@@ -7,6 +7,7 @@ import ProductForm from './pages/ProductForm';
 import ProductDetail from './pages/ProductDetail';
 import Categories from './pages/Categories';
 import Orders from './pages/Orders';
+import OrderDetail from './pages/OrderDetail';
 import Customers from './pages/Customers';
 import Inventory from './pages/Inventory';
 import PurchaseOrders from './pages/PurchaseOrders';
@@ -87,6 +88,13 @@ const routes: RouteConfig[] = [
     path: '/orders',
     element: <Orders />,
     visible: true,
+    requireAuth: true,
+  },
+  {
+    name: 'Order Detail',
+    path: '/orders/:id',
+    element: <OrderDetail />,
+    visible: false,
     requireAuth: true,
   },
   {
