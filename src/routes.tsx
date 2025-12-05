@@ -13,6 +13,8 @@ import Customers from './pages/Customers';
 import Inventory from './pages/Inventory';
 import PurchaseOrders from './pages/PurchaseOrders';
 import SalesReturns from './pages/SalesReturns';
+import CreateReturn from './pages/CreateReturn';
+import ReturnDetail from './pages/ReturnDetail';
 import Reports from './pages/Reports';
 import Employees from './pages/Employees';
 import Settings from './pages/Settings';
@@ -108,9 +110,23 @@ const routes: RouteConfig[] = [
   },
   {
     name: 'Sales Returns',
-    path: '/returns',
+    path: '/sales-returns',
     element: <SalesReturns />,
     visible: true,
+    requireAuth: true,
+  },
+  {
+    name: 'Create Return',
+    path: '/sales-returns/create',
+    element: <CreateReturn />,
+    visible: false,
+    requireAuth: true,
+  },
+  {
+    name: 'Return Detail',
+    path: '/sales-returns/:id',
+    element: <ReturnDetail />,
+    visible: false,
     requireAuth: true,
   },
   {

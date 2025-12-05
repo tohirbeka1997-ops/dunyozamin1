@@ -96,6 +96,8 @@ export interface Order {
   status: OrderStatus;
   payment_status: PaymentStatus;
   notes: string | null;
+  returned_amount: number;
+  return_status: string;
   created_at: string;
 }
 
@@ -129,9 +131,12 @@ export interface SalesReturn {
   customer_id: string | null;
   cashier_id: string;
   total_amount: number;
-  refund_method: RefundMethod;
-  reason: string | null;
+  status: string;
+  reason: string;
+  notes: string | null;
+  refund_method: RefundMethod | null;
   created_at: string;
+  updated_at: string;
 }
 
 export interface SalesReturnItem {
@@ -141,6 +146,7 @@ export interface SalesReturnItem {
   product_name: string;
   quantity: number;
   unit_price: number;
+  line_total: number;
   total: number;
 }
 

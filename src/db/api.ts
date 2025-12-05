@@ -596,72 +596,6 @@ export const generatePaymentNumber = async () => {
   return data as string;
 };
 
-// Sales return functions
-export const getSalesReturns = async (limit = 100) => {
-  const { data, error } = await supabase
-    .from('sales_returns')
-    .select(`
-      *,
-      order:orders(*),
-      customer:customers(*),
-      cashier:profiles(*),
-      items:sales_return_items(*)
-    `)
-    .order('created_at', { ascending: false })
-    .limit(limit);
-  
-  if (error) throw error;
-  return Array.isArray(data) ? data as SalesReturnWithDetails[] : [];
-};
-
-export const generateReturnNumber = async () => {
-  const { data, error } = await supabase.rpc('generate_return_number');
-  if (error) throw error;
-  return data as string;
-};
-
-export const createSalesReturn = async (
-  salesReturn: Omit<SalesReturn, 'id' | 'created_at'>,
-  items: Omit<SalesReturnItem, 'id' | 'return_id'>[]
-) => {
-  const { data: returnData, error: returnError } = await supabase
-    .from('sales_returns')
-    .insert(salesReturn)
-    .select()
-    .maybeSingle();
-  
-  if (returnError) throw returnError;
-  if (!returnData) throw new Error('Failed to create sales return');
-  
-  const returnItems = items.map(item => ({
-    ...item,
-    return_id: returnData.id,
-  }));
-  
-  const { error: itemsError } = await supabase
-    .from('sales_return_items')
-    .insert(returnItems);
-  
-  if (itemsError) throw itemsError;
-  
-  for (const item of items) {
-    const movementNumber = await generateMovementNumber();
-    await supabase
-      .from('inventory_movements')
-      .insert({
-        movement_number: movementNumber,
-        product_id: item.product_id,
-        movement_type: 'return',
-        quantity: item.quantity,
-        reference_type: 'return',
-        reference_id: returnData.id,
-        created_by: salesReturn.cashier_id,
-      });
-  }
-  
-  return returnData as SalesReturn;
-};
-
 // Inventory movement functions
 export const getInventoryMovements = async (productId?: string, limit = 100) => {
   let query = supabase
@@ -806,4 +740,181 @@ export const getDashboardStats = async () => {
     total_revenue: todaySales,
     total_profit: 0,
   };
+};
+
+// Sales Returns functions
+export const getSalesReturns = async (filters?: {
+  startDate?: string;
+  endDate?: string;
+  customerId?: string;
+  cashierId?: string;
+  status?: string;
+}) => {
+  let query = supabase
+    .from('sales_returns')
+    .select(`
+      *,
+      order:orders(order_number),
+      customer:customers(name),
+      cashier:profiles(username)
+    `)
+    .order('created_at', { ascending: false });
+  
+  if (filters?.startDate) {
+    query = query.gte('created_at', filters.startDate);
+  }
+  if (filters?.endDate) {
+    query = query.lte('created_at', filters.endDate);
+  }
+  if (filters?.customerId) {
+    query = query.eq('customer_id', filters.customerId);
+  }
+  if (filters?.cashierId) {
+    query = query.eq('cashier_id', filters.cashierId);
+  }
+  if (filters?.status) {
+    query = query.eq('status', filters.status);
+  }
+  
+  const { data, error } = await query;
+  
+  if (error) throw error;
+  return Array.isArray(data) ? data : [];
+};
+
+export const getSalesReturnById = async (id: string) => {
+  const { data, error } = await supabase
+    .from('sales_returns')
+    .select(`
+      *,
+      order:orders(*),
+      customer:customers(*),
+      cashier:profiles(*)
+    `)
+    .eq('id', id)
+    .maybeSingle();
+  
+  if (error) throw error;
+  if (!data) throw new Error('Sales return not found');
+  
+  // Get return items with product details
+  const { data: items, error: itemsError } = await supabase
+    .from('sales_return_items')
+    .select(`
+      *,
+      product:products(name, sku, barcode)
+    `)
+    .eq('return_id', id)
+    .order('created_at', { ascending: true });
+  
+  if (itemsError) throw itemsError;
+  
+  return {
+    ...data,
+    items: Array.isArray(items) ? items : [],
+  } as SalesReturnWithDetails;
+};
+
+export const getOrderForReturn = async (orderId: string) => {
+  const { data, error } = await supabase
+    .from('orders')
+    .select(`
+      *,
+      customer:customers(*),
+      cashier:profiles(*),
+      items:order_items(
+        *,
+        product:products(name, sku, barcode, image_url)
+      )
+    `)
+    .eq('id', orderId)
+    .maybeSingle();
+  
+  if (error) throw error;
+  if (!data) throw new Error('Order not found');
+  
+  return data as OrderWithDetails;
+};
+
+export const createSalesReturn = async (returnData: {
+  order_id: string;
+  customer_id: string | null;
+  total_amount: number;
+  reason: string;
+  notes: string | null;
+  refund_method: string | null;
+  items: Array<{
+    product_id: string;
+    quantity: number;
+    unit_price: number;
+    line_total: number;
+  }>;
+}) => {
+  const user = await getCurrentUser();
+  if (!user) throw new Error('User not authenticated');
+  
+  // Create return
+  const { data: returnRecord, error: returnError } = await supabase
+    .from('sales_returns')
+    .insert({
+      return_number: '', // Will be auto-generated
+      order_id: returnData.order_id,
+      customer_id: returnData.customer_id,
+      total_amount: returnData.total_amount,
+      status: 'Pending',
+      reason: returnData.reason,
+      notes: returnData.notes,
+      refund_method: returnData.refund_method,
+      cashier_id: user.id,
+    })
+    .select()
+    .maybeSingle();
+  
+  if (returnError) throw returnError;
+  if (!returnRecord) throw new Error('Failed to create return');
+  
+  // Create return items
+  const itemsToInsert = returnData.items.map(item => ({
+    return_id: returnRecord.id,
+    product_id: item.product_id,
+    quantity: item.quantity,
+    unit_price: item.unit_price,
+    line_total: item.line_total,
+  }));
+  
+  const { error: itemsError } = await supabase
+    .from('sales_return_items')
+    .insert(itemsToInsert);
+  
+  if (itemsError) throw itemsError;
+  
+  return returnRecord as SalesReturn;
+};
+
+export const updateSalesReturnStatus = async (id: string, status: string) => {
+  const { error } = await supabase
+    .from('sales_returns')
+    .update({ status, updated_at: new Date().toISOString() })
+    .eq('id', id);
+  
+  if (error) throw error;
+};
+
+export const cancelSalesReturn = async (id: string) => {
+  await updateSalesReturnStatus(id, 'Cancelled');
+};
+
+export const completeSalesReturn = async (id: string) => {
+  await updateSalesReturnStatus(id, 'Completed');
+};
+
+export const getSalesReturnsByOrderId = async (orderId: string) => {
+  const { data, error } = await supabase
+    .from('sales_returns')
+    .select('*')
+    .eq('order_id', orderId)
+    .order('created_at', { ascending: false });
+  
+  if (error) throw error;
+  return Array.isArray(data) ? data as SalesReturn[] : [];
 };

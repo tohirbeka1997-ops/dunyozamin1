@@ -107,7 +107,7 @@ export default function OrderDetail() {
             Print Receipt
           </Button>
           {order.status === 'completed' && (
-            <Button onClick={() => navigate(`/returns/new?orderId=${order.id}`)}>
+            <Button onClick={() => navigate(`/sales-returns/create`)}>
               <RotateCcw className="h-4 w-4 mr-2" />
               Create Return
             </Button>
