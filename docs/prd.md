@@ -18,7 +18,7 @@ Professional savdo nuqtalari uchun to'liq funksional POS tizimi. Tizim real vaqt
 - Chegirma (foiz va summa)\n- Kuponlar va promo-kodlar qo'llash
 - Ko'p to'lov usullari:\n  - Naqd pul\n  - Bank kartasi
   - Terminal\n  - QR to'lov
-  - Aralash to'lov (masalan:50% karta + 50% naqd)
+  - Aralash to'lov (masalan: 50% karta + 50% naqd)
 - Tovar narxini real-time o'zgartirish (faqat manager)\n- Qaytarish summasi avtomatik hisoblash
 - Chek raqami avtomatik generatsiya (Format: POS-YYYYMMDD-#####)
 - Quick Actions paneli:\n  - To'lov qabul qilish
@@ -26,6 +26,9 @@ Professional savdo nuqtalari uchun to'liq funksional POS tizimi. Tizim real vaqt
   - Chek qaytarish
   - Xaridor tanlash
 - Offline rejimda ishlash imkoniyati
+- Kategoriya tugmalari orqali mahsulotlarni filtrlash
+- Rangli kategoriya belgilari va ikkonlar
+- Eng ko'p sotiladigan kategoriyalar yuqorida ko'rsatiladi
 
 ### 3.3 Mahsulotlar katalogi (Products Module)
 \n#### 3.3.1 Products List Page
@@ -78,8 +81,7 @@ Professional savdo nuqtalari uchun to'liq funksional POS tizimi. Tizim real vaqt
 - Mahsulot rasmi yuklash (1-3 ta rasm tavsiya etiladi)
 \n#### 3.3.3 Product Detail Page
 **Yuqori qism:**
-- Rasm
-- Mahsulot nomi
+- Rasm\n- Mahsulot nomi
 - SKU / Barcode
 - Kategoriya
 - Joriy qoldiq
@@ -98,7 +100,8 @@ Professional savdo nuqtalari uchun to'liq funksional POS tizimi. Tizim real vaqt
   - Miqdor (+ yoki –)
   - Foydalanuvchi
   - Bog'liq hujjat raqami
-\n**2) Sotuv tarixi (Sales History)**
+
+**2) Sotuv tarixi (Sales History)**
 - Buyurtma ID
 - Mijoz (ixtiyoriy)
 - Sotilgan miqdor
@@ -114,14 +117,13 @@ Professional savdo nuqtalari uchun to'liq funksional POS tizimi. Tizim real vaqt
 - Xarid buyurtmasi qabul qilinganda → qoldiq ortadi\n- Inventarizatsiya tuzatishi amalga oshganda → loglar yangilanadi
 
 #### 3.3.5 Barcode tizimi integratsiyasi\n- Barcode avtomatik generatsiya YOKI qo'lda kiritish
-- Barcode scanner POS Terminalda mahsulotni darhol qidirishi va qo'shishi kerak
+- Barcode scanner POS Terminalda mahsulotnidarhol qidirishi va qo'shishi kerak
 - Chop qilinadigan barcode yorliqlari yaratish (ixtiyoriy)
 
 #### 3.3.6 Kategoriya integratsiyasi
 - Kategoriya dropdown tanlash
 - Kategoriya bo'yicha filtrlash\n- Kategoriya rangli teglar (ixtiyoriy)
-
-#### 3.3.7 Ma'lumotlarni tekshirish (Data Validation)
+\n#### 3.3.7 Ma'lumotlarni tekshirish (Data Validation)
 - Mahsulot nomi majburiy
 - Sotuv narxi xarid narxidan past bo'lsa ogohlantirish
 - SKU noyob bo'lishi kerak
@@ -132,16 +134,105 @@ Professional savdo nuqtalari uchun to'liq funksional POS tizimi. Tizim real vaqt
 \n#### 3.3.8 Qo'shimcha funksiyalar (Ixtiyoriy lekin tavsiya etiladi)
 - Sevimli mahsulotlar (POS tezkor kirishiga yulduzcha belgisi)
 - Ko'p do'konombor sinxronizatsiyasi
-- Variantlar (o'lcham/rang)
-- Birlashtirilgan mahsulotlar
+- Variantlar (o'lcham/rang)\n- Birlashtirilgan mahsulotlar
 - Amal qilish muddatini kuzatish (dorixona/oziq-ovqat uchun)
 - FIFO/LIFO xarajat hisoblash (ERP darajasidagi ombor uchun)
 
-### 3.4 Kategoriyalar\n- Mahsulotlarni guruhlash
-- Ierarxik tuzilma
+### 3.4 Kategoriyalar (Categories Module)
+\n#### 3.4.1 Categories List Page
+**Sahifa sarlavhasi:** Categories
+
+**Jadval ustunlari:**
+- Name – Kategoriya nomi
+- Description – Ixtiyoriy qisqa tavsif
+- Products Count – Mahsulotlar soni (tavsiya etiladi)
+- Created Date – Yaratilgan sana
+- Actions – Ko'rish / Tahrirlash / O'chirish
+\n**Funksiyalar:**
+- Nom bo'yicha qidiruv
+- Saralash (A–Z, Z–A, eng yangi, eng eski)
+- Sahifalash (Pagination)
+- '+ Add Category' tugmasi\n- O'chirishda → agar kategoriyada mahsulotlar bo'lsa, ogohlantirish ko'rsatish
+- Rangli teg belgilari (ixtiyoriy)
+
+#### 3.4.2 Add Category Form
+**Forma maydonlari:**
+- Category Name (majburiy)
+- Description (ixtiyoriy)\n- Color Tag (ixtiyoriy; POS Terminal UI guruhlashuchun)
+- Icon (ixtiyoriy; emoji yoki SVG)
+- Parent Category (ixtiyoriy → ichki kategoriyalar uchun)
+\n**Tekshirish:**
+- Nom majburiy
+- Noyob bo'lishi kerak
+- Agar parent category tanlangan bo'lsa → doiraviy parent/child munosabatlarini oldini olish
+
+**Tugmalar:**
+- Save\n- Cancel
+\n#### 3.4.3 Edit Category Page
+Yaratish formasiga to'liq o'xshash, lekin oldindan to'ldirilgan.\n
+**Qo'shimcha funksiyalar:**
+- Biriktirilgan mahsulotlar sonini ko'rsatish
+- O'chirishga urinishda:\n  - Agar mahsulotlar yo'q bo'lsa → o'chirishga ruxsat berish
+  - Agar mahsulotlar mavjud bo'lsa → modal ko'rsatish:\n    - 'This category contains X products. Move them to another category before deleting.'
+\n#### 3.4.4 Category Detail Page (tavsiya etiladi)
+**Ko'rsatish:**
+- Name
+- Description
+- Created at
+- Color tag
+- Icon
+- Parent category
+- Products count
+\n**Tabs:**
+\n**1) Products in this Category**
+- Jadval:\n  - Mahsulot nomi
+  - SKU / Barcode
+  - Narx
+  - Qoldiq
+  - Status\n  - 'Open product' amal (mahsulot detailiga o'tish)
+
+**2) Activity Log**
+- Created\n- Updated
+- Deleted
+- Products added/removed
+- (Audit trail uchun)
+
+#### 3.4.5 Mahsulotlar moduli bilan integratsiya
+Kategoriyalar Mahsulotlar bilan to'liq integratsiyalangan bo'lishi kerak:\n- Mahsulot yaratish/tahrirlashda kategoriya dropdown
+- Mahsulotlar ro'yxatida kategoriya bo'yicha filtrlash
+- Agar kategoriyada mahsulotlar bo'lsa, kategoriyani o'chirish mumkin emas
+- Mahsulotlar ro'yxatida kategoriya rangi teglar ko'rsatiladi
+- POS Terminal kategoriya asosida navigatsiyani qo'llab-quvvatlashi kerak
+- Misol:'Drinks', 'Snacks', 'Fruits', 'Pharmacy' kabi tugmalar
+
+#### 3.4.6 POS Terminal bilan integratsiya
+POS Terminal ko'rsatishi kerak:
+- Kategoriya tugmalari\n- Kategoriya bo'yicha filtrlangan mahsulotlar
+- Tez tanib olish uchun ranglar/ikkonlar
+- Aqlli tartiblash: eng ko'p sotiladigan kategoriyalar yuqorida ko'rsatiladi
+\n#### 3.4.7 UI / UX talablar
+- Toza jadval ko'rinishi
+- Minimalistik zamonaviy kartalar
+- Boshqa modullar bilan izchil bo'shliq
+- Mobil qulayyon panel o'zaro ta'siri
+- Vizual guruhlash uchun rangli teglardan foydalanish
+- Ikkonlar ixtiyoriy (lekin POS planshetlar uchun juda tavsiya etiladi)
+\n#### 3.4.8 Xavfsizlik va ruxsatlar
+Rol asosida kirish:\n- Admin va Manager: Kategoriyalarni yaratish, tahrirlash, o'chirish
+- Kassir: Faqat kategoriyalarni ko'rish (tahrirlash yo'q)
+\n#### 3.4.9 Texnik talablar
+**Kategoriya jadval tuzilishi:**
+- id\n- name
+- description\n- color\n- icon
+- parent_id (nullable)
+- created_at
+- updated_at
+\n**Munosabatlar:**
+- Mahsulotlar bilan One-to-many\n- O'z-o'ziga havola qiluvchi parent-child kategoriyalar
+- Inventory va POS Terminal bilan avtomatik sinxronizatsiya
 \n### 3.5 Cheklar / Buyurtmalar (Orders Module)
-\n#### 3.5.1 Orders List Page
-**Sahifa sarlavhasi:** Orders
+
+#### 3.5.1 Orders List Page\n**Sahifa sarlavhasi:** Orders
 
 **Jadval ustunlari:**
 - order_number – Buyurtma / Chek raqami (masalan: POS-20251205-00042)
@@ -151,8 +242,8 @@ Professional savdo nuqtalari uchun to'liq funksional POS tizimi. Tizim real vaqt
 - total_amount – Buyurtma jami\n- payment_status – To'langan / Qisman to'langan / To'lanmagan
 - payment_methods – Ikkonlar yoki matn (Naqd, Karta, QR, Aralash)
 - status – Yakunlangan / Bekor qilingan / Qaytarilgan
-- actions – Ko'rish, Chop qilish, Qaytarish (Sales Return)
-\n**Filtrlar:**
+- actions – Ko'rish, Chop qilish, Qaytarish (Sales Return)\n
+**Filtrlar:**
 - Sana oralig'i (bugun, shu hafta, maxsus)
 - Kassir\n- To'lov holati
 - Status (Yakunlangan, Bekor qilingan, Qaytarilgan)
@@ -165,7 +256,7 @@ Professional savdo nuqtalari uchun to'liq funksional POS tizimi. Tizim real vaqt
   - total_orders_count – Jami buyurtmalar soni
   - average_order_value – O'rtacha buyurtma qiymati
 \n#### 3.5.2 Order Detail Page
-Foydalanuvchi buyurtma qatorini bosganda, Order Detail sahifasi yoki yon panel ochiladi.
+Foydalanuvchi buyurtma qatorini bosganda, Order Detail sahifasi yokiyon panel ochiladi.
 
 **Sarlavha bloki:**
 - Buyurtma raqami
@@ -181,9 +272,10 @@ Foydalanuvchi buyurtma qatorini bosganda, Order Detail sahifasi yoki yon panel o
 - SKU / Barcode
 - Miqdor
 - Birlik narxi
-- Chegirma (har bir qatoruchun,agar mavjud bo'lsa)
+- Chegirma (har bir qator uchun,agar mavjud bo'lsa)
 - Qator jami
-\n**Xulosa bloki:**
+
+**Xulosa bloki:**
 - Oraliq jami (Subtotal)\n- Chegirmalar (buyurtma darajasida)
 - Soliq (agar ishlatilsa)
 - Umumiy jami (Grand total)
@@ -238,7 +330,7 @@ Faqat Manager yoki Admin roligaega foydalanuvchilar:\n- Buyurtmalarni bekor qili
   - Pending – ko'k
   - Voided – kulrang
   - Refunded – to'q sariq
-- Mobil/Planshet uchun qulay (lekin desktopuchun optimallashtirilgan)
+- Mobil/Planshet uchun qulay (lekin desktop uchun optimallashtirilgan)
 
 ### 3.6 Qaytarishlar (Sales Returns)
 - Chek raqami bo'yicha qidiruv
@@ -268,29 +360,26 @@ Faqat Manager yoki Admin roligaega foydalanuvchilar:\n- Buyurtmalarni bekor qili
 - Qabul etilgan mahsulotlar jadvali
 - Narxlarni kechiktirilgan holda o'zgartirish
 - Tovarni omborga avtomatik qo'shish
-- Hisob-faktura raqami
-- Prihod raqami formati: PRC-YYYY-#####
+- Hisob-faktura raqami\n- Prihod raqami formati: PRC-YYYY-#####
 
 ### 3.10 Inventarizatsiya\n- Omborni tanlash
 - Haqiqiy miqdorni kiritish
 - Tizim miqdori bilan taqqoslash
 - Farqni avtomatik hisoblash va tasdiqlash
 - Ombor harakatiga yozish
-- Inventarizatsiya raqami formati: INV-YYYY-#####
-\n### 3.11 Mijozlar (Customers)
+- Inventarizatsiya raqami formati: INV-YYYY-#####\n
+### 3.11 Mijozlar (Customers)
 - Bonus tizimi
 - Qarzdorlik kuzatuvi
 - Keshbek\n- Mijoz tarixini ko'rsatish
 - Oxirgi xaridlar ro'yxati
-\n### 3.12 Xodimlar va rollar
-- Rollar: Admin, Manager, Kassir
+\n### 3.12 Xodimlar va rollar\n- Rollar: Admin, Manager, Kassir
 - Ruxsatlar tizimi:\n  - Narxni o'zgartirish
   - Qaytarish qilish
   - Chek o'chirish
   - Omborga kirish
 - Role-based access control (RBAC)
-
-### 3.13 Hisobotlar (Reports)
+\n### 3.13 Hisobotlar (Reports)
 **Savdo hisobotlari:**
 - Kunlik savdo
 - Kassir bo'yicha savdo
@@ -304,11 +393,9 @@ Faqat Manager yoki Admin roligaega foydalanuvchilar:\n- Buyurtmalarni bekor qili
 \n**Moliya hisobotlari:**
 - Kirim/Chiqim
 - Foyda/zarar (Profit & Loss)
-\n**Mijoz hisobotlari:**
-- Top mijozlar
+\n**Mijoz hisobotlari:**\n- Top mijozlar
 - Qarzdorlik hisobotlari
-
-**Kassa hisobotlari:**
+\n**Kassa hisobotlari:**
 - Z-otchet (kunlik yakun)
 - X-otchet (oraliq hisobot)
 - Kassa ochilishi/yopilishi
@@ -339,13 +426,11 @@ Faqat Manager yoki Admin roligaega foydalanuvchilar:\n- Buyurtmalarni bekor qili
 - Admin darajasidagi funksiyalar kassirlardan yashirilgan
 -10,000+ mahsulot bilan ham tez render qilish
 
-### 5.2 Xavfsizlik
-- JWT yoki Session authentication
+### 5.2 Xavfsizlik\n- JWT yoki Session authentication
 - Role-based access control (RBAC)
 - Offline ma'lumot shifrlanishi
 - Kassa bo'yicha loglar: kim nima qilgan\n\n### 5.3 Integratsiyalar
-- Fiskal printer
-- Barcode scanner
+- Fiskal printer\n- Barcode scanner
 - QR Pay (Click/Payme)
 - Inventory API
 - Bank terminali
@@ -357,16 +442,14 @@ Faqat Manager yoki Admin roligaega foydalanuvchilar:\n- Buyurtmalarni bekor qili
 - Inventarizatsiya: INV-YYYY-#####
 - SKU: SKU-000123
 \n## 7. Modullar integratsiyasi
-Mahsulotlar va Buyurtmalar modullari quyidagi modullar bilan to'liq integratsiyalangan bo'lishi kerak:
-- POS Terminal
-- Ombor (Inventory)
+Mahsulotlar, Kategoriyalar va Buyurtmalar modullari quyidagi modullar bilan to'liq integratsiyalangan bo'lishi kerak:
+- POS Terminal\n- Ombor (Inventory)
 - Xarid buyurtmalari (Purchase Orders)
 - Sotuvlar (Sales)
 - Hisobotlar (Reports)
 - Mijozlar (Customers)
 - Sotuv qaytarishlari (Sales Returns)
-- To'lovlar (Payments)
-\nBarcha operatsiyalar to'liq sinxronlashtirilgan va audit qilinadigan bo'lishi kerak.
+- To'lovlar (Payments)\n\nBarcha operatsiyalar to'liq sinxronlashtirilgan va audit qilinadigan bo'lishi kerak.
 
 ## 8. Dizayn uslubi
 - Zamonaviy va professional ko'rinish, biznes muhitiga mos\n- Asosiy ranglar: ko'k (#2563EB) va kulrang (#64748B) tonlari, oq fon (#FFFFFF)\n- Karta uslubidagi layout, har bir modul alohida kartada
@@ -374,4 +457,4 @@ Mahsulotlar va Buyurtmalar modullari quyidagi modullar bilan to'liq integratsiya
 - Ikkonlar: Lucide yoki Heroicons kutubxonasidan zamonaviy chiziqli ikkonlar
 - Jadvallar: zebra-striped uslubda, hover effekti bilan
 - Tugmalar: to'ldirilgan (primary) va konturli (secondary) variantlar, touch screen uchun minimal44px balandlik
-- Responsive grid layout: desktopuchun 3-4 ustun, tablet uchun 2ustun
+- Responsive grid layout: desktopuchun 3-4 ustun, tablet uchun 2ustun\n- Kategoriya rangli teglar va ikkonlar POS Terminal va mahsulotlar ro'yxatida ko'rsatiladi

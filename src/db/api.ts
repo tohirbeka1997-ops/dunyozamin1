@@ -141,6 +141,39 @@ export const deleteCategory = async (id: string) => {
   if (error) throw error;
 };
 
+export const getCategoryProductCount = async (categoryId: string): Promise<number> => {
+  const { count, error } = await supabase
+    .from('products')
+    .select('*', { count: 'exact', head: true })
+    .eq('category_id', categoryId);
+  
+  if (error) throw error;
+  return count || 0;
+};
+
+export const getCategoryById = async (id: string) => {
+  const { data, error } = await supabase
+    .from('categories')
+    .select('*')
+    .eq('id', id)
+    .maybeSingle();
+  
+  if (error) throw error;
+  if (!data) throw new Error('Category not found');
+  return data as Category;
+};
+
+export const getProductsByCategoryId = async (categoryId: string) => {
+  const { data, error } = await supabase
+    .from('products')
+    .select('*')
+    .eq('category_id', categoryId)
+    .order('name', { ascending: true });
+  
+  if (error) throw error;
+  return Array.isArray(data) ? data as Product[] : [];
+};
+
 // Supplier functions
 export const getSuppliers = async () => {
   const { data, error } = await supabase

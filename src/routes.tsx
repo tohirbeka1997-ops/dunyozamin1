@@ -6,6 +6,7 @@ import Products from './pages/Products';
 import ProductForm from './pages/ProductForm';
 import ProductDetail from './pages/ProductDetail';
 import Categories from './pages/Categories';
+import CategoryDetail from './pages/CategoryDetail';
 import Orders from './pages/Orders';
 import OrderDetail from './pages/OrderDetail';
 import Customers from './pages/Customers';
@@ -80,6 +81,14 @@ const routes: RouteConfig[] = [
     path: '/categories',
     element: <Categories />,
     visible: true,
+    requireAuth: true,
+    allowedRoles: ['admin', 'manager'],
+  },
+  {
+    name: 'Category Detail',
+    path: '/categories/:id',
+    element: <CategoryDetail />,
+    visible: false,
     requireAuth: true,
     allowedRoles: ['admin', 'manager'],
   },
