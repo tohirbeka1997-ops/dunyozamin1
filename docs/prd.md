@@ -30,6 +30,8 @@ Professional savdo nuqtalari uchun to'liq funksional POS tizimi. Tizim real vaqt
 - Kategoriya tugmalari orqali mahsulotlarni filtrlash
 - Rangli kategoriya belgilari va ikkonlar
 - Eng ko'p sotiladigan kategoriyalar yuqorida ko'rsatiladi
+- Mijozni tanlash yoki tezkor yaratish (ism + telefon)
+- Kredit savdo imkoniyati (mijoz ruxsati bo'lsa)
 
 ### 3.3 Mahsulotlar katalogi (Products Module)
 \n#### 3.3.1 Products List Page
@@ -77,7 +79,8 @@ Professional savdo nuqtalari uchun to'liq funksional POS tizimi. Tizim real vaqt
 **Ombor sozlamalari:**
 - Boshlang'ich qoldiq (faqat yaratishda ruxsat etiladi)
 - Minimal qoldiq ogohlantirish darajasi
-- Qoldiqni kuzatish ON/OFF\n  -Agar OFF bo'lsa → mahsulot sotiladi, lekin ombor kamaytirilmaydi
+- Qoldiqni kuzatish ON/OFF
+  - Agar OFF bo'lsa → mahsulot sotiladi, lekin ombor kamaytirilmaydi
 \n**Rasmlar:**
 - Mahsulot rasmi yuklash (1-3 ta rasm tavsiya etiladi)
 \n#### 3.3.3 Product Detail Page
@@ -135,9 +138,10 @@ Professional savdo nuqtalari uchun to'liq funksional POS tizimi. Tizim real vaqt
 - O'chirishda →agar mahsulotning sotuv tarixi bo'lsa ogohlantirish
 \n#### 3.3.8 Qo'shimcha funksiyalar (Ixtiyoriy lekin tavsiya etiladi)
 - Sevimli mahsulotlar (POS tezkor kirishiga yulduzcha belgisi)
-- Ko'p do'konombor sinxronizatsiyasi
+- Ko'p do'kon ombor sinxronizatsiyasi
 - Variantlar (o'lcham/rang)
-- Birlashtirilgan mahsulotlar\n- Amal qilish muddatini kuzatish (dorixona/oziq-ovqat uchun)
+- Birlashtirilgan mahsulotlar
+- Amal qilish muddatini kuzatish (dorixona/oziq-ovqat uchun)
 - FIFO/LIFO xarajat hisoblash (ERP darajasidagi ombor uchun)
 
 ### 3.4 Kategoriyalar (Categories Module)
@@ -168,7 +172,7 @@ Professional savdo nuqtalari uchun to'liq funksional POS tizimi. Tizim real vaqt
 \n**Tekshirish:**
 - Nom majburiy
 - Noyob bo'lishi kerak
--Agar parent category tanlangan bo'lsa → doiraviy parent/child munosabatlarini oldini olish
+- Agar parent category tanlangan bo'lsa → doiraviy parent/child munosabatlarini oldini olish
 
 **Tugmalar:**
 - Save\n- Cancel
@@ -193,7 +197,8 @@ Yaratish formasiga to'liq o'xshash, lekin oldindan to'ldirilgan.\n
   - SKU / Barcode
   - Narx
   - Qoldiq
-  - Status\n  - 'Open product' amal (mahsulot detailiga o'tish)
+  - Status
+  - 'Open product' amal (mahsulot detailiga o'tish)
 
 **2) Activity Log**
 - Created\n- Updated
@@ -321,6 +326,8 @@ Buyurtmalar bu yerda qo'lda yaratilmaydi – ular POS Terminaldan keladi:\n- POS
 
 **Mijozlar integratsiyasi:**\n- Agar mijoz POSda belgilangan bo'lsa, u Orders ro'yxati va detallarda ko'rsatilishi kerak
 - Mijoz balanslari (qarz, sodiqlik) buyurtma yaratilganda/to'langanda/qaytarilganda yangilanishi kerak
+- Kredit savdo amalga oshganda mijoz balansi ortadi
+- To'lov qabul qilinganda mijoz balansi kamayadi
 
 **Sales Returns integratsiyasi:**
 - Order Detail sahifasidan foydalanuvchi Sales Return yozuvini yaratishi mumkin
@@ -341,8 +348,7 @@ Faqat Manager yoki Admin roligaega foydalanuvchilar:\n- Buyurtmalarni bekor qili
   - Refunded – to'q sariq
   - Partially Refunded – och sariq
 - Mobil/Planshet uchun qulay (lekin desktop uchun optimallashtirilgan)
-
-### 3.6 Qaytarishlar (Sales Returns Module)
+\n### 3.6 Qaytarishlar (Sales Returns Module)
 
 #### 3.6.1 Sales Returns List Page
 **Sahifa sarlavhasi:** Sales Returns
@@ -387,7 +393,7 @@ Barcha buyurtma mahsulotlarini jadvalga avtomatik yuklash:
 - Qator jami (avtomatik hisoblash)
 
 **Tekshirish:**
-- Qaytarish miqdori sotilgan miqdordanoshmasligi kerak
+- Qaytarish miqdori sotilgan miqdordan oshmasligi kerak
 - Agar qaytarish miqdori = 0 → mahsulotni o'tkazib yuborish
 \n**Avtomatik hisoblashlar:**
 - line_total = unit_price × return_quantity
@@ -408,8 +414,7 @@ Detail ko'rinishi quyidagilarni ko'rsatishi kerak:
 \n**Umumiy ko'rinish:**
 - Qaytarish raqami
 - Bog'liq buyurtma raqami
-- Mijoz
-- Kassir
+- Mijoz\n- Kassir
 - Sana va vaqt
 - Status belgisi
 - Qaytarish sababi
@@ -467,8 +472,7 @@ Kassir qaytarish usulini tanlaydi:
 #### 3.6.8 Hisobotlar integratsiyasi
 Sales Returns quyidagi hisobotlarda ko'rinishi kerak:
 
-**Savdo hisobotlari:**
-- Jami qaytarilgan summa
+**Savdo hisobotlari:**\n- Jami qaytarilgan summa
 - Sof savdo\n- Qaytarish foizi
 
 **Ombor hisobotlari:**
@@ -511,10 +515,12 @@ Har bir qaytarish uchun quyidagilar logga yoziladi:
 - Oldindan to'lov (qarzdor mijozlar uchun)
 - To'lov ma'lumotlari: raqam, sana, summa, turi, izoh
 - Qaytarish to'lovlari (Refund payments)
+- Mijoz balansi bilan integratsiya
 \n### 3.8 Ombor (Inventory Management)
 - Real-time qoldiq hisoblash: Qoldiq = Prihod – Rashod + Qaytarish – Qaytarish yetkazib beruvchiga
 - Ombor harakatlari: prihod, rashod, inventarizatsiya, ko'chirish, savdo qaytarishlari
-- Serial number tracking\n- Ogohlantirishlar:\n  - Minimal qoldiq\n  - Tugash arafasi
+- Serial number tracking
+- Ogohlantirishlar:\n  - Minimal qoldiq\n  - Tugash arafasi
   - Ko'p sotilayotgan tovarlar
 
 ### 3.9 Tovar qabul qilish (Purchase Receiving)
@@ -532,22 +538,159 @@ Har bir qaytarish uchun quyidagilar logga yoziladi:
 - Ombor harakatiga yozish
 - Inventarizatsiya raqami formati: INV-YYYY-#####
 
-### 3.11 Mijozlar (Customers)
-- Bonus tizimi
-- Qarzdorlik kuzatuvi
-- Keshbek
-- Mijoz tarixini ko'rsatish
-- Oxirgi xaridlar ro'yxati
-- Qaytarishlar tarixi
-- Balans tarixi
-\n### 3.12 Xodimlar va rollar
-- Rollar: Admin, Manager, Kassir\n- Ruxsatlar tizimi:\n  - Narxni o'zgartirish
+### 3.11 Mijozlar (Customers Module)
+\n#### 3.11.1 Customers List Page
+**Sahifa sarlavhasi:** Customers\n
+**Jadval ustunlari:**
+- name – To'liq ism yoki kompaniya nomi
+- phone – Asosiy telefon
+- type – Jismoniy shaxs / Kompaniya\n- total_sales – Jami xaridlar summasi
+- balance – Joriy balans (musbat = mijoz qarzi, manfiy = do'kon qarzi/qaytarish)
+- last_order_date – Oxirgi xarid sanasi
+- status – Faol / Nofaol
+- actions – Ko'rish / Tahrirlash / O'chirish
+
+**Funksiyalar:**
+- Ism / telefon bo'yicha qidiruv
+- Filtrlar:
+  - Turi (Jismoniy shaxs / Kompaniya)
+  - Status (Faol / Nofaol)
+  - Balans (Qarzdor / Qarzsiz)
+- Saralash:\n  - Jami savdo\n  - Oxirgi buyurtma sanasi
+  - Ism A–Z / Z–A
+- Excel / PDF formatida eksport
+- '+ Add Customer' tugmasi
+\n#### 3.11.2 Add / Edit Customer Form
+**Asosiy ma'lumotlar:**
+- name (majburiy)
+- type – Jismoniy shaxs / Kompaniya
+- phone (majburiy, formatlash + tekshirish bilan)
+- email (ixtiyoriy)
+- address (ixtiyoriy)
+\n**Kompaniya bo'limi (faqat type = Kompaniya bo'lganda ko'rinadi):**
+- company_name (agar asosiy ismdan farq qilsa)
+- tax_number / VAT / INN (ixtiyoriy lekin o'rnatilgan bo'lsa noyob)
+\n**Moliyaviy sozlamalar:**
+- credit_limit (ixtiyoriy)
+- allow_debt (ha/yo'q)
+- initial_balance (standart 0; faqat yaratishda)
+\n**Boshqa:**
+- notes – erkin matn
+- status – Faol / Nofaol
+\n**Tekshirish:**
+-Ism va telefon majburiy
+- Telefon noyob (dublikatlar yo'q)
+- Soliq raqami noyob
+- Boshlang'ich balans raqamli
+- Kredit limiti raqamli
+\n**Tugmalar:** Save, Cancel\n
+#### 3.11.3 Customer Detail Page
+**Layout:**umumiy ma'lumotlar bilan sarlavha + tablar.\n
+**Sarlavha bloki:**
+- Ism +turi belgisi
+- Telefon, email\n- Manzil
+- Status
+- Kredit limiti
+- Joriy balans (rang bilan):\n  - Qizil → mijoz do'konga qarzdor (musbat balans)
+  - Yashil → do'kon qarzdor/qaytarish / oldindan to'lov (manfiy)\n  - Kulrang → nol balans
+
+**Asosiy ko'rsatkichlar (kartalar):**
+- Jami savdo summasi
+- Buyurtmalar soni
+- O'rtacha buyurtma qiymati
+- Jami qaytarishlar summasi
+- Oxirgi buyurtma sanasi
+\n**Tab1 — Buyurtmalar (Orders)**
+Jadval:\n- Buyurtma raqami
+- Sana
+- Jami summa
+- To'langan summa
+- Status
+- Amallar → buyurtma detailiga o'tish
+
+**Tab 2 — To'lovlar (Payments)**\nJadval:
+- Sana
+- Summa\n- Yo'nalish (Mijozdan to'lov / Mijozga qaytarish)
+- Usul (Naqd / Karta / O'tkazma / Boshqa)
+- Bog'liq buyurtma (agar mavjud bo'lsa)
+\nBalans buyurtmalar + to'lovlar asosida avtomatik hisoblanishi kerak.
+
+**Tab 3 — Qaytarishlar (Returns)**
+Jadval:
+- Qaytarish raqami
+- Sana\n- Qaytarilgan summa
+- Bog'liq buyurtma
+- Status
+\n**Tab 4 — Eslatmalar / Faoliyat logi (Notes / Activity Log)**
+- Qo'lda eslatmalar
+- Tizim voqealari:\n  - Mijoz yaratildi/yangilandi
+  - Kredit limiti o'zgarishi
+  - Balans tuzatishlari
+\n#### 3.11.4 POS Terminal integratsiyasi
+POS Terminaldan kassir:\n- Mavjud mijozni tanlashi mumkin
+- Tezkor mijoz yaratishi mumkin (faqat ism + telefon)
+\nSotuvdan keyin:
+- Buyurtma mijozga bog'lanadi
+- Balans yangilanadi agar:\n  - Kredit savdo\n  - Ortiqcha to'lov / oldindan to'lov
+\n#### 3.11.5 Balans va qarz mantiqiy (Majburiy)
+**Balans formulasi:**
+Balans = (Mijoz uchun jami buyurtmalar – Mijozdan jami to'lovlar + Do'kon qaytarishlari)\n
+**Balans talqini:**
+- Agar balans > 0 → mijoz qarzi
+- Agar balans < 0 → do'kon qarzdor (oldindan to'lov yoki qaytarish)
+\n**Ogohlantirish ko'rsatish qachon:**
+- Yangi savdo balansi credit_limit danoshirib yuborsa
+- Mijoz allow_debt = false va kassir kredit savdo qilmoqchi bo'lsa
+
+#### 3.11.6 Hisobotlar integratsiyasi
+Mijozlar moduli hisobotlarga ma'lumot berishi kerak:
+- Savdo bo'yicha top mijozlar
+- Eng ko'p qarzdor mijozlar
+- Davr bo'yicha mijoz faolligi
+
+#### 3.11.7 Ruxsatlar va xavfsizlik\n**Admin/Manager:** to'liq kirish (qo'shish, tahrirlash, o'chirish, balansni tuzatish)
+**Kassir:** ko'rish + yaratish + asosiy maydonlarni tahrirlash, o'chirish yo'q, to'g'ridan-to'g'ri balansni tahrirlash yo'q
+
+**Mijozni o'chirish faqat ruxsat etiladiagar:**
+- Bog'liq buyurtmalar, to'lovlar yoki qaytarishlar yo'q bo'lsa
+- Aks holda → jismoniy o'chirish o'rniga Nofaol deb belgilash
+
+#### 3.11.8 UI/UX talablar
+- Toza, zamonaviy jadval ko'rinishi
+- Yopishqoq qidiruv va filtrlar paneli
+- Status va balans uchun rangli belglar
+- Responsive layout (desktop optimallashtirilgan, planshet uchun qulay)
+- Mijoz → buyurtmalar → to'lovlar va orqaga tez navigatsiya
+
+#### 3.11.9 Texnik talablar
+**Mijozlar jadval tuzilishi:**
+- id\n- name
+- type (individual/company)
+- phone
+- email
+- address
+- company_name
+- tax_number
+- credit_limit
+- allow_debt
+- initial_balance
+- current_balance (hisoblangan)
+- notes
+- status
+- created_at
+- updated_at
+\n**Munosabatlar:**
+- Buyurtmalar bilan One-to-many\n- To'lovlar bilan One-to-many
+- Qaytarishlar bilan One-to-many
+- Balans avtomatik hisoblash
+
+### 3.12 Xodimlar va rollar\n- Rollar: Admin, Manager, Kassir\n- Ruxsatlar tizimi:\n  - Narxni o'zgartirish
   - Qaytarish qilish
   - Chek o'chirish
   - Omborga kirish
   - Qaytarishlarni bekor qilish
-- Role-based access control (RBAC)
-\n### 3.13 Hisobotlar (Reports)
+  - Mijozlarni boshqarish
+- Role-based access control (RBAC)\n\n### 3.13 Hisobotlar (Reports)
 **Savdo hisobotlari:**\n- Kunlik savdo
 - Kassir bo'yicha savdo
 - Eng ko'p sotilgan mahsulotlar
@@ -555,7 +698,8 @@ Har bir qaytarish uchun quyidagilar logga yoziladi:
 - To'lov usullari bo'yicha taqsimot
 - Jami qaytarilgan summa
 - Sof savdo (savdo - qaytarishlar)
-- Qaytarish foizi\n
+- Qaytarish foizi
+
 **Ombor hisobotlari:**
 - Qoldiq\n- Harakatlar
 - Kam qoldiqdagi mahsulotlar
@@ -565,34 +709,33 @@ Har bir qaytarish uchun quyidagilar logga yoziladi:
 - Foyda/zarar (Profit & Loss)
 - Qaytarishlar ta'siri
 \n**Mijoz hisobotlari:**
-- Top mijozlar
+- Top mijozlar (savdo bo'yicha)
 - Qarzdorlik hisobotlari
 - Qaytarishlar bo'yicha mijozlar
-
-**Xodimlar hisobotlari:**
+- Mijoz faolligi davr bo'yicha
+\n**Xodimlar hisobotlari:**
 - Kassir bo'yicha savdo
 - Kassir tomonidan qayta ishlangan qaytarishlar
-
-**Kassa hisobotlari:**
-- Z-otchet (kunlik yakun)
+\n**Kassa hisobotlari:**\n- Z-otchet (kunlik yakun)
 - X-otchet (oraliq hisobot)
 - Kassa ochilishi/yopilishi
 - Shift-based accounting
 
 ### 3.14 Sozlamalar (Settings)
-- Tizim sozlamalari
-- Kassa sozlamalari
+- Tizim sozlamalari\n- Kassa sozlamalari
 - Printer sozlamalari
 - Device binding (faqat bitta kassaga ulangan)
 - Qaytarish siyosati sozlamalari
-\n##4. Professional funksiyalar
+- Mijoz sozlamalari (kredit limiti, qarzdorlik siyosati)
+
+##4. Professional funksiyalar
 - Hold order (chekni vaqtincha saqlash)
-- Split payment (bir nechta to'lov turi)
-- Quick add product (tezkor qo'shish)\n- Z-otchet va X-otchet
+- Split payment (bir nechta to'lov turi)\n- Quick add product (tezkor qo'shish)\n- Z-otchet va X-otchet
 - Kassa ochilishi/yopilishi
 - Shift-based accounting
 - Device binding
 - To'liq Sales Returns tizimi
+- To'liq Customers tizimi (balans, qarz, kredit limiti)
 - Ombor bilan avtomatik sinxronizatsiya
 - Audit trail va loglar
 
@@ -615,6 +758,7 @@ Har bir qaytarish uchun quyidagilar logga yoziladi:
 - Offline ma'lumot shifrlanishi
 - Kassa bo'yicha loglar: kim nima qilgan\n- Qaytarishlar uchun audit trail
 - O'chirish va bekor qilish cheklovlari
+- Mijoz ma'lumotlari xavfsizligi
 \n### 5.3 Integratsiyalar
 - Fiskal printer
 - Barcode scanner
@@ -622,6 +766,7 @@ Har bir qaytarish uchun quyidagilar logga yoziladi:
 - Inventory API
 - Bank terminali
 - Sales Returns bilan to'liq integratsiya
+- Customers bilan to'liq integratsiya
 \n## 6. Tizim nomerlash siyosati
 - Chek / Buyurtma: POS-YYYYMMDD-#####
   - Misol: POS-20251205-00042
@@ -631,13 +776,12 @@ Har bir qaytarish uchun quyidagilar logga yoziladi:
 - Inventarizatsiya: INV-YYYY-#####
 - SKU: SKU-000123
 \n## 7. Modullar integratsiyasi
-Mahsulotlar, Kategoriyalar, Buyurtmalar va Sales Returns modullari quyidagi modullar bilan to'liq integratsiyalangan bo'lishi kerak:
+Mahsulotlar, Kategoriyalar, Buyurtmalar, Sales Returns va Customers modullari quyidagi modullar bilan to'liq integratsiyalangan bo'lishi kerak:
 - POS Terminal
 - Ombor (Inventory)
 - Xarid buyurtmalari (Purchase Orders)
 - Sotuvlar (Sales)
 - Hisobotlar (Reports)
-- Mijozlar (Customers)
 - To'lovlar (Payments)
 \nBarcha operatsiyalar to'liq sinxronlashtirilgan va audit qilinadigan bo'lishi kerak.
 
@@ -651,5 +795,8 @@ Mahsulotlar, Kategoriyalar, Buyurtmalar va Sales Returns modullari quyidagi modu
 - Status rangli kodlari:\n  - Completed / Paid → Yashil
   - Pending → Ko'k
   - Cancelled / Voided → Qizil
-- Refunded → To'q sariq
+  - Refunded → To'q sariq
   - Partially Refunded / Partially Paid → Och sariq
+- Mijoz balansi rangli kodlari:\n  - Qizil → mijoz qarzdor (musbat balans)
+  - Yashil → do'kon qarzdor/oldindan to'lov (manfiy balans)
+  - Kulrang → nol balans

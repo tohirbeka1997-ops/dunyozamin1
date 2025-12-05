@@ -61,9 +61,26 @@ export interface Customer {
   phone: string | null;
   email: string | null;
   address: string | null;
+  type: 'individual' | 'company';
+  company_name: string | null;
+  tax_number: string | null;
+  credit_limit: number;
+  allow_debt: boolean;
+  balance: number;
+  total_sales: number;
+  last_order_date: string | null;
+  status: 'active' | 'inactive';
+  notes: string | null;
   bonus_points: number;
   debt_balance: number;
   created_at: string;
+  updated_at: string;
+}
+
+export interface CustomerWithStats extends Customer {
+  order_count?: number;
+  avg_order_value?: number;
+  total_returns?: number;
 }
 
 export interface Shift {

@@ -320,11 +320,43 @@ export const deleteProduct = async (id: string) => {
 };
 
 // Customer functions
-export const getCustomers = async () => {
-  const { data, error } = await supabase
+export const getCustomers = async (filters?: {
+  searchTerm?: string;
+  type?: string;
+  status?: string;
+  hasDebt?: boolean;
+  sortBy?: string;
+  sortOrder?: 'asc' | 'desc';
+}) => {
+  let query = supabase
     .from('customers')
-    .select('*')
-    .order('created_at', { ascending: false });
+    .select('*');
+  
+  if (filters?.searchTerm) {
+    query = query.or(`name.ilike.%${filters.searchTerm}%,phone.ilike.%${filters.searchTerm}%,email.ilike.%${filters.searchTerm}%`);
+  }
+  
+  if (filters?.type && filters.type !== 'all') {
+    query = query.eq('type', filters.type);
+  }
+  
+  if (filters?.status && filters.status !== 'all') {
+    query = query.eq('status', filters.status);
+  }
+  
+  if (filters?.hasDebt !== undefined) {
+    if (filters.hasDebt) {
+      query = query.gt('balance', 0);
+    } else {
+      query = query.lte('balance', 0);
+    }
+  }
+  
+  const sortBy = filters?.sortBy || 'created_at';
+  const sortOrder = filters?.sortOrder || 'desc';
+  query = query.order(sortBy, { ascending: sortOrder === 'asc' });
+  
+  const { data, error } = await query;
   
   if (error) throw error;
   return Array.isArray(data) ? data as Customer[] : [];
@@ -341,11 +373,40 @@ export const getCustomerById = async (id: string) => {
   return data as Customer | null;
 };
 
+export const getCustomerWithStats = async (id: string) => {
+  const customer = await getCustomerById(id);
+  if (!customer) return null;
+  
+  const { data: orders } = await supabase
+    .from('orders')
+    .select('total_amount')
+    .eq('customer_id', id)
+    .eq('status', 'completed');
+  
+  const { data: returns } = await supabase
+    .from('sales_returns')
+    .select('total_amount')
+    .eq('customer_id', id)
+    .eq('status', 'Completed');
+  
+  const orderCount = orders?.length || 0;
+  const totalReturns = returns?.reduce((sum, r) => sum + Number(r.total_amount), 0) || 0;
+  const avgOrderValue = orderCount > 0 ? customer.total_sales / orderCount : 0;
+  
+  return {
+    ...customer,
+    order_count: orderCount,
+    avg_order_value: avgOrderValue,
+    total_returns: totalReturns,
+  };
+};
+
 export const searchCustomers = async (searchTerm: string) => {
   const { data, error } = await supabase
     .from('customers')
     .select('*')
     .or(`name.ilike.%${searchTerm}%,phone.ilike.%${searchTerm}%`)
+    .eq('status', 'active')
     .order('name', { ascending: true })
     .limit(20);
   
@@ -353,10 +414,32 @@ export const searchCustomers = async (searchTerm: string) => {
   return Array.isArray(data) ? data as Customer[] : [];
 };
 
-export const createCustomer = async (customer: Omit<Customer, 'id' | 'created_at' | 'bonus_points' | 'debt_balance'>) => {
+export const createCustomer = async (customer: {
+  name: string;
+  phone?: string | null;
+  email?: string | null;
+  address?: string | null;
+  type?: 'individual' | 'company';
+  company_name?: string | null;
+  tax_number?: string | null;
+  credit_limit?: number;
+  allow_debt?: boolean;
+  notes?: string | null;
+  status?: 'active' | 'inactive';
+}) => {
   const { data, error } = await supabase
     .from('customers')
-    .insert(customer)
+    .insert({
+      ...customer,
+      type: customer.type || 'individual',
+      credit_limit: customer.credit_limit || 0,
+      allow_debt: customer.allow_debt || false,
+      status: customer.status || 'active',
+      balance: 0,
+      total_sales: 0,
+      bonus_points: 0,
+      debt_balance: 0,
+    })
     .select()
     .maybeSingle();
   
@@ -377,12 +460,79 @@ export const updateCustomer = async (id: string, updates: Partial<Customer>) => 
 };
 
 export const deleteCustomer = async (id: string) => {
+  const { data: orders } = await supabase
+    .from('orders')
+    .select('id')
+    .eq('customer_id', id)
+    .limit(1);
+  
+  if (orders && orders.length > 0) {
+    await updateCustomer(id, { status: 'inactive' });
+    throw new Error('Customer has orders. Marked as inactive instead of deleting.');
+  }
+  
   const { error } = await supabase
     .from('customers')
     .delete()
     .eq('id', id);
   
   if (error) throw error;
+};
+
+export const getCustomerOrders = async (customerId: string) => {
+  const { data, error } = await supabase
+    .from('orders')
+    .select(`
+      *,
+      cashier:profiles(*),
+      items:order_items(*),
+      payments:payments(*)
+    `)
+    .eq('customer_id', customerId)
+    .order('created_at', { ascending: false });
+  
+  if (error) throw error;
+  return Array.isArray(data) ? data : [];
+};
+
+export const getCustomerPayments = async (customerId: string) => {
+  const { data: orders } = await supabase
+    .from('orders')
+    .select('id')
+    .eq('customer_id', customerId);
+  
+  if (!orders || orders.length === 0) {
+    return [];
+  }
+  
+  const orderIds = orders.map(o => o.id);
+  
+  const { data, error } = await supabase
+    .from('payments')
+    .select(`
+      *,
+      order:orders(order_number, customer_id)
+    `)
+    .in('order_id', orderIds)
+    .order('created_at', { ascending: false });
+  
+  if (error) throw error;
+  return Array.isArray(data) ? data : [];
+};
+
+export const getCustomerReturns = async (customerId: string) => {
+  const { data, error } = await supabase
+    .from('sales_returns')
+    .select(`
+      *,
+      order:orders(order_number),
+      items:sales_return_items(*)
+    `)
+    .eq('customer_id', customerId)
+    .order('created_at', { ascending: false });
+  
+  if (error) throw error;
+  return Array.isArray(data) ? data : [];
 };
 
 // Shift functions
