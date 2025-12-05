@@ -20,8 +20,7 @@ import {
   createProduct,
   updateProduct,
   generateSKU,
-  createInventoryMovement,
-  generateMovementNumber,
+  createStockAdjustment,
 } from '@/db/api';
 import { useAuth } from '@/contexts/AuthContext';
 import type { Product, Category } from '@/types/database';
@@ -204,16 +203,11 @@ export default function ProductForm() {
         
         const initialStock = Number(formData.initial_stock);
         if (initialStock > 0 && profile) {
-          const movementNumber = await generateMovementNumber();
-          await createInventoryMovement({
-            movement_number: movementNumber,
+          await createStockAdjustment({
             product_id: newProduct.id,
-            movement_type: 'adjustment',
             quantity: initialStock,
-            reference_type: 'initial_stock',
-            reference_id: null,
+            reason: 'initial_stock',
             notes: 'Initial stock',
-            created_by: profile.id,
           });
         }
 

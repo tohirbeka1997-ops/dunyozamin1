@@ -269,18 +269,6 @@ export const searchProducts = async (searchTerm: string) => {
   return Array.isArray(data) ? data as ProductWithCategory[] : [];
 };
 
-export const getLowStockProducts = async () => {
-  const { data, error } = await supabase
-    .from('products')
-    .select('*, category:categories(*)')
-    .filter('current_stock', 'lte', 'min_stock_level')
-    .eq('is_active', true)
-    .order('current_stock', { ascending: true });
-  
-  if (error) throw error;
-  return Array.isArray(data) ? data as ProductWithCategory[] : [];
-};
-
 export const generateSKU = async () => {
   const { data, error } = await supabase.rpc('generate_sku');
   if (error) throw error;
@@ -535,6 +523,170 @@ export const getCustomerReturns = async (customerId: string) => {
   return Array.isArray(data) ? data : [];
 };
 
+// Inventory functions
+export const getInventory = async (filters?: {
+  searchTerm?: string;
+  categoryId?: string;
+  stockStatus?: string;
+  sortBy?: string;
+  sortOrder?: 'asc' | 'desc';
+}) => {
+  let query = supabase
+    .from('products')
+    .select(`
+      *,
+      category:categories(name)
+    `);
+  
+  if (filters?.searchTerm) {
+    query = query.or(`name.ilike.%${filters.searchTerm}%,sku.ilike.%${filters.searchTerm}%,barcode.ilike.%${filters.searchTerm}%`);
+  }
+  
+  if (filters?.categoryId && filters.categoryId !== 'all') {
+    query = query.eq('category_id', filters.categoryId);
+  }
+  
+  if (filters?.stockStatus && filters.stockStatus !== 'all') {
+    if (filters.stockStatus === 'out_of_stock') {
+      query = query.eq('current_stock', 0);
+    } else if (filters.stockStatus === 'low_stock') {
+      query = query.gt('current_stock', 0).filter('current_stock', 'lte', supabase.rpc('minimal_stock'));
+    }
+  }
+  
+  const sortBy = filters?.sortBy || 'name';
+  const sortOrder = filters?.sortOrder || 'asc';
+  query = query.order(sortBy, { ascending: sortOrder === 'asc' });
+  
+  const { data, error } = await query;
+  
+  if (error) throw error;
+  return Array.isArray(data) ? data : [];
+};
+
+export const getLowStockProducts = async () => {
+  const { data, error } = await supabase
+    .from('products')
+    .select('*')
+    .gt('current_stock', 0)
+    .order('current_stock', { ascending: true });
+  
+  if (error) throw error;
+  
+  const products = Array.isArray(data) ? data as Product[] : [];
+  return products.filter(p => Number(p.current_stock) <= Number(p.min_stock_level));
+};
+
+export const getInventoryMovements = async (productId: string) => {
+  const { data, error } = await supabase
+    .from('inventory_movements')
+    .select(`
+      *,
+      product:products(name, sku),
+      user:profiles(username, full_name)
+    `)
+    .eq('product_id', productId)
+    .order('created_at', { ascending: false });
+  
+  if (error) throw error;
+  return Array.isArray(data) ? data : [];
+};
+
+export const getAllInventoryMovements = async (filters?: {
+  productId?: string;
+  movementType?: string;
+  startDate?: string;
+  endDate?: string;
+}) => {
+  let query = supabase
+    .from('inventory_movements')
+    .select(`
+      *,
+      product:products(name, sku),
+      user:profiles(username, full_name)
+    `);
+  
+  if (filters?.productId) {
+    query = query.eq('product_id', filters.productId);
+  }
+  
+  if (filters?.movementType && filters.movementType !== 'all') {
+    query = query.eq('movement_type', filters.movementType);
+  }
+  
+  if (filters?.startDate) {
+    query = query.gte('created_at', filters.startDate);
+  }
+  
+  if (filters?.endDate) {
+    query = query.lte('created_at', filters.endDate);
+  }
+  
+  query = query.order('created_at', { ascending: false });
+  
+  const { data, error } = await query;
+  
+  if (error) throw error;
+  return Array.isArray(data) ? data : [];
+};
+
+export const createStockAdjustment = async (adjustment: {
+  product_id: string;
+  quantity: number;
+  reason: string;
+  notes?: string;
+}) => {
+  const { data, error } = await supabase.rpc('log_inventory_movement', {
+    p_product_id: adjustment.product_id,
+    p_movement_type: 'adjustment',
+    p_quantity: adjustment.quantity,
+    p_reference_type: 'manual_adjustment',
+    p_reference_id: null,
+    p_reason: adjustment.reason,
+    p_notes: adjustment.notes || null,
+    p_created_by: null,
+  });
+  
+  if (error) throw error;
+  return data;
+};
+
+export const getProductPurchaseHistory = async (productId: string) => {
+  const { data, error } = await supabase
+    .from('purchase_order_items')
+    .select(`
+      *,
+      purchase_order:purchase_orders(
+        po_number,
+        created_at,
+        supplier:suppliers(name)
+      )
+    `)
+    .eq('product_id', productId)
+    .order('created_at', { ascending: false });
+  
+  if (error) throw error;
+  return Array.isArray(data) ? data : [];
+};
+
+export const getProductSalesHistory = async (productId: string) => {
+  const { data, error } = await supabase
+    .from('order_items')
+    .select(`
+      *,
+      order:orders(
+        order_number,
+        created_at,
+        customer:customers(name)
+      )
+    `)
+    .eq('product_id', productId)
+    .order('created_at', { ascending: false });
+  
+  if (error) throw error;
+  return Array.isArray(data) ? data : [];
+};
+
 // Shift functions
 export const getShifts = async (limit = 50) => {
   const { data, error } = await supabase
@@ -710,18 +862,16 @@ export const createOrder = async (
   if (paymentsError) throw paymentsError;
   
   for (const item of items) {
-    const movementNumber = await generateMovementNumber();
-    await supabase
-      .from('inventory_movements')
-      .insert({
-        movement_number: movementNumber,
-        product_id: item.product_id,
-        movement_type: 'sale',
-        quantity: -item.quantity,
-        reference_type: 'order',
-        reference_id: orderData.id,
-        created_by: order.cashier_id,
-      });
+    await supabase.rpc('log_inventory_movement', {
+      p_product_id: item.product_id,
+      p_movement_type: 'sale',
+      p_quantity: -item.quantity,
+      p_reference_type: 'order',
+      p_reference_id: orderData.id,
+      p_reason: null,
+      p_notes: null,
+      p_created_by: order.cashier_id,
+    });
   }
   
   return orderData as Order;
@@ -744,41 +894,6 @@ export const generatePaymentNumber = async () => {
   const { data, error } = await supabase.rpc('generate_payment_number');
   if (error) throw error;
   return data as string;
-};
-
-// Inventory movement functions
-export const getInventoryMovements = async (productId?: string, limit = 100) => {
-  let query = supabase
-    .from('inventory_movements')
-    .select('*, product:products(name), created_by_profile:profiles(username)')
-    .order('created_at', { ascending: false })
-    .limit(limit);
-  
-  if (productId) {
-    query = query.eq('product_id', productId);
-  }
-  
-  const { data, error } = await query;
-  
-  if (error) throw error;
-  return Array.isArray(data) ? data : [];
-};
-
-export const generateMovementNumber = async () => {
-  const { data, error } = await supabase.rpc('generate_movement_number');
-  if (error) throw error;
-  return data as string;
-};
-
-export const createInventoryMovement = async (movement: Omit<InventoryMovement, 'id' | 'created_at'>) => {
-  const { data, error } = await supabase
-    .from('inventory_movements')
-    .insert(movement)
-    .select()
-    .maybeSingle();
-  
-  if (error) throw error;
-  return data as InventoryMovement;
 };
 
 // Purchase order functions
@@ -829,18 +944,16 @@ export const createPurchaseOrder = async (
   if (itemsError) throw itemsError;
   
   for (const item of items) {
-    const movementNumber = await generateMovementNumber();
-    await supabase
-      .from('inventory_movements')
-      .insert({
-        movement_number: movementNumber,
-        product_id: item.product_id,
-        movement_type: 'purchase',
-        quantity: item.quantity,
-        reference_type: 'purchase_order',
-        reference_id: poData.id,
-        created_by: purchaseOrder.received_by,
-      });
+    await supabase.rpc('log_inventory_movement', {
+      p_product_id: item.product_id,
+      p_movement_type: 'purchase',
+      p_quantity: item.quantity,
+      p_reference_type: 'purchase_order',
+      p_reference_id: poData.id,
+      p_reason: null,
+      p_notes: null,
+      p_created_by: purchaseOrder.received_by,
+    });
   }
   
   return poData as PurchaseOrder;

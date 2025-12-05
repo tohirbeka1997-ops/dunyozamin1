@@ -11,6 +11,7 @@ import Orders from './pages/Orders';
 import OrderDetail from './pages/OrderDetail';
 import Customers from './pages/Customers';
 import Inventory from './pages/Inventory';
+import InventoryDetail from './pages/InventoryDetail';
 import PurchaseOrders from './pages/PurchaseOrders';
 import SalesReturns from './pages/SalesReturns';
 import CreateReturn from './pages/CreateReturn';
@@ -141,6 +142,14 @@ const routes: RouteConfig[] = [
     path: '/inventory',
     element: <Inventory />,
     visible: true,
+    requireAuth: true,
+    allowedRoles: ['admin', 'manager'],
+  },
+  {
+    name: 'Inventory Detail',
+    path: '/inventory/:id',
+    element: <InventoryDetail />,
+    visible: false,
     requireAuth: true,
     allowedRoles: ['admin', 'manager'],
   },

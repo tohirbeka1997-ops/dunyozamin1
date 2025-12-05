@@ -173,11 +173,19 @@ export interface InventoryMovement {
   product_id: string;
   movement_type: MovementType;
   quantity: number;
+  before_quantity: number;
+  after_quantity: number;
   reference_type: string | null;
   reference_id: string | null;
+  reason: string | null;
   notes: string | null;
   created_by: string | null;
   created_at: string;
+}
+
+export interface InventoryMovementWithDetails extends InventoryMovement {
+  product?: Product;
+  user?: Profile;
 }
 
 export interface PurchaseOrder {
