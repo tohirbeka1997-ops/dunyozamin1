@@ -3,6 +3,8 @@ import Login from './pages/Login';
 import Dashboard from './pages/Dashboard';
 import POSTerminal from './pages/POSTerminal';
 import Products from './pages/Products';
+import ProductForm from './pages/ProductForm';
+import ProductDetail from './pages/ProductDetail';
 import Categories from './pages/Categories';
 import Orders from './pages/Orders';
 import Customers from './pages/Customers';
@@ -49,6 +51,27 @@ const routes: RouteConfig[] = [
     path: '/products',
     element: <Products />,
     visible: true,
+    requireAuth: true,
+  },
+  {
+    name: 'Add Product',
+    path: '/products/new',
+    element: <ProductForm />,
+    visible: false,
+    requireAuth: true,
+  },
+  {
+    name: 'Edit Product',
+    path: '/products/:id/edit',
+    element: <ProductForm />,
+    visible: false,
+    requireAuth: true,
+  },
+  {
+    name: 'Product Detail',
+    path: '/products/:id',
+    element: <ProductDetail />,
+    visible: false,
     requireAuth: true,
   },
   {
