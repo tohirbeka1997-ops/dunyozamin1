@@ -849,56 +849,49 @@ export const generateOrderNumber = async () => {
   return data as string;
 };
 
+// Complete POS order atomically using RPC
+export const completePOSOrder = async (
+  order: Omit<Order, 'id' | 'created_at'>,
+  items: Omit<OrderItem, 'id' | 'order_id'>[],
+  payments: Omit<Payment, 'id' | 'order_id' | 'created_at'>[]
+) => {
+  const { data, error } = await supabase.rpc('complete_pos_order', {
+    p_order: order,
+    p_items: items,
+    p_payments: payments,
+  });
+  
+  if (error) {
+    console.error('RPC error:', error);
+    throw new Error(error.message || 'Failed to complete order');
+  }
+  
+  if (!data) {
+    throw new Error('No response from server');
+  }
+  
+  // Parse the response
+  const response = typeof data === 'string' ? JSON.parse(data) : data;
+  
+  if (!response.success) {
+    throw new Error(response.error || 'Failed to complete order');
+  }
+  
+  return {
+    id: response.order_id,
+    order_number: response.order_number,
+    message: response.message,
+  };
+};
+
+// Legacy createOrder function (kept for backward compatibility)
 export const createOrder = async (
   order: Omit<Order, 'id' | 'created_at'>,
   items: Omit<OrderItem, 'id' | 'order_id'>[],
   payments: Omit<Payment, 'id' | 'order_id' | 'created_at'>[]
 ) => {
-  const { data: orderData, error: orderError } = await supabase
-    .from('orders')
-    .insert(order)
-    .select()
-    .maybeSingle();
-  
-  if (orderError) throw orderError;
-  if (!orderData) throw new Error('Failed to create order');
-  
-  const orderItems = items.map(item => ({
-    ...item,
-    order_id: orderData.id,
-  }));
-  
-  const { error: itemsError } = await supabase
-    .from('order_items')
-    .insert(orderItems);
-  
-  if (itemsError) throw itemsError;
-  
-  const orderPayments = payments.map(payment => ({
-    ...payment,
-    order_id: orderData.id,
-  }));
-  
-  const { error: paymentsError } = await supabase
-    .from('payments')
-    .insert(orderPayments);
-  
-  if (paymentsError) throw paymentsError;
-  
-  for (const item of items) {
-    await supabase.rpc('log_inventory_movement', {
-      p_product_id: item.product_id,
-      p_movement_type: 'sale',
-      p_quantity: -item.quantity,
-      p_reference_type: 'order',
-      p_reference_id: orderData.id,
-      p_reason: null,
-      p_notes: null,
-      p_created_by: order.cashier_id,
-    });
-  }
-  
-  return orderData as Order;
+  // Use the new atomic RPC function
+  return completePOSOrder(order, items, payments);
 };
 
 export const updateOrderStatus = async (id: string, status: string) => {

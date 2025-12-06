@@ -182,7 +182,8 @@ export default function POSTerminal() {
     return { subtotal, discountAmount, total };
   };
 
-  const handlePayment = async () => {
+  const handleCompletePayment = async (paymentMethod: 'cash' | 'card' | 'qr' | 'mixed') => {
+    // Validation
     if (!profile || !currentShift) {
       toast({
         title: 'Error',
@@ -195,27 +196,74 @@ export default function POSTerminal() {
     if (cart.length === 0) {
       toast({
         title: 'Error',
-        description: 'Cart is empty',
+        description: 'Cart is empty. Please add items before completing the order.',
         variant: 'destructive',
       });
       return;
     }
 
     const { subtotal, discountAmount, total } = calculateTotals();
-    const paidAmount = payments.reduce((sum, p) => sum + p.amount, 0);
 
-    if (paidAmount < total) {
+    if (total <= 0) {
       toast({
         title: 'Error',
-        description: 'Insufficient payment amount',
+        description: 'Order total must be greater than zero',
         variant: 'destructive',
       });
       return;
     }
 
+    // Prepare payment data based on method
+    let orderPayments: { method: PaymentMethod; amount: number }[] = [];
+    let paidAmount = 0;
+    let changeAmount = 0;
+
+    if (paymentMethod === 'cash') {
+      const cashAmount = Number(cashReceived);
+      if (!cashAmount || cashAmount < total) {
+        toast({
+          title: 'Error',
+          description: 'Cash received must be greater than or equal to the total amount',
+          variant: 'destructive',
+        });
+        return;
+      }
+      orderPayments = [{ method: 'cash', amount: cashAmount }];
+      paidAmount = cashAmount;
+      changeAmount = cashAmount - total;
+    } else if (paymentMethod === 'card') {
+      orderPayments = [{ method: 'card', amount: total }];
+      paidAmount = total;
+      changeAmount = 0;
+    } else if (paymentMethod === 'qr') {
+      orderPayments = [{ method: 'qr', amount: total }];
+      paidAmount = total;
+      changeAmount = 0;
+    } else if (paymentMethod === 'mixed') {
+      if (payments.length === 0) {
+        toast({
+          title: 'Error',
+          description: 'Please add at least one payment method',
+          variant: 'destructive',
+        });
+        return;
+      }
+      const totalPaid = payments.reduce((sum, p) => sum + p.amount, 0);
+      if (totalPaid < total) {
+        toast({
+          title: 'Error',
+          description: `Insufficient payment. Paid: ${totalPaid.toFixed(2)} UZS, Required: ${total.toFixed(2)} UZS`,
+          variant: 'destructive',
+        });
+        return;
+      }
+      orderPayments = payments;
+      paidAmount = totalPaid;
+      changeAmount = totalPaid - total;
+    }
+
     try {
       const orderNumber = await generateOrderNumber();
-      const changeAmount = paidAmount - total;
 
       const order = {
         order_number: orderNumber,
@@ -246,8 +294,8 @@ export default function POSTerminal() {
         total: item.total,
       }));
 
-      const orderPayments = await Promise.all(
-        payments.map(async (payment) => ({
+      const orderPaymentsData = await Promise.all(
+        orderPayments.map(async (payment) => ({
           payment_number: await generatePaymentNumber(),
           payment_method: payment.method,
           amount: payment.amount,
@@ -256,13 +304,18 @@ export default function POSTerminal() {
         }))
       );
 
-      await createOrder(order, orderItems, orderPayments);
+      // Call the atomic RPC function
+      const result = await createOrder(order, orderItems, orderPaymentsData);
 
+      // Success!
       toast({
         title: 'Success',
-        description: `Order ${orderNumber} completed. Change: $${changeAmount.toFixed(2)}`,
+        description: changeAmount > 0 
+          ? `Order ${orderNumber} completed. Change: ${changeAmount.toFixed(2)} UZS`
+          : `Order ${orderNumber} completed successfully`,
       });
 
+      // Clear cart and reset state
       setCart([]);
       setPayments([]);
       setDiscount({ type: 'amount', value: 0 });
@@ -270,12 +323,19 @@ export default function POSTerminal() {
       setPaymentDialogOpen(false);
       setCashReceived('');
     } catch (error) {
+      console.error('Order completion error:', error);
       toast({
         title: 'Error',
-        description: error instanceof Error ? error.message : 'Failed to complete order',
+        description: error instanceof Error ? error.message : 'Failed to complete order. Please try again.',
         variant: 'destructive',
       });
     }
+  };
+
+  const handlePayment = async () => {
+    // This is the old function - keeping for backward compatibility
+    // but it should not be called anymore
+    console.warn('handlePayment called - this should use handleCompletePayment instead');
   };
 
   const { subtotal, discountAmount, total } = calculateTotals();
@@ -515,54 +575,69 @@ export default function POSTerminal() {
                   value={cashReceived}
                   onChange={(e) => setCashReceived(e.target.value)}
                   placeholder="0.00"
+                  autoFocus
                 />
               </div>
               {cashReceived && (
                 <div className="p-4 bg-muted rounded-lg">
                   <div className="flex justify-between text-lg font-bold">
                     <span>Change:</span>
-                    <span>${(Number(cashReceived) - total).toFixed(2)}</span>
+                    <span className={Number(cashReceived) >= total ? 'text-green-600' : 'text-destructive'}>
+                      {(Number(cashReceived) - total).toFixed(2)} UZS
+                    </span>
                   </div>
                 </div>
               )}
               <Button
                 className="w-full"
-                onClick={() => {
-                  setPayments([{ method: 'cash', amount: Number(cashReceived) }]);
-                  handlePayment();
-                }}
+                onClick={() => handleCompletePayment('cash')}
                 disabled={!cashReceived || Number(cashReceived) < total}
               >
                 Complete Payment
               </Button>
             </TabsContent>
             <TabsContent value="card" className="space-y-4">
+              <div className="p-4 bg-muted rounded-lg space-y-2">
+                <p className="text-sm text-muted-foreground">Amount to charge:</p>
+                <p className="text-2xl font-bold">{total.toFixed(2)} UZS</p>
+              </div>
               <Button
                 className="w-full"
-                onClick={() => {
-                  setPayments([{ method: 'card', amount: total }]);
-                  handlePayment();
-                }}
+                onClick={() => handleCompletePayment('card')}
               >
                 <CreditCard className="h-5 w-5 mr-2" />
                 Process Card Payment
               </Button>
             </TabsContent>
             <TabsContent value="qr" className="space-y-4">
+              <div className="p-4 bg-muted rounded-lg space-y-2">
+                <p className="text-sm text-muted-foreground">Amount to charge:</p>
+                <p className="text-2xl font-bold">{total.toFixed(2)} UZS</p>
+              </div>
               <Button
                 className="w-full"
-                onClick={() => {
-                  setPayments([{ method: 'qr', amount: total }]);
-                  handlePayment();
-                }}
+                onClick={() => handleCompletePayment('qr')}
               >
                 <Smartphone className="h-5 w-5 mr-2" />
                 Process QR Payment
               </Button>
             </TabsContent>
             <TabsContent value="mixed" className="space-y-4">
-              <div className="text-sm text-muted-foreground">
-                Remaining: ${remainingAmount.toFixed(2)}
+              <div className="p-4 bg-muted rounded-lg space-y-2">
+                <div className="flex justify-between">
+                  <span className="text-sm text-muted-foreground">Total:</span>
+                  <span className="font-bold">{total.toFixed(2)} UZS</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-sm text-muted-foreground">Paid:</span>
+                  <span className="font-bold">{paidAmount.toFixed(2)} UZS</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-sm text-muted-foreground">Remaining:</span>
+                  <span className={`font-bold ${remainingAmount > 0 ? 'text-destructive' : 'text-green-600'}`}>
+                    {remainingAmount.toFixed(2)} UZS
+                  </span>
+                </div>
               </div>
               <div className="grid grid-cols-2 gap-2">
                 <Button
@@ -571,6 +646,7 @@ export default function POSTerminal() {
                     const amount = Math.min(remainingAmount, total / 2);
                     setPayments([...payments, { method: 'cash', amount }]);
                   }}
+                  disabled={remainingAmount <= 0}
                 >
                   <Banknote className="h-4 w-4 mr-2" />
                   Add Cash
@@ -580,6 +656,7 @@ export default function POSTerminal() {
                   onClick={() => {
                     setPayments([...payments, { method: 'card', amount: remainingAmount }]);
                   }}
+                  disabled={remainingAmount <= 0}
                 >
                   <CreditCard className="h-4 w-4 mr-2" />
                   Add Card
@@ -587,17 +664,29 @@ export default function POSTerminal() {
               </div>
               {payments.length > 0 && (
                 <div className="space-y-2">
+                  <Label>Payment Methods:</Label>
                   {payments.map((payment, index) => (
                     <div key={index} className="flex justify-between items-center p-2 border rounded">
                       <span className="capitalize">{payment.method}</span>
-                      <span>${payment.amount.toFixed(2)}</span>
+                      <div className="flex items-center gap-2">
+                        <span>{payment.amount.toFixed(2)} UZS</span>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => {
+                            setPayments(payments.filter((_, i) => i !== index));
+                          }}
+                        >
+                          <Trash2 className="h-4 w-4" />
+                        </Button>
+                      </div>
                     </div>
                   ))}
                 </div>
               )}
               <Button
                 className="w-full"
-                onClick={handlePayment}
+                onClick={() => handleCompletePayment('mixed')}
                 disabled={remainingAmount > 0}
               >
                 Complete Payment
