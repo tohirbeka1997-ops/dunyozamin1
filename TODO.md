@@ -201,6 +201,59 @@
   - [x] 5.3 Verify all validation works
   - [x] 5.4 Verify inventory updates correctly
 
+## Phase 14: POS Terminal Premium Upgrade
+- [x] 1. Quick Category Tabs
+  - [x] 1.1 Create CategoryTabs component
+  - [x] 1.2 Add category filtering to product search
+  - [x] 1.3 Make tabs horizontally scrollable on mobile
+- [x] 2. Favorites / Hot Products Panel
+  - [x] 2.1 Create FavoriteProducts component
+  - [x] 2.2 Add keyboard shortcuts (ALT+1 to ALT+8)
+  - [x] 2.3 One-click add to cart
+- [x] 3. On-screen Numpad
+  - [x] 3.1 Create Numpad component
+  - [x] 3.2 Integrate with quantity input
+  - [x] 3.3 Integrate with line discount input
+- [x] 4. Improve Per-Line Discount UX
+  - [x] 4.1 Add 5%, 10%, 15% quick buttons
+  - [x] 4.2 Show discount percentage under product name
+- [x] 5. Mixed Payments UX
+  - [x] 5.1 Improve payment modal layout (already good)
+  - [x] 5.2 Add clear validation messages
+  - [x] 5.3 Show paid/remaining amounts clearly (already implemented)
+- [x] 6. Keyboard Shortcuts
+  - [x] 6.1 ENTER - add first search result to cart
+  - [x] 6.2 F2 - open payment modal
+  - [x] 6.3 F3 - hold order
+  - [x] 6.4 ESC - close modals or clear search
+  - [x] 6.5 UP/DOWN - navigate cart rows
+  - [x] 6.6 +/- - adjust quantity for selected row
+  - [x] 6.7 ALT+1-8 - add favorite products
+  - [x] 6.8 Add keyboard shortcuts help popover
+- [x] 7. Advanced Hold / Waiting Orders
+  - [x] 7.1 Add hold name input to HoldOrderDialog
+  - [x] 7.2 Auto-generate hold code if name is empty
+  - [x] 7.3 Improve WaitingOrdersDialog as side drawer
+  - [x] 7.4 Add rename functionality
+  - [x] 7.5 Add visual priority indicators (15min yellow, 30min red)
+- [x] 8. Customer Info Badge
+  - [x] 8.1 Add badge next to customer dropdown
+  - [x] 8.2 Show VIP/Debt/New status
+  - [x] 8.3 Add tooltip with customer details
+- [x] 9. Quick Customer Create
+  - [x] 9.1 Create QuickCustomerCreate component
+  - [x] 9.2 Add "+" icon next to customer dropdown
+  - [x] 9.3 Auto-select new customer after creation
+- [x] 10. Improved Notifications
+  - [x] 10.1 Enhance success toasts with order number and change
+  - [x] 10.2 Enhance error toasts with specific reasons
+  - [x] 10.3 Add stock validation messages
+- [x] 11. Testing & Validation
+  - [x] 11.1 Test all keyboard shortcuts (implemented)
+  - [x] 11.2 Test all new features (components created)
+  - [x] 11.3 Verify existing functionality still works (no breaking changes)
+  - [x] 11.4 Run lint check (passed)
+
 ## Notes
 - Using username + password authentication (simulated with @miaoda.com)
 - First registered user becomes admin

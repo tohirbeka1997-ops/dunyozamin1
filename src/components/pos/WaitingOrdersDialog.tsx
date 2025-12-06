@@ -19,9 +19,11 @@ import {
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { ScrollArea } from '@/components/ui/scroll-area';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
 import type { HeldOrder } from '@/types/database';
-import { Clock, User, FileText, RotateCcw, Trash2 } from 'lucide-react';
-import { formatDistanceToNow } from 'date-fns';
+import { Clock, User, FileText, RotateCcw, Trash2, Edit2, AlertTriangle } from 'lucide-react';
+import { formatDistanceToNow, differenceInMinutes } from 'date-fns';
 
 interface WaitingOrdersDialogProps {
   open: boolean;
@@ -29,6 +31,7 @@ interface WaitingOrdersDialogProps {
   heldOrders: HeldOrder[];
   onRestore: (order: HeldOrder) => void;
   onCancel: (orderId: string) => void;
+  onRename?: (orderId: string, newName: string) => void;
 }
 
 export default function WaitingOrdersDialog({
@@ -37,8 +40,11 @@ export default function WaitingOrdersDialog({
   heldOrders,
   onRestore,
   onCancel,
+  onRename,
 }: WaitingOrdersDialogProps) {
   const [cancelOrderId, setCancelOrderId] = useState<string | null>(null);
+  const [renameOrderId, setRenameOrderId] = useState<string | null>(null);
+  const [renameName, setRenameName] = useState('');
 
   const calculateTotal = (order: HeldOrder) => {
     const itemsTotal = order.items.reduce((sum, item) => sum + item.total, 0);
@@ -52,11 +58,42 @@ export default function WaitingOrdersDialog({
     return itemsTotal - (itemsTotal * order.discount.value) / 100;
   };
 
+  const getOrderPriority = (order: HeldOrder) => {
+    const minutesAgo = differenceInMinutes(new Date(), new Date(order.created_at));
+    if (minutesAgo >= 30) return 'critical';
+    if (minutesAgo >= 15) return 'warning';
+    return 'normal';
+  };
+
+  const getPriorityStyles = (priority: string) => {
+    switch (priority) {
+      case 'critical':
+        return 'border-red-500 bg-red-50 dark:bg-red-950/20';
+      case 'warning':
+        return 'border-yellow-500 bg-yellow-50 dark:bg-yellow-950/20';
+      default:
+        return '';
+    }
+  };
+
   const handleCancelConfirm = () => {
     if (cancelOrderId) {
       onCancel(cancelOrderId);
       setCancelOrderId(null);
     }
+  };
+
+  const handleRenameConfirm = () => {
+    if (renameOrderId && renameName.trim() && onRename) {
+      onRename(renameOrderId, renameName.trim());
+      setRenameOrderId(null);
+      setRenameName('');
+    }
+  };
+
+  const openRenameDialog = (order: HeldOrder) => {
+    setRenameOrderId(order.id);
+    setRenameName(order.customer_name || '');
   };
 
   return (
@@ -82,68 +119,88 @@ export default function WaitingOrdersDialog({
               </div>
             ) : (
               <div className="space-y-3">
-                {heldOrders.map((order) => (
-                  <div
-                    key={order.id}
-                    className="border rounded-lg p-4 space-y-3 hover:bg-muted/50 transition-colors"
-                  >
-                    <div className="flex items-start justify-between">
-                      <div className="space-y-1">
-                        <div className="flex items-center gap-2">
-                          <Badge variant="secondary">{order.held_number}</Badge>
-                          {order.customer_name && (
-                            <div className="flex items-center gap-1 text-sm text-muted-foreground">
-                              <User className="h-3 w-3" />
-                              <span>{order.customer_name}</span>
-                            </div>
-                          )}
+                {heldOrders.map((order) => {
+                  const priority = getOrderPriority(order);
+                  const priorityStyles = getPriorityStyles(priority);
+                  
+                  return (
+                    <div
+                      key={order.id}
+                      className={`border-2 rounded-lg p-4 space-y-3 hover:bg-muted/50 transition-colors ${priorityStyles}`}
+                    >
+                      <div className="flex items-start justify-between">
+                        <div className="space-y-1">
+                          <div className="flex items-center gap-2">
+                            <Badge variant="secondary">{order.held_number}</Badge>
+                            {priority !== 'normal' && (
+                              <Badge variant={priority === 'critical' ? 'destructive' : 'default'} className="gap-1">
+                                <AlertTriangle className="h-3 w-3" />
+                                {priority === 'critical' ? '30+ min' : '15+ min'}
+                              </Badge>
+                            )}
+                            {order.customer_name && (
+                              <div className="flex items-center gap-1 text-sm text-muted-foreground">
+                                <User className="h-3 w-3" />
+                                <span>{order.customer_name}</span>
+                              </div>
+                            )}
+                          </div>
+                          <div className="flex items-center gap-1 text-xs text-muted-foreground">
+                            <Clock className="h-3 w-3" />
+                            <span>
+                              {formatDistanceToNow(new Date(order.created_at), {
+                                addSuffix: true,
+                              })}
+                            </span>
+                          </div>
                         </div>
-                        <div className="flex items-center gap-1 text-xs text-muted-foreground">
-                          <Clock className="h-3 w-3" />
-                          <span>
-                            {formatDistanceToNow(new Date(order.created_at), {
-                              addSuffix: true,
-                            })}
-                          </span>
+                        <div className="text-right">
+                          <p className="text-lg font-bold">
+                            {calculateTotal(order).toFixed(2)} UZS
+                          </p>
+                          <p className="text-xs text-muted-foreground">
+                            {order.items.length} item{order.items.length > 1 ? 's' : ''}
+                          </p>
                         </div>
                       </div>
-                      <div className="text-right">
-                        <p className="text-lg font-bold">
-                          {calculateTotal(order).toFixed(2)} UZS
-                        </p>
-                        <p className="text-xs text-muted-foreground">
-                          {order.items.length} item{order.items.length > 1 ? 's' : ''}
-                        </p>
+
+                      {order.note && (
+                        <div className="flex items-start gap-2 text-sm bg-muted/50 p-2 rounded">
+                          <FileText className="h-4 w-4 text-muted-foreground mt-0.5" />
+                          <p className="text-muted-foreground">{order.note}</p>
+                        </div>
+                      )}
+
+                      <div className="flex items-center gap-2 pt-2 border-t">
+                        <Button
+                          variant="default"
+                          size="sm"
+                          className="flex-1"
+                          onClick={() => onRestore(order)}
+                        >
+                          <RotateCcw className="h-4 w-4 mr-2" />
+                          Restore
+                        </Button>
+                        {onRename && (
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={() => openRenameDialog(order)}
+                          >
+                            <Edit2 className="h-4 w-4" />
+                          </Button>
+                        )}
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => setCancelOrderId(order.id)}
+                        >
+                          <Trash2 className="h-4 w-4" />
+                        </Button>
                       </div>
                     </div>
-
-                    {order.note && (
-                      <div className="flex items-start gap-2 text-sm bg-muted/50 p-2 rounded">
-                        <FileText className="h-4 w-4 text-muted-foreground mt-0.5" />
-                        <p className="text-muted-foreground">{order.note}</p>
-                      </div>
-                    )}
-
-                    <div className="flex items-center gap-2 pt-2 border-t">
-                      <Button
-                        variant="default"
-                        size="sm"
-                        className="flex-1"
-                        onClick={() => onRestore(order)}
-                      >
-                        <RotateCcw className="h-4 w-4 mr-2" />
-                        Restore
-                      </Button>
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        onClick={() => setCancelOrderId(order.id)}
-                      >
-                        <Trash2 className="h-4 w-4" />
-                      </Button>
-                    </div>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             )}
           </ScrollArea>
@@ -166,6 +223,42 @@ export default function WaitingOrdersDialog({
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+
+      <Dialog open={!!renameOrderId} onOpenChange={(open) => !open && setRenameOrderId(null)}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>Rename Waiting Order</DialogTitle>
+            <DialogDescription>
+              Update the customer name or identifier for this order
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4 py-4">
+            <div className="space-y-2">
+              <Label htmlFor="rename-input">Customer Name</Label>
+              <Input
+                id="rename-input"
+                value={renameName}
+                onChange={(e) => setRenameName(e.target.value)}
+                placeholder="Enter customer name"
+                autoFocus
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    handleRenameConfirm();
+                  }
+                }}
+              />
+            </div>
+          </div>
+          <div className="flex justify-end gap-2">
+            <Button variant="outline" onClick={() => setRenameOrderId(null)}>
+              Cancel
+            </Button>
+            <Button onClick={handleRenameConfirm} disabled={!renameName.trim()}>
+              Save
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
     </>
   );
 }

@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect } from 'react';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -52,24 +52,15 @@ import {
   generateHeldNumber,
   updateHeldOrderStatus,
   deleteHeldOrder,
-  getCategories,
-  updateHeldOrderName,
 } from '@/db/api';
-import type { Product, Customer, CartItem, PaymentMethod, HeldOrder, Category } from '@/types/database';
+import type { Product, Customer, CartItem, PaymentMethod, HeldOrder } from '@/types/database';
 import { Search, Trash2, Plus, Minus, DollarSign, CreditCard, Smartphone, Banknote, Tag, Clock, Pause } from 'lucide-react';
 import HoldOrderDialog from '@/components/pos/HoldOrderDialog';
 import WaitingOrdersDialog from '@/components/pos/WaitingOrdersDialog';
-import CategoryTabs from '@/components/pos/CategoryTabs';
-import FavoriteProducts from '@/components/pos/FavoriteProducts';
-import Numpad from '@/components/pos/Numpad';
-import QuickCustomerCreate from '@/components/pos/QuickCustomerCreate';
-import CustomerInfoBadge from '@/components/pos/CustomerInfoBadge';
 
 export default function POSTerminal() {
   const { toast } = useToast();
   const { profile } = useAuth();
-  const searchInputRef = useRef<HTMLInputElement>(null);
-  
   const [searchTerm, setSearchTerm] = useState('');
   const [searchResults, setSearchResults] = useState<Product[]>([]);
   const [cart, setCart] = useState<CartItem[]>([]);
@@ -91,132 +82,11 @@ export default function POSTerminal() {
   const [restoreConfirmOpen, setRestoreConfirmOpen] = useState(false);
   const [orderToRestore, setOrderToRestore] = useState<HeldOrder | null>(null);
 
-  // New state for premium features
-  const [categories, setCategories] = useState<Category[]>([]);
-  const [selectedCategory, setSelectedCategory] = useState<string | null>(null);
-  const [favoriteProducts, setFavoriteProducts] = useState<Product[]>([]);
-  const [numpadOpen, setNumpadOpen] = useState(false);
-  const [numpadConfig, setNumpadConfig] = useState<{
-    type: 'quantity' | 'discount';
-    productId?: string;
-    initialValue: number;
-    max?: number;
-  } | null>(null);
-  const [selectedCartIndex, setSelectedCartIndex] = useState<number>(-1);
-
   useEffect(() => {
     loadCustomers();
-    loadCategories();
-    loadFavoriteProducts();
     checkShift();
     loadHeldOrders();
   }, []);
-
-  // Keyboard shortcuts
-  useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      // Ignore if typing in an input field (except search)
-      const target = e.target as HTMLElement;
-      const isInput = target.tagName === 'INPUT' || target.tagName === 'TEXTAREA';
-      
-      // F2: Open payment modal
-      if (e.key === 'F2') {
-        e.preventDefault();
-        if (cart.length > 0 && !paymentDialogOpen) {
-          setPaymentDialogOpen(true);
-        }
-        return;
-      }
-      
-      // F3: Hold order
-      if (e.key === 'F3') {
-        e.preventDefault();
-        if (cart.length > 0 && !holdOrderDialogOpen) {
-          setHoldOrderDialogOpen(true);
-        }
-        return;
-      }
-      
-      // ESC: Close modals or clear search
-      if (e.key === 'Escape') {
-        if (paymentDialogOpen) {
-          setPaymentDialogOpen(false);
-        } else if (holdOrderDialogOpen) {
-          setHoldOrderDialogOpen(false);
-        } else if (waitingOrdersDialogOpen) {
-          setWaitingOrdersDialogOpen(false);
-        } else if (searchTerm) {
-          setSearchTerm('');
-          setSearchResults([]);
-        }
-        return;
-      }
-      
-      // ENTER: Add first search result to cart
-      if (e.key === 'Enter' && target === searchInputRef.current && searchResults.length > 0) {
-        e.preventDefault();
-        addToCart(searchResults[0]);
-        setSearchTerm('');
-        setSearchResults([]);
-        return;
-      }
-      
-      // ALT+1 to ALT+8: Add favorite products
-      if (e.altKey && e.key >= '1' && e.key <= '8') {
-        e.preventDefault();
-        const index = parseInt(e.key) - 1;
-        if (favoriteProducts[index]) {
-          addToCart(favoriteProducts[index]);
-        }
-        return;
-      }
-      
-      // Don't process other shortcuts if in input field
-      if (isInput && target !== searchInputRef.current) return;
-      
-      // UP/DOWN: Navigate cart rows
-      if (e.key === 'ArrowUp') {
-        e.preventDefault();
-        setSelectedCartIndex(prev => Math.max(0, prev - 1));
-        return;
-      }
-      
-      if (e.key === 'ArrowDown') {
-        e.preventDefault();
-        setSelectedCartIndex(prev => Math.min(cart.length - 1, prev + 1));
-        return;
-      }
-      
-      // +/-: Adjust quantity for selected row
-      if ((e.key === '+' || e.key === '=') && selectedCartIndex >= 0 && cart[selectedCartIndex]) {
-        e.preventDefault();
-        const item = cart[selectedCartIndex];
-        updateQuantity(item.product.id, item.quantity + 1);
-        return;
-      }
-      
-      if ((e.key === '-' || e.key === '_') && selectedCartIndex >= 0 && cart[selectedCartIndex]) {
-        e.preventDefault();
-        const item = cart[selectedCartIndex];
-        updateQuantity(item.product.id, Math.max(1, item.quantity - 1));
-        return;
-      }
-    };
-    
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [cart, searchResults, searchTerm, paymentDialogOpen, holdOrderDialogOpen, waitingOrdersDialogOpen, selectedCartIndex, favoriteProducts]);
-
-  // Auto-select first cart item when cart changes
-  useEffect(() => {
-    if (cart.length > 0 && selectedCartIndex === -1) {
-      setSelectedCartIndex(0);
-    } else if (cart.length === 0) {
-      setSelectedCartIndex(-1);
-    } else if (selectedCartIndex >= cart.length) {
-      setSelectedCartIndex(cart.length - 1);
-    }
-  }, [cart.length]);
 
   const checkShift = async () => {
     if (!profile) return;
@@ -261,26 +131,6 @@ export default function POSTerminal() {
       setCustomers(data);
     } catch (error) {
       console.error('Error loading customers:', error);
-    }
-  };
-
-  const loadCategories = async () => {
-    try {
-      const data = await getCategories();
-      setCategories(data);
-    } catch (error) {
-      console.error('Error loading categories:', error);
-    }
-  };
-
-  const loadFavoriteProducts = async () => {
-    try {
-      // Load top 8 products by sales or mark specific products as favorites
-      // For now, we'll just load the first 8 active products
-      const results = await searchProducts('');
-      setFavoriteProducts(results.slice(0, 8));
-    } catch (error) {
-      console.error('Error loading favorite products:', error);
     }
   };
 
@@ -461,24 +311,6 @@ export default function POSTerminal() {
     }
   };
 
-  const handleRenameHeldOrder = async (orderId: string, newName: string) => {
-    try {
-      await updateHeldOrderName(orderId, newName);
-      toast({
-        title: 'Order Renamed',
-        description: 'Waiting order name updated successfully',
-      });
-      loadHeldOrders();
-    } catch (error) {
-      console.error('Error renaming held order:', error);
-      toast({
-        title: 'Error',
-        description: 'Failed to rename order',
-        variant: 'destructive',
-      });
-    }
-  };
-
   const handleSearch = async (term: string) => {
     setSearchTerm(term);
     if (term.length < 2) {
@@ -486,35 +318,10 @@ export default function POSTerminal() {
       return;
     }
     try {
-      let results = await searchProducts(term);
-      
-      // Filter by category if selected
-      if (selectedCategory) {
-        results = results.filter(p => p.category_id === selectedCategory);
-      }
-      
+      const results = await searchProducts(term);
       setSearchResults(results);
     } catch (error) {
       console.error('Error searching products:', error);
-    }
-  };
-
-  const handleCategoryChange = async (categoryId: string | null) => {
-    setSelectedCategory(categoryId);
-    
-    // Re-run search with new category filter
-    if (searchTerm.length >= 2) {
-      try {
-        let results = await searchProducts(searchTerm);
-        
-        if (categoryId) {
-          results = results.filter(p => p.category_id === categoryId);
-        }
-        
-        setSearchResults(results);
-      } catch (error) {
-        console.error('Error filtering products:', error);
-      }
     }
   };
 
@@ -639,38 +446,6 @@ export default function POSTerminal() {
     }
   };
 
-  const openQuantityNumpad = (productId: string, currentQuantity: number, maxStock: number) => {
-    setNumpadConfig({
-      type: 'quantity',
-      productId,
-      initialValue: currentQuantity,
-      max: maxStock > 0 ? maxStock : undefined,
-    });
-    setNumpadOpen(true);
-  };
-
-  const openDiscountNumpad = (productId: string, currentDiscount: number, maxDiscount: number) => {
-    setNumpadConfig({
-      type: 'discount',
-      productId,
-      initialValue: currentDiscount,
-      max: maxDiscount,
-    });
-    setNumpadOpen(true);
-  };
-
-  const handleNumpadApply = (value: number) => {
-    if (!numpadConfig) return;
-    
-    if (numpadConfig.type === 'quantity' && numpadConfig.productId) {
-      updateQuantity(numpadConfig.productId, value);
-    } else if (numpadConfig.type === 'discount' && numpadConfig.productId) {
-      updateLineDiscount(numpadConfig.productId, value);
-    }
-    
-    setNumpadConfig(null);
-  };
-
   const updateLineDiscount = (productId: string, discountAmount: number) => {
     setCart(
       cart.map((item) => {
@@ -736,15 +511,6 @@ export default function POSTerminal() {
     };
   };
 
-  const handleCustomerCreated = (customer: Customer) => {
-    setCustomers([...customers, customer]);
-    setSelectedCustomer(customer);
-    toast({
-      title: 'Customer Added',
-      description: `${customer.name} has been added and selected`,
-    });
-  };
-
   const handleCompletePayment = async (paymentMethod: 'cash' | 'card' | 'qr' | 'mixed') => {
     // Validation
     if (!profile || !currentShift) {
@@ -758,8 +524,8 @@ export default function POSTerminal() {
 
     if (cart.length === 0) {
       toast({
-        title: 'Cannot Process Empty Cart',
-        description: 'Please add items to the cart before completing the order.',
+        title: 'Error',
+        description: 'Cart is empty. Please add items before completing the order.',
         variant: 'destructive',
       });
       return;
@@ -769,7 +535,7 @@ export default function POSTerminal() {
 
     if (total <= 0) {
       toast({
-        title: 'Invalid Order Total',
+        title: 'Error',
         description: 'Order total must be greater than zero',
         variant: 'destructive',
       });
@@ -785,8 +551,8 @@ export default function POSTerminal() {
       const cashAmount = Number(cashReceived);
       if (!cashAmount || cashAmount < total) {
         toast({
-          title: 'Insufficient Cash',
-          description: `Cash received (${cashAmount.toFixed(2)} UZS) must be greater than or equal to total (${total.toFixed(2)} UZS)`,
+          title: 'Error',
+          description: 'Cash received must be greater than or equal to the total amount',
           variant: 'destructive',
         });
         return;
@@ -805,17 +571,17 @@ export default function POSTerminal() {
     } else if (paymentMethod === 'mixed') {
       if (payments.length === 0) {
         toast({
-          title: 'No Payment Methods',
-          description: 'Please add at least one payment method for mixed payment',
+          title: 'Error',
+          description: 'Please add at least one payment method',
           variant: 'destructive',
         });
         return;
       }
       const totalPaid = payments.reduce((sum, p) => sum + p.amount, 0);
-      if (Math.abs(totalPaid - total) > 0.01) {
+      if (totalPaid < total) {
         toast({
-          title: 'Payment Mismatch',
-          description: `Payment amounts do not match order total. Paid: ${totalPaid.toFixed(2)} UZS, Required: ${total.toFixed(2)} UZS`,
+          title: 'Error',
+          description: `Insufficient payment. Paid: ${totalPaid.toFixed(2)} UZS, Required: ${total.toFixed(2)} UZS`,
           variant: 'destructive',
         });
         return;
@@ -870,11 +636,10 @@ export default function POSTerminal() {
 
       // Success!
       toast({
-        title: '✅ Order Completed Successfully',
+        title: 'Success',
         description: changeAmount > 0 
           ? `Order ${orderNumber} completed. Change: ${changeAmount.toFixed(2)} UZS`
           : `Order ${orderNumber} completed successfully`,
-        className: 'bg-green-50 border-green-200',
       });
 
       // Clear cart and reset state
@@ -884,23 +649,11 @@ export default function POSTerminal() {
       setSelectedCustomer(null);
       setPaymentDialogOpen(false);
       setCashReceived('');
-      setSelectedCartIndex(-1);
     } catch (error) {
       console.error('Order completion error:', error);
-      
-      // Check for specific error types
-      let errorMessage = 'Failed to complete order. Please try again.';
-      if (error instanceof Error) {
-        if (error.message.includes('stock')) {
-          errorMessage = `Insufficient stock: ${error.message}`;
-        } else {
-          errorMessage = error.message;
-        }
-      }
-      
       toast({
-        title: '❌ Order Failed',
-        description: errorMessage,
+        title: 'Error',
+        description: error instanceof Error ? error.message : 'Failed to complete order. Please try again.',
         variant: 'destructive',
       });
     }
@@ -947,61 +700,16 @@ export default function POSTerminal() {
 
       <div className="grid grid-cols-1 xl:grid-cols-3 gap-6 h-[calc(100vh-8rem)]">
         <div className="xl:col-span-2 space-y-4 overflow-y-auto">
-          <FavoriteProducts products={favoriteProducts} onAddToCart={addToCart} />
-          
           <Card>
-            <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-4">
+            <CardHeader>
               <CardTitle>Product Search</CardTitle>
-              <Popover>
-                <PopoverTrigger asChild>
-                  <Button variant="outline" size="sm" className="h-8 gap-2">
-                    <span className="text-xs">⌨️ Shortcuts</span>
-                  </Button>
-                </PopoverTrigger>
-                <PopoverContent className="w-80" align="end">
-                  <div className="space-y-3">
-                    <h4 className="font-semibold text-sm">Keyboard Shortcuts</h4>
-                    <div className="space-y-2 text-xs">
-                      <div className="flex justify-between">
-                        <span className="text-muted-foreground">Add first result</span>
-                        <kbd className="px-2 py-1 bg-muted rounded">ENTER</kbd>
-                      </div>
-                      <div className="flex justify-between">
-                        <span className="text-muted-foreground">Process payment</span>
-                        <kbd className="px-2 py-1 bg-muted rounded">F2</kbd>
-                      </div>
-                      <div className="flex justify-between">
-                        <span className="text-muted-foreground">Hold order</span>
-                        <kbd className="px-2 py-1 bg-muted rounded">F3</kbd>
-                      </div>
-                      <div className="flex justify-between">
-                        <span className="text-muted-foreground">Close / Clear</span>
-                        <kbd className="px-2 py-1 bg-muted rounded">ESC</kbd>
-                      </div>
-                      <div className="flex justify-between">
-                        <span className="text-muted-foreground">Navigate cart</span>
-                        <kbd className="px-2 py-1 bg-muted rounded">↑ ↓</kbd>
-                      </div>
-                      <div className="flex justify-between">
-                        <span className="text-muted-foreground">Adjust quantity</span>
-                        <kbd className="px-2 py-1 bg-muted rounded">+ -</kbd>
-                      </div>
-                      <div className="flex justify-between">
-                        <span className="text-muted-foreground">Add favorites</span>
-                        <kbd className="px-2 py-1 bg-muted rounded">ALT+1-8</kbd>
-                      </div>
-                    </div>
-                  </div>
-                </PopoverContent>
-              </Popover>
             </CardHeader>
             <CardContent className="space-y-4">
               <div className="flex gap-2">
                 <div className="flex-1 relative">
                   <Search className="absolute left-3 top-3 h-4 w-4 text-muted-foreground" />
                   <Input
-                    ref={searchInputRef}
-                    placeholder="Search products by name, SKU, or barcode... (Press ENTER to add first result)"
+                    placeholder="Search products by name, SKU, or barcode..."
                     value={searchTerm}
                     onChange={(e) => handleSearch(e.target.value)}
                     onKeyDown={(e) => {
@@ -1013,15 +721,6 @@ export default function POSTerminal() {
                   />
                 </div>
               </div>
-              
-              {categories.length > 0 && (
-                <CategoryTabs
-                  categories={categories}
-                  selectedCategory={selectedCategory}
-                  onSelectCategory={handleCategoryChange}
-                />
-              )}
-              
               {searchResults.length > 0 && (
                 <div className="grid grid-cols-2 md:grid-cols-3 gap-2 max-h-48 overflow-y-auto">
                   {searchResults.map((product) => (
@@ -1054,92 +753,58 @@ export default function POSTerminal() {
                 <div className="text-center py-8 text-muted-foreground">Cart is empty</div>
               ) : (
                 <div className="space-y-2">
-                  {cart.map((item, index) => {
-                    const isSelected = index === selectedCartIndex;
-                    const discountPercent = item.subtotal > 0 ? (item.discount_amount / item.subtotal) * 100 : 0;
-                    
-                    return (
-                      <div 
-                        key={item.product.id} 
-                        className={`flex flex-col gap-2 p-3 border-2 rounded-lg transition-colors ${
-                          isSelected ? 'border-blue-500 bg-blue-50 dark:bg-blue-950/20' : 'border-border'
-                        }`}
-                        onClick={() => setSelectedCartIndex(index)}
-                      >
-                        <div className="flex items-start gap-2">
-                          <div className="flex-1">
-                            <p className="font-medium">{item.product.name}</p>
-                            <p className="text-sm text-muted-foreground">
-                              {Number(item.product.sale_price).toFixed(2)} UZS × {item.quantity} = {item.subtotal.toFixed(2)} UZS
-                            </p>
-                            {item.discount_amount > 0 && (
-                              <p className="text-xs text-destructive mt-1">
-                                Discount: {item.discount_amount.toFixed(2)} UZS ({discountPercent.toFixed(1)}%)
-                              </p>
-                            )}
-                          </div>
-                          <div className="flex items-center gap-2">
-                            <Button
-                              variant="outline"
-                              size="icon"
-                              className="h-8 w-8"
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                updateQuantity(item.product.id, item.quantity - 1);
-                              }}
-                            >
-                              <Minus className="h-4 w-4" />
-                            </Button>
-                            <Input
-                              type="number"
-                              min="1"
-                              value={editingQuantity[item.product.id] !== undefined 
-                                ? editingQuantity[item.product.id] 
-                                : item.quantity}
-                              onChange={(e) => handleQuantityInputChange(item.product.id, e.target.value)}
-                              onBlur={() => handleQuantityInputBlur(item.product.id)}
-                              onKeyDown={(e) => handleQuantityInputKeyDown(item.product.id, e)}
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                openQuantityNumpad(item.product.id, item.quantity, item.product.current_stock);
-                              }}
-                              className="w-16 h-8 text-center p-1 cursor-pointer"
-                              readOnly
-                            />
-                            <Button
-                              variant="outline"
-                              size="icon"
-                              className="h-8 w-8"
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                updateQuantity(item.product.id, item.quantity + 1);
-                              }}
-                            >
-                              <Plus className="h-4 w-4" />
-                            </Button>
-                            <Button
-                              variant="ghost"
-                              size="icon"
-                              className="h-8 w-8"
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                removeFromCart(item.product.id);
-                              }}
-                            >
-                              <Trash2 className="h-4 w-4" />
-                            </Button>
-                          </div>
+                  {cart.map((item) => (
+                    <div key={item.product.id} className="flex flex-col gap-2 p-3 border rounded-lg">
+                      <div className="flex items-start gap-2">
+                        <div className="flex-1">
+                          <p className="font-medium">{item.product.name}</p>
+                          <p className="text-sm text-muted-foreground">
+                            {Number(item.product.sale_price).toFixed(2)} UZS × {item.quantity} = {item.subtotal.toFixed(2)} UZS
+                          </p>
                         </div>
-                        
-                        <div className="flex items-center justify-between pt-2 border-t">
+                        <div className="flex items-center gap-2">
+                          <Button
+                            variant="outline"
+                            size="icon"
+                            className="h-8 w-8"
+                            onClick={() => updateQuantity(item.product.id, item.quantity - 1)}
+                          >
+                            <Minus className="h-4 w-4" />
+                          </Button>
+                          <Input
+                            type="number"
+                            min="1"
+                            value={editingQuantity[item.product.id] !== undefined 
+                              ? editingQuantity[item.product.id] 
+                              : item.quantity}
+                            onChange={(e) => handleQuantityInputChange(item.product.id, e.target.value)}
+                            onBlur={() => handleQuantityInputBlur(item.product.id)}
+                            onKeyDown={(e) => handleQuantityInputKeyDown(item.product.id, e)}
+                            className="w-16 h-8 text-center p-1"
+                          />
+                          <Button
+                            variant="outline"
+                            size="icon"
+                            className="h-8 w-8"
+                            onClick={() => updateQuantity(item.product.id, item.quantity + 1)}
+                          >
+                            <Plus className="h-4 w-4" />
+                          </Button>
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            className="h-8 w-8"
+                            onClick={() => removeFromCart(item.product.id)}
+                          >
+                            <Trash2 className="h-4 w-4" />
+                          </Button>
+                        </div>
+                      </div>
+                      
+                      <div className="flex items-center justify-between pt-2 border-t">
                         <Popover>
                           <PopoverTrigger asChild>
-                            <Button 
-                              variant="outline" 
-                              size="sm" 
-                              className="h-8 gap-2"
-                              onClick={(e) => e.stopPropagation()}
-                            >
+                            <Button variant="outline" size="sm" className="h-8 gap-2">
                               <Tag className="h-3 w-3" />
                               <span className="text-xs">
                                 Discount: {item.discount_amount > 0 ? `${item.discount_amount.toFixed(2)} UZS` : '0'}
@@ -1160,20 +825,18 @@ export default function POSTerminal() {
                                     const value = e.target.value === '' ? 0 : Number(e.target.value);
                                     updateLineDiscount(item.product.id, value);
                                   }}
-                                  onClick={() => openDiscountNumpad(item.product.id, item.discount_amount, item.subtotal)}
                                   placeholder="0.00"
-                                  className="h-8 cursor-pointer"
-                                  readOnly
+                                  className="h-8"
                                 />
                                 <p className="text-xs text-muted-foreground">
                                   Max: {item.subtotal.toFixed(2)} UZS
                                 </p>
                               </div>
-                              <div className="grid grid-cols-4 gap-2">
+                              <div className="flex gap-2">
                                 <Button
                                   variant="outline"
                                   size="sm"
-                                  className="h-7 text-xs"
+                                  className="flex-1 h-7 text-xs"
                                   onClick={() => updateLineDiscount(item.product.id, item.subtotal * 0.05)}
                                 >
                                   5%
@@ -1181,7 +844,7 @@ export default function POSTerminal() {
                                 <Button
                                   variant="outline"
                                   size="sm"
-                                  className="h-7 text-xs"
+                                  className="flex-1 h-7 text-xs"
                                   onClick={() => updateLineDiscount(item.product.id, item.subtotal * 0.10)}
                                 >
                                   10%
@@ -1189,15 +852,7 @@ export default function POSTerminal() {
                                 <Button
                                   variant="outline"
                                   size="sm"
-                                  className="h-7 text-xs"
-                                  onClick={() => updateLineDiscount(item.product.id, item.subtotal * 0.15)}
-                                >
-                                  15%
-                                </Button>
-                                <Button
-                                  variant="outline"
-                                  size="sm"
-                                  className="h-7 text-xs"
+                                  className="flex-1 h-7 text-xs"
                                   onClick={() => updateLineDiscount(item.product.id, 0)}
                                 >
                                   Clear
@@ -1219,8 +874,7 @@ export default function POSTerminal() {
                         </div>
                       </div>
                     </div>
-                  );
-                  })}
+                  ))}
                 </div>
               )}
             </CardContent>
@@ -1252,33 +906,25 @@ export default function POSTerminal() {
             <CardContent className="space-y-4">
               <div className="space-y-2">
                 <Label>Customer (Optional)</Label>
-                <div className="flex gap-2 items-start">
-                  <Select
-                    value={selectedCustomer?.id || 'none'}
-                    onValueChange={(value) => {
-                      const customer = customers.find((c) => c.id === value);
-                      setSelectedCustomer(customer || null);
-                    }}
-                  >
-                    <SelectTrigger className="flex-1">
-                      <SelectValue placeholder="Select customer" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="none">Walk-in Customer</SelectItem>
-                      {customers.map((customer) => (
-                        <SelectItem key={customer.id} value={customer.id}>
-                          {customer.name}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                  <QuickCustomerCreate onCustomerCreated={handleCustomerCreated} />
-                </div>
-                {selectedCustomer && (
-                  <div className="pt-1">
-                    <CustomerInfoBadge customer={selectedCustomer} />
-                  </div>
-                )}
+                <Select
+                  value={selectedCustomer?.id || 'none'}
+                  onValueChange={(value) => {
+                    const customer = customers.find((c) => c.id === value);
+                    setSelectedCustomer(customer || null);
+                  }}
+                >
+                  <SelectTrigger>
+                    <SelectValue placeholder="Select customer" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="none">Walk-in Customer</SelectItem>
+                    {customers.map((customer) => (
+                      <SelectItem key={customer.id} value={customer.id}>
+                        {customer.name}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
               </div>
 
               <div className="space-y-2">
@@ -1526,18 +1172,6 @@ export default function POSTerminal() {
         heldOrders={heldOrders}
         onRestore={handleRestoreOrder}
         onCancel={handleCancelHeldOrder}
-        onRename={handleRenameHeldOrder}
-      />
-
-      <Numpad
-        open={numpadOpen}
-        onOpenChange={setNumpadOpen}
-        title={numpadConfig?.type === 'quantity' ? 'Enter Quantity' : 'Enter Discount Amount'}
-        description={numpadConfig?.max ? `Maximum: ${numpadConfig.max}` : undefined}
-        initialValue={numpadConfig?.initialValue || 0}
-        onApply={handleNumpadApply}
-        max={numpadConfig?.max}
-        min={numpadConfig?.type === 'quantity' ? 1 : 0}
       />
 
       <AlertDialog open={restoreConfirmOpen} onOpenChange={setRestoreConfirmOpen}>

@@ -1,24 +1,25 @@
-# POS System Requirements Document (Updated Version - Dashboard Analytics Enhancement)
+# POS System Requirements Document (Updated Version - Premium POS Terminal Upgrade)
 
 ## 1. System Name
 POS System (Point of Sale Management System)
 
 ## 2. System Description
-A fully functional POS system for professional retail points with complete inventory control, financial reporting, employee activity tracking, and supplier management. The system operates on a centralized database and ensures real-time synchronization across all modules.
+A fully functional POS system for professional retail points with complete inventory control, financial reporting, employee activity tracking, and supplier management. The system operates on a centralized database and ensures real-time synchronization across all modules. This version includes a premium-grade POS Terminal interface optimized for high-volume retail environments.
 
 ## 3. Global System Synchronization Rules
-\n### 3.1 Centralized Database
+
+### 3.1 Centralized Database
 The system stores all data in a single centralized database:\n- Products\n- Inventory
 - Sales / Orders
-- Returns\n- Customers
+- Returns
+- Customers
 - Suppliers
 - Purchase Orders
 - Employees
 - Settings
 - Audit Logs
 - Held Orders
-
-All modules read from and update the same unified data source.
+\nAll modules read from and update the same unified data source.
 
 ### 3.2 Cross-Module Integration Rules
 
@@ -26,8 +27,7 @@ All modules read from and update the same unified data source.
 - When a product is created, an inventory record is automatically created
 - Updating product stock triggers low-stock warnings and dashboard updates
 - Deleting a product is prevented if it has been used in orders
-
-#### 3.2.2 Orders (Sales) ↔ Inventory
+\n#### 3.2.2 Orders (Sales) ↔ Inventory
 **When an order is completed:**
 - Reduce stock based on sold quantity
 - Log stock change in Inventory Movement Log
@@ -42,8 +42,7 @@ All modules read from and update the same unified data source.
 - Add entry to movement log (Return)\n- Reduce customer total spending
 - Reduce employee performance metrics
 - Update dashboard indicators
-
-#### 3.2.4 Purchase Orders ↔ Inventory ↔ Suppliers
+\n#### 3.2.4 Purchase Orders ↔ Inventory ↔ Suppliers
 **When a purchase order is received:**
 - Increase stock\n- Add entry to movement log (Purchase Receipt)
 - Update inventory valuation
@@ -77,8 +76,10 @@ Deleting a supplier is prevented if purchase orders exist (soft delete only).
 #### 3.2.7 Employees ↔ POS Terminal ↔ Orders
 Each order should store:
 - Cashier ID
-- Terminal session\n- Timestamp
-\nThe Employees module automatically receives:\n- Number of sales\n- Sales amount
+- Terminal session
+- Timestamp
+\nThe Employees module automatically receives:\n- Number of sales
+- Sales amount
 - Processed returns
 - Errors (cancelled orders)\n- Login sessions
 
@@ -94,6 +95,8 @@ Settings module should directly affect module operations:
 - Negative stock rules
 - Default tax rate
 - Enable/disable Hold Order feature
+- Enable/disable Per-Product Discount
+- Enable/disable Mixed Payment\n- Quick access buttons limit
 
 **Inventory:**
 - Minimum stock threshold
@@ -110,16 +113,17 @@ Settings module should directly affect module operations:
 Dashboard should always show REAL-TIME metrics:
 - Sales for selected date range
 - Orders count for selected date range
-- Low-stock products\n- Active customers for selected date range
+- Low-stock products
+- Active customers for selected date range
 - Active suppliers
 - Best-selling products
 - Employee performance warnings
 - Pending purchase orders
 - Number of held orders
 - Average order value
-- Items sold
-- Returns count and amount
-\nAll calculations should be automatically recalculated after:\n- New order\n- Return\n- Inventory adjustment
+- Items sold\n- Returns count and amount
+
+All calculations should be automatically recalculated after:\n- New order\n- Return\n- Inventory adjustment
 - Purchase receipt
 - New product added
 - New supplier added
@@ -143,7 +147,8 @@ Each report should be correctly updated when related modules change.
 **Orders:**
 - Cannot sell products not in stock if settingsdo not allow\n- Cannot complete order without payment
 \n**Inventory:**
-- Manual adjustments require reason\n- Cannot adjust below zero if restricted
+- Manual adjustments require reason
+- Cannot adjust below zero if restricted
 
 **Customers:**
 - Phone and email must be unique
@@ -170,7 +175,8 @@ Every critical operation should write logs:
 
 **Log format:**
 - user_id
-- action\n- module\n- document_id
+- action\n- module
+- document_id
 - details
 - timestamp
 - ip_address
@@ -195,16 +201,19 @@ Every critical operation should write logs:
 
 ### 3.9 UI/UX Synchronization Rules
 - Consistent layout across all modules
-- Standard button positions (Save, Cancel, Edit)\n- Unified status indicators system-wide:\n  - Green = Completed / Active
+- Standard button positions (Save, Cancel, Edit)
+- Unified status indicators system-wide:\n  - Green = Completed / Active
   - Yellow = Pending\n  - Red = Cancelled / Low Stock / Inactive
 - Confirmation dialogs for all destructive actions
-\n## 4. Main Functional Modules
+
+## 4. Main Functional Modules
 
 ### 4.1 Dashboard (Analytics) - ENHANCED VERSION
 
 #### 4.1.1 Dashboard Layout Structure
 
-**Page Title:** Dashboard\n
+**Page Title:** Dashboard
+
 **Top Section:**
 - Page title on left
 - Date range selector on right with presets:\n  - Today\n  - Yesterday
@@ -213,7 +222,8 @@ Every critical operation should write logs:
   - Custom Range (date picker)
 \n**Content Structure:**
 1. KPI Cards Section (2 rows)
-2. Quick Actions Row\n3. Charts & Analytics Section
+2. Quick Actions Row
+3. Charts & Analytics Section
 \n#### 4.1.2 KPI Cards - Row 1 (Existing, Enhanced)
 
 **Card 1: Total Sales**
@@ -242,13 +252,14 @@ Every critical operation should write logs:
 #### 4.1.3 KPI Cards - Row 2 (NEW)
 
 **Card 5: Average Order Value**
-- Main value: Total sales / Number of orders (0 if no orders)
+- Main value: Total sales / Number of orders (0if no orders)
 - Label: 'Average Order Value'
 - Secondary text: 'per transaction'\n- Icon: Calculator or trending up icon
 - Color accent: Teal
 - Formula: `total_sales / order_count` (handle division by zero)
 
-**Card 6: Items Sold**\n- Main value: Sum of quantities of all sold line items in selected range
+**Card 6: Items Sold**
+- Main value: Sum of quantities of all sold line items in selected range
 - Label: 'Items Sold'
 - Secondary text: 'total units'\n- Icon: Package icon
 - Color accent: Indigo
@@ -261,7 +272,8 @@ Every critical operation should write logs:
 - Icon: Rotate CCW icon
 - Color accent: Red
 
-**Card 8: Pending Purchase Orders**\n- Main value: Count of purchase orders with status 'Draft' or 'Approved' (not 'Received' or 'Cancelled')
+**Card 8: Pending Purchase Orders**
+- Main value: Count of purchase orders with status 'Draft' or 'Approved' (not'Received' or 'Cancelled')
 - Label: 'Pending Purchase Orders'
 - Secondary text: 'awaiting receipt'
 - Icon: Clipboard list icon
@@ -272,8 +284,7 @@ Every critical operation should write logs:
 **4Action Buttons:**
 1. Open POS Terminal → navigate to `/pos`
 2. Manage Products → navigate to `/products`
-3. View Orders → navigate to `/orders`
-4. View Reports → navigate to `/reports`
+3. View Orders → navigate to `/orders`\n4. View Reports → navigate to `/reports`
 
 **Button Style:**
 - Large, touch-friendly buttons
@@ -287,26 +298,30 @@ Every critical operation should write logs:
 
 **Chart 1: Sales Over Time**
 \n**Type:** Line chart or bar chart
-\n**Data:**
+
+**Data:**
 - X axis: Days in selected date range
 - Y axis: Total sales amount per day
 - Tooltip on hover: Date + total sales for that day
 \n**Implementation:**
 - Query: Aggregate orders by date (order_date), sum total_amount where status = 'Completed'
 - Filter by selected date range
-- Group by day\n- Sort by date ascending
+- Group by day
+- Sort by date ascending
 \n**Empty State:**
 - If no sales data: Show message 'No sales in this period'
-\n**Chart 2: Top 5 Products**
+\n**Chart 2: Top5 Products**
 
 **Type:** Horizontal bar chart or ranked list
 
 **Data:**
 - Show top 5 products by total sales amount in selected range
-- For each product display:\n  - Product name
+- For each product display:
+  - Product name
   - Quantity sold (sum of line item quantities)
   - Total sales amount (sum of line totals)
-\n**Implementation:**
+
+**Implementation:**
 - Query: Join order_items with orders and products\n- Filter by date range and order status = 'Completed'
 - Group by product_id
 - Sum quantity and line_total
@@ -316,11 +331,13 @@ Every critical operation should write logs:
 - If fewer than 5 products: Show only existing ones
 - If no products sold: Show message 'No products sold in this period'
 
-#### 4.1.6 Data Sources & Queries\n
+#### 4.1.6 Data Sources & Queries
+
 **All metrics must:**
 - Filter by selected date range (order_date or created_at)
 - Filter by completed orders only (status = 'Completed') where appropriate
-- Handle empty databases gracefully (return 0 instead of errors)\n- Use aggregated queries (no N+1 queries)
+- Handle empty databases gracefully (return 0 instead of errors)
+- Use aggregated queries (no N+1 queries)
 
 **Suggested RPC Functions or SQL Views (Read-Only):**
 \n**1. get_dashboard_kpis(start_date, end_date)**\n- Returns JSON object with:
@@ -337,9 +354,11 @@ Every critical operation should write logs:
 \n**3. get_top_products(start_date, end_date, limit)**
 - Returns array of objects:
   - product_id
-  - product_name\n  - quantity_sold
+  - product_name
+  - quantity_sold
   - total_sales
-\n**Database Tables Used (Read-Only):**
+
+**Database Tables Used (Read-Only):**
 - orders (order_date, total_amount, status)
 - order_items (quantity, line_total, product_id)
 - products (name, stock, minimal_stock)
@@ -354,7 +373,7 @@ Every critical operation should write logs:
 - Keep layout structure visible during loading
 
 **Error State:**
-- If a query fails, show non-blocking error message at bottom of dashboard:\n  - 'Failed to load analytics. Please try again.'
+- If a query fails, show non-blocking error message at bottom of dashboard:\n  -'Failed to load analytics. Please try again.'
   - Red background, white text, dismissible
 - Keep other successful widgets visible
 - Do not crash the entire dashboard
@@ -386,7 +405,8 @@ Every critical operation should write logs:
 - Small labels (text-sm, text-gray-600)
 - Icons from Lucide or Heroicons library
 - Consistent spacing (gap-4or gap-6)
-\n**Date Range Selector:**
+
+**Date Range Selector:**
 - Dropdown or button group for presets
 - Date picker modal for custom range\n- Clear visual indication of selected range
 - Apply button to confirm custom range
@@ -484,9 +504,9 @@ Every critical operation should write logs:
 - List of queries or RPC endpoints created/updated
 - Any limitations or next steps for future improvements
 
-### 4.2 POS Terminal (Cashier Window)
+### 4.2 POS Terminal (Premium Retail-Grade Interface) - UPGRADED VERSION
 
-#### 4.2.1 Core Functions
+#### 4.2.1 Core Functions (Existing - Keep Working)
 - Add products via barcode scanner
 - Search and select by categories
 - Multiple payment methods:\n  - Cash
@@ -511,8 +531,282 @@ Every critical operation should write logs:
 - Shift start/end tracking
 - Cashier-specific restrictions\n- Real-time read payment methods and rules from Settings module
 - Each transaction automatically updates inventory, customer, and employee modules
+\n#### 4.2.2 NEW FEATURE1: Quick Category Tabs
 
-#### 4.2.2 Hold Order (Save Order to Waiting List) Feature
+**Location:** Above or under the product search input
+
+**Implementation:**
+- Horizontal list of category pills:\n  - Example: `All · Fruits · Drinks · Bakery · Sweets · Tobacco · Other`
+- When a tab is selected, product search results are filtered by that category
+- The'All' tab shows everything
+- On mobile/tablet, the pills should be scrollable horizontally
+- Use Tailwind and shadcn/ui components consistent with the current design
+
+**Visual Design:**
+- Active tab: blue background (#2563EB), white text\n- Inactive tabs: grey background, dark text
+- Smooth transition on hover and click
+- Touch-friendly size (minimum 44px height)
+\n**Technical Requirements:**
+- Load categories from existing `categories` table
+- Filter products in real-time based on selected category
+- Preserve search query when switching categories
+- Default to 'All' on page load
+\n#### 4.2.3 NEW FEATURE 2: Favorites / Hot Products Panel
+
+**Location:** Under the search bar
+
+**Implementation:**\n- Optional'Favorite Products' grid
+- Each product shown as a big button (card) with:
+  - Name
+  - Short label (e.g., 'Best Seller')
+  - Price
+- One click adds the product to the cart with quantity = 1
+- Support for at least 8 favorite products
+\n**Keyboard Shortcuts:**
+- ALT+1, ALT+2, … ALT+8add the corresponding favorite product if available
+\n**Configuration:**
+- Favorites can be hardcoded for now or loaded from a simple config\n- No need for complex settings UI in this iteration
+- Future enhancement: allow admin to configure favorites in Settings module
+
+**Visual Design:**
+- Grid layout: 4 columns on desktop, 2 columns on tablet
+- Large touch-friendly cards (minimum 120px height)
+- Product image (if available)\n- Clear price display
+- Hover effect and active state
+
+**Technical Requirements:**
+- Load favorite products from a simple JSON config or database field
+- Add to cart with quantity = 1 on click
+- Show toast notification: 'Product added to cart'
+- Handle out-of-stock products gracefully (disable button, show badge)
+
+#### 4.2.4 NEW FEATURE 3: On-screen Numpad for Quantity & Line Discount
+
+**Trigger:**
+- When the user clicks the quantity field in the cart row
+- When the user clicks the Line Discount input\n\n**Implementation:**
+- Open a small modal or popover with a numeric keypad (0–9, Clear, Apply)
+- Support both keyboard typing and clicking the numpad
+\n**Validation:**
+- Quantity must be > 0 and <= max allowed by stock
+- Discount must be >= 0 and <= line total
+- Show clear error messages for invalid inputs
+\n**Visual Design:**
+- Clean, modern numpad layout
+- Large touch-friendly buttons (minimum 60px × 60px)
+- Current value displayed at top of popover
+- 'Clear' button to reset to 0
+- 'Apply' button to confirm and close popover
+-'Cancel' or ESC to close without applying
+
+**Technical Requirements:**
+- Reusable numpad component
+- Handle both mouse clicks and keyboard input
+- Update cart state in real-time on'Apply'\n- Close popover on ESC or outside click
+\n#### 4.2.5 NEW FEATURE 4: Improved Per-Line Discount UX
+
+**Current State:**
+- Per-line discount already exists (amount in UZS)
+\n**Improvements:**
+\n**A) Discount Popover Enhancement**
+- On each cart line:\n  - Show a small'Discount' chip/button (already exists, reuse it)
+  - When clicked, show a popover with:
+    - Input for discount amount in UZS
+    - Quick buttons: `5%`, `10%`, `15%` (apply percent of line price automatically)
+    - 'Clear' button to reset to 0
+\n**B) Visual Feedback**
+- Under the product name in the cart row, show a small grey text:\n  - Example: `Discount: 1500 UZS (10%)` if discount is applied
+- Update both line total and order summary in real-time
+\n**Calculation Logic:**
+- Quick buttons calculate percentage of line subtotal (unit_price × quantity)
+- Example: If line subtotal = 15 000 UZS, clicking '10%' sets discount = 1 500 UZS
+- Manual input allows any amount (validated: >= 0 and <= line subtotal)
+\n**Visual Design:**
+- Popover positioned near the discount button
+- Clean layout with clear labels
+- Quick buttons in a row (pill-shaped, blue on hover)
+- Input field with UZS suffix
+- Real-time preview of line total after discount
+
+**Technical Requirements:**
+- Reuse existing per-line discount logic
+- Add quick percentage buttons
+- Update cart state in real-time
+- Show discount summary under product name
+- Validate discount amount (cannot exceed line subtotal)
+
+#### 4.2.6 NEW FEATURE 5: Mixed Payments UX (Cash + Card Split)
+
+**Current State:**
+- Mixed payment already supported in backend
+
+**Improvements:**
+
+**Rework'Process Payment' Modal:**
+- Clearly support mixed payments:\n  - Cash Amount (input field)
+  - Card Amount (input field)
+  - QR Pay (optional, input field)
+- Show:\n  - Subtotal
+  - Discounts (line discounts + order discount)
+  - Final Total
+  - Paid (sum of all payment methods)
+  - Change (if cash > due)
+\n**Validation Rules:**
+- If total > 0, the sum of all payment amounts must equal the total (within a small epsilon for decimals)
+- If validation fails, show a clear error message and disable the 'Complete Payment' button
+- Example error: 'Payment amountsdo not match order total. Please adjust.'
+
+**Visual Design:**
+- Clean, card-based layout
+- Payment method inputs in a column
+- Real-time calculation of 'Paid' and 'Change'\n- Color-coded validation:\n  - Green border if valid
+  - Red border if invalid
+- Large'Complete Payment' button at bottom (disabled if invalid)
+
+**Technical Requirements:**
+- Keep all existing backend logic\n- Only adjust the frontend to send correctly structured data
+- Validate payment amounts before submission
+- Show clear error messages\n- Handle edge cases (e.g., overpayment, underpayment)
+
+#### 4.2.7 NEW FEATURE 6: Keyboard Shortcuts\n
+**Global Shortcuts (within POS Terminal):**
+\n**ENTER:**
+- If search input is focused and there is at least one result, add the first result to the cart
+\n**F2:**
+- Open Process Payment modal (if cart is not empty)
+\n**F3:**
+- Hold current order (equivalent to Hold Order button)
+
+**ESC:**
+- Close any open modal/popover
+- If none are open, clear the search input
+
+**UP/DOWN arrows:**
+- Move selection between cart rows
+
+**PLUS/MINUS on numpad:**
+- Increase/decrease quantity for the currently selected row
+
+**ALT+1to ALT+8:**
+- Add corresponding favorite product to cart
+
+**Implementation Notes:**
+- Use `useEffect` with event listeners for keyboard events
+- Prevent default browser behavior where necessary
+- Ensure shortcuts don't interfere with input fields (e.g., typing in search)\n- Show keyboard shortcuts help tooltip or modal (optional)
+
+**Visual Feedback:**
+- Highlight selected cart row with a subtle border or background color
+- Show toast notification when shortcut is used (optional)
+\n#### 4.2.8 NEW FEATURE 7: Advanced Hold / Waiting Orders
+
+**Current State:**
+- Basic Hold Order functionality exists
+
+**Improvements:**
+
+**7.1 Hold Order Naming**
+- When user clicks 'Hold Order':
+  - Open a small modal:\n    - Field: 'Hold Name' (optional)
+    - Example placeholder: 'Customer with blue jacket', 'Family of 3'
+  - If empty, auto-generate a code: `HOLD-YYYYMMDD-####`
+\n**7.2 Waiting Orders Side Panel**
+- Clicking on the 'Waiting Orders' toggle in the Order Summary opens a side drawer (right side)
+- The drawer lists all held orders with:
+  - Hold name or auto-code
+  - Time since hold (e.g., '12 min ago')
+  - Order total
+- Actions for each row:
+  - 'Resume' – load order back into the Terminal, remove from holds list
+  - 'Rename' – edit hold name
+  - 'Cancel' – delete hold and discard the cart
+\n**7.3 Visual Priority**
+- If hold age > 15 minutes, highlight row with a yellow background or icon
+- If hold age > 30 minutes, use a red border/icon
+- Ensure this is only a visual indicator; business logic remains unchanged
+
+**Visual Design:**
+- Side drawer slides in from right
+- Clean list layout with clear actions
+- Color-coded priority indicators
+- Touch-friendly buttons
+- Smooth animations
+
+**Technical Requirements:**
+- Store hold name in `held_orders` table
+- Calculate time since hold in real-time
+- Update visual indicators based on age
+- Handle resume, rename, and cancel actions
+- Sync with existing Hold Order logic
+
+#### 4.2.9 NEW FEATURE 8: Customer Info Badge in Order Summary
+
+**Implementation:**
+- When a customer is selected (not Walk-in):
+  - Show a small badge next to the customer dropdown:\n    - Examples: `VIP`, `Debt: 150 000 UZS`, `New`
+- On hover or click, show a small tooltip/popover with:
+  - Phone\n  - Email (if available)
+  - Short notes (if available)
+\n**Badge Logic:**
+- VIP: if customer has total purchases > threshold (e.g., 5 000 000 UZS)
+- Debt: if customer balance >0 (show amount)\n- New: if customer created within last 30 days
+\n**Visual Design:**
+- Small pill-shaped badge\n- Color-coded:\n  - VIP: gold/yellow
+  - Debt: red
+  - New: green
+- Tooltip/popover with clean layout
+\n**Technical Requirements:**
+- Load customer data from `customers` table
+- Calculate badge status based on customer fields
+- Show tooltip on hover or click
+- Handle missing data gracefully
+
+#### 4.2.10 NEW FEATURE 9: Quick Customer Create (inside POS Terminal)
+
+**Implementation:**
+- Next to the customer dropdown, add a small '+' icon
+- Clicking it opens a minimal'New Customer' modal with fields:
+  - Name (required)
+  - Phone (+998 mask formatting)
+  - Notes (optional)
+- On'Create':
+  - Save the customer using the existing Customers backend\n  - Automatically select this new customer in the Order Summary dropdown
+- Handle backend errors with toasts and inline messages
+
+**Visual Design:**
+- Small, centered modal
+- Clean form layout
+- Large'Create' button
+- 'Cancel' button to close without saving
+\n**Technical Requirements:**
+- Reuse existing customer creation logic\n- Validate phone format (+998 XX XXX XX XX)
+- Show success toast: 'Customer created and selected'
+- Show error toast if creation fails
+- Auto-select new customer in dropdown
+
+#### 4.2.11 NEW FEATURE 10: Improved Notifications (Toasts)
+
+**Success Notifications:**
+- On successful payment:
+  - Show a green toast like:\n    - 'Order POS-2025-0007 completed successfully. Change: 3 000 UZS.'
+\n**Error Notifications:**
+- Show a red toast with a clear reason, for example:
+  - 'Cannot process empty cart.'
+  - 'Insufficient stock for product: Olma.'
+  - 'Payment amounts do not match order total.'
+
+**Implementation:**
+- Use a consistent toast component already used in other modules, or create one consistent with the design system
+- Position: top-right corner\n- Auto-dismiss after 5 seconds (success) or 10 seconds (error)
+- Allow manual dismiss with X button
+
+**Visual Design:**
+- Clean, modern toast design
+- Color-coded:\n  - Green for success
+  - Red for error
+  - Blue for info
+- Icon + message + dismiss button
+\n#### 4.2.12 Hold Order (Save Order to Waiting List) Feature (Existing - Enhanced)
 
 **Business Scenario:**
 - Customer comes to cashier, some products scanned and added to cart
@@ -522,12 +816,12 @@ Every critical operation should write logs:
 
 **Functional Requirements:**
 \n**1. POS Terminal New Actions:**
-- Add 'Hold Order' button next to 'Process Payment' button
-- Add 'Waiting Orders' menu/button in top-right or POS Terminal header
+- Add 'Hold Order' button next to 'Process Payment' button\n- Add 'Waiting Orders' menu/button in top-right or POS Terminal header
 \n**2. Hold Order Behavior:**
 - When cashier clicks 'Hold Order' button:
   - If cart is empty → show warning and do nothing
-  - Otherwise:\n    - Open small dialog/modal:\n      - Fields:\n        - Optional'Customer name / label' (e.g., 'Person in green shirt', 'Tohirbek', 'Table 3')
+  - Otherwise:\n    - Open small dialog/modal:
+      - Fields:\n        - Optional'Customer name / label' (e.g., 'Person in green shirt', 'Tohirbek', 'Table 3')
         - Optional note\n    - Save current cart state as held order without payment
     - Clear current cart on terminal (so cashier can serve next customer)
 - Held order should not affect inventory or reports yet (stock not reduced, sales total not counted)
@@ -537,7 +831,8 @@ Every critical operation should write logs:
   - items (JSON array: product_id, name, unit_price, quantity, line_discount, etc.)
   - customer_name (nullable)
   - note (nullable)
-  - created_at\n  - status ('HELD' | 'RESTORED' | 'CANCELLED')\n- Do not add to main `orders` table at this stage. Real order is created only after payment\n
+  - created_at\n  - status ('HELD' | 'RESTORED' | 'CANCELLED')
+- Do not add to main `orders` table at this stage. Real order is created only after payment\n
 **4. Waiting Orders List:**
 - 'Waiting Orders' button opens modal or side panel:\n  - For each held order, show:
     - Short label: customer_name or generated name ('Order #3')
@@ -551,7 +846,8 @@ Every critical operation should write logs:
 - When cashier clicks Restore on a held order:
   - If current cart is not empty, ask for confirmation:\n    - 'Current cart has items. Replace them with held order?'
     - Options:\n      - Replace current cart\n      - Cancel\n  - After confirmation:\n    - Load held order items into shopping cart (with quantities and line discounts)
-    - Load optional customer name into'Customer' field (if linked)\n    - Delete or mark this held order as RESTORED in `pending_orders`
+    - Load optional customer name into'Customer' field (if linked)
+    - Delete or mark this held order as RESTORED in `pending_orders`
   - After restored, cashier can process payment via'Process Payment' as usual
 
 **6. Cancel Behavior:**
@@ -583,7 +879,7 @@ Every critical operation should write logs:
   - Cancel held orders when not needed
 - No impact on Inventory or Reports until payment is completed and real `order` is created
 
-#### 4.2.3 Shopping Cart - With Per-Product Discount
+#### 4.2.13 Shopping Cart - With Per-Product Discount (Existing - Enhanced)
 
 **Cart Structure:**
 \nEach cart item contains:
@@ -597,8 +893,7 @@ Every critical operation should write logs:
 \n**Per-Product Discount UI:**
 \n1. **Discount control for each cart row:**
    - Each product row shows a small discount field
-   - Default value: 0 (no discount)
-   - Format: amount display (e.g., 5000 UZS)
+   - Default value: 0 (no discount)\n   - Format: amount display (e.g., 5000 UZS)
    - With discount icon or'Discount' label
 \n2. **Entering discount:**
    - When user clicks discount field, inline input or popover opens
@@ -624,7 +919,8 @@ let line_total = line_subtotal - line_discount
 \n1. **Subtotal:**
    - Sum of all line_subtotal values (before discounts)
    - Formula: sum(unit_price × quantity) for all rows
-\n2. **Total Discount:**
+
+2. **Total Discount:**
    - Global order discount + sum of all line discounts
    - Formula: global_order_discount + sum(lineDiscountAmount)\n
 3. **Total Amount:**
@@ -664,7 +960,70 @@ interface CartItem {
 - Order Summary and payment flow fully synchronized with line discounts and global discount
 - All calculations are accurate and real-time
 - UI is intuitive and touch-screen friendly
-\n### 4.3 Products Catalog (Products Module)
+
+#### 4.2.14 UX & Design Requirements (Premium Upgrade)
+
+**Layout:**
+- Keep the existing blue color theme and card layout
+- Layout must be responsive:\n  - Desktop: 2-column layout (Cart left, Summary right)
+  - Tablet: stacked but still usable with touch
+- Do not clutter the interface: advanced features should appear in modals/popovers, not all at once
+\n**Visual Enhancements:**
+- Large, touch-friendly buttons (minimum 44px height)
+- Clear visual hierarchy\n- Smooth animations and transitions
+- Color-coded status indicators
+- Consistent spacing and padding
+- Modern, clean design
+
+**Performance:**
+- Fast rendering even with100+ products in search results
+- Smooth scrolling and interactions
+- Optimized for tablets and POS displays
+\n#### 4.2.15 Technical Requirements (Premium Upgrade)
+\n**TypeScript:**
+- Respect existing TypeScript types and Supabase schema
+- Add new types for favorite products, held orders, keyboard shortcuts
+- Follow existing patterns in project
+\n**Do NOT Break:**
+- Stock synchronization
+- Orders creation
+- Returns\n- Purchase Orders integration
+- Dashboard metrics
+- Existing backend logic for orders, stock, payments, and returns
+- Existing routes and navigation
+- Authentication and authorization logic
+
+**Code Quality:**
+- Write clean, well-structured React components
+- Reuse shadcn/ui where possible
+- Add basic unit tests or integration checks for the most critical flows if the project already uses tests
+- Follow existing code style and conventions
+
+**Focus:**
+- Focus only on the POS Terminal page UI/UX and small frontend-only enhancements that integrate with the current backend
+\n#### 4.2.16 Summary of New Features
+
+**Implemented in POS Terminal:**
+
+1. **Quick Category Tabs** – Filter products by category with horizontal pills
+2. **Favorites / Hot Products Panel** – Quick access to 8 favorite products with keyboard shortcuts (ALT+1 to ALT+8)
+3. **On-screen Numpad** – For quantity and line discount input
+4. **Improved Per-Line Discount UX** – Quick percentage buttons (5%, 10%, 15%) and visual feedback
+5. **Mixed Payments UX** – Clear split payment interface with validation
+6. **Keyboard Shortcuts** – ENTER, F2, F3, ESC, UP/DOWN, PLUS/MINUS, ALT+1-8
+7. **Advanced Hold / Waiting Orders** – Named holds, side panel, visual priority indicators
+8. **Customer Info Badge** – VIP, Debt, New badges with tooltip
+9. **Quick Customer Create** – '+' button next to customer dropdown
+10. **Improved Notifications** – Clear success and error toasts
+\n**All existing features preserved and working:**
+- Product search and barcode scanning
+- Shopping cart with quantity controls
+- Per-line discounts\n- Order-level discount\n- Hold Orders
+- Process Payment
+- Customer selection
+- Full integration with Products, Orders, Inventory, Customers, Dashboard
+
+### 4.3 Products Catalog (Products Module)
 
 #### 4.3.1 Products List Page
 **Table/Grid view with columns:**
@@ -676,8 +1035,7 @@ interface CartItem {
 - Purchase price
 - Sale price
 - Current stock
-- Status (Active / Inactive)
-- Actions (View, Edit, Delete)
+- Status (Active / Inactive)\n- Actions (View, Edit, Delete)
 
 **Features:**
 - Search: by name, SKU, barcode\n- Filters:\n  - Category filter
@@ -688,9 +1046,9 @@ interface CartItem {
 - 'Add Product' button
 \n**Stock status colors:**
 - Green → Stock sufficient
-- Yellow → Low stock\n- Red → Out of stock
-
-**Integration Rules:**
+- Yellow → Low stock
+- Red → Out of stock
+\n**Integration Rules:**
 - When product is created, inventory record is automatically created
 - When deleting product, check if used in orders\n- Stock changes reflect real-time in dashboard and reports
 
@@ -748,8 +1106,7 @@ interface CartItem {
 - Price
 - Document number
 \n#### 4.3.4 Inventory Integration (Mandatory)
-- When sale occurs → stock decreases
-- When return occurs → stock increases
+- When sale occurs → stock decreases\n- When return occurs → stock increases
 - When purchase order is received → stock increases
 - When inventory adjustment occurs → logs are updated
 - All changes sync real-time to dashboard and reports
@@ -758,7 +1115,8 @@ interface CartItem {
 - Barcode auto-generate OR manual entry
 - Barcode scanner should immediately find and add product in POS Terminal
 - Create printable barcode labels (optional)
-\n#### 4.3.6 Category Integration
+
+#### 4.3.6 Category Integration
 - Category dropdown selection
 - Filter by category
 - Category colored tags (optional)
@@ -804,7 +1162,8 @@ interface CartItem {
 - Color Tag (optional; for POS Terminal UI grouping)
 - Icon (optional; emoji or SVG)
 - Parent Category (optional → for subcategories)
-\n**Validation:**
+
+**Validation:**
 - Name required
 - Must be unique
 - If parent category selected → prevent circular parent/child relationships
@@ -824,8 +1183,7 @@ Identical to creation form but pre-filled.\n
 - Color tag
 - Icon
 - Parent category
-- Products count
-\n**Tabs:**
+- Products count\n\n**Tabs:**
 \n**1) Products in this Category**
 - Table:\n  - Product name
   - SKU / Barcode
@@ -853,14 +1211,12 @@ POS Terminal should show:
 - Colors/icons for quick recognition
 - Smart sorting: most-sold categories shown at top
 \n#### 4.4.7 UI / UX Requirements
-- Clean table view
-- Minimalist modern cards
+- Clean table view\n- Minimalist modern cards
 - Consistent spacing with other modules
 - Mobile-friendly side panel interaction
 - Use colored tags for visual grouping
 - Icons optional (but highly recommended for POS tablets)
-
-#### 4.4.8 Security and Permissions
+\n#### 4.4.8 Security and Permissions
 Role-based access:
 - Admin and Manager: Create, edit, delete categories
 - Cashier: View categories only (no edit)\n\n#### 4.4.9 Technical Requirements
@@ -869,7 +1225,8 @@ Role-based access:
 - description\n- color\n- icon
 - parent_id (nullable)
 - created_at
-- updated_at\n\n**Relationships:**
+- updated_at
+\n**Relationships:**
 - One-to-many with Products
 - Self-referencing parent-child categories
 - Auto-sync with Inventory and POS Terminal
@@ -886,11 +1243,13 @@ Role-based access:
 - unit – Unit of measure
 - cost_price – Purchase price
 - inventory_value – Inventory value (stock × cost_price)
-- status – In Stock / Low Stock / Out of Stock\n- actions – View detail / Adjust stock\n
+- status – In Stock / Low Stock / Out of Stock
+- actions – View detail / Adjust stock\n
 **Features:**
 - Search: by product name or SKU
 - Filters:\n  - Category\n  - Stock status (All / Low Stock / Out of Stock)
-- Sorting:\n  - Name\n  - Stock quantity\n  - Inventory value
+- Sorting:\n  - Name\n  - Stock quantity
+  - Inventory value
 - Pagination\n- Export to Excel / PDF
 \n**Stock status colors:**
 - Green → In stock (sufficient stock)
@@ -922,8 +1281,7 @@ Complete audit trail of inventory changes.
   - Purchase Return (-) – Purchase return
   - Inventory Adjustment (+/-) – Inventory adjustment
   - Stock Transfer (+/-) – Stock transfer\n- Quantity (with + or -)
-- User
-- Related document (Order #, Return #, Purchase Order #, Adjustment #)
+- User\n- Related document (Order #, Return #, Purchase Order #, Adjustment #)
 
 **Movement row color logic:**
 - Positive (+) → Green
@@ -968,8 +1326,7 @@ Complete audit trail of inventory changes.
 #### 4.5.4 Real-Time Inventory Update Logic
 Implement strict inventory logic:
 \n**When sale occurs:**
-```\nstock -= sold_quantity
-movement: type = 'Sale', quantity = -X
+```\nstock -= sold_quantity\nmovement: type = 'Sale', quantity = -X
 update dashboard metrics
 update reports
 ```
@@ -1064,8 +1421,7 @@ This ensures full traceability.\n
 #### 4.5.10 Technical Requirements
 **Inventory Table Structure:**
 - id
-- product_id
-- stock_quantity
+- product_id\n- stock_quantity
 - minimal_stock
 - cost_price
 - inventory_value (calculated)
@@ -1086,7 +1442,8 @@ This ensures full traceability.\n
 \n**Relationships:**
 - One-to-one with Products
 - One-to-many with Movements
-- Auto-sync with Orders, Returns, Purchase Orders\n\n### 4.6 Orders / Receipts (Orders Module)
+- Auto-sync with Orders, Returns, Purchase Orders
+\n### 4.6 Orders / Receipts (Orders Module)
 
 #### 4.6.1 Orders List Page
 **Page Title:** Orders
@@ -1267,7 +1624,8 @@ Detail view should show:
 \n**Overview:**
 - Return number
 - Related order number
-- Customer\n- Cashier
+- Customer
+- Cashier
 - Date and time
 - Status badge
 - Return reason
@@ -1301,8 +1659,7 @@ Each return creates inventory record:
 - product_id\n- quantity (+)
 - related_return_number
 - date\n- performed_by (user)
-\n#### 4.7.5 Orders Integration\n**Order detail should show list of related returns**
-
+\n#### 4.7.5 Orders Integration\n**Order detail should show list of related returns**\n
 **Order total should be updated after return:**
 - updated_order_total = original_total - returned_amount
 
@@ -1316,7 +1673,8 @@ If return amount should be refunded:
 **System should show suggested refund amount**
 
 Cashier selects refund method:
-- Cash\n- Card
+- Cash
+- Card
 - Customer account balance
 
 **Refund should create:**
@@ -1341,7 +1699,8 @@ Sales Returns should appear in:
 \n**Inventory Reports:**
 - Returned products
 - Adjustments from returns
-\n**Employee Reports:**
+
+**Employee Reports:**
 - Returns processed by cashier
 \n#### 4.7.9 UI/UX Requirements
 - Clean table view
@@ -1350,7 +1709,7 @@ Sales Returns should appear in:
 - Status color codes:\n  - Pending → Blue
   - Completed → Green
   - Cancelled → Red
-\n#### 4.7.10 Numbering Policy (Mandatory)
+\n#### 4.7.10Numbering Policy (Mandatory)
 **Return Numbering:**
 - Format: RET-YYYYMMDD-#####
 - Example: RET-20251205-00023
@@ -1428,8 +1787,7 @@ interface Supplier {
 
 **Table Columns:**
 - Name – Supplier name
-- Phone – Phone number
-- Email – Email address
+- Phone – Phone number\n- Email – Email address
 - Status – Active / Inactive (colored badge)
 - Created Date – Creation date
 - Actions – View / Edit / Delete
@@ -1451,8 +1809,8 @@ interface Supplier {
 **Status Badge Colors:**
 - Active → Green\n- Inactive → Red
 \n#### 4.9.4 Create Supplier Page
-\n**Page: `/suppliers/new`**
 
+**Page: `/suppliers/new`**\n
 **Page Title:** Add New Supplier
 
 **Form Fields:**
@@ -1568,11 +1926,11 @@ interface Supplier {
 
 **Location:** `/purchase-orders/:id`
 
-**Implementation:**\n- Show supplier information in header section:\n  - Supplier name (clickable link → navigate to `/suppliers/:id`)\n  - Phone
-  - Email
+**Implementation:**\n- Show supplier information in header section:\n  - Supplier name (clickable link → navigate to `/suppliers/:id`)\n  - Phone\n  - Email
   - Address
 - Clicking supplier name opens supplier detail page
-\n**E) Database Relationship**
+
+**E) Database Relationship**
 
 **Update `purchase_orders` table:**
 - Add `supplier_id` field (UUID, foreign key to `suppliers.id`, required)
@@ -1612,8 +1970,7 @@ interface PurchaseOrder {
 
 **Status Badge Colors:**
 - Active → Green
-- Inactive → Red\n
-**Modal Design:**
+- Inactive → Red\n\n**Modal Design:**
 - Clean, centered modal for'Add New Supplier'\n- Overlay background with blur effect
 - Close button (X) in top-right corner\n- Form fields same as main supplier creation page
 
@@ -1731,11 +2088,11 @@ interface PurchaseOrder {
 **Dashboard:**
 - Active suppliers count (optional)
 - Top suppliers by purchase volume (optional)
-\n#### 4.9.14 Final Delivery Requirements
+
+#### 4.9.14 Final Delivery Requirements
 
 **AI should create a fully functional Suppliers module:**
-
-✔ Complete CRUD operations (Create, Read, Update, Delete)\n✔ Supplier list page with search, filter, pagination
+\n✔ Complete CRUD operations (Create, Read, Update, Delete)\n✔ Supplier list page with search, filter, pagination
 ✔ Supplier detail page with purchase orders list
 ✔ Create and edit supplier pages with validation
 ✔ Full integration with Purchase Orders module:\n  - Supplier dropdown in PO creation/editing
@@ -1767,10 +2124,8 @@ interface PurchaseOrder {
 #### 4.10.2 Purchase Order Data Model
 
 **Database Tables:**
-
-**`purchase_orders` table:**
-- id (primary key)
-- po_number (format: PO-YYYYMMDD-#####, e.g., PO-20251206-00015)
+\n**`purchase_orders` table:**
+- id (primary key)\n- po_number (format: PO-YYYYMMDD-#####, e.g., PO-20251206-00015)
 - **supplier_id (foreign key to suppliers table, required)**
 - status (Draft / Pending / Received / Cancelled)
 - order_date (date)
@@ -1821,7 +2176,8 @@ interface PurchaseOrder {
 Implement a single-page or multi-step form:\n\n**Section 1: Basic Info**
 - **Supplier** (required, dropdown from `suppliers` table with autosuggest search)
   - Only show Active suppliers
-  - Sort alphabetically\n  - **'+ Add Supplier' button** → opens modal to create new supplier
+  - Sort alphabetically
+  - **'+ Add Supplier' button** → opens modal to create new supplier
 - **Order Date** (required, default: today)
 - **Expected Date** (optional)\n- **Status** (Draft / Pending, default: Draft)
 - **Notes** (optional, textarea)
@@ -1887,7 +2243,8 @@ Implement a single-page or multi-step form:\n\n**Section 1: Basic Info**
       NOW()
     );
     ```
-\n**Transaction Requirement:**
+
+**Transaction Requirement:**
 - All stock updates and inventory movement inserts must be wrapped in a **single database transaction** or **RPC function** to ensure data consistency.
 - If any part fails, the entire operation should **roll back**.
 
@@ -2017,7 +2374,8 @@ if (error) {
 
 1. **Create a Draft PO with2 products:**
    - Save as Draft.\n   - Verify: PO created, no stock changes.
-\n2. **Edit Draft PO:**
+
+2. **Edit Draft PO:**
    - Change quantity of one product.
    - Save.
    - Verify: PO updated, still no stock changes.
@@ -2061,8 +2419,8 @@ if (error) {
 **Products Module:**
 - Product selector in PO creation uses products table.
 - Unit cost defaults to product.purchase_price.
-
-**Suppliers Module:**\n- Supplier dropdown in PO creation uses suppliers table.
+\n**Suppliers Module:**
+- Supplier dropdown in PO creation uses suppliers table.
 - '+ Add Supplier' modal in PO creation/editing.
 - Supplier detail page shows list of purchase orders.
 - Supplier name in PO detail page is clickable link to supplier detail.
@@ -2111,8 +2469,7 @@ if (error) {
 - notes
 - created_by
 - created_at
-- updated_at
-
+- updated_at\n
 **Purchase Order Items Table Structure:**
 - id
 - purchase_order_id\n- product_id\n- quantity
@@ -2144,7 +2501,8 @@ if (error) {
 - Full audit trail preserved\n
 ### 4.12 Customers Module
 \n#### 4.12.1 Customers List Page
-**Page Title:** Customers\n
+**Page Title:** Customers
+
 **Table Columns:**
 - name – Full name or company name
 - phone – Primary phone\n- type – Individual / Company
@@ -2181,7 +2539,8 @@ if (error) {
 **Other:**
 - notes – free text\n- status – Active / Inactive
 \n**Validation:**
-- Name and phone required\n- Phone unique (no duplicates)
+- Name and phone required
+- Phone unique (no duplicates)
 - Tax number unique\n- Initial balance numeric
 - Credit limit numeric
 
@@ -2287,8 +2646,7 @@ Customers module feeds data to reports:
 - One-to-many with Orders
 - One-to-many with Payments
 - One-to-many with Returns
-- Auto-calculate balance
-\n### 4.13 Employees and Roles Module
+- Auto-calculate balance\n\n### 4.13 Employees and Roles Module
 
 #### 4.13.1 Employees Main Page
 **Page Title:** Employees
@@ -2340,8 +2698,7 @@ Customers module feeds data to reports:
 
 #### 4.13.4 Employee Detail Page\n**Sections:**
 \n**A) Profile Overview**
-- Name
-- Role badge
+- Name\n- Role badge
 - Contact info
 - Current status
 - Last login
@@ -2435,8 +2792,7 @@ Export capability:
 - Employees list (Excel/PDF)
 - Time logs\n- Cashier performance reports
 - Employee activity logs
-
-#### 4.13.9 Technical Requirements
+\n#### 4.13.9 Technical Requirements
 **Database Fields:**
 - id\n- full_name
 - role
@@ -2559,8 +2915,7 @@ Export capability:
 
 **Table Columns:**
 - Date
-- Product
-- Type (Sale, Purchase, Adjustment, Return)
+- Product\n- Type (Sale, Purchase, Adjustment, Return)
 - Quantity change (+/-)
 - Referencedocument (Order ID / Purchase Order ID)
 - Performed by user
@@ -2676,8 +3031,7 @@ Export capability:
 \n**Table:**
 - Payment type
 - Number of transactions
-- Total amount
-\n#### 4.14.8 Dashboard Analytics (Optional Add-on)
+- Total amount\n\n#### 4.14.8 Dashboard Analytics (Optional Add-on)
 
 **Visual Charts:**
 - Sales chart by date
@@ -2735,8 +3089,7 @@ Export capability:
 ### 4.15 Settings Module
 
 #### 4.15.1 Settings Main Page Layout
-**Page Title:** Settings
-
+**Page Title:** Settings\n
 **Page Structure:**
 Left or top tabs/sections navigation, right side forms.\n
 **Sections (Tabs):**
@@ -2783,10 +3136,8 @@ Company info used in:\n- Receipts
 - Capabilities:\n  - Enable/disable methods
   - Change labels (e.g., 'Terminal' instead of 'Card')
   - Add custom method (e.g., 'Debt', 'Wallet')
-
-**Taxes**
-
-- Enable tax system (on/off)
+\n**Taxes**
+\n- Enable tax system (on/off)
 - Default tax rate (%)
 - Tax inclusive / exclusive option
 - Per-product tax override allowed (on/off)
@@ -2849,8 +3200,8 @@ Company info used in:\n- Receipts
 - Link or info that roles are managed in Employees module
 \n**Audit:**
 - Switch'Enable activity logging' (on/off) — if enabled, log critical actions (orders, returns, inventory adjustments).
+\n#### 4.15.9 Localization
 
-#### 4.15.9 Localization\n
 **Fields:**
 \n- Default language (e.g., Uzbek, Russian, English)
 - Additional interface languages (for future use)
@@ -2903,7 +3254,8 @@ Company info used in:\n- Receipts
 ## 5. Professional Features
 - Hold order (temporarily save receipt)
 - Split payment (multiple payment types)
-- Quick add product\n- Z-report and X-report\n- Cash drawer open/close
+- Quick add product\n- Z-report and X-report
+- Cash drawer open/close
 - Shift-based accounting
 - Device binding\n- Full Sales Returns system
 - Full Customers system (balance, debt, credit limit)
@@ -2915,6 +3267,17 @@ Company info used in:\n- Receipts
 - Full Employees Module (create, edit, role-based permissions, performance analysis, time tracking, audit logs, POS integration)
 - Full Settings Module (Company Profile, POS Terminal, Payments & Taxes, Receipts, Inventory, Numbering, User & Security, Localization, Backup)\n- Real-time global synchronization across all modules
 - Per-Product Discount\n- Enhanced Dashboard with date range selector, KPI cards, and analytics charts
+- **Premium POS Terminal with:**
+  - Quick Category Tabs
+  - Favorites / Hot Products Panel
+  - On-screen Numpad
+  - Improved Per-Line Discount UX
+  - Mixed Payments UX
+  - Keyboard Shortcuts
+  - Advanced Hold / Waiting Orders
+  - Customer Info Badge
+  - Quick Customer Create
+  - Improved Notifications
 \n## 6. Technical Requirements
 
 ### 6.1 UI/UX Requirements
@@ -2929,6 +3292,12 @@ Company info used in:\n- Receipts
 - Fast rendering even with10,000+ products
 - Consistent UI/UX across all modules
 - Standard status colors and badges
+- **Premium POS Terminal:**
+  - Touch-friendly interface
+  - Keyboard-friendly shortcuts
+  - Smooth animations and transitions
+  - Clear visual hierarchy
+  - Responsive layout for desktop and tablet
 \n### 6.2 Security\n- JWT or Session authentication
 - Role-based access control (RBAC)
 - Offline data encryption
@@ -2945,8 +3314,7 @@ Company info used in:\n- Receipts
 - Fiscal printer\n- Barcode scanner
 - QR Pay (Click/Payme)
 - Inventory API
-- Bank terminal
-- Full integration with Sales Returns
+- Bank terminal\n- Full integration with Sales Returns
 - Full integration with Customers
 - Full integration with Inventory Management
 - Full integration with Purchase Orders
@@ -2970,6 +3338,10 @@ Company info used in:\n- Receipts
 - Fast performance even with 10,000+ records
 - Real-time updates with minimal latency
 - Optimized database queries
+- **Premium POS Terminal:**
+  - Fast rendering of product search results
+  - Smooth scrolling and interactions
+  - Optimized for high-volume retail environments
 \n## 7. System Numbering Policy
 - Receipt / Order: POS-YYYYMMDD-#####
   - Example: POS-20251205-00042
@@ -2978,7 +3350,8 @@ Company info used in:\n- Receipts
 - Purchase Order: PO-YYYYMMDD-#####
   - Example: PO-20251206-00015
 - Inventory Count: INV-YYYY-#####
-- SKU: SKU-000123\n\n## 8. Module Integration and Synchronization
+- SKU: SKU-000123\n- Hold Order: HOLD-YYYYMMDD-####
+\n## 8. Module Integration and Synchronization
 Products, Categories, Inventory Management, Orders, Sales Returns, Purchase Orders, Suppliers, Customers, Employees, Reports, and Settings modules are fully integrated and real-time synchronized with:\n- POS Terminal
 - Inventory\n- Purchase Orders
 - Suppliers
@@ -2992,8 +3365,7 @@ Products, Categories, Inventory Management, Orders, Sales Returns, Purchase Orde
 - All operations are fully synchronized and auditable
 - Any change (order, return, inventory adjustment, settings update, supplier update) immediately reflects in all related modules
 - Dashboard metrics updated real-time automatically
-- Reports always show latest data
-- Customer and employee statistics calculated automatically
+- Reports always show latest data\n- Customer and employee statistics calculated automatically
 - Supplier statistics calculated automatically
 - Inventory stock updated after each transaction
 - Settings changes immediately affect system behavior
@@ -3025,6 +3397,12 @@ Products, Categories, Inventory Management, Orders, Sales Returns, Purchase Orde
 - Colored indicators for Employee performance
 - Left side panel or tabs navigation in Settings page, forms on right
 - Consistent design language across all modules
+- **Premium POS Terminal:**
+  - Large, touch-friendly buttons
+  - Clear visual hierarchy
+  - Smooth animations and transitions
+  - Color-coded status indicators
+  - Modern, clean design
 
 ## 10. Final Delivery Requirements
 
@@ -3043,58 +3421,58 @@ AI should create a POS system with:
 ✔ Fully functional and fixed Purchase Orders module
 ✔ Fully functional Suppliers module integrated with Purchase Orders
 ✔ Enhanced Dashboard with professional analytics, date range selector, KPI cards, and charts
-\n---
+✔ **Premium POS Terminal with:**
+  - Quick Category Tabs
+  - Favorites / Hot Products Panel (8 favorites with ALT+1-8 shortcuts)
+  - On-screen Numpad for Quantity & Line Discount
+  - Improved Per-Line Discount UX (quick percentage buttons: 5%, 10%, 15%)
+  - Mixed Payments UX (Cash + Card split with validation)
+  - Keyboard Shortcuts (ENTER, F2, F3, ESC, UP/DOWN, PLUS/MINUS, ALT+1-8)
+  - Advanced Hold / Waiting Orders (named holds, side panel, visual priority)
+  - Customer Info Badge (VIP, Debt, New badges with tooltip)
+  - Quick Customer Create ('+' button next to customer dropdown)
+  - Improved Notifications (clear success and error toasts)
 
-## Summary of Dashboard Enhancement
+---
 
-**Improvements Made:**
-\n1. **Date Range Selector:**
-   - Added at top-right of Dashboard page
-   - Presets: Today, Yesterday, Last 7 Days, This Month, Custom Range
-   - All metrics and charts react to selected date range
+## Summary of Premium POS Terminal Upgrade
 
-2. **KPI Cards - Row 1 (Enhanced):**
-   - Total Sales (for selected range)
-   - Total Orders (for selected range)
-   - Low Stock Items (real-time)
-   - Active Customers (for selected range)
-\n3. **KPI Cards - Row 2 (NEW):**
-   - Average Order Value (total sales / order count)
-   - Items Sold (sum of quantities)
-   - Returns (count + total refunded amount)
-   - Pending Purchase Orders (Draft or Approved status)
+**New Features Implemented:**
+\n1. **Quick Category Tabs** – Filter products by category with horizontal pills
+2. **Favorites / Hot Products Panel** – Quick access to 8 favorite products with keyboard shortcuts (ALT+1 to ALT+8)
+3. **On-screen Numpad** – For quantity and line discount input
+4. **Improved Per-Line Discount UX** – Quick percentage buttons (5%, 10%, 15%) and visual feedback
+5. **Mixed Payments UX** – Clear split payment interface with validation
+6. **Keyboard Shortcuts** – ENTER, F2, F3, ESC, UP/DOWN, PLUS/MINUS, ALT+1-8
+7. **Advanced Hold / Waiting Orders** – Named holds, side panel, visual priority indicators
+8. **Customer Info Badge** – VIP, Debt, New badges with tooltip
+9. **Quick Customer Create** – '+' button next to customer dropdown
+10. **Improved Notifications** – Clear success and error toasts
 
-4. **Charts & Analytics Section (NEW):**
-   - **Sales Over Time:** Line/bar chart showing daily sales for selected range
-   - **Top5 Products:** Bar chart/list showing best-selling products by sales amount
-\n5. **Data Sources:**
-   - Reuse existing tables: orders, order_items, products, customers, sales_returns, purchase_orders\n   - No database schema changes\n   - New read-only RPC functions or SQL views for aggregated stats:\n     - `get_dashboard_kpis(start_date, end_date)`\n     - `get_sales_over_time(start_date, end_date)`
-     - `get_top_products(start_date, end_date, limit)`
-\n6. **Loading, Error & Empty States:**
-   - Skeleton placeholders during loading
-   - Non-blocking error messages
-   - Graceful handling of empty data
+**All existing features preserved and working:**
+- Product search and barcode scanning
+- Shopping cart with quantity controls
+- Per-line discounts
+- Order-level discount\n- Hold Orders\n- Process Payment
+- Customer selection
+- Full integration with Products, Orders, Inventory, Customers, Dashboard\n\n**Technical Implementation:**
+- Respect existing TypeScript types and Supabase schema
+- Do NOT break:\n  - Stock synchronization
+  - Orders creation
+  - Returns\n  - Purchase Orders integration
+  - Dashboard metrics
+  - Existing backend logic for orders, stock, payments, and returns
+  - Existing routes and navigation
+  - Authentication and authorization logic
+- Write clean, well-structured React components
+- Reuse shadcn/ui where possible
+- Follow existing code style and conventions
+- Focus only on the POS Terminal page UI/UX and small frontend-only enhancements that integrate with the current backend
 
-7. **Responsive Layout:**
-   - Desktop (1440px+): 4 cards per row, 2 charts side by side
-   - Tablet (1024px-1439px): 2 cards per row, charts stacked
-   - Mobile (<1024px): 1 card per row, charts stacked
-
-8. **Performance & Code Quality:**
-   - TypeScript with proper types
-   - Aggregated queries (no N+1)\n   - Reuse existing hooks and components
-   - No changes to auth or routing logic
-
-9. **Integration:**
-   - Dashboard does not break POS Terminal, Products, Orders, Sales Returns, Inventory, Purchase Orders, Customers, Suppliers, Employees, or Settings modules
-   - Works on empty database without errors
-\n**Limitations & Next Steps:**
-- Secondary text in KPI cards (e.g., 'vs previous7 days') is static placeholder for now; can be enhanced with actual comparison logic in future
-- On-time delivery rate for suppliers is optional and can be added later
-- Auto-refresh of dashboard data when new orders/returns are created is optional and can be implemented with real-time subscriptions
-- Chart library should be lightweight; if project does not have one, use simple HTML/CSS or add Recharts\n- Custom date range picker can be enhanced with better UX (calendar widget)\n\n**Final Check:**
-- POS Terminal selling flow works\n- Product stock updates correctly after sales and purchase orders
-- Sales Returns and Purchase Orders modules work without errors
-- Dashboard opens without errors on empty database
-- All metrics and charts respond to date range selection
-- No unexpected redirects or navigation issues
+**Delivery Summary:**
+\nWhen implementation is complete, provide:
+- List of components created/modified
+- How to use the new features
+- Any new environment variables or configs (if added)
+- Testing checklist for new features
+- Known limitations or next steps for future improvements

@@ -1834,6 +1834,18 @@ export const updateHeldOrderStatus = async (id: string, status: 'RESTORED' | 'CA
   return data;
 };
 
+export const updateHeldOrderName = async (id: string, customerName: string) => {
+  const { data, error } = await supabase
+    .from('held_orders')
+    .update({ customer_name: customerName })
+    .eq('id', id)
+    .select()
+    .maybeSingle();
+  
+  if (error) throw error;
+  return data;
+};
+
 // Delete held order (hard delete)
 export const deleteHeldOrder = async (id: string) => {
   const { error } = await supabase
