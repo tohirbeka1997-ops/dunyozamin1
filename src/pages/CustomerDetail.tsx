@@ -232,7 +232,7 @@ export default function CustomerDetail() {
                     <FileText className="h-5 w-5 text-muted-foreground mt-0.5" />
                     <div>
                       <Label className="text-muted-foreground">Tax ID / INN</Label>
-                      <p className="font-medium">{customer.tax_id || '-'}</p>
+                      <p className="font-medium">{customer.tax_number || '-'}</p>
                     </div>
                   </div>
                 </div>

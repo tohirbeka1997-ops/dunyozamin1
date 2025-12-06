@@ -30,7 +30,7 @@ export default function CustomerForm() {
     address: '',
     type: 'individual' as 'individual' | 'company',
     company_name: '',
-    tax_id: '',
+    tax_number: '',
     status: 'active' as 'active' | 'inactive',
     notes: '',
   });
@@ -54,7 +54,7 @@ export default function CustomerForm() {
         address: customer.address || '',
         type: customer.type,
         company_name: customer.company_name || '',
-        tax_id: customer.tax_id || '',
+        tax_number: customer.tax_number || '',
         status: customer.status,
         notes: customer.notes || '',
       });
@@ -254,11 +254,11 @@ export default function CustomerForm() {
                   </div>
 
                   <div className="space-y-2">
-                    <Label htmlFor="tax_id">Tax ID / INN</Label>
+                    <Label htmlFor="tax_number">Tax ID / INN</Label>
                     <Input
-                      id="tax_id"
-                      value={formData.tax_id}
-                      onChange={(e) => handleChange('tax_id', e.target.value)}
+                      id="tax_number"
+                      value={formData.tax_number}
+                      onChange={(e) => handleChange('tax_number', e.target.value)}
                       placeholder="Enter tax ID"
                     />
                   </div>

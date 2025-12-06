@@ -423,20 +423,25 @@ export const createCustomer = async (customer: {
   const { data, error } = await supabase
     .from('customers')
     .insert({
-      ...customer,
+      name: customer.name,
+      phone: customer.phone || null,
+      email: customer.email || null,
+      address: customer.address || null,
       type: customer.type || 'individual',
+      company_name: customer.company_name || null,
+      tax_number: customer.tax_number || null,
       credit_limit: customer.credit_limit || 0,
       allow_debt: customer.allow_debt || false,
       status: customer.status || 'active',
-      balance: 0,
-      total_sales: 0,
-      bonus_points: 0,
-      debt_balance: 0,
+      notes: customer.notes || null,
     })
     .select()
     .maybeSingle();
   
-  if (error) throw error;
+  if (error) {
+    console.error('Supabase error creating customer:', error);
+    throw new Error(error.message || 'Failed to create customer');
+  }
   return data as Customer;
 };
 

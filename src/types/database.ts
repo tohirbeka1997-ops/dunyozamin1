@@ -68,7 +68,6 @@ export interface Customer {
   type: 'individual' | 'company';
   company_name: string | null;
   tax_number: string | null;
-  tax_id: string | null;
   credit_limit: number;
   allow_debt: boolean;
   balance: number;
@@ -78,7 +77,6 @@ export interface Customer {
   status: 'active' | 'inactive';
   notes: string | null;
   bonus_points: number;
-  debt_balance: number;
   created_at: string;
   updated_at: string;
 }
