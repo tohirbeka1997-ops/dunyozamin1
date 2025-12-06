@@ -1843,3 +1843,245 @@ export const deleteHeldOrder = async (id: string) => {
   
   if (error) throw error;
 };
+
+// Enhanced Dashboard Analytics Functions
+export interface DashboardAnalytics {
+  total_sales: number;
+  total_orders: number;
+  low_stock_count: number;
+  active_customers: number;
+  average_order_value: number;
+  items_sold: number;
+  returns_count: number;
+  returns_amount: number;
+  pending_purchase_orders: number;
+}
+
+export interface DailySales {
+  date: string;
+  total_sales: number;
+  order_count: number;
+}
+
+export interface TopProduct {
+  product_id: string;
+  product_name: string;
+  quantity_sold: number;
+  total_amount: number;
+}
+
+export const getDashboardAnalytics = async (startDate: Date, endDate: Date): Promise<DashboardAnalytics> => {
+  const start = new Date(startDate);
+  start.setHours(0, 0, 0, 0);
+  const end = new Date(endDate);
+  end.setHours(23, 59, 59, 999);
+
+  let totalSales = 0;
+  let totalOrders = 0;
+  let lowStockCount = 0;
+  let activeCustomers = 0;
+  let itemsSold = 0;
+  let returnsCount = 0;
+  let returnsAmount = 0;
+  let pendingPurchaseOrders = 0;
+
+  // Query 1: Orders and sales in date range
+  try {
+    const { data: orders, error } = await supabase
+      .from('orders')
+      .select('id, total_amount, customer_id')
+      .gte('created_at', start.toISOString())
+      .lte('created_at', end.toISOString())
+      .eq('status', 'completed');
+
+    if (!error && Array.isArray(orders)) {
+      totalSales = orders.reduce((sum, o) => sum + (Number(o.total_amount) || 0), 0);
+      totalOrders = orders.length;
+      
+      // Count unique customers
+      const uniqueCustomers = new Set(orders.filter(o => o.customer_id).map(o => o.customer_id));
+      activeCustomers = uniqueCustomers.size;
+    }
+  } catch (error) {
+    console.error('Error fetching orders:', error);
+  }
+
+  // Query 2: Items sold (sum of quantities from order_items)
+  try {
+    const { data: orderItems, error } = await supabase
+      .from('order_items')
+      .select('quantity, order:orders!inner(created_at, status)')
+      .gte('order.created_at', start.toISOString())
+      .lte('order.created_at', end.toISOString())
+      .eq('order.status', 'completed');
+
+    if (!error && Array.isArray(orderItems)) {
+      itemsSold = orderItems.reduce((sum, item) => sum + (Number(item.quantity) || 0), 0);
+    }
+  } catch (error) {
+    console.error('Error fetching order items:', error);
+  }
+
+  // Query 3: Low stock products
+  try {
+    const { data: products, error } = await supabase
+      .from('products')
+      .select('id, current_stock, min_stock_level')
+      .eq('is_active', true);
+
+    if (!error && Array.isArray(products)) {
+      lowStockCount = products.filter(p => 
+        Number(p.current_stock) <= Number(p.min_stock_level)
+      ).length;
+    }
+  } catch (error) {
+    console.error('Error fetching low stock products:', error);
+  }
+
+  // Query 4: Sales returns in date range
+  try {
+    const { data: returns, error } = await supabase
+      .from('sales_returns')
+      .select('id, refund_amount')
+      .gte('return_date', start.toISOString())
+      .lte('return_date', end.toISOString());
+
+    if (!error && Array.isArray(returns)) {
+      returnsCount = returns.length;
+      returnsAmount = returns.reduce((sum, r) => sum + (Number(r.refund_amount) || 0), 0);
+    }
+  } catch (error) {
+    console.error('Error fetching sales returns:', error);
+  }
+
+  // Query 5: Pending purchase orders
+  try {
+    const { data: pos, error } = await supabase
+      .from('purchase_orders')
+      .select('id')
+      .in('status', ['draft', 'approved']);
+
+    if (!error && Array.isArray(pos)) {
+      pendingPurchaseOrders = pos.length;
+    }
+  } catch (error) {
+    console.error('Error fetching purchase orders:', error);
+  }
+
+  const averageOrderValue = totalOrders > 0 ? totalSales / totalOrders : 0;
+
+  return {
+    total_sales: totalSales,
+    total_orders: totalOrders,
+    low_stock_count: lowStockCount,
+    active_customers: activeCustomers,
+    average_order_value: averageOrderValue,
+    items_sold: itemsSold,
+    returns_count: returnsCount,
+    returns_amount: returnsAmount,
+    pending_purchase_orders: pendingPurchaseOrders,
+  };
+};
+
+export const getDailySalesData = async (startDate: Date, endDate: Date): Promise<DailySales[]> => {
+  const start = new Date(startDate);
+  start.setHours(0, 0, 0, 0);
+  const end = new Date(endDate);
+  end.setHours(23, 59, 59, 999);
+
+  try {
+    const { data: orders, error } = await supabase
+      .from('orders')
+      .select('created_at, total_amount')
+      .gte('created_at', start.toISOString())
+      .lte('created_at', end.toISOString())
+      .eq('status', 'completed')
+      .order('created_at', { ascending: true });
+
+    if (error || !Array.isArray(orders)) {
+      console.error('Error fetching daily sales:', error);
+      return [];
+    }
+
+    // Group by date
+    const salesByDate = new Map<string, { total: number; count: number }>();
+    
+    orders.forEach(order => {
+      const date = new Date(order.created_at).toISOString().split('T')[0];
+      const existing = salesByDate.get(date) || { total: 0, count: 0 };
+      existing.total += Number(order.total_amount) || 0;
+      existing.count += 1;
+      salesByDate.set(date, existing);
+    });
+
+    // Convert to array and fill missing dates with 0
+    const result: DailySales[] = [];
+    const currentDate = new Date(start);
+    
+    while (currentDate <= end) {
+      const dateStr = currentDate.toISOString().split('T')[0];
+      const data = salesByDate.get(dateStr) || { total: 0, count: 0 };
+      result.push({
+        date: dateStr,
+        total_sales: data.total,
+        order_count: data.count,
+      });
+      currentDate.setDate(currentDate.getDate() + 1);
+    }
+
+    return result;
+  } catch (error) {
+    console.error('Exception fetching daily sales:', error);
+    return [];
+  }
+};
+
+export const getTopProducts = async (startDate: Date, endDate: Date, limit: number = 5): Promise<TopProduct[]> => {
+  const start = new Date(startDate);
+  start.setHours(0, 0, 0, 0);
+  const end = new Date(endDate);
+  end.setHours(23, 59, 59, 999);
+
+  try {
+    const { data: orderItems, error } = await supabase
+      .from('order_items')
+      .select('product_id, product_name, quantity, subtotal, order:orders!inner(created_at, status)')
+      .gte('order.created_at', start.toISOString())
+      .lte('order.created_at', end.toISOString())
+      .eq('order.status', 'completed');
+
+    if (error || !Array.isArray(orderItems)) {
+      console.error('Error fetching top products:', error);
+      return [];
+    }
+
+    // Aggregate by product
+    const productMap = new Map<string, { name: string; quantity: number; amount: number }>();
+    
+    orderItems.forEach(item => {
+      const existing = productMap.get(item.product_id) || { 
+        name: item.product_name, 
+        quantity: 0, 
+        amount: 0 
+      };
+      existing.quantity += Number(item.quantity) || 0;
+      existing.amount += Number(item.subtotal) || 0;
+      productMap.set(item.product_id, existing);
+    });
+
+    // Convert to array and sort by total amount
+    const products: TopProduct[] = Array.from(productMap.entries()).map(([id, data]) => ({
+      product_id: id,
+      product_name: data.name,
+      quantity_sold: data.quantity,
+      total_amount: data.amount,
+    }));
+
+    products.sort((a, b) => b.total_amount - a.total_amount);
+
+    return products.slice(0, limit);
+  } catch (error) {
+    console.error('Exception fetching top products:', error);
+    return [];
+  }
+};
