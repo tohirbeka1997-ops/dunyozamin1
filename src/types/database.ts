@@ -6,7 +6,7 @@ export type PaymentMethod = 'cash' | 'card' | 'terminal' | 'qr' | 'mixed';
 export type RefundMethod = 'cash' | 'card' | 'credit';
 export type MovementType = 'purchase' | 'sale' | 'return' | 'adjustment' | 'audit';
 export type ShiftStatus = 'open' | 'closed';
-export type PurchaseOrderStatus = 'pending' | 'completed';
+export type PurchaseOrderStatus = 'draft' | 'approved' | 'partially_received' | 'received' | 'cancelled';
 
 export interface Profile {
   id: string;
@@ -191,13 +191,24 @@ export interface InventoryMovementWithDetails extends InventoryMovement {
 export interface PurchaseOrder {
   id: string;
   po_number: string;
-  supplier_id: string;
+  supplier_id: string | null;
+  supplier_name: string | null;
+  order_date: string;
+  expected_date: string | null;
+  reference: string | null;
+  subtotal: number;
+  discount: number;
+  tax: number;
   total_amount: number;
   status: PurchaseOrderStatus;
   invoice_number: string | null;
-  received_by: string;
+  received_by: string | null;
+  created_by: string | null;
+  approved_by: string | null;
+  approved_at: string | null;
   notes: string | null;
   created_at: string;
+  updated_at: string;
 }
 
 export interface PurchaseOrderItem {
@@ -205,9 +216,10 @@ export interface PurchaseOrderItem {
   purchase_order_id: string;
   product_id: string;
   product_name: string;
-  quantity: number;
-  unit_price: number;
-  total: number;
+  ordered_qty: number;
+  received_qty: number;
+  unit_cost: number;
+  line_total: number;
 }
 
 // Extended types with relations
@@ -230,6 +242,8 @@ export interface PurchaseOrderWithDetails extends PurchaseOrder {
   supplier?: Supplier;
   items?: PurchaseOrderItem[];
   received_by_profile?: Profile;
+  created_by_profile?: Profile;
+  approved_by_profile?: Profile;
 }
 
 export interface SalesReturnWithDetails extends SalesReturn {

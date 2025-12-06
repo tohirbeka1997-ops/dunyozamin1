@@ -897,20 +897,67 @@ export const generatePaymentNumber = async () => {
 };
 
 // Purchase order functions
-export const getPurchaseOrders = async (limit = 100) => {
+// Purchase Orders
+export const getPurchaseOrders = async (filters?: {
+  status?: string;
+  supplier_id?: string;
+  date_from?: string;
+  date_to?: string;
+  search?: string;
+}) => {
+  let query = supabase
+    .from('purchase_orders')
+    .select(`
+      *,
+      supplier:suppliers(*),
+      items:purchase_order_items(*),
+      created_by_profile:profiles!purchase_orders_created_by_fkey(id, username, full_name),
+      approved_by_profile:profiles!purchase_orders_approved_by_fkey(id, username, full_name)
+    `)
+    .order('created_at', { ascending: false });
+  
+  if (filters?.status) {
+    query = query.eq('status', filters.status);
+  }
+  
+  if (filters?.supplier_id) {
+    query = query.eq('supplier_id', filters.supplier_id);
+  }
+  
+  if (filters?.date_from) {
+    query = query.gte('order_date', filters.date_from);
+  }
+  
+  if (filters?.date_to) {
+    query = query.lte('order_date', filters.date_to);
+  }
+  
+  if (filters?.search) {
+    query = query.or(`po_number.ilike.%${filters.search}%,supplier_name.ilike.%${filters.search}%`);
+  }
+  
+  const { data, error } = await query;
+  
+  if (error) throw error;
+  return Array.isArray(data) ? data as PurchaseOrderWithDetails[] : [];
+};
+
+export const getPurchaseOrderById = async (id: string) => {
   const { data, error } = await supabase
     .from('purchase_orders')
     .select(`
       *,
       supplier:suppliers(*),
       items:purchase_order_items(*),
-      received_by_profile:profiles(*)
+      created_by_profile:profiles!purchase_orders_created_by_fkey(id, username, full_name),
+      approved_by_profile:profiles!purchase_orders_approved_by_fkey(id, username, full_name)
     `)
-    .order('created_at', { ascending: false })
-    .limit(limit);
+    .eq('id', id)
+    .maybeSingle();
   
   if (error) throw error;
-  return Array.isArray(data) ? data as PurchaseOrderWithDetails[] : [];
+  if (!data) throw new Error('Purchase order not found');
+  return data as PurchaseOrderWithDetails;
 };
 
 export const generatePONumber = async () => {
@@ -920,7 +967,7 @@ export const generatePONumber = async () => {
 };
 
 export const createPurchaseOrder = async (
-  purchaseOrder: Omit<PurchaseOrder, 'id' | 'created_at'>,
+  purchaseOrder: Omit<PurchaseOrder, 'id' | 'created_at' | 'updated_at'>,
   items: Omit<PurchaseOrderItem, 'id' | 'purchase_order_id'>[]
 ) => {
   const { data: poData, error: poError } = await supabase
@@ -943,20 +990,96 @@ export const createPurchaseOrder = async (
   
   if (itemsError) throw itemsError;
   
-  for (const item of items) {
-    await supabase.rpc('log_inventory_movement', {
-      p_product_id: item.product_id,
-      p_movement_type: 'purchase',
-      p_quantity: item.quantity,
-      p_reference_type: 'purchase_order',
-      p_reference_id: poData.id,
-      p_reason: null,
-      p_notes: null,
-      p_created_by: purchaseOrder.received_by,
-    });
+  return poData as PurchaseOrder;
+};
+
+export const updatePurchaseOrder = async (
+  id: string,
+  purchaseOrder: Partial<PurchaseOrder>,
+  items?: Omit<PurchaseOrderItem, 'id' | 'purchase_order_id'>[]
+) => {
+  const { data: poData, error: poError } = await supabase
+    .from('purchase_orders')
+    .update(purchaseOrder)
+    .eq('id', id)
+    .select()
+    .maybeSingle();
+  
+  if (poError) throw poError;
+  if (!poData) throw new Error('Failed to update purchase order');
+  
+  if (items) {
+    // Delete existing items
+    const { error: deleteError } = await supabase
+      .from('purchase_order_items')
+      .delete()
+      .eq('purchase_order_id', id);
+    
+    if (deleteError) throw deleteError;
+    
+    // Insert new items
+    const poItems = items.map(item => ({
+      ...item,
+      purchase_order_id: id,
+    }));
+    
+    const { error: itemsError } = await supabase
+      .from('purchase_order_items')
+      .insert(poItems);
+    
+    if (itemsError) throw itemsError;
   }
   
   return poData as PurchaseOrder;
+};
+
+export const approvePurchaseOrder = async (id: string, approvedBy: string) => {
+  const { data, error } = await supabase
+    .from('purchase_orders')
+    .update({
+      status: 'approved',
+      approved_by: approvedBy,
+      approved_at: new Date().toISOString(),
+    })
+    .eq('id', id)
+    .select()
+    .maybeSingle();
+  
+  if (error) throw error;
+  if (!data) throw new Error('Failed to approve purchase order');
+  return data as PurchaseOrder;
+};
+
+export const cancelPurchaseOrder = async (id: string) => {
+  const { data, error } = await supabase
+    .from('purchase_orders')
+    .update({ status: 'cancelled' })
+    .eq('id', id)
+    .select()
+    .maybeSingle();
+  
+  if (error) throw error;
+  if (!data) throw new Error('Failed to cancel purchase order');
+  return data as PurchaseOrder;
+};
+
+export const receiveGoods = async (
+  poId: string,
+  items: Array<{
+    item_id: string;
+    received_qty: number;
+    notes?: string;
+  }>,
+  receivedDate?: string
+) => {
+  const { data, error } = await supabase.rpc('receive_goods', {
+    p_po_id: poId,
+    p_items: items,
+    p_received_date: receivedDate || new Date().toISOString().split('T')[0],
+  });
+  
+  if (error) throw error;
+  return data;
 };
 
 // Dashboard statistics
