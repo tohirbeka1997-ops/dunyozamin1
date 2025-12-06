@@ -134,7 +134,14 @@ export default function CreateReturn() {
   };
 
   const handleSubmit = async () => {
-    if (!selectedOrder) return;
+    if (!selectedOrder) {
+      toast({
+        title: 'Error',
+        description: 'No order selected',
+        variant: 'destructive',
+      });
+      return;
+    }
     
     // Validate at least one item is being returned
     const itemsToReturn = returnItems.filter(item => item.return_quantity > 0);
@@ -147,7 +154,8 @@ export default function CreateReturn() {
       return;
     }
     
-    if (!reason) {
+    // Validate reason
+    if (!reason || reason.trim() === '') {
       toast({
         title: 'Reason Required',
         description: 'Please provide a reason for the return',
@@ -156,16 +164,26 @@ export default function CreateReturn() {
       return;
     }
     
+    // Validate refund amount
+    const { totalRefund } = calculateTotals();
+    if (totalRefund <= 0) {
+      toast({
+        title: 'Invalid Amount',
+        description: 'Refund amount must be greater than 0',
+        variant: 'destructive',
+      });
+      return;
+    }
+    
     try {
       setLoading(true);
-      const { totalRefund } = calculateTotals();
       
       await createSalesReturn({
         order_id: selectedOrder.id,
         customer_id: selectedOrder.customer_id,
         total_amount: totalRefund,
-        reason,
-        notes,
+        reason: reason.trim(),
+        notes: notes.trim() || null,
         refund_method: refundMethod || null,
         items: itemsToReturn.map(item => ({
           product_id: item.product_id,
@@ -177,14 +195,15 @@ export default function CreateReturn() {
       
       toast({
         title: 'Success',
-        description: 'Sales return created successfully',
+        description: 'Return created successfully. Inventory has been updated.',
       });
       
       navigate('/sales-returns');
     } catch (error) {
+      console.error('Error creating return:', error);
       toast({
         title: 'Error',
-        description: error instanceof Error ? error.message : 'Failed to create return',
+        description: error instanceof Error ? error.message : 'Failed to create return. Please check the form and try again.',
         variant: 'destructive',
       });
     } finally {
@@ -385,9 +404,12 @@ export default function CreateReturn() {
           </CardHeader>
           <CardContent className="space-y-4">
             <div className="space-y-2">
-              <Label htmlFor="reason">Reason for Return *</Label>
+              <Label htmlFor="reason" className="flex items-center gap-1">
+                Reason for Return 
+                <span className="text-destructive">*</span>
+              </Label>
               <Select value={reason} onValueChange={setReason}>
-                <SelectTrigger>
+                <SelectTrigger className={!reason ? 'border-destructive' : ''}>
                   <SelectValue placeholder="Select reason" />
                 </SelectTrigger>
                 <SelectContent>
@@ -399,10 +421,13 @@ export default function CreateReturn() {
                   <SelectItem value="other">Other</SelectItem>
                 </SelectContent>
               </Select>
+              {!reason && (
+                <p className="text-sm text-destructive">Please select a reason for the return</p>
+              )}
             </div>
 
             <div className="space-y-2">
-              <Label htmlFor="refund_method">Refund Method</Label>
+              <Label htmlFor="refund_method">Refund Method (Optional)</Label>
               <Select value={refundMethod} onValueChange={setRefundMethod}>
                 <SelectTrigger>
                   <SelectValue placeholder="Select refund method" />
@@ -449,7 +474,10 @@ export default function CreateReturn() {
               <Button variant="outline" onClick={() => setStep(2)}>
                 Back
               </Button>
-              <Button onClick={handleSubmit} disabled={loading}>
+              <Button 
+                onClick={handleSubmit} 
+                disabled={loading || !reason || totalRefund <= 0}
+              >
                 {loading ? 'Creating...' : 'Submit Return'}
               </Button>
             </div>

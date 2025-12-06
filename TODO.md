@@ -173,6 +173,34 @@
   - [x] 5.1 Run lint check
   - [x] 5.2 Verify all functionality works correctly
 
+## Phase 13: Sales Return Fix
+- [x] 1. Identify Issues
+  - [x] 1.1 Database schema mismatch (refund_method column doesn't exist)
+  - [x] 1.2 Missing inventory updates
+  - [x] 1.3 No transaction safety
+  - [x] 1.4 Insufficient validation
+- [x] 2. Database Changes
+  - [x] 2.1 Create RPC function `create_sales_return_with_inventory`
+  - [x] 2.2 Apply migration 00017_create_sales_return_rpc.sql
+  - [x] 2.3 Add inventory update logic
+  - [x] 2.4 Add inventory movement tracking
+- [x] 3. API Function Updates
+  - [x] 3.1 Rewrite createSalesReturn to use RPC
+  - [x] 3.2 Remove refund_method from database insert
+  - [x] 3.3 Add comprehensive input validation
+  - [x] 3.4 Improve error handling and messages
+- [x] 4. Frontend Improvements
+  - [x] 4.1 Add visual validation indicators
+  - [x] 4.2 Add inline error messages
+  - [x] 4.3 Disable submit button when validation fails
+  - [x] 4.4 Improve success/error toast messages
+  - [x] 4.5 Add loading state to submit button
+- [x] 5. Testing & Documentation
+  - [x] 5.1 Run lint check
+  - [x] 5.2 Create comprehensive documentation (SALES_RETURN_FIX.md)
+  - [x] 5.3 Verify all validation works
+  - [x] 5.4 Verify inventory updates correctly
+
 ## Notes
 - Using username + password authentication (simulated with @miaoda.com)
 - First registered user becomes admin

@@ -1301,7 +1301,7 @@ export const createSalesReturn = async (returnData: {
   total_amount: number;
   reason: string;
   notes: string | null;
-  refund_method: string | null;
+  refund_method?: string | null;
   items: Array<{
     product_id: string;
     quantity: number;
@@ -1312,42 +1312,44 @@ export const createSalesReturn = async (returnData: {
   const user = await getCurrentUser();
   if (!user) throw new Error('User not authenticated');
   
-  // Create return
-  const { data: returnRecord, error: returnError } = await supabase
-    .from('sales_returns')
-    .insert({
-      return_number: '', // Will be auto-generated
-      order_id: returnData.order_id,
-      customer_id: returnData.customer_id,
-      total_amount: returnData.total_amount,
-      status: 'Pending',
-      reason: returnData.reason,
-      notes: returnData.notes,
-      refund_method: returnData.refund_method,
-      cashier_id: user.id,
-    })
-    .select()
-    .maybeSingle();
+  // Validate inputs
+  if (!returnData.order_id) {
+    throw new Error('Order ID is required');
+  }
   
-  if (returnError) throw returnError;
-  if (!returnRecord) throw new Error('Failed to create return');
+  if (returnData.total_amount <= 0) {
+    throw new Error('Refund amount must be greater than 0');
+  }
   
-  // Create return items
-  const itemsToInsert = returnData.items.map(item => ({
-    return_id: returnRecord.id,
-    product_id: item.product_id,
-    quantity: item.quantity,
-    unit_price: item.unit_price,
-    line_total: item.line_total,
-  }));
+  if (!returnData.reason || returnData.reason.trim() === '') {
+    throw new Error('Reason for return is required');
+  }
   
-  const { error: itemsError } = await supabase
-    .from('sales_return_items')
-    .insert(itemsToInsert);
+  if (!returnData.items || returnData.items.length === 0) {
+    throw new Error('At least one item must be returned');
+  }
   
-  if (itemsError) throw itemsError;
+  // Call RPC function to create return with inventory updates
+  const { data, error } = await supabase.rpc('create_sales_return_with_inventory', {
+    p_order_id: returnData.order_id,
+    p_customer_id: returnData.customer_id,
+    p_total_amount: returnData.total_amount,
+    p_reason: returnData.reason,
+    p_notes: returnData.notes || null,
+    p_cashier_id: user.id,
+    p_items: returnData.items,
+  });
   
-  return returnRecord as SalesReturn;
+  if (error) {
+    console.error('Error creating sales return:', error);
+    throw new Error(error.message || 'Failed to create return');
+  }
+  
+  if (!data) {
+    throw new Error('Failed to create return - no data returned');
+  }
+  
+  return data as SalesReturn;
 };
 
 export const updateSalesReturnStatus = async (id: string, status: string) => {
