@@ -15,6 +15,8 @@ import CustomerDetail from './pages/CustomerDetail';
 import Inventory from './pages/Inventory';
 import InventoryDetail from './pages/InventoryDetail';
 import PurchaseOrders from './pages/PurchaseOrders';
+import PurchaseOrderForm from './pages/PurchaseOrderForm';
+import PurchaseOrderDetail from './pages/PurchaseOrderDetail';
 import SalesReturns from './pages/SalesReturns';
 import CreateReturn from './pages/CreateReturn';
 import EditReturn from './pages/EditReturn';
@@ -198,6 +200,30 @@ const routes: RouteConfig[] = [
     path: '/purchase-orders',
     element: <PurchaseOrders />,
     visible: true,
+    requireAuth: true,
+    allowedRoles: ['admin', 'manager'],
+  },
+  {
+    name: 'New Purchase Order',
+    path: '/purchase-orders/new',
+    element: <PurchaseOrderForm />,
+    visible: false,
+    requireAuth: true,
+    allowedRoles: ['admin', 'manager'],
+  },
+  {
+    name: 'Edit Purchase Order',
+    path: '/purchase-orders/:id/edit',
+    element: <PurchaseOrderForm />,
+    visible: false,
+    requireAuth: true,
+    allowedRoles: ['admin', 'manager'],
+  },
+  {
+    name: 'Purchase Order Detail',
+    path: '/purchase-orders/:id',
+    element: <PurchaseOrderDetail />,
+    visible: false,
     requireAuth: true,
     allowedRoles: ['admin', 'manager'],
   },

@@ -1,535 +1,529 @@
-# POS Tizimi Talablar Hujjati (Yangilangan versiya - Hold Order funksiyasi qo'shildi)
+# POS System Requirements Document (Updated Version - Purchase Orders Module Fixed)
 
-## 1. Tizim nomi
-POS Tizimi (Point of Sale Management System)
+## 1. System Name
+POS System (Point of Sale Management System)
 
-## 2. Tizim tavsifi
-Professional savdo nuqtalari uchun to'liq funksional POS tizimi. Tizim real vaqt rejimida savdo jarayonlarini boshqarish,ombor nazorati, moliyaviy hisobotlar va xodimlar faoliyatini kuzatish imkoniyatlarini taqdim etadi. Tizim markazlashtirilgan ma'lumotlar bazasi asosida ishlaydi va barcha modullar o'rtasida real-time sinxronizatsiyani ta'minlaydi.
-\n## 3. Global tizim sinxronizatsiya qoidalari
-\n### 3.1 Markazlashtirilgan ma'lumotlar bazasi
-Tizim quyidagi barcha ma'lumotlarni yagona markazlashtirilgan ma'lumotlar bazasida saqlaydi:
-- Mahsulotlar (Products)
-- Ombor (Inventory)
-- Sotuvlar / Buyurtmalar (Sales / Orders)
-- Qaytarishlar (Returns)
-- Mijozlar (Customers)
-- Yetkazib beruvchilar (Suppliers)
-- Xarid buyurtmalari (Purchase Orders)
-- Xodimlar (Employees)
-- Sozlamalar (Settings)
-- Audit loglari (Audit Logs)
-- Kutilayotgan buyurtmalar (Held Orders)
-\nBarcha modullar bir xil yagona ma'lumotlar manbasidan o'qiydi va yangilaydi.
+## 2. System Description
+A fully functional POS system for professional retail points with complete inventory control, financial reporting, and employee activity tracking. The system operates on a centralized database and ensures real-time synchronization across all modules.
 
-### 3.2 Modullararo integratsiya qoidalari
+## 3. Global System Synchronization Rules
+\n### 3.1 Centralized Database
+The system stores all data in a single centralized database:\n- Products\n- Inventory\n- Sales / Orders
+- Returns\n- Customers
+- Suppliers
+- Purchase Orders
+- Employees
+- Settings
+- Audit Logs
+- Held Orders
 
-#### 3.2.1 Mahsulotlar ↔ Ombor
-- Mahsulot yaratilganda avtomatik ravishda ombor yozuvi yaratiladi
-- Mahsulot qoldig'ini yangilash kam qoldiq ogohlantirishlariga va dashboardga ta'sir qiladi
-- Agar mahsulot buyurtmalarda ishlatilgan bo'lsa, uni o'chirish oldini olinadi
-\n#### 3.2.2 Buyurtmalar (Sotuvlar) ↔Ombor
-**Buyurtma yakunlanganda:**
-- Sotilgan miqdorga asoslanib qoldiqni kamaytirish
-- Qoldiq o'zgarishini Inventory Movement Log ga yozish
-- Dashboard statistikasini yangilash
-- Mijoz xarid tarixini yangilash
-- Xodim samaradorlik statistikasini yangilash
-- To'lov yozuvini yaratish (xulosa)
+All modules read from and update the same unified data source.
 
-**Buyurtma bekor qilinganda:**
-- Qoldiqni tiklash
-- Buyurtmani faoliyat logida bekor qilingandeb belgilash
-\n#### 3.2.3 Savdo qaytarishlari ↔ Ombor
-**Qaytarish qayta ishlanganda:**
-- Mahsulotlarni qoldiqqa qaytarish\n- Harakat logiga yozuv qo'shish (Return)\n- Mijozning jami xarajatini kamaytirish
-- Xodim samaradorlik ko'rsatkichlarini kamaytirish
-- Dashboard ko'rsatkichlarini yangilash
-\n#### 3.2.4 Xarid buyurtmalari ↔ Ombor
-**Xarid buyurtmasi qabul qilinganda:**
-- Qoldiqni oshirish
-- Harakat logiga yozuv qo'shish (Purchase Receipt)
-- Ombor baholashini yangilash
-- Dashboard va hisobotlarni yangilash\n
-**Xarid buyurtmasi bekor qilinganda:**\n- Qoldiqqa hech narsa qo'shilmasligi kerak
-- Bekor qilishni loglash
-\n#### 3.2.5 Mijozlar ↔ Buyurtmalar ↔ Qaytarishlar
-Har bir mijoz quyidagilarga ega bo'lishi kerak:
-- Jami xaridlar soni
-- Jami sarflangan summa
-- Qolgan balans (agar kredit savdo ruxsat etilgan bo'lsa)
-- Buyurtmalar ro'yxati
-- Qaytarishlar ro'yxati
-- Hisobotlar va dashboardda ishlatiladigan ma'lumotlar
+### 3.2 Cross-Module Integration Rules
 
-Agar buyurtmalar mavjud bo'lsa, mijozni o'chirish oldini olinadi (faqat soft delete).
+#### 3.2.1 Products↔ Inventory
+- When a product is created, an inventory record is automatically created
+- Updating product stock triggers low-stock warnings and dashboard updates
+- Deleting a product is prevented if it has been used in orders
 
-#### 3.2.6 Xodimlar ↔ POS Terminal ↔ Buyurtmalar
-Har bir buyurtma quyidagilarni saqlashi kerak:
-- Kassir ID
-- Terminal sessiyasi
-- Vaqt belgisi
-\nXodimlar moduli avtomatik ravishda quyidagilarni oladi:
-- Savdolar soni
-- Savdo summasi
-- Qayta ishlangan qaytarishlar
-- Xatolar (bekor qilingan buyurtmalar)
-- Kirish sessiyalari
-\nPOS Terminal quyidagilarni loglashi kerak:
-- Shift boshlanishi/tugashi
-- Sessiya vaqti
-- Xodimga bog'langan kassa tortmasi amallari
-\n#### 3.2.7 Sozlamalar ↔ Butun tizim
-Sozlamalar modullar faoliyatiga bevosita ta'sir qilishi kerak:
+#### 3.2.2 Orders (Sales) ↔ Inventory
+**When an order is completed:**
+- Reduce stock based on sold quantity
+- Log stock change in Inventory Movement Log
+- Update dashboard statistics
+- Update customer purchase history
+- Update employee performance statistics
+- Create payment record (summary)\n
+**When an order is cancelled:**
+- Restore stock\n- Mark order as voided in activity log
+\n#### 3.2.3 Sales Returns ↔ Inventory
+**When a return is processed:**
+- Return products to stock
+- Add entry to movement log (Return)\n- Reduce customer total spending
+- Reduce employee performance metrics
+- Update dashboard indicators
+
+#### 3.2.4 Purchase Orders ↔ Inventory\n**When a purchase order is received:**
+- Increase stock\n- Add entry to movement log (Purchase Receipt)
+- Update inventory valuation
+- Update dashboard and reports
+\n**When a purchase order is cancelled:**
+- No stock should be added
+- Log the cancellation\n
+#### 3.2.5 Customers ↔ Orders↔ Returns
+Each customer should have:\n- Total number of purchases
+- Total amount spent
+- Remaining balance (if credit sales are allowed)
+- List of orders\n- List of returns
+- Data used in reports and dashboard
+
+Deleting a customer is prevented if orders exist (soft delete only).
+
+#### 3.2.6 Employees ↔ POS Terminal ↔ Orders
+Each order should store:
+- Cashier ID
+- Terminal session\n- Timestamp
+\nThe Employees module automatically receives:\n- Number of sales
+- Sales amount
+- Processed returns
+- Errors (cancelled orders)\n- Login sessions
+
+POS Terminal should log:
+- Shift start/end\n- Session time
+- Cash drawer operations linked to employee
+
+#### 3.2.7 Settings ↔ Entire System
+Settings module should directly affect module operations:
 \n**POS Terminal:**
-- To'lov usullari
-- Aralash to'lov qoidalari
-- Avtomatik chiqish
-- Chek chop qilish sozlamalari
-- Manfiy qoldiq qoidalari
-- Standart soliq stavkasi
-- Hold Order funksiyasini yoqish/o'chirish
+- Payment methods
+- Mixed payment rules
+- Auto logout\n- Receipt printing settings
+- Negative stock rules
+- Default tax rate
+- Enable/disable Hold Order feature
 
-**Ombor:**
-- Minimal qoldiq chegarasi
-- Qoldiq tuzatish cheklovlari
-\n**Buyurtmalar:**
-- Raqam formati
-- Soliq kiritish/chiqarish sozlamasi
+**Inventory:**
+- Minimum stock threshold
+- Stock adjustment restrictions
+\n**Orders:**
+- Number format
+- Tax inclusive/exclusive setting
 \n**UI:**
-- Til\n- Valyuta
-- Raqam formatlash
-\nBarcha o'zgarishlar tizim bo'ylab darhol yangilanishi kerak.
+- Language\n- Currency
+- Number formatting
+\nAll changes should be updated immediately system-wide.
 
-### 3.3 Dashboard sinxronizatsiyasi
-Dashboard doimo REAL-TIME ko'rsatkichlarni ko'rsatishi kerak:
-- Bugungi savdolar
-- Bugungi buyurtmalar
-- Kam qoldiqdagi mahsulotlar
-- Faol mijozlar
-- Eng ko'p sotiladigan mahsulotlar
-- Xodim samaradorligi ogohlantirishlari
-- Kutilayotgan xarid buyurtmalari
-- Kutilayotgan buyurtmalar soni (Held Orders)
+### 3.3 Dashboard Synchronization
+Dashboard should always show REAL-TIME metrics:
+- Today's sales
+- Today's orders
+- Low-stock products
+- Active customers
+- Best-selling products
+- Employee performance warnings
+- Pending purchase orders
+- Number of held orders
 
-Barcha hisoblar quyidagi amallardan keyin avtomatik qayta hisoblanishi kerak:
-- Yangi buyurtma\n- Qaytarish
-- Ombor tuzatishi
-- Xarid qabul qilish
-- Yangi mahsulot qo'shilishi
-- Sozlamalar yangilanishi
+All calculations should be automatically recalculated after:\n- New order\n- Return\n- Inventory adjustment
+- Purchase receipt
+- New product added
+- Settings updated
 
-### 3.4 Hisobotlar moduli sinxronizatsiyasi
-Hisobotlar quyidagi manbalardan real-time ma'lumotlarni olishi kerak:
-- Buyurtmalar (savdolar)
-- Ombor harakatlari
-- Mijozlar
-- Xarid buyurtmalari
-- Xodimlar
-- To'lovlar tizimi
-- Sozlamalar (soliq hisoblash, valyuta, tiluchun)
+### 3.4 Reports Module Synchronization
+Reports should receive real-time data from:
+- Orders (sales)
+- Inventory movements\n- Customers
+- Purchase orders
+- Employees
+- Payment system
+- Settings (for tax calculation, currency, language)
 
-Har bir hisobot bog'liq modullar o'zgarganda to'g'ri yangilanishi kerak.
-\n### 3.5 Modullar bo'ylab ma'lumotlarni tekshirish qoidalari
+Each report should be correctly updated when related modules change.
 
-**Buyurtmalar:**
-- Sozlamalar ruxsat bermasa, qoldiqda yo'q mahsulotlarni sotish mumkin emas
-- To'lovsiz buyurtmani yakunlash mumkin emas
-\n**Ombor:**\n- Qo'lda tuzatishlar sabab talab qiladi
-- Agar cheklangan bo'lsa, noldan pastga tuzatish mumkin emas
+### 3.5 Data Validation Rules Across Modules
 
-**Mijozlar:**
-- Telefon va email noyob bo'lishi kerak
-\n**Xodimlar:**
-- Oxirgi Admin hisobini o'chirish mumkin emas
-\n**Xarid buyurtmalari:**\n- Qabul qilish buyurtma qilingan miqdordanoshib ketishi mumkin emas
+**Orders:**
+- Cannot sell products not in stock if settingsdo not allow\n- Cannot complete order without payment
+\n**Inventory:**
+- Manual adjustments require reason
+- Cannot adjust below zero if restricted
 
-### 3.6 Tizim bo'ylab audit loglash
-Har bir muhim amal loglarni yozishi kerak:
-- Mahsulotlarni yaratish/tahrirlash/o'chirish
-- Buyurtmalarni yaratish, bekor qilish
-- Qaytarishlarni qayta ishlash
--Ombor tuzatishlari
-- Mijozlarni yangilash
-- Xodim amallari
-- Tizim sozlamalarini o'zgartirish
-- Kutilayotgan buyurtmalarni saqlash/tiklash/bekor qilish
+**Customers:**
+- Phone and email must be unique
+\n**Employees:**
+- Cannot delete last Admin account
 
-**Log formati:**
+**Purchase Orders:**
+- Receipt cannot exceed ordered quantity
+\n### 3.6 System-Wide Audit Logging
+Every critical operation should write logs:
+- Product create/edit/delete
+- Order create, cancel\n- Return processing
+- Inventory adjustments
+- Customer updates
+- Employee actions
+- System settings changes
+- Held orders save/restore/cancel
+
+**Log format:**
 - user_id
 - action\n- module
 - document_id
 - details
 - timestamp
 - ip_address
-\n### 3.7 Samaradorlik va optimizatsiya qoidalari
-- SKU, buyurtma raqamlari, mijoz nomlari uchun indekslashdan foydalanish
-- Tez yuklash uchun dashboard ma'lumotlarini keshlash
-- Kerak bo'lsa, og'ir hisobotlarni fonda qayta hisoblash
-\n### 3.8 Ruxsatlar va kirish nazorati
+\n### 3.7 Performance and Optimization Rules
+- Use indexing for SKU, order numbers, customer names
+- Cache dashboard data for fast loading
+- Recalculate heavy reports in background if needed
+\n### 3.8 Permissions and Access Control
 \n**Admin:**
-- Barcha modullar va sozlamalarga to'liq kirish
+- Full access to all modules and settings
 \n**Manager:**
-- Quyidagilarga kirish yo'q:\n  - Tizim sozlamalari
-  - Xodimlarni boshqarish
-  - Raqamlash va xavfsizlik sozlamalari
-\n**Kassir:**
-- Faqat quyidagilarni amalga oshirishi mumkin:
-  - POS Terminalni ochish
-  - Buyurtmalarni yaratish
-  - Qaytarishlarni yaratish
-  - Mahsulotlar va mijozlarni ko'rish
-  - Buyurtmalarni kutish ro'yxatiga saqlash va tiklash
-- Asosiy yozuvlarni tahrirlash yoki o'chirish mumkin emas
+- No access to:\n  - System settings
+  - Employee management
+  - Numbering and security settings
+\n**Cashier:**
+- Can only:\n  - Open POS Terminal
+  - Create orders
+  - Create returns
+  - View products and customers
+  - Save and restore held orders
+- Cannot edit or delete core records
 
-### 3.9 UI/UX sinxronizatsiya qoidalari
-- Barcha modullar bo'ylab izchil layout
-- Standart tugma pozitsiyalari (Save, Cancel, Edit)
-- Tizim bo'ylab yagona status belgilari:\n  - Yashil = Yakunlangan
-  - Sariq = Kutilmoqda
-  - Qizil = Bekor qilingan / Kam qoldiq
-- Barcha buzuvchi amallar uchun tasdiqlash dialoglari
+### 3.9 UI/UX Synchronization Rules
+- Consistent layout across all modules
+- Standard button positions (Save, Cancel, Edit)\n- Unified status indicators system-wide:\n  - Green = Completed
+  - Yellow = Pending
+  - Red = Cancelled / Low Stock
+- Confirmation dialogs for all destructive actions
 
-## 4. Asosiy funksional modullar
+## 4. Main Functional Modules
 
-### 4.1 Dashboard (Analitika)
-- Real vaqt rejimida savdo ko'rsatkichlari
-- Kunlik/haftalik/oylik statistika
-- Tezkor ko'rsatkichlar paneli
-- Barcha modullardan avtomatik yangilanadigan metrikalar
-- Kutilayotgan buyurtmalar soni ko'rsatkichi
+### 4.1 Dashboard (Analytics)
+- Real-time sales metrics
+- Daily/weekly/monthly statistics
+- Quick metrics panel
+- Automatically updated metrics from all modules
+- Held orders count indicator
 
-### 4.2 POS Terminal (Kassa oynasi)
-\n#### 4.2.1 Asosiy funksiyalar
-- Barcode scanner orqali mahsulot qo'shish
-- Qidiruv va kategoriyalar bo'yicha tanlash
-- Ko'p to'lov usullari:\n  - Naqd pul\n  - Bank kartasi
-  - Terminal\n  - QR to'lov
-  - Aralash to'lov (masalan:50% karta + 50% naqd)
-- Tovar narxini real-time o'zgartirish (faqat manager)
-- Qaytarish summasi avtomatik hisoblash
-- Chek raqami avtomatik generatsiya (Format: POS-YYYYMMDD-#####)
-- Quick Actions paneli:\n  - To'lov qabul qilish
-  - Buyurtmani saqlab qo'yish (Hold order)
-  - Kutilayotgan buyurtmalarni ko'rish (Waiting Orders)
-  - Chek qaytarish
-  - Xaridor tanlash
-- Offline rejimda ishlash imkoniyati
-- Kategoriya tugmalari orqali mahsulotlarni filtrlash
-- Rangli kategoriya belgilari va ikkonlar
-- Eng ko'p sotiladigan kategoriyalar yuqorida ko'rsatiladi
-- Mijozni tanlash yoki tezkor yaratish (ism + telefon)
-- Kredit savdo imkoniyati (mijoz ruxsati bo'lsa)
-- Xodim login/logout tizimi
+### 4.2 POS Terminal (Cashier Window)
+\n#### 4.2.1 Core Functions
+- Add products via barcode scanner
+- Search and select by categories
+- Multiple payment methods:\n  - Cash
+  - Bank card
+  - Terminal
+  - QR payment
+  - Mixed payment (e.g., 50% card + 50% cash)
+- Real-time product price modification (manager only)
+- Automatic refund amount calculation
+- Auto-generate receipt number (Format: POS-YYYYMMDD-#####)
+- Quick Actions panel:\n  - Process payment
+  - Hold order
+  - View waiting orders
+  - Return receipt
+  - Select customer
+- Offline mode capability
+- Filter products by category buttons
+- Colored category badges and icons
+- Most-sold categories shown at top
+- Select or quick-create customer (name + phone)
+- Credit sales capability (if customer allowed)
+- Employee login/logout system
 - Shift start/end tracking
-- Kassir-specific cheklovlar
-- Sozlamalar modulidan to'lov usullari va qoidalarni real-time o'qish
-- Har bir tranzaksiya avtomatik ravishda ombor, mijoz va xodim modullarini yangilaydi
+- Cashier-specific restrictions\n- Real-time read payment methods and rules from Settings module
+- Each transaction automatically updates inventory, customer, and employee modules
 
-#### 4.2.2 Hold Order (Buyurtmani kutish ro'yxatiga saqlash) funksiyasi
+#### 4.2.2 Hold Order (Save Order to Waiting List) Feature
 
-**Biznes stsenariy:**
-- Mijoz kassaga keladi, ba'zi mahsulotlar skanerlangan va savatga qo'shilgan
-- Mijoz qo'shimcha mahsulotlar olish yoki biror narsani tekshirish uchun kassirdan kutishni so'raydi
-- Kassir joriy savatni'kutilayotgan buyurtma' sifatida saqlashi va boshqa mijozlar bilan ishlashni davom ettirishi kerak
-- Keyinchalik, mijoz qaytib kelganda, kassir kutilayotgan buyurtmani tiklaydi va to'lovni yakunlaydi
+**Business Scenario:**
+- Customer comes to cashier, some products scanned and added to cart
+- Customer asks cashier to wait while they get additional items or check something
+- Cashier needs to save current cart as'held order' and continue serving other customers
+- Later, when customer returns, cashier restores held order and completes payment
 
-**Funksional talablar:**
-\n**1. POS Terminal yangi amallar:**
-- 'Process Payment' tugmasi yoniga **'Hold Order'** (Buyurtmani saqlash) tugmasini qo'shish
-- Yuqori o'ng qismda yoki POS Terminal sarlavhasida **'Waiting Orders'** (Kutilayotgan buyurtmalar) menyu/tugmasini qo'shish
-\n**2. Hold Order xatti-harakati:**
-- Kassir **'Hold Order'** tugmasini bosganda:\n  - Agar savat bo'sh bo'lsa → ogohlantirish ko'rsatish va hech narsa qilmaslik
-  - Aks holda:\n    - Kichik dialog/modal oynasini ochish:\n      - Maydonlar:\n        - Ixtiyoriy 'Mijoz nomi / yorliq' (masalan: 'Yashil futbolkali odam', 'Tohirbek', 'Stol3')
-        - Ixtiyoriy izoh\n    - Joriy savat holatini to'lovsiz **kutilayotgan buyurtma** sifatida saqlash
-    - Terminaldagi joriy savatni tozalash (kassir keyingi mijozga xizmat ko'rsatishiuchun)
-- Kutilayotgan buyurtma haliombor yoki hisobotlarga ta'sir qilmasligi kerak (qoldiq kamaytirilmaydi, savdo jami hisoblanmaydi)
+**Functional Requirements:**
+\n**1. POS Terminal New Actions:**
+- Add **'Hold Order'** button next to 'Process Payment' button
+- Add **'Waiting Orders'** menu/button in top-right or POS Terminal header
+\n**2. Hold Order Behavior:**
+- When cashier clicks **'Hold Order'** button:
+  - If cart is empty → show warning and do nothing
+  - Otherwise:\n    - Open small dialog/modal:\n      - Fields:\n        - Optional'Customer name / label' (e.g., 'Person in green shirt', 'Tohirbek', 'Table3')
+        - Optional note\n    - Save current cart state as **held order** without payment
+    - Clear current cart on terminal (so cashier can serve next customer)
+- Held order should not affect inventory or reports yet (stock not reduced, sales total not counted)
 
-**3. Ma'lumotlar modeli:**
-- `pending_orders` yoki `held_orders` jadvalini yaratish yoki ishlatish:\n  - id (primary key)
-  - items (JSON array: product_id, name, unit_price, quantity, line_discount va boshqalar)
+**3. Data Model:**
+- Create or use `pending_orders` or `held_orders` table:\n  - id (primary key)
+  - items (JSON array: product_id, name, unit_price, quantity, line_discount, etc.)
   - customer_name (nullable)
   - note (nullable)
-  - created_at\n  - status ('HELD' | 'RESTORED' | 'CANCELLED')\n- Bu bosqichda asosiy `orders` jadvaliga qo'shmaslik. Haqiqiy buyurtma faqat to'lovdan keyin yaratiladi\n
-**4. Kutilayotgan buyurtmalar ro'yxati:**
-- 'Waiting Orders' tugmasi modal yokiyon panelni ochadi:\n  - Har bir kutilayotgan buyurtma uchun ko'rsatish:\n    - Qisqa yorliq: customer_name yoki generatsiya qilingan nom ('Buyurtma #3')
-    - Vaqt (qancha vaqt oldin saqlangan)\n    - Jami summa ko'rinishi (line_subtotals yig'indisi)
-  - Har bir element uchun amallar:
-    - **Restore** (Ushbu buyurtmani joriy savatga yuklash)
-    - **Cancel** (Agar kerak bo'lmasa, kutilayotgan buyurtmani o'chirish)
-- Bir vaqtning o'zida bir nechta kutilayotgan buyurtmalarni qo'llab-quvvatlash
+  - created_at\n  - status ('HELD' | 'RESTORED' | 'CANCELLED')\n- Do not add to main `orders` table at this stage. Real order is created only after payment\n
+**4. Waiting Orders List:**
+- 'Waiting Orders' button opens modal or side panel:\n  - For each held order, show:
+    - Short label: customer_name or generated name ('Order #3')
+    - Time (how long ago saved)
+    - Total amount preview (sum of line_subtotals)
+  - Actions for each item:
+    - **Restore** (Load this order into current cart)
+    - **Cancel** (Delete held order if not needed)
+- Support multiple held orders at once
+\n**5. Restore Behavior:**
+- When cashier clicks **Restore** on a held order:
+  - If current cart is not empty, ask for confirmation:\n    - 'Current cart has items. Replace them with held order?'
+    - Options:
+      - Replace current cart\n      - Cancel\n  - After confirmation:\n    - Load held order items into shopping cart (with quantities and line discounts)
+    - Load optional customer name into 'Customer' field (if linked)\n    - Delete or mark this held order as RESTORED in `pending_orders`
+  - After restored, cashier can process payment via'Process Payment' as usual
 
-**5. Restore (Tiklash) xatti-harakati:**
-- Kassir kutilayotgan buyurtmada **Restore** tugmasini bosganda:
-  - Agar joriy savat bo'sh bo'lmasa, tasdiqlash so'rash:\n    - 'Joriy savatda mahsulotlar bor. Ularni kutilayotgan buyurtma bilan almashtirish kerakmi?'
-    - Variantlar:
-      - Joriy savatni almashtirish
-      - Bekor qilish
-  - Tasdiqlashdan keyin:
-    - Kutilayotgan buyurtma mahsulotlarini savdo savatiga yuklash (miqdorlar va qator chegirmalari bilan)
-    - Ixtiyoriy mijoz nomini 'Customer' maydoniga yuklash (agar bog'langan bo'lsa)
-    - `pending_orders` daushbu kutilayotgan buyurtmani o'chirish yoki RESTOREDdeb belgilash
-  - Tiklanganidan keyin, kassir 'Process Payment' orqali to'lovni odatdagidek qayta ishlashi mumkin
-
-**6. Cancel (Bekor qilish) xatti-harakati:**
-- Kutilayotgan buyurtmani bekor qilishda:\n  - Tasdiqlash ko'rsatish: 'Ushbu kutilayotgan buyurtmani o'chirish kerakmi? Buni qaytarib bo'lmaydi.'
-  - Tasdiqlashda, `pending_orders` da o'chirish yoki CANCELLED deb belgilash
-  - Buombor yoki hisobotlarga ta'sir qilmasligi kerak
-\n**7. UI/UX tafsilotlari:**
--'Hold Order' tugmasi uslubi:
-  - Secondary tugma, masalan: outlined, 'Process Payment' chap tomonida
-- 'Waiting Orders' tugmasi:\n  - Ikkona (masalan: soat yoki pause) + kutilayotgan buyurtmalar soni bilan badge
-- Aniq toast xabarlar:\n  - Saqlash muvaffaqiyatli: 'Buyurtma kutish ro'yxatiga ko'chirildi.'
-  - Tiklash muvaffaqiyatli: 'Kutilayotgan buyurtma savatga tiklandi.'
-  - Bekor qilish: 'Kutilayotgan buyurtma o'chirildi.'
-
-**8. Tekshirish:**
--Agar savat bo'sh bo'lsa, `Hold` ga ruxsat bermaslik\n- Tiklashda mahsulot mavjudligini qayta tekshirish:\n  - Agar ba'zi mahsulotlar katalogdan o'chirilgan yoki qoldiq keskin o'zgargan bo'lsa, yumshoq boshqarish:\n    - Agar mahsulot yo'qolgan bo'lsa → xabar ko'rsatish vaushbu elementni o'tkazib yuborish
-    - Agar miqdor > joriy maksimal qoldiq (agar qoldiqni majburlasangiz) → mavjudga qisqartirish va ogohlantirish ko'rsatish
-\n**9. TypeScript va holat:**
-- `HeldOrder` / `PendingOrder` uchun turlarni qo'shish
-- Quyidagilar uchun hooks yoki state management ni amalga oshirish:
-  - `heldOrders` ro'yxati
+**6. Cancel Behavior:**
+- When cancelling a held order:
+  - Show confirmation: 'Delete this held order? This cannot be undone.'
+  - On confirm, delete or mark as CANCELLED in `pending_orders`
+  - Should not affect inventory or reports
+\n**7. UI/UX Details:**
+- 'Hold Order' button style:
+  - Secondary button, e.g., outlined, left of 'Process Payment'
+- 'Waiting Orders' button:\n  - Icon (e.g., clock or pause) + badge with count of held orders
+- Clear toast messages:\n  - Save success: 'Order moved to waiting list.'
+  - Restore success: 'Held order restored to cart.'
+  - Cancel: 'Held order deleted.'
+\n**8. Validation:**
+- Do not allow `Hold` if cart is empty
+- On restore, recheck product availability:\n  - If some products deleted from catalog or stock drastically changed, handle gracefully:\n    - If product missing → show message and skip that item
+    - If quantity > current max stock (if you enforce stock) → trim to available and show warning
+\n**9. TypeScript and State:**
+- Add types for `HeldOrder` / `PendingOrder`
+- Implement hooks or state management for:\n  - `heldOrders` list
   - `saveHeldOrder`, `restoreHeldOrder`, `cancelHeldOrder`
-- Funksiyalar type-safe bo'lishini va async xatolarni (Supabase yoki API xatolari) boshqarishini ta'minlash
+- Ensure functions are type-safe and handle async errors (Supabase or API errors)
 
-**Yetkazish:**
-- To'liq ishlaydigan 'Hold / Waiting Order' tizimi:\n  - Kassir joriy savatni kutish ro'yxatiga saqlashi mumkin
-  - Barcha kutilayotgan buyurtmalarni ro'yxatda ko'rish\n  - Istalgan kutilayotgan buyurtmani savatga tiklash va to'lovni yakunlash\n  - Kerak bo'lmaganda kutilayotgan buyurtmalarni bekor qilish
-- To'lov yakunlanib, haqiqiy `order` yaratilgunga qadar Inventory yoki Reports ga ta'sir yo'q
-\n#### 4.2.3 Savat (Shopping Cart) - Per-Product Discount bilan
+**Delivery:**
+- Fully working'Hold / Waiting Order' system:\n  - Cashier can save current cart to waiting list
+  - View all held orders in list
+  - Restore any held order to cart and complete payment
+  - Cancel held orders when not needed
+- No impact on Inventory or Reports until payment is completed and real `order` is created
 
-**Savat tuzilishi:**
-\nHar bir savat elementi (cart item) quyidagi ma'lumotlarni o'z ichiga oladi:
-- Mahsulot nomi
+#### 4.2.3 Shopping Cart - With Per-Product Discount
+
+**Cart Structure:**
+\nEach cart item contains:
+- Product name
 - SKU / Barcode
-- Birlik narxi (unit_price)
-- Miqdor (quantity)
-- Qator chegirmasi (lineDiscountAmount)
-- Qator oraliq jami (line_subtotal = unit_price × quantity)
-- Qator jami (line_total = line_subtotal - lineDiscountAmount)
+- Unit price (unit_price)
+- Quantity (quantity)
+- Line discount (lineDiscountAmount)
+- Line subtotal (line_subtotal = unit_price × quantity)
+- Line total (line_total = line_subtotal - lineDiscountAmount)
 \n**Per-Product Discount UI:**
-
-1. **Har bir savat qatoriuchun chegirma nazorati:**
-   - Har bir mahsulot qatorida kichik chegirma maydoni ko'rsatiladi
-   - Standart qiymat: 0(chegirma yo'q)
-   - Format: summa ko'rinishida (masalan: 5000 UZS)
-   - Chegirma belgisi yoki 'Chegirma' yorlig'i bilan
-
-2. **Chegirma kiritish:**
-   - Foydalanuvchi chegirma maydonini bosganda inline input yoki popover ochiladi
-   - Foydalanuvchi chegirma qiymatini kiritishi mumkin
-   - Birinchi versiya uchun: faqat summa (amount) formatida
-   - Kelajakda: foiz (%) va summa o'rtasida toggle qo'shish mumkin
-
-**Hisoblash qoidalari:**
-\n```\nlet unit_price = mahsulot narxi\nlet qty = miqdor
-let line_subtotal = unit_price × qty\nlet line_discount = mahsulot uchun chegirma (summa, >= 0)
+\n1. **Discount control for each cart row:**
+   - Each product row shows a small discount field
+   - Default value: 0 (no discount)
+   - Format: amount display (e.g., 5000 UZS)
+   - With discount icon or'Discount' label
+\n2. **Entering discount:**
+   - When user clicks discount field, inline input or popover opens
+   - User can enter discount value\n   - First version: amount format only\n   - Future: toggle between percentage (%) and amount\n
+**Calculation Rules:**
+\n```\nlet unit_price = product price
+let qty = quantity
+let line_subtotal = unit_price × qty\nlet line_discount = discount for product (amount, >= 0)
 let line_total = line_subtotal - line_discount
 ```
 
-**Cheklovlar:**
-- line_discount manfiy bo'lishi mumkin emas
-- line_discount line_subtotal danoshib ketishi mumkin emas
-- Agar foydalanuvchi line_subtotal dan katta qiymat kiritsa:\n  - Qiymat line_subtotal ga teng qilib o'rnatiladi
-  - Kichik ogohlantirish yoki toast ko'rsatiladi
-- Barcha raqamlar number tipida ishlanishi kerak (stringemas)
+**Constraints:**
+- line_discount cannot be negative
+- line_discount cannot exceed line_subtotal
+- If user enters value greater than line_subtotal:\n  - Value is set equal to line_subtotal
+  - Show small warning or toast
+- All numbers should be handled as number type (not string)
 
-**Miqdor o'zgarganda:**
-- Mavjud line_discount saqlanadi
-- Lekin yangi line_subtotal < mavjud line_discount bo'lsa:\n  - line_discount avtomatik ravishda yangi line_subtotal ga teng qilib o'rnatiladi
-\n**Order Summary integratsiyasi:**
-\n1. **Oraliq jami (Subtotal):**
-   - Barcha line_subtotal qiymatlarining yig'indisi (chegirmalardan oldin)
-   - Formula: sum(unit_price × quantity) barcha qatorlar uchun
-\n2. **Jami chegirma (Total Discount):**
-   - Global buyurtma chegirmasi + barcha qator chegirmalarining yig'indisi
+**When quantity changes:**
+- Existing line_discount is preserved
+- But if new line_subtotal < existing line_discount:
+  - line_discount is automatically set equal to new line_subtotal
+\n**Order Summary Integration:**
+\n1. **Subtotal:**
+   - Sum of all line_subtotal values (before discounts)
+   - Formula: sum(unit_price × quantity) for all rows
+
+2. **Total Discount:**
+   - Global order discount + sum of all line discounts
    - Formula: global_order_discount + sum(lineDiscountAmount)\n
-3. **Jami summa (Total Amount):**
-   - Oraliq jami - jami chegirma
+3. **Total Amount:**
+   - Subtotal - total discount
    - Formula: Subtotal - Total Discount
 
-4. **To'lov modali:**
-   - Yakuniy Total Amount dan foydalanadi
-\n**Real-time yangilanish:**
-- Qator chegirmasini yangilash darhol quyidagilarni qayta hisoblaydi:
-  - Ushbu qatorning line_total qiymatini\n  - Order Summarydagi Subtotal, Discount va Total qiymatlarini
-- Barcha hisoblashlar avtomatik va real-time amalga oshiriladi
+4. **Payment Modal:**
+   - Uses final Total Amount
+\n**Real-time Updates:**
+- Updating line discount immediately recalculates:\n  - That row's line_total
+  - Order Summary's Subtotal, Discount, and Total
+- All calculations are automatic and real-time
 
-**Soliq bilan integratsiya:**
-- Hozircha qator chegirmalari soliqdan oldin qo'llaniladi
-- Soliq mantiqiy keyinchalik yangilanishi mumkin
-\n**TypeScript tuzilishi:**
-\n```typescript
-interface CartItem {
+**Tax Integration:**
+- For now, line discounts are applied before tax\n- Tax logic can be updated later\n
+**TypeScript Structure:**
+
+```typescript\ninterface CartItem {
   id: string;
   productId: string;
   productName: string;
   sku: string;
   unitPrice: number;
   quantity: number;
-  lineDiscountAmount: number; // standart 0\n  lineSubtotal: number; // unitPrice × quantity
+  lineDiscountAmount: number; // default 0
+  lineSubtotal: number; // unitPrice × quantity
   lineTotal: number; // lineSubtotal - lineDiscountAmount
 }\n```
 
-**Xatolarni boshqarish:**\n- Savat bo'sh bo'lganda yoki chegirma maydonlari tozalanganda runtime xatolari bo'lmasligi kerak
-- Agar foydalanuvchi chegirma maydonini tozalasa va bo'sh qoldirsa,0 sifatida qabul qilinadi
-- Barcha kiritishlar validatsiya qilinadi
-- Noto'g'ri qiymatlar uchun aniq xato xabarlari ko'rsatiladi
-\n**Yetkazish talablari:**
-- POS Terminal savati har bir mahsulot uchun tahrirlash mumkin bo'lgan chegirmaga ega
-- Order Summary va to'lov oqimi qator chegirmalari va global chegirma bilan to'liq sinxronlashtirilgan
-- Barcha hisoblashlar aniq va real-time\n- UI intuitiv va touch screen uchun qulay
+**Error Handling:**
+- No runtime errors when cart is empty or discount fields are cleared
+- If user clears discount field and leaves it empty, treat as 0
+- All inputs are validated\n- Clear error messages for invalid values
 
-### 4.3 Mahsulotlar katalogi (Products Module)
+**Delivery Requirements:**
+- POS Terminal cart has editable discount for each product
+- Order Summary and payment flow fully synchronized with line discounts and global discount
+- All calculations are accurate and real-time
+- UI is intuitive and touch-screen friendly
+
+### 4.3 Products Catalog (Products Module)
 
 #### 4.3.1 Products List Page
-**Jadval/Grid ko'rinishi quyidagi ustunlar bilan:**
-- Mahsulot rasmi
-- Mahsulot nomi
+**Table/Grid view with columns:**
+- Product image
+- Product name
 - SKU / Barcode
-- Kategoriya
-- O'lchov birligi (dona, kg, litr, paket va boshqalar)
-- Xarid narxi
-- Sotuv narxi
-- Joriy qoldiq
-- Status (Faol / Nofaol)
-- Amallar (Ko'rish, Tahrirlash, O'chirish)
+- Category
+- Unit of measure (piece, kg, liter, pack, etc.)
+- Purchase price
+- Sale price
+- Current stock
+- Status (Active / Inactive)
+- Actions (View, Edit, Delete)
 
-**Funksiyalar:**
-- Qidiruv: nom, SKU, barcode bo'yicha\n- Filtrlar:\n  - Kategoriya filtri
-  - Status filtri
-  - Kam qoldiq filtri
-- Sahifalash (Pagination)
-- Excel orqali ommaviy import
-- Excel orqali ommaviy export
--'Mahsulot qo'shish' tugmasi
-\n**Qoldiq holati ranglari:**
-- Yashil → Qoldiq yetarli
-- Sariq → Kam qoldiq
-- Qizil → Qoldiqda yo'q
-\n**Integratsiya qoidalari:**
-- Mahsulot yaratilganda avtomatik ombor yozuvi yaratiladi
-- Mahsulot o'chirilganda buyurtmalarda ishlatilganligini tekshirish
-- Qoldiq o'zgarishlari real-time dashboard va hisobotlarga aks etadi
+**Features:**
+- Search: by name, SKU, barcode\n- Filters:\n  - Category filter
+  - Status filter
+  - Low stock filter
+- Pagination\n- Bulk import via Excel
+- Bulk export via Excel
+- 'Add Product' button
+\n**Stock status colors:**
+- Green → Stock sufficient
+- Yellow → Low stock\n- Red → Out of stock\n
+**Integration Rules:**
+- When product is created, inventory record is automatically created
+- When deleting product, check if used in orders\n- Stock changes reflect real-time in dashboard and reports
 
 #### 4.3.2 Add / Edit Product Form
-**Umumiy ma'lumotlar:**
-- Mahsulot nomi (majburiy)
-- SKU (avtomatik generatsiya + tahrirlash mumkin)
+**General Information:**
+- Product name (required)
+- SKU (auto-generate + editable)
   - Format: SKU-000123
-- Barcode (ixtiyoriy, scanner bilan mos)
-- Kategoriya (dropdown)
-- O'lchov birligi (dona, kg, litr, paket va boshqalar)
-- Status (Faol / Nofaol)
-\n**Narxlar:**
-- Xarid narxi
-- Sotuv narxi
-- Foyda foizi kalkulyatori
-- Narxlar o'zgarganda foizni avtomatik hisoblash
-- Soliq stavkasi (ixtiyoriy)
-\n**Ombor sozlamalari:**
-- Boshlang'ich qoldiq (faqat yaratishda ruxsat etiladi)
-- Minimal qoldiq ogohlantirish darajasi
-- Qoldiqni kuzatish ON/OFF\n  - Agar OFF bo'lsa → mahsulot sotiladi, lekin ombor kamaytirilmaydi
-\n**Rasmlar:**
-- Mahsulot rasmi yuklash (1-3 ta rasm tavsiya etiladi)
+- Barcode (optional, scanner compatible)
+- Category (dropdown)
+- Unit of measure (piece, kg, liter, pack, etc.)
+- Status (Active / Inactive)
+\n**Pricing:**
+- Purchase price\n- Sale price
+- Profit percentage calculator
+- Auto-calculate percentage when prices change
+- Tax rate (optional)
+\n**Inventory Settings:**
+- Initial stock (allowed only on creation)
+- Minimum stock warning level
+- Track inventory ON/OFF
+  - If OFF → product is sold but inventory is not reduced
+\n**Images:**
+- Upload product image (1-3 images recommended)
 \n#### 4.3.3 Product Detail Page
-**Yuqori qism:**
-- Rasm\n- Mahsulot nomi
+**Top Section:**
+- Image\n- Product name
 - SKU / Barcode
-- Kategoriya
-- Joriy qoldiq
-- Status belgisi
-- Sotuv narxi
-- Xarid narxi
-- Foyda foizi\n\n**Faoliyat varaqlari (Tabs):**
-\n**1)Ombor harakatlari (Inventory Movements)**
-- Barcha qoldiq tarixi:\n  - Xarid buyurtmalari (kiruvchi qoldiq)
-  - Sotuvlar (chiquvchi qoldiq)
-  - Qaytarishlar\n  - Inventarizatsiya tuzatishlari
-  - Ko'chirishlar
-- Ustunlar:
-  - Sana
-  - Turi
-  - Miqdor (+ yoki –)
-  - Foydalanuvchi
-  - Bog'liq hujjat raqomi
+- Category
+- Current stock
+- Status badge
+- Sale price
+- Purchase price
+- Profit percentage\n\n**Activity Tabs:**
+\n**1) Inventory Movements**
+- All stock history:\n  - Purchase orders (incoming stock)
+  - Sales (outgoing stock)
+  - Returns\n  - Inventory adjustments
+  - Transfers
+- Columns:
+  - Date
+  - Type
+  - Quantity (+ or –)
+  - User
+  - Related document number
+\n**2) Sales History**
+- Order ID
+- Customer (optional)
+- Quantity sold
+- Total amount
+- Profit
+\n**3) Purchase History**
+- Supplier
+- Quantity purchased
+- Price
+- Document number
+\n#### 4.3.4 Inventory Integration (Mandatory)
+- When sale occurs → stock decreases\n- When return occurs → stock increases
+- When purchase order is received → stock increases
+- When inventory adjustment occurs → logs are updated
+- All changes sync real-time to dashboard and reports
 
-**2) Sotuv tarixi (Sales History)**
-- Buyurtma ID
-- Mijoz (ixtiyoriy)
-- Sotilgan miqdor
-- Jami summa
-- Foyda\n\n**3) Xarid tarixi (Purchase History)**
-- Yetkazib beruvchi
-- Xarid qilingan miqdor
-- Narx
-- Hujjat raqomi
-\n#### 4.3.4 Ombor integratsiyasi (Majburiy)
-- Sotuv amalga oshganda → qoldiq kamayadi
-- Qaytarish amalga oshganda → qoldiq ortadi
-- Xarid buyurtmasi qabul qilinganda → qoldiq ortadi\n- Inventarizatsiya tuzatishi amalga oshganda → loglar yangilanadi
-- Barcha o'zgarishlar real-time dashboard va hisobotlarga sinxronlanadi
+#### 4.3.5 Barcode System Integration
+- Barcode auto-generate OR manual entry
+- Barcode scanner should immediately find and add product in POS Terminal
+- Create printable barcode labels (optional)
 
-#### 4.3.5 Barcode tizimi integratsiyasi\n- Barcode avtomatik generatsiya YOKI qo'lda kiritish\n- Barcode scanner POS Terminalda mahsulotnidarhol qidirishi va qo'shishi kerak
-- Chop qilinadigan barcode yorliqlari yaratish (ixtiyoriy)
-\n#### 4.3.6 Kategoriya integratsiyasi
-- Kategoriya dropdown tanlash
-- Kategoriya bo'yicha filtrlash\n- Kategoriya rangli teglar (ixtiyoriy)
+#### 4.3.6 Category Integration
+- Category dropdown selection
+- Filter by category
+- Category colored tags (optional)
 
-#### 4.3.7 Ma'lumotlarni tekshirish (Data Validation)
-- Mahsulot nomi majburiy
-- Sotuv narxi xarid narxidan past bo'lsa ogohlantirish
-- SKU noyob bo'lishi kerak
-- Barcode noyob bo'lishi kerak
-- Boshlang'ich qoldiq manfiy bo'lishi mumkin emas
-- Narxlar raqamli qiymatlar bo'lishi kerak
-- O'chirishda →agar mahsulotning sotuv tarixi bo'lsa ogohlantirish
-\n#### 4.3.8 Qo'shimcha funksiyalar (Ixtiyoriy lekin tavsiya etiladi)
-- Sevimli mahsulotlar (POS tezkor kirishiga yulduzcha belgisi)
-- Ko'pdo'konombor sinxronizatsiyasi
-- Variantlar (o'lcham/rang)
-- Birlashtirilgan mahsulotlar
-- Amal qilish muddatini kuzatish (dorixona/oziq-ovqat uchun)
-- FIFO/LIFO xarajat hisoblash (ERP darajasidagi ombor uchun)
+#### 4.3.7 Data Validation
+- Product name required
+- Warning if sale price is lower than purchase price
+- SKU must be unique
+- Barcode must be unique
+- Initial stock cannot be negative
+- Prices must be numeric values
+- On delete → warning if product has sales history
 
-### 4.4 Kategoriyalar (Categories Module)
-\n#### 4.4.1 Categories List Page
-**Sahifa sarlavhasi:** Categories\n
-**Jadval ustunlari:**
-- Name – Kategoriya nomi
-- Description – Ixtiyoriy qisqa tavsif
-- Products Count – Mahsulotlar soni (tavsiya etiladi)
-- Created Date – Yaratilgan sana
-- Actions – Ko'rish / Tahrirlash / O'chirish
+#### 4.3.8 Additional Features (Optional but Recommended)
+- Favorite products (star badge for POS quick access)
+- Multi-store inventory sync
+- Variants (size/color)
+- Bundled products
+- Expiration date tracking (for pharmacy/food)\n- FIFO/LIFO cost calculation (for ERP-level inventory)
 
-**Funksiyalar:**
-- Nom bo'yicha qidiruv
-- Saralash (A–Z, Z–A, eng yangi, eng eski)
-- Sahifalash (Pagination)
-- '+ Add Category' tugmasi
-- O'chirishda → agar kategoriyada mahsulotlar bo'lsa, ogohlantirish ko'rsatish
-- Rangli teg belgilari (ixtiyoriy)\n
+### 4.4 Categories (Categories Module)
+
+#### 4.4.1 Categories List Page
+**Page Title:** Categories
+\n**Table Columns:**
+- Name – Category name
+- Description – Optional short description
+- Products Count – Number of products (recommended)\n- Created Date – Creation date
+- Actions – View / Edit / Delete
+
+**Features:**
+- Search by name
+- Sorting (A–Z, Z–A, newest, oldest)
+- Pagination
+- '+ Add Category' button
+- On delete → if category has products, show warning
+- Colored tag badges (optional)
+
 #### 4.4.2 Add Category Form
-**Forma maydonlari:**
-- Category Name (majburiy)
-- Description (ixtiyoriy)\n- Color Tag (ixtiyoriy; POS Terminal UI guruhlashuchun)
-- Icon (ixtiyoriy; emoji yoki SVG)
-- Parent Category (ixtiyoriy → ichki kategoriyalaruchun)
-\n**Tekshirish:**
-- Nom majburiy
-- Noyob bo'lishi kerak
--Agar parent category tanlangan bo'lsa → doiraviy parent/child munosabatlarini oldini olish
-\n**Tugmalar:**
+**Form Fields:**
+- Category Name (required)
+- Description (optional)
+- Color Tag (optional; for POS Terminal UI grouping)
+- Icon (optional; emoji or SVG)
+- Parent Category (optional → for subcategories)
+\n**Validation:**
+- Name required
+- Must be unique
+- If parent category selected → prevent circular parent/child relationships
+\n**Buttons:**
 - Save\n- Cancel
 \n#### 4.4.3 Edit Category Page
-Yaratish formasiga to'liq o'xshash, lekin oldindan to'ldirilgan.\n
-**Qo'shimcha funksiyalar:**
-- Biriktirilgan mahsulotlar sonini ko'rsatish
-- O'chirishga urinishda:\n  - Agar mahsulotlar yo'q bo'lsa → o'chirishga ruxsat berish
-  - Agar mahsulotlar mavjud bo'lsa → modal ko'rsatish:\n    - 'This category contains X products. Move them to another category before deleting.'
-\n#### 4.4.4 Category Detail Page (tavsiya etiladi)
-**Ko'rsatish:**
+Identical to creation form but pre-filled.\n
+**Additional Features:**
+- Show count of attached products
+- On delete attempt:\n  - If no products → allow delete
+  - If products exist → show modal:\n    - 'This category contains X products. Move them to another category before deleting.'
+\n#### 4.4.4 Category Detail Page (Recommended)
+**Display:**
 - Name
 - Description
 - Created at
@@ -539,865 +533,1056 @@ Yaratish formasiga to'liq o'xshash, lekin oldindan to'ldirilgan.\n
 - Products count
 \n**Tabs:**
 \n**1) Products in this Category**
-- Jadval:\n  - Mahsulot nomi
+- Table:\n  - Product name
   - SKU / Barcode
-  - Narx
-  - Qoldiq
-  - Status\n  - 'Open product' amal (mahsulot detailiga o'tish)
+  - Price
+  - Stock
+  - Status
+  - 'Open product' action (go to product detail)
 
 **2) Activity Log**
 - Created\n- Updated
 - Deleted
 - Products added/removed
-- (Audit trail uchun)
+- (For audit trail)
 
-#### 4.4.5 Mahsulotlar moduli bilan integratsiya
-Kategoriyalar Mahsulotlar bilan to'liq integratsiyalangan bo'lishi kerak:\n- Mahsulot yaratish/tahrirlashda kategoriya dropdown\n- Mahsulotlar ro'yxatida kategoriya bo'yicha filtrlash
-- Agar kategoriyada mahsulotlar bo'lsa, kategoriyani o'chirish mumkin emas
-- Mahsulotlar ro'yxatida kategoriya rangi teglar ko'rsatiladi
-- POS Terminal kategoriya asosida navigatsiyani qo'llab-quvvatlashi kerak
-- Misol:'Drinks', 'Snacks', 'Fruits', 'Pharmacy' kabi tugmalar
+#### 4.4.5 Products Module Integration
+Categories must be fully integrated with Products:\n- Category dropdown in product create/edit\n- Filter by category in products list
+- Cannot delete category if it has products
+- Category color tags shown in products list
+- POS Terminal should support category-based navigation
+- Example: buttons like 'Drinks', 'Snacks', 'Fruits', 'Pharmacy'
 
-#### 4.4.6 POS Terminal bilan integratsiya
-POS Terminal ko'rsatishi kerak:
-- Kategoriya tugmalari
-- Kategoriya bo'yicha filtrlangan mahsulotlar
-- Tez tanib olish uchun ranglar/ikkonlar
-- Aqlli tartiblash: eng ko'p sotiladigan kategoriyalar yuqorida ko'rsatiladi
-\n#### 4.4.7 UI / UX talablar
-- Toza jadval ko'rinishi
-- Minimalistik zamonaviy kartalar
-- Boshqa modullar bilan izchil bo'shliq
-- Mobil qulay on panel o'zaro ta'siri
-- Vizual guruhlash uchun rangli teglardan foydalanish
-- Ikkonlar ixtiyoriy (lekin POS planshetlar uchun juda tavsiya etiladi)
-\n#### 4.4.8 Xavfsizlik va ruxsatlar
-Rol asosida kirish:\n- Admin va Manager: Kategoriyalarni yaratish, tahrirlash, o'chirish
-- Kassir: Faqat kategoriyalarni ko'rish (tahrirlash yo'q)
-\n#### 4.4.9 Texnik talablar
-**Kategoriya jadval tuzilishi:**
+#### 4.4.6 POS Terminal Integration
+POS Terminal should show:
+- Category buttons\n- Products filtered by category
+- Colors/icons for quick recognition
+- Smart sorting: most-sold categories shown at top
+\n#### 4.4.7 UI / UX Requirements
+- Clean table view\n- Minimalist modern cards
+- Consistent spacing with other modules
+- Mobile-friendly side panel interaction
+- Use colored tags for visual grouping
+- Icons optional (but highly recommended for POS tablets)
+
+#### 4.4.8 Security and Permissions
+Role-based access:
+- Admin and Manager: Create, edit, delete categories
+- Cashier: View categories only (no edit)\n\n#### 4.4.9 Technical Requirements
+**Category Table Structure:**
 - id\n- name
 - description\n- color\n- icon
 - parent_id (nullable)
 - created_at
-- updated_at
-\n**Munosabatlar:**
-- Mahsulotlar bilan One-to-many\n- O'z-o'ziga havola qiluvchi parent-child kategoriyalar
-- Inventory va POS Terminal bilan avtomatik sinxronizatsiya
-\n### 4.5 Ombor boshqaruvi (Inventory Management Module)
+- updated_at\n\n**Relationships:**
+- One-to-many with Products
+- Self-referencing parent-child categories
+- Auto-sync with Inventory and POS Terminal
+
+### 4.5 Inventory Management Module
 
 #### 4.5.1 Inventory List Page
-**Sahifa sarlavhasi:** Inventory
+**Page Title:** Inventory
 
-**Jadval ustunlari:**
-- product_name – Mahsulot nomi\n- SKU / Barcode – Mahsulot identifikatori
-- category – Kategoriya
-- stock_quantity – Joriy qoldiq miqdori
-- unit – O'lchov birligi\n- cost_price – Xarid narxi
-- inventory_value – Ombor qiymati (stock × cost_price)
+**Table Columns:**
+- product_name – Product name
+- SKU / Barcode – Product identifier
+- category – Category\n- stock_quantity – Current stock quantity
+- unit – Unit of measure
+- cost_price – Purchase price
+- inventory_value – Inventory value (stock × cost_price)
 - status – In Stock / Low Stock / Out of Stock
 - actions – View detail / Adjust stock\n
-**Funksiyalar:**
-- Qidiruv: mahsulot nomi yoki SKU bo'yicha
-- Filtrlar:
-  - Kategoriya\n  - Qoldiq holati (All / Low Stock / Out of Stock)
-- Saralash:\n  - Nom
-  - Qoldiq miqdori
-  - Ombor qiymati
-- Sahifalash (Pagination)
-- Excel / PDF formatida eksport
-\n**Qoldiq holati ranglari:**
-- Yashil → In stock (qoldiq yetarli)\n- Sariq → Low stock (kam qoldiq)
-- Qizil → Out of stock (qoldiqda yo'q)
+**Features:**
+- Search: by product name or SKU
+- Filters:\n  - Category\n  - Stock status (All / Low Stock / Out of Stock)
+- Sorting:\n  - Name\n  - Stock quantity\n  - Inventory value
+- Pagination\n- Export to Excel / PDF
+\n**Stock status colors:**
+- Green → In stock (sufficient stock)
+- Yellow → Low stock\n- Red → Out of stock\n
+**Real-time Synchronization:**
+- All stock changes immediately reflect in dashboard and reports
+- Low stock warnings automatically updated
+\n#### 4.5.2 Inventory Detail Page
+Open product-specific inventory information.
 
-**Real-time sinxronizatsiya:**
-- Barcha qoldiq o'zgarishlari darhol dashboard va hisobotlarga aks etadi
-- Kam qoldiq ogohlantirishlari avtomatik yangilanadi
-\n#### 4.5.2Inventory Detail Page
-Mahsulotga xosombor ma'lumotlarini ochish.\n
-**Sarlavha ma'lumotlari:**
-- Mahsulot rasmi
-- Mahsulot nomi
+**Header Info:**
+- Product image
+- Product name
 - SKU / Barcode
-- Kategoriya
-- Joriy qoldiq
-- Minimal qoldiq ogohlantirish darajasi
-- Xarid narxi va sotuv narxi
--Ombor qiymati
-\n**Tabs:**
+- Category
+- Current stock\n- Minimum stock warning level
+- Purchase price and sale price
+- Inventory value
 
-**Tab 1 — Stock Movements (Harakatlar tarixi)**
-Ombor o'zgarishlarining to'liq audit trail.
+**Tabs:**
 
-**Ustunlar:**
-- Sana va vaqt
-- Harakat turi:\n  - Purchase Received (+) – Xarid qabul qilindi
-  - Sale (-) – Sotuv\n  - Sales Return (+) – Savdo qaytarish
-  - Purchase Return (-) – Xarid qaytarish
-  - Inventory Adjustment (+/-) – Inventarizatsiya tuzatishi
-  - Stock Transfer (+/-) – Qoldiq ko'chirish
-- Miqdor (+ yoki - bilan)
-- Foydalanuvchi
-- Bog'liq hujjat (Order #, Return #, Purchase Order #, Adjustment #)
+**Tab 1 — Stock Movements (Movement History)**
+Complete audit trail of inventory changes.
 
-**Harakat qatori rangi mantiqiy:**
-- Musbat (+) → Yashil
-- Manfiy (–) → Qizil
-\n**Tab 2 — Purchase History (Xarid tarixi)**
-**Ustunlar:**
-- Xarid buyurtmasi raqomi
-- Yetkazib beruvchi
-- Sana
-- Qabul qilingan miqdor
-- Narx
-- Jami xarajat
-\n**Tab 3 — Sales History (Sotuv tarixi)**
-**Ustunlar:**
-- Buyurtma raqomi
-- Mijoz
-- Sana
-- Sotilgan miqdor
-- Daromad
-- Foyda (sotuv narxi – xarid narxi × miqdor)
+**Columns:**
+- Date and time
+- Movement type:\n  - Purchase Received (+) – Purchase received
+  - Sale (-) – Sale\n  - Sales Return (+) – Sales return
+  - Purchase Return (-) – Purchase return
+  - Inventory Adjustment (+/-) – Inventory adjustment
+  - Stock Transfer (+/-) – Stock transfer\n- Quantity (with + or -)
+- User
+- Related document (Order #, Return #, Purchase Order #, Adjustment #)
 
-#### 4.5.3 Stock Adjustment Module (Qoldiq tuzatish moduli)
-**Tugma:** Adjust Stock
+**Movement row color logic:**
+- Positive (+) → Green
+- Negative (–) → Red
+\n**Tab 2 — Purchase History**
+**Columns:**
+- Purchase order number
+- Supplier
+- Date
+- Quantity received
+- Price
+- Total cost
+\n**Tab 3 — Sales History**
+**Columns:**
+- Order number
+- Customer
+- Date
+- Quantity sold
+- Revenue
+- Profit (sale price – purchase price × quantity)
 
-**Forma maydonlari:**
-- Tuzatish turi:
-  - Increase (oshirish)
-  - Decrease (kamaytirish)
-- Miqdor\n- Sabab:\n  - Damaged (shikastlangan)
-  - Lost (yo'qolgan)
-  - Correction (tuzatish)
-  - Inventory count difference (inventarizatsiya farqi)
-- Izohlar (ixtiyoriy)
-\n**Tekshirish:**
-- Noldan pastga kamaytirish mumkin emas
-- Tuzatish logga yozilishi kerak
-\n**Tasdiqlashdan keyin:**
-- Harakat Movement History ga qo'shiladi
-- Mahsulot qoldig'i yangilanadi
-- Hisobotlar real-time yangilanadi
-- Dashboard ko'rsatkichlari avtomatik yangilanadi
+#### 4.5.3 Stock Adjustment Module
+**Button:** Adjust Stock
 
-#### 4.5.4 Real-Time Inventory Update Logic (Real vaqt rejimida ombor yangilanish mantiqiy)
-Qat'iy ombor mantiqiy amalga oshirish:
-\n**Sotuv amalga oshganda:**
-```
-stock -= sold_quantity\nmovement: type = 'Sale', quantity = -X
+**Form Fields:**
+- Adjustment type:\n  - Increase\n  - Decrease
+- Quantity\n- Reason:\n  - Damaged
+  - Lost
+  - Correction
+  - Inventory count difference
+- Notes (optional)
+
+**Validation:**
+- Cannot decrease below zero
+- Adjustment must be logged
+\n**After Confirmation:**
+- Movement added to Movement History
+- Product stock updated
+- Reports updated real-time
+- Dashboard metrics automatically updated
+
+#### 4.5.4 Real-Time Inventory Update Logic
+Implement strict inventory logic:
+\n**When sale occurs:**
+```\nstock -= sold_quantity
+movement: type = 'Sale', quantity = -X
 update dashboard metrics
 update reports
 ```
-
-**Savdo qaytarish amalga oshganda:**
+\n**When sales return occurs:**
 ```
 stock += returned_quantity
 movement: type = 'Sales Return', quantity = +X
-update dashboard metrics
-update customer stats
+update dashboard metrics\nupdate customer stats
 update employee stats
 ```
 
-**Xarid buyurtmasi qabul qilinganda:**\n```
+**When purchase order is received:**\n```
 stock += received_quantity
 movement: type = 'Purchase Received', quantity = +X
 update inventory valuation
 update dashboard\n```
 
-**Xarid yetkazib beruvchiga qaytarilganda:**
-```\nstock -= returned_quantity
+**When purchase is returned to supplier:**
+```
+stock -= returned_quantity
 movement: type = 'Purchase Return', quantity = -X
 ```
 
-**Qoldiq tuzatilganda:**
+**When stock is adjusted:**
 ```
-stock += adjustment_quantity (musbat yoki manfiy)
+stock += adjustment_quantity (positive or negative)
 movement: type = 'Adjustment'\nlog user, reason, timestamp
 ```
-\nBarcha harakatlar audit trail uchun doimiy saqlanishi kerak.
 
-#### 4.5.5 Low Stock Alerts (Kam qoldiq ogohlantirishlari)
-**Avtomatik aniqlash:**
+All movements should be permanently stored for audit trail.
+
+#### 4.5.5 Low Stock Alerts
+**Automatic Detection:**
 ```
 if stock_quantity <= minimal_stock:\n    show'Low Stock' badge
     add to dashboard alerts
     notify relevant users
 ```
 
-**Global ogohlantirish paneli qo'shish:**
-- Kam qoldiqdagi mahsulotlar ro'yxatini ko'rsatish
--Ushbu ro'yxatni eksport qilish imkoniyati
-- POS terminal ham kam qoldiqdagi mahsulotlarni ajratib ko'rsatishi kerak (ixtiyoriy)
+**Add Global Alert Panel:**
+- Show list of low-stock products
+- Ability to export this list
+- POS terminal should also highlight low-stock products (optional)
 
-#### 4.5.6 Integration (Integratsiya - MAJBURIY)
-\n**Mahsulotlar bilan integratsiya:**
-Mahsulotlar jadvali quyidagilarni o'z ichiga olishi kerak:
-- minimal_stock
-- track_inventory flag
+#### 4.5.6 Integration (MANDATORY)
+\n**Products Integration:**
+Products table should include:
+- minimal_stock\n- track_inventory flag
 - cost_price
-\nInventory moduli mahsulot ma'lumotlari bilan doimo sinxronlashadi.
+\nInventory module always syncs with product data.
 
-**Buyurtmalar bilan integratsiya:**
-- Buyurtma yaratilganda → qoldiq kamayadi
-- Buyurtma bekor qilinganda → qoldiq tiklanadi
-- Qisman qaytarishlar faqat qaytarilgan mahsulotlar uchun qoldiqni tuzatadi
-- Barcha o'zgarishlar real-time dashboard gaaks etadi
+**Orders Integration:**
+- When order is created → stock decreases
+- When order is cancelled → stock is restored
+- Partial returns adjust stock only for returned products
+- All changes reflect real-time in dashboard\n
+**Sales Returns Integration:**
+- Returns increase stock
+- Dashboard and reports automatically updated
+\n**Purchase Orders Integration:**
+- PO receipt increases stock
+- PO return decreases stock
+\n**Reports Integration:**
+Inventory feeds data to:
+- Inventory Valuation Report
+- Stock Movement Report
+- Profit & Loss report (cost-based calculation)
+- Low-stock report
 
-**Sales Returns bilan integratsiya:**\n- Qaytarishlar qoldiqni oshiradi
-- Dashboard va hisobotlar avtomatik yangilanadi
-\n**Purchase Orders bilan integratsiya:**\n- PO qabul qilish qoldiqni oshiradi\n- PO qaytarish qoldiqni kamaytiradi
-\n**Hisobotlar bilan integratsiya:**
-Inventory quyidagi hisobotlarga ma'lumot beradi:
-- Inventory Valuation Report (Ombor baholash hisoboti)
-- Stock Movement Report (Qoldiq harakati hisoboti)
-- Profit & Loss report (Foyda va zarar hisoboti - xarajat asosida hisoblash)
-- Low-stock report (Kam qoldiq hisoboti)
+#### 4.5.7 Audit Trail Requirements
+Each inventory operation should store:
+- User\n- Timestamp
+- Previous quantity
+- New quantity
+- Difference
+- Related document
 
-#### 4.5.7 Audit Trail Requirements (Audit trail talablari)
-Har birombor amali quyidagilarni saqlashi kerak:
-- Foydalanuvchi\n- Vaqt belgisi
-- Oldingi miqdor
-- Keyingi miqdor
-- Farq\n- Bog'liq hujjat\n
-Bu to'liq kuzatuvni ta'minlaydi.
-
-#### 4.5.8 UI/UX Requirements\n- Toza zamonaviy jadval\n- Status belgilari\n- Tezkor filtrlar
+This ensures full traceability.\n
+#### 4.5.8 UI/UX Requirements
+- Clean modern table\n- Status badges\n- Quick filters
 - Responsive layout
-- 10,000+ mahsulotlar uchun ham tez yuklash
-- Inventory → product → movements orasida silliq navigatsiya
-\n#### 4.5.9 Permissions (Ruxsatlar)
-**Admin / Manager:**
-- To'liq kirish
-- Qoldiqni tuzatish
-- Tuzatishni o'chirish (agar ruxsat etilgan bo'lsa)
+- Fast loading even with 10,000+ products
+- Smooth navigation between Inventory → product → movements
+\n#### 4.5.9 Permissions\n**Admin / Manager:**
+- Full access\n- Adjust stock
+- Delete adjustments (if allowed)
 
-**Kassir:**
-- Faqat ko'rish
-- Tuzatish huquqi yo'q
-\n#### 4.5.10 Texnik talablar
-**Inventory jadval tuzilishi:**\n- id
+**Cashier:**
+- View only
+- No adjustment rights
+
+#### 4.5.10 Technical Requirements
+**Inventory Table Structure:**
+- id
 - product_id
 - stock_quantity
 - minimal_stock
 - cost_price
-- inventory_value (hisoblangan)\n- last_updated
+- inventory_value (calculated)
+- last_updated
 - created_at
 - updated_at
 
-**Inventory Movements jadval tuzilishi:**\n- id
+**Inventory Movements Table Structure:**
+- id
 - product_id
 - movement_type (Sale, Purchase Received, Sales Return, Purchase Return, Adjustment, Transfer)
-- quantity (musbat yoki manfiy)\n- before_quantity\n- after_quantity
+- quantity (positive or negative)
+- before_quantity
+- after_quantity
 - user_id
-- related_document_type
-- related_document_id
-- notes
+- related_document_type\n- related_document_id\n- notes
 - created_at
-\n**Munosabatlar:**
-- Mahsulotlar bilan One-to-one
-- Movements bilan One-to-many\n- Orders, Returns, Purchase Orders bilan avtomatik sinxronizatsiya
-\n### 4.6 Cheklar / Buyurtmalar (Orders Module)
+\n**Relationships:**
+- One-to-one with Products
+- One-to-many with Movements
+- Auto-sync with Orders, Returns, Purchase Orders\n\n### 4.6 Orders / Receipts (Orders Module)
 
-#### 4.6.1 Orders List Page\n**Sahifa sarlavhasi:** Orders
+#### 4.6.1 Orders List Page
+**Page Title:** Orders
 
-**Jadval ustunlari:**
-- order_number – Buyurtma / Chek raqami (masalan: POS-20251205-00042)
-- date_time – Sana va vaqt
-- cashier – Kassir / xodim
-- customer_name – Mijoz (ixtiyoriy,'Walk-in' bo'lishi mumkin)
-- total_amount – Buyurtma jami\n- payment_status – To'langan / Qisman to'langan / To'lanmagan
-- payment_methods – Ikkonlar yoki matn (Naqd, Karta, QR, Aralash)
-- status – Yakunlangan / Bekor qilingan / Qaytarilgan
-- actions – Ko'rish, Chop qilish, Qaytarish (Sales Return)\n\n**Filtrlar:**
-- Sana oralig'i (bugun, shu hafta, maxsus)
-- Kassir\n- To'lov holati
-- Status (Yakunlangan, Bekor qilingan, Qaytarilgan)
-- To'lov usuli\n- Buyurtma raqomi yoki mijoz nomi bo'yicha qidiruv
+**Table Columns:**
+- order_number – Order / Receipt number (e.g., POS-20251205-00042)
+- date_time – Date and time\n- cashier – Cashier / employee
+- customer_name – Customer (optional, can be 'Walk-in')
+- total_amount – Order total
+- payment_status – Paid / Partially Paid / Unpaid
+- payment_methods – Icons or text (Cash, Card, QR, Mixed)
+- status – Completed / Cancelled / Returned
+- actions – View, Print, Return (Sales Return)\n\n**Filters:**
+- Date range (today, this week, custom)
+- Cashier\n- Payment status
+- Status (Completed, Cancelled, Returned)
+- Payment method
+- Search by order number or customer name
 
-**Funksiyalar:**
-- Sahifalash (Pagination)
-- Excel va PDF formatida eksport
-- Tanlangan davr uchun yuqori qismda jami ko'rsatkichlar:\n  - total_sales_amount – Jami savdo summasi
-  - total_orders_count – Jami buyurtmalar soni
-  - average_order_value – O'rtacha buyurtma qiymati
+**Features:**
+- Pagination
+- Export to Excel and PDF
+- Top summary metrics for selected period:\n  - total_sales_amount – Total sales amount
+  - total_orders_count – Total orders count
+  - average_order_value – Average order value
 \n#### 4.6.2 Order Detail Page
-Foydalanuvchi buyurtma qatorini bosganda, Order Detail sahifasi yoki yon panel ochiladi.
+When user clicks order row, Order Detail page or side panel opens.
 
-**Sarlavha bloki:**
-- Buyurtma raqomi
-- Sana va vaqt
-- POS terminal nomi (agar ko'p terminallar bo'lsa)
-- Kassir
-- Mijoz (mijoz profiliga havola bilan)
-- Status belgisi
-- To'lov holati belgisi
-\n**Mahsulotlar jadvali:**
-**Ustunlar:**
-- Mahsulot nomi
+**Header Block:**
+- Order number
+- Date and time
+- POS terminal name (if multiple terminals)
+- Cashier\n- Customer (with link to customer profile)
+- Status badge
+- Payment status badge
+\n**Products Table:**
+**Columns:**
+- Product name
 - SKU / Barcode
-- Miqdor
-- Birlik narxi
-- Qator chegirmasi (lineDiscountAmount)
-- Qator jami\n\n**Xulosa bloki:**
-- Oraliq jami (Subtotal)\n- Qator chegirmalari jami (Total Line Discounts)
-- Buyurtma chegirmasi (Order Discount)
-- Jami chegirmalar (Total Discounts = Line Discounts + Order Discount)
-- Soliq (agar ishlatilsa)
--Umumiy jami (Grand total)
-- To'langan summa
-- Qolgan balans (agar mavjud bo'lsa)
+- Quantity
+- Unit price
+- Line discount (lineDiscountAmount)
+- Line total\n\n**Summary Block:**
+- Subtotal
+- Total line discounts
+- Order discount
+- Total discounts (Line Discounts + Order Discount)
+- Tax (if used)
+- Grand total
+- Amount paid
+- Remaining balance (if any)
 
-**To'lovlar bloki (Payments moduli bilan integratsiyalangan):**
-Ushbu buyurtma uchun to'lovlar ro'yxati:
-- Sana va vaqt
-- Summa
-- Usul (Naqd, Karta, QR, Aralash)
-- Ma'lumotnoma (terminal tranzaksiyasi, chek raqomi)
-\n**Bog'liq qaytarishlar (Sales Returns):**
-Ushbu buyurtmaga bog'liq qaytarishlar ro'yxati:
-- Qaytarish raqomi
-- Sana\n- Qaytarilgan summa
+**Payments Block (Integrated with Payments Module):**
+List of payments for this order:\n- Date and time
+- Amount
+- Method (Cash, Card, QR, Mixed)
+- Reference (terminal transaction, receipt number)\n\n**Related Returns (Sales Returns):**
+List of returns linked to this order:
+- Return number
+- Date\n- Returned amount
 - Status
-\n**Amallar:**
-- Chekni chop qilish (PDF yoki printer)
-- Savdo qaytarishini yaratish (ushbu buyurtmadan oldindan to'ldirilgan Sales Return formasini ochish)
-- Qayta chop qilish / chekni email/WhatsApp orqali yuborish (ixtiyoriy)
-- Buyurtmani bekor qilish (faqat managerlar uchun; kim va qachon logga yozilishi kerak)
+\n**Actions:**
+- Print receipt (PDF or printer)
+- Create sales return (open Sales Return form pre-filled from this order)
+- Reprint / send receipt via email/WhatsApp (optional)
+- Cancel order (manager only; who and when should be logged)
 
-#### 4.6.3 Buyurtma yaratish va manba
-Buyurtmalar bu yerda qo'lda yaratilmaydi – ular POS Terminaldan keladi:\n- POS terminalda har bir yakunlangan savdo avtomatik ravishda Order yozuvini yaratadi
-- Agar buyurtma 'held' yoki 'parked' sifatida saqlangan bo'lsa, status = Pending
-- To'lov yakunlanganda, status = Completed
-- Agar buyurtma POS dan bekor qilinsa, status = Voided vaombor tiklanadi
+#### 4.6.3 Order Creation and Source
+Orders are not manually created here – they come from POS Terminal:\n- Each completed sale in POS terminal automatically creates Order record
+- If order is saved as'held' or 'parked', status = Pending
+- When payment is completed, status = Completed
+- If order is cancelled from POS, status = Voided and inventory is restored
 
-#### 4.6.4 Integratsiyalar (majburiy)
-\n**Ombor integratsiyasi:**
-- Buyurtma Completed bo'lganda → mahsulotlarga ko'ra qoldiq kamayadi
-- Buyurtma Sales Return orqali Refunded bo'lganda → qoldiq ortadi
-- Barcha o'zgarishlar real-time dashboard va hisobotlarga sinxronlanadi
+#### 4.6.4 Integrations (Mandatory)
+\n**Inventory Integration:**
+- When order is Completed → stock decreases by products\n- When order is Refunded via Sales Return → stock increases\n- All changes sync real-time to dashboard and reports
 
-**To'lovlar integratsiyasi:**
-- Har bir to'lov buyurtmaga tegishli\n- To'lov holati hisoblanadi:\n  - Paid: jami to'lovlar >= buyurtma jami
-  - Partially paid: jami to'lovlar >0 va < buyurtma jami
-  - Unpaid: jami to'lovlar = 0
-\n**Mijozlar integratsiyasi:**\n- Agar mijoz POS da belgilangan bo'lsa, u Orders ro'yxati va detallarda ko'rsatilishi kerak
-- Mijoz balanslari (qarz, sodiqlik) buyurtma yaratilganda/to'langanda/qaytarilganda yangilanishi kerak
-- Kredit savdo amalga oshganda mijoz balansi ortadi
-- To'lov qabul qilinganda mijoz balansi kamayadi
-- Mijoz statistikasi real-time yangilanadi
+**Payments Integration:**
+- Each payment belongs to an order
+- Payment status is calculated:\n  - Paid: total payments >= order total
+  - Partially paid: total payments >0 and < order total
+  - Unpaid: total payments = 0\n
+**Customers Integration:**
+- If customer is selected in POS, they should be shown in Orders list and detail
+- Customer balances (debt, loyalty) should be updated when order is created/paid/returned
+- When credit sale occurs, customer balance increases
+- When payment is received, customer balance decreases
+- Customer statistics updated real-time
 
-**Sales Returns integratsiyasi:**\n- Order Detail sahifasidan foydalanuvchi Sales Return yozuvini yaratishi mumkin
-- Order sahifasida bog'liq qaytarishlar ro'yxati ko'rsatilishi kerak\n- Buyurtma holati qaytarishga qarab yangilanadi:\n  - Barcha mahsulotlar qaytarilsa → 'Refunded'\n  - Qisman qaytarilsa → 'Partially Refunded'
-  - Qaytarish bo'lmasa → 'Completed' holatida qoladi
+**Sales Returns Integration:**
+- From Order Detail page, user can create Sales Return record
+- Order page should show list of related returns
+- Order status updates based on returns:\n  - If all products returned →'Refunded'
+  - If partially returned → 'Partially Refunded'
+  - If no returns → stays'Completed'
 
-**Xodimlar integratsiyasi:**
-- Har bir buyurtma kassir ID ni saqlaydi
-- Xodim samaradorlik statistikasi avtomatik yangilanadi
-- Bekor qilingan buyurtmalar xodim xato darajasiga ta'sir qiladi
-\n**Dashboard integratsiyasi:**
-- Har bir yangi buyurtma dashboard ko'rsatkichlarini darhol yangilaydi
-- Bugungi savdolar, buyurtmalar soni, o'rtacha qiymat real-time hisoblanadi
-\n#### 4.6.5 Tekshirish va xavfsizlik
-Faqat Manager yoki Admin roligaega foydalanuvchilar:\n- Buyurtmalarni bekor qilishi mumkin
-- Buyurtmalarni o'chirishi mumkin (agar umuman ruxsat etilgan bo'lsa)
-\nBuyurtmalarga o'zgartirishlar (bekor qilish, qaytarish) logga yozilishi kerak:\n- kim, qachon, nima o'zgartirilgan
-\n#### 4.6.6 UI/UX talablar
-- Toza, tez jadval ko'rinishi
-- Yuqori qismda yopishqoq filtrlar paneli
-- Status va payment_status rangli belglar bilan:\n  - Completed – yashil
-  - Pending – ko'k
-  - Voided – kulrang
-  - Refunded – to'q sariq
-  - Partially Refunded – och sariq
-- Mobil/Planshet uchun qulay (lekin desktop uchun optimallashtirilgan)
+**Employees Integration:**
+- Each order stores cashier ID
+- Employee performance statistics automatically updated
+- Cancelled orders affect employee error rate
 
-### 4.7 Qaytarishlar (Sales Returns Module)
+**Dashboard Integration:**
+- Each new order immediately updates dashboard metrics
+- Today's sales, order count, average value calculated real-time
+\n#### 4.6.5Validation and Security
+Only users with Manager or Admin role can:
+- Cancel orders\n- Delete orders (if allowed at all)
+\nChanges to orders (cancel, return) should be logged:\n- who, when, what changed
+\n#### 4.6.6 UI/UX Requirements
+- Clean, fast table view
+- Sticky filters panel at top
+- Status and payment_status with colored badges:\n  - Completed – green
+  - Pending – blue
+  - Voided – grey
+  - Refunded – dark yellow
+  - Partially Refunded – light yellow
+- Mobile/Tablet friendly (but optimized for desktop)
+\n### 4.7 Sales Returns Module
 
 #### 4.7.1 Sales Returns List Page
-**Sahifa sarlavhasi:** Sales Returns
-\n**Jadval ustunlari:**
-- return_number – Qaytarish raqami (RET-YYYYMMDD-#####)
-- order_number – Asl sotuv buyurtmasi raqomi
-- customer_name – Mijoz nomi
-- date_time – Sana va vaqt
-- returned_amount – Qaytarilgan summa
-- status – Pending, Completed, Cancelled
-- cashier – Kassir\n- actions – Ko'rish, Chop qilish, Bekor qilish
+**Page Title:** Sales Returns
 
-**Funksiyalar:**
-- Qaytarish raqomi yoki buyurtma raqomi bo'yicha qidiruv
-- Filtrlar:\n  - Sana oralig'i
-  - Mijoz\n  - Kassir
-  - Status
-- Sahifalash (Pagination)
-- Excel va PDF formatida eksport
-- '+ New Sales Return' tugmasi
+**Table Columns:**
+- return_number – Return number (RET-YYYYMMDD-#####)
+- order_number – Original sales order number
+- customer_name – Customer name
+- date_time – Date and time
+- returned_amount – Returned amount
+- status – Pending, Completed, Cancelled\n- cashier – Cashier\n- actions – View, Print, Cancel\n
+**Features:**
+- Search by return number or order number
+- Filters:
+  - Date range
+  - Customer
+  - Cashier
+  - Status\n- Pagination
+- Export to Excel and PDF
+- '+ New Sales Return' button
 
 #### 4.7.2 Create Sales Return Page
-Ushbu sahifa mavjud buyurtmadan mahsulotlarni qaytarish imkonini beradi.
+This page allows returning products from an existing order.
 
-**Qadam 1 — Buyurtmani tanlash**
-Foydalanuvchi quyidagilarni amalga oshirishi mumkin:
-- Buyurtma raqomi bo'yicha qidiruv
-- Chek barcode skanerlash (ixtiyoriy)
-- Oxirgi buyurtmalardan tanlash
-\nTanlangandan keyin ko'rsatish:
-- Buyurtma raqomi
-- Mijoz\n- Kassir
-- Sana
-- Jami summa
-\n**Qadam 2 — Qaytariladigan mahsulotlar jadvali**
-Barcha buyurtma mahsulotlarini jadvalga avtomatik yuklash:
-\n**Ustunlar:**\n- Mahsulot nomi
-- SKU\n- Sotilgan miqdor
-- Qaytarish miqdori (tahrirlash mumkin)
-- Birlik narxi
-- Qator jami (avtomatik hisoblash)
+**Step 1 — Select Order**
+User can:\n- Search by order number\n- Scan receipt barcode (optional)
+- Select from recent orders
+\nAfter selection, show:
+- Order number
+- Customer\n- Cashier
+- Date\n- Total amount
+\n**Step 2 — Products to Return Table**
+Auto-load all order products into table:\n\n**Columns:**
+- Product name
+- SKU\n- Quantity sold
+- Return quantity (editable)
+- Unit price
+- Line total (auto-calculate)
 
-**Tekshirish:**
-- Qaytarish miqdori sotilgan miqdordanoshmasligi kerak
-- Agar qaytarish miqdori = 0 → mahsulotni o'tkazib yuborish
-\n**Avtomatik hisoblashlar:**
+**Validation:**
+- Return quantity cannot exceed sold quantity
+- If return quantity = 0 → skip product
+\n**Auto-calculations:**
 - line_total = unit_price × return_quantity
-\n**Qadam 3 — Xulosa bloki**
-Ko'rsatish:
-- Qaytarilgan mahsulotlar oraliq jami
-- Soliqlar (agar ishlatilsa)
-- Jami qaytarish summasi
-- Mijozning yangi balansi (agar mijoz mavjud bo'lsa)
+\n**Step 3 — Summary Block**
+Show:
+- Returned products subtotal
+- Taxes (if used)
+- Total return amount
+- Customer's new balance (if customer exists)
 
-**Qadam 4 — Qo'shimcha maydonlar**
-- Qaytarish sababi (tanlash: shikastlangan, noto'g'ri mahsulot, mijoz noroziligi va boshqalar)
-- Izohlar (ixtiyoriy)
-\n**Qadam 5 — Amallar**
-- Qaytarishni yuborish →ombor ortadi, buyurtma yangilanadi
-- Bekor qilish\n- Ixtiyoriy: Qaytarish chekini chop qilish\n\n#### 4.7.3 Sales Return Detail Page
-Detail ko'rinishi quyidagilarni ko'rsatishi kerak:
-\n**Umumiy ko'rinish:**
-- Qaytarish raqomi
-- Bog'liq buyurtma raqomi
-- Mijoz
-- Kassir
-- Sana va vaqt
-- Status belgisi
-- Qaytarish sababi
-- Izohlar
+**Step 4 — Additional Fields**
+- Return reason (select: damaged, wrong product, customer dissatisfaction, etc.)
+- Notes (optional)
+\n**Step 5 — Actions**
+- Submit return → inventory increases, order updated
+- Cancel\n- Optional: Print return receipt\n
+#### 4.7.3 Sales Return Detail Page
+Detail view should show:
+\n**Overview:**
+- Return number
+- Related order number
+- Customer
+- Cashier
+- Date and time
+- Status badge
+- Return reason
+- Notes
 
-**Mahsulotlar jadvali:**
-- Mahsulot\n- SKU
-- Qaytarilgan miqdor
-- Narx
-- Qator jami
-\n**Moliyaviy xulosa:**
-- Jami qaytarilgan summa
-- Buyurtmaning oldingi jami
-- Buyurtmaning yangi jami
-- Mijozning yangilangan balansi
+**Products Table:**
+- Product\n- SKU
+- Quantity returned
+- Price
+- Line total
+\n**Financial Summary:**
+- Total returned amount
+- Order's previous total
+- Order's new total
+- Customer's updated balance
 
-**Amallar:**
-- Qaytarish chekini chop qilish
-- PDF eksport qilish
-- Qaytarishni bekor qilish (faqat ombor tiklanmagan bo'lsa)
-\n#### 4.7.4 Ombor integratsiyasi (Majburiy)
-To'g'ri qoldiq mantiqini amalga oshirish:
-\n**Qaytarish yaratilganda:**
+**Actions:**
+- Print return receipt\n- Export to PDF
+- Cancel return (only if inventory not yet restored)
+
+#### 4.7.4 Inventory Integration (Mandatory)
+Implement correct stock logic:
+
+**When return is created:**
 - inventory_stock += returned_quantity
-- Dashboard va hisobotlar avtomatik yangilanadi
-\n**Harakatni loglash:**
-Har bir qaytarish ombor yozuvini yaratadi:
+- Dashboard and reports automatically updated
+
+**Log Movement:**
+Each return creates inventory record:
 - type: 'Sales Return'
 - product_id\n- quantity (+)
 - related_return_number
-- date\n- performed_by (foydalanuvchi)
-\n#### 4.7.5 Buyurtmalar integratsiyasi\n**Buyurtma detali bog'liq qaytarishlar ro'yxatini ko'rsatishi kerak**\n
-**Buyurtma jami qaytarishdan keyin yangilanishi kerak:**
+- date\n- performed_by (user)
+\n#### 4.7.5 Orders Integration\n**Order detail should show list of related returns**\n
+**Order total should be updated after return:**
 - updated_order_total = original_total - returned_amount
-\n**Buyurtma holati:**
-- Barcha mahsulotlar qaytarilsa → 'Refunded'
-- Qisman qaytarilsa → 'Partially Refunded'
-- Qaytarish bo'lmasa → 'Completed' holatida qoladi
 
-#### 4.7.6 To'lovlar integratsiyasi
-Agar qaytarish summasi qaytarilishi kerak bo'lsa:
-\n**Tizim taklif qilinadigan qaytarish summasini ko'rsatishi kerak**
+**Order Status:**
+- If all products returned → 'Refunded'\n- If partially returned → 'Partially Refunded'
+- If no returns → stays 'Completed'
 
-Kassir qaytarish usulini tanlaydi:
-- Naqd\n- Karta
-- Mijoz hisobiga balans
-\n**Qaytarish quyidagilarni yaratishi kerak:**
+#### 4.7.6 Payments Integration
+If return amount should be refunded:
+
+**System should show suggested refund amount**
+
+Cashier selects refund method:
+- Cash
+- Card
+- Customer account balance
+
+**Refund should create:**
 - payment_type: Refund
 - amount: returned_amount
-- method: tanlangan usul
-\n#### 4.7.7 Mijozlar integratsiyasi
-Agar mijoz bog'langan bo'lsa:\n
-**Mijoz balansi qaytarilgan summa miqdorida ortadi (agar balans qaytarishturi bo'lsa)**
+- method: selected method
+\n#### 4.7.7 Customers Integration
+If customer is linked:\n
+**Customer balance increases by returned amount (if balance refund type)**
 
-**Mijoz profili ko'rsatadi:**
-- Bog'liq qaytarishlar\n- Qaytarilgan mahsulotlar
-- Qaytarish tarixi
-
-**Mijoz statistikasi avtomatik yangilanadi:**\n- Jami xaridlar summasi kamayadi
-- Qaytarishlar soni ortadi
-\n#### 4.7.8 Hisobotlar integratsiyasi
-Sales Returns quyidagi hisobotlarda ko'rinishi kerak:
-
-**Savdo hisobotlari:**
-- Jami qaytarilgan summa
-- Sof savdo\n- Qaytarish foizi
-
-**Ombor hisobotlari:**
-- Qaytarilgan mahsulotlar
-- Qaytarishlardan tuzatishlar
-\n**Xodimlar hisobotlari:**
-- Kassir tomonidan qayta ishlangan qaytarishlar
-\n#### 4.7.9 UI/UX talablar
-- Toza jadval ko'rinishi
-- Tezkor POS ish jarayoni uchun katta kirishlar
-- Aniq ogohlantirishlar va tekshirish xabarlari
-- Status rangli kodlari:\n  - Pending → Ko'k
-  - Completed → Yashil
-  - Cancelled → Qizil
-
-#### 4.7.10 Raqamlash siyosati (Majburiy)
-**Qaytarish raqamlash:**
+**Customer profile shows:**
+- Related returns\n- Returned products
+- Return history
+\n**Customer statistics automatically updated:**
+- Total purchases amount decreases
+- Returns count increases
+\n#### 4.7.8 Reports Integration
+Sales Returns should appear in:
+\n**Sales Reports:**
+- Total returned amount
+- Net sales\n- Return percentage
+\n**Inventory Reports:**
+- Returned products
+- Adjustments from returns
+\n**Employee Reports:**
+- Returns processed by cashier
+\n#### 4.7.9 UI/UX Requirements
+- Clean table view
+- Large inputs for quick POS workflow
+- Clear warnings and validation messages
+- Status color codes:\n  - Pending → Blue
+  - Completed → Green
+  - Cancelled → Red
+\n#### 4.7.10 Numbering Policy (Mandatory)
+**Return Numbering:**
 - Format: RET-YYYYMMDD-#####
-- Misol: RET-20251205-00023
+- Example: RET-20251205-00023
 
-**Buyurtmaga asoslangan havola kuzatuvni ta'minlaydi**
+**Order-based link ensures traceability**
+\n#### 4.7.11 Delete and Cancel Restrictions
+- Only Manager and Admin can cancel or delete returns
+- Cannot cancel return if inventory already updated
+- All changes logged to audit log
 
-#### 4.7.11 O'chirish va bekor qilish cheklovlari
-- Faqat Manager va Admin qaytarishlarni bekor qilishi yoki o'chirishi mumkin
-- Agar ombor allaqachon yangilangan bo'lsa, qaytarishni bekor qilish mumkin emas
-- Barcha o'zgarishlar audit logiga yoziladi
+#### 4.7.12 Audit Trail\nFor each return, log:
+- Who created\n- When created
+- From which order
+- Which products returned
+- How much amount returned
+- Which method used for refund
+- Who cancelled (if cancelled)
 
-#### 4.7.12 Audit trail
-Har bir qaytarish uchun quyidagilar logga yoziladi:
-- Kim yaratdi
-- Qachon yaratildi
-- Qaysi buyurtmadan\n- Qaysi mahsulotlar qaytarildi
-- Qancha summa qaytarildi
-- Qaysi usul bilan qaytarildi
-- Kim bekor qildi (agar bekor qilingan bo'lsa)
+### 4.8 Payments\n- Multiple payment methods\n- Partial payment capability
+- Terminal integration
+- Advance payment (for debtor customers)
+- Payment details: number, date, amount, type, note
+- Refund payments\n- Customer balance integration
+- Real-time read payment methods from Settings module
+- Each payment linked to order and customer
+- Payments auto-sync to dashboard and reports
 
-### 4.8 To'lovlar (Payments)\n- Bir nechta to'lov usuli
-- Qisman to'lov imkoniyati
-- Terminal integratsiyasi
-- Oldindan to'lov (qarzdor mijozlar uchun)
-- To'lov ma'lumotlari: raqam, sana, summa, turi, izoh
-- Qaytarish to'lovlari (Refund payments)
-- Mijoz balansi bilan integratsiya
-- Sozlamalar modulidan to'lov usullarini real-time o'qish
-- Har bir to'lov buyurtma va mijozga bog'lanadi
-- To'lovlar dashboard va hisobotlarga avtomatik sinxronlanadi
+### 4.9 Purchase Orders Module (FIXED AND FULLY IMPLEMENTED)
 
-### 4.9 Xarid buyurtmalari (Purchase Orders Module)
+#### 4.9.1 Routing and Navigation
+\n**Routes:**
+- `/purchase-orders` → Purchase orders list page
+- `/purchase-orders/new` → Create new purchase order\n- `/purchase-orders/:id` → View purchase order detail
+- `/purchase-orders/:id/edit` → Edit existing purchase order
+\n**Navigation Fix:**
+- The'New Purchase Order' button on the list page now correctly navigates to `/purchase-orders/new` instead of redirecting to Dashboard.\n- All routes are wrapped inside the authenticated layout with proper `useAuth` / `AuthProvider` configuration (no undefined context errors).
 
-#### 4.9.1 Purchase Orders List Page
-**Sahifa sarlavhasi:** Purchase Orders
-\n**Jadval ustunlari:**
-- po_number – Xarid buyurtmasi raqomi (masalan: PO-20251206-00023)
-- supplier_name – Yetkazib beruvchi (matn yoki bog'langan obyekt)
-- order_date – Yaratilgan sana
-- expected_date – Kutilayotgan yetkazib berish sanasi
-- total_amount – Buyurtma jami
-- status – Draft / Approved / Partially Received / Received / Cancelled
-- created_by – Foydalanuvchi\n- actions – Ko'rish / Tahrirlash / Qabul qilish / Bekor qilish
+#### 4.9.2 Purchase Order Data Model
 
-**Funksiyalar:**
-- PO raqomi yoki yetkazib beruvchi nomi bo'yicha qidiruv
-- Filtrlar:
-  - Status
-  - Sana oralig'i
-  - Yetkazib beruvchi
-- Sana, status, jami summa bo'yicha saralash
-- Sahifalash (Pagination)
-- Excel / PDF formatida eksport
-- '+ New Purchase Order' tugmasi
+**Database Tables:**
+\n**`purchase_orders` table:**
+- id (primary key)
+- po_number (format: PO-YYYYMMDD-#####, e.g., PO-20251206-00015)
+- supplier_id (foreign key to suppliers table)
+- status (Draft / Pending / Received / Cancelled)
+- order_date (date)
+- expected_date (date, optional)
+- total_cost (numeric)\n- notes (text, optional)
+- created_by (user_id)
+- created_at (timestamp)
+- updated_at (timestamp)
+\n**`purchase_order_items` table:**
+- id (primary key)
+- purchase_order_id (foreign key)\n- product_id (foreign key)
+- quantity (numeric, > 0)
+- unit_cost (numeric, >= 0)
+- line_total (calculated: quantity × unit_cost)
+\n**`inventory_movements` table (existing, reused):**
+- product_id\n- quantity_change (positive for purchases)\n- movement_type = 'purchase'\n- reference_id = purchase_order_id
+- created_at\n
+**`suppliers` table (existing, reused):**
+- Used for supplier dropdown in PO creation.\n
+**TypeScript Interfaces:**
+\n```typescript
+interface PurchaseOrder {
+  id: string;\n  po_number: string;\n  supplier_id: string;\n  supplier?: Supplier; // joined data
+  status: 'Draft' | 'Pending' | 'Received' | 'Cancelled';
+  order_date: string;
+  expected_date?: string;
+  total_cost: number;
+  notes?: string;
+  created_by: string;
+  created_at: string;
+  updated_at: string;
+}
+\ninterface PurchaseOrderItem {
+  id: string;\n  purchase_order_id: string;
+  product_id: string;
+  product?: Product; // joined data
+  quantity: number;
+  unit_cost: number;
+  line_total: number;
+}
+```
 
-#### 4.9.2 Create / Edit Purchase Order Page
-**Forma bo'limlari:**
-\n**A) Sarlavha**
-- po_number – avtomatik generatsiya (faqat o'qish)\n- supplier_name – dropdown yoki matn kiritish
-- order_date – standart = bugun
-- expected_date – ixtiyoriy
-- reference – yetkazib beruvchi hisob-fakturasi / ma'lumotnoma raqomi (ixtiyoriy)
-- notes – matn maydoni\n- status – Draft (standart)\n\n**B) Mahsulotlar jadvali**
-**Ustunlar:**
-- Mahsulot (nom yoki SKU bo'yicha qidiruv)
-- SKU\n- Birlik\n- Miqdor (ordered_qty)
-- Xarid narxi (cost)\n- Qator jami (qty × price, avtomatik)\n
-**Funksiyalar:**
-- Qatorlarni qo'shish / o'chirish
-- Mahsulotdan cost_price ni avtomatik to'ldirish, lekin tahrirlash mumkin
-\n**Tekshirish:**
-- Miqdor > 0\n- Narx ≥ 0
-\n**C) Xulosa**
-- Oraliq jami (Subtotal)\n- Chegirma (ixtiyoriy)
-- Soliq (ixtiyoriy)
-- Jami summa (Total amount)
-\n**Tugmalar:**
-- Save as Draft\n- Approve
-- Cancel
-\n**Status o'zgarishlari:**
-- Draft → Approved → (Partially) Received → Closed
-- Draft / Approved → Cancelled
-\n#### 4.9.3 Purchase Order Detail Page
-**Ko'rsatish:**
-\n**Sarlavha:**
-- PO raqomi
-- Yetkazib beruvchi\n- Status belgisi
-- Buyurtma sanasi va kutilayotgan sana
-- Kim yaratdi, kim tasdiqladi
-- Izohlar\n
-**Mahsulotlar jadvali:**
-- Mahsulot
-- Buyurtma qilingan miqdor
-- Qabul qilingan miqdor
-- Qolgan miqdor
-- Birlik narxi
-- Qator jami
+#### 4.9.3 UI / UX – Purchase Order Creation Flow
 
-**Xulosa:**
-- Jami buyurtma qilingan summa
-- Jami qabul qilingan summa
-- Qolgan summa
-\n**Vaqt chizig'i / Faoliyat logi (ixtiyoriy):**
-- Yaratildi, tasdiqlandi, har bir qabul qilish voqeasi, status o'zgarishlari
-\n**Amallar:**
-- Tovarlarni qabul qilish (qisman yoki to'liq)
-- Tahrirlash (faqat Draft / Approved)\n- Bekor qilish (agar hech narsa qabul qilinmagan bo'lsa)
-- PO ni chop qilish / PDF eksport qilish
+**Page: `/purchase-orders/new`**\n
+Implement a single-page or multi-step form:
 
-#### 4.9.4 Receive Goods Flow (Juda muhim)
-**Tugma:** Receive goods
+**Section 1: Basic Info**
+- **Supplier** (required, dropdown from `suppliers` table)
+- **Order Date** (required, default: today)
+- **Expected Date** (optional)\n- **Status** (Draft / Pending, default: Draft)
+- **Notes** (optional, textarea)
 
-**Forma maydonlari:**
-- Qabul qilingan sana
-- Har bir qatoruchun:\n  - Buyurtma qilingan miqdor
-  - Allaqachon qabul qilingan miqdor
-  - Yangi qabul qilingan miqdor (kiritish)
-- Izohlar
+**Validation:**
+- Supplier is required.\n- Order date is required.
+\n**Section 2: Add Products**
+- **Product Search Input** (by name, SKU, or barcode)\n- **Line Items Table:**
+  - Columns:\n    - Product name
+    - SKU
+    - Quantity (editable, numeric input, must be > 0)
+    - Unit cost (editable, numeric input, must be >= 0; default = product.purchase_price)
+    - Line total (calculated: quantity × unit_cost, read-only)
+  - Actions:\n    - Add row (+ button)
+    - Remove row (trash icon)
 
-**Tekshirish:**
-- Yangi qabul qilingan miqdor + allaqachon qabul qilingan ≤ buyurtma qilingan miqdor
-\n**Yuborishdan keyin:**
-- Ombor harakatlarini yaratish:\n  - type: Purchase Received
-  - quantity: +received_qty
-- Inventory modulida mahsulot qoldig'ini yangilash
-- PO statusini yangilash:\n  -Agar barcha qatorlar to'liq qabul qilingan bo'lsa → Received
-  - Agar kamida bitta qator qisman qabul qilingan bo'lsa → Partially Received
-- Dashboard ko'rsatkichlarini yangilash
-- Hisobotlarni yangilash
+**Validation:**
+- At least one product is required.
+- Quantity must be > 0.
+- Unit cost must be >= 0.
+\n**Section 3: Review & Save**
+- **Summary Display:**
+  - Supplier name
+  - Order date and expected date
+  - List of items with quantities and costs
+  - **Total Cost** (sum of all line_total values)
+\n**Actions:**
+- **'Save as Draft'** button:\n  - Insert records into `purchase_orders` and `purchase_order_items`.\n  - Do **not** affect product stock.
+  - Status ='Draft'.
+  - Show success toast: 'Purchase order created as draft.'
+  - Navigate to `/purchase-orders/:id` (detail page).
 
-**Ixtiyoriy:**
-- Oxirgi xaridga asoslanib mahsulot cost_price ni avtomatik yangilash
-\n#### 4.9.5 Integratsiyalar
-\n**Inventory moduli bilan:**
-- Har bir qabul qilish voqeasi qoldiqnioshiradi va harakat yozuvini qo'shadi
-- Ixtiyoriy: Xarid qaytarish oqimi (kelajakda)
-- Barcha o'zgarishlar real-time dashboard va hisobotlarga sinxronlanadi
+- **'Save & Mark as Received'** button:
+  - Insert records into `purchase_orders` and `purchase_order_items`.\n  - **Immediately mark as Received** (see business logic below).
+  - Show success toast: 'Purchase order created and marked as received. Stock updated.'
+  - Navigate to `/purchase-orders/:id` (detail page).
 
-**Mahsulotlar moduli bilan:**
-- Mahsulotlar jadvalidagi mahsulot tanlagich
-- Narx va birlik mahsulotlar jadvalidan o'qiladi
-\n**Yetkazib beruvchilar bilan (agar tizimda mavjud bo'lsa):**
-- supplier_name Suppliers moduliga bog'lanishi mumkin
-\n**Hisobotlar bilan:**
-Purchase Orders ma'lumotlari quyidagi hisobotlarda ishlatiladi:
-- Mahsulot bo'yicha xarid tarixi
-- Yetkazib beruvchi samaradorligi hisobotlari
-- Ombor baholash va xarajat tahlili
-\n#### 4.9.6 Ruxsatlar va xavfsizlik
+#### 4.9.4 Business Logic & Inventory Integration
+
+**When a Purchase Order is saved as Draft:**
+- Insert records into `purchase_orders` and `purchase_order_items`.
+- Do **not** affect product stock.
+- Status = 'Draft'.\n\n**When a Purchase Order is marked as Received:**
+(Either directly when creating via'Save & Mark as Received', or later from detail page via 'Mark as Received' button)
+\n- Update `purchase_orders.status` to 'Received'.
+- For each item in `purchase_order_items`:
+  - **Increase product stock:**
+    ```sql
+    UPDATE products
+    SET stock = stock + quantity\n    WHERE id = product_id;
+    ```
+  - **Insert inventory movement record:**
+    ```sql
+    INSERT INTO inventory_movements (
+      product_id,\n      quantity_change,
+      movement_type,
+      reference_id,
+      created_at
+    ) VALUES (
+      product_id,
+      +quantity,
+      'purchase',\n      purchase_order_id,
+      NOW()
+    );
+    ```
+\n**Transaction Requirement:**
+- All stock updates and inventory movement inserts must be wrapped in a **single database transaction** or **RPC function** to ensure data consistency.
+- If any part fails, the entire operation should **roll back**.
+
+**Example Supabase RPC Function (Pseudocode):**
+\n```sql
+CREATE OR REPLACE FUNCTION mark_purchase_order_as_received(po_id UUID)
+RETURNS VOID AS $$
+BEGIN
+  -- Update PO status\n  UPDATE purchase_orders SET status = 'Received' WHERE id = po_id;
+\n  -- For each item, update stock and log movement
+  FOR item IN SELECT * FROM purchase_order_items WHERE purchase_order_id = po_id LOOP
+    UPDATE products SET stock = stock + item.quantity WHERE id = item.product_id;
+    INSERT INTO inventory_movements (product_id, quantity_change, movement_type, reference_id, created_at)\n    VALUES (item.product_id, item.quantity, 'purchase', po_id, NOW());
+  END LOOP;
+END;
+$$ LANGUAGE plpgsql;\n```
+
+**Frontend Call:**
+\n```typescript
+const { error } = await supabase.rpc('mark_purchase_order_as_received', { po_id: purchaseOrderId });
+if (error) {
+  toast.error('Failed to mark purchase order as received.');
+} else {
+  toast.success('Purchase order marked as received. Stock updated.');
+}
+```
+
+#### 4.9.5 Purchase Orders List Page
+
+**Page: `/purchase-orders`**\n
+**Features:**
+- **Filters:**
+  - Search by PO number or supplier name
+  - Filter by status (All / Draft / Pending / Received / Cancelled)
+  - Date range filter (order_date)
+\n**Table Columns:**
+- **PO Number** (e.g., PO-20251206-00015)
+- **Supplier** (supplier name)
+- **Order Date** (formatted date)
+- **Status** (colored badge):
+  - Draft → Grey
+  - Pending → Yellow
+  - Received → Green
+  - Cancelled → Red
+- **Total Cost** (formatted currency)
+- **Actions:**
+  - **View** (eye icon) → navigate to `/purchase-orders/:id`
+  - **Edit** (pencil icon) → navigate to `/purchase-orders/:id/edit` (only for Draft or Pending)\n  - **Mark as Received** (check icon) → call RPC function to mark as received (only for Pending)
+  - **Cancel** (optional, does not change stock if not yet received)
+
+**Pagination:**
+- Implement pagination for large datasets.
+\n**Export:**
+- Export to Excel / PDF (optional).
+
+#### 4.9.6 Detail Page and Actions
+
+**Page: `/purchase-orders/:id`**\n
+**Header Section:**
+- PO Number
+- Supplier name
+- Order Date
+- Expected Date (if any)
+- Status badge
+- Total Cost
+- Notes (if any)
+- Created by (user name)
+- Created at (timestamp)\n
+**Items Table:**
+- Columns:
+  - Product name\n  - SKU
+  - Quantity
+  - Unit cost
+  - Line total\n\n**Actions (based on status):**
+\n- **If status is 'Pending':**
+  - **'Mark as Received'** button:\n    - Call RPC function to update stock and log movements.\n    - Show success toast: 'Purchase order marked as received. Stock updated.'
+    - Refresh page to show updated status.
+\n- **If status is 'Draft':**
+  - **'Edit'** button → navigate to `/purchase-orders/:id/edit`.\n\n- **If status is 'Received' or 'Cancelled':**\n  - Read-only view (no edit or mark as received).
+
+**Optional:**
+- **'Print'** button → generate PDF of purchase order.
+- **'Cancel'** button (only for Draft or Pending, does not affect stock if not yet received).
+
+#### 4.9.7 Edit Page
+
+**Page: `/purchase-orders/:id/edit`**
+
+- Pre-fill form with existing PO data.
+- Allow editing:\n  - Supplier\n  - Order Date
+  - Expected Date
+  - Status (Draft / Pending)
+  - Notes
+  - Line items (add/remove/edit quantities and unit costs)
+
+**Validation:**
+- Same as creation form.
+
+**Actions:**
+- **'Save Changes'** button:\n  - Update `purchase_orders` and `purchase_order_items` records.
+  - Do **not** affect stock (unless status is changed to 'Received').
+  - Show success toast: 'Purchase order updated.'
+  - Navigate back to `/purchase-orders/:id`.
+
+- **'Cancel'** button → navigate back without saving.
+
+**Restriction:**
+- Cannot edit if status is 'Received' or 'Cancelled'.
+\n#### 4.9.8 Validation, Types, and Error Handling
+
+**TypeScript Types:**
+- Update all TypeScript interfaces for `PurchaseOrder`, `PurchaseOrderItem`, and related Supabase types.
+
+**Validation:**
+- Required fields: Supplier, Order Date, at least one product.
+- Quantity must be > 0.
+- Unit cost must be >= 0.
+- Show user-friendly error messages for invalid inputs.
+
+**Error Handling:**
+- Handle Supabase errors gracefully.
+- Show toast notifications for:\n  - Success: 'Purchase order created', 'Purchase order updated', 'Stock updated successfully'
+  - Error: 'Failed to create purchase order', 'Failed to update stock'\n
+**Navigation:**
+- Ensure no unexpected redirects to Dashboard.
+- All navigation should be intentional and correct.
+
+#### 4.9.9 Testing Scenarios
+
+1. **Create a Draft PO with2 products:**
+   - Save as Draft.\n   - Verify: PO created, no stock changes.
+\n2. **Edit Draft PO:**
+   - Change quantity of one product.
+   - Save.
+   - Verify: PO updated, still no stock changes.
+
+3. **Mark PO as Received:**
+   - Click 'Mark as Received' button.
+   - Verify:\n     - `products.stock` increases correctly for each item.
+     - `inventory_movements` records are created.
+     - Status changes to 'Received'.
+
+4. **Create PO and immediately'Save & Mark as Received':**\n   - One-step creation & stock update.
+   - Verify: PO created with status 'Received', stock updated.
+
+5. **Refresh Products page:**
+   - Verify: Stock column reflects new quantities.
+
+6. **Navigate from'New Purchase Order' button:**
+   - Verify: Always opens `/purchase-orders/new`, not Dashboard.
+
+7. **Attempt to edit'Received' PO:**\n   - Verify: Edit button is disabled or not shown.
+
+8. **Cancel a Draft PO:**
+   - Verify: Status changes to 'Cancelled', no stock changes.
+
+#### 4.9.10 Integration with Other Modules
+
+**Inventory Module:**
+- Each PO receipt increases stock and logs movement.
+- Inventory movements table shows 'purchase' type entries.
+
+**Products Module:**
+- Product selector in PO creation uses products table.
+- Unit cost defaults to product.purchase_price.
+
+**Suppliers Module:**\n- Supplier dropdown in PO creation uses suppliers table.
+
+**Reports Module:**
+- Purchase Orders data feeds into:\n  - Purchase history by product
+  - Supplier performance reports
+  - Inventory valuation and cost analysis
+
+**Dashboard:**
+- Pending purchase orders count shown on dashboard.
+- Real-time updates when PO is created or received.
+
+#### 4.9.11 Permissions and Security
+
 **Admin / Manager:**
-- PO larni yaratish, tahrirlash, tasdiqlash, qabul qilish, bekor qilish
-\n**Kassir / Xodim:**
-- Faqat ko'rish, ixtiyoriy ravishda draft yaratish
+- Create, edit, approve, receive, cancel POs.
+\n**Cashier / Employee:**
+- View only, optionally create drafts.
 
-**Barcha status o'zgarishlari va qabul qilish operatsiyalari logga yozilishi kerak:**
-- foydalanuvchi, vaqt, eski status, yangi status
+**Audit Logging:**
+- All status changes and receipt operations logged:\n  - user, timestamp, old status, new status
+\n#### 4.9.12 UI / UX Requirements
 
-#### 4.9.7 UI / UX talablar
-- Toza, karta asosidagi layout
-- Asosiy PO ma'lumotlari bilan yopishqoq sarlavha
-- Inline tahrirlash bilan mahsulotlar jadvali
-- Rangli status belgilari:
-  - Draft – kulrang
-  - Approved – ko'k
-  - Partially Received – to'q sariq
-  - Received – yashil
-  - Cancelled – qizil
-- Desktop (POS backoffice) uchun optimallashtirilgan, planshet uchun qulay
+- Clean, card-based layout.
+- Sticky header with key PO info.
+- Products table with inline editing.
+- Colored status badges:\n  - Draft – Grey
+  - Pending – Yellow
+  - Received – Green
+  - Cancelled – Red
+- Optimized for desktop (POS backoffice), tablet-friendly.\n\n#### 4.9.13Numbering Policy
 
-#### 4.9.8 Raqamlash siyosati\n**PO raqamini avtomatik generatsiya:**
+**PO Number Auto-generation:**
 - Format: PO-YYYYMMDD-#####
-- Misol: PO-20251206-00015
+- Example: PO-20251206-00015
 
-**Buyurtmaga asoslangan havola kuzatuvni ta'minlaydi**
+**Order-based link ensures traceability.**
 
-#### 4.9.9 Texnik talablar
-**Purchase Orders jadval tuzilishi:**
+#### 4.9.14 Technical Requirements
+
+**Purchase Orders Table Structure:**
 - id\n- po_number
-- supplier_name
-- order_date
-- expected_date\n- reference
+- supplier_id
+- status\n- order_date
+- expected_date
+- total_cost
 - notes
-- status
-- total_amount
 - created_by
-- approved_by
 - created_at
-- updated_at
-\n**Purchase Order Items jadval tuzilishi:**\n- id
-- po_id
-- product_id\n- ordered_qty
-- received_qty
+- updated_at\n
+**Purchase Order Items Table Structure:**
+- id
+- purchase_order_id
+- product_id\n- quantity
 - unit_cost
-- line_total
-\n**Munosabatlar:**
-- Mahsulotlar bilan Many-to-many (PO Items orqali)
-- Inventory Movements bilan One-to-many\n- Yetkazib beruvchilar bilan Many-to-one (agar mavjud bo'lsa)
+- line_total\n\n**Relationships:**
+- Many-to-many with Products (via PO Items)
+- One-to-many with Inventory Movements
+- Many-to-one with Suppliers (if exists)
 
-### 4.10 Inventarizatsiya\n- Omborni tanlash
-- Haqiqiy miqdorni kiritish
-- Tizim miqdori bilan taqqoslash
-- Farqni avtomatik hisoblash va tasdiqlash
-- Ombor harakatiga yozish
-- Inventarizatsiya raqomi formati: INV-YYYY-#####
-- Barcha o'zgarishlar real-time dashboard va hisobotlarga sinxronlanadi
-- Audit trail to'liq saqlanadi
+#### 4.9.15 Final Objective
 
-### 4.11 Mijozlar (Customers Module)
+- **'New Purchase Order' button opens a functional purchase order creation flow.**
+- **Purchase Orders module supports full lifecycle: list, create, edit, receive.**
+- **Product stock and inventory movements stay fully synchronized with purchase operations.**
+- **No unexpected redirects to Dashboard.**
+- **All routes and navigation work correctly.**
+- **Data consistency ensured via database transactions.**
+\n### 4.10 Inventory Count\n- Select warehouse\n- Enter actual quantity
+- Compare with system quantity
+- Auto-calculate difference and confirm
+- Write to inventory movement\n- Inventory count number format: INV-YYYY-#####
+- All changes sync real-time to dashboard and reports
+- Full audit trail preserved\n
+### 4.11 Customers Module
+\n#### 4.11.1 Customers List Page
+**Page Title:** Customers
 
-#### 4.11.1 Customers List Page
-**Sahifa sarlavhasi:** Customers
-\n**Jadval ustunlari:**
-- name – To'liq ism yoki kompaniya nomi
-- phone – Asosiy telefon\n- type – Jismoniy shaxs / Kompaniya\n- total_sales – Jami xaridlar summasi
-- balance – Joriy balans (musbat = mijoz qarzi, manfiy = do'kon qarzi/qaytarish)
-- last_order_date – Oxirgi xarid sanasi
-- status – Faol / Nofaol
-- actions – Ko'rish / Tahrirlash / O'chirish
+**Table Columns:**
+- name – Full name or company name
+- phone – Primary phone\n- type – Individual / Company
+- total_sales – Total purchases amount
+- balance – Current balance (positive = customer debt, negative = store debt/refund)
+- last_order_date – Last purchase date
+- status – Active / Inactive
+- actions – View / Edit / Delete\n
+**Features:**
+- Search by name / phone
+- Filters:\n  - Type (Individual / Company)
+  - Status (Active / Inactive)
+  - Balance (In Debt / No Debt)
+- Sorting:
+  - Total sales\n  - Last order date
+  - Name A–Z / Z–A
+- Export to Excel / PDF
+- '+ Add Customer' button
 
-**Funksiyalar:**
-- Ism / telefon bo'yicha qidiruv
-- Filtrlar:\n  -Turi (Jismoniy shaxs / Kompaniya)
-  - Status (Faol / Nofaol)
-  - Balans (Qarzdor / Qarzsiz)
-- Saralash:\n  - Jami savdo\n  - Oxirgi buyurtma sanasi
-  -Ism A–Z / Z–A
-- Excel / PDF formatida eksport
-- '+ Add Customer' tugmasi
-\n#### 4.11.2 Add / Edit Customer Form
-**Asosiy ma'lumotlar:**
-- name (majburiy)
-- type – Jismoniy shaxs / Kompaniya
-- phone (majburiy, formatlash + tekshirish bilan)
-- email (ixtiyoriy)
-- address (ixtiyoriy)
-\n**Kompaniya bo'limi (faqat type = Kompaniya bo'lganda ko'rinadi):**
-- company_name (agar asosiy ismdan farq qilsa)
-- tax_number / VAT / INN (ixtiyoriy lekin o'rnatilgan bo'lsa noyob)
-\n**Moliyaviy sozlamalar:**
-- credit_limit (ixtiyoriy)
-- allow_debt (ha/yo'q)
-- initial_balance (standart 0; faqat yaratishda)
-\n**Boshqa:**
-- notes – erkin matn
-- status – Faol / Nofaol
-\n**Tekshirish:**
-- Ism va telefon majburiy
-- Telefon noyob (dublikatlar yo'q)
-- Soliq raqami noyob
-- Boshlang'ich balans raqamli
-- Kredit limiti raqamli
+#### 4.11.2 Add / Edit Customer Form
+**Basic Info:**
+- name (required)
+- type – Individual / Company
+- phone (required, with formatting + validation)
+- email (optional)
+- address (optional)
+\n**Company Section (visible only when type = Company):**
+- company_name (if different from main name)
+- tax_number / VAT / INN (optional but unique if set)
+\n**Financial Settings:**
+- credit_limit (optional)
+- allow_debt (yes/no)
+- initial_balance (default0; only on creation)
 
-**Tugmalar:** Save, Cancel\n
+**Other:**
+- notes – free text\n- status – Active / Inactive
+\n**Validation:**
+- Name and phone required\n- Phone unique (no duplicates)
+- Tax number unique\n- Initial balance numeric
+- Credit limit numeric
+
+**Buttons:** Save, Cancel\n
 #### 4.11.3 Customer Detail Page
-**Layout:**umumiy ma'lumotlar bilan sarlavha + tablar.\n
-**Sarlavha bloki:**
-- Ism +turi belgisi
-- Telefon, email\n- Manzil
+**Layout:** header with general info + tabs.\n
+**Header Block:**
+- Name + type badge
+- Phone, email\n- Address
+- Status\n- Credit limit
+- Current balance (with color):\n  - Red → customer owes store (positive balance)
+  - Green → store owes customer/refund/advance payment (negative)\n  - Grey → zero balance
+
+**Key Metrics (cards):**
+- Total sales amount
+- Number of orders
+- Average order value
+- Total returns amount
+- Last order date
+\n**Tab1 — Orders**
+Table:\n- Order number
+- Date
+- Total amount
+- Amount paid
 - Status
-- Kredit limiti
-- Joriy balans (rang bilan):\n  - Qizil → mijoz do'konga qarzdor (musbat balans)
-  - Yashil → do'kon qarzdor/qaytarish / oldindan to'lov (manfiy)\n  - Kulrang → nol balans
-\n**Asosiy ko'rsatkichlar (kartalar):**
-- Jami savdo summasi
-- Buyurtmalar soni
-- O'rtacha buyurtma qiymati
-- Jami qaytarishlar summasi
-- Oxirgi buyurtma sanasi
-\n**Tab1— Buyurtmalar (Orders)**
-Jadval:\n- Buyurtma raqomi
-- Sana
-- Jami summa
-- To'langan summa
-- Status
-- Amallar → buyurtma detailiga o'tish
+- Actions → go to order detail
 
-**Tab 2 — To'lovlar (Payments)**
-Jadval:
-- Sana
-- Summa
-- Yo'nalish (Mijozdan to'lov / Mijozga qaytarish)
-- Usul (Naqd / Karta / O'tkazma / Boshqa)
-- Bog'liq buyurtma (agar mavjud bo'lsa)
-\nBalans buyurtmalar + to'lovlar asosida avtomatik hisoblanishi kerak.
+**Tab 2 — Payments**
+Table:
+- Date
+- Amount
+- Direction (Payment from customer / Refund to customer)\n- Method (Cash / Card / Transfer / Other)
+- Related order (if any)
+\nBalance calculated automatically based on orders + payments.
 
-**Tab 3 — Qaytarishlar (Returns)**
-Jadval:
-- Qaytarish raqomi
-- Sana
-- Qaytarilgan summa
-- Bog'liq buyurtma
-- Status
-\n**Tab 4 — Eslatmalar / Faoliyat logi (Notes / Activity Log)**
-- Qo'lda eslatmalar
-- Tizim voqealari:\n  - Mijoz yaratildi/yangilandi
-  - Kredit limiti o'zgarishi
-  - Balans tuzatishlari
-\n#### 4.11.4 POS Terminal integratsiyasi
-POS Terminaldan kassir:\n- Mavjud mijozni tanlashi mumkin
-- Tezkor mijoz yaratishi mumkin (faqat ism + telefon)
-\nSotuvdan keyin:
-- Buyurtma mijozga bog'lanadi
-- Balans yangilanadi agar:\n  - Kredit savdo\n  - Ortiqcha to'lov / oldindan to'lov
-- Mijoz statistikasi real-time yangilanadi
+**Tab 3 — Returns**
+Table:
+- Return number
+- Date
+- Returned amount
+- Related order\n- Status
+\n**Tab 4 — Notes / Activity Log**
+- Manual notes
+- System events:\n  - Customer created/updated
+  - Credit limit change
+  - Balance adjustments
+\n#### 4.11.4 POS Terminal Integration
+From POS Terminal, cashier can:
+- Select existing customer
+- Quick-create customer (name + phone only)
+\nAfter sale:
+- Order linked to customer
+- Balance updated if:\n  - Credit sale
+  - Overpayment / advance payment
+- Customer statistics updated real-time
 
-#### 4.11.5 Balans va qarz mantiqiy (Majburiy)
-**Balans formulasi:**
-Balans = (Mijoz uchun jami buyurtmalar – Mijozdan jami to'lovlar + Do'kon qaytarishlari)\n
-**Balans talqini:**
-- Agar balans > 0 → mijoz qarzi
-- Agar balans < 0 → do'kon qarzdor (oldindan to'lov yoki qaytarish)
-\n**Ogohlantirish ko'rsatish qachon:**
-- Yangi savdo balansi credit_limit danoshirib yuborsa
-- Mijoz allow_debt = false va kassir kredit savdo qilmoqchi bo'lsa
+#### 4.11.5 Balance and Debt Logic (Mandatory)
+**Balance Formula:**
+Balance = (Total orders for customer – Total payments from customer + Store refunds)\n
+**Balance Interpretation:**
+- If balance > 0 → customer debt
+- If balance < 0 → store owes (advance payment or refund)
+\n**Show Warning When:**
+- New sale would exceed credit_limit
+- Customer has allow_debt = false and cashier tries credit sale
+\n#### 4.11.6 Reports Integration
+Customers module feeds data to reports:
+- Top customers by sales
+- Most indebted customers
+- Customer activity by period
 
-#### 4.11.6 Hisobotlar integratsiyasi
-Mijozlar moduli hisobotlarga ma'lumot berishi kerak:
-- Savdo bo'yicha top mijozlar
-- Eng ko'p qarzdor mijozlar
-- Davr bo'yicha mijoz faolligi
+#### 4.11.7 Permissions and Security
+**Admin/Manager:** full access (add, edit, delete, adjust balance)
+**Cashier:** view + create + edit basic fields, no delete, no direct balance edit
+\n**Delete customer only allowed if:**
+- No related orders, payments, or returns
+- Otherwise → mark as Inactive instead of physical delete
 
-#### 4.11.7 Ruxsatlar va xavfsizlik
-**Admin/Manager:** to'liq kirish (qo'shish, tahrirlash, o'chirish, balansni tuzatish)
-**Kassir:** ko'rish + yaratish + asosiy maydonlarni tahrirlash, o'chirish yo'q, to'g'ridan-to'g'ri balansni tahrirlash yo'q
-
-**Mijozni o'chirish faqat ruxsat etiladiagar:**
-- Bog'liq buyurtmalar, to'lovlar yoki qaytarishlar yo'q bo'lsa
-- Aks holda → jismoniy o'chirish o'rniga Nofaol deb belgilash
-
-#### 4.11.8 UI/UX talablar
-- Toza, zamonaviy jadval ko'rinishi
-- Yopishqoq qidiruv va filtrlar paneli
-- Status va balans uchun rangli belglar
-- Responsive layout (desktop optimallashtirilgan, planshet uchun qulay)
-- Mijoz → buyurtmalar → to'lovlar va orqaga tez navigatsiya
-
-#### 4.11.9 Texnik talablar
-**Mijozlar jadval tuzilishi:**
+#### 4.11.8 UI/UX Requirements
+- Clean, modern table view
+- Sticky search and filters panel
+- Colored badges for status and balance
+- Responsive layout (desktop optimized, tablet-friendly)
+- Fast navigation between customer → orders → payments and back
+\n#### 4.11.9 Technical Requirements
+**Customers Table Structure:**
 - id
 - name
 - type (individual/company)
@@ -1406,164 +1591,173 @@ Mijozlar moduli hisobotlarga ma'lumot berishi kerak:
 - address
 - company_name
 - tax_number
-- credit_limit\n- allow_debt
+- credit_limit
+- allow_debt
 - initial_balance
-- current_balance (hisoblangan)
+- current_balance (calculated)
 - notes
 - status
 - created_at
 - updated_at
 
-**Munosabatlar:**
-- Buyurtmalar bilan One-to-many\n- To'lovlar bilan One-to-many
-- Qaytarishlar bilan One-to-many
-- Balans avtomatik hisoblash
-\n### 4.12 Xodimlar va rollar (Employees Module)
+**Relationships:**
+- One-to-many with Orders
+- One-to-many with Payments
+- One-to-many with Returns
+- Auto-calculate balance\n
+### 4.12 Employees and Roles Module
 
 #### 4.12.1 Employees Main Page
-**Sahifa sarlavhasi:** Employees
+**Page Title:** Employees
 
-**Jadval ustunlari:**
-- Name – To'liq ism\n- Role – Admin / Manager / Cashier\n- Phone – Telefon raqami
-- Email – Elektron pochta
+**Table Columns:**
+- Name – Full name
+- Role – Admin / Manager / Cashier\n- Phone – Phone number
+- Email – Email address
 - Status – Active / Disabled
-- Last login – Oxirgi kirish vaqti
+- Last login – Last login time
 - Actions – View, Edit, Deactivate
 
-**Funksiyalar:**
-- Ism, telefon yoki email bo'yicha qidiruv
-- Filtrlar:
+**Features:**
+- Search by name, phone, or email
+- Filters:
   - Role (Admin / Manager / Cashier)
   - Status (Active / Disabled)
-- Sahifalash (Pagination)
-- '+ Add Employee' tugmasi\n
-#### 4.12.2 Add Employee Form
-**Forma maydonlari:**
-- Full name (majburiy)
-- Role: Admin / Manager / Cashier (majburiy)
-- Phone number (majburiy, +998 formatini tekshirish)
-- Email (ixtiyoriy lekin tekshiriladi)
-- Login username (majburiy, noyob)
+- Pagination
+- '+ Add Employee' button
+\n#### 4.12.2 Add Employee Form
+**Form Fields:**
+- Full name (required)
+- Role: Admin / Manager / Cashier (required)
+- Phone number (required, validate +998 format)
+- Email (optional but validated)
+- Login username (required, unique)
 - Password + Confirm Password\n- Status (Active / Disabled)
-\n**Tekshirish:**
-- Username noyob bo'lishi kerak
-- Telefon mahalliy formatgamos kelishi kerak
-- Parol uzunligi ≥ 6\n- Rolni Adminga o'zgartirish tasdiqlash modali bilan amalga oshiriladi
+\n**Validation:**
+- Username must be unique
+- Phone must match local format
+- Password length >= 6
+- Changing role to Admin requires confirmation modal
 
-**Yuborishdan keyin:**
-- Xodim foydalanuvchi yozuvini yaratish
-- Ruxsatlarni avtomatik tayinlash
-\n#### 4.12.3 Edit Employee Page
-**Tahrirlash mumkin bo'lgan maydonlar:**
-- Name\n- Role (Admin faqat manager/kassirlarni pasaytirishi/ko'tarishi mumkin)
+**After Submit:**
+- Create employee user record
+- Auto-assign permissions\n\n#### 4.12.3 Edit Employee Page
+**Editable Fields:**
+- Name
+- Role (Admin can only demote/promote managers/cashiers)
 - Phone
 - Email
 - Status toggle
-\n**Tahrirlash mumkin emas:**
-- Username\n- Created date
-\n**Qo'shimcha amallar:**
-- Reset password\n- Disable employee (soft delete)
-- Force logout (faol sessiyani o'chirish)
-\n#### 4.12.4 Employee Detail Page
-**Bo'limlar:**
+\n**Non-editable:**
+- Username
+- Created date
+\n**Additional Actions:**
+- Reset password
+- Disable employee (soft delete)
+- Force logout (clear active session)
+
+#### 4.12.4 Employee Detail Page\n**Sections:**
 \n**A) Profile Overview**
-- Name\n- Role badge
+- Name
+- Role badge
 - Contact info
 - Current status
 - Last login
 - Account created date
-\n**B) Performance Dashboard**
-- Total sales completed – Yakunlangan jami savdolar\n- Total revenue generated – Yaratilgan jami daromad
-- Average order amount – O'rtacha buyurtma summasi
-- Total returns processed – Qayta ishlangan jami qaytarishlar
-- Net profit from sales – Savdodan sof foyda
-- Productivity index – Samaradorlik indeksi (AI hisoblangan)
 
-**Diagrammalar:**
-- Daily sales chart – Kunlik savdo diagrammasi
-- Transactions count chart – Tranzaksiyalar soni diagrammasi
-- Hourly activity heatmap – Soatlik faoliyat issiqlik xaritasi
+**B) Performance Dashboard**
+- Total sales completed
+- Total revenue generated
+- Average order amount
+- Total returns processed
+- Net profit from sales
+- Productivity index (AI calculated)
+
+**Charts:**
+- Daily sales chart
+- Transactions count chart
+- Hourly activity heatmap
 \n**C) Time Tracking**
-Barcha login/logout ro'yxati:
-- Login time – Kirish vaqti
-- Logout time – Chiqish vaqti
-- Session duration – Sessiya davomiyligi
-- IP address – IP manzil
+List of all login/logout:\n- Login time
+- Logout time
+- Session duration
+- IP address
 
 **D) Activity Log**
 Audit trail:
-- Created orders – Yaratilgan buyurtmalar
-- Edited orders – Tahrirlangan buyurtmalar
-- Cancellations – Bekor qilishlar
-- Returns – Qaytarishlar\n- Inventory adjustments – Ombor tuzatishlari
-- Price changes – Narx o'zgarishlari
-- Held orders saved/restored – Kutilayotgan buyurtmalar saqlangan/tiklangan
+- Created orders
+- Edited orders
+- Cancellations
+- Returns
+- Inventory adjustments
+- Price changes
+- Held orders saved/restored
 
-Har bir yozuv quyidagilarni o'z ichiga olishi kerak:
-- Timestamp – Vaqt belgisi
-- Action – Amal\n- Affected document ID – Ta'sirlangan hujjat ID
-- Description – Tavsif
-\n#### 4.12.5 POS Terminal bilan integratsiya
-POS Terminal xodimga asoslangan mantiqni qo'llab-quvvatlashi kerak:
-\n**Login tizimi:**
-- Username/password orqali kirish
-- Sessiya kuzatuvi
-- Xodim shift start/end\n- Avtomatik shift hisobotlari
-- Cash drawer open/close yozuvlari xodimga bog'langan
+Each entry includes:\n- Timestamp
+- Action\n- Affected document ID
+- Description
 
-**Kassir cheklovlari:**
-- Mahsulotlarni tahrirlash mumkin emas
-- Sozlamalarni tahrirlash mumkin emas\n- Buyurtmalarni o'chirish mumkin emas\n- Narxlarni o'zgartirish mumkin emas\n\n**Manager:**
-- Chegirmalarni tasdiqlashi mumkin\n- Kam qoldiqdagi savdolarni bekor qilishi mumkin
-- Qaytarishlarni tasdiqlashi mumkin
+#### 4.12.5 POS Terminal Integration
+POS Terminal supports employee-based logic:
+\n**Login System:**
+- Login via username/password
+- Session tracking
+- Employee shift start/end\n- Auto shift reports
+- Cash drawer open/close records linked to employee
+
+**Cashier Restrictions:**
+- Cannot edit products
+- Cannot edit settings
+- Cannot delete orders
+- Cannot change prices
+\n**Manager:**
+- Can approve discounts
+- Can override low-stock sales
+- Can approve returns
 \n**Admin:**
-- To'liq kirish\n\n#### 4.12.6 Permissions & Security Layer
-**Rol asosida kirish:**
+- Full access\n\n#### 4.12.6Permissions & Security Layer
+**Role-based Access:**
 \n**Admin:**
-- Tizimga to'liq kirish
-- Xodimlarni yaratish/tahrirlash/o'chirish
-- Barcha hisobotlarni ko'rish
-- Tizim sozlamalarini o'zgartirish
+- Full system access
+- Create/edit/delete employees
+- View all reports
+- Change system settings
 
 **Manager:**
-- Ko'pchilik resurslarga ko'rish/tahrirlash
-- Xodimlarni o'chirish mumkin emas
-- Tizim sozlamalarini o'zgartirish mumkin emas
-- Muhim amallarni tasdiqlashi mumkin
+- View/edit most resources
+- Cannot delete employees
+- Cannot change system settings
+- Can approve critical actions
 
-**Kassir:**
-- Cheklangan kirish
-- Savdo, qaytarishlar yaratishi mumkin
-- Moliyaviy hisobotlarni ko'rish mumkin emas
-- Omborni tahrirlash mumkin emas\n
-**Backend tekshiruvlari:**
-- Himoyalangan xodim yozuvlari (oxirgi adminni o'chirish mumkin emas)
-- Kuchli parol tekshiruvi
-- 5marta muvaffaqiyatsiz kirish urinishidan keyin hisob blokirovkasi
+**Cashier:**
+- Limited access
+- Can create sales, returns\n- Cannot view financial reports
+- Cannot edit inventory
 
-#### 4.12.7 Employee Activity Analytics
-Tizim quyidagilarni hisoblashi kerak:
-- Employee performance score – Xodim samaradorlik balli
-- Profit contribution – Foyda hissasi
-- Transaction accuracy – Tranzaksiyaaniqligi
-- Error rate – Xato darajasi (bekor qilingan/o'chirilgan buyurtmalar)
-- Average checkout time – O'rtacha to'lov vaqti
-- Peak working hours – Eng yuqori ish soatlari
+**Backend Checks:**
+- Protected employee records (cannot delete last admin)
+- Strong password validation
+- Account lockout after 5 failed login attempts
+\n#### 4.12.7 Employee Activity Analytics
+System calculates:
+- Employee performance score\n- Profit contribution
+- Transaction accuracy
+- Error rate (cancelled/voided orders)
+- Average checkout time
+- Peak working hours
 
-**Vizualizatsiya:**
-- Line charts – Chiziqli diagrammalar
-- Bar charts – Ustunli diagrammalar
-- Pie charts – Doira diagrammalar
+**Visualization:**
+- Line charts\n- Bar charts
+- Pie charts
 \n#### 4.12.8 Export & Reporting
-Eksport imkoniyati:
-- Employees list (Excel/PDF) – Xodimlar ro'yxati
-- Time logs – Vaqt loglari
-- Cashier performance reports – Kassir samaradorlik hisobotlari
-- Employee activity logs – Xodim faoliyat loglari
-\n#### 4.12.9 Technical Requirements
-**Database fields:**
-- id
-- full_name
+Export capability:
+- Employees list (Excel/PDF)
+- Time logs\n- Cashier performance reports
+- Employee activity logs
+
+#### 4.12.9 Technical Requirements
+**Database Fields:**
+- id\n- full_name
 - role
 - phone
 - email
@@ -1587,537 +1781,560 @@ Eksport imkoniyati:
 - duration
 - ip_address
 
-#### 4.12.10 UI/UX talablar
-- Toza professional layout
-- Izchil rang sxemasi
-- Responsive dizayn
-- Mobil qulay versiya
+#### 4.12.10 UI/UX Requirements
+- Clean professional layout
+- Consistent color scheme
+- Responsive design
+- Mobile-friendly version
 - Sticky table header
-- Loading states va skeletons
+- Loading states and skeletons
 - Empty state placeholders
-- Xodim → buyurtmalar → faoliyat va orqaga tez navigatsiya
+- Fast navigation between employee → orders → activity and back
 
-#### 4.12.11 Ruxsatlar\n**Admin:**
-- Barcha xodim operatsiyalariga to'liq kirish
-- Rollarni o'zgartirish
-- Xodimlarni o'chirish
+#### 4.12.11 Permissions\n**Admin:**
+- Full access to all employee operations
+- Change roles\n- Delete employees
 \n**Manager:**
-- Xodimlarni ko'rish
-- Kassirlarni yaratish/tahrirlash
-- O'chirish huquqi yo'q
+- View employees
+- Create/edit cashiers
+- No delete rights
 
-**Kassir:**
-- Faqat o'z profilini ko'rish
-- Tahrirlash huquqi yo'q
-\n### 4.13 Hisobotlar (Reports Module)
+**Cashier:**
+- View own profile only
+- No edit rights
+\n### 4.13 Reports Module
 
-#### 4.13.1 Reports Main Page\n**Sahifa sarlavhasi:** Reports
+#### 4.13.1 Reports Main Page
+**Page Title:** Reports\n
+**Page Sections (card view with icons):**
+- Sales Reports
+- Inventory Reports
+- Purchase Reports
+- Employee Reports
+- Financial Reports
+- Export Center
 
-**Sahifa bo'limlari (kartalar ko'rinishida ikkonlar bilan):**
-- Sales Reports (Savdo hisobotlari)
-- Inventory Reports (Ombor hisobotlari)
-- Purchase Reports (Xarid hisobotlari)\n- Employee Reports (Xodimlar hisobotlari)
-- Financial Reports (Moliya hisobotlari)
-- Export Center (Eksport markazi)
-
-#### 4.13.2 Sales Reports (Savdo hisobotlari)
-\n**4.13.2.1 Daily Sales Report (Kunlik savdo hisoboti)**
-\n**Jadval ustunlari:**
-- Invoice number (Chek raqomi)
-- Date/time (Sana/vaqt)
-- Cashier (Kassir)
-- Payment type (To'lov turi: Cash / Card / Mixed)
-- Total sale (Jami savdo)
-- Profit (Foyda)
+#### 4.13.2 Sales Reports
+\n**4.13.2.1 Daily Sales Report**
+\n**Table Columns:**
+- Invoice number
+- Date/time
+- Cashier\n- Payment type (Cash / Card / Mixed)
+- Total sale\n- Profit
 - Status (Completed / Returned / Cancelled)
+\n**Filters:**
+- Date range\n- Cashier\n- Payment type
+- Status
 
-**Filtrlar:**
-- Date range (Sana oralig'i)
-- Cashier (Kassir)
-- Payment type (To'lov turi)
-- Status\n
-**Jami ko'rsatkichlar:**
-- Total sales (Jami savdo)
-- Total profit (Jami foyda)\n- Total returns (Jami qaytarishlar)
-- Average order value (O'rtacha buyurtma qiymati)
-\n**Eksport:**
-- Excel va PDF\n\n**Real-time sinxronizatsiya:**
-- Barcha ko'rsatkichlar buyurtmalar va qaytarishlar modullaridan avtomatik yangilanadi
-\n**4.13.2.2 Product Sales Report (Mahsulot savdo hisoboti)**
+**Summary Metrics:**
+- Total sales\n- Total profit
+- Total returns
+- Average order value\n\n**Export:**
+- Excel and PDF\n\n**Real-time Synchronization:**
+- All metrics automatically updated from orders and returns modules
+\n**4.13.2.2 Product Sales Report**
 
-**Jadval ustunlari:**
-- Product name (Mahsulot nomi)
-- SKU\n- Category (Kategoriya)
-- Quantity sold (Sotilgan miqdor)
-- Revenue (Daromad)
-- Profit (Foyda)\n\n**Funksiyalar:**
-- Top10 best-selling products (Eng ko'p sotilgan 10 mahsulot)
-- Slow-moving products (Kam sotilayotgan mahsulotlar)\n- Profit margin indicators (Foyda marjasi ko'rsatkichlari: yashil/qizil)\n
-**Filtrlar:**
-- Date range (Sana oralig'i)
-- Category (Kategoriya)
+**Table Columns:**
+- Product name
 - SKU
-\n**4.13.2.3 Customer Sales Report (Mijoz savdo hisoboti)**
-
-**Jadval ustunlari:**
-- Customer (Mijoz)
-- Total purchases (Jami xaridlar)
-- Number of orders (Buyurtmalar soni)
-- Average order value (O'rtacha buyurtma qiymati)
-- Outstanding balance (Qarz balansi)
-
-**Filtrlar:**
-- Customer name (Mijoz nomi)
-- Date (Sana)
-\n#### 4.13.3 Inventory Reports (Ombor hisobotlari)
-
-**4.13.3.1 Stock Levels Report (Qoldiq darajalari hisoboti)**
-
-**Jadval ustunlari:**
-- Product name (Mahsulot nomi)
+- Category
+- Quantity sold
+- Revenue
+- Profit
+\n**Features:**
+- Top10 best-selling products
+- Slow-moving products
+- Profit margin indicators (green/red)
+\n**Filters:**
+- Date range
+- Category
 - SKU
-- Current stock (Joriy qoldiq)
-- Minimum stock (Minimal qoldiq)
-- Stock status (Qoldiq holati: Low / OK / Out of stock)
-\n**Funksiyalar:**
-- Avtomatik rangli ko'rsatkichlar
-- Excel va PDF eksport
-\n**4.13.3.2 Inventory Movement Report (Ombor harakati hisoboti)**
-\n**Jadval ustunlari:**
-- Date (Sana)
-- Product (Mahsulot)
-- Type (Turi: Sale, Purchase, Adjustment, Return)
-- Quantity change (Miqdor o'zgarishi: +/-)
-- Referencedocument (Ma'lumotnoma hujjat: Order ID / Purchase Order ID)
-- Performed by user (Foydalanuvchi tomonidan amalga oshirildi)
+\n**4.13.2.3 Customer Sales Report**
 
-**Filtrlar:**
-- Date range (Sana oralig'i)
-- Type (Turi)
-- Product (Mahsulot)
+**Table Columns:**
+- Customer\n- Total purchases
+- Number of orders
+- Average order value
+- Outstanding balance
 
-**4.13.3.3 Valuation Report (Baholash hisoboti)**
-\n**Jadval ustunlari:**
-- Product (Mahsulot)
+**Filters:**
+- Customer name
+- Date\n\n#### 4.13.3 Inventory Reports
+
+**4.13.3.1 Stock Levels Report**
+
+**Table Columns:**
+- Product name
 - SKU
-- Cost price (Xarid narxi)
-- Quantity (Miqdor)
-- Total value (Jami qiymat: qty × price)
-\n**Jami ko'rsatkichlar:**
-- Total inventory value (Jami ombor qiymati)
-- Total units in stock (Ombordagi jami birliklar)\n\n#### 4.13.4 Purchase Reports (Xarid hisobotlari)
-\n**4.13.4.1 Purchase Order Summary (Xarid buyurtmasi xulosasi)**
+- Current stock
+- Minimum stock
+- Stock status (Low / OK / Out of stock)
 
-**Jadval ustunlari:**\n- PO number (PO raqomi)
-- Supplier (Yetkazib beruvchi)
-- Total ordered amount (Jami buyurtma qilingan summa)
-- Total received amount (Jami qabul qilingan summa)
-- Status\n- Date (Sana)
+**Features:**
+- Auto color indicators\n- Excel and PDF export
+\n**4.13.3.2 Inventory Movement Report**
 
-**4.13.4.2 Supplier Performance Report (Yetkazib beruvchi samaradorligi hisoboti)**
-\n**Jadval ustunlari:**
-- Supplier (Yetkazib beruvchi)
-- Total purchases (Jami xaridlar)
-- On-time delivery rate (O'z vaqtida yetkazib berish darajasi)
-- Number of purchase orders (Xarid buyurtmalari soni)
-- Returns from supplier (Yetkazib beruvchidan qaytarishlar)
-- Average cost savings (O'rtacha xarajat tejash)
+**Table Columns:**
+- Date
+- Product
+- Type (Sale, Purchase, Adjustment, Return)
+- Quantity change (+/-)
+- Referencedocument (Order ID / Purchase Order ID)
+- Performed by user
 
-#### 4.13.5 Employee Reports (Xodimlar hisobotlari)
+**Filters:**
+- Date range
+- Type
+- Product
 
-**4.13.5.1Cashier Performance (Kassir samaradorligi)**
+**4.13.3.3 Valuation Report**
 
-**Jadval ustunlari:**
-- Employee (Xodim)
-- Number of sales (Savdolar soni)
-- Total sales amount (Jami savdo summasi)
-- Total profit (Jami foyda)\n- Mistakes / voided orders (Xatolar / bekor qilingan buyurtmalar)
-- Working hours (Ish soatlari - ixtiyoriy)\n
-**4.13.5.2 Login Activity Log (Kirish faoliyati logi)**
+**Table Columns:**
+- Product
+- SKU
+- Cost price
+- Quantity
+- Total value (qty × price)
+\n**Summary Metrics:**
+- Total inventory value
+- Total units in stock
+\n#### 4.13.4 Purchase Reports
 
-**Jadval ustunlari:**
-- Employee (Xodim)\n- Login time (Kirish vaqti)
-- Logout time (Chiqish vaqti)
-- Duration (Davomiyligi)
-- IP address (IP manzil)
-\n#### 4.13.6 Financial Reports (Moliya hisobotlari)
+**4.13.4.1 Purchase Order Summary**
 
-**4.13.6.1 Profit & Loss Report (Foyda va zarar hisoboti)**
-\n**Bo'limlar:**
-- Gross sales (Yalpi savdo)
-- Discounts (Chegirmalar - qator va buyurtma chegirmalari)
-- Net sales (Sof savdo)
-- Cost of goods sold - COGS (Sotilgan tovarlar xarajati)
-- Gross profit (Yalpi foyda)
-- Returns (Qaytarishlar)\n- Final profit (Yakuniy foyda)
-\n**Vaqt davrlari:**
-- Daily (Kunlik)
-- Weekly (Haftalik)
-- Monthly (Oylik)
-- Custom date (Maxsus sana)
+**Table Columns:**
+- PO number
+- Supplier
+- Total ordered amount
+- Total received amount
+- Status\n- Date
 
-**4.13.6.2 Payment Method Breakdown (To'lov usullari taqsimoti)**
-\n**Diagramma:**
-- Cash % (Naqd %)
-- Card % (Karta %)
-- Mixed payments % (Aralash to'lovlar %)
-\n**Jadval:**
-- Payment type (To'lov turi)\n- Number of transactions (Tranzaksiyalar soni)
-- Total amount (Jami summa)
-\n#### 4.13.7 Dashboard Analytics (Ixtiyoriy qo'shimcha)\n
-**Vizual diagrammalar:**
-- Sales chart by date (Sana bo'yicha savdo diagrammasi)
-- Profit chart (Foyda diagrammasi)
-- Top products (Top mahsulotlar)
-- Stock alerts (Qoldiq ogohlantirishlari)
-- Purchase trends (Xarid tendentsiyalari)
+**4.13.4.2 Supplier Performance Report**
 
-**Diagramma turlari:**
-- Bar chart (Ustunli diagramma)
-- Line chart (Chiziqli diagramma)
-- Pie chart (Doira diagramma)\n\n**Ishlatish:**
-- Recharts kutubxonasi
-- Responsive UI
-\n#### 4.13.8 Export Center (Eksport markazi)
+**Table Columns:**
+- Supplier\n- Total purchases
+- On-time delivery rate
+- Number of purchase orders
+- Returns from supplier
+- Average cost savings
 
-**Har bir hisobot uchun eksport qo'llab-quvvatlash:**\n- Excel\n- PDF
-- CSV\n\n#### 4.13.9Filtrlar va qidiruv (Global mantiq)
+#### 4.13.5 Employee Reports
 
-**Har bir hisobot quyidagilarni qo'llab-quvvatlashi kerak:**
-- Global tezkor qidiruv
-- Date range picker (Sana oralig'i tanlagich)
-- Multi-select filters (Ko'p tanlovli filtrlar)
-- Pagination (Sahifalash)
-- Sorting (Saralash)
-\n#### 4.13.10 Ruxsatlar\n
+**4.13.5.1 Cashier Performance**
+
+**Table Columns:**
+- Employee
+- Number of sales
+- Total sales amount
+- Total profit
+- Mistakes / voided orders
+- Working hours (optional)
+
+**4.13.5.2 Login Activity Log**
+
+**Table Columns:**
+- Employee
+- Login time
+- Logout time
+- Duration\n- IP address
+
+#### 4.13.6 Financial Reports
+
+**4.13.6.1 Profit & Loss Report**
+
+**Sections:**
+- Gross sales
+- Discounts (line and order discounts)
+- Net sales
+- Cost of goods sold - COGS
+- Gross profit
+- Returns\n- Final profit
+
+**Time Periods:**
+- Daily
+- Weekly
+- Monthly
+- Custom date\n
+**4.13.6.2 Payment Method Breakdown**
+
+**Chart:**
+- Cash %
+- Card %
+- Mixed payments %
+\n**Table:**
+- Payment type
+- Number of transactions
+- Total amount\n\n#### 4.13.7 Dashboard Analytics (Optional Add-on)
+
+**Visual Charts:**
+- Sales chart by date
+- Profit chart\n- Top products\n- Stock alerts
+- Purchase trends
+
+**Chart Types:**
+- Bar chart
+- Line chart
+- Pie chart
+\n**Usage:**
+- Recharts library\n- Responsive UI
+\n#### 4.13.8 Export Center
+
+**Export support for each report:**
+- Excel
+- PDF
+- CSV
+\n#### 4.13.9 Filters and Search (Global Logic)
+
+**Each report should support:**
+- Global quick search
+- Date range picker
+- Multi-select filters
+- Pagination
+- Sorting
+\n#### 4.13.10 Permissions\n
 **Admin:**
-- Barcha hisobotlarga kirish
+- Access to all reports
 \n**Manager:**
-- Savdo,ombor, moliya hisobotlariga kirish
+- Access to sales, inventory, financial reports
 
-**Kassir:**
-- Faqat shaxsiy samaradorlik hisobotiga kirish
+**Cashier:**
+- Access to personal performance report only
 
-**Audit logging:**
-- Eksportlarni ko'rish
-- Hisobotlarni yaratish
-\n#### 4.13.11 UI talablar
+**Audit Logging:**
+- View exports
+- Create reports
+\n#### 4.13.11 UI Requirements
 
-- Toza professional layout
-- Izchil rang sxemasi
-- Responsive dizayn
-- Mobil qulay versiya
-- Sticky table header (Yopishqoq jadval sarlavhasi)
-- Loading states va skeletons (Yuklash holatlari va skeletlar)
-- Empty state placeholders (Bo'sh holat to'ldirgichlari)
-\n#### 4.13.12 Real-time sinxronizatsiya
-- Barcha hisobotlar bog'liq modullardan real-time ma'lumotlarni oladi
-- Har qanday o'zgarish (buyurtma, qaytarish, ombor tuzatishi) hisobotlarni avtomatik yangilaydi
-- Dashboard ko'rsatkichlari doimiy sinxronlashtiriladi
+- Clean professional layout
+- Consistent color scheme
+- Responsive design
+- Mobile-friendly version
+- Sticky table header
+- Loading states and skeletons
+- Empty state placeholders
+\n#### 4.13.12 Real-time Synchronization
+- All reports receive real-time data from related modules
+- Any change (order, return, inventory adjustment) automatically updates reports
+- Dashboard metrics constantly synchronized
 
-### 4.14 Sozlamalar (Settings Module)
+### 4.14 Settings Module
 
 #### 4.14.1 Settings Main Page Layout
-**Sahifa sarlavhasi:** Settings
+**Page Title:** Settings
 
-**Sahifa tuzilishi:**
-Chap yoki yuqori qismda tablar/bo'limlar navigatsiyasi, o'ng qismda formalar.\n
-**Bo'limlar (Tabs):**
-1. Company Profile (Kompaniya profili)
-2. POS Terminal Settings (POS Terminal sozlamalari)
-3. Payments & Taxes (To'lovlar va soliqlar)
-4. Receipts & Printing (Cheklar va chop qilish)
-5. Inventory Settings (Ombor sozlamalari)
-6. Numbering & IDs (Raqamlash va ID'lar)
-7. User & Security (Foydalanuvchi va xavfsizlik)
-8. Localization (Mahalliylashtirish)
-9. Backup & Data Management (Zaxira va ma'lumotlar boshqaruvi - ixtiyoriy)
-\n#### 4.14.2 Company Profile (Kompaniya profili)
+**Page Structure:**
+Left or top tabs/sections navigation, right side forms.\n
+**Sections (Tabs):**
+1. Company Profile
+2. POS Terminal Settings
+3. Payments & Taxes
+4. Receipts & Printing
+5. Inventory Settings
+6. Numbering & IDs
+7. User & Security
+8. Localization
+9. Backup & Data Management (optional)
+\n#### 4.14.2 Company Profile
 
-**Maydonlar:**
-- Company name (majburiy) – Kompaniya nomi
-- Legal name (ixtiyoriy) – Yuridik nomi
-- Logo upload – Logo yuklash
-- Address (country, city, street) – Manzil (mamlakat, shahar, ko'cha)
-- Phone number – Telefon raqami
-- Email – Elektron pochta\n- Website (ixtiyoriy) – Veb-sayt
-- Tax ID / INN / VAT number (ixtiyoriy) – Soliq ID / INN / QQS raqami
-\n**Tekshirish:**
-- Majburiy maydonlar bo'sh bo'lishi mumkin emas
-- Email formatlash
-- Telefon formati (masalan: +998 XX XXX XX XX)
-\n**Ishlatilishi:**
-Kompaniya ma'lumotlari quyidagilarda ishlatiladi:
-- Cheklar\n- Hisob-fakturalar
-- Hisobotlar
-\n#### 4.14.3 POS Terminal Settings (POS Terminal sozlamalari)
-\n**POS frontuchun global parametrlar:**
-- Default POS mode: Retail / Restaurant (faqat enum, kelajakuchun)
-- Enable'Hold Order' feature (yoqish/o'chirish) –'Buyurtmani saqlash' funksiyasini yoqish
-- Enable 'Mixed Payment' (yoqish/o'chirish) – 'Aralash to'lov' funksiyasini yoqish
-- Enable 'Per-Product Discount' (yoqish/o'chirish) – 'Mahsulot bo'yicha chegirma' funksiyasini yoqish
-- Require customer selection for credit sales (yoqish/o'chirish) – Kredit savdo uchun mijoz tanlashni talab qilish
-- Automatically log out cashier after X minutes of inactivity – Xdaqiqa faoliyatsizlikdan keyin kassirni avtomatik chiqarish
-- Show low-stock warning in POS (yoqish/o'chirish) – POS da kam qoldiq ogohlantirishini ko'rsatish
-- Quick access buttons limit (masalan: 8 / 12 / 16 products on main screen) – Tezkor kirish tugmalari cheklovi (asosiy ekranda mahsulotlar soni)
+**Fields:**
+- Company name (required)
+- Legal name (optional)
+- Logo upload\n- Address (country, city, street)
+- Phone number
+- Email
+- Website (optional)
+- Tax ID / INN / VAT number (optional)
+\n**Validation:**
+- Required fields cannot be empty
+- Email formatting\n- Phone format (e.g., +998 XX XXX XX XX)
+\n**Usage:**
+Company info used in:\n- Receipts
+- Invoices\n- Reports
+\n#### 4.14.3 POS Terminal Settings
+\n**Global parameters for POS front:**
+- Default POS mode: Retail / Restaurant (enum only, for future)\n- Enable'Hold Order' feature (on/off)
+- Enable 'Mixed Payment' (on/off)
+- Enable 'Per-Product Discount' (on/off)\n- Require customer selection for credit sales (on/off)
+- Automatically log out cashier after X minutes of inactivity
+- Show low-stock warning in POS (on/off)
+- Quick access buttons limit (e.g., 8 / 12 / 16 products on main screen)
 
-**Ushbu sozlamalar POS Terminal xatti-harakatiga real-time ta'sir qiladi.**
+**These settings affect POS Terminal behavior real-time.**
 
-#### 4.14.4 Payments & Taxes (To'lovlar va soliqlar)
+#### 4.14.4 Payments & Taxes
 
-**Payment Methods (To'lov usullari)**
-\n**Sozlanadigan ro'yxat:**
-- Standart usullar: Cash, Card, QR, Bank transfer
-- Imkoniyatlar:\n  - Usullarni yoqish/o'chirish
-  - Yorliqlarni o'zgartirish (masalan: 'Card' o'rniga 'Terminal')
-  - Maxsus usul qo'shish (masalan: 'Debt', 'Wallet')
+**Payment Methods**\n\n**Configurable List:**
+- Default methods: Cash, Card, QR, Bank transfer
+- Capabilities:\n  - Enable/disable methods
+  - Change labels (e.g., 'Terminal' instead of 'Card')
+  - Add custom method (e.g., 'Debt', 'Wallet')
 
-**Taxes (Soliqlar)**
+**Taxes**
 
-- Enable tax system (yoqish/o'chirish) – Soliq tizimini yoqish\n- Default tax rate (%) – Standart soliq stavkasi
-- Tax inclusive / exclusive option – Soliq kiritilgan / chiqarilgan varianti
-- Per-product tax override allowed (yoqish/o'chirish) – Mahsulot bo'yicha soliqni bekor qilishga ruxsat berish
-\n**Tekshirish:**
-- Foiz0 dan 100 gacha bo'lishi kerak
-\n**Real-time sinxronizatsiya:**
-- To'lov usullari o'zgarishlari darhol POS Terminal va buyurtmalar moduliga sinxronlanadi
-- Soliq sozlamalari barcha narx hisoblashlariga avtomatik qo'llaniladi
-\n#### 4.14.5 Receipts & Printing (Cheklar va chop qilish)
+- Enable tax system (on/off)
+- Default tax rate (%)
+- Tax inclusive / exclusive option
+- Per-product tax override allowed (on/off)
+\n**Validation:**
+- Percentage must be 0 to 100
+\n**Real-time Synchronization:**
+- Payment methods changes immediately sync to POS Terminal and orders module
+- Tax settings automatically applied to all price calculations
 
-**Chek shablonlari uchun parametrlar:**
-\n- Toggle: Auto print receipt after each sale (yoqish/o'chirish) – Har bir sotuvdan keyin chekni avtomatik chop qilish
-- Receipt header text (ko'p qatorli; masalan: 'Thank you for shopping') – Chek sarlavha matni
-- Receipt footer text (return policy, contact info) – Chek pastki matni (qaytarish siyosati, aloqa ma'lumotlari)
-- Show company logo on receipt (yoqish/o'chirish) – Chekda kompaniya logosini ko'rsatish\n- Show cashier name (yoqish/o'chirish) – Kassir nomini ko'rsatish
-- Show customer name (yoqish/o'chirish) – Mijoz nomini ko'rsatish\n- Show product SKU (yoqish/o'chirish) – Mahsulot SKU ni ko'rsatish
-- Show line discounts on receipt (yoqish/o'chirish) – Chekda qator chegirmalarini ko'rsatish\n- Default receipt size: 58mm / 80mm – Standart chek o'lchami
-- Test print button (placeholder) – Sinov chop qilish tugmasi
+#### 4.14.5 Receipts & Printing
 
-**Ushbu sozlamalar chop qilish mantiqida qayta ishlatilishi kerak.**
+**Parameters for receipt templates:**
+\n- Toggle: Auto print receipt after each sale (on/off)
+- Receipt header text (multi-line; e.g., 'Thank you for shopping')
+- Receipt footer text (return policy, contact info)
+- Show company logo on receipt (on/off)
+- Show cashier name (on/off)
+- Show customer name (on/off)
+- Show product SKU (on/off)
+- Show line discounts on receipt (on/off)
+- Default receipt size: 58mm / 80mm
+- Test print button (placeholder)
 
-#### 4.14.6 Inventory Settings (Ombor sozlamalari)
+**These settings should be reused in print logic.**
 
-**Globalombor xatti-harakati:**
-\n- Enable inventory tracking (yoqish/o'chirish) – Ombor kuzatuvini yoqish
-- Default minimal stock level for new products – Yangi mahsulotlar uchun standart minimal qoldiq darajasi
-- Allow selling when stock is zero or negative: – Qoldiq nol yoki manfiy bo'lganda sotishga ruxsat berish:\n  - Option: Block sale, Allow with warning, Allow without warning – Variant: Sotuvni bloklash, Ogohlantirish bilan ruxsat berish, Ogohlantirishsiz ruxsat berish
-- Automatic cost calculation mode (for profit reports): – Avtomatik xarajat hisoblash rejimi (foyda hisobotlari uchun):
-  - Latest purchase price – Oxirgi xarid narxi
-  - Average cost (future-ready) – O'rtacha xarajat (kelajak uchun tayyor)
-- Automatic stock adjustment approval required (yes/no) – Avtomatik qoldiq tuzatishini tasdiqlash talab qilinadi (ha/yo'q)
-\n**Real-time sinxronizatsiya:**
-- Ombor sozlamalari o'zgarishlari darhol POS Terminal va Inventory moduliga qo'llaniladi
-\n#### 4.14.7 Numbering & IDs (Raqamlash va ID'lar)
+#### 4.14.6 Inventory Settings
 
-**Avtomatik yaratilgan raqamlar uchun sozlamalar:**
+**Global inventory behavior:**
+\n- Enable inventory tracking (on/off)\n- Default minimal stock level for new products
+- Allow selling when stock is zero or negative:\n  - Option: Block sale, Allow with warning, Allow without warning
+- Automatic cost calculation mode (for profit reports):
+  - Latest purchase price
+  - Average cost (future-ready)
+- Automatic stock adjustment approval required (yes/no)
+\n**Real-time Synchronization:**
+- Inventory settings changes immediately applied to POS Terminal and Inventory module
+\n#### 4.14.7 Numbering & IDs\n
+**Settings for auto-generated numbers:**
 
-**Maydonlar:**
-- Order number prefix (standart: POS-) – Buyurtma raqami prefiksi
-- Order number format: POS-YYYYMMDD-##### – Buyurtma raqami formati
-- Return number prefix (standart: RET-) – Qaytarish raqami prefiksi\n- Purchase order prefix (standart: PO-) – Xarid buyurtmasi prefiksi
-- Movement/adjustment prefix (ixtiyoriy) – Harakat/tuzatish prefiksi
+**Fields:**
+- Order number prefix (default: POS-)
+- Order number format: POS-YYYYMMDD-#####
+- Return number prefix (default: RET-)
+- Purchase order prefix (default: PO-)
+- Movement/adjustment prefix (optional)
+\n**AI should support:**
+- View next sequence number for eachdocument type
+- Reset sequences (with confirmation modal)
+\n**All IDs must remain unique.**
 
-**AI quyidagilarni qo'llab-quvvatlashi kerak:**
-- Har bir hujjat turi uchun keyingi ketma-ketlik raqamini ko'rish
-- Ketma-ketliklarni qayta tiklash (tasdiqlash modali bilan)
-\n**Barcha ID'lar noyob bo'lib qolishi kerak.**
+#### 4.14.8 User & Security\n
+**Security Parameters:**
 
-#### 4.14.8 User & Security (Foydalanuvchi va xavfsizlik)
-\n**Xavfsizlik parametrlari:**
-\n- Minimum password length (standart 6) – Minimal parol uzunligi
-- Require strong password (letters + numbers) (yoqish/o'chirish) – Kuchli parol talab qilish (harflar + raqamlar)\n- Max failed login attempts before lock (masalan: 5) – Blokirovkadan oldin maksimal muvaffaqiyatsiz kirish urinishlari
-- Session timeout (minutes) – Sessiya tugash vaqti (daqiqalar)
-- Allow multiple active sessions per user (yes/no) – Foydalanuvchi uchun bir nechta faol sessiyalarga ruxsat berish (ha/yo'q)
-\n**Role management (qisqa tavsif, bu yerda to'liq CRUD yo'q):**
-- Rollar ro'yxatini ko'rsatish (Admin, Manager, Cashier) qisqa tavsif bilan
-- Rollar Employees modulida boshqarilishiga havola yoki ma'lumot berish
+- Minimum password length (default6)
+- Require strong password (letters + numbers) (on/off)
+- Max failed login attempts before lock (e.g., 5)
+- Session timeout (minutes)\n- Allow multiple active sessions per user (yes/no)
+\n**Role Management (brief description, no full CRUD here):**
+- Show list of roles (Admin, Manager, Cashier) with brief description
+- Link or info that roles are managed in Employees module
 \n**Audit:**
-- Switch'Enable activity logging' (yoqish/o'chirish) – 'Faoliyat logini yoqish' tugmasi —agar yoqilgan bo'lsa, asosiy amallarni loglash (buyurtmalar, qaytarishlar, ombor tuzatishlari).
+- Switch'Enable activity logging' (on/off) — if enabled, log critical actions (orders, returns, inventory adjustments).
 
-#### 4.14.9 Localization (Mahalliylashtirish)
+#### 4.14.9 Localization\n
+**Fields:**
+\n- Default language (e.g., Uzbek, Russian, English)
+- Additional interface languages (for future use)
+- Default currency (UZS, USD, etc.)
+- Currency symbol position:\n  - Before amount (₩10000)\n  - After amount (10000 ₩)
+- Thousand separator and decimal separator options
 
-**Maydonlar:**
-\n- Default language (masalan: Uzbek, Russian, English) – Standart til
-- Additional interface languages (for future use) – Qo'shimcha interfeys tillari (kelajak uchun)
-- Default currency (UZS, USD, va boshqalar) – Standart valyuta
-- Currency symbol position: – Valyuta belgisi pozitsiyasi:
-  - Before amount (₩10000) – Summa oldida
-  - After amount (10000 ₩) – Summa keyin
-- Thousand separator and decimal separator options – Ming ajratuvchi va o'nlik ajratuvchi parametrlari
-\n**Ushbu sozlamalar barcha modullarda formatlashni boshqaradi.**
+**These settings control formatting across all modules.**
 
-#### 4.14.10 Backup & Data Management (Zaxira va ma'lumotlar boshqaruvi - Ixtiyoriy lekin tavsiya etiladi)
+#### 4.14.10 Backup & Data Management (Optional but Recommended)
 
-**Sozlamalar:**
-\n- Allow export of: – Eksport qilishga ruxsat berish:
-  - Products – Mahsulotlar
-  - Customers – Mijozlar
-  - Orders – Buyurtmalar
-  - Inventory movements – Ombor harakatlari
-- 'Download full backup' button (placeholder) – 'To'liq zaxirani yuklash' tugmasi
-- Info text about where backups are stored – Zaxiralar qayerda saqlanishi haqida ma'lumot matni
-\n#### 4.14.11 Permissions & Access (Ruxsatlar va kirish)
+**Settings:**
 
-**Faqat Admin roli Settings sahifasini ko'rishi va o'zgartirishi mumkin.**
+- Allow export of:\n  - Products\n  - Customers
+  - Orders
+  - Inventory movements
+-'Download full backup' button (placeholder)
+- Info text about where backups are stored
+\n#### 4.14.11 Permissions & Access
 
-**Manager va Kassir bu sahifaga kira olmaydi.**
+**Only Admin role can view and modify Settings page.**
 
-**Har bir saqlash operatsiyasi quyidagilarni bajarishi kerak:**
-- Maydonlarni tekshirish
-- Muvaffaqiyat yoki xato toast ko'rsatish
-- Audit logiga yozish:\n  - foydalanuvchi, vaqt, qaysi bo'lim o'zgartirilgan
-\n#### 4.14.12 UI/UX Requirements (UI/UX talablar)
+**Manager and Cashier cannot access this page.**
 
-- Har bir bo'lim uchun toza karta asosidagi layout
-- Bo'limlar orasida navigatsiya uchun chapyon panel yoki tablar
-- Viewport pastki qismida mahkamlangan Save / Cancel tugmalari
-- Saqlanmagan o'zgarishlar bilan sahifani tark etishda tasdiqlash dialogi
-- Xavfli parametrlarni tushuntiruvchi aniq tooltiplar (masalan: 'Allow negative stock')
-- To'liq responsive (desktop ustuvorligi, planshet uchun qulay)
+**Each save operation should:**
+- Validate fields
+- Show success or error toast
+- Write to audit log:\n  - user, time, which section changed
+\n#### 4.14.12 UI/UX Requirements
 
-#### 4.14.13 Final AI Requirements (Yakuniy AI talablar)
+- Clean card-based layout for each section
+- Left side panel or tabs for navigation between sections
+- Save / Cancel buttons fixed at bottom of viewport
+- Confirmation dialog when leaving page with unsaved changes
+- Clear tooltips explaining risky parameters (e.g., 'Allow negative stock')
+- Fully responsive (desktop priority, tablet-friendly)\n\n#### 4.14.13 Final AI Requirements
 
-**AI to'liq funksional Settings modulini yaratishi kerak:**
-\n- Konfiguratsiyani markaziy settings jadvalida / config store da saqlash
-- Ushbu sozlamalarni quyidagi modullarda real-time qo'llash:
-  - POS Terminal\n  - Orders
-  - Sales Returns
-  - Inventory
-  - Purchase Orders
+**AI should create fully functional Settings module:**
+\n- Store configuration in central settings table / config store
+- Apply these settings real-time in:\n  - POS Terminal
+  - Orders\n  - Sales Returns
+  - Inventory\n  - Purchase Orders
   - Reports
   - Employees
-- Adminga tekshirish va audit loglash bilan konfiguratsiyani xavfsiz ko'rish va yangilash imkonini berish
-- POS tizimining qolgan qismi bilan izchil UI dan foydalanish
-- Barcha o'zgarishlar tizim bo'ylabdarhol sinxronlanadi
+- Allow Admin to securely view and update configuration with validation and audit logging
+- Use consistent UI with rest of POS system
+- All changes sync immediately system-wide
 
-##5. Professional funksiyalar
-- Hold order (chekni vaqtincha saqlash) - YANGI\n- Split payment (bir nechta to'lov turi)\n- Quick add product (tezkor qo'shish)\n- Z-otchet va X-otchet\n- Kassa ochilishi/yopilishi
+## 5. Professional Features
+- Hold order (temporarily save receipt) - NEW
+- Split payment (multiple payment types)\n- Quick add product\n- Z-report and X-report\n- Cash drawer open/close
 - Shift-based accounting
-- Device binding\n- To'liq Sales Returns tizimi
-- To'liq Customers tizimi (balans, qarz, kredit limiti)
-- To'liq Inventory Management tizimi (real-time tracking, movements, adjustments, alerts)
-- To'liq Purchase Orders tizimi (yaratish, tasdiqlash, qabul qilish,ombor integratsiyasi)
--Ombor bilan avtomatik sinxronizatsiya
-- Audit trail va loglar
-- To'liq Reports Module (Sales, Inventory, Purchase, Employee, Financial analytics)
-- To'liq Employees Module (yaratish, tahrirlash, rol asosida ruxsatlar, samaradorlik tahlili, vaqt kuzatuvi, audit loglari, POS integratsiyasi)
-- To'liq Settings Module (Company Profile, POS Terminal, Payments & Taxes, Receipts, Inventory, Numbering, User & Security, Localization, Backup)\n- Real-time global sinxronizatsiya barcha modullar orasida
-- Per-Product Discount (Mahsulot bo'yicha chegirma)\n\n## 6. Texnik talablar
-\n### 6.1 UI/UX talablar
-- Minimalist va silliq dizayn
-- Tez ishlash (caching va optimization)
-- Tablet va kassa monitorlariga moslashgan\n- Touch screenuchun katta tugmalar
-- Offline mode va data sync
-- Qorong'i va yorug' rejim
-- Desktop va POS displeylaruchun optimallashtirilgan
-- Yig'iladigan yon panellar
-- Admin darajasidagi funksiyalar kassirlardan yashirilgan
--10,000+ mahsulot bilan ham tez render qilish
-- Barcha modullar bo'ylab izchil UI/UX
-- Standart status ranglari va belgilari
-\n### 6.2 Xavfsizlik\n- JWT yoki Session authentication
-- Role-based access control (RBAC)
-- Offline ma'lumot shifrlanishi
-- Kassa bo'yicha loglar: kim nima qilgan\n- Qaytarishlar uchun audit trail
-- O'chirish va bekor qilish cheklovlari
-- Mijoz ma'lumotlari xavfsizligi
-- Xodim ma'lumotlari xavfsizligi
-- Kuchli parol siyosati
-- Session management
-- IP tracking
-- Oxirgi admin hisobini o'chirish oldini olish
-- Barcha muhim amallar uchun audit loglash
+- Device binding\n- Full Sales Returns system
+- Full Customers system (balance, debt, credit limit)
+- Full Inventory Management system (real-time tracking, movements, adjustments, alerts)
+- Full Purchase Orders system (create, approve, receive, inventory integration) - FIXED
+- Auto-sync with inventory\n- Audit trail and logs
+- Full Reports Module (Sales, Inventory, Purchase, Employee, Financial analytics)
+- Full Employees Module (create, edit, role-based permissions, performance analysis, time tracking, audit logs, POS integration)
+- Full Settings Module (Company Profile, POS Terminal, Payments & Taxes, Receipts, Inventory, Numbering, User & Security, Localization, Backup)\n- Real-time global synchronization across all modules
+- Per-Product Discount\n\n## 6. Technical Requirements
 
-### 6.3 Integratsiyalar
-- Fiskal printer\n- Barcode scanner
+### 6.1 UI/UX Requirements
+- Minimalist and smooth design
+- Fast performance (caching and optimization)
+- Adapted for tablets and cashier monitors
+- Large buttons for touch screen
+- Offline mode and data sync
+- Dark and light mode\n- Optimized for desktop and POS displays
+- Collapsible side panels
+- Admin-level features hidden from cashiers
+- Fast rendering even with10,000+ products
+- Consistent UI/UX across all modules
+- Standard status colors and badges
+\n### 6.2 Security\n- JWT or Session authentication
+- Role-based access control (RBAC)
+- Offline data encryption
+- Logs by cashier: who did what\n- Audit trail for returns\n- Delete and cancel restrictions
+- Customer data security
+- Employee data security
+- Strong password policy
+- Session management
+- IP tracking\n- Prevent deleting last admin account
+- Audit logging for all critical actions
+
+### 6.3 Integrations
+- Fiscal printer\n- Barcode scanner
 - QR Pay (Click/Payme)
 - Inventory API
-- Bank terminali
-- Sales Returns bilan to'liq integratsiya
-- Customers bilan to'liq integratsiya
-- Inventory Management bilan to'liq integratsiya
-- Purchase Orders bilan to'liq integratsiya
-- Reports Module bilan to'liq integratsiya
-- Employees Module bilan to'liq integratsiya
-- Settings Module bilan to'liq integratsiya
-- Barcha modullar markazlashtirilgan ma'lumotlar bazasi orqali real-time sinxronlashadi
+- Bank terminal
+- Full integration with Sales Returns
+- Full integration with Customers
+- Full integration with Inventory Management
+- Full integration with Purchase Orders - FIXED
+- Full integration with Reports Module
+- Full integration with Employees Module
+- Full integration with Settings Module
+- All modules sync real-time via centralized database
 
-### 6.4 Ma'lumotlar bazasi arxitekturasi
-- Markazlashtirilgan yagona ma'lumotlar bazasi
-- Barcha modullar bir xil ma'lumotlar manbasidan o'qiydi va yozadi
-- Real-time sinxronizatsiya barcha modullar orasida
-- Indexing muhim maydonlar uchun (SKU, order numbers, customer names)
-- Optimallashtirilgan so'rovlar va keshlash
-- Audit trail barcha muhim amallar uchun\n- Held Orders jadvali (pending_orders / held_orders)
-\n### 6.5 Samaradorlik va optimizatsiya
-- Tez yuklash uchun dashboard ma'lumotlarini keshlash
-- Og'ir hisobotlarni fonda hisoblash
-- 10,000+ yozuvlar bilan ham tez ishlash
-- Real-time yangilanishlar minimal kechikish bilan
-- Optimallashtirilgan ma'lumotlar bazasi so'rovlari
-\n## 7. Tizim nomerlash siyosati
-- Chek / Buyurtma: POS-YYYYMMDD-#####
-  - Misol: POS-20251205-00042
-- Qaytarish: RET-YYYYMMDD-#####
-  - Misol: RET-20251205-00023
-- Xarid buyurtmasi: PO-YYYYMMDD-#####\n  - Misol: PO-20251206-00015
-- Inventarizatsiya: INV-YYYY-#####
-- SKU: SKU-000123\n\n## 8. Modullar integratsiyasi va sinxronizatsiya
-Mahsulotlar, Kategoriyalar, Inventory Management, Buyurtmalar, Sales Returns, Purchase Orders, Customers, Employees, Reports va Settings modullari quyidagi modullar bilan to'liq integratsiyalangan va real-time sinxronlashtirilgan:\n- POS Terminal
--Ombor (Inventory)
-- Xarid buyurtmalari (Purchase Orders)
-- Sotuvlar (Sales)\n- Hisobotlar (Reports)
-- To'lovlar (Payments)
-- Xodimlar (Employees)
-- Sozlamalar (Settings)
-- Dashboard\n- Kutilayotgan buyurtmalar (Held Orders)
+### 6.4 Database Architecture
+- Centralized single database
+- All modules read from and write to same data source
+- Real-time synchronization across all modules
+- Indexing for critical fields (SKU, order numbers, customer names)
+- Optimized queries and caching
+- Audit trail for all critical actions
+- Held Orders table (pending_orders / held_orders)
+\n### 6.5 Performance and Optimization
+- Cache dashboard data for fast loading
+- Calculate heavy reports in background
+- Fast performance even with 10,000+ records
+- Real-time updates with minimal latency
+- Optimized database queries
+\n## 7. System Numbering Policy
+- Receipt / Order: POS-YYYYMMDD-#####
+  - Example: POS-20251205-00042
+- Return: RET-YYYYMMDD-#####
+  - Example: RET-20251205-00023
+- Purchase Order: PO-YYYYMMDD-#####
+  - Example: PO-20251206-00015
+- Inventory Count: INV-YYYY-#####
+- SKU: SKU-000123\n
+## 8. Module Integration and Synchronization
+Products, Categories, Inventory Management, Orders, Sales Returns, Purchase Orders, Customers, Employees, Reports, and Settings modules are fully integrated and real-time synchronized with:\n- POS Terminal
+- Inventory\n- Purchase Orders - FIXED
+- Sales\n- Reports
+- Payments\n- Employees
+- Settings
+- Dashboard
+- Held Orders
 
-**Sinxronizatsiya qoidalari:**
-- Barcha operatsiyalar to'liq sinxronlashtirilgan va audit qilinadigan
-- Har qanday o'zgarish (buyurtma, qaytarish,ombor tuzatishi, sozlamalar yangilanishi)darhol barcha bog'liq modullargaaks etadi
-- Dashboard ko'rsatkichlari real-time avtomatik yangilanadi
-- Hisobotlar hardoim eng yangi ma'lumotlarni ko'rsatadi
-- Mijoz va xodim statistikasi avtomatik hisoblanadi
--Ombor qoldiqlari har bir tranzaksiyadan keyin yangilanadi
-- Sozlamalar o'zgarishlari darhol tizim xatti-harakatiga ta'sir qiladi
-- Kutilayotgan buyurtmalarombor yoki hisobotlarga ta'sir qilmaydi (faqat to'lov yakunlangandan keyin)
+**Synchronization Rules:**
+- All operations are fully synchronized and auditable
+- Any change (order, return, inventory adjustment, settings update) immediately reflects in all related modules
+- Dashboard metrics updated real-time automatically
+- Reports always show latest data\n- Customer and employee statistics calculated automatically
+- Inventory stock updated after each transaction
+- Settings changes immediately affect system behavior
+- Held ordersdo not affect inventory or reports (only after payment is completed)
 
-## 9. Dizayn uslubi
-- Zamonaviy va professional ko'rinish, biznes muhitiga mos\n- Asosiy ranglar: ko'k (#2563EB) va kulrang (#64748B) tonlari, oq fon (#FFFFFF)\n- Karta uslubidagi layout, har bir modul alohida kartada
-- Yumshoq soyalar (shadow-sm) va 8px border-radius
-- Ikkonlar: Lucide yoki Heroicons kutubxonasidan zamonaviy chiziqli ikkonlar
-- Jadvallar: zebra-striped uslubda, hover effekti bilan
-- Tugmalar: to'ldirilgan (primary) va konturli (secondary) variantlar, touch screen uchun minimal44px balandlik
-- Responsive grid layout: desktopuchun 3-4 ustun, tablet uchun 2ustun\n- Kategoriya rangli teglar va ikkonlar POS Terminal va mahsulotlar ro'yxatida ko'rsatiladi
-- Status rangli kodlari:\n  - Completed / Paid / In Stock / Received → Yashil
-  - Pending / Low Stock / Approved / Held → Sariq yoki Ko'k
-  - Cancelled / Voided / Out of Stock → Qizil
-  - Refunded → To'q sariq
-  - Partially Refunded / Partially Paid / Partially Received → Och sariq
-  - Draft → Kulrang
-- Mijoz balansi rangli kodlari:
-  - Qizil → mijoz qarzdor (musbat balans)
-  - Yashil → do'kon qarzdor/oldindan to'lov (manfiy balans)
-  - Kulrang → nol balans
-- Inventory movements rangli kodlari:
-  - Musbat (+) → Yashil
-  - Manfiy (–) → Qizil
-- Diagrammalar uchun Recharts kutubxonasi
-- Reports sahifalarida professional data visualization
-- Employee performance indicatorsuchun rangli ko'rsatkichlar
-- Settings sahifasida chap yon panel yoki tablar navigatsiyasi, o'ng qismda formalar
-- Barcha modullar bo'ylab izchil dizayn tili
+## 9. Design Style\n- Modern and professional appearance, suitable for business environment
+- Primary colors: blue (#2563EB) and grey (#64748B) tones, white background (#FFFFFF)
+- Card-style layout, each module in separate card
+- Soft shadows (shadow-sm) and 8px border-radius
+- Icons: modern line icons from Lucide or Heroicons library
+- Tables: zebra-striped style with hover effect
+- Buttons: filled (primary) and outlined (secondary) variants, minimum 44px height for touch screen
+- Responsive grid layout: 3-4 columns for desktop, 2 columns for tablet\n- Category colored tags and icons shown in POS Terminal and products list
+- Status color codes:\n  - Completed / Paid / In Stock / Received → Green
+  - Pending / Low Stock / Approved / Held → Yellow or Blue
+  - Cancelled / Voided / Out of Stock → Red
+  - Refunded → Dark Yellow
+  - Partially Refunded / Partially Paid / Partially Received → Light Yellow
+  - Draft → Grey
+- Customer balance color codes:
+  - Red → customer owes (positive balance)
+  - Green → store owes/advance payment (negative balance)
+  - Grey → zero balance
+- Inventory movements color codes:
+  - Positive (+) → Green
+  - Negative (–) → Red
+- Recharts library for charts
+- Professional data visualization in Reports pages
+- Colored indicators for Employee performance
+- Left side panel or tabs navigation in Settings page, forms on right
+- Consistent design language across all modules
 
-## 10. Yakuniy yetkazish talablari
-\nAI quyidagi xususiyatlarga ega POS tizimini yaratishi kerak:
-\n✔ To'liq integratsiyalangan\n✔ Real-time sinxronlashtirilgan\n✔ Rol asosida kirish bilan xavfsiz
-✔ Barcha biznes qoidalariga mos
-✔ Professional darajadagi arxitektura
-✔ Ishlab chiqarish uchun tayyor
-✔ Markazlashtirilgan ma'lumotlar bazasi
-✔ Barcha modullar orasida avtomatik sinxronizatsiya
-✔ To'liq audit trail va loglash
-✔ Optimallashtirilgan samaradorlik
-✔ Izchil UI/UX barcha modullar bo'ylab
-✔ Per-Product Discount funksiyasi bilan to'liq POS Terminal
-✔ **Hold Order (Buyurtmani kutish ro'yxatiga saqlash) funksiyasi bilan to'liq POS Terminal** - YANGI
+## 10. Final Delivery Requirements
+
+AI should create a POS system with:
+\n✔ Fully integrated\n✔ Real-time synchronized
+✔ Secure with role-based access
+✔ Compliant with all business rules
+✔ Professional-grade architecture
+✔ Production-ready\n✔ Centralized database
+✔ Auto-sync across all modules
+✔ Full audit trail and logging
+✔ Optimized performance
+✔ Consistent UI/UX across all modules
+✔ Full POS Terminal with Per-Product Discount feature
+✔ **Full POS Terminal with Hold Order (Save Order to Waiting List) feature** - NEW
+✔ **Fully functional and fixed Purchase Orders module** - FIXED
+\n---
+
+## Summary of Purchase Orders Module Fix
+
+**Problem Solved:**
+- 'New Purchase Order' button now correctly navigates to `/purchase-orders/new` instead of redirecting to Dashboard.\n- Purchase Orders module is now fully functional with complete lifecycle: list, create, edit, receive.\n- Product stock and inventory movements are fully synchronized with purchase operations.
+\n**Key Implementations:**
+1. **Routing:** Proper routes created for list, create, detail, and edit pages.\n2. **Data Model:** Database tables for `purchase_orders`, `purchase_order_items`, and integration with `inventory_movements`.
+3. **UI/UX:** Multi-step or single-page form for PO creation with product search, line items table, and summary.
+4. **Business Logic:** Draft POsdo not affect stock; marking as Received increases stock and logs movements via database transaction.
+5. **Integration:** Full integration with Inventory, Products, Suppliers, Reports, and Dashboard modules.
+6. **Validation:** Type-safe TypeScript interfaces, user-friendly error messages, and proper validation.
+7. **Testing:** Comprehensive testing scenarios to ensure correct functionality.
+8. **Permissions:** Role-based access control for Admin, Manager, and Cashier.\n9. **UI/UX:** Clean, card-based layout with colored status badges and optimized for desktop.\n10. **Numbering:** Auto-generated PO numbers in format PO-YYYYMMDD-#####.
+
+**Final Objective Achieved:**
+- Purchase Orders module is now fully operational and integrated with the rest of the POS system.
+- All navigation, data flow, and inventory synchronization work correctly.
+- No unexpected redirects or errors.
+- Production-ready implementation.
