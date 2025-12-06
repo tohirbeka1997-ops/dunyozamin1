@@ -73,7 +73,6 @@ export default function PurchaseOrderForm() {
 
   // Form fields
   const [supplierId, setSupplierId] = useState('');
-  const [supplierName, setSupplierName] = useState('');
   const [orderDate, setOrderDate] = useState(format(new Date(), 'yyyy-MM-dd'));
   const [expectedDate, setExpectedDate] = useState('');
   const [status, setStatus] = useState<'draft' | 'approved'>('draft');
@@ -111,7 +110,6 @@ export default function PurchaseOrderForm() {
         if (poData) {
           setExistingPO(poData);
           setSupplierId(poData.supplier_id || '');
-          setSupplierName(poData.supplier_name || '');
           setOrderDate(poData.order_date);
           setExpectedDate(poData.expected_date || '');
           setStatus(poData.status as 'draft' | 'approved');
@@ -181,10 +179,10 @@ export default function PurchaseOrderForm() {
   };
 
   const validateForm = () => {
-    if (!supplierId && !supplierName) {
+    if (!supplierId) {
       toast({
         title: 'Validation Error',
-        description: 'Please select or enter a supplier',
+        description: 'Please select a supplier from the dropdown',
         variant: 'destructive',
       });
       return false;
@@ -271,7 +269,6 @@ export default function PurchaseOrderForm() {
       const updatedSuppliers = await getSuppliers();
       setSuppliers(updatedSuppliers);
       setSupplierId(newSupplier.id);
-      setSupplierName('');
 
       // Reset modal
       setShowSupplierModal(false);
@@ -302,8 +299,8 @@ export default function PurchaseOrderForm() {
       if (isEditMode && id) {
         // Update existing PO
         const purchaseOrderData: Partial<PurchaseOrder> = {
-          supplier_id: supplierId || null,
-          supplier_name: supplierName || null,
+          supplier_id: supplierId,
+          supplier_name: null,
           order_date: orderDate,
           expected_date: expectedDate || null,
           subtotal,
@@ -311,6 +308,7 @@ export default function PurchaseOrderForm() {
           tax: 0,
           total_amount: subtotal,
           status: (markAsReceived ? 'received' : status) as PurchaseOrderStatus,
+          received_by: markAsReceived ? (user?.id || null) : undefined,
           notes,
         };
 
@@ -335,8 +333,8 @@ export default function PurchaseOrderForm() {
         
         const purchaseOrderData: Omit<PurchaseOrder, 'id' | 'created_at' | 'updated_at'> = {
           po_number: poNumber,
-          supplier_id: supplierId || null,
-          supplier_name: supplierName || null,
+          supplier_id: supplierId,
+          supplier_name: null,
           order_date: orderDate,
           expected_date: expectedDate || null,
           reference: null,
@@ -346,7 +344,7 @@ export default function PurchaseOrderForm() {
           total_amount: subtotal,
           status: (markAsReceived ? 'received' : status) as PurchaseOrderStatus,
           invoice_number: null,
-          received_by: null,
+          received_by: markAsReceived ? (user?.id || null) : null,
           approved_by: null,
           approved_at: null,
           notes,
@@ -478,17 +476,6 @@ export default function PurchaseOrderForm() {
                       </Button>
                     )}
                   </div>
-                </div>
-
-                <div className="space-y-2">
-                  <Label htmlFor="supplier-name">Or Enter Supplier Name</Label>
-                  <Input
-                    id="supplier-name"
-                    value={supplierName}
-                    onChange={(e) => setSupplierName(e.target.value)}
-                    placeholder="Enter supplier name"
-                    disabled={isReadOnly}
-                  />
                 </div>
 
                 <div className="space-y-2">
