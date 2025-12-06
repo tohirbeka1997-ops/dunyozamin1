@@ -59,6 +59,15 @@
   - [x] Add validation (non-negative, max = line subtotal)
   - [x] Test with quantity changes
   - [x] Test with global discount
+- [x] Editable Quantity Input Feature
+  - [x] Replace static quantity label with input field
+  - [x] Add quantity input validation (min: 1, max: stock)
+  - [x] Handle keyboard events (Enter to apply)
+  - [x] Handle blur events (click outside to apply)
+  - [x] Integrate with +/- buttons
+  - [x] Add stock limit validation
+  - [x] Show appropriate error toasts
+  - [x] Update order summary on quantity change
 
 ## Phase 6: Orders & Returns
 - [ ] Orders/Receipts list page (placeholder created)

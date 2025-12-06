@@ -55,6 +55,7 @@ export default function POSTerminal() {
   const [currentShift, setCurrentShift] = useState<any>(null);
   const [shiftDialogOpen, setShiftDialogOpen] = useState(false);
   const [openingCash, setOpeningCash] = useState('');
+  const [editingQuantity, setEditingQuantity] = useState<{ [key: string]: string }>({});
 
   useEffect(() => {
     loadCustomers();
@@ -155,10 +156,28 @@ export default function POSTerminal() {
       removeFromCart(productId);
       return;
     }
+    
+    // Find the product to check stock
+    const cartItem = cart.find(item => item.product.id === productId);
+    if (!cartItem) return;
+    
+    const maxStock = cartItem.product.current_stock;
+    let validQuantity = quantity;
+    
+    // Validate against stock
+    if (maxStock > 0 && quantity > maxStock) {
+      validQuantity = maxStock;
+      toast({
+        title: 'Stock Limit Reached',
+        description: `Maximum available quantity is ${maxStock}`,
+        variant: 'destructive',
+      });
+    }
+    
     setCart(
       cart.map((item) => {
         if (item.product.id === productId) {
-          const subtotal = Number(item.product.sale_price) * quantity;
+          const subtotal = Number(item.product.sale_price) * validQuantity;
           let lineDiscount = item.discount_amount;
           
           // If new subtotal is less than current discount, adjust discount down
@@ -172,7 +191,7 @@ export default function POSTerminal() {
           
           return {
             ...item,
-            quantity,
+            quantity: validQuantity,
             subtotal,
             discount_amount: lineDiscount,
             total: subtotal - lineDiscount,
@@ -181,6 +200,47 @@ export default function POSTerminal() {
         return item;
       })
     );
+  };
+
+  const handleQuantityInputChange = (productId: string, value: string) => {
+    // Allow empty string while typing
+    setEditingQuantity({ ...editingQuantity, [productId]: value });
+  };
+
+  const handleQuantityInputBlur = (productId: string) => {
+    const value = editingQuantity[productId];
+    const cartItem = cart.find(item => item.product.id === productId);
+    
+    if (!cartItem) return;
+    
+    // Parse the input value
+    const parsedValue = parseInt(value, 10);
+    
+    // Validate: must be a valid integer >= 1
+    if (isNaN(parsedValue) || parsedValue < 1 || value.trim() === '') {
+      // Restore previous valid value
+      setEditingQuantity({ ...editingQuantity, [productId]: cartItem.quantity.toString() });
+      toast({
+        title: 'Invalid Quantity',
+        description: 'Quantity must be at least 1',
+        variant: 'destructive',
+      });
+      return;
+    }
+    
+    // Update quantity (will handle stock validation)
+    updateQuantity(productId, parsedValue);
+    
+    // Clear editing state
+    const newEditingQuantity = { ...editingQuantity };
+    delete newEditingQuantity[productId];
+    setEditingQuantity(newEditingQuantity);
+  };
+
+  const handleQuantityInputKeyDown = (productId: string, e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === 'Enter') {
+      e.currentTarget.blur();
+    }
   };
 
   const updateLineDiscount = (productId: string, discountAmount: number) => {
@@ -508,7 +568,17 @@ export default function POSTerminal() {
                           >
                             <Minus className="h-4 w-4" />
                           </Button>
-                          <span className="w-8 text-center">{item.quantity}</span>
+                          <Input
+                            type="number"
+                            min="1"
+                            value={editingQuantity[item.product.id] !== undefined 
+                              ? editingQuantity[item.product.id] 
+                              : item.quantity}
+                            onChange={(e) => handleQuantityInputChange(item.product.id, e.target.value)}
+                            onBlur={() => handleQuantityInputBlur(item.product.id)}
+                            onKeyDown={(e) => handleQuantityInputKeyDown(item.product.id, e)}
+                            className="w-16 h-8 text-center p-1"
+                          />
                           <Button
                             variant="outline"
                             size="icon"
