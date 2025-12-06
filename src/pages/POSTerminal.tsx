@@ -521,20 +521,20 @@ export default function POSTerminal() {
               {searchResults.length > 0 && (
                 <div className="grid grid-cols-2 md:grid-cols-3 gap-2 max-h-48 overflow-y-auto">
                   {searchResults.map((product) => (
-                    <Button
+                    <button
                       key={product.id}
-                      variant="outline"
-                      className="h-auto p-3 flex flex-col items-start"
+                      type="button"
+                      className="h-auto py-3 px-4 flex flex-col items-start gap-1 rounded-lg bg-blue-600 hover:bg-blue-500 active:bg-blue-700 transition-colors border border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-400 focus:ring-offset-2"
                       onClick={() => {
                         addToCart(product);
                         setSearchTerm('');
                         setSearchResults([]);
                       }}
                     >
-                      <span className="font-medium text-sm">{product.name}</span>
-                      <span className="text-xs text-muted-foreground">{Number(product.sale_price).toFixed(2)} UZS</span>
-                      <span className="text-xs text-muted-foreground">Stock: {product.current_stock}</span>
-                    </Button>
+                      <span className="font-semibold text-sm text-white leading-tight">{product.name}</span>
+                      <span className="text-xs text-slate-100 font-medium">{Number(product.sale_price).toFixed(2)} UZS</span>
+                      <span className="text-xs text-slate-200">Stock: {product.current_stock}</span>
+                    </button>
                   ))}
                 </div>
               )}
