@@ -117,8 +117,6 @@ export interface Order {
   status: OrderStatus;
   payment_status: PaymentStatus;
   notes: string | null;
-  returned_amount: number;
-  return_status: string;
   created_at: string;
 }
 

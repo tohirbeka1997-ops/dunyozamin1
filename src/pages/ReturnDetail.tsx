@@ -338,26 +338,22 @@ export default function ReturnDetail() {
             <CardTitle>Order Summary</CardTitle>
           </CardHeader>
           <CardContent>
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+            <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
               <div>
                 <Label className="text-muted-foreground">Original Total</Label>
                 <p className="font-medium">${Number(returnData.order.total_amount).toFixed(2)}</p>
               </div>
               <div>
-                <Label className="text-muted-foreground">Returned Amount</Label>
+                <Label className="text-muted-foreground">Return Amount</Label>
                 <p className="font-medium text-destructive">
-                  -${Number(returnData.order.returned_amount || 0).toFixed(2)}
+                  -${Number(returnData.total_amount).toFixed(2)}
                 </p>
               </div>
               <div>
                 <Label className="text-muted-foreground">Net Total</Label>
                 <p className="font-medium">
-                  ${(Number(returnData.order.total_amount) - Number(returnData.order.returned_amount || 0)).toFixed(2)}
+                  ${(Number(returnData.order.total_amount) - Number(returnData.total_amount)).toFixed(2)}
                 </p>
-              </div>
-              <div>
-                <Label className="text-muted-foreground">Return Status</Label>
-                <p className="font-medium capitalize">{returnData.order.return_status?.replace('_', ' ')}</p>
               </div>
             </div>
           </CardContent>

@@ -1,49 +1,37 @@
 /*
-# Complete Order RPC Function
+# Update Complete Order RPC - Remove returned_amount and return_status
 
 ## Overview
-This migration creates an atomic RPC function to complete a POS order transaction.
-All operations are performed in a single database transaction to ensure data consistency.
+This migration updates the complete_pos_order RPC function to remove references to
+returned_amount and return_status fields that don't exist in the orders table.
 
-## Function: complete_pos_order
+## Changes
+- Remove returned_amount from INSERT statement
+- Remove return_status from INSERT statement
+- Only insert columns that actually exist in the orders table
 
-### Purpose
-Atomically creates an order with all related records (items, payments) and updates inventory.
-
-### Parameters
-- p_order: JSONB - Order data
-- p_items: JSONB - Array of order items
-- p_payments: JSONB - Array of payment records
-
-### Returns
-JSONB object with:
-- success: boolean
-- order_id: uuid
-- order_number: text
-- message: text
-- error: text (if failed)
-
-### Operations (Atomic)
-1. Validate input data
-2. Insert order record
-3. Insert order items
-4. Insert payment records
-5. Update product inventory (via trigger)
-6. Return success response
-
-### Error Handling
-- All operations in single transaction
-- Rollback on any error
-- Return detailed error message
-
-## Notes
-- Uses SECURITY DEFINER for proper permissions
-- Inventory updates handled by existing triggers
-- Customer stats updated by existing triggers
-- Employee activity logged by existing triggers
+## Valid Columns in orders table:
+- order_number
+- customer_id
+- cashier_id
+- shift_id
+- subtotal
+- discount_amount
+- discount_percent
+- tax_amount
+- total_amount
+- paid_amount
+- change_amount
+- status
+- payment_status
+- notes
+- created_at (auto-generated)
 */
 
--- Function to complete a POS order atomically
+-- Drop the old function
+DROP FUNCTION IF EXISTS complete_pos_order(JSONB, JSONB, JSONB);
+
+-- Recreate the function without returned_amount and return_status
 CREATE OR REPLACE FUNCTION complete_pos_order(
   p_order JSONB,
   p_items JSONB,
@@ -118,7 +106,7 @@ BEGIN
     END IF;
   END LOOP;
   
-  -- Insert order
+  -- Insert order (ONLY valid columns)
   INSERT INTO orders (
     order_number,
     customer_id,
@@ -219,4 +207,4 @@ $$;
 GRANT EXECUTE ON FUNCTION complete_pos_order TO authenticated;
 
 -- Add comment
-COMMENT ON FUNCTION complete_pos_order IS 'Atomically completes a POS order with items and payments. Validates stock and creates all related records in a single transaction.';
+COMMENT ON FUNCTION complete_pos_order IS 'Atomically completes a POS order with items and payments. Validates stock and creates all related records in a single transaction. Updated to match actual orders table schema.';

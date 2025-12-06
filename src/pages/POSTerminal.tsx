@@ -280,8 +280,6 @@ export default function POSTerminal() {
         status: 'completed' as const,
         payment_status: 'paid' as const,
         notes: null,
-        returned_amount: 0,
-        return_status: 'none',
       };
 
       const orderItems = cart.map((item) => ({
