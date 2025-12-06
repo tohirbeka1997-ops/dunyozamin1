@@ -268,6 +268,25 @@ export interface CartItem {
   total: number;
 }
 
+// Held order status
+export type HeldOrderStatus = 'HELD' | 'RESTORED' | 'CANCELLED';
+
+// Held order for POS terminal (Park Sale / Kutish)
+export interface HeldOrder {
+  id: string;
+  held_number: string;
+  cashier_id: string;
+  shift_id: string | null;
+  customer_id: string | null;
+  customer_name: string | null;
+  items: CartItem[];
+  discount: { type: 'amount' | 'percent'; value: number } | null;
+  note: string | null;
+  status: HeldOrderStatus;
+  created_at: string;
+  updated_at: string | null;
+}
+
 // Dashboard statistics
 export interface DashboardStats {
   today_sales: number;

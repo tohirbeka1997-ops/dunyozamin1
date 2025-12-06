@@ -1643,3 +1643,82 @@ export const bulkUpdateSettings = async (
   if (error) throw error;
   return data as number;
 };
+
+// ============================================================================
+// Held Orders (Park Sale / Kutish)
+// ============================================================================
+
+// Generate held order number
+export const generateHeldNumber = async (): Promise<string> => {
+  const { data, error } = await supabase.rpc('generate_held_number');
+  if (error) throw error;
+  return data as string;
+};
+
+// Save held order
+export const saveHeldOrder = async (heldOrder: {
+  held_number: string;
+  cashier_id: string;
+  shift_id: string | null;
+  customer_id: string | null;
+  customer_name: string | null;
+  items: unknown;
+  discount: unknown;
+  note: string | null;
+}) => {
+  const { data, error } = await supabase
+    .from('held_orders')
+    .insert(heldOrder)
+    .select()
+    .single();
+  
+  if (error) throw error;
+  return data;
+};
+
+// Get all held orders (only HELD status)
+export const getHeldOrders = async () => {
+  const { data, error } = await supabase
+    .from('held_orders')
+    .select('*')
+    .eq('status', 'HELD')
+    .order('created_at', { ascending: false });
+  
+  if (error) throw error;
+  return Array.isArray(data) ? data : [];
+};
+
+// Get held order by ID
+export const getHeldOrderById = async (id: string) => {
+  const { data, error } = await supabase
+    .from('held_orders')
+    .select('*')
+    .eq('id', id)
+    .maybeSingle();
+  
+  if (error) throw error;
+  return data;
+};
+
+// Update held order status (for restore or cancel)
+export const updateHeldOrderStatus = async (id: string, status: 'RESTORED' | 'CANCELLED') => {
+  const { data, error } = await supabase
+    .from('held_orders')
+    .update({ status })
+    .eq('id', id)
+    .select()
+    .maybeSingle();
+  
+  if (error) throw error;
+  return data;
+};
+
+// Delete held order (hard delete)
+export const deleteHeldOrder = async (id: string) => {
+  const { error } = await supabase
+    .from('held_orders')
+    .delete()
+    .eq('id', id);
+  
+  if (error) throw error;
+};

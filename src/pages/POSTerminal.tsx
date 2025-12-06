@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import { Button } from '@/components/ui/button';
+import { Badge } from '@/components/ui/badge';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -19,6 +20,16 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog';
 import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from '@/components/ui/alert-dialog';
+import {
   Popover,
   PopoverContent,
   PopoverTrigger,
@@ -36,9 +47,16 @@ import {
   getActiveShift,
   createShift,
   generateShiftNumber,
+  saveHeldOrder,
+  getHeldOrders,
+  generateHeldNumber,
+  updateHeldOrderStatus,
+  deleteHeldOrder,
 } from '@/db/api';
-import type { Product, Customer, CartItem, PaymentMethod } from '@/types/database';
-import { Search, Trash2, Plus, Minus, DollarSign, CreditCard, Smartphone, Banknote, Tag } from 'lucide-react';
+import type { Product, Customer, CartItem, PaymentMethod, HeldOrder } from '@/types/database';
+import { Search, Trash2, Plus, Minus, DollarSign, CreditCard, Smartphone, Banknote, Tag, Clock, Pause } from 'lucide-react';
+import HoldOrderDialog from '@/components/pos/HoldOrderDialog';
+import WaitingOrdersDialog from '@/components/pos/WaitingOrdersDialog';
 
 export default function POSTerminal() {
   const { toast } = useToast();
@@ -56,10 +74,18 @@ export default function POSTerminal() {
   const [shiftDialogOpen, setShiftDialogOpen] = useState(false);
   const [openingCash, setOpeningCash] = useState('');
   const [editingQuantity, setEditingQuantity] = useState<{ [key: string]: string }>({});
+  
+  // Held orders state
+  const [heldOrders, setHeldOrders] = useState<HeldOrder[]>([]);
+  const [holdOrderDialogOpen, setHoldOrderDialogOpen] = useState(false);
+  const [waitingOrdersDialogOpen, setWaitingOrdersDialogOpen] = useState(false);
+  const [restoreConfirmOpen, setRestoreConfirmOpen] = useState(false);
+  const [orderToRestore, setOrderToRestore] = useState<HeldOrder | null>(null);
 
   useEffect(() => {
     loadCustomers();
     checkShift();
+    loadHeldOrders();
   }, []);
 
   const checkShift = async () => {
@@ -105,6 +131,183 @@ export default function POSTerminal() {
       setCustomers(data);
     } catch (error) {
       console.error('Error loading customers:', error);
+    }
+  };
+
+  const loadHeldOrders = async () => {
+    try {
+      const data = await getHeldOrders();
+      setHeldOrders(data as HeldOrder[]);
+    } catch (error) {
+      console.error('Error loading held orders:', error);
+    }
+  };
+
+  const handleHoldOrder = async (customerName: string, note: string) => {
+    if (!profile || !currentShift) {
+      toast({
+        title: 'Error',
+        description: 'Please open a shift first',
+        variant: 'destructive',
+      });
+      return;
+    }
+
+    if (cart.length === 0) {
+      toast({
+        title: 'Cannot Hold Empty Cart',
+        description: 'Please add items to the cart before holding the order',
+        variant: 'destructive',
+      });
+      return;
+    }
+
+    try {
+      const heldNumber = await generateHeldNumber();
+      
+      await saveHeldOrder({
+        held_number: heldNumber,
+        cashier_id: profile.id,
+        shift_id: currentShift.id,
+        customer_id: selectedCustomer?.id || null,
+        customer_name: customerName || null,
+        items: cart,
+        discount: discount.value > 0 ? discount : null,
+        note: note || null,
+      });
+
+      toast({
+        title: 'Order Held',
+        description: 'Order moved to waiting list',
+      });
+
+      // Clear cart and reset state
+      setCart([]);
+      setDiscount({ type: 'amount', value: 0 });
+      setSelectedCustomer(null);
+      setHoldOrderDialogOpen(false);
+      
+      // Reload held orders
+      loadHeldOrders();
+    } catch (error) {
+      console.error('Error holding order:', error);
+      toast({
+        title: 'Error',
+        description: 'Failed to hold order',
+        variant: 'destructive',
+      });
+    }
+  };
+
+  const handleRestoreOrder = (order: HeldOrder) => {
+    if (cart.length > 0) {
+      // Show confirmation if cart is not empty
+      setOrderToRestore(order);
+      setRestoreConfirmOpen(true);
+    } else {
+      // Restore directly if cart is empty
+      restoreOrder(order);
+    }
+  };
+
+  const restoreOrder = async (order: HeldOrder) => {
+    try {
+      // Validate product availability
+      const unavailableProducts: string[] = [];
+      const adjustedItems: CartItem[] = [];
+
+      for (const item of order.items) {
+        const currentProduct = await getProductByBarcode(item.product.barcode || '');
+        
+        if (!currentProduct) {
+          unavailableProducts.push(item.product.name);
+          continue;
+        }
+
+        // Check stock and adjust quantity if needed
+        let quantity = item.quantity;
+        if (currentProduct.current_stock > 0 && quantity > currentProduct.current_stock) {
+          quantity = currentProduct.current_stock;
+          toast({
+            title: 'Quantity Adjusted',
+            description: `${item.product.name}: reduced to ${quantity} (available stock)`,
+          });
+        }
+
+        adjustedItems.push({
+          ...item,
+          product: currentProduct,
+          quantity,
+        });
+      }
+
+      if (unavailableProducts.length > 0) {
+        toast({
+          title: 'Some Products Unavailable',
+          description: `Skipped: ${unavailableProducts.join(', ')}`,
+          variant: 'destructive',
+        });
+      }
+
+      if (adjustedItems.length === 0) {
+        toast({
+          title: 'Cannot Restore Order',
+          description: 'No products available from this order',
+          variant: 'destructive',
+        });
+        return;
+      }
+
+      // Restore cart state
+      setCart(adjustedItems);
+      setDiscount(order.discount || { type: 'amount', value: 0 });
+      
+      // Restore customer if exists
+      if (order.customer_id) {
+        const customer = customers.find(c => c.id === order.customer_id);
+        setSelectedCustomer(customer || null);
+      }
+
+      // Mark order as restored
+      await updateHeldOrderStatus(order.id, 'RESTORED');
+
+      toast({
+        title: 'Order Restored',
+        description: 'Waiting order restored to cart',
+      });
+
+      // Close dialogs and reload
+      setWaitingOrdersDialogOpen(false);
+      setRestoreConfirmOpen(false);
+      setOrderToRestore(null);
+      loadHeldOrders();
+    } catch (error) {
+      console.error('Error restoring order:', error);
+      toast({
+        title: 'Error',
+        description: 'Failed to restore order',
+        variant: 'destructive',
+      });
+    }
+  };
+
+  const handleCancelHeldOrder = async (orderId: string) => {
+    try {
+      await deleteHeldOrder(orderId);
+      
+      toast({
+        title: 'Order Deleted',
+        description: 'Waiting order deleted',
+      });
+
+      loadHeldOrders();
+    } catch (error) {
+      console.error('Error cancelling held order:', error);
+      toast({
+        title: 'Error',
+        description: 'Failed to delete order',
+        variant: 'destructive',
+      });
     }
   };
 
@@ -680,8 +883,25 @@ export default function POSTerminal() {
 
         <div className="space-y-4">
           <Card>
-            <CardHeader>
+            <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-4">
               <CardTitle>Order Summary</CardTitle>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setWaitingOrdersDialogOpen(true)}
+                className="relative"
+              >
+                <Clock className="h-4 w-4 mr-2" />
+                Waiting Orders
+                {heldOrders.length > 0 && (
+                  <Badge
+                    variant="destructive"
+                    className="ml-2 h-5 w-5 p-0 flex items-center justify-center rounded-full"
+                  >
+                    {heldOrders.length}
+                  </Badge>
+                )}
+              </Button>
             </CardHeader>
             <CardContent className="space-y-4">
               <div className="space-y-2">
@@ -761,15 +981,37 @@ export default function POSTerminal() {
                 </div>
               </div>
 
-              <Button
-                className="w-full h-12"
-                size="lg"
-                disabled={cart.length === 0}
-                onClick={() => setPaymentDialogOpen(true)}
-              >
-                <DollarSign className="h-5 w-5 mr-2" />
-                Process Payment
-              </Button>
+              <div className="flex gap-2">
+                <Button
+                  variant="outline"
+                  className="flex-1 h-12"
+                  size="lg"
+                  disabled={cart.length === 0}
+                  onClick={() => {
+                    if (cart.length === 0) {
+                      toast({
+                        title: 'Cannot Hold Empty Cart',
+                        description: 'Please add items to the cart',
+                        variant: 'destructive',
+                      });
+                      return;
+                    }
+                    setHoldOrderDialogOpen(true);
+                  }}
+                >
+                  <Pause className="h-5 w-5 mr-2" />
+                  Hold Order
+                </Button>
+                <Button
+                  className="flex-1 h-12"
+                  size="lg"
+                  disabled={cart.length === 0}
+                  onClick={() => setPaymentDialogOpen(true)}
+                >
+                  <DollarSign className="h-5 w-5 mr-2" />
+                  Process Payment
+                </Button>
+              </div>
             </CardContent>
           </Card>
         </div>
@@ -917,6 +1159,40 @@ export default function POSTerminal() {
           </Tabs>
         </DialogContent>
       </Dialog>
+
+      <HoldOrderDialog
+        open={holdOrderDialogOpen}
+        onOpenChange={setHoldOrderDialogOpen}
+        onConfirm={handleHoldOrder}
+      />
+
+      <WaitingOrdersDialog
+        open={waitingOrdersDialogOpen}
+        onOpenChange={setWaitingOrdersDialogOpen}
+        heldOrders={heldOrders}
+        onRestore={handleRestoreOrder}
+        onCancel={handleCancelHeldOrder}
+      />
+
+      <AlertDialog open={restoreConfirmOpen} onOpenChange={setRestoreConfirmOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Replace Current Cart?</AlertDialogTitle>
+            <AlertDialogDescription>
+              You have items in the current cart. Do you want to replace them with the waiting order?
+              Current cart items will be lost.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel onClick={() => setOrderToRestore(null)}>
+              Cancel
+            </AlertDialogCancel>
+            <AlertDialogAction onClick={() => orderToRestore && restoreOrder(orderToRestore)}>
+              Replace Cart
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </>
   );
 }

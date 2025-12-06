@@ -1,4 +1,4 @@
-# POS Tizimi Talablar Hujjati (Yangilangan versiya - Per-Product Discount qo'shildi)
+# POS Tizimi Talablar Hujjati (Yangilangan versiya - Hold Order funksiyasi qo'shildi)
 
 ## 1. Tizim nomi
 POS Tizimi (Point of Sale Management System)
@@ -18,6 +18,7 @@ Tizim quyidagi barcha ma'lumotlarni yagona markazlashtirilgan ma'lumotlar bazasi
 - Xodimlar (Employees)
 - Sozlamalar (Settings)
 - Audit loglari (Audit Logs)
+- Kutilayotgan buyurtmalar (Held Orders)
 \nBarcha modullar bir xil yagona ma'lumotlar manbasidan o'qiydi va yangilaydi.
 
 ### 3.2 Modullararo integratsiya qoidalari
@@ -25,15 +26,15 @@ Tizim quyidagi barcha ma'lumotlarni yagona markazlashtirilgan ma'lumotlar bazasi
 #### 3.2.1 Mahsulotlar ↔ Ombor
 - Mahsulot yaratilganda avtomatik ravishda ombor yozuvi yaratiladi
 - Mahsulot qoldig'ini yangilash kam qoldiq ogohlantirishlariga va dashboardga ta'sir qiladi
--Agar mahsulot buyurtmalarda ishlatilgan bo'lsa, uni o'chirish oldini olinadi
-
-#### 3.2.2 Buyurtmalar (Sotuvlar) ↔Ombor
+- Agar mahsulot buyurtmalarda ishlatilgan bo'lsa, uni o'chirish oldini olinadi
+\n#### 3.2.2 Buyurtmalar (Sotuvlar) ↔Ombor
 **Buyurtma yakunlanganda:**
 - Sotilgan miqdorga asoslanib qoldiqni kamaytirish
 - Qoldiq o'zgarishini Inventory Movement Log ga yozish
 - Dashboard statistikasini yangilash
 - Mijoz xarid tarixini yangilash
-- Xodim samaradorlik statistikasini yangilash\n- To'lov yozuvini yaratish (xulosa)
+- Xodim samaradorlik statistikasini yangilash
+- To'lov yozuvini yaratish (xulosa)
 
 **Buyurtma bekor qilinganda:**
 - Qoldiqni tiklash
@@ -43,11 +44,13 @@ Tizim quyidagi barcha ma'lumotlarni yagona markazlashtirilgan ma'lumotlar bazasi
 - Mahsulotlarni qoldiqqa qaytarish\n- Harakat logiga yozuv qo'shish (Return)\n- Mijozning jami xarajatini kamaytirish
 - Xodim samaradorlik ko'rsatkichlarini kamaytirish
 - Dashboard ko'rsatkichlarini yangilash
-\n#### 3.2.4 Xarid buyurtmalari ↔ Ombor\n**Xarid buyurtmasi qabul qilinganda:**
+\n#### 3.2.4 Xarid buyurtmalari ↔ Ombor
+**Xarid buyurtmasi qabul qilinganda:**
 - Qoldiqni oshirish
 - Harakat logiga yozuv qo'shish (Purchase Receipt)
 - Ombor baholashini yangilash
-- Dashboard va hisobotlarni yangilash\n\n**Xarid buyurtmasi bekor qilinganda:**\n- Qoldiqqa hech narsa qo'shilmasligi kerak
+- Dashboard va hisobotlarni yangilash\n
+**Xarid buyurtmasi bekor qilinganda:**\n- Qoldiqqa hech narsa qo'shilmasligi kerak
 - Bekor qilishni loglash
 \n#### 3.2.5 Mijozlar ↔ Buyurtmalar ↔ Qaytarishlar
 Har bir mijoz quyidagilarga ega bo'lishi kerak:
@@ -75,7 +78,8 @@ Har bir buyurtma quyidagilarni saqlashi kerak:
 - Shift boshlanishi/tugashi
 - Sessiya vaqti
 - Xodimga bog'langan kassa tortmasi amallari
-\n#### 3.2.7 Sozlamalar ↔ Butun tizim\nSozlamalar modullar faoliyatiga bevosita ta'sir qilishi kerak:
+\n#### 3.2.7 Sozlamalar ↔ Butun tizim
+Sozlamalar modullar faoliyatiga bevosita ta'sir qilishi kerak:
 \n**POS Terminal:**
 - To'lov usullari
 - Aralash to'lov qoidalari
@@ -83,6 +87,7 @@ Har bir buyurtma quyidagilarni saqlashi kerak:
 - Chek chop qilish sozlamalari
 - Manfiy qoldiq qoidalari
 - Standart soliq stavkasi
+- Hold Order funksiyasini yoqish/o'chirish
 
 **Ombor:**
 - Minimal qoldiq chegarasi
@@ -104,6 +109,7 @@ Dashboard doimo REAL-TIME ko'rsatkichlarni ko'rsatishi kerak:
 - Eng ko'p sotiladigan mahsulotlar
 - Xodim samaradorligi ogohlantirishlari
 - Kutilayotgan xarid buyurtmalari
+- Kutilayotgan buyurtmalar soni (Held Orders)
 
 Barcha hisoblar quyidagi amallardan keyin avtomatik qayta hisoblanishi kerak:
 - Yangi buyurtma\n- Qaytarish
@@ -135,8 +141,7 @@ Har bir hisobot bog'liq modullar o'zgarganda to'g'ri yangilanishi kerak.
 - Telefon va email noyob bo'lishi kerak
 \n**Xodimlar:**
 - Oxirgi Admin hisobini o'chirish mumkin emas
-
-**Xarid buyurtmalari:**\n- Qabul qilish buyurtma qilingan miqdordanoshib ketishi mumkin emas
+\n**Xarid buyurtmalari:**\n- Qabul qilish buyurtma qilingan miqdordanoshib ketishi mumkin emas
 
 ### 3.6 Tizim bo'ylab audit loglash
 Har bir muhim amal loglarni yozishi kerak:
@@ -147,6 +152,7 @@ Har bir muhim amal loglarni yozishi kerak:
 - Mijozlarni yangilash
 - Xodim amallari
 - Tizim sozlamalarini o'zgartirish
+- Kutilayotgan buyurtmalarni saqlash/tiklash/bekor qilish
 
 **Log formati:**
 - user_id
@@ -172,6 +178,7 @@ Har bir muhim amal loglarni yozishi kerak:
   - Buyurtmalarni yaratish
   - Qaytarishlarni yaratish
   - Mahsulotlar va mijozlarni ko'rish
+  - Buyurtmalarni kutish ro'yxatiga saqlash va tiklash
 - Asosiy yozuvlarni tahrirlash yoki o'chirish mumkin emas
 
 ### 3.9 UI/UX sinxronizatsiya qoidalari
@@ -189,6 +196,7 @@ Har bir muhim amal loglarni yozishi kerak:
 - Kunlik/haftalik/oylik statistika
 - Tezkor ko'rsatkichlar paneli
 - Barcha modullardan avtomatik yangilanadigan metrikalar
+- Kutilayotgan buyurtmalar soni ko'rsatkichi
 
 ### 4.2 POS Terminal (Kassa oynasi)
 \n#### 4.2.1 Asosiy funksiyalar
@@ -202,6 +210,7 @@ Har bir muhim amal loglarni yozishi kerak:
 - Chek raqami avtomatik generatsiya (Format: POS-YYYYMMDD-#####)
 - Quick Actions paneli:\n  - To'lov qabul qilish
   - Buyurtmani saqlab qo'yish (Hold order)
+  - Kutilayotgan buyurtmalarni ko'rish (Waiting Orders)
   - Chek qaytarish
   - Xaridor tanlash
 - Offline rejimda ishlash imkoniyati
@@ -216,21 +225,93 @@ Har bir muhim amal loglarni yozishi kerak:
 - Sozlamalar modulidan to'lov usullari va qoidalarni real-time o'qish
 - Har bir tranzaksiya avtomatik ravishda ombor, mijoz va xodim modullarini yangilaydi
 
-#### 4.2.2 Savat (Shopping Cart) - Per-Product Discount bilan
-\n**Savat tuzilishi:**
+#### 4.2.2 Hold Order (Buyurtmani kutish ro'yxatiga saqlash) funksiyasi
+
+**Biznes stsenariy:**
+- Mijoz kassaga keladi, ba'zi mahsulotlar skanerlangan va savatga qo'shilgan
+- Mijoz qo'shimcha mahsulotlar olish yoki biror narsani tekshirish uchun kassirdan kutishni so'raydi
+- Kassir joriy savatni'kutilayotgan buyurtma' sifatida saqlashi va boshqa mijozlar bilan ishlashni davom ettirishi kerak
+- Keyinchalik, mijoz qaytib kelganda, kassir kutilayotgan buyurtmani tiklaydi va to'lovni yakunlaydi
+
+**Funksional talablar:**
+\n**1. POS Terminal yangi amallar:**
+- 'Process Payment' tugmasi yoniga **'Hold Order'** (Buyurtmani saqlash) tugmasini qo'shish
+- Yuqori o'ng qismda yoki POS Terminal sarlavhasida **'Waiting Orders'** (Kutilayotgan buyurtmalar) menyu/tugmasini qo'shish
+\n**2. Hold Order xatti-harakati:**
+- Kassir **'Hold Order'** tugmasini bosganda:\n  - Agar savat bo'sh bo'lsa → ogohlantirish ko'rsatish va hech narsa qilmaslik
+  - Aks holda:\n    - Kichik dialog/modal oynasini ochish:\n      - Maydonlar:\n        - Ixtiyoriy 'Mijoz nomi / yorliq' (masalan: 'Yashil futbolkali odam', 'Tohirbek', 'Stol3')
+        - Ixtiyoriy izoh\n    - Joriy savat holatini to'lovsiz **kutilayotgan buyurtma** sifatida saqlash
+    - Terminaldagi joriy savatni tozalash (kassir keyingi mijozga xizmat ko'rsatishiuchun)
+- Kutilayotgan buyurtma haliombor yoki hisobotlarga ta'sir qilmasligi kerak (qoldiq kamaytirilmaydi, savdo jami hisoblanmaydi)
+
+**3. Ma'lumotlar modeli:**
+- `pending_orders` yoki `held_orders` jadvalini yaratish yoki ishlatish:\n  - id (primary key)
+  - items (JSON array: product_id, name, unit_price, quantity, line_discount va boshqalar)
+  - customer_name (nullable)
+  - note (nullable)
+  - created_at\n  - status ('HELD' | 'RESTORED' | 'CANCELLED')\n- Bu bosqichda asosiy `orders` jadvaliga qo'shmaslik. Haqiqiy buyurtma faqat to'lovdan keyin yaratiladi\n
+**4. Kutilayotgan buyurtmalar ro'yxati:**
+- 'Waiting Orders' tugmasi modal yokiyon panelni ochadi:\n  - Har bir kutilayotgan buyurtma uchun ko'rsatish:\n    - Qisqa yorliq: customer_name yoki generatsiya qilingan nom ('Buyurtma #3')
+    - Vaqt (qancha vaqt oldin saqlangan)\n    - Jami summa ko'rinishi (line_subtotals yig'indisi)
+  - Har bir element uchun amallar:
+    - **Restore** (Ushbu buyurtmani joriy savatga yuklash)
+    - **Cancel** (Agar kerak bo'lmasa, kutilayotgan buyurtmani o'chirish)
+- Bir vaqtning o'zida bir nechta kutilayotgan buyurtmalarni qo'llab-quvvatlash
+
+**5. Restore (Tiklash) xatti-harakati:**
+- Kassir kutilayotgan buyurtmada **Restore** tugmasini bosganda:
+  - Agar joriy savat bo'sh bo'lmasa, tasdiqlash so'rash:\n    - 'Joriy savatda mahsulotlar bor. Ularni kutilayotgan buyurtma bilan almashtirish kerakmi?'
+    - Variantlar:
+      - Joriy savatni almashtirish
+      - Bekor qilish
+  - Tasdiqlashdan keyin:
+    - Kutilayotgan buyurtma mahsulotlarini savdo savatiga yuklash (miqdorlar va qator chegirmalari bilan)
+    - Ixtiyoriy mijoz nomini 'Customer' maydoniga yuklash (agar bog'langan bo'lsa)
+    - `pending_orders` daushbu kutilayotgan buyurtmani o'chirish yoki RESTOREDdeb belgilash
+  - Tiklanganidan keyin, kassir 'Process Payment' orqali to'lovni odatdagidek qayta ishlashi mumkin
+
+**6. Cancel (Bekor qilish) xatti-harakati:**
+- Kutilayotgan buyurtmani bekor qilishda:\n  - Tasdiqlash ko'rsatish: 'Ushbu kutilayotgan buyurtmani o'chirish kerakmi? Buni qaytarib bo'lmaydi.'
+  - Tasdiqlashda, `pending_orders` da o'chirish yoki CANCELLED deb belgilash
+  - Buombor yoki hisobotlarga ta'sir qilmasligi kerak
+\n**7. UI/UX tafsilotlari:**
+-'Hold Order' tugmasi uslubi:
+  - Secondary tugma, masalan: outlined, 'Process Payment' chap tomonida
+- 'Waiting Orders' tugmasi:\n  - Ikkona (masalan: soat yoki pause) + kutilayotgan buyurtmalar soni bilan badge
+- Aniq toast xabarlar:\n  - Saqlash muvaffaqiyatli: 'Buyurtma kutish ro'yxatiga ko'chirildi.'
+  - Tiklash muvaffaqiyatli: 'Kutilayotgan buyurtma savatga tiklandi.'
+  - Bekor qilish: 'Kutilayotgan buyurtma o'chirildi.'
+
+**8. Tekshirish:**
+-Agar savat bo'sh bo'lsa, `Hold` ga ruxsat bermaslik\n- Tiklashda mahsulot mavjudligini qayta tekshirish:\n  - Agar ba'zi mahsulotlar katalogdan o'chirilgan yoki qoldiq keskin o'zgargan bo'lsa, yumshoq boshqarish:\n    - Agar mahsulot yo'qolgan bo'lsa → xabar ko'rsatish vaushbu elementni o'tkazib yuborish
+    - Agar miqdor > joriy maksimal qoldiq (agar qoldiqni majburlasangiz) → mavjudga qisqartirish va ogohlantirish ko'rsatish
+\n**9. TypeScript va holat:**
+- `HeldOrder` / `PendingOrder` uchun turlarni qo'shish
+- Quyidagilar uchun hooks yoki state management ni amalga oshirish:
+  - `heldOrders` ro'yxati
+  - `saveHeldOrder`, `restoreHeldOrder`, `cancelHeldOrder`
+- Funksiyalar type-safe bo'lishini va async xatolarni (Supabase yoki API xatolari) boshqarishini ta'minlash
+
+**Yetkazish:**
+- To'liq ishlaydigan 'Hold / Waiting Order' tizimi:\n  - Kassir joriy savatni kutish ro'yxatiga saqlashi mumkin
+  - Barcha kutilayotgan buyurtmalarni ro'yxatda ko'rish\n  - Istalgan kutilayotgan buyurtmani savatga tiklash va to'lovni yakunlash\n  - Kerak bo'lmaganda kutilayotgan buyurtmalarni bekor qilish
+- To'lov yakunlanib, haqiqiy `order` yaratilgunga qadar Inventory yoki Reports ga ta'sir yo'q
+\n#### 4.2.3 Savat (Shopping Cart) - Per-Product Discount bilan
+
+**Savat tuzilishi:**
 \nHar bir savat elementi (cart item) quyidagi ma'lumotlarni o'z ichiga oladi:
 - Mahsulot nomi
 - SKU / Barcode
 - Birlik narxi (unit_price)
 - Miqdor (quantity)
-- **Qator chegirmasi (lineDiscountAmount)** - YANGI
+- Qator chegirmasi (lineDiscountAmount)
 - Qator oraliq jami (line_subtotal = unit_price × quantity)
 - Qator jami (line_total = line_subtotal - lineDiscountAmount)
 \n**Per-Product Discount UI:**
 
 1. **Har bir savat qatoriuchun chegirma nazorati:**
    - Har bir mahsulot qatorida kichik chegirma maydoni ko'rsatiladi
-   - Standart qiymat: 0 (chegirma yo'q)
+   - Standart qiymat: 0(chegirma yo'q)
    - Format: summa ko'rinishida (masalan: 5000 UZS)
    - Chegirma belgisi yoki 'Chegirma' yorlig'i bilan
 
@@ -242,8 +323,7 @@ Har bir muhim amal loglarni yozishi kerak:
 
 **Hisoblash qoidalari:**
 \n```\nlet unit_price = mahsulot narxi\nlet qty = miqdor
-let line_subtotal = unit_price × qty
-let line_discount = mahsulot uchun chegirma (summa, >= 0)
+let line_subtotal = unit_price × qty\nlet line_discount = mahsulot uchun chegirma (summa, >= 0)
 let line_total = line_subtotal - line_discount
 ```
 
@@ -260,7 +340,7 @@ let line_total = line_subtotal - line_discount
 \n**Order Summary integratsiyasi:**
 \n1. **Oraliq jami (Subtotal):**
    - Barcha line_subtotal qiymatlarining yig'indisi (chegirmalardan oldin)
-   - Formula: sum(unit_price × quantity) barcha qatorlaruchun
+   - Formula: sum(unit_price × quantity) barcha qatorlar uchun
 \n2. **Jami chegirma (Total Discount):**
    - Global buyurtma chegirmasi + barcha qator chegirmalarining yig'indisi
    - Formula: global_order_discount + sum(lineDiscountAmount)\n
@@ -271,7 +351,8 @@ let line_total = line_subtotal - line_discount
 4. **To'lov modali:**
    - Yakuniy Total Amount dan foydalanadi
 \n**Real-time yangilanish:**
-- Qator chegirmasini yangilash darhol quyidagilarni qayta hisoblaydi:\n  - Ushbu qatorning line_total qiymatini\n  - Order Summarydagi Subtotal, Discount va Total qiymatlarini
+- Qator chegirmasini yangilash darhol quyidagilarni qayta hisoblaydi:
+  - Ushbu qatorning line_total qiymatini\n  - Order Summarydagi Subtotal, Discount va Total qiymatlarini
 - Barcha hisoblashlar avtomatik va real-time amalga oshiriladi
 
 **Soliq bilan integratsiya:**
@@ -286,13 +367,11 @@ interface CartItem {
   sku: string;
   unitPrice: number;
   quantity: number;
-  lineDiscountAmount: number; // YANGI - standart 0
-  lineSubtotal: number; // unitPrice × quantity
+  lineDiscountAmount: number; // standart 0\n  lineSubtotal: number; // unitPrice × quantity
   lineTotal: number; // lineSubtotal - lineDiscountAmount
 }\n```
 
-**Xatolarni boshqarish:**
-- Savat bo'sh bo'lganda yoki chegirma maydonlari tozalanganda runtime xatolari bo'lmasligi kerak
+**Xatolarni boshqarish:**\n- Savat bo'sh bo'lganda yoki chegirma maydonlari tozalanganda runtime xatolari bo'lmasligi kerak
 - Agar foydalanuvchi chegirma maydonini tozalasa va bo'sh qoldirsa,0 sifatida qabul qilinadi
 - Barcha kiritishlar validatsiya qilinadi
 - Noto'g'ri qiymatlar uchun aniq xato xabarlari ko'rsatiladi
@@ -323,7 +402,7 @@ interface CartItem {
 - Sahifalash (Pagination)
 - Excel orqali ommaviy import
 - Excel orqali ommaviy export
-- 'Mahsulot qo'shish' tugmasi
+-'Mahsulot qo'shish' tugmasi
 \n**Qoldiq holati ranglari:**
 - Yashil → Qoldiq yetarli
 - Sariq → Kam qoldiq
@@ -356,8 +435,7 @@ interface CartItem {
 - Mahsulot rasmi yuklash (1-3 ta rasm tavsiya etiladi)
 \n#### 4.3.3 Product Detail Page
 **Yuqori qism:**
-- Rasm
-- Mahsulot nomi
+- Rasm\n- Mahsulot nomi
 - SKU / Barcode
 - Kategoriya
 - Joriy qoldiq
@@ -375,7 +453,7 @@ interface CartItem {
   - Turi
   - Miqdor (+ yoki –)
   - Foydalanuvchi
-  - Bog'liq hujjat raqami
+  - Bog'liq hujjat raqomi
 
 **2) Sotuv tarixi (Sales History)**
 - Buyurtma ID
@@ -409,7 +487,7 @@ interface CartItem {
 - O'chirishda →agar mahsulotning sotuv tarixi bo'lsa ogohlantirish
 \n#### 4.3.8 Qo'shimcha funksiyalar (Ixtiyoriy lekin tavsiya etiladi)
 - Sevimli mahsulotlar (POS tezkor kirishiga yulduzcha belgisi)
-- Ko'p do'konombor sinxronizatsiyasi
+- Ko'pdo'konombor sinxronizatsiyasi
 - Variantlar (o'lcham/rang)
 - Birlashtirilgan mahsulotlar
 - Amal qilish muddatini kuzatish (dorixona/oziq-ovqat uchun)
@@ -431,8 +509,7 @@ interface CartItem {
 - Sahifalash (Pagination)
 - '+ Add Category' tugmasi
 - O'chirishda → agar kategoriyada mahsulotlar bo'lsa, ogohlantirish ko'rsatish
-- Rangli teg belgilari (ixtiyoriy)
-
+- Rangli teg belgilari (ixtiyoriy)\n
 #### 4.4.2 Add Category Form
 **Forma maydonlari:**
 - Category Name (majburiy)
@@ -536,7 +613,7 @@ Rol asosida kirish:\n- Admin va Manager: Kategoriyalarni yaratish, tahrirlash, o
 **Real-time sinxronizatsiya:**
 - Barcha qoldiq o'zgarishlari darhol dashboard va hisobotlarga aks etadi
 - Kam qoldiq ogohlantirishlari avtomatik yangilanadi
-\n#### 4.5.2 Inventory Detail Page
+\n#### 4.5.2Inventory Detail Page
 Mahsulotga xosombor ma'lumotlarini ochish.\n
 **Sarlavha ma'lumotlari:**
 - Mahsulot rasmi
@@ -595,8 +672,8 @@ Ombor o'zgarishlarining to'liq audit trail.
   - Correction (tuzatish)
   - Inventory count difference (inventarizatsiya farqi)
 - Izohlar (ixtiyoriy)
-
-**Tekshirish:**\n- Noldan pastga kamaytirish mumkin emas
+\n**Tekshirish:**
+- Noldan pastga kamaytirish mumkin emas
 - Tuzatish logga yozilishi kerak
 \n**Tasdiqlashdan keyin:**
 - Harakat Movement History ga qo'shiladi
@@ -650,7 +727,7 @@ if stock_quantity <= minimal_stock:\n    show'Low Stock' badge
 
 **Global ogohlantirish paneli qo'shish:**
 - Kam qoldiqdagi mahsulotlar ro'yxatini ko'rsatish
-- Ushbu ro'yxatni eksport qilish imkoniyati
+-Ushbu ro'yxatni eksport qilish imkoniyati
 - POS terminal ham kam qoldiqdagi mahsulotlarni ajratib ko'rsatishi kerak (ixtiyoriy)
 
 #### 4.5.6 Integration (Integratsiya - MAJBURIY)
@@ -761,10 +838,11 @@ Foydalanuvchi buyurtma qatorini bosganda, Order Detail sahifasi yoki yon panel o
 - SKU / Barcode
 - Miqdor
 - Birlik narxi
-- Qator chegirmasi (lineDiscountAmount) - YANGI
+- Qator chegirmasi (lineDiscountAmount)
 - Qator jami\n\n**Xulosa bloki:**
-- Oraliq jami (Subtotal)\n- Qator chegirmalari jami (Total Line Discounts) - YANGI
-- Buyurtma chegirmasi (Order Discount)\n- Jami chegirmalar (Total Discounts = Line Discounts + Order Discount) - YANGI
+- Oraliq jami (Subtotal)\n- Qator chegirmalari jami (Total Line Discounts)
+- Buyurtma chegirmasi (Order Discount)
+- Jami chegirmalar (Total Discounts = Line Discounts + Order Discount)
 - Soliq (agar ishlatilsa)
 -Umumiy jami (Grand total)
 - To'langan summa
@@ -775,7 +853,7 @@ Ushbu buyurtma uchun to'lovlar ro'yxati:
 - Sana va vaqt
 - Summa
 - Usul (Naqd, Karta, QR, Aralash)
-- Ma'lumotnoma (terminal tranzaksiyasi, chek raqami)
+- Ma'lumotnoma (terminal tranzaksiyasi, chek raqomi)
 \n**Bog'liq qaytarishlar (Sales Returns):**
 Ushbu buyurtmaga bog'liq qaytarishlar ro'yxati:
 - Qaytarish raqomi
@@ -842,10 +920,10 @@ Faqat Manager yoki Admin roligaega foydalanuvchilar:\n- Buyurtmalarni bekor qili
 - return_number – Qaytarish raqami (RET-YYYYMMDD-#####)
 - order_number – Asl sotuv buyurtmasi raqomi
 - customer_name – Mijoz nomi
-- date_time – Sana va vaqt\n- returned_amount – Qaytarilgan summa
+- date_time – Sana va vaqt
+- returned_amount – Qaytarilgan summa
 - status – Pending, Completed, Cancelled
-- cashier – Kassir
-- actions – Ko'rish, Chop qilish, Bekor qilish
+- cashier – Kassir\n- actions – Ko'rish, Chop qilish, Bekor qilish
 
 **Funksiyalar:**
 - Qaytarish raqomi yoki buyurtma raqomi bo'yicha qidiruv
@@ -953,7 +1031,7 @@ Kassir qaytarish usulini tanlaydi:
 - method: tanlangan usul
 \n#### 4.7.7 Mijozlar integratsiyasi
 Agar mijoz bog'langan bo'lsa:\n
-**Mijoz balansi qaytarilgan summa miqdorida ortadi (agar balans qaytarish turi bo'lsa)**
+**Mijoz balansi qaytarilgan summa miqdorida ortadi (agar balans qaytarishturi bo'lsa)**
 
 **Mijoz profili ko'rsatadi:**
 - Bog'liq qaytarishlar\n- Qaytarilgan mahsulotlar
@@ -966,8 +1044,7 @@ Sales Returns quyidagi hisobotlarda ko'rinishi kerak:
 
 **Savdo hisobotlari:**
 - Jami qaytarilgan summa
-- Sof savdo
-- Qaytarish foizi
+- Sof savdo\n- Qaytarish foizi
 
 **Ombor hisobotlari:**
 - Qaytarilgan mahsulotlar
@@ -1007,7 +1084,7 @@ Har bir qaytarish uchun quyidagilar logga yoziladi:
 - Qisman to'lov imkoniyati
 - Terminal integratsiyasi
 - Oldindan to'lov (qarzdor mijozlar uchun)
-- To'lov ma'lumotlari: raqam, sana, summa,turi, izoh
+- To'lov ma'lumotlari: raqam, sana, summa, turi, izoh
 - Qaytarish to'lovlari (Refund payments)
 - Mijoz balansi bilan integratsiya
 - Sozlamalar modulidan to'lov usullarini real-time o'qish
@@ -1019,7 +1096,7 @@ Har bir qaytarish uchun quyidagilar logga yoziladi:
 #### 4.9.1 Purchase Orders List Page
 **Sahifa sarlavhasi:** Purchase Orders
 \n**Jadval ustunlari:**
-- po_number – Xarid buyurtmasi raqami (masalan: PO-20251206-00023)
+- po_number – Xarid buyurtmasi raqomi (masalan: PO-20251206-00023)
 - supplier_name – Yetkazib beruvchi (matn yoki bog'langan obyekt)
 - order_date – Yaratilgan sana
 - expected_date – Kutilayotgan yetkazib berish sanasi
@@ -1060,8 +1137,7 @@ Har bir qaytarish uchun quyidagilar logga yoziladi:
 - Soliq (ixtiyoriy)
 - Jami summa (Total amount)
 \n**Tugmalar:**
-- Save as Draft
-- Approve
+- Save as Draft\n- Approve
 - Cancel
 \n**Status o'zgarishlari:**
 - Draft → Approved → (Partially) Received → Closed
@@ -1073,8 +1149,7 @@ Har bir qaytarish uchun quyidagilar logga yoziladi:
 - Yetkazib beruvchi\n- Status belgisi
 - Buyurtma sanasi va kutilayotgan sana
 - Kim yaratdi, kim tasdiqladi
-- Izohlar
-
+- Izohlar\n
 **Mahsulotlar jadvali:**
 - Mahsulot
 - Buyurtma qilingan miqdor
@@ -1133,8 +1208,7 @@ Purchase Orders ma'lumotlari quyidagi hisobotlarda ishlatiladi:
 - Mahsulot bo'yicha xarid tarixi
 - Yetkazib beruvchi samaradorligi hisobotlari
 - Ombor baholash va xarajat tahlili
-
-#### 4.9.6 Ruxsatlar va xavfsizlik
+\n#### 4.9.6 Ruxsatlar va xavfsizlik
 **Admin / Manager:**
 - PO larni yaratish, tahrirlash, tasdiqlash, qabul qilish, bekor qilish
 \n**Kassir / Xodim:**
@@ -1244,7 +1318,8 @@ Purchase Orders ma'lumotlari quyidagi hisobotlarda ishlatiladi:
 **Sarlavha bloki:**
 - Ism +turi belgisi
 - Telefon, email\n- Manzil
-- Status\n- Kredit limiti
+- Status
+- Kredit limiti
 - Joriy balans (rang bilan):\n  - Qizil → mijoz do'konga qarzdor (musbat balans)
   - Yashil → do'kon qarzdor/qaytarish / oldindan to'lov (manfiy)\n  - Kulrang → nol balans
 \n**Asosiy ko'rsatkichlar (kartalar):**
@@ -1252,7 +1327,8 @@ Purchase Orders ma'lumotlari quyidagi hisobotlarda ishlatiladi:
 - Buyurtmalar soni
 - O'rtacha buyurtma qiymati
 - Jami qaytarishlar summasi
-- Oxirgi buyurtma sanasi\n\n**Tab1— Buyurtmalar (Orders)**
+- Oxirgi buyurtma sanasi
+\n**Tab1— Buyurtmalar (Orders)**
 Jadval:\n- Buyurtma raqomi
 - Sana
 - Jami summa
@@ -1298,7 +1374,8 @@ Balans = (Mijoz uchun jami buyurtmalar – Mijozdan jami to'lovlar + Do'kon qayt
 \n**Ogohlantirish ko'rsatish qachon:**
 - Yangi savdo balansi credit_limit danoshirib yuborsa
 - Mijoz allow_debt = false va kassir kredit savdo qilmoqchi bo'lsa
-\n#### 4.11.6 Hisobotlar integratsiyasi
+
+#### 4.11.6 Hisobotlar integratsiyasi
 Mijozlar moduli hisobotlarga ma'lumot berishi kerak:
 - Savdo bo'yicha top mijozlar
 - Eng ko'p qarzdor mijozlar
@@ -1420,6 +1497,7 @@ Audit trail:
 - Cancellations – Bekor qilishlar
 - Returns – Qaytarishlar\n- Inventory adjustments – Ombor tuzatishlari
 - Price changes – Narx o'zgarishlari
+- Held orders saved/restored – Kutilayotgan buyurtmalar saqlangan/tiklangan
 
 Har bir yozuv quyidagilarni o'z ichiga olishi kerak:
 - Timestamp – Vaqt belgisi
@@ -1435,8 +1513,7 @@ POS Terminal xodimga asoslangan mantiqni qo'llab-quvvatlashi kerak:
 
 **Kassir cheklovlari:**
 - Mahsulotlarni tahrirlash mumkin emas
-- Sozlamalarni tahrirlash mumkin emas\n- Buyurtmalarni o'chirish mumkin emas\n- Narxlarni o'zgartirish mumkin emas\n
-**Manager:**
+- Sozlamalarni tahrirlash mumkin emas\n- Buyurtmalarni o'chirish mumkin emas\n- Narxlarni o'zgartirish mumkin emas\n\n**Manager:**
 - Chegirmalarni tasdiqlashi mumkin\n- Kam qoldiqdagi savdolarni bekor qilishi mumkin
 - Qaytarishlarni tasdiqlashi mumkin
 \n**Admin:**
@@ -1539,22 +1616,22 @@ Eksport imkoniyati:
 **Sahifa bo'limlari (kartalar ko'rinishida ikkonlar bilan):**
 - Sales Reports (Savdo hisobotlari)
 - Inventory Reports (Ombor hisobotlari)
-- Purchase Reports (Xarid hisobotlari)
-- Employee Reports (Xodimlar hisobotlari)
+- Purchase Reports (Xarid hisobotlari)\n- Employee Reports (Xodimlar hisobotlari)
 - Financial Reports (Moliya hisobotlari)
 - Export Center (Eksport markazi)
 
 #### 4.13.2 Sales Reports (Savdo hisobotlari)
 \n**4.13.2.1 Daily Sales Report (Kunlik savdo hisoboti)**
 \n**Jadval ustunlari:**
-- Invoice number (Chek raqami)
+- Invoice number (Chek raqomi)
 - Date/time (Sana/vaqt)
 - Cashier (Kassir)
 - Payment type (To'lov turi: Cash / Card / Mixed)
 - Total sale (Jami savdo)
 - Profit (Foyda)
 - Status (Completed / Returned / Cancelled)
-\n**Filtrlar:**
+
+**Filtrlar:**
 - Date range (Sana oralig'i)
 - Cashier (Kassir)
 - Payment type (To'lov turi)
@@ -1631,7 +1708,7 @@ Eksport imkoniyati:
 - Total units in stock (Ombordagi jami birliklar)\n\n#### 4.13.4 Purchase Reports (Xarid hisobotlari)
 \n**4.13.4.1 Purchase Order Summary (Xarid buyurtmasi xulosasi)**
 
-**Jadval ustunlari:**\n- PO number (PO raqami)
+**Jadval ustunlari:**\n- PO number (PO raqomi)
 - Supplier (Yetkazib beruvchi)
 - Total ordered amount (Jami buyurtma qilingan summa)
 - Total received amount (Jami qabul qilingan summa)
@@ -1668,7 +1745,7 @@ Eksport imkoniyati:
 **4.13.6.1 Profit & Loss Report (Foyda va zarar hisoboti)**
 \n**Bo'limlar:**
 - Gross sales (Yalpi savdo)
-- Discounts (Chegirmalar - qator va buyurtma chegirmalari) - YANGILANDI
+- Discounts (Chegirmalar - qator va buyurtma chegirmalari)
 - Net sales (Sof savdo)
 - Cost of goods sold - COGS (Sotilgan tovarlar xarajati)
 - Gross profit (Yalpi foyda)
@@ -1778,7 +1855,7 @@ Kompaniya ma'lumotlari quyidagilarda ishlatiladi:
 - Default POS mode: Retail / Restaurant (faqat enum, kelajakuchun)
 - Enable'Hold Order' feature (yoqish/o'chirish) –'Buyurtmani saqlash' funksiyasini yoqish
 - Enable 'Mixed Payment' (yoqish/o'chirish) – 'Aralash to'lov' funksiyasini yoqish
-- Enable 'Per-Product Discount' (yoqish/o'chirish) – 'Mahsulot bo'yicha chegirma' funksiyasini yoqish - YANGI
+- Enable 'Per-Product Discount' (yoqish/o'chirish) – 'Mahsulot bo'yicha chegirma' funksiyasini yoqish
 - Require customer selection for credit sales (yoqish/o'chirish) – Kredit savdo uchun mijoz tanlashni talab qilish
 - Automatically log out cashier after X minutes of inactivity – Xdaqiqa faoliyatsizlikdan keyin kassirni avtomatik chiqarish
 - Show low-stock warning in POS (yoqish/o'chirish) – POS da kam qoldiq ogohlantirishini ko'rsatish
@@ -1813,8 +1890,7 @@ Kompaniya ma'lumotlari quyidagilarda ishlatiladi:
 - Receipt footer text (return policy, contact info) – Chek pastki matni (qaytarish siyosati, aloqa ma'lumotlari)
 - Show company logo on receipt (yoqish/o'chirish) – Chekda kompaniya logosini ko'rsatish\n- Show cashier name (yoqish/o'chirish) – Kassir nomini ko'rsatish
 - Show customer name (yoqish/o'chirish) – Mijoz nomini ko'rsatish\n- Show product SKU (yoqish/o'chirish) – Mahsulot SKU ni ko'rsatish
-- Show line discounts on receipt (yoqish/o'chirish) – Chekda qator chegirmalarini ko'rsatish - YANGI
-- Default receipt size: 58mm / 80mm – Standart chek o'lchami
+- Show line discounts on receipt (yoqish/o'chirish) – Chekda qator chegirmalarini ko'rsatish\n- Default receipt size: 58mm / 80mm – Standart chek o'lchami
 - Test print button (placeholder) – Sinov chop qilish tugmasi
 
 **Ushbu sozlamalar chop qilish mantiqida qayta ishlatilishi kerak.**
@@ -1915,9 +1991,9 @@ Kompaniya ma'lumotlari quyidagilarda ishlatiladi:
 - Barcha o'zgarishlar tizim bo'ylabdarhol sinxronlanadi
 
 ##5. Professional funksiyalar
-- Hold order (chekni vaqtincha saqlash)
-- Split payment (bir nechta to'lov turi)\n- Quick add product (tezkor qo'shish)\n- Z-otchet va X-otchet\n- Kassa ochilishi/yopilishi
-- Shift-based accounting\n- Device binding\n- To'liq Sales Returns tizimi
+- Hold order (chekni vaqtincha saqlash) - YANGI\n- Split payment (bir nechta to'lov turi)\n- Quick add product (tezkor qo'shish)\n- Z-otchet va X-otchet\n- Kassa ochilishi/yopilishi
+- Shift-based accounting
+- Device binding\n- To'liq Sales Returns tizimi
 - To'liq Customers tizimi (balans, qarz, kredit limiti)
 - To'liq Inventory Management tizimi (real-time tracking, movements, adjustments, alerts)
 - To'liq Purchase Orders tizimi (yaratish, tasdiqlash, qabul qilish,ombor integratsiyasi)
@@ -1926,8 +2002,7 @@ Kompaniya ma'lumotlari quyidagilarda ishlatiladi:
 - To'liq Reports Module (Sales, Inventory, Purchase, Employee, Financial analytics)
 - To'liq Employees Module (yaratish, tahrirlash, rol asosida ruxsatlar, samaradorlik tahlili, vaqt kuzatuvi, audit loglari, POS integratsiyasi)
 - To'liq Settings Module (Company Profile, POS Terminal, Payments & Taxes, Receipts, Inventory, Numbering, User & Security, Localization, Backup)\n- Real-time global sinxronizatsiya barcha modullar orasida
-- **Per-Product Discount (Mahsulot bo'yicha chegirma)** - YANGI
-\n## 6. Texnik talablar
+- Per-Product Discount (Mahsulot bo'yicha chegirma)\n\n## 6. Texnik talablar
 \n### 6.1 UI/UX talablar
 - Minimalist va silliq dizayn
 - Tez ishlash (caching va optimization)
@@ -1973,8 +2048,8 @@ Kompaniya ma'lumotlari quyidagilarda ishlatiladi:
 - Real-time sinxronizatsiya barcha modullar orasida
 - Indexing muhim maydonlar uchun (SKU, order numbers, customer names)
 - Optimallashtirilgan so'rovlar va keshlash
-- Audit trail barcha muhim amallar uchun\n
-### 6.5 Samaradorlik va optimizatsiya
+- Audit trail barcha muhim amallar uchun\n- Held Orders jadvali (pending_orders / held_orders)
+\n### 6.5 Samaradorlik va optimizatsiya
 - Tez yuklash uchun dashboard ma'lumotlarini keshlash
 - Og'ir hisobotlarni fonda hisoblash
 - 10,000+ yozuvlar bilan ham tez ishlash
@@ -1989,22 +2064,25 @@ Kompaniya ma'lumotlari quyidagilarda ishlatiladi:
 - Inventarizatsiya: INV-YYYY-#####
 - SKU: SKU-000123\n\n## 8. Modullar integratsiyasi va sinxronizatsiya
 Mahsulotlar, Kategoriyalar, Inventory Management, Buyurtmalar, Sales Returns, Purchase Orders, Customers, Employees, Reports va Settings modullari quyidagi modullar bilan to'liq integratsiyalangan va real-time sinxronlashtirilgan:\n- POS Terminal
-- Ombor (Inventory)
+-Ombor (Inventory)
 - Xarid buyurtmalari (Purchase Orders)
 - Sotuvlar (Sales)\n- Hisobotlar (Reports)
 - To'lovlar (Payments)
 - Xodimlar (Employees)
 - Sozlamalar (Settings)
-- Dashboard\n
+- Dashboard\n- Kutilayotgan buyurtmalar (Held Orders)
+
 **Sinxronizatsiya qoidalari:**
 - Barcha operatsiyalar to'liq sinxronlashtirilgan va audit qilinadigan
-- Har qanay o'zgarish (buyurtma, qaytarish, ombor tuzatishi, sozlamalar yangilanishi)darhol barcha bog'liq modullargaaks etadi
+- Har qanday o'zgarish (buyurtma, qaytarish,ombor tuzatishi, sozlamalar yangilanishi)darhol barcha bog'liq modullargaaks etadi
 - Dashboard ko'rsatkichlari real-time avtomatik yangilanadi
 - Hisobotlar hardoim eng yangi ma'lumotlarni ko'rsatadi
 - Mijoz va xodim statistikasi avtomatik hisoblanadi
 -Ombor qoldiqlari har bir tranzaksiyadan keyin yangilanadi
 - Sozlamalar o'zgarishlari darhol tizim xatti-harakatiga ta'sir qiladi
-\n## 9. Dizayn uslubi
+- Kutilayotgan buyurtmalarombor yoki hisobotlarga ta'sir qilmaydi (faqat to'lov yakunlangandan keyin)
+
+## 9. Dizayn uslubi
 - Zamonaviy va professional ko'rinish, biznes muhitiga mos\n- Asosiy ranglar: ko'k (#2563EB) va kulrang (#64748B) tonlari, oq fon (#FFFFFF)\n- Karta uslubidagi layout, har bir modul alohida kartada
 - Yumshoq soyalar (shadow-sm) va 8px border-radius
 - Ikkonlar: Lucide yoki Heroicons kutubxonasidan zamonaviy chiziqli ikkonlar
@@ -2012,7 +2090,7 @@ Mahsulotlar, Kategoriyalar, Inventory Management, Buyurtmalar, Sales Returns, Pu
 - Tugmalar: to'ldirilgan (primary) va konturli (secondary) variantlar, touch screen uchun minimal44px balandlik
 - Responsive grid layout: desktopuchun 3-4 ustun, tablet uchun 2ustun\n- Kategoriya rangli teglar va ikkonlar POS Terminal va mahsulotlar ro'yxatida ko'rsatiladi
 - Status rangli kodlari:\n  - Completed / Paid / In Stock / Received → Yashil
-  - Pending / Low Stock / Approved → Sariq yoki Ko'k
+  - Pending / Low Stock / Approved / Held → Sariq yoki Ko'k
   - Cancelled / Voided / Out of Stock → Qizil
   - Refunded → To'q sariq
   - Partially Refunded / Partially Paid / Partially Received → Och sariq
@@ -2032,8 +2110,7 @@ Mahsulotlar, Kategoriyalar, Inventory Management, Buyurtmalar, Sales Returns, Pu
 
 ## 10. Yakuniy yetkazish talablari
 \nAI quyidagi xususiyatlarga ega POS tizimini yaratishi kerak:
-\n✔ To'liq integratsiyalangan\n✔ Real-time sinxronlashtirilgan
-✔ Rol asosida kirish bilan xavfsiz
+\n✔ To'liq integratsiyalangan\n✔ Real-time sinxronlashtirilgan\n✔ Rol asosida kirish bilan xavfsiz
 ✔ Barcha biznes qoidalariga mos
 ✔ Professional darajadagi arxitektura
 ✔ Ishlab chiqarish uchun tayyor
@@ -2042,4 +2119,5 @@ Mahsulotlar, Kategoriyalar, Inventory Management, Buyurtmalar, Sales Returns, Pu
 ✔ To'liq audit trail va loglash
 ✔ Optimallashtirilgan samaradorlik
 ✔ Izchil UI/UX barcha modullar bo'ylab
-✔ **Per-Product Discount funksiyasi bilan to'liq POS Terminal** - YANGI
+✔ Per-Product Discount funksiyasi bilan to'liq POS Terminal
+✔ **Hold Order (Buyurtmani kutish ro'yxatiga saqlash) funksiyasi bilan to'liq POS Terminal** - YANGI

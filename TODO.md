@@ -149,6 +149,30 @@
   - [x] getDashboardStats with fallback values
   - [x] getLowStockProducts with error handling
 
+## Phase 12: Hold Order (Park Sale) Feature
+- [x] 1. Database Schema
+  - [x] 1.1 Create `held_orders` table migration
+  - [x] 1.2 Add TypeScript types for HeldOrder
+- [x] 2. API Functions
+  - [x] 2.1 Add saveHeldOrder function
+  - [x] 2.2 Add getHeldOrders function
+  - [x] 2.3 Add restoreHeldOrder function
+  - [x] 2.4 Add cancelHeldOrder function
+- [x] 3. UI Components
+  - [x] 3.1 Create HoldOrderDialog component
+  - [x] 3.2 Create WaitingOrdersDialog component
+  - [x] 3.3 Add "Hold Order" button to POS Terminal
+  - [x] 3.4 Add "Waiting Orders" button with badge to POS Terminal
+- [x] 4. POS Terminal Integration
+  - [x] 4.1 Add state management for held orders
+  - [x] 4.2 Implement hold order logic
+  - [x] 4.3 Implement restore order logic with confirmation
+  - [x] 4.4 Implement cancel order logic with confirmation
+  - [x] 4.5 Add validation for empty cart and product availability
+- [x] 5. Testing & Validation
+  - [x] 5.1 Run lint check
+  - [x] 5.2 Verify all functionality works correctly
+
 ## Notes
 - Using username + password authentication (simulated with @miaoda.com)
 - First registered user becomes admin
@@ -157,3 +181,4 @@
 - Minimum button height: 44px for touch screens
 - All modules fully integrated with automatic synchronization
 - Dashboard never crashes, even with empty or misconfigured tables
+- Hold Order: Held orders do NOT affect inventory or reports until payment is completed
