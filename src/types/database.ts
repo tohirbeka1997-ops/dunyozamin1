@@ -227,10 +227,14 @@ export interface ProductWithCategory extends Product {
   category?: Category;
 }
 
+export interface OrderItemWithProduct extends OrderItem {
+  product?: ProductWithCategory;
+}
+
 export interface OrderWithDetails extends Order {
   customer?: Customer;
   cashier?: Profile;
-  items?: OrderItem[];
+  items?: OrderItemWithProduct[];
   payments?: Payment[];
 }
 

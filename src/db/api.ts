@@ -775,7 +775,7 @@ export const getOrders = async (limit = 100) => {
       *,
       customer:customers(*),
       cashier:profiles(*),
-      items:order_items(*),
+      items:order_items(*, product:products(*, category:categories(*))),
       payments:payments(*)
     `)
     .order('created_at', { ascending: false })
@@ -792,7 +792,7 @@ export const getOrderById = async (id: string) => {
       *,
       customer:customers(*),
       cashier:profiles(*),
-      items:order_items(*),
+      items:order_items(*, product:products(*)),
       payments:payments(*)
     `)
     .eq('id', id)
@@ -809,7 +809,7 @@ export const getOrderByNumber = async (orderNumber: string) => {
       *,
       customer:customers(*),
       cashier:profiles(*),
-      items:order_items(*),
+      items:order_items(*, product:products(*)),
       payments:payments(*)
     `)
     .eq('order_number', orderNumber)

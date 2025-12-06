@@ -60,7 +60,21 @@
 - [ ] Employees management page (placeholder created)
 
 ## Phase 8: Reports
-- [ ] Reports page (placeholder created)
+- [x] Reports main page (navigation hub)
+- [x] Daily Sales Report (with filters, totals, profit calculation)
+- [x] Product Sales Report (with top 10 chart, slow-moving products)
+- [x] Customer Sales Report (with customer purchase analysis)
+- [x] Stock Levels Report (with status indicators and alerts)
+- [x] Inventory Movement Report (with movement tracking)
+- [x] Profit & Loss Report (with trend chart and income statement)
+- [x] Payment Method Breakdown Report (with pie chart)
+- [ ] Valuation Report
+- [ ] Purchase Order Summary Report
+- [ ] Supplier Performance Report
+- [ ] Cashier Performance Report
+- [ ] Login Activity Log
+- [ ] Export functionality (Excel, PDF, CSV)
+- [ ] Additional charts and visualizations
 
 ## Phase 9: Settings & Professional Features
 - [ ] Settings page (placeholder created)

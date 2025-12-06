@@ -17,6 +17,13 @@ import SalesReturns from './pages/SalesReturns';
 import CreateReturn from './pages/CreateReturn';
 import ReturnDetail from './pages/ReturnDetail';
 import Reports from './pages/Reports';
+import DailySalesReport from './pages/reports/sales/DailySalesReport';
+import ProductSalesReport from './pages/reports/sales/ProductSalesReport';
+import CustomerSalesReport from './pages/reports/sales/CustomerSalesReport';
+import StockLevelsReport from './pages/reports/inventory/StockLevelsReport';
+import InventoryMovementReport from './pages/reports/inventory/InventoryMovementReport';
+import ProfitLossReport from './pages/reports/financial/ProfitLossReport';
+import PaymentMethodReport from './pages/reports/financial/PaymentMethodReport';
 import Employees from './pages/Employees';
 import Settings from './pages/Settings';
 
@@ -166,6 +173,62 @@ const routes: RouteConfig[] = [
     path: '/reports',
     element: <Reports />,
     visible: true,
+    requireAuth: true,
+    allowedRoles: ['admin', 'manager'],
+  },
+  {
+    name: 'Daily Sales Report',
+    path: '/reports/sales/daily',
+    element: <DailySalesReport />,
+    visible: false,
+    requireAuth: true,
+    allowedRoles: ['admin', 'manager'],
+  },
+  {
+    name: 'Product Sales Report',
+    path: '/reports/sales/products',
+    element: <ProductSalesReport />,
+    visible: false,
+    requireAuth: true,
+    allowedRoles: ['admin', 'manager'],
+  },
+  {
+    name: 'Stock Levels Report',
+    path: '/reports/inventory/stock-levels',
+    element: <StockLevelsReport />,
+    visible: false,
+    requireAuth: true,
+    allowedRoles: ['admin', 'manager'],
+  },
+  {
+    name: 'Profit & Loss Report',
+    path: '/reports/financial/profit-loss',
+    element: <ProfitLossReport />,
+    visible: false,
+    requireAuth: true,
+    allowedRoles: ['admin', 'manager'],
+  },
+  {
+    name: 'Customer Sales Report',
+    path: '/reports/sales/customers',
+    element: <CustomerSalesReport />,
+    visible: false,
+    requireAuth: true,
+    allowedRoles: ['admin', 'manager'],
+  },
+  {
+    name: 'Inventory Movement Report',
+    path: '/reports/inventory/movements',
+    element: <InventoryMovementReport />,
+    visible: false,
+    requireAuth: true,
+    allowedRoles: ['admin', 'manager'],
+  },
+  {
+    name: 'Payment Method Report',
+    path: '/reports/financial/payment-methods',
+    element: <PaymentMethodReport />,
+    visible: false,
     requireAuth: true,
     allowedRoles: ['admin', 'manager'],
   },
