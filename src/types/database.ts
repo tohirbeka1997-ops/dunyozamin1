@@ -68,10 +68,12 @@ export interface Customer {
   type: 'individual' | 'company';
   company_name: string | null;
   tax_number: string | null;
+  tax_id: string | null;
   credit_limit: number;
   allow_debt: boolean;
   balance: number;
   total_sales: number;
+  total_orders: number;
   last_order_date: string | null;
   status: 'active' | 'inactive';
   notes: string | null;

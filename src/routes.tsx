@@ -10,6 +10,8 @@ import CategoryDetail from './pages/CategoryDetail';
 import Orders from './pages/Orders';
 import OrderDetail from './pages/OrderDetail';
 import Customers from './pages/Customers';
+import CustomerForm from './pages/CustomerForm';
+import CustomerDetail from './pages/CustomerDetail';
 import Inventory from './pages/Inventory';
 import InventoryDetail from './pages/InventoryDetail';
 import PurchaseOrders from './pages/PurchaseOrders';
@@ -144,6 +146,27 @@ const routes: RouteConfig[] = [
     path: '/customers',
     element: <Customers />,
     visible: true,
+    requireAuth: true,
+  },
+  {
+    name: 'Add Customer',
+    path: '/customers/new',
+    element: <CustomerForm />,
+    visible: false,
+    requireAuth: true,
+  },
+  {
+    name: 'Edit Customer',
+    path: '/customers/:id/edit',
+    element: <CustomerForm />,
+    visible: false,
+    requireAuth: true,
+  },
+  {
+    name: 'Customer Detail',
+    path: '/customers/:id',
+    element: <CustomerDetail />,
+    visible: false,
     requireAuth: true,
   },
   {

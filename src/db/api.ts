@@ -843,6 +843,23 @@ export const getOrderByNumber = async (orderNumber: string) => {
   return data as OrderWithDetails | null;
 };
 
+export const getOrdersByCustomer = async (customerId: string) => {
+  const { data, error } = await supabase
+    .from('orders')
+    .select(`
+      *,
+      customer:customers(*),
+      cashier:profiles(*),
+      items:order_items(*, product:products(*)),
+      payments:payments(*)
+    `)
+    .eq('customer_id', customerId)
+    .order('created_at', { ascending: false });
+  
+  if (error) throw error;
+  return Array.isArray(data) ? data as OrderWithDetails[] : [];
+};
+
 export const generateOrderNumber = async () => {
   const { data, error } = await supabase.rpc('generate_order_number');
   if (error) throw error;
