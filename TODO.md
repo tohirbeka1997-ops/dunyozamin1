@@ -50,6 +50,15 @@
   - [x] Split payment support
   - [x] Shift management
   - [x] Order completion
+- [x] Per-Product Discount Feature
+  - [x] Update CartItem type (already has discount_amount)
+  - [x] Add line discount UI to each cart item
+  - [x] Add discount input popover/dialog
+  - [x] Update cart calculation logic
+  - [x] Update Order Summary to show line discounts
+  - [x] Add validation (non-negative, max = line subtotal)
+  - [x] Test with quantity changes
+  - [x] Test with global discount
 
 ## Phase 6: Orders & Returns
 - [ ] Orders/Receipts list page (placeholder created)

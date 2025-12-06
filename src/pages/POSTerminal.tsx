@@ -18,6 +18,11 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog';
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from '@/components/ui/popover';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { useToast } from '@/hooks/use-toast';
 import { useAuth } from '@/contexts/AuthContext';
@@ -33,7 +38,7 @@ import {
   generateShiftNumber,
 } from '@/db/api';
 import type { Product, Customer, CartItem, PaymentMethod } from '@/types/database';
-import { Search, Trash2, Plus, Minus, DollarSign, CreditCard, Smartphone, Banknote } from 'lucide-react';
+import { Search, Trash2, Plus, Minus, DollarSign, CreditCard, Smartphone, Banknote, Tag } from 'lucide-react';
 
 export default function POSTerminal() {
   const { toast } = useToast();
@@ -154,11 +159,59 @@ export default function POSTerminal() {
       cart.map((item) => {
         if (item.product.id === productId) {
           const subtotal = Number(item.product.sale_price) * quantity;
+          let lineDiscount = item.discount_amount;
+          
+          // If new subtotal is less than current discount, adjust discount down
+          if (lineDiscount > subtotal) {
+            lineDiscount = subtotal;
+            toast({
+              title: 'Discount Adjusted',
+              description: `Line discount reduced to ${lineDiscount.toFixed(2)} UZS (cannot exceed line subtotal)`,
+            });
+          }
+          
           return {
             ...item,
             quantity,
             subtotal,
-            total: subtotal - item.discount_amount,
+            discount_amount: lineDiscount,
+            total: subtotal - lineDiscount,
+          };
+        }
+        return item;
+      })
+    );
+  };
+
+  const updateLineDiscount = (productId: string, discountAmount: number) => {
+    setCart(
+      cart.map((item) => {
+        if (item.product.id === productId) {
+          let validDiscount = discountAmount;
+          
+          // Validate: cannot be negative
+          if (validDiscount < 0) {
+            validDiscount = 0;
+            toast({
+              title: 'Invalid Discount',
+              description: 'Discount cannot be negative',
+              variant: 'destructive',
+            });
+          }
+          
+          // Validate: cannot exceed line subtotal
+          if (validDiscount > item.subtotal) {
+            validDiscount = item.subtotal;
+            toast({
+              title: 'Discount Adjusted',
+              description: `Maximum discount is ${item.subtotal.toFixed(2)} UZS (line subtotal)`,
+            });
+          }
+          
+          return {
+            ...item,
+            discount_amount: validDiscount,
+            total: item.subtotal - validDiscount,
           };
         }
         return item;
@@ -172,14 +225,27 @@ export default function POSTerminal() {
 
   const calculateTotals = () => {
     const subtotal = cart.reduce((sum, item) => sum + item.subtotal, 0);
-    let discountAmount = 0;
+    const lineDiscountsTotal = cart.reduce((sum, item) => sum + item.discount_amount, 0);
+    
+    let globalDiscountAmount = 0;
     if (discount.type === 'amount') {
-      discountAmount = discount.value;
+      globalDiscountAmount = discount.value;
     } else {
-      discountAmount = (subtotal * discount.value) / 100;
+      // Apply percentage to subtotal after line discounts
+      const subtotalAfterLineDiscounts = subtotal - lineDiscountsTotal;
+      globalDiscountAmount = (subtotalAfterLineDiscounts * discount.value) / 100;
     }
-    const total = subtotal - discountAmount;
-    return { subtotal, discountAmount, total };
+    
+    const totalDiscountAmount = lineDiscountsTotal + globalDiscountAmount;
+    const total = subtotal - totalDiscountAmount;
+    
+    return { 
+      subtotal, 
+      lineDiscountsTotal,
+      globalDiscountAmount,
+      discountAmount: totalDiscountAmount, 
+      total 
+    };
   };
 
   const handleCompletePayment = async (paymentMethod: 'cash' | 'card' | 'qr' | 'mixed') => {
@@ -336,7 +402,7 @@ export default function POSTerminal() {
     console.warn('handlePayment called - this should use handleCompletePayment instead');
   };
 
-  const { subtotal, discountAmount, total } = calculateTotals();
+  const { subtotal, lineDiscountsTotal, globalDiscountAmount, discountAmount, total } = calculateTotals();
   const paidAmount = payments.reduce((sum, p) => sum + p.amount, 0);
   const remainingAmount = total - paidAmount;
 
@@ -406,7 +472,7 @@ export default function POSTerminal() {
                       }}
                     >
                       <span className="font-medium text-sm">{product.name}</span>
-                      <span className="text-xs text-muted-foreground">${Number(product.sale_price).toFixed(2)}</span>
+                      <span className="text-xs text-muted-foreground">{Number(product.sale_price).toFixed(2)} UZS</span>
                       <span className="text-xs text-muted-foreground">Stock: {product.current_stock}</span>
                     </Button>
                   ))}
@@ -425,41 +491,115 @@ export default function POSTerminal() {
               ) : (
                 <div className="space-y-2">
                   {cart.map((item) => (
-                    <div key={item.product.id} className="flex items-center gap-2 p-2 border rounded-lg">
-                      <div className="flex-1">
-                        <p className="font-medium">{item.product.name}</p>
-                        <p className="text-sm text-muted-foreground">
-                          ${Number(item.product.sale_price).toFixed(2)} × {item.quantity}
-                        </p>
+                    <div key={item.product.id} className="flex flex-col gap-2 p-3 border rounded-lg">
+                      <div className="flex items-start gap-2">
+                        <div className="flex-1">
+                          <p className="font-medium">{item.product.name}</p>
+                          <p className="text-sm text-muted-foreground">
+                            {Number(item.product.sale_price).toFixed(2)} UZS × {item.quantity} = {item.subtotal.toFixed(2)} UZS
+                          </p>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <Button
+                            variant="outline"
+                            size="icon"
+                            className="h-8 w-8"
+                            onClick={() => updateQuantity(item.product.id, item.quantity - 1)}
+                          >
+                            <Minus className="h-4 w-4" />
+                          </Button>
+                          <span className="w-8 text-center">{item.quantity}</span>
+                          <Button
+                            variant="outline"
+                            size="icon"
+                            className="h-8 w-8"
+                            onClick={() => updateQuantity(item.product.id, item.quantity + 1)}
+                          >
+                            <Plus className="h-4 w-4" />
+                          </Button>
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            className="h-8 w-8"
+                            onClick={() => removeFromCart(item.product.id)}
+                          >
+                            <Trash2 className="h-4 w-4" />
+                          </Button>
+                        </div>
                       </div>
-                      <div className="flex items-center gap-2">
-                        <Button
-                          variant="outline"
-                          size="icon"
-                          className="h-8 w-8"
-                          onClick={() => updateQuantity(item.product.id, item.quantity - 1)}
-                        >
-                          <Minus className="h-4 w-4" />
-                        </Button>
-                        <span className="w-8 text-center">{item.quantity}</span>
-                        <Button
-                          variant="outline"
-                          size="icon"
-                          className="h-8 w-8"
-                          onClick={() => updateQuantity(item.product.id, item.quantity + 1)}
-                        >
-                          <Plus className="h-4 w-4" />
-                        </Button>
-                        <Button
-                          variant="ghost"
-                          size="icon"
-                          className="h-8 w-8"
-                          onClick={() => removeFromCart(item.product.id)}
-                        >
-                          <Trash2 className="h-4 w-4" />
-                        </Button>
+                      
+                      <div className="flex items-center justify-between pt-2 border-t">
+                        <Popover>
+                          <PopoverTrigger asChild>
+                            <Button variant="outline" size="sm" className="h-8 gap-2">
+                              <Tag className="h-3 w-3" />
+                              <span className="text-xs">
+                                Discount: {item.discount_amount > 0 ? `${item.discount_amount.toFixed(2)} UZS` : '0'}
+                              </span>
+                            </Button>
+                          </PopoverTrigger>
+                          <PopoverContent className="w-64" align="start">
+                            <div className="space-y-3">
+                              <div className="space-y-1">
+                                <Label className="text-xs">Line Discount (UZS)</Label>
+                                <Input
+                                  type="number"
+                                  step="0.01"
+                                  min="0"
+                                  max={item.subtotal}
+                                  value={item.discount_amount}
+                                  onChange={(e) => {
+                                    const value = e.target.value === '' ? 0 : Number(e.target.value);
+                                    updateLineDiscount(item.product.id, value);
+                                  }}
+                                  placeholder="0.00"
+                                  className="h-8"
+                                />
+                                <p className="text-xs text-muted-foreground">
+                                  Max: {item.subtotal.toFixed(2)} UZS
+                                </p>
+                              </div>
+                              <div className="flex gap-2">
+                                <Button
+                                  variant="outline"
+                                  size="sm"
+                                  className="flex-1 h-7 text-xs"
+                                  onClick={() => updateLineDiscount(item.product.id, item.subtotal * 0.05)}
+                                >
+                                  5%
+                                </Button>
+                                <Button
+                                  variant="outline"
+                                  size="sm"
+                                  className="flex-1 h-7 text-xs"
+                                  onClick={() => updateLineDiscount(item.product.id, item.subtotal * 0.10)}
+                                >
+                                  10%
+                                </Button>
+                                <Button
+                                  variant="outline"
+                                  size="sm"
+                                  className="flex-1 h-7 text-xs"
+                                  onClick={() => updateLineDiscount(item.product.id, 0)}
+                                >
+                                  Clear
+                                </Button>
+                              </div>
+                            </div>
+                          </PopoverContent>
+                        </Popover>
+                        
+                        <div className="text-right">
+                          {item.discount_amount > 0 && (
+                            <p className="text-xs text-destructive line-through">
+                              {item.subtotal.toFixed(2)} UZS
+                            </p>
+                          )}
+                          <p className="font-bold text-lg">
+                            {item.total.toFixed(2)} UZS
+                          </p>
+                        </div>
                       </div>
-                      <div className="text-right font-medium w-20">${item.total.toFixed(2)}</div>
                     </div>
                   ))}
                 </div>
@@ -525,15 +665,29 @@ export default function POSTerminal() {
               <div className="space-y-2 pt-4 border-t">
                 <div className="flex justify-between">
                   <span>Subtotal:</span>
-                  <span className="font-medium">${subtotal.toFixed(2)}</span>
+                  <span className="font-medium">{subtotal.toFixed(2)} UZS</span>
                 </div>
-                <div className="flex justify-between text-destructive">
-                  <span>Discount:</span>
-                  <span className="font-medium">-${discountAmount.toFixed(2)}</span>
-                </div>
+                {lineDiscountsTotal > 0 && (
+                  <div className="flex justify-between text-destructive text-sm">
+                    <span>Line Discounts:</span>
+                    <span className="font-medium">-{lineDiscountsTotal.toFixed(2)} UZS</span>
+                  </div>
+                )}
+                {globalDiscountAmount > 0 && (
+                  <div className="flex justify-between text-destructive text-sm">
+                    <span>Order Discount:</span>
+                    <span className="font-medium">-{globalDiscountAmount.toFixed(2)} UZS</span>
+                  </div>
+                )}
+                {discountAmount > 0 && (
+                  <div className="flex justify-between text-destructive font-medium">
+                    <span>Total Discount:</span>
+                    <span>-{discountAmount.toFixed(2)} UZS</span>
+                  </div>
+                )}
                 <div className="flex justify-between text-lg font-bold pt-2 border-t">
                   <span>Total:</span>
-                  <span>${total.toFixed(2)}</span>
+                  <span>{total.toFixed(2)} UZS</span>
                 </div>
               </div>
 
