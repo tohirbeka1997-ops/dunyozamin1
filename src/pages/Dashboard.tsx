@@ -11,7 +11,7 @@ import {
 } from '@/components/ui/select';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { Calendar } from '@/components/ui/calendar';
-import { getLowStockProducts, getDashboardAnalytics, getDailySalesData, getTopProducts } from '@/db/api';
+import { getLowStockProducts, getDashboardAnalytics, getDailySalesData, getTopProducts, getTotalCustomerDebt } from '@/db/api';
 import type { ProductWithCategory } from '@/types/database';
 import type { DashboardAnalytics, DailySales, TopProduct } from '@/db/api';
 import {
@@ -95,6 +95,7 @@ export default function Dashboard() {
   const [lowStockProducts, setLowStockProducts] = useState<ProductWithCategory[]>([]);
   const [dailySales, setDailySales] = useState<DailySales[]>([]);
   const [topProducts, setTopProducts] = useState<TopProduct[]>([]);
+  const [totalCustomerDebt, setTotalCustomerDebt] = useState<number>(0);
   
   // Loading and error state
   const [loading, setLoading] = useState(true);
@@ -194,6 +195,15 @@ export default function Dashboard() {
         returns_amount: 0,
         pending_purchase_orders: 0,
       });
+    }
+
+    // Load total customer debt
+    try {
+      const debt = await getTotalCustomerDebt();
+      setTotalCustomerDebt(debt);
+    } catch (error) {
+      console.error('Failed to load customer debt:', error);
+      setTotalCustomerDebt(0);
     }
 
     // Load low stock products
@@ -383,6 +393,20 @@ export default function Dashboard() {
           error={analyticsError}
         />
       </div>
+
+      {/* Row 3: Customer Debt */}
+      {totalCustomerDebt > 0 && (
+        <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+          <MetricCard
+            title="Total Customer Debt"
+            value={formatCurrency(totalCustomerDebt)}
+            subtitle="Outstanding balance"
+            icon={<DollarSign className="h-4 w-4 text-destructive" />}
+            loading={loading}
+            error={analyticsError}
+          />
+        </div>
+      )}
 
       {/* Charts Section */}
       <div className="grid gap-4 xl:grid-cols-2">

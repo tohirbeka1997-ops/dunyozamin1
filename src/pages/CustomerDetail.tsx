@@ -13,10 +13,11 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table';
-import { getCustomerById, getOrdersByCustomer } from '@/db/api';
-import type { Customer, OrderWithDetails } from '@/types/database';
-import { ArrowLeft, Edit, Mail, Phone, MapPin, Building2, FileText, ShoppingCart, DollarSign } from 'lucide-react';
+import { getCustomerById, getOrdersByCustomer, getCustomerPayments } from '@/db/api';
+import type { Customer, OrderWithDetails, CustomerPayment } from '@/types/database';
+import { ArrowLeft, Edit, Mail, Phone, MapPin, Building2, FileText, ShoppingCart, DollarSign, CreditCard } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
+import ReceivePaymentDialog from '@/components/customers/ReceivePaymentDialog';
 
 export default function CustomerDetail() {
   const { id } = useParams<{ id: string }>();
@@ -24,13 +25,17 @@ export default function CustomerDetail() {
   const { toast } = useToast();
   const [customer, setCustomer] = useState<Customer | null>(null);
   const [orders, setOrders] = useState<OrderWithDetails[]>([]);
+  const [payments, setPayments] = useState<CustomerPayment[]>([]);
   const [loading, setLoading] = useState(true);
   const [ordersLoading, setOrdersLoading] = useState(true);
+  const [paymentsLoading, setPaymentsLoading] = useState(true);
+  const [receivePaymentOpen, setReceivePaymentOpen] = useState(false);
 
   useEffect(() => {
     if (id) {
       loadCustomer();
       loadOrders();
+      loadPayments();
     }
   }, [id]);
 
@@ -65,6 +70,25 @@ export default function CustomerDetail() {
     } finally {
       setOrdersLoading(false);
     }
+  };
+
+  const loadPayments = async () => {
+    if (!id) return;
+
+    try {
+      setPaymentsLoading(true);
+      const data = await getCustomerPayments(id);
+      setPayments(data);
+    } catch (error) {
+      console.error('Failed to load payments:', error);
+    } finally {
+      setPaymentsLoading(false);
+    }
+  };
+
+  const handlePaymentSuccess = () => {
+    loadCustomer();
+    loadPayments();
   };
 
   const getStatusBadge = (status: string) => {
@@ -124,10 +148,18 @@ export default function CustomerDetail() {
             <p className="text-muted-foreground">Customer Details</p>
           </div>
         </div>
-        <Button onClick={() => navigate(`/customers/${id}/edit`)}>
-          <Edit className="h-4 w-4 mr-2" />
-          Edit Customer
-        </Button>
+        <div className="flex items-center gap-2">
+          {(customer.balance || 0) > 0 && (
+            <Button onClick={() => setReceivePaymentOpen(true)} variant="default">
+              <CreditCard className="h-4 w-4 mr-2" />
+              Receive Payment
+            </Button>
+          )}
+          <Button onClick={() => navigate(`/customers/${id}/edit`)} variant="outline">
+            <Edit className="h-4 w-4 mr-2" />
+            Edit Customer
+          </Button>
+        </div>
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
@@ -165,10 +197,53 @@ export default function CustomerDetail() {
         </Card>
       </div>
 
+      {(customer.balance || 0) > 0 && (
+        <Card className="border-destructive/50">
+          <CardHeader>
+            <CardTitle className="flex items-center justify-between">
+              <span>Customer Debt</span>
+              <Badge variant="destructive">Outstanding</Badge>
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <div className="flex justify-between items-center">
+              <span className="text-sm text-muted-foreground">Current Balance:</span>
+              <span className="text-2xl font-bold text-destructive">
+                {(customer.balance || 0).toFixed(2)} UZS
+              </span>
+            </div>
+            {customer.credit_limit > 0 && (
+              <>
+                <div className="flex justify-between items-center">
+                  <span className="text-sm text-muted-foreground">Credit Limit:</span>
+                  <span className="text-lg font-semibold">
+                    {customer.credit_limit.toFixed(2)} UZS
+                  </span>
+                </div>
+                <div className="flex justify-between items-center">
+                  <span className="text-sm text-muted-foreground">Available Credit:</span>
+                  <span className={`text-lg font-semibold ${(customer.credit_limit - (customer.balance || 0)) > 0 ? 'text-success' : 'text-destructive'}`}>
+                    {Math.max(0, customer.credit_limit - (customer.balance || 0)).toFixed(2)} UZS
+                  </span>
+                </div>
+              </>
+            )}
+            <Button 
+              className="w-full" 
+              onClick={() => setReceivePaymentOpen(true)}
+            >
+              <CreditCard className="h-4 w-4 mr-2" />
+              Receive Payment
+            </Button>
+          </CardContent>
+        </Card>
+      )}
+
       <Tabs defaultValue="info" className="space-y-4">
         <TabsList>
           <TabsTrigger value="info">Information</TabsTrigger>
           <TabsTrigger value="orders">Orders ({orders.length})</TabsTrigger>
+          <TabsTrigger value="payments">Payments ({payments.length})</TabsTrigger>
         </TabsList>
 
         <TabsContent value="info" className="space-y-4">
@@ -337,7 +412,65 @@ export default function CustomerDetail() {
             </CardContent>
           </Card>
         </TabsContent>
+        <TabsContent value="payments" className="space-y-4">
+          <Card>
+            <CardHeader>
+              <CardTitle>Payment History</CardTitle>
+            </CardHeader>
+            <CardContent>
+              {paymentsLoading ? (
+                <div className="text-center py-8">
+                  <p className="text-muted-foreground">Loading payments...</p>
+                </div>
+              ) : payments.length === 0 ? (
+                <div className="text-center py-8">
+                  <p className="text-muted-foreground">No payment history</p>
+                </div>
+              ) : (
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>Payment Number</TableHead>
+                      <TableHead>Date</TableHead>
+                      <TableHead>Method</TableHead>
+                      <TableHead className="text-right">Amount</TableHead>
+                      <TableHead>Note</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {payments.map((payment) => (
+                      <TableRow key={payment.id}>
+                        <TableCell className="font-medium">{payment.payment_number}</TableCell>
+                        <TableCell>{new Date(payment.created_at).toLocaleString()}</TableCell>
+                        <TableCell>
+                          <Badge variant="outline" className="capitalize">
+                            {payment.payment_method}
+                          </Badge>
+                        </TableCell>
+                        <TableCell className="text-right font-semibold text-success">
+                          {payment.amount.toFixed(2)} UZS
+                        </TableCell>
+                        <TableCell className="text-muted-foreground">
+                          {payment.notes || '-'}
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              )}
+            </CardContent>
+          </Card>
+        </TabsContent>
       </Tabs>
+
+      {customer && (
+        <ReceivePaymentDialog
+          customer={customer}
+          open={receivePaymentOpen}
+          onOpenChange={setReceivePaymentOpen}
+          onSuccess={handlePaymentSuccess}
+        />
+      )}
     </div>
   );
 }

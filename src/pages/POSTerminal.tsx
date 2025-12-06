@@ -42,6 +42,7 @@ import {
   getProductByBarcode,
   getCustomers,
   createOrder,
+  createCreditOrder,
   generateOrderNumber,
   generatePaymentNumber,
   getActiveShift,
@@ -840,6 +841,7 @@ export default function POSTerminal() {
         tax_amount: 0,
         total_amount: total,
         paid_amount: paidAmount,
+        credit_amount: 0,
         change_amount: changeAmount,
         status: 'completed' as const,
         payment_status: 'paid' as const,
@@ -901,6 +903,132 @@ export default function POSTerminal() {
       
       toast({
         title: '❌ Order Failed',
+        description: errorMessage,
+        variant: 'destructive',
+      });
+    }
+  };
+
+  const handleCreditSale = async () => {
+    // Validation
+    if (!profile || !currentShift) {
+      toast({
+        title: 'Error',
+        description: 'Please open a shift first',
+        variant: 'destructive',
+      });
+      return;
+    }
+
+    if (cart.length === 0) {
+      toast({
+        title: 'Cannot Process Empty Cart',
+        description: 'Please add items to the cart before completing the order.',
+        variant: 'destructive',
+      });
+      return;
+    }
+
+    // Check if customer is selected and not walk-in
+    if (!selectedCustomer || selectedCustomer.id === 'none') {
+      toast({
+        title: 'Customer Required',
+        description: 'Credit sales are only available for registered customers. Please select a customer.',
+        variant: 'destructive',
+      });
+      return;
+    }
+
+    // Check if customer is active
+    if (selectedCustomer.status !== 'active') {
+      toast({
+        title: 'Inactive Customer',
+        description: 'Cannot sell on credit to inactive customers.',
+        variant: 'destructive',
+      });
+      return;
+    }
+
+    const { subtotal, discountAmount, total } = calculateTotals();
+
+    if (total <= 0) {
+      toast({
+        title: 'Invalid Order Total',
+        description: 'Order total must be greater than zero',
+        variant: 'destructive',
+      });
+      return;
+    }
+
+    // Check credit limit if set
+    if (selectedCustomer.credit_limit > 0) {
+      const newBalance = (selectedCustomer.balance || 0) + total;
+      if (newBalance > selectedCustomer.credit_limit) {
+        toast({
+          title: 'Credit Limit Exceeded',
+          description: `Customer's credit limit is ${selectedCustomer.credit_limit.toFixed(2)} UZS. New balance would be ${newBalance.toFixed(2)} UZS.`,
+          variant: 'destructive',
+        });
+        return;
+      }
+    }
+
+    try {
+      const orderItems = cart.map((item) => ({
+        product_id: item.product.id,
+        product_name: item.product.name,
+        quantity: item.quantity,
+        unit_price: Number(item.product.sale_price),
+        subtotal: item.subtotal,
+        discount_amount: item.discount_amount,
+        total: item.total,
+      }));
+
+      // Call the credit order RPC function
+      const result = await createCreditOrder({
+        customer_id: selectedCustomer.id,
+        cashier_id: profile.id,
+        shift_id: currentShift.id,
+        items: orderItems,
+        subtotal,
+        discount_amount: discountAmount,
+        discount_percent: discount.type === 'percent' ? discount.value : 0,
+        tax_amount: 0,
+        total_amount: total,
+        notes: null,
+      });
+
+      if (!result.success) {
+        throw new Error(result.error || 'Failed to create credit order');
+      }
+
+      // Success!
+      toast({
+        title: '✅ Credit Sale Completed',
+        description: `Order ${result.order_number} created ON CREDIT. Customer balance: ${result.new_balance?.toFixed(2)} UZS`,
+        className: 'bg-green-50 border-green-200',
+      });
+
+      // Clear cart and reset state
+      setCart([]);
+      setPayments([]);
+      setDiscount({ type: 'amount', value: 0 });
+      setPaymentDialogOpen(false);
+      setCashReceived('');
+      setSelectedCartIndex(-1);
+
+      // Refresh customer data to show updated balance
+      loadCustomers();
+    } catch (error) {
+      console.error('Credit sale error:', error);
+      
+      let errorMessage = 'Failed to complete credit sale. Please try again.';
+      if (error instanceof Error) {
+        errorMessage = error.message;
+      }
+      
+      toast({
+        title: '❌ Credit Sale Failed',
         description: errorMessage,
         variant: 'destructive',
       });
@@ -1276,8 +1404,22 @@ export default function POSTerminal() {
                   <QuickCustomerCreate onCustomerCreated={handleCustomerCreated} />
                 </div>
                 {selectedCustomer && (
-                  <div className="pt-1">
+                  <div className="pt-1 space-y-2">
                     <CustomerInfoBadge customer={selectedCustomer} />
+                    {selectedCustomer.id !== 'none' && (selectedCustomer.balance || 0) > 0 && (
+                      <div className="p-2 bg-destructive/10 border border-destructive/20 rounded-md">
+                        <div className="flex justify-between items-center text-sm">
+                          <span className="text-destructive font-medium">Current Debt:</span>
+                          <span className="text-destructive font-bold">{(selectedCustomer.balance || 0).toFixed(2)} UZS</span>
+                        </div>
+                        {selectedCustomer.credit_limit > 0 && (
+                          <div className="flex justify-between items-center text-xs text-muted-foreground mt-1">
+                            <span>Credit Limit:</span>
+                            <span>{selectedCustomer.credit_limit.toFixed(2)} UZS</span>
+                          </div>
+                        )}
+                      </div>
+                    )}
                   </div>
                 )}
               </div>
@@ -1379,11 +1521,17 @@ export default function POSTerminal() {
             <DialogDescription>Total Amount: ${total.toFixed(2)}</DialogDescription>
           </DialogHeader>
           <Tabs defaultValue="cash" className="w-full">
-            <TabsList className="grid w-full grid-cols-4">
+            <TabsList className="grid w-full grid-cols-5">
               <TabsTrigger value="cash">Cash</TabsTrigger>
               <TabsTrigger value="card">Card</TabsTrigger>
               <TabsTrigger value="qr">QR Pay</TabsTrigger>
               <TabsTrigger value="mixed">Mixed</TabsTrigger>
+              <TabsTrigger 
+                value="credit" 
+                disabled={!selectedCustomer || selectedCustomer.id === 'none'}
+              >
+                Credit
+              </TabsTrigger>
             </TabsList>
             <TabsContent value="cash" className="space-y-4">
               <div className="space-y-2">
@@ -1510,6 +1658,77 @@ export default function POSTerminal() {
               >
                 Complete Payment
               </Button>
+            </TabsContent>
+            <TabsContent value="credit" className="space-y-4">
+              {!selectedCustomer || selectedCustomer.id === 'none' ? (
+                <div className="p-4 bg-muted rounded-lg text-center">
+                  <p className="text-sm text-muted-foreground">
+                    Credit sales are only available for registered customers.
+                  </p>
+                  <p className="text-sm text-muted-foreground mt-2">
+                    Please select a customer to continue.
+                  </p>
+                </div>
+              ) : (
+                <>
+                  <div className="p-4 bg-muted rounded-lg space-y-3">
+                    <div className="flex justify-between">
+                      <span className="text-sm text-muted-foreground">Customer:</span>
+                      <span className="font-semibold">{selectedCustomer.name}</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-sm text-muted-foreground">Current Balance:</span>
+                      <span className={`font-bold ${(selectedCustomer.balance || 0) > 0 ? 'text-destructive' : 'text-muted-foreground'}`}>
+                        {(selectedCustomer.balance || 0).toFixed(2)} UZS
+                      </span>
+                    </div>
+                    {selectedCustomer.credit_limit > 0 && (
+                      <div className="flex justify-between">
+                        <span className="text-sm text-muted-foreground">Credit Limit:</span>
+                        <span className="font-semibold">{selectedCustomer.credit_limit.toFixed(2)} UZS</span>
+                      </div>
+                    )}
+                    <div className="border-t pt-2 mt-2">
+                      <div className="flex justify-between">
+                        <span className="text-sm text-muted-foreground">Order Total:</span>
+                        <span className="font-bold text-lg">{total.toFixed(2)} UZS</span>
+                      </div>
+                      <div className="flex justify-between mt-1">
+                        <span className="text-sm text-muted-foreground">New Balance:</span>
+                        <span className={`font-bold ${((selectedCustomer.balance || 0) + total) > (selectedCustomer.credit_limit || 0) && selectedCustomer.credit_limit > 0 ? 'text-destructive' : 'text-primary'}`}>
+                          {((selectedCustomer.balance || 0) + total).toFixed(2)} UZS
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+                  {selectedCustomer.credit_limit > 0 && ((selectedCustomer.balance || 0) + total) > selectedCustomer.credit_limit && (
+                    <div className="p-3 bg-destructive/10 border border-destructive/20 rounded-lg">
+                      <p className="text-sm text-destructive font-medium">
+                        ⚠️ Credit Limit Exceeded
+                      </p>
+                      <p className="text-xs text-destructive/80 mt-1">
+                        This sale would exceed the customer's credit limit.
+                      </p>
+                    </div>
+                  )}
+                  <Button
+                    className="w-full"
+                    onClick={handleCreditSale}
+                    disabled={
+                      selectedCustomer.status !== 'active' ||
+                      (selectedCustomer.credit_limit > 0 && ((selectedCustomer.balance || 0) + total) > selectedCustomer.credit_limit)
+                    }
+                  >
+                    <Tag className="h-5 w-5 mr-2" />
+                    Sell on Credit
+                  </Button>
+                  {selectedCustomer.status !== 'active' && (
+                    <p className="text-xs text-center text-destructive">
+                      Customer account is inactive
+                    </p>
+                  )}
+                </>
+              )}
             </TabsContent>
           </Tabs>
         </DialogContent>

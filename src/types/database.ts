@@ -1,7 +1,7 @@
 export type UserRole = 'admin' | 'manager' | 'cashier';
 
 export type OrderStatus = 'hold' | 'completed' | 'returned';
-export type PaymentStatus = 'pending' | 'partial' | 'paid';
+export type PaymentStatus = 'pending' | 'partial' | 'paid' | 'on_credit';
 export type PaymentMethod = 'cash' | 'card' | 'terminal' | 'qr' | 'mixed';
 export type RefundMethod = 'cash' | 'card' | 'credit';
 export type MovementType = 'purchase' | 'sale' | 'return' | 'adjustment' | 'audit';
@@ -120,6 +120,7 @@ export interface Order {
   tax_amount: number;
   total_amount: number;
   paid_amount: number;
+  credit_amount: number;
   change_amount: number;
   status: OrderStatus;
   payment_status: PaymentStatus;
@@ -147,6 +148,18 @@ export interface Payment {
   amount: number;
   reference_number: string | null;
   notes: string | null;
+  created_at: string;
+}
+
+export interface CustomerPayment {
+  id: string;
+  payment_number: string;
+  customer_id: string;
+  amount: number;
+  payment_method: 'cash' | 'card' | 'qr';
+  reference_number: string | null;
+  notes: string | null;
+  received_by: string | null;
   created_at: string;
 }
 

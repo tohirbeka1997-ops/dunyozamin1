@@ -1,10 +1,10 @@
-# POS System Requirements Document (Updated Version - Premium POS Terminal Upgrade)
+# POS System Requirements Document (Updated Version - Customer Credit/Debt Feature Added)
 
 ## 1. System Name
 POS System (Point of Sale Management System)
 
 ## 2. System Description
-A fully functional POS system for professional retail points with complete inventory control, financial reporting, employee activity tracking, and supplier management. The system operates on a centralized database and ensures real-time synchronization across all modules. This version includes a premium-grade POS Terminal interface optimized for high-volume retail environments.
+A fully functional POS system for professional retail points with complete inventory control, financial reporting, employee activity tracking, supplier management, and **customer credit/debt management**. The system operates on a centralized database and ensures real-time synchronization across all modules. This version includes a premium-grade POS Terminal interface optimized for high-volume retail environments and a comprehensive customer credit/debt tracking system.
 
 ## 3. Global System Synchronization Rules
 
@@ -19,32 +19,40 @@ The system stores all data in a single centralized database:\n- Products\n- Inve
 - Settings
 - Audit Logs
 - Held Orders
-\nAll modules read from and update the same unified data source.
+- **Customer Payments (for debt tracking)**
+
+All modules read from and update the same unified data source.
 
 ### 3.2 Cross-Module Integration Rules
 
 #### 3.2.1 Products↔ Inventory
-- When a product is created, an inventory record is automatically created
-- Updating product stock triggers low-stock warnings and dashboard updates
+- When a product is created, an inventory record is automatically created\n- Updating product stock triggers low-stock warnings and dashboard updates
 - Deleting a product is prevented if it has been used in orders
-\n#### 3.2.2 Orders (Sales) ↔ Inventory
+
+#### 3.2.2 Orders (Sales) ↔ Inventory
 **When an order is completed:**
 - Reduce stock based on sold quantity
 - Log stock change in Inventory Movement Log
 - Update dashboard statistics
 - Update customer purchase history
+- **Update customer balance if order is on credit**
 - Update employee performance statistics
 - Create payment record (summary)\n
 **When an order is cancelled:**
-- Restore stock\n- Mark order as voided in activity log
-\n#### 3.2.3 Sales Returns ↔ Inventory\n**When a return is processed:**
+- Restore stock\n- **Restore customer balance if order was on credit**
+- Mark order as voided in activity log
+\n#### 3.2.3 Sales Returns ↔ Inventory ↔ Customers
+**When a return is processed:**
 - Return products to stock
 - Add entry to movement log (Return)\n- Reduce customer total spending
+- **Reduce customer balance if original order was on credit**
 - Reduce employee performance metrics
 - Update dashboard indicators
-\n#### 3.2.4 Purchase Orders ↔ Inventory ↔ Suppliers
+
+#### 3.2.4 Purchase Orders ↔ Inventory ↔ Suppliers
 **When a purchase order is received:**
-- Increase stock\n- Add entry to movement log (Purchase Receipt)
+- Increase stock
+- Add entry to movement log (Purchase Receipt)
 - Update inventory valuation
 - Update dashboard and reports
 - Link to supplier record
@@ -53,17 +61,18 @@ The system stores all data in a single centralized database:\n- Products\n- Inve
 - No stock should be added
 - Log the cancellation\n- Maintain supplier relationship record
 
-#### 3.2.5 Customers ↔ Orders↔ Returns
+#### 3.2.5 Customers ↔ Orders ↔ Returns↔ Payments
 Each customer should have:\n- Total number of purchases
 - Total amount spent
-- Remaining balance (if credit sales are allowed)
+- **Current balance (debtowed to store)**
+- **Credit limit (optional)**
+- **Payment history**
 - List of orders\n- List of returns
 - Data used in reports and dashboard
 
 Deleting a customer is prevented if orders exist (soft delete only).
 
-#### 3.2.6 Suppliers ↔ Purchase Orders
-Each supplier should have:
+#### 3.2.6 Suppliers ↔ Purchase Orders\nEach supplier should have:
 - Total number of purchase orders
 - Total purchase amount
 - List of purchase orders
@@ -76,8 +85,7 @@ Deleting a supplier is prevented if purchase orders exist (soft delete only).
 #### 3.2.7 Employees ↔ POS Terminal ↔ Orders
 Each order should store:
 - Cashier ID
-- Terminal session
-- Timestamp
+- Terminal session\n- Timestamp
 \nThe Employees module automatically receives:\n- Number of sales
 - Sales amount
 - Processed returns
@@ -97,8 +105,9 @@ Settings module should directly affect module operations:
 - Enable/disable Hold Order feature
 - Enable/disable Per-Product Discount
 - Enable/disable Mixed Payment\n- Quick access buttons limit
-
-**Inventory:**
+- **Enable/disable Credit Sales**
+- **Default credit limit**
+\n**Inventory:**
 - Minimum stock threshold
 - Stock adjustment restrictions
 \n**Orders:**
@@ -109,8 +118,7 @@ Settings module should directly affect module operations:
 - Number formatting
 \nAll changes should be updated immediately system-wide.
 
-### 3.3 Dashboard Synchronization
-Dashboard should always show REAL-TIME metrics:
+### 3.3 Dashboard Synchronization\nDashboard should always show REAL-TIME metrics:
 - Sales for selected date range
 - Orders count for selected date range
 - Low-stock products
@@ -122,6 +130,8 @@ Dashboard should always show REAL-TIME metrics:
 - Number of held orders
 - Average order value
 - Items sold\n- Returns count and amount
+- **Total customer debt**
+- **Top debtors (optional)**
 
 All calculations should be automatically recalculated after:\n- New order\n- Return\n- Inventory adjustment
 - Purchase receipt
@@ -129,30 +139,35 @@ All calculations should be automatically recalculated after:\n- New order\n- Ret
 - New supplier added
 - Settings updated
 - Date range selection changed
-
-### 3.4 Reports Module Synchronization
+- **Customer payment received**
+- **Credit sale created**
+\n### 3.4 Reports Module Synchronization
 Reports should receive real-time data from:
 - Orders (sales)\n- Inventory movements
-- Customers
-- Suppliers
+- Customers\n- Suppliers
 - Purchase orders
 - Employees
 - Payment system
 - Settings (for tax calculation, currency, language)
+- **Customer payments and debt tracking**
 
 Each report should be correctly updated when related modules change.
 
 ### 3.5 Data Validation Rules Across Modules
 
 **Orders:**
-- Cannot sell products not in stock if settingsdo not allow\n- Cannot complete order without payment
+- Cannot sell products not in stock if settingsdo not allow\n- Cannot complete order without payment **OR valid credit sale**
+- **Credit sales require non-walk-in customer selection**
+- **Credit sales must not exceed customer credit limit (if set)**
 \n**Inventory:**
-- Manual adjustments require reason
-- Cannot adjust below zero if restricted
-
-**Customers:**
+- Manual adjustments require reason\n- Cannot adjust below zero if restricted
+\n**Customers:**
 - Phone and email must be unique
-\n**Suppliers:**
+- **Balance must be numeric**
+- **Credit limit must be numeric and >= 0**
+- **Payment amount must be > 0 and <= current balance (configurable)**
+
+**Suppliers:**
 - Name is required
 - Email must be valid format if provided
 - Cannot delete if linked to purchase orders
@@ -172,8 +187,10 @@ Every critical operation should write logs:
 - Employee actions
 - System settings changes
 - Held orders save/restore/cancel
-
-**Log format:**
+- **Customer payment received**
+- **Credit sale created**
+- **Customer balance adjustments**
+\n**Log format:**
 - user_id
 - action\n- module
 - document_id
@@ -184,6 +201,7 @@ Every critical operation should write logs:
 - Use indexing for SKU, order numbers, customer names, supplier names
 - Cache dashboard data for fast loading
 - Recalculate heavy reports in background if needed
+- **Index customer balance field for fast debt queries**
 \n### 3.8 Permissions and Access Control
 \n**Admin:**
 - Full access to all modules and settings
@@ -197,16 +215,16 @@ Every critical operation should write logs:
   - Create returns
   - View products and customers
   - Save and restore held orders
+  - **Process credit sales (if enabled in settings)**
+  - **Receive customer payments (if enabled)**
 - Cannot edit or delete core records
 
 ### 3.9 UI/UX Synchronization Rules
 - Consistent layout across all modules
-- Standard button positions (Save, Cancel, Edit)
-- Unified status indicators system-wide:\n  - Green = Completed / Active
-  - Yellow = Pending\n  - Red = Cancelled / Low Stock / Inactive
-- Confirmation dialogs for all destructive actions
-
-## 4. Main Functional Modules
+- Standard button positions (Save, Cancel, Edit)\n- Unified status indicators system-wide:\n  - Green = Completed / Active / Paid
+  - Yellow = Pending / Low Stock\n  - Red = Cancelled / Low Stock / Inactive / **Debt Exceeded**
+  - Blue = On Credit / Partially Paid\n- Confirmation dialogs for all destructive actions
+\n## 4. Main Functional Modules
 
 ### 4.1 Dashboard (Analytics) - ENHANCED VERSION
 
@@ -249,7 +267,7 @@ Every critical operation should write logs:
 - Secondary text: 'in this period'\n- Icon: Users icon
 - Color accent: Purple
 
-#### 4.1.3 KPI Cards - Row 2 (NEW)
+#### 4.1.3 KPI Cards - Row 2 (Enhanced with Debt Tracking)
 
 **Card 5: Average Order Value**
 - Main value: Total sales / Number of orders (0if no orders)
@@ -272,19 +290,20 @@ Every critical operation should write logs:
 - Icon: Rotate CCW icon
 - Color accent: Red
 
-**Card 8: Pending Purchase Orders**
-- Main value: Count of purchase orders with status 'Draft' or 'Approved' (not'Received' or 'Cancelled')
-- Label: 'Pending Purchase Orders'
-- Secondary text: 'awaiting receipt'
-- Icon: Clipboard list icon
-- Color accent: Amber
+**Card 8: Total Customer Debt (NEW)**
+- Main value: Sum of all positive customer balances
+- Label: 'Total Customer Debt'
+- Secondary text: 'outstanding balance'
+- Icon: Credit card or alert icon
+- Color accent: Orange/Red
+- Formula: `SUM(balance) WHERE balance > 0 FROM customers`
 
-#### 4.1.4 Quick Actions Row (Existing, Keep)
-
+#### 4.1.4 Quick Actions Row (Existing, Keep)\n
 **4Action Buttons:**
 1. Open POS Terminal → navigate to `/pos`
 2. Manage Products → navigate to `/products`
-3. View Orders → navigate to `/orders`\n4. View Reports → navigate to `/reports`
+3. View Orders → navigate to `/orders`
+4. View Reports → navigate to `/reports`
 
 **Button Style:**
 - Large, touch-friendly buttons
@@ -292,22 +311,20 @@ Every critical operation should write logs:
 - Primary blue color
 - Consistent spacing
 
-#### 4.1.5 Charts & Analytics Section (NEW)
+#### 4.1.5 Charts & Analytics Section (Enhanced)
 
 **Section Title:** Analytics Overview
 
 **Chart 1: Sales Over Time**
 \n**Type:** Line chart or bar chart
-
-**Data:**
+\n**Data:**
 - X axis: Days in selected date range
 - Y axis: Total sales amount per day
 - Tooltip on hover: Date + total sales for that day
 \n**Implementation:**
 - Query: Aggregate orders by date (order_date), sum total_amount where status = 'Completed'
 - Filter by selected date range
-- Group by day
-- Sort by date ascending
+- Group by day\n- Sort by date ascending
 \n**Empty State:**
 - If no sales data: Show message 'No sales in this period'
 \n**Chart 2: Top5 Products**
@@ -331,7 +348,19 @@ Every critical operation should write logs:
 - If fewer than 5 products: Show only existing ones
 - If no products sold: Show message 'No products sold in this period'
 
-#### 4.1.6 Data Sources & Queries
+**Chart 3: Top 5 Debtors (NEW, Optional)**
+
+**Type:** Horizontal bar chart or ranked list\n
+**Data:**
+- Show top 5 customers by outstanding balance\n- For each customer display:
+  - Customer name
+  - Current balance
+  - Credit limit (if set)
+\n**Implementation:**
+- Query: SELECT name, balance, credit_limit FROM customers WHERE balance > 0 ORDER BY balance DESC LIMIT 5
+\n**Empty State:**
+- If no customers with debt: Show message 'No outstanding customer debt'
+\n#### 4.1.6 Data Sources & Queries
 
 **All metrics must:**
 - Filter by selected date range (order_date or created_at)
@@ -342,15 +371,15 @@ Every critical operation should write logs:
 **Suggested RPC Functions or SQL Views (Read-Only):**
 \n**1. get_dashboard_kpis(start_date, end_date)**\n- Returns JSON object with:
   - total_sales
-  - total_orders\n  - low_stock_count
+  - total_orders
+  - low_stock_count
   - active_customers\n  - average_order_value
   - items_sold\n  - returns_count
   - returns_amount
   - pending_purchase_orders
-
-**2. get_sales_over_time(start_date, end_date)**
-- Returns array of objects:\n  - date
-  - total_sales
+  - **total_customer_debt**
+\n**2. get_sales_over_time(start_date, end_date)**
+- Returns array of objects:\n  - date\n  - total_sales
 \n**3. get_top_products(start_date, end_date, limit)**
 - Returns array of objects:
   - product_id
@@ -358,12 +387,19 @@ Every critical operation should write logs:
   - quantity_sold
   - total_sales
 
+**4. get_top_debtors(limit) (NEW)**
+- Returns array of objects:
+  - customer_id
+  - customer_name\n  - balance
+  - credit_limit
+
 **Database Tables Used (Read-Only):**
-- orders (order_date, total_amount, status)
-- order_items (quantity, line_total, product_id)
-- products (name, stock, minimal_stock)
-- customers (id)\n- sales_returns (created_at, returned_amount, status)
-- purchase_orders (status)\n\n**No database schema changes required.**
+- orders (order_date, total_amount, status, payment_status)
+- order_items (quantity, line_total, product_id)\n- products (name, stock, minimal_stock)\n- customers (id, name, balance, credit_limit)
+- sales_returns (created_at, returned_amount, status)
+- purchase_orders (status)\n- **customer_payments (amount, created_at)**
+
+**No database schema changes required for dashboard.**
 
 #### 4.1.7 Loading, Error & Empty States
 
@@ -373,19 +409,21 @@ Every critical operation should write logs:
 - Keep layout structure visible during loading
 
 **Error State:**
-- If a query fails, show non-blocking error message at bottom of dashboard:\n  -'Failed to load analytics. Please try again.'
+- If a query fails, show non-blocking error message at bottom of dashboard:\n  - 'Failed to load analytics. Please try again.'
   - Red background, white text, dismissible
 - Keep other successful widgets visible
 - Do not crash the entire dashboard
 
 **Empty State:**
-- If no data for selected range:\n  - KPI cards show '0' or 'N/A'\n  - Charts show 'No data available for this period'
+- If no data for selected range:\n  - KPI cards show '0' or 'N/A'
+  - Charts show 'No data available for this period'
 - Handle division by zero gracefully (Average Order Value = 0 if no orders)
-\n#### 4.1.8 Responsive Layout
+
+#### 4.1.8 Responsive Layout
 
 **Desktop (1440px and above):**
 - KPI cards: 4 cards per row (2 rows = 8 cards total)
-- Quick actions: 4 buttons in a row\n- Charts: 2 charts side by side (50% width each)
+- Quick actions: 4 buttons in a row\n- Charts: 2-3 charts side by side
 \n**Tablet (1024px - 1439px):**
 - KPI cards: 2 cards per row (4 rows = 8 cards total)
 - Quick actions: 2 buttons per row (2 rows)\n- Charts: Stacked vertically (100% width each)
@@ -405,8 +443,7 @@ Every critical operation should write logs:
 - Small labels (text-sm, text-gray-600)
 - Icons from Lucide or Heroicons library
 - Consistent spacing (gap-4or gap-6)
-
-**Date Range Selector:**
+\n**Date Range Selector:**
 - Dropdown or button group for presets
 - Date picker modal for custom range\n- Clear visual indication of selected range
 - Apply button to confirm custom range
@@ -427,7 +464,9 @@ Every critical operation should write logs:
 - Use aggregated queries (GROUP BY, SUM, COUNT)
 - Avoid N+1 queries (no looping over rows on client)
 - Use indexes on date fields for fast filtering
-\n**Reuse Existing Code:**
+- **Index customer balance field for fast debt calculations**
+
+**Reuse Existing Code:**
 - Reuse auth hooks (useAuth)\n- Reuse layout components\n- Reuse card components
 - Do NOT touch authentication or routing logic
 
@@ -444,6 +483,7 @@ Every critical operation should write logs:
 - Sales Returns module
 - Purchase Orders module
 - All other existing modules
+- **Customer credit/debt tracking**
 
 **Dashboard must work:**
 - On empty database (no crashes, just show0 values)
@@ -488,12 +528,19 @@ Every critical operation should write logs:
     - Verify: Skeleton placeholders appear while data loads
     - Verify: Smooth transition to actual data
 
+11. **Create credit sale:**
+    - Verify: Total Customer Debt card updates
+    - Verify: Dashboard reflects new debt amount
+
+12. **Receive customer payment:**
+    - Verify: Total Customer Debt card decreases
+    - Verify: Dashboard updates in real-time
+
 #### 4.1.13 Final Delivery Requirements
 
 **AI should create:**
 \n✔ Enhanced Dashboard page with date range selector
-✔ 8 KPI cards (4 existing + 4 new) connected to date range\n✔ 2 charts (Sales Over Time + Top 5 Products)
-✔ Read-only RPC functions or SQL views for aggregated data
+✔ 8 KPI cards (4 existing + 4 new including Total Customer Debt) connected to date range\n✔ 2-3 charts (Sales Over Time + Top 5 Products + Top 5 Debtors)\n✔ Read-only RPC functions or SQL views for aggregated data
 ✔ Loading, error, and empty states
 ✔ Responsive layout for desktop and tablet
 ✔ TypeScript code following existing patterns
@@ -503,8 +550,7 @@ Every critical operation should write logs:
 - List of new metrics and charts added
 - List of queries or RPC endpoints created/updated
 - Any limitations or next steps for future improvements
-
-### 4.2 POS Terminal (Premium Retail-Grade Interface) - UPGRADED VERSION
+\n### 4.2 POS Terminal (Premium Retail-Grade Interface with Credit Sales) - UPGRADED VERSION
 
 #### 4.2.1 Core Functions (Existing - Keep Working)
 - Add products via barcode scanner
@@ -513,6 +559,7 @@ Every critical operation should write logs:
   - Bank card
   - Terminal\n  - QR payment
   - Mixed payment (e.g., 50% card + 50% cash)
+  - **Credit sale (full or partial)**
 - Real-time product price modification (manager only)
 - Automatic refund amount calculation
 - Auto-generate receipt number (Format: POS-YYYYMMDD-#####)
@@ -521,16 +568,18 @@ Every critical operation should write logs:
   - View waiting orders
   - Return receipt
   - Select customer
+  - **Receive customer payment**
 - Offline mode capability
 - Filter products by category buttons
 - Colored category badges and icons
 - Most-sold categories shown at top
 - Select or quick-create customer (name + phone)
-- Credit sales capability (if customer allowed)
+- **Credit sales capability (if customer allowed)**
 - Employee login/logout system
 - Shift start/end tracking
 - Cashier-specific restrictions\n- Real-time read payment methods and rules from Settings module
 - Each transaction automatically updates inventory, customer, and employee modules
+- **Each credit sale automatically updates customer balance**
 \n#### 4.2.2 NEW FEATURE1: Quick Category Tabs
 
 **Location:** Above or under the product search input
@@ -615,11 +664,11 @@ Every critical operation should write logs:
     - Quick buttons: `5%`, `10%`, `15%` (apply percent of line price automatically)
     - 'Clear' button to reset to 0
 \n**B) Visual Feedback**
-- Under the product name in the cart row, show a small grey text:\n  - Example: `Discount: 1500 UZS (10%)` if discount is applied
+- Under the product name in the cart row, show a small grey text:\n  - Example: `Discount: 1500UZS (10%)` if discount is applied
 - Update both line total and order summary in real-time
 \n**Calculation Logic:**
 - Quick buttons calculate percentage of line subtotal (unit_price × quantity)
-- Example: If line subtotal = 15 000 UZS, clicking '10%' sets discount = 1 500 UZS
+- Example: If line subtotal = 15000 UZS, clicking '10%' sets discount = 1 500 UZS
 - Manual input allows any amount (validated: >= 0 and <= line subtotal)
 \n**Visual Design:**
 - Popover positioned near the discount button
@@ -627,8 +676,7 @@ Every critical operation should write logs:
 - Quick buttons in a row (pill-shaped, blue on hover)
 - Input field with UZS suffix
 - Real-time preview of line total after discount
-
-**Technical Requirements:**
+\n**Technical Requirements:**
 - Reuse existing per-line discount logic
 - Add quick percentage buttons
 - Update cart state in real-time
@@ -646,6 +694,7 @@ Every critical operation should write logs:
 - Clearly support mixed payments:\n  - Cash Amount (input field)
   - Card Amount (input field)
   - QR Pay (optional, input field)
+  - **Credit Amount (input field, only if customer selected)**
 - Show:\n  - Subtotal
   - Discounts (line discounts + order discount)
   - Final Total
@@ -655,6 +704,8 @@ Every critical operation should write logs:
 - If total > 0, the sum of all payment amounts must equal the total (within a small epsilon for decimals)
 - If validation fails, show a clear error message and disable the 'Complete Payment' button
 - Example error: 'Payment amountsdo not match order total. Please adjust.'
+- **Credit sales require non-walk-in customer selection**
+- **Credit amount cannot exceed customer credit limit (if set)**
 
 **Visual Design:**
 - Clean, card-based layout
@@ -667,6 +718,7 @@ Every critical operation should write logs:
 - Keep all existing backend logic\n- Only adjust the frontend to send correctly structured data
 - Validate payment amounts before submission
 - Show clear error messages\n- Handle edge cases (e.g., overpayment, underpayment)
+- **Handle credit sales with customer balance updates**
 
 #### 4.2.7 NEW FEATURE 6: Keyboard Shortcuts\n
 **Global Shortcuts (within POS Terminal):**
@@ -730,10 +782,8 @@ Every critical operation should write logs:
 - Clean list layout with clear actions
 - Color-coded priority indicators
 - Touch-friendly buttons
-- Smooth animations
-
-**Technical Requirements:**
-- Store hold name in `held_orders` table
+- Smooth animations\n
+**Technical Requirements:**\n- Store hold name in `held_orders` table
 - Calculate time since hold in real-time
 - Update visual indicators based on age
 - Handle resume, rename, and cancel actions
@@ -743,23 +793,32 @@ Every critical operation should write logs:
 
 **Implementation:**
 - When a customer is selected (not Walk-in):
-  - Show a small badge next to the customer dropdown:\n    - Examples: `VIP`, `Debt: 150 000 UZS`, `New`
+  - Show a small badge next to the customer dropdown:\n    - Examples: `VIP`, `Debt: 150 000 UZS`, `New`, **`Credit Available: 500 000 UZS`**
 - On hover or click, show a small tooltip/popover with:
   - Phone\n  - Email (if available)
   - Short notes (if available)
+  - **Current balance**
+  - **Credit limit (if set)**
+  - **Available credit (credit_limit - balance)**
 \n**Badge Logic:**
 - VIP: if customer has total purchases > threshold (e.g., 5 000 000 UZS)
-- Debt: if customer balance >0 (show amount)\n- New: if customer created within last 30 days
-\n**Visual Design:**
+- **Debt: if customer balance > 0 (show amount in red)**
+- New: if customer created within last 30 days
+- **Credit Available: if credit_limit is set and balance< credit_limit (show available amount in green)**
+- **Credit Exceeded: if balance >= credit_limit (show in red, block credit sales)**
+
+**Visual Design:**
 - Small pill-shaped badge\n- Color-coded:\n  - VIP: gold/yellow
   - Debt: red
-  - New: green
+  - New: green\n  - **Credit Available: green**
+  - **Credit Exceeded: red**
 - Tooltip/popover with clean layout
 \n**Technical Requirements:**
 - Load customer data from `customers` table
 - Calculate badge status based on customer fields
 - Show tooltip on hover or click
 - Handle missing data gracefully
+- **Real-time update when customer balance changes**
 
 #### 4.2.10 NEW FEATURE 9: Quick Customer Create (inside POS Terminal)
 
@@ -769,6 +828,7 @@ Every critical operation should write logs:
   - Name (required)
   - Phone (+998 mask formatting)
   - Notes (optional)
+  - **Credit Limit (optional, numeric)**
 - On'Create':
   - Save the customer using the existing Customers backend\n  - Automatically select this new customer in the Order Summary dropdown
 - Handle backend errors with toasts and inline messages
@@ -776,52 +836,230 @@ Every critical operation should write logs:
 **Visual Design:**
 - Small, centered modal
 - Clean form layout
-- Large'Create' button
-- 'Cancel' button to close without saving
+- Large'Create' button\n- 'Cancel' button to close without saving
 \n**Technical Requirements:**
 - Reuse existing customer creation logic\n- Validate phone format (+998 XX XXX XX XX)
 - Show success toast: 'Customer created and selected'
 - Show error toast if creation fails
 - Auto-select new customer in dropdown
+- **Initialize balance to 0**
 
 #### 4.2.11 NEW FEATURE 10: Improved Notifications (Toasts)
 
 **Success Notifications:**
 - On successful payment:
   - Show a green toast like:\n    - 'Order POS-2025-0007 completed successfully. Change: 3 000 UZS.'
-\n**Error Notifications:**
+- **On successful credit sale:**
+  - Show a blue toast like:
+    - 'Order POS-2025-0007 created ON CREDIT. New customer balance: 1 250 000 UZS.'\n\n**Error Notifications:**
 - Show a red toast with a clear reason, for example:
   - 'Cannot process empty cart.'
   - 'Insufficient stock for product: Olma.'
   - 'Payment amounts do not match order total.'
+- **'Credit sales are only available for saved customers.'**
+  - **'Credit limit exceeded for this customer.'**
+  - **'Customer is not allowed to purchase on credit.'**
 
 **Implementation:**
 - Use a consistent toast component already used in other modules, or create one consistent with the design system
 - Position: top-right corner\n- Auto-dismiss after 5 seconds (success) or 10 seconds (error)
 - Allow manual dismiss with X button
-
-**Visual Design:**
+\n**Visual Design:**
 - Clean, modern toast design
 - Color-coded:\n  - Green for success
   - Red for error
-  - Blue for info
+  - Blue for info/credit sales
 - Icon + message + dismiss button
-\n#### 4.2.12 Hold Order (Save Order to Waiting List) Feature (Existing - Enhanced)
+\n#### 4.2.12 NEW FEATURE 11: Credit Sales Support (CORE FEATURE)
 
 **Business Scenario:**
-- Customer comes to cashier, some products scanned and added to cart
-- Customer asks cashier to wait while they get additional items or check something
+- Customer comes to cashier, products scanned and added to cart
+- Customer requests to purchase on credit (pay later)
+- Cashier selects customer and processes credit sale
+- Customer balance increases by order total
+- Later, customer returns to pay off debt
+
+**Functional Requirements:**
+\n**1. Customer Selection Requirement**
+- Credit sales are **only allowed when a specific customer is selected** in the 'Customer (Optional)' dropdown
+- If `Walk-in Customer` is selected:\n  - Disable credit option in payment modal
+  - Show tooltip: 'Credit sales are only available for saved customers.'
+\n**2. Process Payment Modal - Credit Sale Option**
+\nIn the existing'Process Payment' modal:
+\n- Keep the current behavior for normal payments (Cash, Card, QR, Mixed)
+- Add a **clearly separated option**:
+  - A toggle or tab: `Pay Now` vs `Sell on Credit`
+  - Or an explicit button: `Sell Entire Order on Credit`
+\n**Case A: Full Credit Sale**
+\n- User selects `Sell on Credit`
+- Validation:
+  - Cart must not be empty
+  - A non-walk-in customer must be selected
+  - If `credit_limit` is set and `customer.balance + order_total > credit_limit`, show a blocking error:\n    - 'Credit limit exceeded for this customer.'
+  - If customer has `allow_debt = false` (optional field), show error:
+    - 'Customer is not allowed to purchase on credit.'\n- On confirm:
+  - Create order with:\n    - `payment_status = 'ON_CREDIT'`
+    - `paid_amount = 0`
+    - `credit_amount = order_total`\n  - Adjust stock as for a normal sale
+  - Update customer:\n    - `balance = balance + order_total`\n  - Log transaction in audit log
+- Show a success toast:\n  - 'Order POS-XXXX-YYYY created ON CREDIT. New customer balance: 1 250 000 UZS.'
+
+**Case B: Partial Payment + Credit (Optional for Future)**
+
+- If you implement partial payments now:\n  - User can enter Cash/Card amount smaller than total
+  - `paid_amount` is recorded, remainder goes to `credit_amount`
+  - `customer.balance += credit_amount`
+  - `payment_status = 'PARTIALLY_PAID'`
+- If not implemented in this iteration, clearly comment the code to show where it can be added later
+
+**3. UI Indicators in POS Terminal**
+\n- In the Order Summary panel:
+  - When order will be credited, show a badge like:
+    - `Credit Sale: 150 000 UZS will be added to customer balance`
+- If customer already has a positive balance:\n  - Show a small grey text:\n    - `Current debt: 850 000 UZS`\n  - If `balance` exceeds `credit_limit`, show it in red
+- Show available credit:\n  - `Available credit: 500 000 UZS` (credit_limit - balance)
+\n**4. Credit Sale Validation Rules**
+
+- Cannot create credit sale if:
+  - No customer selected (Walk-in)
+  - Customer is inactive\n  - `balance + order_total > credit_limit` (if credit_limit is set)
+  - `allow_debt = false` (if this field exists)
+- Show clear error messages for each validation failure
+
+**5. Database Integration**
+
+**Orders Table Updates:**
+- Ensure `orders` table has:
+  - `payment_status` enum or text: `PAID`, `ON_CREDIT`, `PARTIALLY_PAID`
+  - `paid_amount` (numeric, default 0)
+  - `credit_amount` (numeric, default 0)
+\n**Customers Table Updates:**
+- Ensure `customers` table has:
+  - `balance` (numeric, default 0, NOT NULL) – current outstanding debt
+  - `credit_limit` (numeric, nullable, default NULL) – optional per-customer maximum allowed debt
+  - `allow_debt` (boolean, default true, optional) – whether customer can purchase on credit
+
+**Transaction Safety:**
+- All credit sale operations must run in a single database transaction:\n  - Create order
+  - Update stock
+  - Update customer balance\n  - Log audit trail
+- If any part fails, entire operation should roll back
+
+**Example Supabase RPC Function (Pseudocode):**
+
+```sql
+CREATE OR REPLACE FUNCTION create_credit_sale(
+  order_data JSON,
+  customer_id UUID,
+  credit_amount NUMERIC\n)\nRETURNS UUID AS$$
+DECLARE\n  order_id UUID;\nBEGIN
+  -- Create order
+  INSERT INTO orders (...) VALUES (...) RETURNING id INTO order_id;
+  
+  -- Update stock for each item
+  FOR item IN SELECT * FROM order_items WHERE order_id = order_id LOOP
+    UPDATE products SET stock = stock - item.quantity WHERE id = item.product_id;
+  END LOOP;
+  \n  -- Update customer balance
+  UPDATE customers SET balance = balance + credit_amount WHERE id = customer_id;
+  
+  -- Log audit trail
+  INSERT INTO audit_logs(...) VALUES (...);
+  
+  RETURN order_id;
+END;
+$$ LANGUAGE plpgsql;\n```
+
+**Frontend Call:**
+\n```typescript
+const { data, error } = await supabase.rpc('create_credit_sale', {
+  order_data: orderData,
+  customer_id: customerId,
+  credit_amount: creditAmount
+});
+\nif (error) {
+  toast.error('Failed to create credit sale.');
+} else {
+  toast.success(`Order ${orderNumber} created ON CREDIT. New customer balance: ${newBalance} UZS.`);
+}\n```
+
+**6. Sales Returns Integration**
+
+- When a credited order item is returned:
+  - Increase stock (as normal)
+  - **Reduce customer balance by returned amount**
+  - Update order status\n  - Log audit trail
+\n**Example:**
+- Original order: 500 000 UZS on credit
+- Customer balance: +500 000 UZS\n- Return: 100 000 UZS
+- New customer balance: +400 000 UZS\n\n**7. TypeScript Types**
+
+```typescript
+interface Order {
+  id: string;\n  order_number: string;
+  customer_id?: string;
+  payment_status: 'PAID' | 'ON_CREDIT' | 'PARTIALLY_PAID';
+  paid_amount: number;
+  credit_amount: number;
+  total_amount: number;
+  // ... other fields
+}
+\ninterface Customer {
+  id: string;
+  name: string;
+  phone: string;\n  balance: number; // positive = customer owes store
+  credit_limit?: number;
+  allow_debt: boolean;
+  // ... other fields
+}
+```
+\n**8. Testing Scenarios**
+
+1. **Create full credit sale:**
+   - Select customer
+   - Add products to cart
+   - Click 'Sell on Credit'
+   - Verify: Order created with payment_status = 'ON_CREDIT'
+   - Verify: Customer balance increased\n   - Verify: Stock decreased
+\n2. **Attempt credit sale with Walk-in customer:**
+   - Select 'Walk-in Customer'
+   - Add products to cart
+   - Verify: Credit option is disabled
+   - Verify: Tooltip shows error message
+
+3. **Attempt credit sale exceeding credit limit:**
+   - Select customer with credit_limit = 1000 000 UZS
+   - Customer balance = 800 000 UZS
+   - Add products totaling 300 000 UZS
+   - Click 'Sell on Credit'
+   - Verify: Error message: 'Credit limit exceeded for this customer.'
+
+4. **Return credited order item:**
+   - Process return for credited order
+   - Verify: Customer balance decreased by returned amount
+   - Verify: Stock increased
+
+5. **View customer balance in POS Terminal:**
+   - Select customer with positive balance
+   - Verify: Badge shows 'Debt: X UZS' in red
+   - Verify: Tooltip shows current balance and credit limit
+
+#### 4.2.13 Hold Order (Save Order to Waiting List) Feature (Existing - Enhanced)
+
+**Business Scenario:**
+- Customer comes to cashier, some products scanned and added to cart\n- Customer asks cashier to wait while they get additional items or check something
 - Cashier needs to save current cart as'held order' and continue serving other customers
 - Later, when customer returns, cashier restores held order and completes payment
 
 **Functional Requirements:**
-\n**1. POS Terminal New Actions:**
-- Add 'Hold Order' button next to 'Process Payment' button\n- Add 'Waiting Orders' menu/button in top-right or POS Terminal header
+
+**1. POS Terminal New Actions:**
+- Add 'Hold Order' button next to 'Process Payment' button
+- Add 'Waiting Orders' menu/button in top-right or POS Terminal header
 \n**2. Hold Order Behavior:**
 - When cashier clicks 'Hold Order' button:
   - If cart is empty → show warning and do nothing
-  - Otherwise:\n    - Open small dialog/modal:
-      - Fields:\n        - Optional'Customer name / label' (e.g., 'Person in green shirt', 'Tohirbek', 'Table 3')
+  - Otherwise:\n    - Open small dialog/modal:\n      - Fields:\n        - Optional'Customer name / label' (e.g., 'Person in green shirt', 'Tohirbek', 'Table 3')
         - Optional note\n    - Save current cart state as held order without payment
     - Clear current cart on terminal (so cashier can serve next customer)
 - Held order should not affect inventory or reports yet (stock not reduced, sales total not counted)
@@ -832,7 +1070,8 @@ Every critical operation should write logs:
   - customer_name (nullable)
   - note (nullable)
   - created_at\n  - status ('HELD' | 'RESTORED' | 'CANCELLED')
-- Do not add to main `orders` table at this stage. Real order is created only after payment\n
+- Do not add to main `orders` table at this stage. Real order is created only after payment
+
 **4. Waiting Orders List:**
 - 'Waiting Orders' button opens modal or side panel:\n  - For each held order, show:
     - Short label: customer_name or generated name ('Order #3')
@@ -842,12 +1081,12 @@ Every critical operation should write logs:
     - Restore (Load this order into current cart)
     - Cancel (Delete held order if not needed)
 - Support multiple held orders at once
-\n**5. Restore Behavior:**
+
+**5. Restore Behavior:**
 - When cashier clicks Restore on a held order:
   - If current cart is not empty, ask for confirmation:\n    - 'Current cart has items. Replace them with held order?'
     - Options:\n      - Replace current cart\n      - Cancel\n  - After confirmation:\n    - Load held order items into shopping cart (with quantities and line discounts)
-    - Load optional customer name into'Customer' field (if linked)
-    - Delete or mark this held order as RESTORED in `pending_orders`
+    - Load optional customer name into'Customer' field (if linked)\n    - Delete or mark this held order as RESTORED in `pending_orders`
   - After restored, cashier can process payment via'Process Payment' as usual
 
 **6. Cancel Behavior:**
@@ -862,11 +1101,13 @@ Every critical operation should write logs:
 - Clear toast messages:\n  - Save success: 'Order moved to waiting list.'
   - Restore success: 'Held order restored to cart.'
   - Cancel: 'Held order deleted.'
-\n**8. Validation:**
+
+**8. Validation:**
 - Do not allow Hold if cart is empty
 - On restore, recheck product availability:\n  - If some products deleted from catalog or stock drastically changed, handle gracefully:\n    - If product missing → show message and skip that item
     - If quantity > current max stock (if you enforce stock) → trim to available and show warning
-\n**9. TypeScript and State:**
+
+**9. TypeScript and State:**
 - Add types for `HeldOrder` / `PendingOrder`
 - Implement hooks or state management for:\n  - `heldOrders` list
   - `saveHeldOrder`, `restoreHeldOrder`, `cancelHeldOrder`
@@ -879,7 +1120,7 @@ Every critical operation should write logs:
   - Cancel held orders when not needed
 - No impact on Inventory or Reports until payment is completed and real `order` is created
 
-#### 4.2.13 Shopping Cart - With Per-Product Discount (Existing - Enhanced)
+#### 4.2.14 Shopping Cart - With Per-Product Discount (Existing - Enhanced)
 
 **Cart Structure:**
 \nEach cart item contains:
@@ -899,8 +1140,7 @@ Every critical operation should write logs:
    - When user clicks discount field, inline input or popover opens
    - User can enter discount value\n   - First version: amount format only\n   - Future: toggle between percentage (%) and amount\n
 **Calculation Rules:**
-\n```\nlet unit_price = product price
-let qty = quantity
+\n```\nlet unit_price = product price\nlet qty = quantity
 let line_subtotal = unit_price × qty\nlet line_discount = discount for product (amount, >= 0)
 let line_total = line_subtotal - line_discount
 ```
@@ -937,8 +1177,8 @@ let line_total = line_subtotal - line_discount
 **Tax Integration:**
 - For now, line discounts are applied before tax\n- Tax logic can be updated later\n
 **TypeScript Structure:**
-\n```typescript
-interface CartItem {
+
+```typescript\ninterface CartItem {
   id: string;
   productId: string;
   productName: string;
@@ -961,32 +1201,32 @@ interface CartItem {
 - All calculations are accurate and real-time
 - UI is intuitive and touch-screen friendly
 
-#### 4.2.14 UX & Design Requirements (Premium Upgrade)
+#### 4.2.15 UX & Design Requirements (Premium Upgrade)
 
 **Layout:**
 - Keep the existing blue color theme and card layout
 - Layout must be responsive:\n  - Desktop: 2-column layout (Cart left, Summary right)
   - Tablet: stacked but still usable with touch
 - Do not clutter the interface: advanced features should appear in modals/popovers, not all at once
-\n**Visual Enhancements:**
+
+**Visual Enhancements:**
 - Large, touch-friendly buttons (minimum 44px height)
 - Clear visual hierarchy\n- Smooth animations and transitions
-- Color-coded status indicators
-- Consistent spacing and padding
+- Color-coded status indicators\n- Consistent spacing and padding
 - Modern, clean design
+- **Credit sale indicators clearly visible**
+- **Customer debt warnings prominently displayed**
 
 **Performance:**
 - Fast rendering even with100+ products in search results
 - Smooth scrolling and interactions
 - Optimized for tablets and POS displays
-\n#### 4.2.15 Technical Requirements (Premium Upgrade)
+\n#### 4.2.16 Technical Requirements (Premium Upgrade)
 \n**TypeScript:**
 - Respect existing TypeScript types and Supabase schema
-- Add new types for favorite products, held orders, keyboard shortcuts
-- Follow existing patterns in project
-\n**Do NOT Break:**
-- Stock synchronization
-- Orders creation
+- Add new types for favorite products, held orders, keyboard shortcuts, **credit sales, customer payments**
+- Follow existing patterns in project\n\n**Do NOT Break:**
+- Stock synchronization\n- Orders creation
 - Returns\n- Purchase Orders integration
 - Dashboard metrics
 - Existing backend logic for orders, stock, payments, and returns
@@ -1001,25 +1241,26 @@ interface CartItem {
 
 **Focus:**
 - Focus only on the POS Terminal page UI/UX and small frontend-only enhancements that integrate with the current backend
-\n#### 4.2.16 Summary of New Features
+- **Implement credit sales with proper transaction safety**
+\n#### 4.2.17 Summary of New Features
 
 **Implemented in POS Terminal:**
 
 1. **Quick Category Tabs** – Filter products by category with horizontal pills
-2. **Favorites / Hot Products Panel** – Quick access to 8 favorite products with keyboard shortcuts (ALT+1 to ALT+8)
+2. **Favorites / Hot Products Panel** – Quick access to 8 favorite products with keyboard shortcuts (ALT+1to ALT+8)
 3. **On-screen Numpad** – For quantity and line discount input
 4. **Improved Per-Line Discount UX** – Quick percentage buttons (5%, 10%, 15%) and visual feedback
 5. **Mixed Payments UX** – Clear split payment interface with validation
 6. **Keyboard Shortcuts** – ENTER, F2, F3, ESC, UP/DOWN, PLUS/MINUS, ALT+1-8
 7. **Advanced Hold / Waiting Orders** – Named holds, side panel, visual priority indicators
-8. **Customer Info Badge** – VIP, Debt, New badges with tooltip
+8. **Customer Info Badge** – VIP, Debt, New, **Credit Available, Credit Exceeded** badges with tooltip
 9. **Quick Customer Create** – '+' button next to customer dropdown
 10. **Improved Notifications** – Clear success and error toasts
+11. **Credit Sales Support (NEW)** – Full credit sale capability with customer balance tracking
 \n**All existing features preserved and working:**
 - Product search and barcode scanning
 - Shopping cart with quantity controls
-- Per-line discounts\n- Order-level discount\n- Hold Orders
-- Process Payment
+- Per-line discounts\n- Order-level discount\n- Hold Orders\n- Process Payment
 - Customer selection
 - Full integration with Products, Orders, Inventory, Customers, Dashboard
 
@@ -1035,7 +1276,8 @@ interface CartItem {
 - Purchase price
 - Sale price
 - Current stock
-- Status (Active / Inactive)\n- Actions (View, Edit, Delete)
+- Status (Active / Inactive)
+- Actions (View, Edit, Delete)
 
 **Features:**
 - Search: by name, SKU, barcode\n- Filters:\n  - Category filter
@@ -1046,13 +1288,12 @@ interface CartItem {
 - 'Add Product' button
 \n**Stock status colors:**
 - Green → Stock sufficient
-- Yellow → Low stock
-- Red → Out of stock
-\n**Integration Rules:**
+- Yellow → Low stock\n- Red → Out of stock
+
+**Integration Rules:**
 - When product is created, inventory record is automatically created
 - When deleting product, check if used in orders\n- Stock changes reflect real-time in dashboard and reports
-
-#### 4.3.2 Add / Edit Product Form
+\n#### 4.3.2 Add / Edit Product Form
 **General Information:**
 - Product name (required)
 - SKU (auto-generate + editable)
@@ -1091,7 +1332,8 @@ interface CartItem {
   - Transfers
 - Columns:
   - Date
-  - Type\n  - Quantity (+ or –)
+  - Type
+  - Quantity (+ or –)
   - User
   - Related document number
 \n**2) Sales History**
@@ -1167,7 +1409,8 @@ interface CartItem {
 - Name required
 - Must be unique
 - If parent category selected → prevent circular parent/child relationships
-\n**Buttons:**
+
+**Buttons:**
 - Save\n- Cancel
 \n#### 4.4.3 Edit Category Page
 Identical to creation form but pre-filled.\n
@@ -1437,13 +1680,14 @@ This ensures full traceability.\n
 - before_quantity
 - after_quantity
 - user_id
-- related_document_type\n- related_document_id\n- notes
+- related_document_type
+- related_document_id
+- notes
 - created_at
 \n**Relationships:**
 - One-to-one with Products
 - One-to-many with Movements
-- Auto-sync with Orders, Returns, Purchase Orders
-\n### 4.6 Orders / Receipts (Orders Module)
+- Auto-sync with Orders, Returns, Purchase Orders\n\n### 4.6 Orders / Receipts (Orders Module)
 
 #### 4.6.1 Orders List Page
 **Page Title:** Orders
@@ -1453,8 +1697,8 @@ This ensures full traceability.\n
 - date_time – Date and time\n- cashier – Cashier / employee
 - customer_name – Customer (optional, can be 'Walk-in')
 - total_amount – Order total
-- payment_status – Paid / Partially Paid / Unpaid
-- payment_methods – Icons or text (Cash, Card, QR, Mixed)
+- payment_status – **Paid / On Credit / Partially Paid / Unpaid**
+- payment_methods – Icons or text (Cash, Card, QR, Mixed, **Credit**)
 - status – Completed / Cancelled / Returned
 - actions – View, Print, Return (Sales Return)\n\n**Filters:**
 - Date range (today, this week, custom)
@@ -1469,6 +1713,7 @@ This ensures full traceability.\n
 - Top summary metrics for selected period:\n  - total_sales_amount – Total sales amount
   - total_orders_count – Total orders count
   - average_order_value – Average order value
+  - **total_credit_sales – Total credit sales amount**
 \n#### 4.6.2 Order Detail Page
 When user clicks order row, Order Detail page or side panel opens.
 
@@ -1478,7 +1723,7 @@ When user clicks order row, Order Detail page or side panel opens.
 - POS terminal name (if multiple terminals)
 - Cashier\n- Customer (with link to customer profile)
 - Status badge
-- Payment status badge
+- **Payment status badge (Paid / On Credit / Partially Paid)**
 \n**Products Table:**
 **Columns:**
 - Product name
@@ -1489,17 +1734,17 @@ When user clicks order row, Order Detail page or side panel opens.
 - Line total\n\n**Summary Block:**
 - Subtotal
 - Total line discounts
-- Order discount
-- Total discounts (Line Discounts + Order Discount)
+- Order discount\n- Total discounts (Line Discounts + Order Discount)
 - Tax (if used)
 - Grand total
-- Amount paid
-- Remaining balance (if any)
+- **Amount paid**
+- **Credit amount**
+- **Remaining balance (if any)**
 
 **Payments Block (Integrated with Payments Module):**
 List of payments for this order:\n- Date and time
 - Amount
-- Method (Cash, Card, QR, Mixed)
+- Method (Cash, Card, QR, Mixed, **Credit**)
 - Reference (terminal transaction, receipt number)\n\n**Related Returns (Sales Returns):**
 List of returns linked to this order:
 - Return number
@@ -1515,6 +1760,7 @@ List of returns linked to this order:
 Orders are not manually created here – they come from POS Terminal:\n- Each completed sale in POS terminal automatically creates Order record
 - If order is saved as'held' or 'parked', status = Pending
 - When payment is completed, status = Completed
+- **When credit sale is created, payment_status = 'ON_CREDIT'**
 - If order is cancelled from POS, status = Voided and inventory is restored
 
 #### 4.6.4 Integrations (Mandatory)
@@ -1525,11 +1771,12 @@ Orders are not manually created here – they come from POS Terminal:\n- Each co
 - Each payment belongs to an order
 - Payment status is calculated:\n  - Paid: total payments >= order total
   - Partially paid: total payments >0 and < order total
-  - Unpaid: total payments = 0\n
+  - Unpaid: total payments = 0\n  - **On Credit: credit_amount > 0 and paid_amount = 0**
+
 **Customers Integration:**
 - If customer is selected in POS, they should be shown in Orders list and detail
 - Customer balances (debt, loyalty) should be updated when order is created/paid/returned
-- When credit sale occurs, customer balance increases
+- **When credit sale occurs, customer balance increases**
 - When payment is received, customer balance decreases
 - Customer statistics updated real-time
 
@@ -1539,8 +1786,8 @@ Orders are not manually created here – they come from POS Terminal:\n- Each co
 - Order status updates based on returns:\n  - If all products returned →'Refunded'
   - If partially returned → 'Partially Refunded'
   - If no returns → stays'Completed'
-
-**Employees Integration:**
+- **If credited order is returned, customer balance decreases**
+\n**Employees Integration:**
 - Each order stores cashier ID
 - Employee performance statistics automatically updated
 - Cancelled orders affect employee error rate
@@ -1548,7 +1795,9 @@ Orders are not manually created here – they come from POS Terminal:\n- Each co
 **Dashboard Integration:**
 - Each new order immediately updates dashboard metrics
 - Today's sales, order count, average value calculated real-time
-\n#### 4.6.5Validation and Security
+- **Credit sales tracked separately**
+
+#### 4.6.5 Validation and Security
 Only users with Manager or Admin role can:
 - Cancel orders\n- Delete orders (if allowed at all)
 \nChanges to orders (cancel, return) should be logged:\n- who, when, what changed
@@ -1560,6 +1809,9 @@ Only users with Manager or Admin role can:
   - Voided – grey
   - Refunded – dark yellow
   - Partially Refunded – light yellow
+  - **On Credit – blue**
+  - **Paid – green**
+  - **Partially Paid – light blue**
 - Mobile/Tablet friendly (but optimized for desktop)
 \n### 4.7 Sales Returns Module
 
@@ -1576,8 +1828,7 @@ Only users with Manager or Admin role can:
 **Features:**
 - Search by return number or order number
 - Filters:
-  - Date range
-  - Customer
+  - Date range\n  - Customer
   - Cashier
   - Status\n- Pagination
 - Export to Excel and PDF
@@ -1593,15 +1844,16 @@ User can:\n- Search by order number\n- Scan receipt barcode (optional)
 - Order number
 - Customer\n- Cashier
 - Date\n- Total amount
-\n**Step 2 — Products to Return Table**
+- **Payment status (if order was on credit)**
+
+**Step 2 — Products to Return Table**
 Auto-load all order products into table:\n\n**Columns:**
 - Product name
 - SKU\n- Quantity sold
 - Return quantity (editable)
 - Unit price
 - Line total (auto-calculate)
-
-**Validation:**
+\n**Validation:**
 - Return quantity cannot exceed sold quantity
 - If return quantity = 0 → skip product
 \n**Auto-calculations:**
@@ -1611,21 +1863,19 @@ Show:
 - Returned products subtotal
 - Taxes (if used)
 - Total return amount
-- Customer's new balance (if customer exists)
-
-**Step 4 — Additional Fields**
+- **Customer's new balance (if customer exists and order was on credit)**
+\n**Step 4 — Additional Fields**
 - Return reason (select: damaged, wrong product, customer dissatisfaction, etc.)
 - Notes (optional)
 \n**Step 5 — Actions**
-- Submit return → inventory increases, order updated
+- Submit return → inventory increases, order updated, **customer balance decreased (if order was on credit)**
 - Cancel\n- Optional: Print return receipt\n
 #### 4.7.3 Sales Return Detail Page
 Detail view should show:
 \n**Overview:**
 - Return number
 - Related order number
-- Customer
-- Cashier
+- Customer\n- Cashier
 - Date and time
 - Status badge
 - Return reason
@@ -1640,10 +1890,11 @@ Detail view should show:
 - Total returned amount
 - Order's previous total
 - Order's new total
-- Customer's updated balance
+- **Customer's updated balance (if applicable)**
 
 **Actions:**
-- Print return receipt\n- Export to PDF
+- Print return receipt
+- Export to PDF
 - Cancel return (only if inventory not yet restored)
 
 #### 4.7.4 Inventory Integration (Mandatory)
@@ -1656,15 +1907,15 @@ Implement correct stock logic:
 **Log Movement:**
 Each return creates inventory record:
 - type: 'Sales Return'
-- product_id\n- quantity (+)
-- related_return_number
-- date\n- performed_by (user)
-\n#### 4.7.5 Orders Integration\n**Order detail should show list of related returns**\n
+- product_id\n- quantity (+)\n- related_return_number
+- date\n- performed_by (user)\n\n#### 4.7.5 Orders Integration\n**Order detail should show list of related returns**
+
 **Order total should be updated after return:**
 - updated_order_total = original_total - returned_amount
 
 **Order Status:**
-- If all products returned → 'Refunded'\n- If partially returned → 'Partially Refunded'
+- If all products returned → 'Refunded'
+- If partially returned → 'Partially Refunded'
 - If no returns → stays 'Completed'
 
 #### 4.7.6 Payments Integration
@@ -1673,9 +1924,8 @@ If return amount should be refunded:
 **System should show suggested refund amount**
 
 Cashier selects refund method:
-- Cash
-- Card
-- Customer account balance
+- Cash\n- Card
+- **Customer account balance (reduce debt)**
 
 **Refund should create:**
 - payment_type: Refund
@@ -1683,15 +1933,16 @@ Cashier selects refund method:
 - method: selected method
 \n#### 4.7.7 Customers Integration
 If customer is linked:\n
-**Customer balance increases by returned amount (if balance refund type)**
-
-**Customer profile shows:**
+**Customer balance decreases by returned amount (if original order was on credit)**
+\n**Customer profile shows:**
 - Related returns\n- Returned products
 - Return history
 \n**Customer statistics automatically updated:**
 - Total purchases amount decreases
 - Returns count increases
-\n#### 4.7.8 Reports Integration
+- **Balance decreases (if order was on credit)**
+
+#### 4.7.8 Reports Integration
 Sales Returns should appear in:
 \n**Sales Reports:**
 - Total returned amount
@@ -1699,8 +1950,7 @@ Sales Returns should appear in:
 \n**Inventory Reports:**
 - Returned products
 - Adjustments from returns
-
-**Employee Reports:**
+\n**Employee Reports:**
 - Returns processed by cashier
 \n#### 4.7.9 UI/UX Requirements
 - Clean table view
@@ -1709,13 +1959,14 @@ Sales Returns should appear in:
 - Status color codes:\n  - Pending → Blue
   - Completed → Green
   - Cancelled → Red
-\n#### 4.7.10Numbering Policy (Mandatory)
+\n#### 4.7.10 Numbering Policy (Mandatory)
 **Return Numbering:**
 - Format: RET-YYYYMMDD-#####
 - Example: RET-20251205-00023
 
 **Order-based link ensures traceability**
-\n#### 4.7.11 Delete and Cancel Restrictions
+
+#### 4.7.11 Delete and Cancel Restrictions
 - Only Manager and Admin can cancel or delete returns
 - Cannot cancel return if inventory already updated
 - All changes logged to audit log
@@ -1727,12 +1978,14 @@ Sales Returns should appear in:
 - How much amount returned
 - Which method used for refund
 - Who cancelled (if cancelled)
+- **Customer balance adjustment (if applicable)**
 
 ### 4.8 Payments\n- Multiple payment methods\n- Partial payment capability
 - Terminal integration
 - Advance payment (for debtor customers)
 - Payment details: number, date, amount, type, note
-- Refund payments\n- Customer balance integration
+- Refund payments\n- **Customer balance integration**
+- **Credit sales tracking**
 - Real-time read payment methods from Settings module
 - Each payment linked to order and customer
 - Payments auto-sync to dashboard and reports
@@ -1787,7 +2040,8 @@ interface Supplier {
 
 **Table Columns:**
 - Name – Supplier name
-- Phone – Phone number\n- Email – Email address
+- Phone – Phone number
+- Email – Email address
 - Status – Active / Inactive (colored badge)
 - Created Date – Creation date
 - Actions – View / Edit / Delete
@@ -1809,8 +2063,8 @@ interface Supplier {
 **Status Badge Colors:**
 - Active → Green\n- Inactive → Red
 \n#### 4.9.4 Create Supplier Page
+\n**Page: `/suppliers/new`**
 
-**Page: `/suppliers/new`**\n
 **Page Title:** Add New Supplier
 
 **Form Fields:**
@@ -1842,8 +2096,7 @@ interface Supplier {
 - Same fields as Create Supplier page
 \n**Validation:**
 - Same as Create Supplier page
-
-**Buttons:**
+\n**Buttons:**
 - **Save Changes** → Update supplier record, show success toast: 'Supplier updated', navigate to `/suppliers/:id`\n- **Cancel** → Navigate back to `/suppliers/:id` without saving
 
 **Error Handling:**
@@ -1856,7 +2109,8 @@ interface Supplier {
 **Page Title:** Supplier Detail
 
 **Header Section:**
-- Supplier name\n- Status badge (Active / Inactive)
+- Supplier name
+- Status badge (Active / Inactive)
 - Phone\n- Email
 - Address\n- Notes
 - Created date
@@ -1921,8 +2175,7 @@ interface Supplier {
 - When typing in supplier dropdown, show matching suppliers from database
 - If no match found → show option: 'Create new supplier: [typed name]'
 - Clicking this option opens'Add New Supplier' modal with name pre-filled
-
-**D) Supplier Display in PO Detail Page**
+\n**D) Supplier Display in PO Detail Page**
 
 **Location:** `/purchase-orders/:id`
 
@@ -1945,8 +2198,7 @@ interface PurchaseOrder {
   status: 'Draft' | 'Pending' | 'Received' | 'Cancelled';\n  order_date: string;
   expected_date?: string;
   total_cost: number;
-  notes?: string;
-  created_by: string;
+  notes?: string;\n  created_by: string;
   created_at: string;
   updated_at: string;
 }
@@ -1970,7 +2222,8 @@ interface PurchaseOrder {
 
 **Status Badge Colors:**
 - Active → Green
-- Inactive → Red\n\n**Modal Design:**
+- Inactive → Red\n
+**Modal Design:**
 - Clean, centered modal for'Add New Supplier'\n- Overlay background with blur effect
 - Close button (X) in top-right corner\n- Form fields same as main supplier creation page
 
@@ -2068,9 +2321,9 @@ interface PurchaseOrder {
    - Verify: Navigated to supplier detail page\n
 9. **Search suppliers in list page:**
    - Type supplier name in search box
-   - Verify: Matching suppliers displayed\n
-10. **Filter suppliers by status:**
-    - Select'Active' or 'Inactive' filter
+   - Verify: Matching suppliers displayed
+
+10. **Filter suppliers by status:**\n    - Select 'Active' or 'Inactive' filter
     - Verify: Only suppliers with selected status displayed
 
 #### 4.9.13 Integration with Other Modules
@@ -2088,11 +2341,11 @@ interface PurchaseOrder {
 **Dashboard:**
 - Active suppliers count (optional)
 - Top suppliers by purchase volume (optional)
-
-#### 4.9.14 Final Delivery Requirements
+\n#### 4.9.14 Final Delivery Requirements
 
 **AI should create a fully functional Suppliers module:**
-\n✔ Complete CRUD operations (Create, Read, Update, Delete)\n✔ Supplier list page with search, filter, pagination
+
+✔ Complete CRUD operations (Create, Read, Update, Delete)\n✔ Supplier list page with search, filter, pagination
 ✔ Supplier detail page with purchase orders list
 ✔ Create and edit supplier pages with validation
 ✔ Full integration with Purchase Orders module:\n  - Supplier dropdown in PO creation/editing
@@ -2124,15 +2377,15 @@ interface PurchaseOrder {
 #### 4.10.2 Purchase Order Data Model
 
 **Database Tables:**
-\n**`purchase_orders` table:**
-- id (primary key)\n- po_number (format: PO-YYYYMMDD-#####, e.g., PO-20251206-00015)
+
+**`purchase_orders` table:**
+- id (primary key)
+- po_number (format: PO-YYYYMMDD-#####, e.g., PO-20251206-00015)
 - **supplier_id (foreign key to suppliers table, required)**
 - status (Draft / Pending / Received / Cancelled)
 - order_date (date)
 - expected_date (date, optional)
-- total_cost (numeric)
-- notes (text, optional)
-- created_by (user_id)
+- total_cost (numeric)\n- notes (text, optional)\n- created_by (user_id)
 - created_at (timestamp)
 - updated_at (timestamp)
 
@@ -2176,8 +2429,7 @@ interface PurchaseOrder {
 Implement a single-page or multi-step form:\n\n**Section 1: Basic Info**
 - **Supplier** (required, dropdown from `suppliers` table with autosuggest search)
   - Only show Active suppliers
-  - Sort alphabetically
-  - **'+ Add Supplier' button** → opens modal to create new supplier
+  - Sort alphabetically\n  - **'+ Add Supplier' button** → opens modal to create new supplier
 - **Order Date** (required, default: today)
 - **Expected Date** (optional)\n- **Status** (Draft / Pending, default: Draft)
 - **Notes** (optional, textarea)
@@ -2374,8 +2626,7 @@ if (error) {
 
 1. **Create a Draft PO with2 products:**
    - Save as Draft.\n   - Verify: PO created, no stock changes.
-
-2. **Edit Draft PO:**
+\n2. **Edit Draft PO:**
    - Change quantity of one product.
    - Save.
    - Verify: PO updated, still no stock changes.
@@ -2419,8 +2670,8 @@ if (error) {
 **Products Module:**
 - Product selector in PO creation uses products table.
 - Unit cost defaults to product.purchase_price.
-\n**Suppliers Module:**
-- Supplier dropdown in PO creation uses suppliers table.
+
+**Suppliers Module:**\n- Supplier dropdown in PO creation uses suppliers table.
 - '+ Add Supplier' modal in PO creation/editing.
 - Supplier detail page shows list of purchase orders.
 - Supplier name in PO detail page is clickable link to supplier detail.
@@ -2469,7 +2720,8 @@ if (error) {
 - notes
 - created_by
 - created_at
-- updated_at\n
+- updated_at
+
 **Purchase Order Items Table Structure:**
 - id
 - purchase_order_id\n- product_id\n- quantity
@@ -2499,29 +2751,36 @@ if (error) {
 - Write to inventory movement\n- Inventory count number format: INV-YYYY-#####
 - All changes sync real-time to dashboard and reports
 - Full audit trail preserved\n
-### 4.12 Customers Module
-\n#### 4.12.1 Customers List Page
+### 4.12 Customers Module (Enhanced with Credit/Debt Management)
+
+#### 4.12.1 Customers List Page
 **Page Title:** Customers
 
 **Table Columns:**
 - name – Full name or company name
 - phone – Primary phone\n- type – Individual / Company
 - total_sales – Total purchases amount
-- balance – Current balance (positive = customer debt, negative = store debt/refund)
+- **balance – Current balance (positive = customer debt, negative = store debt/refund)**
 - last_order_date – Last purchase date
 - status – Active / Inactive
-- actions – View / Edit / Delete
-\n**Features:**
+- actions – View / Edit / Delete / **Receive Payment**
+
+**Features:**
 - Search by name / phone
 - Filters:\n  - Type (Individual / Company)
   - Status (Active / Inactive)
-  - Balance (In Debt / No Debt)
-- Sorting:
-  - Total sales\n  - Last order date
+  - **Balance (In Debt / No Debt / Credit Available)**
+- Sorting:\n  - Total sales\n  - Last order date
   - Name A–Z / Z–A
+  - **Balance (highest to lowest)**
 - Export to Excel / PDF
 - '+ Add Customer' button
-\n#### 4.12.2 Add / Edit Customer Form
+\n**Balance Display:**
+- **Positive balance (customer owes store):** Red or orange badge
+- **Zero balance:** Grey badge
+- **Negative balance (store owes customer):** Green badge
+
+#### 4.12.2 Add / Edit Customer Form
 **Basic Info:**
 - name (required)
 - type – Individual / Company
@@ -2532,51 +2791,58 @@ if (error) {
 - company_name (if different from main name)
 - tax_number / VAT / INN (optional but unique if set)
 \n**Financial Settings:**
-- credit_limit (optional)
-- allow_debt (yes/no)
-- initial_balance (default 0; only on creation)
-
-**Other:**
+- **credit_limit (optional, numeric, >= 0)**
+- **allow_debt (yes/no, default: yes)**\n- initial_balance (default0; only on creation)
+\n**Other:**
 - notes – free text\n- status – Active / Inactive
 \n**Validation:**
-- Name and phone required
-- Phone unique (no duplicates)
+- Name and phone required\n- Phone unique (no duplicates)
 - Tax number unique\n- Initial balance numeric
-- Credit limit numeric
+- **Credit limit numeric and >= 0**
+- **Balance must be numeric**
 
 **Buttons:** Save, Cancel\n
 #### 4.12.3 Customer Detail Page
 **Layout:** header with general info + tabs.\n
 **Header Block:**
 - Name + type badge
-- Phone, email\n- Address
-- Status\n- Credit limit
-- Current balance (with color):\n  - Red → customer owes store (positive balance)
-  - Green → store owes customer/refund/advance payment (negative)\n  - Grey → zero balance\n
+- Phone, email\n- Address\n- Status\n- **Credit limit**
+- **Current balance (with color):**
+  - **Red → customer owes store (positive balance)**
+  - **Green → store owes customer/refund/advance payment (negative)**
+  - **Grey → zero balance**
+- **Available credit (credit_limit - balance, if credit_limit is set)**
+
 **Key Metrics (cards):**
 - Total sales amount
 - Number of orders
 - Average order value
 - Total returns amount
 - Last order date
+- **Total credit sales amount**
+- **Total payments received**
 \n**Tab1 — Orders**
 Table:\n- Order number
 - Date
 - Total amount
 - Amount paid
+- **Credit amount**
+- **Payment status (Paid / On Credit / Partially Paid)**
 - Status
 - Actions → go to order detail
 
-**Tab 2 — Payments**
+**Tab 2 — Payments (NEW)**
 Table:
 - Date
 - Amount
 - Direction (Payment from customer / Refund to customer)\n- Method (Cash / Card / Transfer / Other)
 - Related order (if any)
-\nBalance calculated automatically based on orders + payments.
+- Notes
+- Actions → View receipt (optional)
 
-**Tab 3 — Returns**
-Table:
+**Balance calculated automatically based on orders + payments.**
+
+**Tab 3 — Returns**\nTable:
 - Return number
 - Date
 - Returned amount
@@ -2586,45 +2852,113 @@ Table:
 - System events:\n  - Customer created/updated
   - Credit limit change
   - Balance adjustments
-\n#### 4.12.4 POS Terminal Integration
+  - **Credit sales created**
+  - **Payments received**
+\n#### 4.12.4 NEW FEATURE: Receive Payment (Pay off debt)
+
+**Access:**
+- From Customer detail page: button `Receive Payment`
+- From Customers list page: action button for each customer
+- Optionally from POS Terminal (button near customer dropdown)
+
+**Modal or Page Fields:**
+- Amount (required, numeric > 0, cannot exceed current balance if you choose to restrict)\n- Payment method: Cash / Card / QR / Bank Transfer\n- Optional note
+- Optional reference number
+\n**Validation:**
+- Amount must be > 0
+- Amount cannot exceed current balance (configurable)
+- Payment method is required
+\n**On Submit (Transaction-Safe):**
+- Insert a record into `customer_payments` table:\n  - customer_id\n  - amount
+  - method
+  - note
+  - created_at
+  - created_by (user_id)
+- Decrease `customer.balance` by `amount`:\n  ```sql
+  UPDATE customers
+  SET balance = balance - amount\n  WHERE id = customer_id;
+  ```
+- Log transaction in audit log
+- Show success toast:\n  - 'Payment of300000 UZS received from Customer X. New balance: 950 000 UZS.'
+\n**Do NOT alter past paid orders; debt is tracked at customer level.**
+
+**Transaction Safety:**
+- All operations must run in a single database transaction
+- If any part fails, entire operation should roll back
+\n**Example Supabase RPC Function (Pseudocode):**
+\n```sql
+CREATE OR REPLACE FUNCTION receive_customer_payment(
+  customer_id UUID,
+  amount NUMERIC,\n  method TEXT,
+  note TEXT\n)\nRETURNS VOID AS $$
+BEGIN
+  -- Insert payment record
+  INSERT INTO customer_payments (customer_id, amount, method, note, created_at)\n  VALUES (customer_id, amount, method, note, NOW());
+  
+  -- Update customer balance
+  UPDATE customers SET balance = balance - amount WHERE id = customer_id;
+  
+  -- Log audit trail
+  INSERT INTO audit_logs(...) VALUES (...);
+END;
+$$ LANGUAGE plpgsql;\n```
+
+**Frontend Call:**
+\n```typescript
+const { error } = await supabase.rpc('receive_customer_payment', {\n  customer_id: customerId,
+  amount: paymentAmount,
+  method: paymentMethod,
+  note: paymentNote
+});\n\nif (error) {
+  toast.error('Failed to receive payment.');
+} else {
+  toast.success(`Payment of ${paymentAmount} UZS received. New balance: ${newBalance} UZS.`);\n}
+```
+
+#### 4.12.5 POS Terminal Integration
 From POS Terminal, cashier can:
 - Select existing customer
-- Quick-create customer (name + phone only)
+- Quick-create customer (name + phone + **credit limit**)
 \nAfter sale:
 - Order linked to customer
-- Balance updated if:\n  - Credit sale
-  - Overpayment / advance payment
+- **Balance updated if credit sale**
 - Customer statistics updated real-time
 
-#### 4.12.5 Balance and Debt Logic (Mandatory)
+#### 4.12.6 Balance and Debt Logic (Mandatory)
 **Balance Formula:**
-Balance = (Total orders for customer – Total payments from customer + Store refunds)\n
+Balance = (Total credit sales for customer – Total payments from customer + Store refunds)\n
 **Balance Interpretation:**
 - If balance > 0 → customer debt
 - If balance < 0 → store owes (advance payment or refund)
 \n**Show Warning When:**
 - New sale would exceed credit_limit
 - Customer has allow_debt = false and cashier tries credit sale
-\n#### 4.12.6 Reports Integration
+
+#### 4.12.7 Reports Integration
 Customers module feeds data to reports:
 - Top customers by sales
 - Most indebted customers
 - Customer activity by period
+- **Credit sales report**
+- **Customer payments report**
 
-#### 4.12.7 Permissions and Security
-**Admin/Manager:** full access (add, edit, delete, adjust balance)
-**Cashier:** view + create + edit basic fields, no delete, no direct balance edit
-\n**Delete customer only allowed if:**
+#### 4.12.8 Permissions and Security
+**Admin/Manager:** full access (add, edit, delete, adjust balance, receive payments)
+**Cashier:** view + create + edit basic fields, no delete, no direct balance edit, **can receive payments (if enabled)**
+
+**Delete customer only allowed if:**
 - No related orders, payments, or returns
 - Otherwise → mark as Inactive instead of physical delete
 
-#### 4.12.8 UI/UX Requirements
+#### 4.12.9 UI/UX Requirements
 - Clean, modern table view
 - Sticky search and filters panel
 - Colored badges for status and balance
 - Responsive layout (desktop optimized, tablet-friendly)
 - Fast navigation between customer → orders → payments and back
-\n#### 4.12.9 Technical Requirements
+- **Clear visual indicators for debt status**
+- **Prominent'Receive Payment' button**
+\n#### 4.12.10 Technical Requirements
 **Customers Table Structure:**
 - id\n- name
 - type (individual/company)
@@ -2633,31 +2967,68 @@ Customers module feeds data to reports:
 - address
 - company_name
 - tax_number
-- credit_limit
-- allow_debt
-- initial_balance
-- current_balance (calculated)
+- **credit_limit (numeric, nullable, >= 0)**
+- **allow_debt (boolean, default true)**
+- initial_balance\n- **current_balance (numeric, default 0, NOT NULL)**
 - notes
 - status
 - created_at
 - updated_at
 
-**Relationships:**
-- One-to-many with Orders
-- One-to-many with Payments
+**Customer Payments Table Structure (NEW):**
+- id (primary key)
+- customer_id (foreign key to customers.id)
+- amount (numeric, > 0)
+- method (text: Cash / Card / QR / Bank Transfer)
+- note (text, optional)
+- reference_number (text, optional)
+- created_at (timestamp)
+- created_by (user_id)
+\n**Relationships:**
+- One-to-many with Orders\n- **One-to-many with Customer Payments**
 - One-to-many with Returns
-- Auto-calculate balance\n\n### 4.13 Employees and Roles Module
+- Auto-calculate balance
+\n#### 4.12.11 Testing Scenarios
+
+1. **Create credit sale:**
+   - Select customer
+   - Create order on credit\n   - Verify: Customer balance increased
+\n2. **Receive payment:**
+   - Open'Receive Payment' modal
+   - Enter amount and method
+   - Submit\n   - Verify: Customer balance decreased
+   - Verify: Payment record created
+
+3. **View customer balance in detail page:**
+   - Navigate to customer detail
+   - Verify: Balance displayed with correct color
+   - Verify: Available credit calculated correctly
+
+4. **Attempt credit sale exceeding limit:**
+   - Select customer with credit_limit = 1 000 000 UZS
+   - Customer balance = 800 000 UZS
+   - Add products totaling 300 000 UZS
+   - Attempt credit sale\n   - Verify: Error message:'Credit limit exceeded for this customer.'
+
+5. **Return credited order:**
+   - Process return for credited order
+   - Verify: Customer balance decreased by returned amount
+\n6. **View customer payments history:**
+   - Navigate to customer detail → Payments tab
+   - Verify: All payments listed with correct amounts and methods
+
+### 4.13 Employees and Roles Module
 
 #### 4.13.1 Employees Main Page
 **Page Title:** Employees
 
 **Table Columns:**
-- Name – Full name\n- Role – Admin / Manager / Cashier\n- Phone – Phone number
+- Name – Full name
+- Role – Admin / Manager / Cashier\n- Phone – Phone number
 - Email – Email address
 - Status – Active / Disabled
 - Last login – Last login time
-- Actions – View, Edit, Deactivate
-
+- Actions – View, Edit, Deactivate\n
 **Features:**
 - Search by name, phone, or email
 - Filters:
@@ -2683,8 +3054,7 @@ Customers module feeds data to reports:
 - Create employee user record
 - Auto-assign permissions\n\n#### 4.13.3 Edit Employee Page
 **Editable Fields:**
-- Name
-- Role (Admin can only demote/promote managers/cashiers)
+- Name\n- Role (Admin can only demote/promote managers/cashiers)
 - Phone
 - Email
 - Status toggle
@@ -2696,20 +3066,21 @@ Customers module feeds data to reports:
 - Disable employee (soft delete)
 - Force logout (clear active session)
 
-#### 4.13.4 Employee Detail Page\n**Sections:**
+#### 4.13.4 Employee Detail Page
+**Sections:**
 \n**A) Profile Overview**
 - Name\n- Role badge
 - Contact info
 - Current status
 - Last login
 - Account created date
-
-**B) Performance Dashboard**
+\n**B) Performance Dashboard**
 - Total sales completed
 - Total revenue generated
 - Average order amount
 - Total returns processed
 - Net profit from sales
+- **Total credit sales processed**
 - Productivity index (AI calculated)
 
 **Charts:**
@@ -2730,12 +3101,13 @@ Audit trail:
 - Inventory adjustments
 - Price changes
 - Held orders saved/restored
+- **Credit sales created**
+- **Customer payments received**
 
 Each entry includes:\n- Timestamp
 - Action\n- Affected document ID
 - Description
-
-#### 4.13.5 POS Terminal Integration
+\n#### 4.13.5 POS Terminal Integration
 POS Terminal supports employee-based logic:
 \n**Login System:**
 - Login via username/password
@@ -2748,12 +3120,15 @@ POS Terminal supports employee-based logic:
 - Cannot edit settings
 - Cannot delete orders
 - Cannot change prices
-\n**Manager:**
+- **Can process credit sales (if enabled in settings)**
+- **Can receive customer payments (if enabled)**
+
+**Manager:**
 - Can approve discounts
 - Can override low-stock sales
 - Can approve returns
 \n**Admin:**
-- Full access\n\n#### 4.13.6Permissions & Security Layer
+- Full access\n\n#### 4.13.6 Permissions & Security Layer
 **Role-based Access:**
 \n**Admin:**
 - Full system access
@@ -2768,8 +3143,9 @@ POS Terminal supports employee-based logic:
 - Can approve critical actions
 
 **Cashier:**
-- Limited access
-- Can create sales, returns\n- Cannot view financial reports
+- Limited access\n- Can create sales, returns\n- **Can process credit sales (if enabled)**
+- **Can receive customer payments (if enabled)**
+- Cannot view financial reports
 - Cannot edit inventory
 
 **Backend Checks:**
@@ -2783,6 +3159,8 @@ System calculates:
 - Error rate (cancelled/voided orders)
 - Average checkout time
 - Peak working hours
+- **Credit sales processed**
+- **Customer payments received**
 
 **Visualization:**
 - Line charts\n- Bar charts
@@ -2806,8 +3184,7 @@ Export capability:
 - updated_at
 
 **Audit Log Table:**
-- employee_id
-- action_type
+- employee_id\n- action_type
 - description
 - document_id
 - timestamp
@@ -2827,8 +3204,7 @@ Export capability:
 - Loading states and skeletons
 - Empty state placeholders
 - Fast navigation between employee → orders → activity and back
-
-#### 4.13.11 Permissions\n**Admin:**
+\n#### 4.13.11Permissions\n**Admin:**
 - Full access to all employee operations
 - Change roles\n- Delete employees
 \n**Manager:**
@@ -2839,10 +3215,10 @@ Export capability:
 **Cashier:**
 - View own profile only
 - No edit rights
-\n### 4.14 Reports Module
+\n### 4.14 Reports Module (Enhanced with Credit/Debt Tracking)
 
-#### 4.14.1 Reports Main Page
-**Page Title:** Reports\n
+#### 4.14.1 Reports Main Page\n**Page Title:** Reports
+
 **Page Sections (card view with icons):**
 - Sales Reports
 - Inventory Reports
@@ -2850,6 +3226,7 @@ Export capability:
 - Supplier Reports
 - Employee Reports
 - Financial Reports
+- **Customer Debt Reports (NEW)**
 - Export Center
 
 #### 4.14.2 Sales Reports
@@ -2857,18 +3234,25 @@ Export capability:
 \n**Table Columns:**
 - Invoice number
 - Date/time
-- Cashier\n- Payment type (Cash / Card / Mixed)
+- Cashier\n- Payment type (Cash / Card / Mixed / **Credit**)
 - Total sale\n- Profit
 - Status (Completed / Returned / Cancelled)
+- **Payment status (Paid / On Credit / Partially Paid)**
 \n**Filters:**
-- Date range\n- Cashier
+- Date range
+- Cashier
 - Payment type
 - Status
+- **Payment status**
 
 **Summary Metrics:**
-- Total sales\n- Total profit
+- Total sales
+- Total profit
 - Total returns
-- Average order value\n\n**Export:**
+- Average order value
+- **Total credit sales**
+- **Total cash sales**
+\n**Export:**
 - Excel and PDF\n\n**Real-time Synchronization:**
 - All metrics automatically updated from orders and returns modules
 \n**4.14.2.2 Product Sales Report**
@@ -2894,11 +3278,15 @@ Export capability:
 - Customer\n- Total purchases
 - Number of orders
 - Average order value
-- Outstanding balance
+- **Outstanding balance**
+- **Total credit sales**
+- **Total payments received**
 
 **Filters:**
 - Customer name
-- Date\n\n#### 4.14.3 Inventory Reports
+- Date\n- **Balance status (In Debt / No Debt)**
+
+#### 4.14.3 Inventory Reports
 
 **4.14.3.1 Stock Levels Report**
 
@@ -2908,9 +3296,9 @@ Export capability:
 - Current stock
 - Minimum stock
 - Stock status (Low / OK / Out of stock)
-
-**Features:**
-- Auto color indicators\n- Excel and PDF export
+\n**Features:**
+- Auto color indicators
+- Excel and PDF export
 \n**4.14.3.2 Inventory Movement Report**
 
 **Table Columns:**
@@ -2976,7 +3364,8 @@ Export capability:
 \n**Table Columns:**
 - Supplier name
 - Total purchase orders
-- Total purchase amount\n- Average order value
+- Total purchase amount
+- Average order value
 - On-time delivery rate (optional)
 - Number of returns to supplier (optional)
 
@@ -2995,6 +3384,8 @@ Export capability:
 - Total profit
 - Mistakes / voided orders
 - Working hours (optional)
+- **Total credit sales processed**
+- **Total customer payments received**
 
 **4.14.6.2 Login Activity Log**
 
@@ -3002,8 +3393,7 @@ Export capability:
 - Employee
 - Login time
 - Logout time
-- Duration
-- IP address
+- Duration\n- IP address
 
 #### 4.14.7 Financial Reports
 
@@ -3015,7 +3405,8 @@ Export capability:
 - Net sales
 - Cost of goods sold - COGS
 - Gross profit
-- Returns\n- Final profit
+- Returns\n- **Credit sales (tracked separately)**
+- Final profit
 
 **Time Periods:**
 - Daily
@@ -3028,30 +3419,99 @@ Export capability:
 - Cash %
 - Card %
 - Mixed payments %
+- **Credit %**
 \n**Table:**
 - Payment type
 - Number of transactions
-- Total amount\n\n#### 4.14.8 Dashboard Analytics (Optional Add-on)
+- Total amount\n\n#### 4.14.8 Customer Debt Reports (NEW)
+
+**4.14.8.1 Outstanding Debt Report**
+
+**Table Columns:**
+- Customer name
+- Phone\n- Current balance
+- Credit limit
+- Available credit
+- Last order date
+- Last payment date
+- Days since last payment
+
+**Filters:**
+- Balance range (e.g., > 500 000 UZS)
+- Days since last payment (e.g., > 30 days)
+- Customer name
+
+**Summary Metrics:**
+- Total outstanding debt
+- Number of customers with debt
+- Average debt per customer
+- Total overdue debt (optional)
+
+**Export:**
+- Excel and PDF
+
+**4.14.8.2 Customer Payments Report**
+
+**Table Columns:**
+- Date
+- Customer name
+- Amount\n- Payment method
+- Reference number
+- Notes
+- Processed by (employee)\n
+**Filters:**\n- Date range
+- Customer name
+- Payment method
+- Employee\n
+**Summary Metrics:**
+- Total payments received
+- Number of payments\n- Average payment amount
+\n**Export:**
+- Excel and PDF
+
+**4.14.8.3 Credit Sales Report**
+
+**Table Columns:**
+- Order number
+- Date
+- Customer name
+- Total amount
+- Credit amount
+- Payment status
+- Days since order
+
+**Filters:**
+- Date range
+- Customer name
+- Payment status\n\n**Summary Metrics:**
+- Total credit sales
+- Number of credit orders
+- Average credit amount
+
+**Export:**
+- Excel and PDF
+
+#### 4.14.9 Dashboard Analytics (Optional Add-on)
 
 **Visual Charts:**
 - Sales chart by date
 - Profit chart\n- Top products\n- Stock alerts
 - Purchase trends
+- **Customer debt trends**
+- **Payment collection trends**
 
 **Chart Types:**
-- Bar chart
-- Line chart
-- Pie chart
-\n**Usage:**
+- Bar chart\n- Line chart
+- Pie chart\n\n**Usage:**
 - Recharts library
 - Responsive UI
-\n#### 4.14.9 Export Center
+\n#### 4.14.10 Export Center
 
 **Export support for each report:**
 - Excel
 - PDF
 - CSV
-\n#### 4.14.10Filters and Search (Global Logic)
+\n#### 4.14.11 Filters and Search (Global Logic)
 
 **Each report should support:**
 - Global quick search
@@ -3059,12 +3519,13 @@ Export capability:
 - Multi-select filters
 - Pagination
 - Sorting
-\n#### 4.14.11 Permissions
+\n#### 4.14.12 Permissions
 
 **Admin:**
 - Access to all reports
 \n**Manager:**
 - Access to sales, inventory, financial reports
+- **Access to customer debt reports**
 
 **Cashier:**
 - Access to personal performance report only
@@ -3072,24 +3533,24 @@ Export capability:
 **Audit Logging:**
 - View exports
 - Create reports
-\n#### 4.14.12 UI Requirements
+\n#### 4.14.13 UI Requirements
 
 - Clean professional layout
-- Consistent color scheme
-- Responsive design
+- Consistent color scheme\n- Responsive design
 - Mobile-friendly version
 - Sticky table header
 - Loading states and skeletons
 - Empty state placeholders
-\n#### 4.14.13 Real-time Synchronization
+\n#### 4.14.14 Real-time Synchronization
 - All reports receive real-time data from related modules
-- Any change (order, return, inventory adjustment) automatically updates reports
+- Any change (order, return, inventory adjustment, **credit sale, customer payment**) automatically updates reports
 - Dashboard metrics constantly synchronized
 
-### 4.15 Settings Module
+### 4.15 Settings Module (Enhanced with Credit Sales Settings)
 
 #### 4.15.1 Settings Main Page Layout
-**Page Title:** Settings\n
+**Page Title:** Settings
+
 **Page Structure:**
 Left or top tabs/sections navigation, right side forms.\n
 **Sections (Tabs):**
@@ -3101,8 +3562,10 @@ Left or top tabs/sections navigation, right side forms.\n
 6. Numbering & IDs
 7. User & Security
 8. Localization
-9. Backup & Data Management (optional)
-\n#### 4.15.2 Company Profile
+9. **Credit Sales Settings (NEW)**
+10. Backup & Data Management (optional)
+
+#### 4.15.2 Company Profile
 
 **Fields:**
 - Company name (required)
@@ -3122,7 +3585,8 @@ Company info used in:\n- Receipts
 \n**Global parameters for POS front:**
 - Default POS mode: Retail / Restaurant (enum only, for future)\n- Enable'Hold Order' feature (on/off)
 - Enable 'Mixed Payment' (on/off)
-- Enable 'Per-Product Discount' (on/off)\n- Require customer selection for credit sales (on/off)
+- Enable 'Per-Product Discount' (on/off)\n- **Enable 'Credit Sales' (on/off)**
+- Require customer selection for credit sales (on/off)
 - Automatically log out cashier after X minutes of inactivity
 - Show low-stock warning in POS (on/off)
 - Quick access buttons limit (e.g., 8 / 12 / 16 products on main screen)
@@ -3132,7 +3596,7 @@ Company info used in:\n- Receipts
 #### 4.15.4 Payments & Taxes
 
 **Payment Methods**\n\n**Configurable List:**
-- Default methods: Cash, Card, QR, Bank transfer
+- Default methods: Cash, Card, QR, Bank transfer, **Credit**
 - Capabilities:\n  - Enable/disable methods
   - Change labels (e.g., 'Terminal' instead of 'Card')
   - Add custom method (e.g., 'Debt', 'Wallet')
@@ -3152,12 +3616,12 @@ Company info used in:\n- Receipts
 **Parameters for receipt templates:**
 \n- Toggle: Auto print receipt after each sale (on/off)
 - Receipt header text (multi-line; e.g., 'Thank you for shopping')
-- Receipt footer text (return policy, contact info)
-- Show company logo on receipt (on/off)
+- Receipt footer text (return policy, contact info)\n- Show company logo on receipt (on/off)
 - Show cashier name (on/off)
 - Show customer name (on/off)
 - Show product SKU (on/off)
 - Show line discounts on receipt (on/off)
+- **Show payment status on receipt (on/off)**
 - Default receipt size: 58mm / 80mm
 - Test print button (placeholder)
 
@@ -3166,7 +3630,8 @@ Company info used in:\n- Receipts
 #### 4.15.6 Inventory Settings
 
 **Global inventory behavior:**
-\n- Enable inventory tracking (on/off)\n- Default minimal stock level for new products
+\n- Enable inventory tracking (on/off)
+- Default minimal stock level for new products
 - Allow selling when stock is zero or negative:\n  - Option: Block sale, Allow with warning, Allow without warning
 - Automatic cost calculation mode (for profit reports):
   - Latest purchase price
@@ -3176,8 +3641,7 @@ Company info used in:\n- Receipts
 - Inventory settings changes immediately applied to POS Terminal and Inventory module
 \n#### 4.15.7 Numbering & IDs\n
 **Settings for auto-generated numbers:**
-
-**Fields:**
+\n**Fields:**
 - Order number prefix (default: POS-)
 - Order number format: POS-YYYYMMDD-#####
 - Return number prefix (default: RET-)
@@ -3188,7 +3652,8 @@ Company info used in:\n- Receipts
 - Reset sequences (with confirmation modal)
 \n**All IDs must remain unique.**
 
-#### 4.15.8 User & Security\n
+#### 4.15.8 User & Security
+
 **Security Parameters:**
 
 - Minimum password length (default6)
@@ -3199,7 +3664,7 @@ Company info used in:\n- Receipts
 - Show list of roles (Admin, Manager, Cashier) with brief description
 - Link or info that roles are managed in Employees module
 \n**Audit:**
-- Switch'Enable activity logging' (on/off) — if enabled, log critical actions (orders, returns, inventory adjustments).
+- Switch'Enable activity logging' (on/off) — if enabled, log critical actions (orders, returns, inventory adjustments, **credit sales, customer payments**).
 \n#### 4.15.9 Localization
 
 **Fields:**
@@ -3208,20 +3673,41 @@ Company info used in:\n- Receipts
 - Default currency (UZS, USD, etc.)
 - Currency symbol position:\n  - Before amount (₩10000)\n  - After amount (10000 ₩)
 - Thousand separator and decimal separator options
+\n**These settings control formatting across all modules.**
 
-**These settings control formatting across all modules.**
+#### 4.15.10 Credit Sales Settings (NEW)
 
-#### 4.15.10 Backup & Data Management (Optional but Recommended)
+**Global Credit Sales Parameters:**
+
+- **Enable credit sales system-wide (on/off)**
+- **Default credit limit for new customers (numeric, optional)**
+- **Require customer selection for credit sales (on/off, default: on)**
+- **Allow cashiers to process credit sales (on/off)**
+- **Allow cashiers to receive customer payments (on/off)**
+- **Show customer debt warnings in POS (on/off)**\n- **Block credit sales when limit exceeded (on/off, default: on)**
+- **Send debt reminder notifications (on/off, future feature)**
+- **Debt reminder threshold (days, e.g., 30 days)**
+\n**Validation:**
+- Default credit limit must be >= 0
+- Debt reminder threshold must be > 0
+
+**Real-time Synchronization:**
+- Credit sales settings changes immediately applied to POS Terminal and Customers module
+
+#### 4.15.11 Backup & Data Management (Optional but Recommended)
 
 **Settings:**
 
-- Allow export of:\n  - Products\n  - Customers
+- Allow export of:\n  - Products
+  - Customers
   - Suppliers
   - Orders
   - Inventory movements
--'Download full backup' button (placeholder)
+  - **Customer payments**
+- 'Download full backup' button (placeholder)
 - Info text about where backups are stored
-\n#### 4.15.11 Permissions & Access
+
+#### 4.15.12 Permissions & Access
 
 **Only Admin role can view and modify Settings page.**
 
@@ -3231,14 +3717,14 @@ Company info used in:\n- Receipts
 - Validate fields
 - Show success or error toast
 - Write to audit log:\n  - user, time, which section changed
-\n#### 4.15.12 UI/UX Requirements
+\n#### 4.15.13 UI/UX Requirements
 
 - Clean card-based layout for each section
 - Left side panel or tabs for navigation between sections
 - Save / Cancel buttons fixed at bottom of viewport
 - Confirmation dialog when leaving page with unsaved changes
-- Clear tooltips explaining risky parameters (e.g., 'Allow negative stock')
-- Fully responsive (desktop priority, tablet-friendly)\n\n#### 4.15.13 Final AI Requirements
+- Clear tooltips explaining risky parameters (e.g., 'Allow negative stock', **'Block credit sales when limit exceeded'**)
+- Fully responsive (desktop priority, tablet-friendly)\n\n#### 4.15.14 Final AI Requirements
 
 **AI should create fully functional Settings module:**
 \n- Store configuration in central settings table / config store
@@ -3247,25 +3733,25 @@ Company info used in:\n- Receipts
   - Inventory\n  - Purchase Orders
   - Reports
   - Employees
+  - **Customers (credit sales)**
 - Allow Admin to securely view and update configuration with validation and audit logging
 - Use consistent UI with rest of POS system
 - All changes sync immediately system-wide
 
-## 5. Professional Features
-- Hold order (temporarily save receipt)
+## 5. Professional Features\n- Hold order (temporarily save receipt)
 - Split payment (multiple payment types)
 - Quick add product\n- Z-report and X-report
 - Cash drawer open/close
 - Shift-based accounting
 - Device binding\n- Full Sales Returns system
-- Full Customers system (balance, debt, credit limit)
+- Full Customers system (balance, debt, credit limit, **credit sales, customer payments**)
 - Full Inventory Management system (real-time tracking, movements, adjustments, alerts)
 - Full Purchase Orders system (create, approve, receive, inventory integration)
 - Full Suppliers system (create, edit, view, integrate with Purchase Orders)
 - Auto-sync with inventory\n- Audit trail and logs
-- Full Reports Module (Sales, Inventory, Purchase, Supplier, Employee, Financial analytics)
+- Full Reports Module (Sales, Inventory, Purchase, Supplier, Employee, Financial analytics, **Customer Debt Reports**)
 - Full Employees Module (create, edit, role-based permissions, performance analysis, time tracking, audit logs, POS integration)
-- Full Settings Module (Company Profile, POS Terminal, Payments & Taxes, Receipts, Inventory, Numbering, User & Security, Localization, Backup)\n- Real-time global synchronization across all modules
+- Full Settings Module (Company Profile, POS Terminal, Payments & Taxes, Receipts, Inventory, Numbering, User & Security, Localization, **Credit Sales Settings**, Backup)\n- Real-time global synchronization across all modules
 - Per-Product Discount\n- Enhanced Dashboard with date range selector, KPI cards, and analytics charts
 - **Premium POS Terminal with:**
   - Quick Category Tabs
@@ -3278,6 +3764,12 @@ Company info used in:\n- Receipts
   - Customer Info Badge
   - Quick Customer Create
   - Improved Notifications
+  - **Credit Sales Support**
+- **Customer Credit/Debt Management:**
+  - Track customer balances
+  - Credit limit enforcement
+  - Customer payment processing
+  - Debt reports and analytics
 \n## 6. Technical Requirements
 
 ### 6.1 UI/UX Requirements
@@ -3298,6 +3790,10 @@ Company info used in:\n- Receipts
   - Smooth animations and transitions
   - Clear visual hierarchy
   - Responsive layout for desktop and tablet
+- **Credit Sales UI:**
+  - Clear debt indicators
+  - Prominent payment buttons
+  - Color-coded balance displays
 \n### 6.2 Security\n- JWT or Session authentication
 - Role-based access control (RBAC)
 - Offline data encryption
@@ -3309,6 +3805,8 @@ Company info used in:\n- Receipts
 - Session management
 - IP tracking\n- Prevent deleting last admin account
 - Audit logging for all critical actions
+- **Credit sales transaction logging**
+- **Customer payment audit trail**
 
 ### 6.3 Integrations
 - Fiscal printer\n- Barcode scanner
@@ -3322,22 +3820,27 @@ Company info used in:\n- Receipts
 - Full integration with Reports Module
 - Full integration with Employees Module
 - Full integration with Settings Module
+- **Full integration with Customer Credit/Debt Management**
 - All modules sync real-time via centralized database
 
 ### 6.4 Database Architecture
 - Centralized single database
 - All modules read from and write to same data source
 - Real-time synchronization across all modules
-- Indexing for critical fields (SKU, order numbers, customer names, supplier names)
+- Indexing for critical fields (SKU, order numbers, customer names, supplier names, **customer balance**)
 - Optimized queries and caching
 - Audit trail for all critical actions
 - Held Orders table (pending_orders / held_orders)
-- Suppliers table\n\n### 6.5 Performance and Optimization
+- Suppliers table\n- **Customer Payments table**
+- **Enhanced Customers table with balance and credit_limit fields**
+- **Enhanced Orders table with payment_status, paid_amount, credit_amount fields**
+\n### 6.5 Performance and Optimization
 - Cache dashboard data for fast loading
 - Calculate heavy reports in background
 - Fast performance even with 10,000+ records
 - Real-time updates with minimal latency
 - Optimized database queries
+- **Index customer balance field for fast debt queries**
 - **Premium POS Terminal:**
   - Fast rendering of product search results
   - Smooth scrolling and interactions
@@ -3356,20 +3859,21 @@ Products, Categories, Inventory Management, Orders, Sales Returns, Purchase Orde
 - Inventory\n- Purchase Orders
 - Suppliers
 - Sales\n- Reports
-- Payments
-- Employees
+- Payments\n- Employees
 - Settings
 - Dashboard
 - Held Orders
-\n**Synchronization Rules:**
+- **Customer Credit/Debt Management**\n
+**Synchronization Rules:**
 - All operations are fully synchronized and auditable
-- Any change (order, return, inventory adjustment, settings update, supplier update) immediately reflects in all related modules
+- Any change (order, return, inventory adjustment, settings update, supplier update, **credit sale, customer payment**) immediately reflects in all related modules
 - Dashboard metrics updated real-time automatically
 - Reports always show latest data\n- Customer and employee statistics calculated automatically
 - Supplier statistics calculated automatically
 - Inventory stock updated after each transaction
 - Settings changes immediately affect system behavior
 - Held ordersdo not affect inventory or reports (only after payment is completed)
+- **Customer balances updated after each credit sale and payment**
 
 ## 9. Design Style\n- Modern and professional appearance, suitable for business environment
 - Primary colors: blue (#2563EB) and grey (#64748B) tones, white background (#FFFFFF)
@@ -3385,10 +3889,11 @@ Products, Categories, Inventory Management, Orders, Sales Returns, Purchase Orde
   - Refunded → Dark Yellow
   - Partially Refunded / Partially Paid / Partially Received → Light Yellow
   - Draft → Grey
+  - **On Credit → Blue**
 - Customer balance color codes:
-  - Red → customer owes (positive balance)
-  - Green → store owes/advance payment (negative balance)
-  - Grey → zero balance
+  - **Red → customer owes (positive balance)**
+  - **Green → store owes/advance payment (negative balance)**
+  - **Grey → zero balance**
 - Inventory movements color codes:
   - Positive (+) → Green
   - Negative (–) → Red
@@ -3403,8 +3908,7 @@ Products, Categories, Inventory Management, Orders, Sales Returns, Purchase Orde
   - Smooth animations and transitions
   - Color-coded status indicators
   - Modern, clean design
-
-## 10. Final Delivery Requirements
+\n## 10. Final Delivery Requirements
 
 AI should create a POS system with:
 \n✔ Fully integrated\n✔ Real-time synchronized
@@ -3429,50 +3933,102 @@ AI should create a POS system with:
   - Mixed Payments UX (Cash + Card split with validation)
   - Keyboard Shortcuts (ENTER, F2, F3, ESC, UP/DOWN, PLUS/MINUS, ALT+1-8)
   - Advanced Hold / Waiting Orders (named holds, side panel, visual priority)
-  - Customer Info Badge (VIP, Debt, New badges with tooltip)
+  - Customer Info Badge (VIP, Debt, New, Credit Available, Credit Exceeded badges with tooltip)
   - Quick Customer Create ('+' button next to customer dropdown)
   - Improved Notifications (clear success and error toasts)
+  - **Credit Sales Support (full credit sale capability with customer balance tracking)**
+✔ **Customer Credit/Debt Management:**
+  - Track customer balances
+  - Credit limit enforcement
+  - Customer payment processing
+  - Debt reports and analytics
+  - Full integration with POS Terminal, Orders, Returns, Reports, Dashboard
+\n---
 
----
-
-## Summary of Premium POS Terminal Upgrade
-
+## Summary of Customer Credit/Debt Feature\n
 **New Features Implemented:**
-\n1. **Quick Category Tabs** – Filter products by category with horizontal pills
-2. **Favorites / Hot Products Panel** – Quick access to 8 favorite products with keyboard shortcuts (ALT+1 to ALT+8)
-3. **On-screen Numpad** – For quantity and line discount input
-4. **Improved Per-Line Discount UX** – Quick percentage buttons (5%, 10%, 15%) and visual feedback
-5. **Mixed Payments UX** – Clear split payment interface with validation
-6. **Keyboard Shortcuts** – ENTER, F2, F3, ESC, UP/DOWN, PLUS/MINUS, ALT+1-8
-7. **Advanced Hold / Waiting Orders** – Named holds, side panel, visual priority indicators
-8. **Customer Info Badge** – VIP, Debt, New badges with tooltip
-9. **Quick Customer Create** – '+' button next to customer dropdown
-10. **Improved Notifications** – Clear success and error toasts
+\n1. **Credit Sales in POS Terminal:**
+   - Full credit sale option in payment modal
+   - Partial payment + credit (optional)\n   - Customer selection requirement
+   - Credit limit validation\n   - Real-time balance updates
+\n2. **Customer Balance Tracking:**
+   - Balance field in customers table
+   - Credit limit field (optional)
+   - Allow debt flag (optional)
+   - Automatic balance calculation
+\n3. **Customer Payment Processing:**
+   - Receive Payment modal/page
+   - Multiple payment methods\n   - Transaction-safe operations
+   - Audit trail logging
 
-**All existing features preserved and working:**
-- Product search and barcode scanning
-- Shopping cart with quantity controls
-- Per-line discounts
-- Order-level discount\n- Hold Orders\n- Process Payment
-- Customer selection
-- Full integration with Products, Orders, Inventory, Customers, Dashboard\n\n**Technical Implementation:**
-- Respect existing TypeScript types and Supabase schema
-- Do NOT break:\n  - Stock synchronization
-  - Orders creation
-  - Returns\n  - Purchase Orders integration
-  - Dashboard metrics
-  - Existing backend logic for orders, stock, payments, and returns
-  - Existing routes and navigation
-  - Authentication and authorization logic
-- Write clean, well-structured React components
-- Reuse shadcn/ui where possible
-- Follow existing code style and conventions
-- Focus only on the POS Terminal page UI/UX and small frontend-only enhancements that integrate with the current backend
+4. **Enhanced Customer Module:**
+   - Balance column in customers list
+   - Debt status badges
+   - Payments tab in customer detail
+   - Credit sales history
+
+5. **Dashboard Integration:**
+   - Total Customer Debt KPI card
+   - Top Debtors chart (optional)
+   - Real-time debt tracking
+\n6. **Reports Integration:**
+   - Outstanding Debt Report
+   - Customer Payments Report
+   - Credit Sales Report
+   - Enhanced sales reports with payment status
+
+7. **Settings Integration:**
+   - Credit Sales Settings section
+   - Enable/disable credit sales
+   - Default credit limit
+   - Cashier permissions
+
+**Database Changes:**
+\n- **customers table:**
+  - balance (numeric, default 0, NOT NULL)
+  - credit_limit (numeric, nullable)
+  - allow_debt (boolean, default true, optional)
+\n- **orders table:**
+  - payment_status (enum: PAID / ON_CREDIT / PARTIALLY_PAID)\n  - paid_amount (numeric, default 0)\n  - credit_amount (numeric, default 0)
+\n- **customer_payments table (NEW):**
+  - id (primary key)
+  - customer_id (foreign key)
+  - amount (numeric)
+  - method (text)
+  - note (text, optional)
+  - reference_number (text, optional)
+  - created_at (timestamp)
+  - created_by (user_id)
+\n**Technical Implementation:**
+
+- Transaction-safe operations (RPC functions)
+- Real-time synchronization across all modules
+- Audit trail for all credit sales and payments
+- Validation at UI, API, and database levels
+- Error handling with clear user messages
+- TypeScript types for all new interfaces
+\n**Testing Checklist:**
+
+1. Create full credit sale\n2. Receive customer payment
+3. View customer balance in POS Terminal
+4. Attempt credit sale exceeding limit
+5. Return credited order
+6. View customer payments history
+7. View debt reports
+8. Test transaction rollback on error
+9. Test permissions (cashier vs admin)
+10. Test real-time dashboard updates
 
 **Delivery Summary:**
-\nWhen implementation is complete, provide:
+
+When implementation is complete, provide:
+- List of database migrations created
+- List of RPC functions created
 - List of components created/modified
-- How to use the new features
+- How to use the new credit sales features
 - Any new environment variables or configs (if added)
 - Testing checklist for new features
 - Known limitations or next steps for future improvements
+
+---
+\n**Note:** This updated requirements document includes all existing POS system features plus the new Customer Credit/Debt Management feature. All modules are fully integrated and synchronized in real-time. The system is production-ready and follows best practices for security, performance, and user experience.

@@ -10,6 +10,7 @@ import type {
   Order,
   OrderItem,
   Payment,
+  CustomerPayment,
   SalesReturn,
   SalesReturnItem,
   InventoryMovement,
@@ -548,7 +549,7 @@ export const getCustomerOrders = async (customerId: string) => {
   return Array.isArray(data) ? data : [];
 };
 
-export const getCustomerPayments = async (customerId: string) => {
+export const getCustomerOrderPayments = async (customerId: string) => {
   const { data: orders } = await supabase
     .from('orders')
     .select('id')
@@ -2095,5 +2096,147 @@ export const getTopProducts = async (startDate: Date, endDate: Date, limit: numb
   } catch (error) {
     console.error('Exception fetching top products:', error);
     return [];
+  }
+};
+
+// ==================== CUSTOMER CREDIT / DEBT FUNCTIONS ====================
+
+export const createCreditOrder = async (orderData: {
+  customer_id: string;
+  cashier_id: string;
+  shift_id: string | null;
+  items: Array<{
+    product_id: string;
+    product_name: string;
+    quantity: number;
+    unit_price: number;
+    subtotal: number;
+    discount_amount: number;
+    total: number;
+  }>;
+  subtotal: number;
+  discount_amount: number;
+  discount_percent: number;
+  tax_amount: number;
+  total_amount: number;
+  notes?: string;
+}): Promise<{ success: boolean; order_id?: string; order_number?: string; new_balance?: number; error?: string }> => {
+  try {
+    const { data, error } = await supabase.rpc('create_credit_order', {
+      p_customer_id: orderData.customer_id,
+      p_cashier_id: orderData.cashier_id,
+      p_shift_id: orderData.shift_id,
+      p_items: orderData.items,
+      p_subtotal: orderData.subtotal,
+      p_discount_amount: orderData.discount_amount,
+      p_discount_percent: orderData.discount_percent,
+      p_tax_amount: orderData.tax_amount,
+      p_total_amount: orderData.total_amount,
+      p_notes: orderData.notes || null,
+    });
+
+    if (error) {
+      console.error('Error creating credit order:', error);
+      return { success: false, error: error.message };
+    }
+
+    return data as { success: boolean; order_id?: string; order_number?: string; new_balance?: number; error?: string };
+  } catch (error) {
+    console.error('Exception creating credit order:', error);
+    return { success: false, error: 'Failed to create credit order' };
+  }
+};
+
+export const receiveCustomerPayment = async (paymentData: {
+  customer_id: string;
+  amount: number;
+  payment_method: 'cash' | 'card' | 'qr';
+  reference_number?: string;
+  notes?: string;
+  received_by?: string;
+}): Promise<{ success: boolean; payment_number?: string; old_balance?: number; new_balance?: number; error?: string }> => {
+  try {
+    const { data, error } = await supabase.rpc('receive_customer_payment', {
+      p_customer_id: paymentData.customer_id,
+      p_amount: paymentData.amount,
+      p_payment_method: paymentData.payment_method,
+      p_reference_number: paymentData.reference_number || null,
+      p_notes: paymentData.notes || null,
+      p_received_by: paymentData.received_by || null,
+    });
+
+    if (error) {
+      console.error('Error receiving customer payment:', error);
+      return { success: false, error: error.message };
+    }
+
+    return data as { success: boolean; payment_number?: string; old_balance?: number; new_balance?: number; error?: string };
+  } catch (error) {
+    console.error('Exception receiving customer payment:', error);
+    return { success: false, error: 'Failed to receive payment' };
+  }
+};
+
+export const getCustomerPayments = async (customerId: string): Promise<CustomerPayment[]> => {
+  try {
+    const { data, error } = await supabase
+      .from('customer_payments')
+      .select('*')
+      .eq('customer_id', customerId)
+      .order('created_at', { ascending: false });
+
+    if (error) {
+      console.error('Error fetching customer payments:', error);
+      return [];
+    }
+
+    return Array.isArray(data) ? data : [];
+  } catch (error) {
+    console.error('Exception fetching customer payments:', error);
+    return [];
+  }
+};
+
+export const getCustomersWithDebt = async (): Promise<Customer[]> => {
+  try {
+    const { data, error } = await supabase
+      .from('customers')
+      .select('*')
+      .gt('balance', 0)
+      .eq('status', 'active')
+      .order('balance', { ascending: false });
+
+    if (error) {
+      console.error('Error fetching customers with debt:', error);
+      return [];
+    }
+
+    return Array.isArray(data) ? data : [];
+  } catch (error) {
+    console.error('Exception fetching customers with debt:', error);
+    return [];
+  }
+};
+
+export const getTotalCustomerDebt = async (): Promise<number> => {
+  try {
+    const { data, error } = await supabase
+      .from('customers')
+      .select('balance')
+      .gt('balance', 0)
+      .eq('status', 'active');
+
+    if (error) {
+      console.error('Error fetching total customer debt:', error);
+      return 0;
+    }
+
+    if (!Array.isArray(data)) return 0;
+
+    const total = data.reduce((sum, customer) => sum + (Number(customer.balance) || 0), 0);
+    return total;
+  } catch (error) {
+    console.error('Exception fetching total customer debt:', error);
+    return 0;
   }
 };
