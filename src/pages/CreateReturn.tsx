@@ -52,7 +52,7 @@ export default function CreateReturn() {
   // Step 3: Additional Info
   const [reason, setReason] = useState('');
   const [notes, setNotes] = useState('');
-  const [refundMethod, setRefundMethod] = useState('');
+  const [refundMethod, setRefundMethod] = useState<'cash' | 'card' | 'credit' | ''>('');
 
   useEffect(() => {
     loadOrders();
@@ -164,6 +164,16 @@ export default function CreateReturn() {
       return;
     }
     
+    // Validate refund method
+    if (!refundMethod) {
+      toast({
+        title: 'Refund Method Required',
+        description: 'Please select a refund method',
+        variant: 'destructive',
+      });
+      return;
+    }
+    
     // Validate refund amount
     const { totalRefund } = calculateTotals();
     if (totalRefund <= 0) {
@@ -182,9 +192,9 @@ export default function CreateReturn() {
         order_id: selectedOrder.id,
         customer_id: selectedOrder.customer_id,
         total_amount: totalRefund,
+        refund_method: refundMethod as 'cash' | 'card' | 'credit',
         reason: reason.trim(),
         notes: notes.trim() || null,
-        refund_method: refundMethod || null,
         items: itemsToReturn.map(item => ({
           product_id: item.product_id,
           quantity: item.return_quantity,
@@ -427,18 +437,22 @@ export default function CreateReturn() {
             </div>
 
             <div className="space-y-2">
-              <Label htmlFor="refund_method">Refund Method (Optional)</Label>
-              <Select value={refundMethod} onValueChange={setRefundMethod}>
-                <SelectTrigger>
+              <Label htmlFor="refund_method">
+                Refund Method <span className="text-destructive">*</span>
+              </Label>
+              <Select value={refundMethod} onValueChange={(value) => setRefundMethod(value as 'cash' | 'card' | 'credit')}>
+                <SelectTrigger className={!refundMethod ? 'border-destructive' : ''}>
                   <SelectValue placeholder="Select refund method" />
                 </SelectTrigger>
                 <SelectContent>
                   <SelectItem value="cash">Cash</SelectItem>
                   <SelectItem value="card">Card</SelectItem>
-                  <SelectItem value="store_credit">Store Credit</SelectItem>
-                  <SelectItem value="original_payment">Original Payment Method</SelectItem>
+                  <SelectItem value="credit">Store Credit</SelectItem>
                 </SelectContent>
               </Select>
+              {!refundMethod && (
+                <p className="text-sm text-destructive">Please select a refund method</p>
+              )}
             </div>
 
             <div className="space-y-2">
@@ -476,7 +490,7 @@ export default function CreateReturn() {
               </Button>
               <Button 
                 onClick={handleSubmit} 
-                disabled={loading || !reason || totalRefund <= 0}
+                disabled={loading || !reason || !refundMethod || totalRefund <= 0}
               >
                 {loading ? 'Creating...' : 'Submit Return'}
               </Button>

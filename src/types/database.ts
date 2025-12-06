@@ -150,6 +150,7 @@ export interface SalesReturn {
   customer_id: string | null;
   cashier_id: string;
   total_amount: number;
+  refund_method: 'cash' | 'card' | 'credit';
   status: string;
   reason: string;
   notes: string | null;

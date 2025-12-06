@@ -1354,9 +1354,9 @@ export const createSalesReturn = async (returnData: {
   order_id: string;
   customer_id: string | null;
   total_amount: number;
+  refund_method: 'cash' | 'card' | 'credit';
   reason: string;
   notes: string | null;
-  refund_method?: string | null;
   items: Array<{
     product_id: string;
     quantity: number;
@@ -1376,6 +1376,14 @@ export const createSalesReturn = async (returnData: {
     throw new Error('Refund amount must be greater than 0');
   }
   
+  if (!returnData.refund_method) {
+    throw new Error('Refund method is required');
+  }
+  
+  if (!['cash', 'card', 'credit'].includes(returnData.refund_method)) {
+    throw new Error('Invalid refund method. Must be cash, card, or credit');
+  }
+  
   if (!returnData.reason || returnData.reason.trim() === '') {
     throw new Error('Reason for return is required');
   }
@@ -1389,6 +1397,7 @@ export const createSalesReturn = async (returnData: {
     p_order_id: returnData.order_id,
     p_customer_id: returnData.customer_id,
     p_total_amount: returnData.total_amount,
+    p_refund_method: returnData.refund_method,
     p_reason: returnData.reason,
     p_notes: returnData.notes || null,
     p_cashier_id: user.id,

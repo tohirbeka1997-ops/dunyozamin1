@@ -133,6 +133,15 @@ export default function ReturnDetail() {
     return reasons[reason] || reason;
   };
 
+  const getRefundMethodLabel = (method: string) => {
+    const methods: Record<string, string> = {
+      cash: 'Cash',
+      card: 'Card',
+      credit: 'Store Credit',
+    };
+    return methods[method] || method;
+  };
+
   if (loading) {
     return (
       <div className="space-y-6">
@@ -285,6 +294,10 @@ export default function ReturnDetail() {
             <div>
               <Label className="text-muted-foreground">Reason for Return</Label>
               <p className="font-medium">{getReasonLabel(returnData.reason)}</p>
+            </div>
+            <div>
+              <Label className="text-muted-foreground">Refund Method</Label>
+              <p className="font-medium">{getRefundMethodLabel(returnData.refund_method)}</p>
             </div>
             <div>
               <Label className="text-muted-foreground">Notes</Label>
