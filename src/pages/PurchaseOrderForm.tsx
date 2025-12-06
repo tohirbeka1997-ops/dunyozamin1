@@ -13,6 +13,14 @@ import {
   SelectValue,
 } from '@/components/ui/select';
 import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog';
+import {
   Table,
   TableBody,
   TableCell,
@@ -30,6 +38,8 @@ import {
   updatePurchaseOrder,
   receiveGoods,
   generatePONumber,
+  createSupplier,
+  searchSuppliers,
 } from '@/db/api';
 import type {
   Supplier,
@@ -38,7 +48,7 @@ import type {
   PurchaseOrder,
   PurchaseOrderStatus,
 } from '@/types/database';
-import { Plus, Trash2, Search, ArrowLeft, Save, Package } from 'lucide-react';
+import { Plus, Trash2, Search, ArrowLeft, Save, Package, UserPlus } from 'lucide-react';
 import { format } from 'date-fns';
 
 interface OrderItem {
@@ -73,6 +83,13 @@ export default function PurchaseOrderForm() {
   // Product search
   const [searchTerm, setSearchTerm] = useState('');
   const [showProductSearch, setShowProductSearch] = useState(false);
+
+  // Supplier modal
+  const [showSupplierModal, setShowSupplierModal] = useState(false);
+  const [newSupplierName, setNewSupplierName] = useState('');
+  const [newSupplierPhone, setNewSupplierPhone] = useState('');
+  const [newSupplierEmail, setNewSupplierEmail] = useState('');
+  const [creatingSupplier, setCreatingSupplier] = useState(false);
 
   useEffect(() => {
     loadInitialData();
@@ -212,6 +229,64 @@ export default function PurchaseOrderForm() {
     }
 
     return true;
+  };
+
+  const handleCreateSupplier = async () => {
+    if (!newSupplierName.trim()) {
+      toast({
+        title: 'Validation Error',
+        description: 'Supplier name is required',
+        variant: 'destructive',
+      });
+      return;
+    }
+
+    if (newSupplierEmail && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(newSupplierEmail)) {
+      toast({
+        title: 'Validation Error',
+        description: 'Invalid email format',
+        variant: 'destructive',
+      });
+      return;
+    }
+
+    try {
+      setCreatingSupplier(true);
+      const newSupplier = await createSupplier({
+        name: newSupplierName.trim(),
+        phone: newSupplierPhone.trim() || null,
+        email: newSupplierEmail.trim() || null,
+        contact_person: null,
+        address: null,
+        note: null,
+        status: 'active',
+      });
+
+      toast({
+        title: 'Success',
+        description: 'Supplier created successfully',
+      });
+
+      // Reload suppliers and select the new one
+      const updatedSuppliers = await getSuppliers();
+      setSuppliers(updatedSuppliers);
+      setSupplierId(newSupplier.id);
+      setSupplierName('');
+
+      // Reset modal
+      setShowSupplierModal(false);
+      setNewSupplierName('');
+      setNewSupplierPhone('');
+      setNewSupplierEmail('');
+    } catch (error: any) {
+      toast({
+        title: 'Error',
+        description: error.message || 'Failed to create supplier',
+        variant: 'destructive',
+      });
+    } finally {
+      setCreatingSupplier(false);
+    }
   };
 
   const handleSave = async (markAsReceived = false) => {
@@ -378,18 +453,31 @@ export default function PurchaseOrderForm() {
                   <Label htmlFor="supplier">
                     Supplier <span className="text-destructive">*</span>
                   </Label>
-                  <Select value={supplierId} onValueChange={setSupplierId} disabled={isReadOnly}>
-                    <SelectTrigger id="supplier">
-                      <SelectValue placeholder="Select supplier" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {suppliers.map((supplier) => (
-                        <SelectItem key={supplier.id} value={supplier.id}>
-                          {supplier.name}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
+                  <div className="flex gap-2">
+                    <Select value={supplierId} onValueChange={setSupplierId} disabled={isReadOnly}>
+                      <SelectTrigger id="supplier" className="flex-1">
+                        <SelectValue placeholder="Select supplier" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {suppliers.map((supplier) => (
+                          <SelectItem key={supplier.id} value={supplier.id}>
+                            {supplier.name}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                    {!isReadOnly && (
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="icon"
+                        onClick={() => setShowSupplierModal(true)}
+                        title="Add New Supplier"
+                      >
+                        <UserPlus className="h-4 w-4" />
+                      </Button>
+                    )}
+                  </div>
                 </div>
 
                 <div className="space-y-2">
@@ -648,6 +736,66 @@ export default function PurchaseOrderForm() {
           </Card>
         </div>
       </div>
+
+      {/* Add New Supplier Modal */}
+      <Dialog open={showSupplierModal} onOpenChange={setShowSupplierModal}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Add New Supplier</DialogTitle>
+            <DialogDescription>
+              Create a new supplier to add to your purchase order
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4 py-4">
+            <div className="space-y-2">
+              <Label htmlFor="new-supplier-name">
+                Supplier Name <span className="text-destructive">*</span>
+              </Label>
+              <Input
+                id="new-supplier-name"
+                value={newSupplierName}
+                onChange={(e) => setNewSupplierName(e.target.value)}
+                placeholder="Enter supplier name"
+              />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="new-supplier-phone">Phone</Label>
+              <Input
+                id="new-supplier-phone"
+                value={newSupplierPhone}
+                onChange={(e) => setNewSupplierPhone(e.target.value)}
+                placeholder="Enter phone number"
+              />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="new-supplier-email">Email</Label>
+              <Input
+                id="new-supplier-email"
+                type="email"
+                value={newSupplierEmail}
+                onChange={(e) => setNewSupplierEmail(e.target.value)}
+                placeholder="Enter email address"
+              />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => {
+                setShowSupplierModal(false);
+                setNewSupplierName('');
+                setNewSupplierPhone('');
+                setNewSupplierEmail('');
+              }}
+            >
+              Cancel
+            </Button>
+            <Button onClick={handleCreateSupplier} disabled={creatingSupplier}>
+              {creatingSupplier ? 'Creating...' : 'Create Supplier'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

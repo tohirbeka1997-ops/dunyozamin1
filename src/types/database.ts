@@ -38,7 +38,14 @@ export interface Supplier {
   phone: string | null;
   email: string | null;
   address: string | null;
+  note: string | null;
+  status: 'active' | 'inactive';
   created_at: string;
+  updated_at: string | null;
+}
+
+export interface SupplierWithPOs extends Supplier {
+  purchase_orders?: PurchaseOrder[];
 }
 
 export interface Product {

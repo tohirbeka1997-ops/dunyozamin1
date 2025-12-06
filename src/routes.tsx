@@ -17,6 +17,9 @@ import InventoryDetail from './pages/InventoryDetail';
 import PurchaseOrders from './pages/PurchaseOrders';
 import PurchaseOrderForm from './pages/PurchaseOrderForm';
 import PurchaseOrderDetail from './pages/PurchaseOrderDetail';
+import Suppliers from './pages/Suppliers';
+import SupplierForm from './pages/SupplierForm';
+import SupplierDetail from './pages/SupplierDetail';
 import SalesReturns from './pages/SalesReturns';
 import CreateReturn from './pages/CreateReturn';
 import EditReturn from './pages/EditReturn';
@@ -223,6 +226,38 @@ const routes: RouteConfig[] = [
     name: 'Purchase Order Detail',
     path: '/purchase-orders/:id',
     element: <PurchaseOrderDetail />,
+    visible: false,
+    requireAuth: true,
+    allowedRoles: ['admin', 'manager'],
+  },
+  {
+    name: 'Suppliers',
+    path: '/suppliers',
+    element: <Suppliers />,
+    visible: true,
+    requireAuth: true,
+    allowedRoles: ['admin', 'manager'],
+  },
+  {
+    name: 'New Supplier',
+    path: '/suppliers/new',
+    element: <SupplierForm />,
+    visible: false,
+    requireAuth: true,
+    allowedRoles: ['admin', 'manager'],
+  },
+  {
+    name: 'Edit Supplier',
+    path: '/suppliers/:id/edit',
+    element: <SupplierForm />,
+    visible: false,
+    requireAuth: true,
+    allowedRoles: ['admin', 'manager'],
+  },
+  {
+    name: 'Supplier Detail',
+    path: '/suppliers/:id',
+    element: <SupplierDetail />,
     visible: false,
     requireAuth: true,
     allowedRoles: ['admin', 'manager'],

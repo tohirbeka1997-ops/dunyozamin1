@@ -210,9 +210,25 @@ export default function PurchaseOrderDetail() {
                 </div>
                 <div>
                   <p className="text-sm text-muted-foreground">Supplier</p>
-                  <p className="font-medium">
-                    {purchaseOrder.supplier?.name || purchaseOrder.supplier_name || '-'}
-                  </p>
+                  {purchaseOrder.supplier_id ? (
+                    <Button
+                      variant="link"
+                      className="h-auto p-0 font-medium text-primary"
+                      onClick={() => navigate(`/suppliers/${purchaseOrder.supplier_id}`)}
+                    >
+                      {purchaseOrder.supplier?.name || purchaseOrder.supplier_name || '-'}
+                    </Button>
+                  ) : (
+                    <p className="font-medium">
+                      {purchaseOrder.supplier_name || '-'}
+                    </p>
+                  )}
+                  {purchaseOrder.supplier?.phone && (
+                    <p className="text-sm text-muted-foreground">{purchaseOrder.supplier.phone}</p>
+                  )}
+                  {purchaseOrder.supplier?.email && (
+                    <p className="text-sm text-muted-foreground">{purchaseOrder.supplier.email}</p>
+                  )}
                 </div>
                 <div>
                   <p className="text-sm text-muted-foreground">Order Date</p>

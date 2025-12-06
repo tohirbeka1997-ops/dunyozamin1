@@ -3,6 +3,7 @@ import type {
   Profile,
   Category,
   Supplier,
+  SupplierWithPOs,
   Product,
   Customer,
   Shift,
@@ -180,17 +181,56 @@ export const getProductsByCategoryId = async (categoryId: string) => {
 };
 
 // Supplier functions
-export const getSuppliers = async () => {
-  const { data, error } = await supabase
+export const getSuppliers = async (includeInactive = false) => {
+  let query = supabase
     .from('suppliers')
     .select('*')
     .order('name', { ascending: true });
+  
+  if (!includeInactive) {
+    query = query.eq('status', 'active');
+  }
+  
+  const { data, error } = await query;
   
   if (error) throw error;
   return Array.isArray(data) ? data as Supplier[] : [];
 };
 
-export const createSupplier = async (supplier: Omit<Supplier, 'id' | 'created_at'>) => {
+export const getSupplierById = async (id: string) => {
+  const { data, error } = await supabase
+    .from('suppliers')
+    .select(`
+      *,
+      purchase_orders:purchase_orders(*)
+    `)
+    .eq('id', id)
+    .maybeSingle();
+  
+  if (error) throw error;
+  if (!data) throw new Error('Supplier not found');
+  return data as SupplierWithPOs;
+};
+
+export const searchSuppliers = async (searchTerm: string, includeInactive = false) => {
+  let query = supabase
+    .from('suppliers')
+    .select('*')
+    .or(`name.ilike.%${searchTerm}%,phone.ilike.%${searchTerm}%,email.ilike.%${searchTerm}%`)
+    .order('name', { ascending: true })
+    .limit(10);
+  
+  if (!includeInactive) {
+    query = query.eq('status', 'active');
+  }
+  
+  const { data, error } = await query;
+  
+  if (error) throw error;
+  return Array.isArray(data) ? data as Supplier[] : [];
+};
+
+export const createSupplier = async (supplier: Omit<Supplier, 'id' | 'created_at' | 'updated_at'>) => {
   const { data, error } = await supabase
     .from('suppliers')
     .insert(supplier)
@@ -198,6 +238,7 @@ export const createSupplier = async (supplier: Omit<Supplier, 'id' | 'created_at
     .maybeSingle();
   
   if (error) throw error;
+  if (!data) throw new Error('Failed to create supplier');
   return data as Supplier;
 };
 
@@ -210,10 +251,24 @@ export const updateSupplier = async (id: string, updates: Partial<Supplier>) => 
     .maybeSingle();
   
   if (error) throw error;
+  if (!data) throw new Error('Failed to update supplier');
   return data as Supplier;
 };
 
 export const deleteSupplier = async (id: string) => {
+  // Check if supplier has any purchase orders
+  const { data: pos, error: checkError } = await supabase
+    .from('purchase_orders')
+    .select('id')
+    .eq('supplier_id', id)
+    .limit(1);
+  
+  if (checkError) throw checkError;
+  
+  if (pos && pos.length > 0) {
+    throw new Error('Cannot delete supplier with existing purchase orders');
+  }
+  
   const { error } = await supabase
     .from('suppliers')
     .delete()
