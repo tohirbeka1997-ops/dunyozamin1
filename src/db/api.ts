@@ -1507,3 +1507,71 @@ export const getEmployeePerformance = async (
   if (error) throw error;
   return Array.isArray(data) && data.length > 0 ? data[0] as EmployeePerformance : null;
 };
+
+// ==================== Settings Management ====================
+
+// Get all settings by category
+export const getSettingsByCategory = async (category: string) => {
+  const { data, error } = await supabase
+    .from('settings')
+    .select('*')
+    .eq('category', category)
+    .order('key', { ascending: true });
+  
+  if (error) throw error;
+  
+  // Convert to key-value object
+  const settings: Record<string, unknown> = {};
+  if (Array.isArray(data)) {
+    data.forEach((setting) => {
+      settings[setting.key] = setting.value;
+    });
+  }
+  
+  return settings;
+};
+
+// Get single setting value
+export const getSetting = async (category: string, key: string) => {
+  const { data, error } = await supabase.rpc('get_setting', {
+    p_category: category,
+    p_key: key,
+  });
+  
+  if (error) throw error;
+  return data;
+};
+
+// Update single setting
+export const updateSetting = async (
+  category: string,
+  key: string,
+  value: unknown,
+  updatedBy: string
+) => {
+  const { data, error } = await supabase.rpc('update_setting', {
+    p_category: category,
+    p_key: key,
+    p_value: value,
+    p_updated_by: updatedBy,
+  });
+  
+  if (error) throw error;
+  return data as boolean;
+};
+
+// Bulk update settings for a category
+export const bulkUpdateSettings = async (
+  category: string,
+  settings: Record<string, unknown>,
+  updatedBy: string
+) => {
+  const { data, error } = await supabase.rpc('bulk_update_settings', {
+    p_category: category,
+    p_settings: settings,
+    p_updated_by: updatedBy,
+  });
+  
+  if (error) throw error;
+  return data as number;
+};

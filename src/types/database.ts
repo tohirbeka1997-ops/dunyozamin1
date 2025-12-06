@@ -321,3 +321,99 @@ export interface EmployeePerformance {
   net_revenue: number;
   transaction_count: number;
 }
+
+// Settings
+export interface Setting {
+  id: string;
+  category: string;
+  key: string;
+  value: unknown;
+  description: string | null;
+  updated_by: string | null;
+  updated_at: string;
+  created_at: string;
+}
+
+export interface CompanySettings {
+  name: string;
+  legal_name: string;
+  logo_url: string;
+  address_country: string;
+  address_city: string;
+  address_street: string;
+  phone: string;
+  email: string;
+  website: string;
+  tax_id: string;
+}
+
+export interface POSSettings {
+  mode: 'retail' | 'restaurant';
+  enable_hold_order: boolean;
+  enable_mixed_payment: boolean;
+  require_customer_for_credit: boolean;
+  auto_logout_minutes: number;
+  show_low_stock_warning: boolean;
+  quick_access_limit: number;
+}
+
+export interface PaymentSettings {
+  methods: string[];
+  method_labels: Record<string, string>;
+}
+
+export interface TaxSettings {
+  enabled: boolean;
+  default_rate: number;
+  inclusive: boolean;
+  per_product_override: boolean;
+}
+
+export interface ReceiptSettings {
+  auto_print: boolean;
+  header_text: string;
+  footer_text: string;
+  show_logo: boolean;
+  show_cashier: boolean;
+  show_customer: boolean;
+  show_sku: boolean;
+  paper_size: '58mm' | '80mm';
+}
+
+export interface InventorySettings {
+  tracking_enabled: boolean;
+  default_min_stock: number;
+  allow_negative_stock: 'block' | 'allow_with_warning' | 'allow_without_warning';
+  cost_calculation: 'latest_purchase' | 'average_cost';
+  adjustment_approval_required: boolean;
+}
+
+export interface NumberingSettings {
+  order_prefix: string;
+  order_format: string;
+  return_prefix: string;
+  return_format: string;
+  purchase_prefix: string;
+  purchase_format: string;
+  movement_prefix: string;
+  movement_format: string;
+}
+
+export interface SecuritySettings {
+  min_password_length: number;
+  require_strong_password: boolean;
+  max_failed_attempts: number;
+  session_timeout_minutes: number;
+  allow_multiple_sessions: boolean;
+  enable_activity_logging: boolean;
+}
+
+export interface LocalizationSettings {
+  default_language: 'en' | 'uz' | 'ru';
+  available_languages: string[];
+  default_currency: string;
+  currency_symbol: string;
+  currency_position: 'before' | 'after';
+  thousand_separator: string;
+  decimal_separator: string;
+}

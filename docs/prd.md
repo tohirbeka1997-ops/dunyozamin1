@@ -30,7 +30,8 @@ Professional savdo nuqtalari uchun to'liq funksional POS tizimi. Tizim real vaqt
 - Kategoriya tugmalari orqali mahsulotlarni filtrlash
 - Rangli kategoriya belgilari va ikkonlar
 - Eng ko'p sotiladigan kategoriyalar yuqorida ko'rsatiladi
-- Mijozni tanlash yoki tezkor yaratish (ism + telefon)\n- Kredit savdo imkoniyati (mijoz ruxsati bo'lsa)
+- Mijozni tanlash yoki tezkor yaratish (ism + telefon)
+- Kredit savdo imkoniyati (mijoz ruxsati bo'lsa)
 - Xodim login/logout tizimi
 - Shift start/end tracking
 - Kassir-specific cheklovlar
@@ -45,11 +46,13 @@ Professional savdo nuqtalari uchun to'liq funksional POS tizimi. Tizim real vaqt
 - Xarid narxi
 - Sotuv narxi
 - Joriy qoldiq
-- Status (Faol / Nofaol)\n- Amallar (Ko'rish, Tahrirlash, O'chirish)
+- Status (Faol / Nofaol)
+- Amallar (Ko'rish, Tahrirlash, O'chirish)
 \n**Funksiyalar:**
 - Qidiruv: nom, SKU, barcode bo'yicha
 - Filtrlar:\n  - Kategoriya filtri
-  - Status filtri\n  - Kam qoldiq filtri
+  - Status filtri
+  - Kam qoldiq filtri
 - Sahifalash (Pagination)
 - Excel orqali ommaviy import
 - Excel orqali ommaviy export
@@ -62,8 +65,7 @@ Professional savdo nuqtalari uchun to'liq funksional POS tizimi. Tizim real vaqt
 **Umumiy ma'lumotlar:**
 - Mahsulot nomi (majburiy)
 - SKU (avtomatik generatsiya + tahrirlash mumkin)
-  - Format: SKU-000123
-- Barcode (ixtiyoriy, scanner bilan mos)
+  - Format: SKU-000123\n- Barcode (ixtiyoriy, scanner bilan mos)
 - Kategoriya (dropdown)
 - O'lchov birligi (dona, kg, litr, paket va boshqalar)
 - Status (Faol / Nofaol)
@@ -77,7 +79,8 @@ Professional savdo nuqtalari uchun to'liq funksional POS tizimi. Tizim real vaqt
 **Ombor sozlamalari:**
 - Boshlang'ich qoldiq (faqat yaratishda ruxsat etiladi)
 - Minimal qoldiq ogohlantirish darajasi
-- Qoldiqni kuzatish ON/OFF\n  - Agar OFF bo'lsa → mahsulot sotiladi, lekin ombor kamaytirilmaydi
+- Qoldiqni kuzatish ON/OFF
+  - Agar OFF bo'lsa → mahsulot sotiladi, lekin ombor kamaytirilmaydi
 \n**Rasmlar:**
 - Mahsulot rasmi yuklash (1-3 ta rasm tavsiya etiladi)
 \n#### 3.3.3 Product Detail Page
@@ -117,7 +120,8 @@ Professional savdo nuqtalari uchun to'liq funksional POS tizimi. Tizim real vaqt
 - Qaytarish amalga oshganda → qoldiq ortadi
 - Xarid buyurtmasi qabul qilinganda → qoldiq ortadi\n- Inventarizatsiya tuzatishi amalga oshganda → loglar yangilanadi
 
-#### 3.3.5 Barcode tizimi integratsiyasi\n- Barcode avtomatik generatsiya YOKI qo'lda kiritish
+#### 3.3.5 Barcode tizimi integratsiyasi
+- Barcode avtomatik generatsiya YOKI qo'lda kiritish
 - Barcode scanner POS Terminalda mahsulotni darhol qidirishi va qo'shishi kerak
 - Chop qilinadigan barcode yorliqlari yaratish (ixtiyoriy)
 
@@ -135,12 +139,13 @@ Professional savdo nuqtalari uchun to'liq funksional POS tizimi. Tizim real vaqt
 \n#### 3.3.8 Qo'shimcha funksiyalar (Ixtiyoriy lekin tavsiya etiladi)
 - Sevimli mahsulotlar (POS tezkor kirishiga yulduzcha belgisi)
 - Ko'p do'konombor sinxronizatsiyasi
-- Variantlar (o'lcham/rang)\n- Birlashtirilgan mahsulotlar\n- Amal qilish muddatini kuzatish (dorixona/oziq-ovqat uchun)
+- Variantlar (o'lcham/rang)\n- Birlashtirilgan mahsulotlar
+- Amal qilish muddatini kuzatish (dorixona/oziq-ovqat uchun)
 - FIFO/LIFO xarajat hisoblash (ERP darajasidagi ombor uchun)
 
 ### 3.4 Kategoriyalar (Categories Module)
-\n#### 3.4.1 Categories List Page
-**Sahifa sarlavhasi:** Categories
+
+#### 3.4.1 Categories List Page\n**Sahifa sarlavhasi:** Categories
 
 **Jadval ustunlari:**
 - Name – Kategoriya nomi
@@ -151,7 +156,7 @@ Professional savdo nuqtalari uchun to'liq funksional POS tizimi. Tizim real vaqt
 
 **Funksiyalar:**
 - Nom bo'yicha qidiruv
-- Saralash (A–Z, Z–A, eng yangi, eng eski)
+- Saralash (A–Z, Z–A, eng yangi, engeski)
 - Sahifalash (Pagination)
 - '+ Add Category' tugmasi
 - O'chirishda → agar kategoriyada mahsulotlar bo'lsa, ogohlantirish ko'rsatish
@@ -159,8 +164,7 @@ Professional savdo nuqtalari uchun to'liq funksional POS tizimi. Tizim real vaqt
 \n#### 3.4.2 Add Category Form
 **Forma maydonlari:**
 - Category Name (majburiy)
-- Description (ixtiyoriy)
-- Color Tag (ixtiyoriy; POS Terminal UI guruhlashuchun)
+- Description (ixtiyoriy)\n- Color Tag (ixtiyoriy; POS Terminal UI guruhlashuchun)
 - Icon (ixtiyoriy; emoji yoki SVG)
 - Parent Category (ixtiyoriy → ichki kategoriyalaruchun)
 \n**Tekshirish:**
@@ -191,7 +195,8 @@ Yaratish formasiga to'liq o'xshash, lekin oldindan to'ldirilgan.\n
   - SKU / Barcode
   - Narx
   - Qoldiq
-  - Status\n  - 'Open product' amal (mahsulot detailiga o'tish)
+  - Status
+  - 'Open product' amal (mahsulot detailiga o'tish)
 
 **2) Activity Log**
 - Created\n- Updated
@@ -311,8 +316,7 @@ Ombor o'zgarishlarining to'liq audit trail.
 **Tugma:** Adjust Stock
 
 **Forma maydonlari:**
-- Tuzatish turi:
-  - Increase (oshirish)
+- Tuzatish turi:\n  - Increase (oshirish)
   - Decrease (kamaytirish)
 - Miqdor\n- Sabab:\n  - Damaged (shikastlangan)
   - Lost (yo'qolgan)
@@ -326,8 +330,7 @@ Ombor o'zgarishlarining to'liq audit trail.
 - Harakat Movement History ga qo'shiladi
 - Mahsulot qoldig'i yangilanadi
 - Hisobotlar real-time yangilanadi
-
-#### 3.5.4 Real-Time Inventory Update Logic (Real vaqt rejimida ombor yangilanish mantiqiy)
+\n#### 3.5.4 Real-Time Inventory Update Logic (Real vaqt rejimida ombor yangilanish mantiqiy)
 Qat'iy ombor mantiqiy amalga oshirish:
 \n**Sotuv amalga oshganda:**
 ```
@@ -340,7 +343,8 @@ stock += returned_quantity
 movement: type = 'Sales Return', quantity = +X
 ```
 
-**Xarid buyurtmasi qabul qilinganda:**\n```
+**Xarid buyurtmasi qabul qilinganda:**
+```
 stock += received_quantity
 movement: type = 'Purchase Received', quantity = +X
 ```
@@ -711,11 +715,10 @@ Har bir qaytarish uchun quyidagilar logga yoziladi:
 - Qaytarish to'lovlari (Refund payments)
 - Mijoz balansi bilan integratsiya
 \n### 3.9 Xarid buyurtmalari (Purchase Orders Module)
-
-#### 3.9.1 Purchase Orders List Page
+\n#### 3.9.1 Purchase Orders List Page
 **Sahifa sarlavhasi:** Purchase Orders
-\n**Jadval ustunlari:**
-- po_number – Xarid buyurtmasi raqami (masalan: PO-20251206-00023)
+
+**Jadval ustunlari:**\n- po_number – Xarid buyurtmasi raqami (masalan: PO-20251206-00023)
 - supplier_name – Yetkazib beruvchi (matn yoki bog'langan obyekt)
 - order_date – Yaratilgan sana
 - expected_date – Kutilayotgan yetkazib berish sanasi
@@ -1295,8 +1298,7 @@ Eksport imkoniyati:
 \n**Funksiyalar:**
 - Avtomatik rangli ko'rsatkichlar
 - Excel va PDF eksport
-
-**3.13.3.2 Inventory Movement Report (Ombor harakati hisoboti)**
+\n**3.13.3.2 Inventory Movement Report (Ombor harakati hisoboti)**
 \n**Jadval ustunlari:**
 - Date (Sana)
 - Product (Mahsulot)
@@ -1424,18 +1426,177 @@ Eksport imkoniyati:
 - Sticky table header (Yopishqoq jadval sarlavhasi)
 - Loading states va skeletons (Yuklash holatlari va skeletlar)
 - Empty state placeholders (Bo'sh holat to'ldirgichlari)
-\n### 3.14 Sozlamalar (Settings)\n- Tizim sozlamalari
-- Kassa sozlamalari
-- Printer sozlamalari
-- Device binding (faqat bitta kassaga ulangan)
-- Qaytarish siyosati sozlamalari
-- Mijoz sozlamalari (kredit limiti, qarzdorlik siyosati)
-\n## 4. Professional funksiyalar
-- Hold order (chekni vaqtincha saqlash)
-- Split payment (bir nechta to'lov turi)
-- Quick add product (tezkor qo'shish)
-- Z-otchet va X-otchet\n- Kassa ochilishi/yopilishi
-- Shift-based accounting\n- Device binding\n- To'liq Sales Returns tizimi
+\n### 3.14 Sozlamalar (Settings Module)
+
+#### 3.14.1 Settings Main Page Layout
+**Sahifa sarlavhasi:** Settings
+
+**Sahifa tuzilishi:**
+Chap yoki yuqori qismda tablar/bo'limlar navigatsiyasi, o'ng qismda formalar.\n
+**Bo'limlar (Tabs):**
+1. Company Profile (Kompaniya profili)
+2. POS Terminal Settings (POS Terminal sozlamalari)
+3. Payments & Taxes (To'lovlar va soliqlar)
+4. Receipts & Printing (Cheklar va chop qilish)
+5. Inventory Settings (Ombor sozlamalari)
+6. Numbering & IDs (Raqamlash va ID'lar)
+7. User & Security (Foydalanuvchi va xavfsizlik)
+8. Localization (Mahalliylashtirish)
+9. Backup & Data Management (Zaxira va ma'lumotlar boshqaruvi - ixtiyoriy)
+\n#### 3.14.2 Company Profile (Kompaniya profili)
+
+**Maydonlar:**
+- Company name (majburiy) – Kompaniya nomi
+- Legal name (ixtiyoriy) – Yuridik nomi
+- Logo upload – Logo yuklash
+- Address (country, city, street) – Manzil (mamlakat, shahar, ko'cha)
+- Phone number – Telefon raqami
+- Email – Elektron pochta\n- Website (ixtiyoriy) – Veb-sayt
+- Tax ID / INN / VAT number (ixtiyoriy) – Soliq ID / INN / QQS raqami
+\n**Tekshirish:**
+- Majburiy maydonlar bo'sh bo'lishi mumkin emas
+- Email formatlash
+- Telefon formati (masalan: +998 XX XXX XX XX)
+\n**Ishlatilishi:**
+Kompaniya ma'lumotlari quyidagilarda ishlatiladi:
+- Cheklar\n- Hisob-fakturalar
+- Hisobotlar
+\n#### 3.14.3 POS Terminal Settings (POS Terminal sozlamalari)
+\n**POS frontuchun global parametrlar:**
+- Default POS mode: Retail / Restaurant (faqat enum, kelajakuchun)
+- Enable'Hold Order' feature (yoqish/o'chirish) –'Buyurtmani saqlash' funksiyasini yoqish
+- Enable 'Mixed Payment' (yoqish/o'chirish) – 'Aralash to'lov' funksiyasini yoqish
+- Require customer selection for credit sales (yoqish/o'chirish) – Kredit savdo uchun mijoz tanlashni talab qilish
+- Automatically log out cashier after X minutes of inactivity – Xdaqiqa faoliyatsizlikdan keyin kassirni avtomatik chiqarish
+- Show low-stock warning in POS (yoqish/o'chirish) – POS da kam qoldiq ogohlantirishini ko'rsatish
+- Quick access buttons limit (masalan: 8 / 12 / 16 products on main screen) – Tezkor kirish tugmalari cheklovi (asosiy ekranda mahsulotlar soni)
+
+**Ushbu sozlamalar POS Terminal xatti-harakatiga ta'sir qiladi.**
+
+#### 3.14.4 Payments & Taxes (To'lovlar va soliqlar)
+
+**Payment Methods (To'lov usullari)**
+\n**Sozlanadigan ro'yxat:**
+- Standart usullar: Cash, Card, QR, Bank transfer
+- Imkoniyatlar:\n  - Usullarni yoqish/o'chirish
+  - Yorliqlarni o'zgartirish (masalan: 'Card' o'rniga 'Terminal')
+  - Maxsus usul qo'shish (masalan: 'Debt', 'Wallet')
+
+**Taxes (Soliqlar)**
+
+- Enable tax system (yoqish/o'chirish) – Soliq tizimini yoqish\n- Default tax rate (%) – Standart soliq stavkasi
+- Tax inclusive / exclusive option – Soliq kiritilgan / chiqarilgan varianti
+- Per-product tax override allowed (yoqish/o'chirish) – Mahsulot bo'yicha soliqni bekor qilishga ruxsat berish
+\n**Tekshirish:**
+- Foiz0 dan 100 gacha bo'lishi kerak
+\n#### 3.14.5 Receipts & Printing (Cheklar va chop qilish)
+
+**Chek shablonlari uchun parametrlar:**
+\n- Toggle: Auto print receipt after each sale (yoqish/o'chirish) – Har bir sotuvdan keyin chekni avtomatik chop qilish
+- Receipt header text (ko'p qatorli; masalan: 'Thank you for shopping') – Chek sarlavha matni
+- Receipt footer text (return policy, contact info) – Chek pastki matni (qaytarish siyosati, aloqa ma'lumotlari)
+- Show company logo on receipt (yoqish/o'chirish) – Chekda kompaniya logosini ko'rsatish\n- Show cashier name (yoqish/o'chirish) – Kassir nomini ko'rsatish
+- Show customer name (yoqish/o'chirish) – Mijoz nomini ko'rsatish\n- Show product SKU (yoqish/o'chirish) – Mahsulot SKU ni ko'rsatish
+- Default receipt size: 58mm / 80mm – Standart chek o'lchami
+- Test print button (placeholder) – Sinov chop qilish tugmasi
+\n**Ushbu sozlamalar chop qilish mantiqida qayta ishlatilishi kerak.**
+
+#### 3.14.6 Inventory Settings (Ombor sozlamalari)
+
+**Global ombor xatti-harakati:**
+\n- Enable inventory tracking (yoqish/o'chirish) – Ombor kuzatuvini yoqish
+- Default minimal stock level for new products – Yangi mahsulotlar uchun standart minimal qoldiq darajasi
+- Allow selling when stock is zero or negative: – Qoldiq nol yoki manfiy bo'lganda sotishga ruxsat berish:\n  - Option: Block sale, Allow with warning, Allow without warning – Variant: Sotuvni bloklash, Ogohlantirish bilan ruxsat berish, Ogohlantirishsiz ruxsat berish
+- Automatic cost calculation mode (for profit reports): – Avtomatik xarajat hisoblash rejimi (foyda hisobotlari uchun):
+  - Latest purchase price – Oxirgi xarid narxi
+  - Average cost (future-ready) – O'rtacha xarajat (kelajak uchun tayyor)
+- Automatic stock adjustment approval required (yes/no) – Avtomatik qoldiq tuzatishini tasdiqlash talab qilinadi (ha/yo'q)
+\n#### 3.14.7 Numbering & IDs (Raqamlash va ID'lar)
+
+**Avtomatik yaratilgan raqamlar uchun sozlamalar:**
+
+**Maydonlar:**
+- Order number prefix (standart: POS-) – Buyurtma raqami prefiksi
+- Order number format: POS-YYYYMMDD-##### – Buyurtma raqami formati
+- Return number prefix (standart: RET-) – Qaytarish raqami prefiksi\n- Purchase order prefix (standart: PO-) – Xarid buyurtmasi prefiksi
+- Movement/adjustment prefix (ixtiyoriy) – Harakat/tuzatish prefiksi
+\n**AI quyidagilarni qo'llab-quvvatlashi kerak:**
+- Har bir hujjat turi uchun keyingi ketma-ketlik raqamini ko'rish
+- Ketma-ketliklarni qayta tiklash (tasdiqlash modali bilan)
+\n**Barcha ID'lar noyob bo'lib qolishi kerak.**
+
+#### 3.14.8 User & Security (Foydalanuvchi va xavfsizlik)
+\n**Xavfsizlik parametrlari:**
+\n- Minimum password length (standart 6) – Minimal parol uzunligi
+- Require strong password (letters + numbers) (yoqish/o'chirish) – Kuchli parol talab qilish (harflar + raqamlar)\n- Max failed login attempts before lock (masalan: 5) – Blokirovkadan oldin maksimal muvaffaqiyatsiz kirish urinishlari
+- Session timeout (minutes) – Sessiya tugash vaqti (daqiqalar)
+- Allow multiple active sessions per user (yes/no) – Foydalanuvchi uchun bir nechta faol sessiyalarga ruxsat berish (ha/yo'q)
+\n**Role management (qisqa tavsif, bu yerda to'liq CRUD yo'q):**
+- Rollar ro'yxatini ko'rsatish (Admin, Manager, Cashier) qisqa tavsif bilan
+- Rollar Employees modulida boshqarilishiga havola yoki ma'lumot berish
+\n**Audit:**
+- Switch'Enable activity logging' (yoqish/o'chirish) – 'Faoliyat logini yoqish' tugmasi —agar yoqilgan bo'lsa, asosiy amallarni loglash (buyurtmalar, qaytarishlar, ombor tuzatishlari).
+
+#### 3.14.9 Localization (Mahalliylashtirish)
+
+**Maydonlar:**
+\n- Default language (masalan: Uzbek, Russian, English) – Standart til
+- Additional interface languages (for future use) – Qo'shimcha interfeys tillari (kelajak uchun)
+- Default currency (UZS, USD, va boshqalar) – Standart valyuta
+- Currency symbol position: – Valyuta belgisi pozitsiyasi:
+  - Before amount (₩10000) – Summa oldida
+  - After amount (10 000 ₩) – Summa keyin
+- Thousand separator and decimal separator options – Ming ajratuvchi va o'nlik ajratuvchi parametrlari
+\n**Ushbu sozlamalar barcha modullarda formatlashni boshqaradi.**
+
+#### 3.14.10 Backup & Data Management (Zaxira va ma'lumotlar boshqaruvi - Ixtiyoriy lekin tavsiya etiladi)
+
+**Sozlamalar:**
+
+- Allow export of: – Eksport qilishga ruxsat berish:
+  - Products – Mahsulotlar
+  - Customers – Mijozlar
+  - Orders – Buyurtmalar
+  - Inventory movements – Ombor harakatlari
+- 'Download full backup' button (placeholder) – 'To'liq zaxirani yuklash' tugmasi
+- Info text about where backups are stored – Zaxiralar qayerda saqlanishi haqida ma'lumot matni
+\n#### 3.14.11 Permissions & Access (Ruxsatlar va kirish)
+
+**Faqat Admin roli Settings sahifasini ko'rishi va o'zgartirishi mumkin.**
+
+**Manager va Kassir bu sahifaga kira olmaydi.**
+
+**Har bir saqlash operatsiyasi quyidagilarni bajarishi kerak:**
+- Maydonlarni tekshirish
+- Muvaffaqiyat yoki xato toast ko'rsatish
+- Audit logiga yozish:\n  - foydalanuvchi, vaqt, qaysi bo'lim o'zgartirilgan
+\n#### 3.14.12 UI/UX Requirements (UI/UX talablar)
+
+- Har bir bo'lim uchun toza karta asosidagi layout
+- Bo'limlar orasida navigatsiya uchun chapyon panel yoki tablar
+- Viewport pastki qismida mahkamlangan Save / Cancel tugmalari
+- Saqlanmagan o'zgarishlar bilan sahifani tark etishda tasdiqlash dialogi
+- Xavfli parametrlarni tushuntiruvchi aniq tooltiplar (masalan: 'Allow negative stock')
+- To'liq responsive (desktop ustuvorligi, planshet uchun qulay)
+
+#### 3.14.13 Final AI Requirements (Yakuniy AI talablar)
+
+**AI to'liq funksional Settings modulini yaratishi kerak:**
+\n- Konfiguratsiyani markaziy settings jadvalida / config store da saqlash
+- Ushbu sozlamalarni quyidagi modullarda qo'llash:
+  - POS Terminal\n  - Orders
+  - Sales Returns
+  - Inventory
+  - Purchase Orders
+  - Reports
+  - Employees
+- Adminga tekshirish va audit loglash bilan konfiguratsiyani xavfsiz ko'rish va yangilash imkonini berish
+- POS tizimining qolgan qismi bilan izchil UI dan foydalanish
+
+## 4. Professional funksiyalar\n- Hold order (chekni vaqtincha saqlash)
+- Split payment (bir nechta to'lov turi)\n- Quick add product (tezkor qo'shish)\n- Z-otchet va X-otchet\n- Kassa ochilishi/yopilishi
+- Shift-based accounting
+- Device binding\n- To'liq Sales Returns tizimi
 - To'liq Customers tizimi (balans, qarz, kredit limiti)
 - To'liq Inventory Management tizimi (real-time tracking, movements, adjustments, alerts)
 - To'liq Purchase Orders tizimi (yaratish, tasdiqlash, qabul qilish,ombor integratsiyasi)
@@ -1443,12 +1604,11 @@ Eksport imkoniyati:
 - Audit trail va loglar
 - To'liq Reports Module (Sales, Inventory, Purchase, Employee, Financial analytics)
 - To'liq Employees Module (yaratish, tahrirlash, rol asosida ruxsatlar, samaradorlik tahlili, vaqt kuzatuvi, audit loglari, POS integratsiyasi)
-\n## 5. Texnik talablar
+- To'liq Settings Module (Company Profile, POS Terminal, Payments & Taxes, Receipts, Inventory, Numbering, User & Security, Localization, Backup)\n\n## 5. Texnik talablar
 \n### 5.1 UI/UX talablar
 - Minimalist va silliq dizayn
 - Tez ishlash (caching va optimization)
-- Tablet va kassa monitorlariga moslashgan
-- Touch screenuchun katta tugmalar
+- Tablet va kassa monitorlariga moslashgan\n- Touch screenuchun katta tugmalar
 - Offline mode va data sync
 - Qorong'i va yorug' rejim
 - Desktop va POS displeylaruchun optimallashtirilgan
@@ -1467,44 +1627,46 @@ Eksport imkoniyati:
 - Session management
 - IP tracking
 \n### 5.3 Integratsiyalar
-- Fiskal printer
-- Barcode scanner
+- Fiskal printer\n- Barcode scanner
 - QR Pay (Click/Payme)
 - Inventory API
 - Bank terminali
-- Sales Returns bilan to'liq integratsiya
-- Customers bilan to'liq integratsiya
+- Sales Returns bilan to'liq integratsiya\n- Customers bilan to'liq integratsiya
 - Inventory Management bilan to'liq integratsiya
 - Purchase Orders bilan to'liq integratsiya
 - Reports Module bilan to'liq integratsiya
 - Employees Module bilan to'liq integratsiya
-\n## 6. Tizim nomerlash siyosati
+- Settings Module bilan to'liq integratsiya
+
+## 6. Tizim nomerlash siyosati
 - Chek / Buyurtma: POS-YYYYMMDD-#####
   - Misol: POS-20251205-00042
 - Qaytarish: RET-YYYYMMDD-#####
   - Misol: RET-20251205-00023
-- Xarid buyurtmasi: PO-YYYYMMDD-#####
-  - Misol: PO-20251206-00015
+- Xarid buyurtmasi: PO-YYYYMMDD-#####\n  - Misol: PO-20251206-00015
 - Inventarizatsiya: INV-YYYY-#####
-- SKU: SKU-000123\n\n## 7. Modullar integratsiyasi
-Mahsulotlar, Kategoriyalar, Inventory Management, Buyurtmalar, Sales Returns, Purchase Orders, Customers, Employees va Reports modullari quyidagi modullar bilan to'liq integratsiyalangan bo'lishi kerak:
+- SKU: SKU-000123
+\n## 7. Modullar integratsiyasi
+Mahsulotlar, Kategoriyalar, Inventory Management, Buyurtmalar, Sales Returns, Purchase Orders, Customers, Employees, Reports va Settings modullari quyidagi modullar bilan to'liq integratsiyalangan bo'lishi kerak:
 - POS Terminal
-- Ombor (Inventory)\n- Xarid buyurtmalari (Purchase Orders)
+-Ombor (Inventory)\n- Xarid buyurtmalari (Purchase Orders)
 - Sotuvlar (Sales)\n- Hisobotlar (Reports)
 - To'lovlar (Payments)
 - Xodimlar (Employees)
-\nBarcha operatsiyalar to'liq sinxronlashtirilgan va audit qilinadigan bo'lishi kerak.
+- Sozlamalar (Settings)
 
-## 8. Dizayn uslubi
+Barcha operatsiyalar to'liq sinxronlashtirilgan va audit qilinadigan bo'lishi kerak.
+\n## 8. Dizayn uslubi
 - Zamonaviy va professional ko'rinish, biznes muhitiga mos\n- Asosiy ranglar: ko'k (#2563EB) va kulrang (#64748B) tonlari, oq fon (#FFFFFF)\n- Karta uslubidagi layout, har bir modul alohida kartada
 - Yumshoq soyalar (shadow-sm) va 8px border-radius
 - Ikkonlar: Lucide yoki Heroicons kutubxonasidan zamonaviy chiziqli ikkonlar
 - Jadvallar: zebra-striped uslubda, hover effekti bilan
 - Tugmalar: to'ldirilgan (primary) va konturli (secondary) variantlar, touch screen uchun minimal44px balandlik
-- Responsive grid layout: desktopuchun 3-4 ustun, tablet uchun 2 ustun\n- Kategoriya rangli teglar va ikkonlar POS Terminal va mahsulotlar ro'yxatida ko'rsatiladi
+- Responsive grid layout: desktopuchun 3-4 ustun, tablet uchun 2ustun\n- Kategoriya rangli teglar va ikkonlar POS Terminal va mahsulotlar ro'yxatida ko'rsatiladi
 - Status rangli kodlari:\n  - Completed / Paid / In Stock / Received → Yashil
   - Pending / Low Stock / Approved → Sariq yoki Ko'k
-  - Cancelled / Voided / Out of Stock → Qizil\n  - Refunded → To'q sariq
+  - Cancelled / Voided / Out of Stock → Qizil
+  - Refunded → To'q sariq
   - Partially Refunded / Partially Paid / Partially Received → Och sariq
   - Draft → Kulrang
 - Mijoz balansi rangli kodlari:
@@ -1514,5 +1676,7 @@ Mahsulotlar, Kategoriyalar, Inventory Management, Buyurtmalar, Sales Returns, Pu
 - Inventory movements rangli kodlari:
   - Musbat (+) → Yashil
   - Manfiy (–) → Qizil
-- Diagrammalar uchun Recharts kutubxonasi\n- Reports sahifalarida professional data visualization
+- Diagrammalar uchun Recharts kutubxonasi
+- Reports sahifalarida professional data visualization
 - Employee performance indicatorsuchun rangli ko'rsatkichlar
+- Settings sahifasida chap yon panel yoki tablar navigatsiyasi, o'ng qismda formalar
