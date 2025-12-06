@@ -272,6 +272,7 @@ const routes: RouteConfig[] = [
     element: <Settings />,
     visible: true,
     requireAuth: true,
+    allowedRoles: ['admin'],
   },
 ];
 
