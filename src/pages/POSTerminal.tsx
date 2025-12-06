@@ -104,13 +104,65 @@ export default function POSTerminal() {
   } | null>(null);
   const [selectedCartIndex, setSelectedCartIndex] = useState<number>(-1);
 
+  // Load functions - defined before useEffect
+  const loadCustomers = useCallback(async () => {
+    try {
+      const data = await getCustomers();
+      setCustomers(data);
+    } catch (error) {
+      console.error('Error loading customers:', error);
+    }
+  }, []);
+
+  const loadCategories = useCallback(async () => {
+    try {
+      const data = await getCategories();
+      setCategories(data);
+    } catch (error) {
+      console.error('Error loading categories:', error);
+    }
+  }, []);
+
+  const loadFavoriteProducts = useCallback(async () => {
+    try {
+      // Load top 8 products by sales or mark specific products as favorites
+      // For now, we'll just load the first 8 active products
+      const results = await searchProducts('');
+      setFavoriteProducts(results.slice(0, 8));
+    } catch (error) {
+      console.error('Error loading favorite products:', error);
+    }
+  }, []);
+
+  const loadHeldOrders = useCallback(async () => {
+    try {
+      const data = await getHeldOrders();
+      setHeldOrders(data as HeldOrder[]);
+    } catch (error) {
+      console.error('Error loading held orders:', error);
+    }
+  }, []);
+
+  const checkShift = useCallback(async () => {
+    if (!profile) return;
+    try {
+      const shift = await getActiveShift(profile.id);
+      setCurrentShift(shift);
+      if (!shift) {
+        setShiftDialogOpen(true);
+      }
+    } catch (error) {
+      console.error('Error checking shift:', error);
+    }
+  }, [profile]);
+
   useEffect(() => {
     loadCustomers();
     loadCategories();
     loadFavoriteProducts();
     checkShift();
     loadHeldOrders();
-  }, []);
+  }, [loadCustomers, loadCategories, loadFavoriteProducts, checkShift, loadHeldOrders]);
 
   // Keyboard shortcuts
   useEffect(() => {
@@ -218,19 +270,6 @@ export default function POSTerminal() {
     }
   }, [cart.length]);
 
-  const checkShift = async () => {
-    if (!profile) return;
-    try {
-      const shift = await getActiveShift(profile.id);
-      setCurrentShift(shift);
-      if (!shift) {
-        setShiftDialogOpen(true);
-      }
-    } catch (error) {
-      console.error('Error checking shift:', error);
-    }
-  };
-
   const handleOpenShift = async () => {
     if (!profile || !openingCash) return;
     try {
@@ -252,44 +291,6 @@ export default function POSTerminal() {
         description: 'Failed to open shift',
         variant: 'destructive',
       });
-    }
-  };
-
-  const loadCustomers = async () => {
-    try {
-      const data = await getCustomers();
-      setCustomers(data);
-    } catch (error) {
-      console.error('Error loading customers:', error);
-    }
-  };
-
-  const loadCategories = async () => {
-    try {
-      const data = await getCategories();
-      setCategories(data);
-    } catch (error) {
-      console.error('Error loading categories:', error);
-    }
-  };
-
-  const loadFavoriteProducts = async () => {
-    try {
-      // Load top 8 products by sales or mark specific products as favorites
-      // For now, we'll just load the first 8 active products
-      const results = await searchProducts('');
-      setFavoriteProducts(results.slice(0, 8));
-    } catch (error) {
-      console.error('Error loading favorite products:', error);
-    }
-  };
-
-  const loadHeldOrders = async () => {
-    try {
-      const data = await getHeldOrders();
-      setHeldOrders(data as HeldOrder[]);
-    } catch (error) {
-      console.error('Error loading held orders:', error);
     }
   };
 
