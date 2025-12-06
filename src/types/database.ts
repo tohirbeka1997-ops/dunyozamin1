@@ -12,9 +12,13 @@ export interface Profile {
   id: string;
   username: string;
   full_name: string | null;
+  phone: string | null;
+  email: string | null;
   role: UserRole;
   is_active: boolean;
+  last_login: string | null;
   created_at: string;
+  updated_at: string | null;
 }
 
 export interface Category {
@@ -274,4 +278,46 @@ export interface DashboardStats {
   active_customers: number;
   total_revenue: number;
   total_profit: number;
+}
+
+// Employee Sessions
+export interface EmployeeSession {
+  id: string;
+  employee_id: string;
+  login_time: string;
+  logout_time: string | null;
+  duration: string | null;
+  ip_address: string | null;
+  created_at: string;
+}
+
+export interface EmployeeSessionWithProfile extends EmployeeSession {
+  employee?: Profile;
+}
+
+// Employee Activity Logs
+export interface EmployeeActivityLog {
+  id: string;
+  employee_id: string;
+  action_type: string;
+  description: string;
+  document_id: string | null;
+  document_type: string | null;
+  ip_address: string | null;
+  created_at: string;
+}
+
+export interface EmployeeActivityLogWithProfile extends EmployeeActivityLog {
+  employee?: Profile;
+}
+
+// Employee Performance Metrics
+export interface EmployeePerformance {
+  total_sales: number;
+  total_revenue: number;
+  average_order_amount: number;
+  total_returns: number;
+  return_amount: number;
+  net_revenue: number;
+  transaction_count: number;
 }

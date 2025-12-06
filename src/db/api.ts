@@ -19,6 +19,11 @@ import type {
   ShiftWithCashier,
   PurchaseOrderWithDetails,
   SalesReturnWithDetails,
+  EmployeeSession,
+  EmployeeSessionWithProfile,
+  EmployeeActivityLog,
+  EmployeeActivityLogWithProfile,
+  EmployeePerformance,
 } from '@/types/database';
 
 // Auth functions
@@ -1303,4 +1308,202 @@ export const getSalesReturnsByOrderId = async (orderId: string) => {
   
   if (error) throw error;
   return Array.isArray(data) ? data as SalesReturn[] : [];
+};
+
+// ==================== Employee Management ====================
+
+// Get all employees
+export const getAllEmployees = async () => {
+  const { data, error } = await supabase
+    .from('profiles')
+    .select('*')
+    .order('created_at', { ascending: false });
+  
+  if (error) throw error;
+  return Array.isArray(data) ? data as Profile[] : [];
+};
+
+// Get employee by ID
+export const getEmployeeById = async (id: string) => {
+  const { data, error } = await supabase
+    .from('profiles')
+    .select('*')
+    .eq('id', id)
+    .maybeSingle();
+  
+  if (error) throw error;
+  return data as Profile | null;
+};
+
+// Create employee
+export const createEmployee = async (employeeData: {
+  username: string;
+  password: string;
+  full_name: string;
+  phone?: string;
+  email?: string;
+  role: 'admin' | 'manager' | 'cashier';
+  is_active?: boolean;
+}) => {
+  const email = `${employeeData.username}@miaoda.com`;
+  
+  // Create auth user
+  const { data: authData, error: authError } = await supabase.auth.signUp({
+    email,
+    password: employeeData.password,
+  });
+  
+  if (authError) throw authError;
+  if (!authData.user) throw new Error('Failed to create user');
+  
+  // Update profile with additional data
+  const { data: profileData, error: profileError } = await supabase
+    .from('profiles')
+    .update({
+      full_name: employeeData.full_name,
+      phone: employeeData.phone || null,
+      email: employeeData.email || null,
+      role: employeeData.role,
+      is_active: employeeData.is_active !== undefined ? employeeData.is_active : true,
+    })
+    .eq('id', authData.user.id)
+    .select()
+    .maybeSingle();
+  
+  if (profileError) throw profileError;
+  return profileData as Profile;
+};
+
+// Update employee
+export const updateEmployee = async (id: string, updates: Partial<Profile>) => {
+  const { data, error } = await supabase
+    .from('profiles')
+    .update(updates)
+    .eq('id', id)
+    .select()
+    .maybeSingle();
+  
+  if (error) throw error;
+  return data as Profile;
+};
+
+// Deactivate employee
+export const deactivateEmployee = async (id: string) => {
+  return updateEmployee(id, { is_active: false });
+};
+
+// Activate employee
+export const activateEmployee = async (id: string) => {
+  return updateEmployee(id, { is_active: true });
+};
+
+// Delete employee (soft delete by deactivating)
+export const deleteEmployee = async (id: string) => {
+  return deactivateEmployee(id);
+};
+
+// ==================== Employee Sessions ====================
+
+// Get employee sessions
+export const getEmployeeSessions = async (employeeId?: string) => {
+  let query = supabase
+    .from('employee_sessions')
+    .select(`
+      *,
+      employee:profiles(*)
+    `)
+    .order('login_time', { ascending: false });
+  
+  if (employeeId) {
+    query = query.eq('employee_id', employeeId);
+  }
+  
+  const { data, error } = await query;
+  
+  if (error) throw error;
+  return Array.isArray(data) ? data as EmployeeSessionWithProfile[] : [];
+};
+
+// Start employee session
+export const startEmployeeSession = async (employeeId: string, ipAddress?: string) => {
+  const { data, error } = await supabase.rpc('start_employee_session', {
+    p_employee_id: employeeId,
+    p_ip_address: ipAddress || null,
+  });
+  
+  if (error) throw error;
+  return data as string; // Returns session ID
+};
+
+// End employee session
+export const endEmployeeSession = async (sessionId: string, ipAddress?: string) => {
+  const { data, error } = await supabase.rpc('end_employee_session', {
+    p_session_id: sessionId,
+    p_ip_address: ipAddress || null,
+  });
+  
+  if (error) throw error;
+  return data as boolean;
+};
+
+// ==================== Employee Activity Logs ====================
+
+// Get employee activity logs
+export const getEmployeeActivityLogs = async (employeeId?: string) => {
+  let query = supabase
+    .from('employee_activity_logs')
+    .select(`
+      *,
+      employee:profiles(*)
+    `)
+    .order('created_at', { ascending: false });
+  
+  if (employeeId) {
+    query = query.eq('employee_id', employeeId);
+  }
+  
+  const { data, error } = await query;
+  
+  if (error) throw error;
+  return Array.isArray(data) ? data as EmployeeActivityLogWithProfile[] : [];
+};
+
+// Log employee activity
+export const logEmployeeActivity = async (
+  employeeId: string,
+  actionType: string,
+  description: string,
+  documentId?: string,
+  documentType?: string,
+  ipAddress?: string
+) => {
+  const { data, error } = await supabase.rpc('log_employee_activity', {
+    p_employee_id: employeeId,
+    p_action_type: actionType,
+    p_description: description,
+    p_document_id: documentId || null,
+    p_document_type: documentType || null,
+    p_ip_address: ipAddress || null,
+  });
+  
+  if (error) throw error;
+  return data as string; // Returns log ID
+};
+
+// ==================== Employee Performance ====================
+
+// Get employee performance metrics
+export const getEmployeePerformance = async (
+  employeeId: string,
+  startDate?: string,
+  endDate?: string
+) => {
+  const { data, error } = await supabase.rpc('get_employee_performance', {
+    p_employee_id: employeeId,
+    p_start_date: startDate || null,
+    p_end_date: endDate || null,
+  });
+  
+  if (error) throw error;
+  return Array.isArray(data) && data.length > 0 ? data[0] as EmployeePerformance : null;
 };

@@ -30,10 +30,11 @@ Professional savdo nuqtalari uchun to'liq funksional POS tizimi. Tizim real vaqt
 - Kategoriya tugmalari orqali mahsulotlarni filtrlash
 - Rangli kategoriya belgilari va ikkonlar
 - Eng ko'p sotiladigan kategoriyalar yuqorida ko'rsatiladi
-- Mijozni tanlash yoki tezkor yaratish (ism + telefon)
-- Kredit savdo imkoniyati (mijoz ruxsati bo'lsa)
-
-### 3.3 Mahsulotlar katalogi (Products Module)
+- Mijozni tanlash yoki tezkor yaratish (ism + telefon)\n- Kredit savdo imkoniyati (mijoz ruxsati bo'lsa)
+- Xodim login/logout tizimi
+- Shift start/end tracking
+- Kassir-specific cheklovlar
+\n### 3.3 Mahsulotlar katalogi (Products Module)
 \n#### 3.3.1 Products List Page
 **Jadval/Grid ko'rinishi quyidagi ustunlar bilan:**
 - Mahsulot rasmi
@@ -45,12 +46,10 @@ Professional savdo nuqtalari uchun to'liq funksional POS tizimi. Tizim real vaqt
 - Sotuv narxi
 - Joriy qoldiq
 - Status (Faol / Nofaol)\n- Amallar (Ko'rish, Tahrirlash, O'chirish)
-
-**Funksiyalar:**
+\n**Funksiyalar:**
 - Qidiruv: nom, SKU, barcode bo'yicha
 - Filtrlar:\n  - Kategoriya filtri
-  - Status filtri
-  - Kam qoldiq filtri
+  - Status filtri\n  - Kam qoldiq filtri
 - Sahifalash (Pagination)
 - Excel orqali ommaviy import
 - Excel orqali ommaviy export
@@ -78,7 +77,7 @@ Professional savdo nuqtalari uchun to'liq funksional POS tizimi. Tizim real vaqt
 **Ombor sozlamalari:**
 - Boshlang'ich qoldiq (faqat yaratishda ruxsat etiladi)
 - Minimal qoldiq ogohlantirish darajasi
-- Qoldiqni kuzatish ON/OFF\n  -Agar OFF bo'lsa → mahsulot sotiladi, lekin ombor kamaytirilmaydi
+- Qoldiqni kuzatish ON/OFF\n  - Agar OFF bo'lsa → mahsulot sotiladi, lekin ombor kamaytirilmaydi
 \n**Rasmlar:**
 - Mahsulot rasmi yuklash (1-3 ta rasm tavsiya etiladi)
 \n#### 3.3.3 Product Detail Page
@@ -136,8 +135,7 @@ Professional savdo nuqtalari uchun to'liq funksional POS tizimi. Tizim real vaqt
 \n#### 3.3.8 Qo'shimcha funksiyalar (Ixtiyoriy lekin tavsiya etiladi)
 - Sevimli mahsulotlar (POS tezkor kirishiga yulduzcha belgisi)
 - Ko'p do'konombor sinxronizatsiyasi
-- Variantlar (o'lcham/rang)
-- Birlashtirilgan mahsulotlar\n- Amal qilish muddatini kuzatish (dorixona/oziq-ovqat uchun)
+- Variantlar (o'lcham/rang)\n- Birlashtirilgan mahsulotlar\n- Amal qilish muddatini kuzatish (dorixona/oziq-ovqat uchun)
 - FIFO/LIFO xarajat hisoblash (ERP darajasidagi ombor uchun)
 
 ### 3.4 Kategoriyalar (Categories Module)
@@ -240,7 +238,8 @@ Rol asosida kirish:\n- Admin va Manager: Kategoriyalarni yaratish, tahrirlash, o
 #### 3.5.1 Inventory List Page
 **Sahifa sarlavhasi:** Inventory
 \n**Jadval ustunlari:**
-- product_name – Mahsulot nomi\n- SKU / Barcode – Mahsulot identifikatori
+- product_name – Mahsulot nomi
+- SKU / Barcode – Mahsulot identifikatori
 - category – Kategoriya
 - stock_quantity – Joriy qoldiq miqdori
 - unit – O'lchov birligi\n- cost_price – Xarid narxi
@@ -320,15 +319,15 @@ Ombor o'zgarishlarining to'liq audit trail.
   - Correction (tuzatish)
   - Inventory count difference (inventarizatsiya farqi)
 - Izohlar (ixtiyoriy)
-
-**Tekshirish:**
+\n**Tekshirish:**
 - Noldan pastga kamaytirish mumkin emas
 - Tuzatish logga yozilishi kerak
 \n**Tasdiqlashdan keyin:**
 - Harakat Movement History ga qo'shiladi
 - Mahsulot qoldig'i yangilanadi
 - Hisobotlar real-time yangilanadi
-\n#### 3.5.4 Real-Time Inventory Update Logic (Real vaqt rejimida ombor yangilanish mantiqiy)
+
+#### 3.5.4 Real-Time Inventory Update Logic (Real vaqt rejimida ombor yangilanish mantiqiy)
 Qat'iy ombor mantiqiy amalga oshirish:
 \n**Sotuv amalga oshganda:**
 ```
@@ -507,7 +506,7 @@ Ushbu buyurtmaga bog'liq qaytarishlar ro'yxati:
 Buyurtmalar bu yerda qo'lda yaratilmaydi – ular POS Terminaldan keladi:\n- POS terminalda har bir yakunlangan savdo avtomatik ravishda Order yozuvini yaratadi
 - Agar buyurtma 'held' yoki 'parked' sifatida saqlangan bo'lsa, status = Pending
 - To'lov yakunlanganda, status = Completed
-- Agar buyurtma POSdan bekor qilinsa, status = Voided vaombor tiklanadi
+- Agar buyurtma POS dan bekor qilinsa, status = Voided vaombor tiklanadi
 
 #### 3.6.4 Integratsiyalar (majburiy)
 \n**Ombor integratsiyasi:**
@@ -518,7 +517,7 @@ Buyurtmalar bu yerda qo'lda yaratilmaydi – ular POS Terminaldan keladi:\n- POS
   - Partially paid: jami to'lovlar >0 va < buyurtma jami
   - Unpaid: jami to'lovlar = 0
 
-**Mijozlar integratsiyasi:**\n- Agar mijoz POSda belgilangan bo'lsa, u Orders ro'yxati va detallarda ko'rsatilishi kerak
+**Mijozlar integratsiyasi:**\n- Agar mijoz POS da belgilangan bo'lsa, u Orders ro'yxati va detallarda ko'rsatilishi kerak
 - Mijoz balanslari (qarz, sodiqlik) buyurtma yaratilganda/to'langanda/qaytarilganda yangilanishi kerak
 - Kredit savdo amalga oshganda mijoz balansi ortadi
 - To'lov qabul qilinganda mijoz balansi kamayadi
@@ -691,7 +690,8 @@ Sales Returns quyidagi hisobotlarda ko'rinishi kerak:
 **Buyurtmaga asoslangan havola kuzatuvni ta'minlaydi**
 
 #### 3.7.11 O'chirish va bekor qilish cheklovlari
-- Faqat Manager va Admin qaytarishlarni bekor qilishi yoki o'chirishi mumkin\n- Agar ombor allaqachon yangilangan bo'lsa, qaytarishni bekor qilish mumkin emas
+- Faqat Manager va Admin qaytarishlarni bekor qilishi yoki o'chirishi mumkin
+- Agar ombor allaqachon yangilangan bo'lsa, qaytarishni bekor qilish mumkin emas
 - Barcha o'zgarishlar audit logiga yoziladi
 
 #### 3.7.12 Audit trail
@@ -711,10 +711,11 @@ Har bir qaytarish uchun quyidagilar logga yoziladi:
 - Qaytarish to'lovlari (Refund payments)
 - Mijoz balansi bilan integratsiya
 \n### 3.9 Xarid buyurtmalari (Purchase Orders Module)
-\n#### 3.9.1 Purchase Orders List Page
-**Sahifa sarlavhasi:** Purchase Orders
 
-**Jadval ustunlari:**\n- po_number – Xarid buyurtmasi raqami (masalan: PO-20251206-00023)
+#### 3.9.1 Purchase Orders List Page
+**Sahifa sarlavhasi:** Purchase Orders
+\n**Jadval ustunlari:**
+- po_number – Xarid buyurtmasi raqami (masalan: PO-20251206-00023)
 - supplier_name – Yetkazib beruvchi (matn yoki bog'langan obyekt)
 - order_date – Yaratilgan sana
 - expected_date – Kutilayotgan yetkazib berish sanasi
@@ -922,7 +923,8 @@ Purchase Orders ma'lumotlari quyidagi hisobotlarda ishlatiladi:
 \n**Tekshirish:**
 - Ism va telefon majburiy
 - Telefon noyob (dublikatlar yo'q)
-- Soliq raqami noyob\n- Boshlang'ich balans raqamli
+- Soliq raqami noyob
+- Boshlang'ich balans raqamli
 - Kredit limiti raqamli
 
 **Tugmalar:** Save, Cancel\n
@@ -977,8 +979,7 @@ POS Terminaldan kassir:\n- Mavjud mijozni tanlashi mumkin
 - Balans yangilanadi agar:\n  - Kredit savdo\n  - Ortiqcha to'lov / oldindan to'lov
 \n#### 3.11.5 Balans va qarz mantiqiy (Majburiy)
 **Balans formulasi:**
-Balans = (Mijoz uchun jami buyurtmalar – Mijozdan jami to'lovlar + Do'kon qaytarishlari)
-
+Balans = (Mijoz uchun jami buyurtmalar – Mijozdan jami to'lovlar + Do'kon qaytarishlari)\n
 **Balans talqini:**
 - Agar balans > 0 → mijoz qarzi
 - Agar balans < 0 → do'kon qarzdor (oldindan to'lov yoki qaytarish)
@@ -1029,19 +1030,208 @@ Mijozlar moduli hisobotlarga ma'lumot berishi kerak:
 - Buyurtmalar bilan One-to-many\n- To'lovlar bilan One-to-many
 - Qaytarishlar bilan One-to-many
 - Balans avtomatik hisoblash
-\n### 3.12 Xodimlar va rollar\n- Rollar: Admin, Manager, Kassir\n- Ruxsatlar tizimi:\n  - Narxni o'zgartirish
-  - Qaytarish qilish
-  - Chek o'chirish
-  - Omborga kirish
-  - Qaytarishlarni bekor qilish
-  - Mijozlarni boshqarish
-- Role-based access control (RBAC)\n\n### 3.13 Hisobotlar (Reports Module)
+\n### 3.12 Xodimlar va rollar (Employees Module)
 
-#### 3.13.1 Reports Main Page
-**Sahifa sarlavhasi:** Reports
-\n**Sahifa bo'limlari (kartalar ko'rinishida ikkonlar bilan):**
+#### 3.12.1 Employees Main Page
+**Sahifa sarlavhasi:** Employees
+
+**Jadval ustunlari:**
+- Name – To'liq ism\n- Role – Admin / Manager / Cashier\n- Phone – Telefon raqami
+- Email – Elektron pochta
+- Status – Active / Disabled
+- Last login – Oxirgi kirish vaqti
+- Actions – View, Edit, Deactivate\n
+**Funksiyalar:**
+- Ism, telefon yoki email bo'yicha qidiruv
+- Filtrlar:
+  - Role (Admin / Manager / Cashier)
+  - Status (Active / Disabled)
+- Sahifalash (Pagination)
+- '+ Add Employee' tugmasi\n
+#### 3.12.2 Add Employee Form
+**Forma maydonlari:**
+- Full name (majburiy)
+- Role: Admin / Manager / Cashier (majburiy)
+- Phone number (majburiy, +998 formatini tekshirish)
+- Email (ixtiyoriy lekin tekshiriladi)
+- Login username (majburiy, noyob)
+- Password + Confirm Password\n- Status (Active / Disabled)
+\n**Tekshirish:**
+- Username noyob bo'lishi kerak
+- Telefon mahalliy formatgamos kelishi kerak
+- Parol uzunligi ≥ 6\n- Rolni Adminga o'zgartirish tasdiqlash modali bilan amalga oshiriladi
+
+**Yuborishdan keyin:**
+- Xodim foydalanuvchi yozuvini yaratish
+- Ruxsatlarni avtomatik tayinlash
+\n#### 3.12.3 Edit Employee Page
+**Tahrirlash mumkin bo'lgan maydonlar:**
+- Name\n- Role (Admin faqat manager/kassirlarni pasaytirishi/ko'tarishi mumkin)
+- Phone
+- Email
+- Status toggle
+\n**Tahrirlash mumkin emas:**
+- Username\n- Created date
+\n**Qo'shimcha amallar:**
+- Reset password\n- Disable employee (soft delete)
+- Force logout (faol sessiyani o'chirish)
+\n#### 3.12.4 Employee Detail Page
+**Bo'limlar:**
+\n**A) Profile Overview**
+- Name\n- Role badge
+- Contact info
+- Current status
+- Last login
+- Account created date
+\n**B) Performance Dashboard**
+- Total sales completed – Yakunlangan jami savdolar
+- Total revenue generated – Yaratilgan jami daromad
+- Average order amount – O'rtacha buyurtma summasi
+- Total returns processed – Qayta ishlangan jami qaytarishlar
+- Net profit from sales – Savdodan sof foyda
+- Productivity index – Samaradorlik indeksi (AI hisoblangan)
+
+**Diagrammalar:**
+- Daily sales chart – Kunlik savdo diagrammasi
+- Transactions count chart – Tranzaksiyalar soni diagrammasi
+- Hourly activity heatmap – Soatlik faoliyat issiqlik xaritasi
+\n**C) Time Tracking**
+Barcha login/logout ro'yxati:
+- Login time – Kirish vaqti
+- Logout time – Chiqish vaqti
+- Session duration – Sessiya davomiyligi
+- IP address – IP manzil
+
+**D) Activity Log**
+Audit trail:
+- Created orders – Yaratilgan buyurtmalar
+- Edited orders – Tahrirlangan buyurtmalar
+- Cancellations – Bekor qilishlar
+- Returns – Qaytarishlar\n- Inventory adjustments – Ombor tuzatishlari
+- Price changes – Narx o'zgarishlari
+
+Har bir yozuv quyidagilarni o'z ichiga olishi kerak:
+- Timestamp – Vaqt belgisi
+- Action – Amal\n- Affected document ID – Ta'sirlangan hujjat ID
+- Description – Tavsif
+\n#### 3.12.5 POS Terminal bilan integratsiya
+POS Terminal xodimga asoslangan mantiqni qo'llab-quvvatlashi kerak:
+\n**Login tizimi:**
+- Username/password orqali kirish
+- Sessiya kuzatuvi
+- Xodim shift start/end\n- Avtomatik shift hisobotlari
+- Cash drawer open/close yozuvlari xodimga bog'langan
+
+**Kassir cheklovlari:**
+- Mahsulotlarni tahrirlash mumkin emas
+- Sozlamalarni tahrirlash mumkin emas\n- Buyurtmalarni o'chirish mumkin emas\n- Narxlarni o'zgartirish mumkin emas\n
+**Manager:**
+- Chegirmalarni tasdiqlashi mumkin\n- Kam qoldiqdagi savdolarni bekor qilishi mumkin
+- Qaytarishlarni tasdiqlashi mumkin
+\n**Admin:**
+- To'liq kirish
+\n#### 3.12.6 Permissions & Security Layer
+**Rol asosida kirish:**
+\n**Admin:**
+- Tizimga to'liq kirish
+- Xodimlarni yaratish/tahrirlash/o'chirish
+- Barcha hisobotlarni ko'rish
+- Tizim sozlamalarini o'zgartirish
+
+**Manager:**
+- Ko'pchilik resurslarga ko'rish/tahrirlash
+- Xodimlarni o'chirish mumkin emas
+- Tizim sozlamalarini o'zgartirish mumkin emas
+- Muhim amallarni tasdiqlashi mumkin
+
+**Kassir:**
+- Cheklangan kirish
+- Savdo, qaytarishlar yaratishi mumkin
+- Moliyaviy hisobotlarni ko'rish mumkin emas
+- Omborni tahrirlash mumkin emas\n
+**Backend tekshiruvlari:**
+- Himoyalangan xodim yozuvlari (oxirgi adminni o'chirish mumkin emas)
+- Kuchli parol tekshiruvi
+- 5marta muvaffaqiyatsiz kirish urinishidan keyin hisob blokirovkasi
+
+#### 3.12.7 Employee Activity Analytics
+Tizim quyidagilarni hisoblashi kerak:
+- Employee performance score – Xodim samaradorlik balli
+- Profit contribution – Foyda hissasi
+- Transaction accuracy – Tranzaksiyaaniqligi
+- Error rate – Xato darajasi (bekor qilingan/o'chirilgan buyurtmalar)
+- Average checkout time – O'rtacha to'lov vaqti
+- Peak working hours – Eng yuqori ish soatlari
+
+**Vizualizatsiya:**
+- Line charts – Chiziqli diagrammalar
+- Bar charts – Ustunli diagrammalar
+- Pie charts – Doira diagrammalar
+\n#### 3.12.8 Export & Reporting
+Eksport imkoniyati:
+- Employees list (Excel/PDF) – Xodimlar ro'yxati
+- Time logs – Vaqt loglari
+- Cashier performance reports – Kassir samaradorlik hisobotlari
+- Employee activity logs – Xodim faoliyat loglari
+\n#### 3.12.9 Technical Requirements
+**Database fields:**
+- id
+- full_name
+- role
+- phone
+- email
+- username
+- password_hash
+- status
+- last_login
+- created_at
+- updated_at
+
+**Audit Log Table:**
+- employee_id
+- action_type
+- description
+- document_id
+- timestamp
+- ip_address
+\n**Time Tracking Table:**
+- employee_id
+- login_time
+- logout_time
+- duration
+- ip_address
+
+#### 3.12.10 UI/UX talablar
+- Toza professional layout
+- Izchil rang sxemasi
+- Responsive dizayn
+- Mobil qulay versiya
+- Sticky table header
+- Loading states va skeletons
+- Empty state placeholders
+- Xodim → buyurtmalar → faoliyat va orqaga tez navigatsiya
+
+#### 3.12.11 Ruxsatlar\n**Admin:**
+- Barcha xodim operatsiyalariga to'liq kirish
+- Rollarni o'zgartirish
+- Xodimlarni o'chirish
+\n**Manager:**
+- Xodimlarni ko'rish
+- Kassirlarni yaratish/tahrirlash
+- O'chirish huquqi yo'q
+
+**Kassir:**
+- Faqat o'z profilini ko'rish
+- Tahrirlash huquqi yo'q
+\n### 3.13 Hisobotlar (Reports Module)
+
+#### 3.13.1 Reports Main Page\n**Sahifa sarlavhasi:** Reports
+
+**Sahifa bo'limlari (kartalar ko'rinishida ikkonlar bilan):**
 - Sales Reports (Savdo hisobotlari)
-- Inventory Reports (Ombor hisobotlari)\n- Purchase Reports (Xarid hisobotlari)\n- Employee Reports (Xodimlar hisobotlari)
+- Inventory Reports (Ombor hisobotlari)
+- Purchase Reports (Xarid hisobotlari)
+- Employee Reports (Xodimlar hisobotlari)
 - Financial Reports (Moliya hisobotlari)
 - Export Center (Eksport markazi)
 
@@ -1052,17 +1242,18 @@ Mijozlar moduli hisobotlarga ma'lumot berishi kerak:
 - Date/time (Sana/vaqt)
 - Cashier (Kassir)
 - Payment type (To'lov turi: Cash / Card / Mixed)
-- Total sale (Jami savdo)\n- Profit (Foyda)
+- Total sale (Jami savdo)
+- Profit (Foyda)
 - Status (Completed / Returned / Cancelled)
-\n**Filtrlar:**
+
+**Filtrlar:**
 - Date range (Sana oralig'i)
 - Cashier (Kassir)
 - Payment type (To'lov turi)
 - Status\n
 **Jami ko'rsatkichlar:**
 - Total sales (Jami savdo)
-- Total profit (Jami foyda)
-- Total returns (Jami qaytarishlar)
+- Total profit (Jami foyda)\n- Total returns (Jami qaytarishlar)
 - Average order value (O'rtacha buyurtma qiymati)
 \n**Eksport:**
 - Excel va PDF\n\n**3.13.2.2 Product Sales Report (Mahsulot savdo hisoboti)**
@@ -1072,8 +1263,7 @@ Mijozlar moduli hisobotlarga ma'lumot berishi kerak:
 - SKU\n- Category (Kategoriya)
 - Quantity sold (Sotilgan miqdor)
 - Revenue (Daromad)
-- Profit (Foyda)
-\n**Funksiyalar:**
+- Profit (Foyda)\n\n**Funksiyalar:**
 - Top10 best-selling products (Eng ko'p sotilgan 10 mahsulot)
 - Slow-moving products (Kam sotilayotgan mahsulotlar)\n- Profit margin indicators (Foyda marjasi ko'rsatkichlari: yashil/qizil)\n
 **Filtrlar:**
@@ -1083,7 +1273,8 @@ Mijozlar moduli hisobotlarga ma'lumot berishi kerak:
 \n**3.13.2.3 Customer Sales Report (Mijoz savdo hisoboti)**
 
 **Jadval ustunlari:**
-- Customer (Mijoz)\n- Total purchases (Jami xaridlar)
+- Customer (Mijoz)
+- Total purchases (Jami xaridlar)
 - Number of orders (Buyurtmalar soni)
 - Average order value (O'rtacha buyurtma qiymati)
 - Outstanding balance (Qarz balansi)
@@ -1129,8 +1320,7 @@ Mijozlar moduli hisobotlarga ma'lumot berishi kerak:
 \n**Jami ko'rsatkichlar:**
 - Total inventory value (Jami ombor qiymati)
 - Total units in stock (Ombordagi jami birliklar)\n\n#### 3.13.4 Purchase Reports (Xarid hisobotlari)
-
-**3.13.4.1 Purchase Order Summary (Xarid buyurtmasi xulosasi)**
+\n**3.13.4.1 Purchase Order Summary (Xarid buyurtmasi xulosasi)**
 
 **Jadval ustunlari:**\n- PO number (PO raqami)
 - Supplier (Yetkazib beruvchi)
@@ -1144,7 +1334,8 @@ Mijozlar moduli hisobotlarga ma'lumot berishi kerak:
 - Total purchases (Jami xaridlar)
 - On-time delivery rate (O'z vaqtida yetkazib berish darajasi)
 - Number of purchase orders (Xarid buyurtmalari soni)
-- Returns from supplier (Yetkazib beruvchidan qaytarishlar)\n- Average cost savings (O'rtacha xarajat tejash)
+- Returns from supplier (Yetkazib beruvchidan qaytarishlar)
+- Average cost savings (O'rtacha xarajat tejash)
 
 #### 3.13.5 Employee Reports (Xodimlar hisobotlari)
 
@@ -1154,24 +1345,24 @@ Mijozlar moduli hisobotlarga ma'lumot berishi kerak:
 - Employee (Xodim)
 - Number of sales (Savdolar soni)
 - Total sales amount (Jami savdo summasi)
-- Total profit (Jami foyda)
-- Mistakes / voided orders (Xatolar / bekor qilingan buyurtmalar)
-- Working hours (Ish soatlari - ixtiyoriy)
-
+- Total profit (Jami foyda)\n- Mistakes / voided orders (Xatolar / bekor qilingan buyurtmalar)
+- Working hours (Ish soatlari - ixtiyoriy)\n
 **3.13.5.2 Login Activity Log (Kirish faoliyati logi)**
 
-**Jadval ustunlari:**\n- Employee (Xodim)
-- Login time (Kirish vaqti)\n- Logout time (Chiqish vaqti)
+**Jadval ustunlari:**
+- Employee (Xodim)\n- Login time (Kirish vaqti)
+- Logout time (Chiqish vaqti)
 - Duration (Davomiyligi)
 - IP address (IP manzil)
 \n#### 3.13.6 Financial Reports (Moliya hisobotlari)
 
-**3.13.6.1Profit & Loss Report (Foyda va zarar hisoboti)**
+**3.13.6.1 Profit & Loss Report (Foyda va zarar hisoboti)**
 \n**Bo'limlar:**
 - Gross sales (Yalpi savdo)
 - Discounts (Chegirmalar)
 - Net sales (Sof savdo)
-- Cost of goods sold - COGS (Sotilgan tovarlar xarajati)\n- Gross profit (Yalpi foyda)
+- Cost of goods sold - COGS (Sotilgan tovarlar xarajati)
+- Gross profit (Yalpi foyda)
 - Returns (Qaytarishlar)\n- Final profit (Yakuniy foyda)
 \n**Vaqt davrlari:**
 - Daily (Kunlik)
@@ -1185,8 +1376,7 @@ Mijozlar moduli hisobotlarga ma'lumot berishi kerak:
 - Card % (Karta %)
 - Mixed payments % (Aralash to'lovlar %)
 \n**Jadval:**
-- Payment type (To'lov turi)
-- Number of transactions (Tranzaksiyalar soni)
+- Payment type (To'lov turi)\n- Number of transactions (Tranzaksiyalar soni)
 - Total amount (Jami summa)
 \n#### 3.13.7 Dashboard Analytics (Ixtiyoriy qo'shimcha)\n
 **Vizual diagrammalar:**
@@ -1199,14 +1389,13 @@ Mijozlar moduli hisobotlarga ma'lumot berishi kerak:
 **Diagramma turlari:**
 - Bar chart (Ustunli diagramma)
 - Line chart (Chiziqli diagramma)
-- Pie chart (Doira diagramma)
-\n**Ishlatish:**
+- Pie chart (Doira diagramma)\n\n**Ishlatish:**
 - Recharts kutubxonasi
 - Responsive UI
 \n#### 3.13.8 Export Center (Eksport markazi)
 
 **Har bir hisobot uchun eksport qo'llab-quvvatlash:**\n- Excel\n- PDF
-- CSV\n\n#### 3.13.9 Filtrlar va qidiruv (Global mantiq)
+- CSV\n\n#### 3.13.9Filtrlar va qidiruv (Global mantiq)
 
 **Har bir hisobot quyidagilarni qo'llab-quvvatlashi kerak:**
 - Global tezkor qidiruv
@@ -1235,15 +1424,16 @@ Mijozlar moduli hisobotlarga ma'lumot berishi kerak:
 - Sticky table header (Yopishqoq jadval sarlavhasi)
 - Loading states va skeletons (Yuklash holatlari va skeletlar)
 - Empty state placeholders (Bo'sh holat to'ldirgichlari)
-
-### 3.14 Sozlamalar (Settings)\n- Tizim sozlamalari\n- Kassa sozlamalari
+\n### 3.14 Sozlamalar (Settings)\n- Tizim sozlamalari
+- Kassa sozlamalari
 - Printer sozlamalari
 - Device binding (faqat bitta kassaga ulangan)
 - Qaytarish siyosati sozlamalari
 - Mijoz sozlamalari (kredit limiti, qarzdorlik siyosati)
-\n##4. Professional funksiyalar
+\n## 4. Professional funksiyalar
 - Hold order (chekni vaqtincha saqlash)
-- Split payment (bir nechta to'lov turi)\n- Quick add product (tezkor qo'shish)
+- Split payment (bir nechta to'lov turi)
+- Quick add product (tezkor qo'shish)
 - Z-otchet va X-otchet\n- Kassa ochilishi/yopilishi
 - Shift-based accounting\n- Device binding\n- To'liq Sales Returns tizimi
 - To'liq Customers tizimi (balans, qarz, kredit limiti)
@@ -1252,6 +1442,7 @@ Mijozlar moduli hisobotlarga ma'lumot berishi kerak:
 -Ombor bilan avtomatik sinxronizatsiya
 - Audit trail va loglar
 - To'liq Reports Module (Sales, Inventory, Purchase, Employee, Financial analytics)
+- To'liq Employees Module (yaratish, tahrirlash, rol asosida ruxsatlar, samaradorlik tahlili, vaqt kuzatuvi, audit loglari, POS integratsiyasi)
 \n## 5. Texnik talablar
 \n### 5.1 UI/UX talablar
 - Minimalist va silliq dizayn
@@ -1271,6 +1462,10 @@ Mijozlar moduli hisobotlarga ma'lumot berishi kerak:
 - Kassa bo'yicha loglar: kim nima qilgan\n- Qaytarishlar uchun audit trail
 - O'chirish va bekor qilish cheklovlari
 - Mijoz ma'lumotlari xavfsizligi
+- Xodim ma'lumotlari xavfsizligi
+- Kuchli parol siyosati
+- Session management
+- IP tracking
 \n### 5.3 Integratsiyalar
 - Fiskal printer
 - Barcode scanner
@@ -1282,8 +1477,8 @@ Mijozlar moduli hisobotlarga ma'lumot berishi kerak:
 - Inventory Management bilan to'liq integratsiya
 - Purchase Orders bilan to'liq integratsiya
 - Reports Module bilan to'liq integratsiya
-
-## 6. Tizim nomerlash siyosati
+- Employees Module bilan to'liq integratsiya
+\n## 6. Tizim nomerlash siyosati
 - Chek / Buyurtma: POS-YYYYMMDD-#####
   - Misol: POS-20251205-00042
 - Qaytarish: RET-YYYYMMDD-#####
@@ -1292,11 +1487,12 @@ Mijozlar moduli hisobotlarga ma'lumot berishi kerak:
   - Misol: PO-20251206-00015
 - Inventarizatsiya: INV-YYYY-#####
 - SKU: SKU-000123\n\n## 7. Modullar integratsiyasi
-Mahsulotlar, Kategoriyalar, Inventory Management, Buyurtmalar, Sales Returns, Purchase Orders, Customers va Reports modullari quyidagi modullar bilan to'liq integratsiyalangan bo'lishi kerak:
+Mahsulotlar, Kategoriyalar, Inventory Management, Buyurtmalar, Sales Returns, Purchase Orders, Customers, Employees va Reports modullari quyidagi modullar bilan to'liq integratsiyalangan bo'lishi kerak:
 - POS Terminal
 - Ombor (Inventory)\n- Xarid buyurtmalari (Purchase Orders)
 - Sotuvlar (Sales)\n- Hisobotlar (Reports)
 - To'lovlar (Payments)
+- Xodimlar (Employees)
 \nBarcha operatsiyalar to'liq sinxronlashtirilgan va audit qilinadigan bo'lishi kerak.
 
 ## 8. Dizayn uslubi
@@ -1319,3 +1515,4 @@ Mahsulotlar, Kategoriyalar, Inventory Management, Buyurtmalar, Sales Returns, Pu
   - Musbat (+) → Yashil
   - Manfiy (–) → Qizil
 - Diagrammalar uchun Recharts kutubxonasi\n- Reports sahifalarida professional data visualization
+- Employee performance indicatorsuchun rangli ko'rsatkichlar

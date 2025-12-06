@@ -25,6 +25,8 @@ import InventoryMovementReport from './pages/reports/inventory/InventoryMovement
 import ProfitLossReport from './pages/reports/financial/ProfitLossReport';
 import PaymentMethodReport from './pages/reports/financial/PaymentMethodReport';
 import Employees from './pages/Employees';
+import EmployeeForm from './pages/employees/EmployeeForm';
+import EmployeeDetail from './pages/employees/EmployeeDetail';
 import Settings from './pages/Settings';
 
 export interface RouteConfig {
@@ -237,6 +239,30 @@ const routes: RouteConfig[] = [
     path: '/employees',
     element: <Employees />,
     visible: true,
+    requireAuth: true,
+    allowedRoles: ['admin'],
+  },
+  {
+    name: 'Add Employee',
+    path: '/employees/new',
+    element: <EmployeeForm />,
+    visible: false,
+    requireAuth: true,
+    allowedRoles: ['admin'],
+  },
+  {
+    name: 'Edit Employee',
+    path: '/employees/:id/edit',
+    element: <EmployeeForm />,
+    visible: false,
+    requireAuth: true,
+    allowedRoles: ['admin'],
+  },
+  {
+    name: 'Employee Detail',
+    path: '/employees/:id',
+    element: <EmployeeDetail />,
+    visible: false,
     requireAuth: true,
     allowedRoles: ['admin'],
   },

@@ -56,8 +56,15 @@
 - [ ] Sales returns page (placeholder created)
 
 ## Phase 7: Customer & Employee Management
-- [ ] Customers list page (placeholder created)
-- [ ] Employees management page (placeholder created)
+- [x] Customers list page (with filters and sorting)
+- [x] Employees management page (fully implemented)
+  - [x] Employees list with search and filters
+  - [x] Add/Edit employee form with validation
+  - [x] Employee detail page with performance dashboard
+  - [x] Time tracking (login/logout sessions)
+  - [x] Activity logs
+  - [x] Role-based permissions
+  - [x] Account status management
 
 ## Phase 8: Reports
 - [x] Reports main page (navigation hub)
