@@ -605,6 +605,7 @@ export default function POSTerminal() {
         tax_amount: 0,
         total_amount: total,
         paid_amount: paidAmount,
+        credit_amount: 0,
         change_amount: changeAmount,
         status: 'completed' as const,
         payment_status: 'paid' as const,

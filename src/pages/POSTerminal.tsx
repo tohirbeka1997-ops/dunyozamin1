@@ -84,6 +84,7 @@ export default function POSTerminal() {
   const [shiftDialogOpen, setShiftDialogOpen] = useState(false);
   const [openingCash, setOpeningCash] = useState('');
   const [editingQuantity, setEditingQuantity] = useState<{ [key: string]: string }>({});
+  const [creditAmount, setCreditAmount] = useState<string>('');
   
   // Held orders state
   const [heldOrders, setHeldOrders] = useState<HeldOrder[]>([]);
@@ -782,30 +783,43 @@ export default function POSTerminal() {
     let orderPayments: { method: PaymentMethod; amount: number }[] = [];
     let paidAmount = 0;
     let changeAmount = 0;
+    let creditAmountValue = 0;
+
+    // Check if there's a credit payment in the payments array (from partial credit flow)
+    const creditPayment = payments.find(p => p.method === 'credit');
+    if (creditPayment) {
+      creditAmountValue = creditPayment.amount;
+      // Remove credit from orderPayments as it's handled separately
+      orderPayments = payments.filter(p => p.method !== 'credit');
+    }
 
     if (paymentMethod === 'cash') {
       const cashAmount = Number(cashReceived);
-      if (!cashAmount || cashAmount < total) {
+      const requiredAmount = total - creditAmountValue;
+      
+      if (!cashAmount || cashAmount < requiredAmount) {
         toast({
           title: 'Insufficient Cash',
-          description: `Cash received (${cashAmount.toFixed(2)} UZS) must be greater than or equal to total (${total.toFixed(2)} UZS)`,
+          description: `Cash received (${cashAmount.toFixed(2)} UZS) must be greater than or equal to required amount (${requiredAmount.toFixed(2)} UZS)`,
           variant: 'destructive',
         });
         return;
       }
       orderPayments = [{ method: 'cash', amount: cashAmount }];
       paidAmount = cashAmount;
-      changeAmount = cashAmount - total;
+      changeAmount = cashAmount - requiredAmount;
     } else if (paymentMethod === 'card') {
-      orderPayments = [{ method: 'card', amount: total }];
-      paidAmount = total;
+      const requiredAmount = total - creditAmountValue;
+      orderPayments = [{ method: 'card', amount: requiredAmount }];
+      paidAmount = requiredAmount;
       changeAmount = 0;
     } else if (paymentMethod === 'qr') {
-      orderPayments = [{ method: 'qr', amount: total }];
-      paidAmount = total;
+      const requiredAmount = total - creditAmountValue;
+      orderPayments = [{ method: 'qr', amount: requiredAmount }];
+      paidAmount = requiredAmount;
       changeAmount = 0;
     } else if (paymentMethod === 'mixed') {
-      if (payments.length === 0) {
+      if (orderPayments.length === 0) {
         toast({
           title: 'No Payment Methods',
           description: 'Please add at least one payment method for mixed payment',
@@ -813,18 +827,19 @@ export default function POSTerminal() {
         });
         return;
       }
-      const totalPaid = payments.reduce((sum, p) => sum + p.amount, 0);
-      if (Math.abs(totalPaid - total) > 0.01) {
+      const totalPaid = orderPayments.reduce((sum, p) => sum + p.amount, 0);
+      const requiredAmount = total - creditAmountValue;
+      
+      if (Math.abs(totalPaid - requiredAmount) > 0.01) {
         toast({
           title: 'Payment Mismatch',
-          description: `Payment amounts do not match order total. Paid: ${totalPaid.toFixed(2)} UZS, Required: ${total.toFixed(2)} UZS`,
+          description: `Payment amounts do not match required amount. Paid: ${totalPaid.toFixed(2)} UZS, Required: ${requiredAmount.toFixed(2)} UZS`,
           variant: 'destructive',
         });
         return;
       }
-      orderPayments = payments;
       paidAmount = totalPaid;
-      changeAmount = totalPaid - total;
+      changeAmount = totalPaid - requiredAmount;
     }
 
     try {
@@ -841,10 +856,12 @@ export default function POSTerminal() {
         tax_amount: 0,
         total_amount: total,
         paid_amount: paidAmount,
-        credit_amount: 0,
+        credit_amount: creditAmountValue,
         change_amount: changeAmount,
         status: 'completed' as const,
-        payment_status: 'paid' as const,
+        payment_status: creditAmountValue === total ? 'on_credit' as const : 
+                       creditAmountValue === 0 ? 'paid' as const : 
+                       'partially_paid' as const,
         notes: null,
       };
 
@@ -871,12 +888,24 @@ export default function POSTerminal() {
       // Call the atomic RPC function
       const result = await createOrder(order, orderItems, orderPaymentsData);
 
-      // Success!
+      // Success message based on payment type
+      let successMessage = '';
+      if (creditAmountValue > 0 && creditAmountValue < total) {
+        successMessage = `Order ${orderNumber} completed. ${creditAmountValue.toFixed(2)} UZS on credit, ${paidAmount.toFixed(2)} UZS paid.`;
+        if (changeAmount > 0) {
+          successMessage += ` Change: ${changeAmount.toFixed(2)} UZS`;
+        }
+      } else if (creditAmountValue === total) {
+        successMessage = `Order ${orderNumber} completed ON CREDIT.`;
+      } else {
+        successMessage = changeAmount > 0 
+          ? `Order ${orderNumber} completed. Change: ${changeAmount.toFixed(2)} UZS`
+          : `Order ${orderNumber} completed successfully`;
+      }
+
       toast({
         title: '✅ Order Completed Successfully',
-        description: changeAmount > 0 
-          ? `Order ${orderNumber} completed. Change: ${changeAmount.toFixed(2)} UZS`
-          : `Order ${orderNumber} completed successfully`,
+        description: successMessage,
         className: 'bg-green-50 border-green-200',
       });
 
@@ -887,7 +916,13 @@ export default function POSTerminal() {
       setSelectedCustomer(null);
       setPaymentDialogOpen(false);
       setCashReceived('');
+      setCreditAmount('');
       setSelectedCartIndex(-1);
+
+      // Refresh customer data if credit was used
+      if (creditAmountValue > 0) {
+        loadCustomers();
+      }
     } catch (error) {
       console.error('Order completion error:', error);
       
@@ -960,9 +995,31 @@ export default function POSTerminal() {
       return;
     }
 
+    // Determine credit amount (default to full total if not specified)
+    const creditAmountValue = creditAmount ? Number(creditAmount) : total;
+    
+    // Validate credit amount
+    if (creditAmountValue < 0) {
+      toast({
+        title: 'Invalid Credit Amount',
+        description: 'Credit amount cannot be negative',
+        variant: 'destructive',
+      });
+      return;
+    }
+
+    if (creditAmountValue > total) {
+      toast({
+        title: 'Invalid Credit Amount',
+        description: 'Credit amount cannot exceed order total',
+        variant: 'destructive',
+      });
+      return;
+    }
+
     // Check credit limit if set
     if (selectedCustomer.credit_limit > 0) {
-      const newBalance = (selectedCustomer.balance || 0) + total;
+      const newBalance = (selectedCustomer.balance || 0) + creditAmountValue;
       if (newBalance > selectedCustomer.credit_limit) {
         toast({
           title: 'Credit Limit Exceeded',
@@ -973,6 +1030,26 @@ export default function POSTerminal() {
       }
     }
 
+    // If partial credit, need to collect remaining amount
+    if (creditAmountValue < total) {
+      const remainingAmount = total - creditAmountValue;
+      
+      toast({
+        title: 'Partial Credit Confirmed',
+        description: `${creditAmountValue.toFixed(2)} UZS on credit. Please collect remaining ${remainingAmount.toFixed(2)} UZS.`,
+        className: 'bg-blue-50 border-blue-200',
+      });
+
+      // Close payment dialog and switch to mixed payment tab
+      // Store credit amount in payments array for later processing
+      setPayments([{ method: 'credit' as PaymentMethod, amount: creditAmountValue }]);
+      
+      // Keep dialog open but switch to mixed tab to collect remaining payment
+      // User will need to add remaining payment methods
+      return;
+    }
+
+    // Full credit sale - process immediately
     try {
       const orderItems = cart.map((item) => ({
         product_id: item.product.id,
@@ -984,7 +1061,7 @@ export default function POSTerminal() {
         total: item.total,
       }));
 
-      // Call the credit order RPC function
+      // Call the credit order RPC function (legacy - for full credit only)
       const result = await createCreditOrder({
         customer_id: selectedCustomer.id,
         cashier_id: profile.id,
@@ -1015,6 +1092,7 @@ export default function POSTerminal() {
       setDiscount({ type: 'amount', value: 0 });
       setPaymentDialogOpen(false);
       setCashReceived('');
+      setCreditAmount('');
       setSelectedCartIndex(-1);
 
       // Refresh customer data to show updated balance
@@ -1688,39 +1766,125 @@ export default function POSTerminal() {
                         <span className="font-semibold">{selectedCustomer.credit_limit.toFixed(2)} UZS</span>
                       </div>
                     )}
-                    <div className="border-t pt-2 mt-2">
-                      <div className="flex justify-between">
-                        <span className="text-sm text-muted-foreground">Order Total:</span>
-                        <span className="font-bold text-lg">{total.toFixed(2)} UZS</span>
-                      </div>
-                      <div className="flex justify-between mt-1">
-                        <span className="text-sm text-muted-foreground">New Balance:</span>
-                        <span className={`font-bold ${((selectedCustomer.balance || 0) + total) > (selectedCustomer.credit_limit || 0) && selectedCustomer.credit_limit > 0 ? 'text-destructive' : 'text-primary'}`}>
-                          {((selectedCustomer.balance || 0) + total).toFixed(2)} UZS
-                        </span>
-                      </div>
+                    <div className="flex justify-between">
+                      <span className="text-sm text-muted-foreground">Available Credit:</span>
+                      <span className="font-semibold text-primary">
+                        {(() => {
+                          const maxCredit = selectedCustomer.credit_limit > 0 
+                            ? Math.min(total, selectedCustomer.credit_limit - (selectedCustomer.balance || 0))
+                            : total;
+                          return Math.max(0, maxCredit).toFixed(2);
+                        })()} UZS
+                      </span>
                     </div>
                   </div>
-                  {selectedCustomer.credit_limit > 0 && ((selectedCustomer.balance || 0) + total) > selectedCustomer.credit_limit && (
+
+                  <div className="space-y-2">
+                    <Label htmlFor="credit-amount">Credit Amount (UZS)</Label>
+                    <Input
+                      id="credit-amount"
+                      type="number"
+                      step="0.01"
+                      min="0"
+                      max={(() => {
+                        const maxCredit = selectedCustomer.credit_limit > 0 
+                          ? Math.min(total, selectedCustomer.credit_limit - (selectedCustomer.balance || 0))
+                          : total;
+                        return Math.max(0, maxCredit);
+                      })()}
+                      value={creditAmount}
+                      onChange={(e) => {
+                        const value = e.target.value;
+                        const numValue = Number(value);
+                        const maxCredit = selectedCustomer.credit_limit > 0 
+                          ? Math.min(total, selectedCustomer.credit_limit - (selectedCustomer.balance || 0))
+                          : total;
+                        
+                        if (value === '' || (numValue >= 0 && numValue <= Math.max(0, maxCredit))) {
+                          setCreditAmount(value);
+                        }
+                      }}
+                      placeholder={`Max: ${(() => {
+                        const maxCredit = selectedCustomer.credit_limit > 0 
+                          ? Math.min(total, selectedCustomer.credit_limit - (selectedCustomer.balance || 0))
+                          : total;
+                        return Math.max(0, maxCredit).toFixed(2);
+                      })()}`}
+                      autoFocus
+                    />
+                    <p className="text-xs text-muted-foreground">
+                      Enter the amount to be paid on credit. Leave empty or enter full amount for complete credit sale.
+                    </p>
+                  </div>
+
+                  <div className="p-4 bg-muted rounded-lg space-y-2">
+                    <div className="flex justify-between">
+                      <span className="text-sm text-muted-foreground">Order Total:</span>
+                      <span className="font-bold">{total.toFixed(2)} UZS</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-sm text-muted-foreground">Credit Amount:</span>
+                      <span className="font-bold text-primary">
+                        {(creditAmount ? Number(creditAmount) : total).toFixed(2)} UZS
+                      </span>
+                    </div>
+                    {creditAmount && Number(creditAmount) < total && (
+                      <div className="flex justify-between border-t pt-2">
+                        <span className="text-sm font-medium">Remaining to Pay:</span>
+                        <span className="font-bold text-destructive">
+                          {(total - Number(creditAmount)).toFixed(2)} UZS
+                        </span>
+                      </div>
+                    )}
+                    <div className="flex justify-between border-t pt-2">
+                      <span className="text-sm text-muted-foreground">New Balance:</span>
+                      <span className={`font-bold ${
+                        ((selectedCustomer.balance || 0) + (creditAmount ? Number(creditAmount) : total)) > (selectedCustomer.credit_limit || 0) && selectedCustomer.credit_limit > 0 
+                          ? 'text-destructive' 
+                          : 'text-primary'
+                      }`}>
+                        {((selectedCustomer.balance || 0) + (creditAmount ? Number(creditAmount) : total)).toFixed(2)} UZS
+                      </span>
+                    </div>
+                  </div>
+
+                  {selectedCustomer.credit_limit > 0 && 
+                   ((selectedCustomer.balance || 0) + (creditAmount ? Number(creditAmount) : total)) > selectedCustomer.credit_limit && (
                     <div className="p-3 bg-destructive/10 border border-destructive/20 rounded-lg">
                       <p className="text-sm text-destructive font-medium">
                         ⚠️ Credit Limit Exceeded
                       </p>
                       <p className="text-xs text-destructive/80 mt-1">
-                        This sale would exceed the customer's credit limit.
+                        This credit amount would exceed the customer's credit limit.
                       </p>
                     </div>
                   )}
+
+                  {creditAmount && Number(creditAmount) < total && (
+                    <div className="p-3 bg-blue-50 border border-blue-200 rounded-lg">
+                      <p className="text-sm text-blue-900 font-medium">
+                        ℹ️ Partial Credit Payment
+                      </p>
+                      <p className="text-xs text-blue-700 mt-1">
+                        After confirming, you'll need to collect the remaining {(total - Number(creditAmount)).toFixed(2)} UZS via Cash, Card, or QR.
+                      </p>
+                    </div>
+                  )}
+
                   <Button
                     className="w-full"
                     onClick={handleCreditSale}
                     disabled={
                       selectedCustomer.status !== 'active' ||
-                      (selectedCustomer.credit_limit > 0 && ((selectedCustomer.balance || 0) + total) > selectedCustomer.credit_limit)
+                      (selectedCustomer.credit_limit > 0 && 
+                       ((selectedCustomer.balance || 0) + (creditAmount ? Number(creditAmount) : total)) > selectedCustomer.credit_limit) ||
+                      (creditAmount && Number(creditAmount) < 0)
                     }
                   >
                     <Tag className="h-5 w-5 mr-2" />
-                    Sell on Credit
+                    {creditAmount && Number(creditAmount) < total 
+                      ? 'Continue with Partial Credit' 
+                      : 'Sell on Credit'}
                   </Button>
                   {selectedCustomer.status !== 'active' && (
                     <p className="text-xs text-center text-destructive">

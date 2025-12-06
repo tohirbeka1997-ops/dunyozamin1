@@ -1,8 +1,8 @@
 export type UserRole = 'admin' | 'manager' | 'cashier';
 
 export type OrderStatus = 'hold' | 'completed' | 'returned';
-export type PaymentStatus = 'pending' | 'partial' | 'paid' | 'on_credit';
-export type PaymentMethod = 'cash' | 'card' | 'terminal' | 'qr' | 'mixed';
+export type PaymentStatus = 'pending' | 'partial' | 'paid' | 'on_credit' | 'partially_paid';
+export type PaymentMethod = 'cash' | 'card' | 'terminal' | 'qr' | 'mixed' | 'credit';
 export type RefundMethod = 'cash' | 'card' | 'credit';
 export type MovementType = 'purchase' | 'sale' | 'return' | 'adjustment' | 'audit';
 export type ShiftStatus = 'open' | 'closed';
