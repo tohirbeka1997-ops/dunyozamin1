@@ -4,30 +4,18 @@ import { Toaster } from './components/ui/toaster';
 import routes from './routes';
 import MainLayout from './components/layout/MainLayout';
 
-function PrivateRoute({ children, allowedRoles }: { children: React.ReactNode; allowedRoles?: string[] }) {
-  const { user, profile, loading } = useAuth();
-  const location = useLocation();
-
-  if (loading) {
-    return (
-      <div className="flex items-center justify-center min-h-screen">
-        <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-primary" />
-      </div>
-    );
-  }
-
-  if (!user) {
-    return <Navigate to="/login" state={{ from: location }} replace />;
-  }
-
-  if (allowedRoles && profile && !allowedRoles.includes(profile.role)) {
-    return <Navigate to="/" replace />;
-  }
-
-  return <>{children}</>;
+function App() {
+  return (
+    <AuthProvider>
+      <Router>
+        <Toaster />
+        <AppContent />
+      </Router>
+    </AuthProvider>
+  );
 }
 
-function AppRoutes() {
+function AppContent() {
   return (
     <Routes>
       {routes.map((route, index) => {
@@ -51,15 +39,27 @@ function AppRoutes() {
   );
 }
 
-function App() {
-  return (
-    <AuthProvider>
-      <Router>
-        <Toaster />
-        <AppRoutes />
-      </Router>
-    </AuthProvider>
-  );
+function PrivateRoute({ children, allowedRoles }: { children: React.ReactNode; allowedRoles?: string[] }) {
+  const { user, profile, loading } = useAuth();
+  const location = useLocation();
+
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center min-h-screen">
+        <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-primary" />
+      </div>
+    );
+  }
+
+  if (!user) {
+    return <Navigate to="/login" state={{ from: location }} replace />;
+  }
+
+  if (allowedRoles && profile && !allowedRoles.includes(profile.role)) {
+    return <Navigate to="/" replace />;
+  }
+
+  return <>{children}</>;
 }
 
 export default App;
