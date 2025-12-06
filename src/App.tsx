@@ -1,4 +1,5 @@
 import { BrowserRouter as Router, Routes, Route, Navigate, useLocation } from 'react-router-dom';
+import type { ReactNode } from 'react';
 import { AuthProvider, useAuth } from './contexts/AuthContext';
 import { Toaster } from './components/ui/toaster';
 import routes from './routes';
@@ -39,7 +40,7 @@ function AppContent() {
   );
 }
 
-function PrivateRoute({ children, allowedRoles }: { children: React.ReactNode; allowedRoles?: string[] }) {
+function PrivateRoute({ children, allowedRoles }: { children: ReactNode; allowedRoles?: string[] }) {
   const { user, profile, loading } = useAuth();
   const location = useLocation();
 
