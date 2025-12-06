@@ -17,6 +17,7 @@ import InventoryDetail from './pages/InventoryDetail';
 import PurchaseOrders from './pages/PurchaseOrders';
 import SalesReturns from './pages/SalesReturns';
 import CreateReturn from './pages/CreateReturn';
+import EditReturn from './pages/EditReturn';
 import ReturnDetail from './pages/ReturnDetail';
 import Reports from './pages/Reports';
 import DailySalesReport from './pages/reports/sales/DailySalesReport';
@@ -131,6 +132,13 @@ const routes: RouteConfig[] = [
     name: 'Create Return',
     path: '/sales-returns/create',
     element: <CreateReturn />,
+    visible: false,
+    requireAuth: true,
+  },
+  {
+    name: 'Edit Return',
+    path: '/sales-returns/:id/edit',
+    element: <EditReturn />,
     visible: false,
     requireAuth: true,
   },

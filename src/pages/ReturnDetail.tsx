@@ -23,10 +23,11 @@ import {
   AlertDialogTitle,
   AlertDialogTrigger,
 } from '@/components/ui/alert-dialog';
-import { getSalesReturnById, completeSalesReturn, cancelSalesReturn } from '@/db/api';
+import { getSalesReturnById, deleteSalesReturn, updateSalesReturn } from '@/db/api';
 import type { SalesReturnWithDetails } from '@/types/database';
-import { ArrowLeft, Printer, CheckCircle, XCircle, Package } from 'lucide-react';
+import { ArrowLeft, Printer, Package, Edit, Trash2 } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
+import { Skeleton } from '@/components/ui/skeleton';
 
 export default function ReturnDetail() {
   const { id } = useParams<{ id: string }>();
@@ -50,9 +51,10 @@ export default function ReturnDetail() {
       const data = await getSalesReturnById(id);
       setReturnData(data);
     } catch (error) {
+      console.error('Error loading return:', error);
       toast({
         title: 'Error',
-        description: 'Failed to load return details',
+        description: error instanceof Error ? error.message : 'Failed to load return details',
         variant: 'destructive',
       });
       navigate('/sales-returns');
@@ -66,16 +68,17 @@ export default function ReturnDetail() {
     
     try {
       setActionLoading(true);
-      await completeSalesReturn(id);
+      await updateSalesReturn(id, { status: 'Completed' });
       toast({
         title: 'Success',
-        description: 'Return completed successfully. Inventory has been updated.',
+        description: 'Return marked as completed',
       });
       loadReturnData();
     } catch (error) {
+      console.error('Error completing return:', error);
       toast({
         title: 'Error',
-        description: 'Failed to complete return',
+        description: error instanceof Error ? error.message : 'Failed to complete return',
         variant: 'destructive',
       });
     } finally {
@@ -83,24 +86,24 @@ export default function ReturnDetail() {
     }
   };
 
-  const handleCancel = async () => {
+  const handleDelete = async () => {
     if (!id) return;
     
     try {
       setActionLoading(true);
-      await cancelSalesReturn(id);
+      await deleteSalesReturn(id);
       toast({
         title: 'Success',
-        description: 'Return cancelled successfully',
+        description: 'Return deleted successfully. Inventory has been reversed.',
       });
-      loadReturnData();
+      navigate('/sales-returns');
     } catch (error) {
+      console.error('Error deleting return:', error);
       toast({
         title: 'Error',
-        description: 'Failed to cancel return',
+        description: error instanceof Error ? error.message : 'Failed to delete return',
         variant: 'destructive',
       });
-    } finally {
       setActionLoading(false);
     }
   };
@@ -132,8 +135,16 @@ export default function ReturnDetail() {
 
   if (loading) {
     return (
-      <div className="flex justify-center items-center min-h-screen">
-        <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-primary" />
+      <div className="space-y-6">
+        <div className="flex items-center justify-between">
+          <Skeleton className="h-10 w-64 bg-muted" />
+          <Skeleton className="h-10 w-32 bg-muted" />
+        </div>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+          <Skeleton className="h-64 bg-muted" />
+          <Skeleton className="h-64 bg-muted" />
+        </div>
+        <Skeleton className="h-96 bg-muted" />
       </div>
     );
   }
@@ -150,19 +161,62 @@ export default function ReturnDetail() {
     );
   }
 
+  const canEdit = returnData.status !== 'Completed';
+  const canDelete = returnData.status !== 'Completed';
+
   return (
     <div className="space-y-6">
+      {/* Header */}
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-4">
-          <Button variant="ghost" size="icon" onClick={() => navigate('/sales-returns')}>
+          <Button variant="outline" size="icon" onClick={() => navigate('/sales-returns')}>
             <ArrowLeft className="h-4 w-4" />
           </Button>
           <div>
-            <h1 className="text-3xl font-bold">Return Details</h1>
-            <p className="text-muted-foreground">{returnData.return_number}</p>
+            <h1 className="text-2xl font-bold">Return Details</h1>
+            <p className="text-sm text-muted-foreground">{returnData.return_number}</p>
           </div>
         </div>
         <div className="flex items-center gap-2">
+          {canEdit && (
+            <Button
+              variant="outline"
+              onClick={() => navigate(`/sales-returns/${id}/edit`)}
+            >
+              <Edit className="h-4 w-4 mr-2" />
+              Edit
+            </Button>
+          )}
+          {canDelete && (
+            <AlertDialog>
+              <AlertDialogTrigger asChild>
+                <Button variant="destructive" disabled={actionLoading}>
+                  <Trash2 className="h-4 w-4 mr-2" />
+                  Delete
+                </Button>
+              </AlertDialogTrigger>
+              <AlertDialogContent>
+                <AlertDialogHeader>
+                  <AlertDialogTitle>Delete Return?</AlertDialogTitle>
+                  <AlertDialogDescription>
+                    This will permanently delete the return and reverse all inventory changes.
+                    This action cannot be undone.
+                  </AlertDialogDescription>
+                </AlertDialogHeader>
+                <AlertDialogFooter>
+                  <AlertDialogCancel>Cancel</AlertDialogCancel>
+                  <AlertDialogAction onClick={handleDelete} className="bg-destructive text-destructive-foreground">
+                    Delete
+                  </AlertDialogAction>
+                </AlertDialogFooter>
+              </AlertDialogContent>
+            </AlertDialog>
+          )}
+          {returnData.status === 'Pending' && (
+            <Button onClick={handleComplete} disabled={actionLoading}>
+              Mark as Completed
+            </Button>
+          )}
           <Button
             variant="outline"
             onClick={() => {
@@ -175,54 +229,10 @@ export default function ReturnDetail() {
             <Printer className="h-4 w-4 mr-2" />
             Print
           </Button>
-          {returnData.status === 'Pending' && (
-            <>
-              <AlertDialog>
-                <AlertDialogTrigger asChild>
-                  <Button disabled={actionLoading}>
-                    <CheckCircle className="h-4 w-4 mr-2" />
-                    Complete Return
-                  </Button>
-                </AlertDialogTrigger>
-                <AlertDialogContent>
-                  <AlertDialogHeader>
-                    <AlertDialogTitle>Complete Return?</AlertDialogTitle>
-                    <AlertDialogDescription>
-                      This will update the inventory and mark the return as completed. This action cannot be undone.
-                    </AlertDialogDescription>
-                  </AlertDialogHeader>
-                  <AlertDialogFooter>
-                    <AlertDialogCancel>Cancel</AlertDialogCancel>
-                    <AlertDialogAction onClick={handleComplete}>Complete</AlertDialogAction>
-                  </AlertDialogFooter>
-                </AlertDialogContent>
-              </AlertDialog>
-
-              <AlertDialog>
-                <AlertDialogTrigger asChild>
-                  <Button variant="destructive" disabled={actionLoading}>
-                    <XCircle className="h-4 w-4 mr-2" />
-                    Cancel Return
-                  </Button>
-                </AlertDialogTrigger>
-                <AlertDialogContent>
-                  <AlertDialogHeader>
-                    <AlertDialogTitle>Cancel Return?</AlertDialogTitle>
-                    <AlertDialogDescription>
-                      This will cancel the return. No inventory changes will be made.
-                    </AlertDialogDescription>
-                  </AlertDialogHeader>
-                  <AlertDialogFooter>
-                    <AlertDialogCancel>No</AlertDialogCancel>
-                    <AlertDialogAction onClick={handleCancel}>Yes, Cancel</AlertDialogAction>
-                  </AlertDialogFooter>
-                </AlertDialogContent>
-              </AlertDialog>
-            </>
-          )}
         </div>
       </div>
 
+      {/* Return Information */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
         <Card>
           <CardHeader>
@@ -246,21 +256,22 @@ export default function ReturnDetail() {
                     className="p-0 h-auto font-medium"
                     onClick={() => navigate(`/orders/${returnData.order_id}`)}
                   >
-                    {returnData.order?.order_number}
+                    {returnData.order?.order_number || 'N/A'}
                   </Button>
                 </p>
               </div>
               <div>
-                <Label className="text-muted-foreground">Date & Time</Label>
-                <p className="font-medium">{new Date(returnData.created_at).toLocaleString()}</p>
+                <Label className="text-muted-foreground">Total Amount</Label>
+                <p className="font-medium text-lg">${returnData.total_amount.toFixed(2)}</p>
               </div>
-              <div>
+              <div className="col-span-2">
                 <Label className="text-muted-foreground">Customer</Label>
-                <p className="font-medium">{returnData.customer?.name || 'Walk-in'}</p>
-              </div>
-              <div>
-                <Label className="text-muted-foreground">Cashier</Label>
-                <p className="font-medium">{returnData.cashier?.username || '-'}</p>
+                <p className="font-medium">
+                  {returnData.customer?.name || 'Walk-in Customer'}
+                </p>
+                {returnData.customer?.phone && (
+                  <p className="text-sm text-muted-foreground">{returnData.customer.phone}</p>
+                )}
               </div>
             </div>
           </CardContent>
@@ -275,22 +286,25 @@ export default function ReturnDetail() {
               <Label className="text-muted-foreground">Reason for Return</Label>
               <p className="font-medium">{getReasonLabel(returnData.reason)}</p>
             </div>
-            {returnData.refund_method && (
-              <div>
-                <Label className="text-muted-foreground">Refund Method</Label>
-                <p className="font-medium capitalize">{returnData.refund_method.replace('_', ' ')}</p>
-              </div>
-            )}
-            {returnData.notes && (
-              <div>
-                <Label className="text-muted-foreground">Notes</Label>
-                <p className="text-sm">{returnData.notes}</p>
-              </div>
-            )}
+            <div>
+              <Label className="text-muted-foreground">Notes</Label>
+              <p className="text-sm">{returnData.notes || 'No notes provided'}</p>
+            </div>
+            <div>
+              <Label className="text-muted-foreground">Processed By</Label>
+              <p className="font-medium">{returnData.cashier?.username || 'N/A'}</p>
+            </div>
+            <div>
+              <Label className="text-muted-foreground">Created At</Label>
+              <p className="text-sm">
+                {new Date(returnData.created_at).toLocaleString()}
+              </p>
+            </div>
           </CardContent>
         </Card>
       </div>
 
+      {/* Returned Items */}
       <Card>
         <CardHeader>
           <CardTitle>Returned Items</CardTitle>
@@ -303,62 +317,66 @@ export default function ReturnDetail() {
                 <TableHead>SKU</TableHead>
                 <TableHead className="text-center">Quantity</TableHead>
                 <TableHead className="text-right">Unit Price</TableHead>
-                <TableHead className="text-right">Line Total</TableHead>
+                <TableHead className="text-right">Total</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
-              {returnData.items?.map((item: any) => (
-                <TableRow key={item.id}>
-                  <TableCell className="font-medium">
-                    {item.product?.name || item.product_name}
-                  </TableCell>
-                  <TableCell>{item.product?.sku || '-'}</TableCell>
-                  <TableCell className="text-center">{item.quantity}</TableCell>
-                  <TableCell className="text-right">${Number(item.unit_price).toFixed(2)}</TableCell>
-                  <TableCell className="text-right font-medium">
-                    ${Number(item.line_total).toFixed(2)}
+              {returnData.items && returnData.items.length > 0 ? (
+                returnData.items.map((item) => (
+                  <TableRow key={item.id}>
+                    <TableCell className="font-medium">
+                      {item.product?.name || 'Unknown Product'}
+                    </TableCell>
+                    <TableCell>{item.product?.sku || 'N/A'}</TableCell>
+                    <TableCell className="text-center">{item.quantity}</TableCell>
+                    <TableCell className="text-right">${item.unit_price.toFixed(2)}</TableCell>
+                    <TableCell className="text-right font-medium">
+                      ${item.line_total.toFixed(2)}
+                    </TableCell>
+                  </TableRow>
+                ))
+              ) : (
+                <TableRow>
+                  <TableCell colSpan={5} className="text-center text-muted-foreground">
+                    No items found
                   </TableCell>
                 </TableRow>
-              ))}
+              )}
             </TableBody>
           </Table>
-
-          <div className="mt-6 space-y-2 border-t pt-4">
-            <div className="flex justify-between text-lg font-bold">
-              <span>Total Refund Amount:</span>
-              <span>${Number(returnData.total_amount).toFixed(2)}</span>
+          <div className="mt-4 flex justify-end border-t pt-4">
+            <div className="text-right">
+              <p className="text-sm text-muted-foreground">Total Refund</p>
+              <p className="text-2xl font-bold">${returnData.total_amount.toFixed(2)}</p>
             </div>
           </div>
         </CardContent>
       </Card>
 
-      {returnData.order && (
-        <Card>
-          <CardHeader>
-            <CardTitle>Order Summary</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
-              <div>
-                <Label className="text-muted-foreground">Original Total</Label>
-                <p className="font-medium">${Number(returnData.order.total_amount).toFixed(2)}</p>
-              </div>
-              <div>
-                <Label className="text-muted-foreground">Return Amount</Label>
-                <p className="font-medium text-destructive">
-                  -${Number(returnData.total_amount).toFixed(2)}
-                </p>
-              </div>
-              <div>
-                <Label className="text-muted-foreground">Net Total</Label>
-                <p className="font-medium">
-                  ${(Number(returnData.order.total_amount) - Number(returnData.total_amount)).toFixed(2)}
-                </p>
-              </div>
-            </div>
-          </CardContent>
-        </Card>
-      )}
+      {/* Inventory Adjustments Info */}
+      <Card>
+        <CardHeader>
+          <CardTitle>Inventory Impact</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <p className="text-sm text-muted-foreground">
+            When this return was created, the following inventory adjustments were made:
+          </p>
+          <ul className="mt-2 space-y-1">
+            {returnData.items?.map((item) => (
+              <li key={item.id} className="text-sm">
+                • <span className="font-medium">{item.product?.name}</span>: 
+                Stock increased by <span className="font-medium">{item.quantity}</span> units
+              </li>
+            ))}
+          </ul>
+          {canDelete && (
+            <p className="mt-4 text-sm text-muted-foreground">
+              If you delete this return, these inventory changes will be reversed.
+            </p>
+          )}
+        </CardContent>
+      </Card>
     </div>
   );
 }

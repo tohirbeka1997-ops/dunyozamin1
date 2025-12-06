@@ -1202,59 +1202,26 @@ export const getDashboardStats = async () => {
 };
 
 // Sales Returns functions
-export const getSalesReturns = async (filters?: {
-  startDate?: string;
-  endDate?: string;
-  customerId?: string;
-  cashierId?: string;
-  status?: string;
-}) => {
-  let query = supabase
-    .from('sales_returns')
-    .select(`
-      *,
-      order:orders(order_number),
-      customer:customers(name),
-      cashier:profiles(username)
-    `)
-    .order('created_at', { ascending: false });
-  
-  if (filters?.startDate) {
-    query = query.gte('created_at', filters.startDate);
-  }
-  if (filters?.endDate) {
-    query = query.lte('created_at', filters.endDate);
-  }
-  if (filters?.customerId) {
-    query = query.eq('customer_id', filters.customerId);
-  }
-  if (filters?.cashierId) {
-    query = query.eq('cashier_id', filters.cashierId);
-  }
-  if (filters?.status) {
-    query = query.eq('status', filters.status);
-  }
-  
-  const { data, error } = await query;
-  
-  if (error) throw error;
-  return Array.isArray(data) ? data : [];
-};
-
 export const getSalesReturnById = async (id: string) => {
   const { data, error } = await supabase
     .from('sales_returns')
     .select(`
       *,
-      order:orders(*),
-      customer:customers(*),
-      cashier:profiles(*)
+      order:orders(id, order_number, total_amount, created_at),
+      customer:customers(id, name, phone, email),
+      cashier:profiles(id, username, email)
     `)
     .eq('id', id)
     .maybeSingle();
   
-  if (error) throw error;
-  if (!data) throw new Error('Sales return not found');
+  if (error) {
+    console.error('Error fetching sales return:', error);
+    throw new Error(error.message || 'Failed to fetch sales return');
+  }
+  
+  if (!data) {
+    throw new Error('Sales return not found');
+  }
   
   // Get return items with product details
   const { data: items, error: itemsError } = await supabase
@@ -1266,12 +1233,100 @@ export const getSalesReturnById = async (id: string) => {
     .eq('return_id', id)
     .order('created_at', { ascending: true });
   
-  if (itemsError) throw itemsError;
+  if (itemsError) {
+    console.error('Error fetching return items:', itemsError);
+    throw new Error(itemsError.message || 'Failed to fetch return items');
+  }
   
   return {
     ...data,
     items: Array.isArray(items) ? items : [],
   } as SalesReturnWithDetails;
+};
+
+export const getSalesReturns = async (filters?: {
+  status?: string;
+  startDate?: string;
+  endDate?: string;
+  customerId?: string;
+}) => {
+  let query = supabase
+    .from('sales_returns')
+    .select(`
+      *,
+      order:orders(order_number),
+      customer:customers(name),
+      cashier:profiles(username)
+    `)
+    .order('created_at', { ascending: false });
+  
+  if (filters?.status) {
+    query = query.eq('status', filters.status);
+  }
+  
+  if (filters?.startDate) {
+    query = query.gte('created_at', filters.startDate);
+  }
+  
+  if (filters?.endDate) {
+    query = query.lte('created_at', filters.endDate);
+  }
+  
+  if (filters?.customerId) {
+    query = query.eq('customer_id', filters.customerId);
+  }
+  
+  const { data, error } = await query;
+  
+  if (error) {
+    console.error('Error fetching sales returns:', error);
+    throw new Error(error.message || 'Failed to fetch sales returns');
+  }
+  
+  return Array.isArray(data) ? data : [];
+};
+
+export const updateSalesReturn = async (
+  id: string,
+  updates: {
+    reason?: string;
+    notes?: string | null;
+    status?: string;
+  }
+) => {
+  const { data, error } = await supabase
+    .from('sales_returns')
+    .update({
+      ...updates,
+      updated_at: new Date().toISOString(),
+    })
+    .eq('id', id)
+    .select()
+    .maybeSingle();
+  
+  if (error) {
+    console.error('Error updating sales return:', error);
+    throw new Error(error.message || 'Failed to update sales return');
+  }
+  
+  if (!data) {
+    throw new Error('Sales return not found');
+  }
+  
+  return data as SalesReturn;
+};
+
+export const deleteSalesReturn = async (id: string) => {
+  const { data, error } = await supabase.rpc('delete_sales_return_with_inventory', {
+    p_return_id: id,
+  });
+  
+  if (error) {
+    console.error('Error deleting sales return:', error);
+    throw new Error(error.message || 'Failed to delete sales return');
+  }
+  
+  return data;
 };
 
 export const getOrderForReturn = async (orderId: string) => {

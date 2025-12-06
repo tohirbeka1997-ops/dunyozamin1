@@ -153,7 +153,6 @@ export interface SalesReturn {
   status: string;
   reason: string;
   notes: string | null;
-  refund_method: RefundMethod | null;
   created_at: string;
   updated_at: string;
 }
@@ -162,11 +161,15 @@ export interface SalesReturnItem {
   id: string;
   return_id: string;
   product_id: string;
-  product_name: string;
   quantity: number;
   unit_price: number;
   line_total: number;
-  total: number;
+  created_at?: string;
+  product?: {
+    name: string;
+    sku: string;
+    barcode: string | null;
+  };
 }
 
 export interface InventoryMovement {

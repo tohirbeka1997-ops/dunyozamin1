@@ -21,7 +21,7 @@ import {
 } from '@/components/ui/table';
 import { getSalesReturns, getCustomers } from '@/db/api';
 import type { Customer } from '@/types/database';
-import { Plus, Search, Eye, Printer, RotateCcw } from 'lucide-react';
+import { Plus, Search, Eye, Printer, RotateCcw, Edit, Trash2 } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 
 export default function SalesReturns() {
@@ -286,9 +286,20 @@ export default function SalesReturns() {
                           variant="ghost"
                           size="icon"
                           onClick={() => navigate(`/sales-returns/${ret.id}`)}
+                          title="View Details"
                         >
                           <Eye className="h-4 w-4" />
                         </Button>
+                        {ret.status !== 'Completed' && (
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            onClick={() => navigate(`/sales-returns/${ret.id}/edit`)}
+                            title="Edit Return"
+                          >
+                            <Edit className="h-4 w-4" />
+                          </Button>
+                        )}
                         <Button
                           variant="ghost"
                           size="icon"
@@ -298,6 +309,7 @@ export default function SalesReturns() {
                               description: 'Print functionality coming soon',
                             });
                           }}
+                          title="Print"
                         >
                           <Printer className="h-4 w-4" />
                         </Button>
