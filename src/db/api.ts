@@ -570,16 +570,35 @@ export const getInventory = async (filters?: {
 };
 
 export const getLowStockProducts = async () => {
-  const { data, error } = await supabase
-    .from('products')
-    .select('*')
-    .gt('current_stock', 0)
-    .order('current_stock', { ascending: true });
-  
-  if (error) throw error;
-  
-  const products = Array.isArray(data) ? data as Product[] : [];
-  return products.filter(p => Number(p.current_stock) <= Number(p.min_stock_level));
+  try {
+    const { data, error } = await supabase
+      .from('products')
+      .select(`
+        *,
+        category:categories(id, name)
+      `)
+      .eq('is_active', true)
+      .order('current_stock', { ascending: true });
+    
+    if (error) {
+      console.error('Error fetching low stock products:', error);
+      return [];
+    }
+    
+    if (!Array.isArray(data)) {
+      return [];
+    }
+    
+    // Filter products where current_stock <= min_stock_level
+    const lowStockProducts = data.filter(p => 
+      Number(p.current_stock || 0) <= Number(p.min_stock_level || 0)
+    );
+    
+    return lowStockProducts as ProductWithCategory[];
+  } catch (error) {
+    console.error('Exception fetching low stock products:', error);
+    return [];
+  }
 };
 
 export const getInventoryMovements = async (productId: string) => {
@@ -1092,36 +1111,70 @@ export const getDashboardStats = async () => {
   const today = new Date();
   today.setHours(0, 0, 0, 0);
   
-  const { data: todayOrders, error: ordersError } = await supabase
-    .from('orders')
-    .select('total_amount')
-    .gte('created_at', today.toISOString())
-    .eq('status', 'completed');
+  // Initialize default values
+  let todaySales = 0;
+  let todayOrdersCount = 0;
+  let lowStockCount = 0;
+  let activeCustomers = 0;
   
-  if (ordersError) throw ordersError;
+  // Query 1: Today's orders and sales
+  try {
+    const { data: todayOrders, error: ordersError } = await supabase
+      .from('orders')
+      .select('total_amount')
+      .gte('created_at', today.toISOString())
+      .eq('status', 'completed');
+    
+    if (!ordersError && Array.isArray(todayOrders)) {
+      todaySales = todayOrders.reduce((sum, o) => sum + (Number(o.total_amount) || 0), 0);
+      todayOrdersCount = todayOrders.length;
+    } else if (ordersError) {
+      console.error('Error fetching today\'s orders:', ordersError);
+    }
+  } catch (error) {
+    console.error('Exception fetching today\'s orders:', error);
+  }
   
-  const todaySales = Array.isArray(todayOrders) 
-    ? todayOrders.reduce((sum, o) => sum + Number(o.total_amount), 0) 
-    : 0;
-  const todayOrdersCount = Array.isArray(todayOrders) ? todayOrders.length : 0;
+  // Query 2: Low stock products
+  try {
+    const { data: lowStockData, error: lowStockError } = await supabase
+      .from('products')
+      .select('id, current_stock, min_stock_level')
+      .eq('is_active', true);
+    
+    if (!lowStockError && Array.isArray(lowStockData)) {
+      // Filter products where current_stock <= min_stock_level
+      lowStockCount = lowStockData.filter(p => 
+        Number(p.current_stock) <= Number(p.min_stock_level)
+      ).length;
+    } else if (lowStockError) {
+      console.error('Error fetching low stock products:', lowStockError);
+    }
+  } catch (error) {
+    console.error('Exception fetching low stock products:', error);
+  }
   
-  const { data: lowStockData, error: lowStockError } = await supabase
-    .from('products')
-    .select('id')
-    .filter('current_stock', 'lte', 'min_stock_level')
-    .eq('is_active', true);
-  
-  if (lowStockError) throw lowStockError;
-  
-  const lowStockCount = Array.isArray(lowStockData) ? lowStockData.length : 0;
-  
-  const { data: customersData, error: customersError } = await supabase
-    .from('customers')
-    .select('id');
-  
-  if (customersError) throw customersError;
-  
-  const activeCustomers = Array.isArray(customersData) ? customersData.length : 0;
+  // Query 3: Active customers
+  try {
+    const { data: customersData, error: customersError, count } = await supabase
+      .from('customers')
+      .select('id', { count: 'exact', head: true });
+    
+    if (!customersError && count !== null) {
+      activeCustomers = count;
+    } else if (!customersError && Array.isArray(customersData)) {
+      activeCustomers = customersData.length;
+    } else {
+      console.error('Error fetching customers:', customersError);
+      // Fallback: try counting without head option
+      const { data: fallbackData } = await supabase
+        .from('customers')
+        .select('id');
+      activeCustomers = Array.isArray(fallbackData) ? fallbackData.length : 0;
+    }
+  } catch (error) {
+    console.error('Exception fetching customers:', error);
+  }
   
   return {
     today_sales: todaySales,
