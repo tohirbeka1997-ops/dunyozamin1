@@ -1090,6 +1090,7 @@ export default function POSTerminal() {
       setCart([]);
       setPayments([]);
       setDiscount({ type: 'amount', value: 0 });
+      setSelectedCustomer(null);
       setPaymentDialogOpen(false);
       setCashReceived('');
       setCreditAmount('');

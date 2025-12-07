@@ -32,8 +32,9 @@ import {
 } from '@/components/ui/alert-dialog';
 import { getCustomers, deleteCustomer } from '@/db/api';
 import type { Customer } from '@/types/database';
-import { Search, Plus, Eye, Edit, Trash2, Download, ArrowUpDown } from 'lucide-react';
+import { Search, Plus, Eye, Edit, Trash2, Download, ArrowUpDown, DollarSign } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
+import ReceivePaymentDialog from '@/components/customers/ReceivePaymentDialog';
 
 export default function Customers() {
   const navigate = useNavigate();
@@ -46,6 +47,8 @@ export default function Customers() {
   const [debtFilter, setDebtFilter] = useState('all');
   const [sortBy, setSortBy] = useState('created_at');
   const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('desc');
+  const [paymentDialogOpen, setPaymentDialogOpen] = useState(false);
+  const [selectedCustomerForPayment, setSelectedCustomerForPayment] = useState<Customer | null>(null);
 
   useEffect(() => {
     loadCustomers();
@@ -90,6 +93,15 @@ export default function Customers() {
         variant: 'destructive',
       });
     }
+  };
+
+  const handleReceivePayment = (customer: Customer) => {
+    setSelectedCustomerForPayment(customer);
+    setPaymentDialogOpen(true);
+  };
+
+  const handlePaymentSuccess = () => {
+    loadCustomers(); // Refresh customer list to show updated balance
   };
 
   const handleSort = (field: string) => {
@@ -274,6 +286,18 @@ export default function Customers() {
                       <TableCell>{getStatusBadge(customer.status)}</TableCell>
                       <TableCell className="text-right">
                         <div className="flex items-center justify-end gap-2">
+                          {/* Receive Payment button - only show if customer has debt */}
+                          {customer.balance > 0 && (
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              onClick={() => handleReceivePayment(customer)}
+                              className="text-green-600 hover:text-green-700 hover:bg-green-50"
+                            >
+                              <DollarSign className="h-4 w-4 mr-1" />
+                              Receive Payment
+                            </Button>
+                          )}
                           <Button
                             variant="ghost"
                             size="icon"
@@ -322,6 +346,16 @@ export default function Customers() {
           </div>
         </CardContent>
       </Card>
+
+      {/* Receive Payment Dialog */}
+      {selectedCustomerForPayment && (
+        <ReceivePaymentDialog
+          open={paymentDialogOpen}
+          onOpenChange={setPaymentDialogOpen}
+          customer={selectedCustomerForPayment}
+          onSuccess={handlePaymentSuccess}
+        />
+      )}
     </div>
   );
 }
