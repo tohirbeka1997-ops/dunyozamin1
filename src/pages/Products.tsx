@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
@@ -25,6 +26,7 @@ import { useToast } from '@/hooks/use-toast';
 import { Link, useNavigate } from 'react-router-dom';
 
 export default function Products() {
+  const { t } = useTranslation();
   const { toast } = useToast();
   const navigate = useNavigate();
   const [products, setProducts] = useState<ProductWithCategory[]>([]);
@@ -50,8 +52,8 @@ export default function Products() {
       setCategories(categoriesData);
     } catch (error) {
       toast({
-        title: 'Error',
-        description: 'Failed to load products',
+        title: t('common.error'),
+        description: t('products.failed_to_load'),
         variant: 'destructive',
       });
     } finally {
@@ -60,15 +62,15 @@ export default function Products() {
   };
 
   const handleDelete = async (id: string, name: string) => {
-    if (!confirm(`Are you sure you want to delete "${name}"? This will mark it as inactive.`)) return;
+    if (!confirm(t('products.delete_confirm', { name }))) return;
     try {
       await deleteProduct(id);
-      toast({ title: 'Success', description: 'Product deleted successfully' });
+      toast({ title: t('common.success'), description: t('products.product_deleted') });
       loadData();
     } catch (error) {
       toast({
-        title: 'Error',
-        description: 'Failed to delete product',
+        title: t('common.error'),
+        description: t('products.failed_to_delete'),
         variant: 'destructive',
       });
     }
@@ -76,12 +78,12 @@ export default function Products() {
 
   const getStockStatus = (product: ProductWithCategory) => {
     if (product.current_stock <= 0) {
-      return { label: 'Out of Stock', color: 'bg-destructive text-destructive-foreground' };
+      return { label: t('products.out_of_stock_label'), color: 'bg-destructive text-destructive-foreground' };
     }
     if (product.current_stock <= product.min_stock_level) {
-      return { label: 'Low Stock', color: 'bg-warning text-warning-foreground' };
+      return { label: t('products.low_stock_label'), color: 'bg-warning text-warning-foreground' };
     }
-    return { label: 'In Stock', color: 'bg-success text-success-foreground' };
+    return { label: t('products.in_stock_label'), color: 'bg-success text-success-foreground' };
   };
 
   const filteredProducts = products.filter((product) => {
@@ -110,25 +112,25 @@ export default function Products() {
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-3xl font-bold">Products</h1>
-          <p className="text-muted-foreground">Manage your product catalog</p>
+          <h1 className="text-3xl font-bold">{t('products.title')}</h1>
+          <p className="text-muted-foreground">{t('products.subtitle')}</p>
         </div>
         <Button onClick={() => navigate('/products/new')}>
           <Plus className="h-4 w-4 mr-2" />
-          Add Product
+          {t('products.add_product')}
         </Button>
       </div>
 
       <Card>
         <CardHeader>
-          <CardTitle>Filters</CardTitle>
+          <CardTitle>{t('products.filters')}</CardTitle>
         </CardHeader>
         <CardContent>
           <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4">
             <div className="relative">
               <Search className="absolute left-3 top-3 h-4 w-4 text-muted-foreground" />
               <Input
-                placeholder="Search by name, SKU, or barcode..."
+                placeholder={t('products.search_placeholder')}
                 value={searchTerm}
                 onChange={(e) => setSearchTerm(e.target.value)}
                 className="pl-9"
@@ -136,10 +138,10 @@ export default function Products() {
             </div>
             <Select value={categoryFilter} onValueChange={setCategoryFilter}>
               <SelectTrigger>
-                <SelectValue placeholder="All Categories" />
+                <SelectValue placeholder={t('products.all_categories')} />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="all">All Categories</SelectItem>
+                <SelectItem value="all">{t('products.all_categories')}</SelectItem>
                 {categories.map((category) => (
                   <SelectItem key={category.id} value={category.id}>
                     {category.name}
@@ -149,22 +151,22 @@ export default function Products() {
             </Select>
             <Select value={statusFilter} onValueChange={setStatusFilter}>
               <SelectTrigger>
-                <SelectValue placeholder="All Status" />
+                <SelectValue placeholder={t('products.all_statuses')} />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="all">All Status</SelectItem>
-                <SelectItem value="active">Active</SelectItem>
-                <SelectItem value="inactive">Inactive</SelectItem>
+                <SelectItem value="all">{t('products.all_statuses')}</SelectItem>
+                <SelectItem value="active">{t('common.active')}</SelectItem>
+                <SelectItem value="inactive">{t('common.inactive')}</SelectItem>
               </SelectContent>
             </Select>
             <Select value={stockFilter} onValueChange={setStockFilter}>
               <SelectTrigger>
-                <SelectValue placeholder="All Stock Levels" />
+                <SelectValue placeholder={t('products.all_stock')} />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="all">All Stock Levels</SelectItem>
-                <SelectItem value="low">Low Stock</SelectItem>
-                <SelectItem value="out">Out of Stock</SelectItem>
+                <SelectItem value="all">{t('products.all_stock')}</SelectItem>
+                <SelectItem value="low">{t('products.low_stock')}</SelectItem>
+                <SelectItem value="out">{t('products.out_of_stock')}</SelectItem>
               </SelectContent>
             </Select>
           </div>
@@ -174,7 +176,7 @@ export default function Products() {
       <Card>
         <CardHeader>
           <CardTitle>
-            Products ({filteredProducts.length})
+            {t('products.title')} ({filteredProducts.length})
           </CardTitle>
         </CardHeader>
         <CardContent>
@@ -185,10 +187,10 @@ export default function Products() {
           ) : filteredProducts.length === 0 ? (
             <div className="text-center py-12">
               <Package className="h-12 w-12 mx-auto text-muted-foreground mb-4" />
-              <p className="text-muted-foreground">No products found</p>
+              <p className="text-muted-foreground">{t('products.no_products_found')}</p>
               <Button className="mt-4" onClick={() => navigate('/products/new')}>
                 <Plus className="h-4 w-4 mr-2" />
-                Add Your First Product
+                {t('products.add_product')}
               </Button>
             </div>
           ) : (
@@ -196,15 +198,15 @@ export default function Products() {
               <Table>
                 <TableHeader>
                   <TableRow>
-                    <TableHead>Product</TableHead>
-                    <TableHead>SKU / Barcode</TableHead>
-                    <TableHead>Category</TableHead>
-                    <TableHead>Unit</TableHead>
-                    <TableHead className="text-right">Purchase Price</TableHead>
-                    <TableHead className="text-right">Sale Price</TableHead>
-                    <TableHead className="text-right">Stock</TableHead>
-                    <TableHead>Status</TableHead>
-                    <TableHead className="text-right">Actions</TableHead>
+                    <TableHead>{t('products.product_name')}</TableHead>
+                    <TableHead>{t('products.sku')} / {t('products.barcode')}</TableHead>
+                    <TableHead>{t('products.category')}</TableHead>
+                    <TableHead>{t('products.unit')}</TableHead>
+                    <TableHead className="text-right">{t('products.purchase_price')}</TableHead>
+                    <TableHead className="text-right">{t('products.sale_price')}</TableHead>
+                    <TableHead className="text-right">{t('pos.stock')}</TableHead>
+                    <TableHead>{t('common.status')}</TableHead>
+                    <TableHead className="text-right">{t('common.actions')}</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
@@ -271,7 +273,7 @@ export default function Products() {
                         <TableCell>
                           <div className="flex flex-col gap-1">
                             <Badge variant={product.is_active ? 'default' : 'secondary'}>
-                              {product.is_active ? 'Active' : 'Inactive'}
+                              {product.is_active ? t('common.active') : t('common.inactive')}
                             </Badge>
                             <Badge className={stockStatus.color} variant="secondary">
                               {stockStatus.label}

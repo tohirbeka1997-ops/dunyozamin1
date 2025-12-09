@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import { useNavigate } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -35,6 +36,7 @@ import { Plus, Pencil, Trash2, Search, Eye, FolderTree, Package } from 'lucide-r
 import { useToast } from '@/hooks/use-toast';
 
 export default function Categories() {
+  const { t } = useTranslation();
   const { toast } = useToast();
   const navigate = useNavigate();
   const [categories, setCategories] = useState<Category[]>([]);
@@ -74,8 +76,8 @@ export default function Categories() {
       setProductCounts(counts);
     } catch (error) {
       toast({
-        title: 'Error',
-        description: 'Failed to load categories',
+        title: t('common.error'),
+        description: t('categories.failed_to_load'),
         variant: 'destructive',
       });
     } finally {
@@ -111,8 +113,8 @@ export default function Categories() {
 
     if (!formData.name.trim()) {
       toast({
-        title: 'Validation Error',
-        description: 'Category name is required',
+        title: t('categories.validation.name_required_title'),
+        description: t('categories.validation.name_required'),
         variant: 'destructive',
       });
       return;
@@ -121,8 +123,8 @@ export default function Categories() {
     if (formData.parent_id && editingCategory) {
       if (formData.parent_id === editingCategory.id) {
         toast({
-          title: 'Validation Error',
-          description: 'A category cannot be its own parent',
+          title: t('categories.validation.invalid_parent_title'),
+          description: t('categories.validation.invalid_parent'),
           variant: 'destructive',
         });
         return;
@@ -141,14 +143,14 @@ export default function Categories() {
       if (editingCategory) {
         await updateCategory(editingCategory.id, categoryData);
         toast({
-          title: 'Success',
-          description: 'Category updated successfully',
+          title: t('common.success'),
+          description: t('categories.messages.updated'),
         });
       } else {
         await createCategory(categoryData);
         toast({
-          title: 'Success',
-          description: 'Category created successfully',
+          title: t('common.success'),
+          description: t('categories.messages.created'),
         });
       }
 
@@ -156,8 +158,8 @@ export default function Categories() {
       loadCategories();
     } catch (error) {
       toast({
-        title: 'Error',
-        description: error instanceof Error ? error.message : 'Failed to save category',
+        title: t('common.error'),
+        description: error instanceof Error ? error.message : t('categories.messages.save_failed'),
         variant: 'destructive',
       });
     }
@@ -168,26 +170,26 @@ export default function Categories() {
     
     if (productCount > 0) {
       toast({
-        title: 'Cannot Delete',
-        description: `This category contains ${productCount} product(s). Please move or delete the products first.`,
+        title: t('categories.messages.cannot_delete_title'),
+        description: t('categories.messages.cannot_delete', { count: productCount }),
         variant: 'destructive',
       });
       return;
     }
 
-    if (!confirm(`Are you sure you want to delete "${category.name}"?`)) return;
+    if (!confirm(t('categories.delete_confirm', { name: category.name }))) return;
 
     try {
       await deleteCategory(category.id);
       toast({
-        title: 'Success',
-        description: 'Category deleted successfully',
+        title: t('common.success'),
+        description: t('categories.messages.deleted'),
       });
       loadCategories();
     } catch (error) {
       toast({
-        title: 'Error',
-        description: 'Failed to delete category',
+        title: t('common.error'),
+        description: t('categories.messages.delete_failed'),
         variant: 'destructive',
       });
     }
@@ -231,25 +233,25 @@ export default function Categories() {
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-3xl font-bold">Categories</h1>
-          <p className="text-muted-foreground">Organize your products into categories</p>
+          <h1 className="text-3xl font-bold">{t('categories.title')}</h1>
+          <p className="text-muted-foreground">{t('categories.subtitle')}</p>
         </div>
         <Button onClick={() => handleOpenDialog()}>
           <Plus className="h-4 w-4 mr-2" />
-          Add Category
+          {t('categories.add_category')}
         </Button>
       </div>
 
       <Card>
         <CardHeader>
-          <CardTitle>Filters</CardTitle>
+          <CardTitle>{t('categories.filters')}</CardTitle>
         </CardHeader>
         <CardContent>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <div className="relative">
               <Search className="absolute left-3 top-3 h-4 w-4 text-muted-foreground" />
               <Input
-                placeholder="Search categories..."
+                placeholder={t('categories.search_placeholder')}
                 value={searchTerm}
                 onChange={(e) => setSearchTerm(e.target.value)}
                 className="pl-9"
@@ -257,13 +259,13 @@ export default function Categories() {
             </div>
             <Select value={sortBy} onValueChange={setSortBy}>
               <SelectTrigger>
-                <SelectValue placeholder="Sort by" />
+                <SelectValue placeholder={t('categories.sort_by')} />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="name-asc">Name (A-Z)</SelectItem>
-                <SelectItem value="name-desc">Name (Z-A)</SelectItem>
-                <SelectItem value="newest">Newest First</SelectItem>
-                <SelectItem value="oldest">Oldest First</SelectItem>
+                <SelectItem value="name-asc">{t('categories.sort.name_asc')}</SelectItem>
+                <SelectItem value="name-desc">{t('categories.sort.name_desc')}</SelectItem>
+                <SelectItem value="newest">{t('categories.sort.newest')}</SelectItem>
+                <SelectItem value="oldest">{t('categories.sort.oldest')}</SelectItem>
               </SelectContent>
             </Select>
           </div>
@@ -272,7 +274,7 @@ export default function Categories() {
 
       <Card>
         <CardHeader>
-          <CardTitle>Categories ({filteredCategories.length})</CardTitle>
+          <CardTitle>{t('categories.title')} ({filteredCategories.length})</CardTitle>
         </CardHeader>
         <CardContent>
           {loading ? (
@@ -282,22 +284,22 @@ export default function Categories() {
           ) : filteredCategories.length === 0 ? (
             <div className="text-center py-12">
               <FolderTree className="h-12 w-12 mx-auto text-muted-foreground mb-4" />
-              <p className="text-muted-foreground">No categories found</p>
+              <p className="text-muted-foreground">{t('categories.no_categories_found')}</p>
               <Button className="mt-4" onClick={() => handleOpenDialog()}>
                 <Plus className="h-4 w-4 mr-2" />
-                Add Your First Category
+                {t('categories.add_first_category')}
               </Button>
             </div>
           ) : (
             <Table>
               <TableHeader>
                 <TableRow>
-                  <TableHead>Category</TableHead>
-                  <TableHead>Description</TableHead>
-                  <TableHead>Parent Category</TableHead>
-                  <TableHead className="text-right">Products</TableHead>
-                  <TableHead>Created</TableHead>
-                  <TableHead className="text-right">Actions</TableHead>
+                  <TableHead>{t('categories.table.category')}</TableHead>
+                  <TableHead>{t('categories.table.description')}</TableHead>
+                  <TableHead>{t('categories.table.parent_category')}</TableHead>
+                  <TableHead className="text-right">{t('categories.table.products')}</TableHead>
+                  <TableHead>{t('categories.table.created')}</TableHead>
+                  <TableHead className="text-right">{t('common.actions')}</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -326,7 +328,7 @@ export default function Categories() {
                           {getParentCategoryName(category.parent_id)}
                         </Badge>
                       ) : (
-                        <span className="text-muted-foreground text-sm">Root</span>
+                        <span className="text-muted-foreground text-sm">{t('categories.root')}</span>
                       )}
                     </TableCell>
                     <TableCell className="text-right">
@@ -374,38 +376,38 @@ export default function Categories() {
       <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
         <DialogContent className="max-w-md">
           <DialogHeader>
-            <DialogTitle>{editingCategory ? 'Edit Category' : 'Add Category'}</DialogTitle>
+            <DialogTitle>{editingCategory ? t('categories.edit_category') : t('categories.add_category')}</DialogTitle>
             <DialogDescription>
-              {editingCategory ? 'Update category information' : 'Create a new category for organizing products'}
+              {editingCategory ? t('categories.update_category_info') : t('categories.create_new_category')}
             </DialogDescription>
           </DialogHeader>
           <form onSubmit={handleSubmit}>
             <div className="space-y-4 py-4">
               <div className="space-y-2">
-                <Label htmlFor="name">Category Name *</Label>
+                <Label htmlFor="name">{t('categories.category_name_required')}</Label>
                 <Input
                   id="name"
                   value={formData.name}
                   onChange={(e) => setFormData({ ...formData, name: e.target.value })}
-                  placeholder="Enter category name"
+                  placeholder={t('categories.enter_category_name')}
                   required
                 />
               </div>
 
               <div className="space-y-2">
-                <Label htmlFor="description">Description</Label>
+                <Label htmlFor="description">{t('categories.description')}</Label>
                 <Textarea
                   id="description"
                   value={formData.description}
                   onChange={(e) => setFormData({ ...formData, description: e.target.value })}
-                  placeholder="Enter category description"
+                  placeholder={t('categories.enter_description')}
                   rows={3}
                 />
               </div>
 
               <div className="grid grid-cols-2 gap-4">
                 <div className="space-y-2">
-                  <Label htmlFor="icon">Icon (Emoji)</Label>
+                  <Label htmlFor="icon">{t('categories.icon_emoji')}</Label>
                   <Input
                     id="icon"
                     value={formData.icon}
@@ -416,7 +418,7 @@ export default function Categories() {
                 </div>
 
                 <div className="space-y-2">
-                  <Label htmlFor="color">Color</Label>
+                  <Label htmlFor="color">{t('categories.color')}</Label>
                   <Input
                     id="color"
                     type="color"
@@ -427,16 +429,16 @@ export default function Categories() {
               </div>
 
               <div className="space-y-2">
-                <Label htmlFor="parent">Parent Category</Label>
+                <Label htmlFor="parent">{t('categories.parent_category')}</Label>
                 <Select
                   value={formData.parent_id || 'none'}
                   onValueChange={(value) => setFormData({ ...formData, parent_id: value === 'none' ? '' : value })}
                 >
                   <SelectTrigger id="parent">
-                    <SelectValue placeholder="Select parent category" />
+                    <SelectValue placeholder={t('categories.select_parent')} />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="none">None (Root Category)</SelectItem>
+                    <SelectItem value="none">{t('categories.no_parent')}</SelectItem>
                     {availableParentCategories.map((category) => (
                       <SelectItem key={category.id} value={category.id}>
                         {category.icon} {category.name}
@@ -449,17 +451,17 @@ export default function Categories() {
               {editingCategory && productCounts[editingCategory.id] > 0 && (
                 <div className="p-3 bg-muted rounded-lg">
                   <p className="text-sm text-muted-foreground">
-                    This category contains {productCounts[editingCategory.id]} product(s)
+                    {t('categories.contains_products', { count: productCounts[editingCategory.id] })}
                   </p>
                 </div>
               )}
             </div>
             <DialogFooter>
               <Button type="button" variant="outline" onClick={() => setDialogOpen(false)}>
-                Cancel
+                {t('common.cancel')}
               </Button>
               <Button type="submit">
-                {editingCategory ? 'Update' : 'Create'}
+                {editingCategory ? t('common.update') : t('common.create')}
               </Button>
             </DialogFooter>
           </form>

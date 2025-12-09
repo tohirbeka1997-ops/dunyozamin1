@@ -3,6 +3,31 @@
 @tailwind components;
 @tailwind utilities;
 
+/* Print styles for thermal receipt */
+@media print {
+  body * {
+    visibility: hidden;
+  }
+  
+  .receipt-container,
+  .receipt-container * {
+    visibility: visible;
+  }
+  
+  .receipt-container {
+    position: absolute;
+    left: 0;
+    top: 0;
+    width: 200px !important;
+    max-width: 200px !important;
+  }
+  
+  @page {
+    size: 58mm auto;
+    margin: 0;
+  }
+}
+
 /* Definition of the design system. All colors, gradients, fonts, etc should be defined here.
 All colors MUST be HSL.
 */

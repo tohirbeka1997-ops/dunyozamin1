@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import { useNavigate, useParams } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -27,6 +28,7 @@ import type { Product, Category } from '@/types/database';
 import { ArrowLeft, Save } from 'lucide-react';
 
 export default function ProductForm() {
+  const { t } = useTranslation();
   const { id } = useParams();
   const navigate = useNavigate();
   const { toast } = useToast();
@@ -91,8 +93,8 @@ export default function ProductForm() {
       }
     } catch (error) {
       toast({
-        title: 'Error',
-        description: 'Failed to load product',
+        title: t('common.error'),
+        description: t('productForm.failed_to_load'),
         variant: 'destructive',
       });
       navigate('/products');
@@ -120,8 +122,8 @@ export default function ProductForm() {
   const validateForm = () => {
     if (!formData.name.trim()) {
       toast({
-        title: 'Validation Error',
-        description: 'Product name is required',
+        title: t('productForm.validation_error'),
+        description: t('productForm.name_required'),
         variant: 'destructive',
       });
       return false;
@@ -129,8 +131,8 @@ export default function ProductForm() {
 
     if (!formData.sku.trim()) {
       toast({
-        title: 'Validation Error',
-        description: 'SKU is required',
+        title: t('productForm.validation_error'),
+        description: t('productForm.sku_required'),
         variant: 'destructive',
       });
       return false;
@@ -141,17 +143,15 @@ export default function ProductForm() {
 
     if (purchasePrice < 0 || salePrice < 0) {
       toast({
-        title: 'Validation Error',
-        description: 'Prices cannot be negative',
+        title: t('productForm.validation_error'),
+        description: t('productForm.prices_negative'),
         variant: 'destructive',
       });
       return false;
     }
 
     if (salePrice < purchasePrice) {
-      const confirmed = confirm(
-        'Warning: Sale price is lower than purchase price. This will result in a loss. Continue?'
-      );
+      const confirmed = confirm(t('productForm.sale_price_warning'));
       if (!confirmed) return false;
     }
 
@@ -159,8 +159,8 @@ export default function ProductForm() {
       const initialStock = Number(formData.initial_stock);
       if (initialStock < 0) {
         toast({
-          title: 'Validation Error',
-          description: 'Initial stock cannot be negative',
+          title: t('productForm.validation_error'),
+          description: t('productForm.initial_stock_negative'),
           variant: 'destructive',
         });
         return false;
@@ -195,8 +195,8 @@ export default function ProductForm() {
       if (isEditMode && id) {
         await updateProduct(id, productData);
         toast({
-          title: 'Success',
-          description: 'Product updated successfully',
+          title: t('common.success'),
+          description: t('productForm.updated_success'),
         });
       } else {
         const newProduct = await createProduct(productData);
@@ -207,21 +207,21 @@ export default function ProductForm() {
             product_id: newProduct.id,
             quantity: initialStock,
             reason: 'initial_stock',
-            notes: 'Initial stock',
+            notes: t('productForm.initial_stock_note'),
           });
         }
 
         toast({
-          title: 'Success',
-          description: 'Product created successfully',
+          title: t('common.success'),
+          description: t('productForm.created_success'),
         });
       }
 
       navigate('/products');
     } catch (error) {
       toast({
-        title: 'Error',
-        description: error instanceof Error ? error.message : 'Failed to save product',
+        title: t('common.error'),
+        description: error instanceof Error ? error.message : t('productForm.failed_to_save'),
         variant: 'destructive',
       });
     } finally {
@@ -238,9 +238,9 @@ export default function ProductForm() {
           <ArrowLeft className="h-5 w-5" />
         </Button>
         <div>
-          <h1 className="text-3xl font-bold">{isEditMode ? 'Edit Product' : 'Add Product'}</h1>
+          <h1 className="text-3xl font-bold">{isEditMode ? t('productForm.edit_title') : t('productForm.add_title')}</h1>
           <p className="text-muted-foreground">
-            {isEditMode ? 'Update product information' : 'Create a new product'}
+            {isEditMode ? t('productForm.edit_subtitle') : t('productForm.add_subtitle')}
           </p>
         </div>
       </div>
@@ -248,62 +248,62 @@ export default function ProductForm() {
       <form onSubmit={handleSubmit} className="space-y-6">
         <Card>
           <CardHeader>
-            <CardTitle>General Information</CardTitle>
+            <CardTitle>{t('products.general_information')}</CardTitle>
           </CardHeader>
           <CardContent className="space-y-4">
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               <div className="space-y-2">
-                <Label htmlFor="name">Product Name *</Label>
+                <Label htmlFor="name">{t('productForm.product_name_label')}</Label>
                 <Input
                   id="name"
                   value={formData.name}
                   onChange={(e) => setFormData({ ...formData, name: e.target.value })}
-                  placeholder="Enter product name"
+                  placeholder={t('productForm.product_name_placeholder')}
                   required
                 />
               </div>
 
               <div className="space-y-2">
-                <Label htmlFor="sku">SKU *</Label>
+                <Label htmlFor="sku">{t('productForm.sku_label')}</Label>
                 <div className="flex gap-2">
                   <Input
                     id="sku"
                     value={formData.sku}
                     onChange={(e) => setFormData({ ...formData, sku: e.target.value })}
-                    placeholder="SKU-000123"
+                    placeholder={t('products.sku_placeholder')}
                     required
                     className="font-mono"
                   />
                   {!isEditMode && (
                     <Button type="button" variant="outline" onClick={generateNewSKU}>
-                      Generate
+                      {t('products.generate')}
                     </Button>
                   )}
                 </div>
               </div>
 
               <div className="space-y-2">
-                <Label htmlFor="barcode">Barcode</Label>
+                <Label htmlFor="barcode">{t('products.barcode')}</Label>
                 <Input
                   id="barcode"
                   value={formData.barcode}
                   onChange={(e) => setFormData({ ...formData, barcode: e.target.value })}
-                  placeholder="Enter or scan barcode"
+                  placeholder={t('productForm.barcode_placeholder')}
                   className="font-mono"
                 />
               </div>
 
               <div className="space-y-2">
-                <Label htmlFor="category">Category</Label>
+                <Label htmlFor="category">{t('products.category')}</Label>
                 <Select
                   value={formData.category_id || 'none'}
                   onValueChange={(value) => setFormData({ ...formData, category_id: value === 'none' ? '' : value })}
                 >
                   <SelectTrigger id="category">
-                    <SelectValue placeholder="Select category" />
+                    <SelectValue placeholder={t('products.select_category')} />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="none">No Category</SelectItem>
+                    <SelectItem value="none">{t('productForm.no_category')}</SelectItem>
                     {categories.map((category) => (
                       <SelectItem key={category.id} value={category.id}>
                         {category.name}
@@ -314,7 +314,7 @@ export default function ProductForm() {
               </div>
 
               <div className="space-y-2">
-                <Label htmlFor="unit">Unit of Measure</Label>
+                <Label htmlFor="unit">{t('productForm.unit_label')}</Label>
                 <Select
                   value={formData.unit}
                   onValueChange={(value) => setFormData({ ...formData, unit: value })}
@@ -323,37 +323,37 @@ export default function ProductForm() {
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="pcs">Pieces (pcs)</SelectItem>
-                    <SelectItem value="kg">Kilogram (kg)</SelectItem>
-                    <SelectItem value="g">Gram (g)</SelectItem>
-                    <SelectItem value="l">Liter (l)</SelectItem>
-                    <SelectItem value="ml">Milliliter (ml)</SelectItem>
-                    <SelectItem value="pack">Pack</SelectItem>
-                    <SelectItem value="box">Box</SelectItem>
-                    <SelectItem value="dozen">Dozen</SelectItem>
+                    <SelectItem value="pcs">{t('productForm.unit_pcs')}</SelectItem>
+                    <SelectItem value="kg">{t('productForm.unit_kg')}</SelectItem>
+                    <SelectItem value="g">{t('productForm.unit_g')}</SelectItem>
+                    <SelectItem value="l">{t('productForm.unit_l')}</SelectItem>
+                    <SelectItem value="ml">{t('productForm.unit_ml')}</SelectItem>
+                    <SelectItem value="pack">{t('productForm.unit_pack')}</SelectItem>
+                    <SelectItem value="box">{t('productForm.unit_box')}</SelectItem>
+                    <SelectItem value="dozen">{t('productForm.unit_dozen')}</SelectItem>
                   </SelectContent>
                 </Select>
               </div>
 
               <div className="space-y-2">
-                <Label htmlFor="image_url">Image URL</Label>
+                <Label htmlFor="image_url">{t('products.image_url')}</Label>
                 <Input
                   id="image_url"
                   value={formData.image_url}
                   onChange={(e) => setFormData({ ...formData, image_url: e.target.value })}
-                  placeholder="https://example.com/image.jpg"
+                  placeholder={t('productForm.image_url_placeholder')}
                   type="url"
                 />
               </div>
             </div>
 
             <div className="space-y-2">
-              <Label htmlFor="description">Description</Label>
+              <Label htmlFor="description">{t('productForm.description_label')}</Label>
               <Textarea
                 id="description"
                 value={formData.description}
                 onChange={(e) => setFormData({ ...formData, description: e.target.value })}
-                placeholder="Enter product description"
+                placeholder={t('productForm.description_placeholder')}
                 rows={3}
               />
             </div>
@@ -364,19 +364,19 @@ export default function ProductForm() {
                 checked={formData.is_active}
                 onCheckedChange={(checked) => setFormData({ ...formData, is_active: checked })}
               />
-              <Label htmlFor="is_active">Active</Label>
+              <Label htmlFor="is_active">{t('products.is_active')}</Label>
             </div>
           </CardContent>
         </Card>
 
         <Card>
           <CardHeader>
-            <CardTitle>Pricing</CardTitle>
+            <CardTitle>{t('products.pricing')}</CardTitle>
           </CardHeader>
           <CardContent className="space-y-4">
             <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
               <div className="space-y-2">
-                <Label htmlFor="purchase_price">Purchase Price *</Label>
+                <Label htmlFor="purchase_price">{t('productForm.purchase_price_label')}</Label>
                 <Input
                   id="purchase_price"
                   type="number"
@@ -390,7 +390,7 @@ export default function ProductForm() {
               </div>
 
               <div className="space-y-2">
-                <Label htmlFor="sale_price">Sale Price *</Label>
+                <Label htmlFor="sale_price">{t('productForm.sale_price_label')}</Label>
                 <Input
                   id="sale_price"
                   type="number"
@@ -404,7 +404,7 @@ export default function ProductForm() {
               </div>
 
               <div className="space-y-2">
-                <Label>Profit Margin</Label>
+                <Label>{t('productForm.profit_margin_label')}</Label>
                 <div className="h-10 px-3 py-2 border rounded-md bg-muted flex items-center">
                   <span className="font-medium">{margin}%</span>
                 </div>
@@ -415,13 +415,13 @@ export default function ProductForm() {
 
         <Card>
           <CardHeader>
-            <CardTitle>Inventory Settings</CardTitle>
+            <CardTitle>{t('productForm.inventory_settings')}</CardTitle>
           </CardHeader>
           <CardContent className="space-y-4">
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               {!isEditMode && (
                 <div className="space-y-2">
-                  <Label htmlFor="initial_stock">Initial Stock</Label>
+                  <Label htmlFor="initial_stock">{t('products.initial_stock')}</Label>
                   <Input
                     id="initial_stock"
                     type="number"
@@ -432,13 +432,13 @@ export default function ProductForm() {
                     placeholder="0"
                   />
                   <p className="text-xs text-muted-foreground">
-                    Set the starting stock quantity for this product
+                    {t('productForm.initial_stock_help')}
                   </p>
                 </div>
               )}
 
               <div className="space-y-2">
-                <Label htmlFor="min_stock_level">Minimum Stock Level</Label>
+                <Label htmlFor="min_stock_level">{t('products.min_stock_level')}</Label>
                 <Input
                   id="min_stock_level"
                   type="number"
@@ -449,7 +449,7 @@ export default function ProductForm() {
                   placeholder="0"
                 />
                 <p className="text-xs text-muted-foreground">
-                  Alert when stock falls below this level
+                  {t('productForm.min_stock_help')}
                 </p>
               </div>
             </div>
@@ -459,10 +459,10 @@ export default function ProductForm() {
         <div className="flex items-center gap-4">
           <Button type="submit" disabled={loading}>
             <Save className="h-4 w-4 mr-2" />
-            {loading ? 'Saving...' : isEditMode ? 'Update Product' : 'Create Product'}
+            {loading ? t('productForm.saving') : isEditMode ? t('productForm.update_button') : t('productForm.create_button')}
           </Button>
           <Button type="button" variant="outline" onClick={() => navigate('/products')}>
-            Cancel
+            {t('common.cancel')}
           </Button>
         </div>
       </form>

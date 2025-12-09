@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react';
+import { useTranslation } from 'react-i18next';
 import { useNavigate } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -36,6 +37,7 @@ interface ReturnItem {
 }
 
 export default function CreateReturn() {
+  const { t } = useTranslation();
   const { toast } = useToast();
   const navigate = useNavigate();
   const [step, setStep] = useState(1);
@@ -67,8 +69,8 @@ export default function CreateReturn() {
       setOrders(completedOrders);
     } catch (error) {
       toast({
-        title: 'Error',
-        description: 'Failed to load orders',
+        title: t('common.error'),
+        description: t('sales_returns.create.failed_to_load_orders'),
         variant: 'destructive',
       });
     } finally {
@@ -97,8 +99,8 @@ export default function CreateReturn() {
       setStep(2);
     } catch (error) {
       toast({
-        title: 'Error',
-        description: 'Failed to load order details',
+        title: t('common.error'),
+        description: t('sales_returns.create.failed_to_load_order_details'),
         variant: 'destructive',
       });
     } finally {
@@ -112,8 +114,8 @@ export default function CreateReturn() {
     
     if (quantity > item.sold_quantity) {
       toast({
-        title: 'Invalid Quantity',
-        description: `Return quantity cannot exceed sold quantity (${item.sold_quantity})`,
+        title: t('sales_returns.create.invalid_quantity_title'),
+        description: t('sales_returns.create.invalid_quantity', { max: item.sold_quantity }),
         variant: 'destructive',
       });
       return;
@@ -136,8 +138,8 @@ export default function CreateReturn() {
   const handleSubmit = async () => {
     if (!selectedOrder) {
       toast({
-        title: 'Error',
-        description: 'No order selected',
+        title: t('common.error'),
+        description: t('sales_returns.create.no_order_selected'),
         variant: 'destructive',
       });
       return;
@@ -147,8 +149,8 @@ export default function CreateReturn() {
     const itemsToReturn = returnItems.filter(item => item.return_quantity > 0);
     if (itemsToReturn.length === 0) {
       toast({
-        title: 'No Items Selected',
-        description: 'Please select at least one item to return',
+        title: t('sales_returns.create.no_items_selected_title'),
+        description: t('sales_returns.create.no_items_selected'),
         variant: 'destructive',
       });
       return;
@@ -157,8 +159,8 @@ export default function CreateReturn() {
     // Validate reason
     if (!reason || reason.trim() === '') {
       toast({
-        title: 'Reason Required',
-        description: 'Please provide a reason for the return',
+        title: t('sales_returns.create.reason_required_title'),
+        description: t('sales_returns.create.reason_required'),
         variant: 'destructive',
       });
       return;
@@ -167,8 +169,8 @@ export default function CreateReturn() {
     // Validate refund method
     if (!refundMethod) {
       toast({
-        title: 'Refund Method Required',
-        description: 'Please select a refund method',
+        title: t('sales_returns.create.refund_method_required_title'),
+        description: t('sales_returns.create.refund_method_required'),
         variant: 'destructive',
       });
       return;
@@ -178,8 +180,8 @@ export default function CreateReturn() {
     const { totalRefund } = calculateTotals();
     if (totalRefund <= 0) {
       toast({
-        title: 'Invalid Amount',
-        description: 'Refund amount must be greater than 0',
+        title: t('sales_returns.create.invalid_amount_title'),
+        description: t('sales_returns.create.invalid_amount'),
         variant: 'destructive',
       });
       return;
@@ -204,16 +206,16 @@ export default function CreateReturn() {
       });
       
       toast({
-        title: 'Success',
-        description: 'Return created successfully. Inventory has been updated.',
+        title: t('common.success'),
+        description: t('sales_returns.create.success'),
       });
       
       navigate('/sales-returns');
     } catch (error) {
       console.error('Error creating return:', error);
       toast({
-        title: 'Error',
-        description: error instanceof Error ? error.message : 'Failed to create return. Please check the form and try again.',
+        title: t('common.error'),
+        description: error instanceof Error ? error.message : t('sales_returns.create.failed_to_create'),
         variant: 'destructive',
       });
     } finally {
@@ -240,11 +242,11 @@ export default function CreateReturn() {
             <ArrowLeft className="h-4 w-4" />
           </Button>
           <div>
-            <h1 className="text-3xl font-bold">Create Sales Return</h1>
+            <h1 className="text-3xl font-bold">{t('sales_returns.create.title')}</h1>
             <p className="text-muted-foreground">
-              {step === 1 && 'Step 1: Select an order'}
-              {step === 2 && 'Step 2: Select items to return'}
-              {step === 3 && 'Step 3: Additional information'}
+              {step === 1 && t('sales_returns.create.step_1')}
+              {step === 2 && t('sales_returns.create.step_2')}
+              {step === 3 && t('sales_returns.create.step_3')}
             </p>
           </div>
         </div>
@@ -253,19 +255,19 @@ export default function CreateReturn() {
       {/* Step 1: Order Selection */}
       {step === 1 && (
         <Card>
-          <CardHeader>
-            <CardTitle>Select Order</CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            <div className="relative">
-              <Search className="absolute left-3 top-3 h-4 w-4 text-muted-foreground" />
-              <Input
-                placeholder="Search by order number or customer..."
-                value={searchTerm}
-                onChange={(e) => setSearchTerm(e.target.value)}
-                className="pl-9"
-              />
-            </div>
+            <CardHeader>
+              <CardTitle>{t('sales_returns.create.select_order')}</CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <div className="relative">
+                <Search className="absolute left-3 top-3 h-4 w-4 text-muted-foreground" />
+                <Input
+                  placeholder={t('sales_returns.create.search_placeholder')}
+                  value={searchTerm}
+                  onChange={(e) => setSearchTerm(e.target.value)}
+                  className="pl-9"
+                />
+              </div>
 
             {loading ? (
               <div className="flex justify-center py-8">
@@ -274,29 +276,29 @@ export default function CreateReturn() {
             ) : filteredOrders.length === 0 ? (
               <div className="text-center py-12">
                 <Package className="h-12 w-12 mx-auto text-muted-foreground mb-4" />
-                <p className="text-muted-foreground">No completed orders found</p>
+                <p className="text-muted-foreground">{t('sales_returns.create.no_orders_found')}</p>
               </div>
             ) : (
               <Table>
                 <TableHeader>
                   <TableRow>
-                    <TableHead>Order Number</TableHead>
-                    <TableHead>Customer</TableHead>
-                    <TableHead>Date</TableHead>
-                    <TableHead className="text-right">Total</TableHead>
-                    <TableHead className="text-right">Action</TableHead>
+                    <TableHead>{t('sales_returns.create.table.order_number')}</TableHead>
+                    <TableHead>{t('sales_returns.create.table.customer')}</TableHead>
+                    <TableHead>{t('sales_returns.create.table.date')}</TableHead>
+                    <TableHead className="text-right">{t('sales_returns.create.table.total')}</TableHead>
+                    <TableHead className="text-right">{t('common.actions')}</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
                   {filteredOrders.map((order) => (
                     <TableRow key={order.id}>
                       <TableCell className="font-medium">{order.order_number}</TableCell>
-                      <TableCell>{order.customer?.name || 'Walk-in'}</TableCell>
+                      <TableCell>{order.customer?.name || t('pos.walk_in_customer')}</TableCell>
                       <TableCell>{new Date(order.created_at).toLocaleDateString()}</TableCell>
                       <TableCell className="text-right">${Number(order.total_amount).toFixed(2)}</TableCell>
                       <TableCell className="text-right">
                         <Button size="sm" onClick={() => handleSelectOrder(order.id)}>
-                          Select
+                          {t('sales_returns.create.select')}
                         </Button>
                       </TableCell>
                     </TableRow>
@@ -313,24 +315,24 @@ export default function CreateReturn() {
         <div className="space-y-6">
           <Card>
             <CardHeader>
-              <CardTitle>Order Information</CardTitle>
+              <CardTitle>{t('sales_returns.create.order_information')}</CardTitle>
             </CardHeader>
             <CardContent>
               <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
                 <div>
-                  <Label className="text-muted-foreground">Order Number</Label>
+                  <Label className="text-muted-foreground">{t('sales_returns.create.order_number')}</Label>
                   <p className="font-medium">{selectedOrder.order_number}</p>
                 </div>
                 <div>
-                  <Label className="text-muted-foreground">Customer</Label>
-                  <p className="font-medium">{selectedOrder.customer?.name || 'Walk-in'}</p>
+                  <Label className="text-muted-foreground">{t('sales_returns.create.customer')}</Label>
+                  <p className="font-medium">{selectedOrder.customer?.name || t('pos.walk_in_customer')}</p>
                 </div>
                 <div>
-                  <Label className="text-muted-foreground">Date</Label>
+                  <Label className="text-muted-foreground">{t('sales_returns.create.date')}</Label>
                   <p className="font-medium">{new Date(selectedOrder.created_at).toLocaleDateString()}</p>
                 </div>
                 <div>
-                  <Label className="text-muted-foreground">Total Amount</Label>
+                  <Label className="text-muted-foreground">{t('sales_returns.create.total_amount')}</Label>
                   <p className="font-medium">${Number(selectedOrder.total_amount).toFixed(2)}</p>
                 </div>
               </div>
@@ -339,18 +341,18 @@ export default function CreateReturn() {
 
           <Card>
             <CardHeader>
-              <CardTitle>Return Items</CardTitle>
+              <CardTitle>{t('sales_returns.create.return_items')}</CardTitle>
             </CardHeader>
             <CardContent>
               <Table>
                 <TableHeader>
                   <TableRow>
-                    <TableHead>Product</TableHead>
-                    <TableHead>SKU</TableHead>
-                    <TableHead className="text-center">Sold Qty</TableHead>
-                    <TableHead className="text-center">Return Qty</TableHead>
-                    <TableHead className="text-right">Unit Price</TableHead>
-                    <TableHead className="text-right">Line Total</TableHead>
+                    <TableHead>{t('sales_returns.create.table.product')}</TableHead>
+                    <TableHead>{t('sales_returns.create.table.sku')}</TableHead>
+                    <TableHead className="text-center">{t('sales_returns.create.table.sold_qty')}</TableHead>
+                    <TableHead className="text-center">{t('sales_returns.create.table.return_qty')}</TableHead>
+                    <TableHead className="text-right">{t('sales_returns.create.table.unit_price')}</TableHead>
+                    <TableHead className="text-right">{t('sales_returns.create.table.line_total')}</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
@@ -380,25 +382,25 @@ export default function CreateReturn() {
 
               <div className="mt-6 space-y-2 border-t pt-4">
                 <div className="flex justify-between text-sm">
-                  <span>Subtotal:</span>
+                  <span>{t('sales_returns.create.subtotal')}:</span>
                   <span className="font-medium">${subtotal.toFixed(2)}</span>
                 </div>
                 <div className="flex justify-between text-sm">
-                  <span>Tax:</span>
+                  <span>{t('sales_returns.create.tax')}:</span>
                   <span className="font-medium">${taxAmount.toFixed(2)}</span>
                 </div>
                 <div className="flex justify-between text-lg font-bold border-t pt-2">
-                  <span>Total Refund:</span>
+                  <span>{t('sales_returns.create.total_refund')}:</span>
                   <span>${totalRefund.toFixed(2)}</span>
                 </div>
               </div>
 
               <div className="flex justify-between mt-6">
                 <Button variant="outline" onClick={() => setStep(1)}>
-                  Back
+                  {t('common.back')}
                 </Button>
                 <Button onClick={() => setStep(3)}>
-                  Continue
+                  {t('sales_returns.create.continue')}
                 </Button>
               </div>
             </CardContent>
@@ -409,92 +411,92 @@ export default function CreateReturn() {
       {/* Step 3: Additional Information */}
       {step === 3 && (
         <Card>
-          <CardHeader>
-            <CardTitle>Additional Information</CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            <div className="space-y-2">
-              <Label htmlFor="reason" className="flex items-center gap-1">
-                Reason for Return 
-                <span className="text-destructive">*</span>
-              </Label>
-              <Select value={reason} onValueChange={setReason}>
-                <SelectTrigger className={!reason ? 'border-destructive' : ''}>
-                  <SelectValue placeholder="Select reason" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="damaged">Damaged Product</SelectItem>
-                  <SelectItem value="incorrect">Incorrect Item</SelectItem>
-                  <SelectItem value="defective">Defective Product</SelectItem>
-                  <SelectItem value="dissatisfaction">Customer Dissatisfaction</SelectItem>
-                  <SelectItem value="expired">Expired Product</SelectItem>
-                  <SelectItem value="other">Other</SelectItem>
-                </SelectContent>
-              </Select>
-              {!reason && (
-                <p className="text-sm text-destructive">Please select a reason for the return</p>
-              )}
-            </div>
+            <CardHeader>
+              <CardTitle>{t('sales_returns.create.additional_information')}</CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <div className="space-y-2">
+                <Label htmlFor="reason" className="flex items-center gap-1">
+                  {t('sales_returns.create.reason_for_return')} 
+                  <span className="text-destructive">*</span>
+                </Label>
+                <Select value={reason} onValueChange={setReason}>
+                  <SelectTrigger className={!reason ? 'border-destructive' : ''}>
+                    <SelectValue placeholder={t('sales_returns.create.select_reason')} />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="damaged">{t('sales_returns.create.reasons.damaged')}</SelectItem>
+                    <SelectItem value="incorrect">{t('sales_returns.create.reasons.incorrect')}</SelectItem>
+                    <SelectItem value="defective">{t('sales_returns.create.reasons.defective')}</SelectItem>
+                    <SelectItem value="dissatisfaction">{t('sales_returns.create.reasons.dissatisfaction')}</SelectItem>
+                    <SelectItem value="expired">{t('sales_returns.create.reasons.expired')}</SelectItem>
+                    <SelectItem value="other">{t('sales_returns.create.reasons.other')}</SelectItem>
+                  </SelectContent>
+                </Select>
+                {!reason && (
+                  <p className="text-sm text-destructive">{t('sales_returns.create.select_reason_error')}</p>
+                )}
+              </div>
 
-            <div className="space-y-2">
-              <Label htmlFor="refund_method">
-                Refund Method <span className="text-destructive">*</span>
-              </Label>
-              <Select value={refundMethod} onValueChange={(value) => setRefundMethod(value as 'cash' | 'card' | 'credit')}>
-                <SelectTrigger className={!refundMethod ? 'border-destructive' : ''}>
-                  <SelectValue placeholder="Select refund method" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="cash">Cash</SelectItem>
-                  <SelectItem value="card">Card</SelectItem>
-                  <SelectItem value="credit">Store Credit</SelectItem>
-                </SelectContent>
-              </Select>
-              {!refundMethod && (
-                <p className="text-sm text-destructive">Please select a refund method</p>
-              )}
-            </div>
+              <div className="space-y-2">
+                <Label htmlFor="refund_method">
+                  {t('sales_returns.create.refund_method')} <span className="text-destructive">*</span>
+                </Label>
+                <Select value={refundMethod} onValueChange={(value) => setRefundMethod(value as 'cash' | 'card' | 'credit')}>
+                  <SelectTrigger className={!refundMethod ? 'border-destructive' : ''}>
+                    <SelectValue placeholder={t('sales_returns.create.select_refund_method')} />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="cash">{t('pos.cash')}</SelectItem>
+                    <SelectItem value="card">{t('pos.card')}</SelectItem>
+                    <SelectItem value="credit">{t('sales_returns.create.store_credit')}</SelectItem>
+                  </SelectContent>
+                </Select>
+                {!refundMethod && (
+                  <p className="text-sm text-destructive">{t('sales_returns.create.select_refund_method_error')}</p>
+                )}
+              </div>
 
-            <div className="space-y-2">
-              <Label htmlFor="notes">Notes (Optional)</Label>
-              <Textarea
-                id="notes"
-                placeholder="Add any additional notes..."
-                value={notes}
-                onChange={(e) => setNotes(e.target.value)}
-                rows={4}
-              />
-            </div>
+              <div className="space-y-2">
+                <Label htmlFor="notes">{t('sales_returns.create.notes_optional')}</Label>
+                <Textarea
+                  id="notes"
+                  placeholder={t('sales_returns.create.notes_placeholder')}
+                  value={notes}
+                  onChange={(e) => setNotes(e.target.value)}
+                  rows={4}
+                />
+              </div>
 
-            <div className="bg-muted p-4 rounded-lg">
-              <div className="flex items-start gap-2">
-                <AlertCircle className="h-5 w-5 text-primary mt-0.5" />
-                <div className="space-y-1">
-                  <p className="font-medium">Return Summary</p>
-                  <p className="text-sm text-muted-foreground">
-                    Order: {selectedOrder?.order_number}
-                  </p>
-                  <p className="text-sm text-muted-foreground">
-                    Items to return: {returnItems.filter(i => i.return_quantity > 0).length}
-                  </p>
-                  <p className="text-sm font-medium">
-                    Total refund amount: ${totalRefund.toFixed(2)}
-                  </p>
+              <div className="bg-muted p-4 rounded-lg">
+                <div className="flex items-start gap-2">
+                  <AlertCircle className="h-5 w-5 text-primary mt-0.5" />
+                  <div className="space-y-1">
+                    <p className="font-medium">{t('sales_returns.create.return_summary')}</p>
+                    <p className="text-sm text-muted-foreground">
+                      {t('sales_returns.create.summary.order')}: {selectedOrder?.order_number}
+                    </p>
+                    <p className="text-sm text-muted-foreground">
+                      {t('sales_returns.create.summary.items_to_return')}: {returnItems.filter(i => i.return_quantity > 0).length}
+                    </p>
+                    <p className="text-sm font-medium">
+                      {t('sales_returns.create.summary.total_refund')}: ${totalRefund.toFixed(2)}
+                    </p>
+                  </div>
                 </div>
               </div>
-            </div>
 
-            <div className="flex justify-between pt-4">
-              <Button variant="outline" onClick={() => setStep(2)}>
-                Back
-              </Button>
-              <Button 
-                onClick={handleSubmit} 
-                disabled={loading || !reason || !refundMethod || totalRefund <= 0}
-              >
-                {loading ? 'Creating...' : 'Submit Return'}
-              </Button>
-            </div>
+              <div className="flex justify-between pt-4">
+                <Button variant="outline" onClick={() => setStep(2)}>
+                  {t('common.back')}
+                </Button>
+                <Button 
+                  onClick={handleSubmit} 
+                  disabled={loading || !reason || !refundMethod || totalRefund <= 0}
+                >
+                  {loading ? t('sales_returns.create.creating') : t('sales_returns.create.submit_return')}
+                </Button>
+              </div>
           </CardContent>
         </Card>
       )}

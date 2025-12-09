@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { Button } from '@/components/ui/button';
 import {
   Dialog,
@@ -32,68 +32,199 @@ export default function Numpad({
   min = 0,
 }: NumpadProps) {
   const [value, setValue] = useState(initialValue.toString());
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  // Reset value when dialog opens or initialValue changes
+  useEffect(() => {
+    if (open) {
+      const newValue = initialValue.toString();
+      setValue(newValue);
+      // Sync input ref immediately
+      if (inputRef.current) {
+        inputRef.current.value = newValue;
+      }
+    }
+  }, [open, initialValue]);
+
+  // Keypad Logic: Ensure state updates instantly and synchronously
+  const updateValueImmediately = (newValue: string) => {
+    setValue(newValue);
+    // Also update input ref immediately to avoid stale reads
+    if (inputRef.current) {
+      inputRef.current.value = newValue;
+    }
+  };
 
   const handleNumberClick = (num: string) => {
-    if (value === '0') {
-      setValue(num);
-    } else {
-      setValue(value + num);
-    }
+    const newValue = (() => {
+      const current = inputRef.current?.value || value;
+      if (current === '0' || current === '') {
+        return num;
+      }
+      return current + num;
+    })();
+    updateValueImmediately(newValue);
   };
 
   const handleDecimalClick = () => {
-    if (!value.includes('.')) {
-      setValue(value + '.');
-    }
+    const newValue = (() => {
+      const current = inputRef.current?.value || value;
+      if (current === '' || current === '0') {
+        return '0.';
+      }
+      if (!current.includes('.')) {
+        return current + '.';
+      }
+      return current;
+    })();
+    updateValueImmediately(newValue);
   };
 
   const handleClear = () => {
-    setValue('0');
+    updateValueImmediately('0');
   };
 
   const handleBackspace = () => {
-    if (value.length === 1) {
-      setValue('0');
-    } else {
-      setValue(value.slice(0, -1));
+    const newValue = (() => {
+      const current = inputRef.current?.value || value;
+      if (current.length <= 1 || current === '0') {
+        return '0';
+      }
+      return current.slice(0, -1);
+    })();
+    updateValueImmediately(newValue);
+  };
+
+  const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const inputValue = e.target.value;
+    // Allow empty string, numbers, and single decimal point
+    if (inputValue === '' || /^\d*\.?\d*$/.test(inputValue)) {
+      const newValue = inputValue === '' ? '0' : inputValue;
+      setValue(newValue);
+      // Keep ref in sync
+      if (inputRef.current) {
+        inputRef.current.value = newValue;
+      }
     }
   };
 
   const handleApply = () => {
-    const numValue = Number(value);
-    if (isNaN(numValue)) {
-      setValue('0');
+    // CRITICAL FIX: Read value directly from input DOM to avoid stale state
+    // This ensures we get the most current value even if state hasn't updated yet
+    const currentInputValue = inputRef.current?.value || value;
+    
+    // Force type conversion: explicitly convert to number using Number() or parseInt()
+    let numValue: number;
+    
+    // Handle empty string, null, or undefined
+    if (!currentInputValue || currentInputValue.trim() === '' || currentInputValue === '0') {
+      // For quantity (min >= 1), default to min. For discount (min = 0), default to 0
+      numValue = min;
+    } else {
+      // Use parseInt for integers (quantity) or parseFloat for decimals (discount)
+      // Force conversion: try parseInt first, then parseFloat if needed
+      const intValue = parseInt(currentInputValue, 10);
+      const floatValue = parseFloat(currentInputValue);
+      
+      // Use integer if it matches the float (no decimals), otherwise use float
+      numValue = intValue === floatValue ? intValue : floatValue;
+      
+      // Final conversion using Number() to ensure proper type
+      numValue = Number(numValue);
+    }
+    
+    // Validate: Only proceed if value is a valid number
+    if (isNaN(numValue) || !isFinite(numValue)) {
+      setValue(min.toString());
+      if (inputRef.current) {
+        inputRef.current.value = min.toString();
+      }
       return;
     }
     
+    // Refactor validation: Ensure validation logic checks the converted number, not raw string
+    // Ensure value meets minimum requirement (for quantity, min is 1)
     let validValue = numValue;
-    if (validValue < min) validValue = min;
-    if (max !== undefined && validValue > max) validValue = max;
+    if (validValue < min) {
+      validValue = min;
+    }
     
+    // Ensure value doesn't exceed maximum if specified
+    if (max !== undefined && validValue > max) {
+      validValue = max;
+    }
+    
+    // Final check: ensure validValue is a proper number
+    if (isNaN(validValue) || !isFinite(validValue)) {
+      setValue(min.toString());
+      if (inputRef.current) {
+        inputRef.current.value = min.toString();
+      }
+      return;
+    }
+    
+    // Update state to match the validated value (for consistency)
+    setValue(validValue.toString());
+    if (inputRef.current) {
+      inputRef.current.value = validValue.toString();
+    }
+    
+    // Apply the validated value immediately
     onApply(validValue);
     onOpenChange(false);
   };
 
-  const handleKeyDown = (e: React.KeyboardEvent) => {
+  const handleInputKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
     if (e.key === 'Enter') {
+      e.preventDefault();
       handleApply();
     } else if (e.key === 'Escape') {
+      e.preventDefault();
       onOpenChange(false);
+    }
+    // Let the input handle number keys, decimal, backspace, delete naturally
+  };
+
+  const handleDialogKeyDown = (e: React.KeyboardEvent) => {
+    // Only handle Enter and Escape when focus is on dialog (not input)
+    if (e.target === e.currentTarget || (e.target as HTMLElement).tagName !== 'INPUT') {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        handleApply();
+      } else if (e.key === 'Escape') {
+        e.preventDefault();
+        onOpenChange(false);
+      }
     }
   };
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-sm" onKeyDown={handleKeyDown}>
+      <DialogContent 
+        className="max-w-sm" 
+        onKeyDown={handleDialogKeyDown}
+      >
         <DialogHeader>
           <DialogTitle>{title}</DialogTitle>
           {description && <DialogDescription>{description}</DialogDescription>}
         </DialogHeader>
         <div className="space-y-4">
           <div className="bg-muted rounded-lg p-4 text-right">
-            <div className="text-3xl font-bold">{value}</div>
+            <input
+              ref={inputRef}
+              type="text"
+              value={value}
+              onChange={handleInputChange}
+              onKeyDown={handleInputKeyDown}
+              className="w-full text-3xl font-bold bg-transparent border-none outline-none text-right focus:ring-0"
+              autoFocus
+              inputMode="decimal"
+            />
             {max !== undefined && (
               <div className="text-xs text-muted-foreground mt-1">Max: {max}</div>
+            )}
+            {min > 0 && (
+              <div className="text-xs text-muted-foreground mt-1">Min: {min}</div>
             )}
           </div>
           <div className="grid grid-cols-3 gap-2">

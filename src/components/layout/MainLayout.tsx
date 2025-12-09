@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
+import { useTranslation } from 'react-i18next';
 import { useAuth } from '@/contexts/AuthContext';
 import { Button } from '@/components/ui/button';
 import {
@@ -33,6 +34,7 @@ import {
 } from 'lucide-react';
 import { useTheme } from '@/hooks/use-theme';
 import routes from '@/routes';
+import LanguageSwitcher from '@/components/common/LanguageSwitcher';
 
 const iconMap: Record<string, React.ReactNode> = {
   Dashboard: <LayoutDashboard className="h-5 w-5" />,
@@ -49,7 +51,24 @@ const iconMap: Record<string, React.ReactNode> = {
   Settings: <Settings className="h-5 w-5" />,
 };
 
+const routeNameMap: Record<string, string> = {
+  'Dashboard': 'navigation.dashboard',
+  'POS Terminal': 'navigation.pos_terminal',
+  'Products': 'navigation.products',
+  'Categories': 'navigation.categories',
+  'Orders': 'navigation.orders',
+  'Sales Returns': 'navigation.sales_returns',
+  'Customers': 'navigation.customers',
+  'Inventory': 'navigation.inventory',
+  'Purchase Orders': 'navigation.purchase_orders',
+  'Suppliers': 'navigation.suppliers',
+  'Reports': 'navigation.reports',
+  'Employees': 'navigation.employees',
+  'Settings': 'navigation.settings',
+};
+
 export default function MainLayout({ children }: { children: React.ReactNode }) {
+  const { t } = useTranslation();
   const { profile, signOut } = useAuth();
   const location = useLocation();
   const navigate = useNavigate();
@@ -85,7 +104,7 @@ export default function MainLayout({ children }: { children: React.ReactNode }) 
             }`}
           >
             {iconMap[route.name]}
-            <span>{route.name}</span>
+            <span>{routeNameMap[route.name] ? t(routeNameMap[route.name]) : route.name}</span>
           </Link>
         );
       })}
@@ -102,8 +121,8 @@ export default function MainLayout({ children }: { children: React.ReactNode }) 
               <Store className="h-6 w-6 text-primary-foreground" />
             </div>
             <div>
-              <h1 className="font-bold text-lg">POS System</h1>
-              <p className="text-xs text-muted-foreground">Point of Sale</p>
+              <h1 className="font-bold text-lg">{t('common.pos_system')}</h1>
+              <p className="text-xs text-muted-foreground">{t('common.point_of_sale')}</p>
             </div>
           </Link>
         </div>
@@ -122,7 +141,7 @@ export default function MainLayout({ children }: { children: React.ReactNode }) 
           </div>
           <Button variant="outline" size="sm" className="w-full" onClick={handleSignOut}>
             <LogOut className="h-4 w-4 mr-2" />
-            Sign Out
+            {t('common.sign_out')}
           </Button>
         </div>
       </aside>
@@ -146,8 +165,8 @@ export default function MainLayout({ children }: { children: React.ReactNode }) 
                       <Store className="h-6 w-6 text-primary-foreground" />
                     </div>
                     <div>
-                      <h1 className="font-bold text-lg">POS System</h1>
-                      <p className="text-xs text-muted-foreground">Point of Sale</p>
+                      <h1 className="font-bold text-lg">{t('common.pos_system')}</h1>
+                      <p className="text-xs text-muted-foreground">{t('common.point_of_sale')}</p>
                     </div>
                   </Link>
                 </div>
@@ -158,11 +177,17 @@ export default function MainLayout({ children }: { children: React.ReactNode }) 
             </Sheet>
 
             <h2 className="text-lg font-semibold">
-              {routes.find((r) => r.path === location.pathname)?.name || 'POS System'}
+              {(() => {
+                const currentRoute = routes.find((r) => r.path === location.pathname);
+                if (!currentRoute) return t('common.pos_system');
+                const translationKey = routeNameMap[currentRoute.name];
+                return translationKey ? t(translationKey) : currentRoute.name;
+              })()}
             </h2>
           </div>
 
           <div className="flex items-center gap-2">
+            <LanguageSwitcher />
             <Button
               variant="ghost"
               size="icon"
@@ -187,7 +212,7 @@ export default function MainLayout({ children }: { children: React.ReactNode }) 
                 <DropdownMenuSeparator />
                 <DropdownMenuItem onClick={handleSignOut}>
                   <LogOut className="h-4 w-4 mr-2" />
-                  Sign Out
+                  {t('common.sign_out')}
                 </DropdownMenuItem>
               </DropdownMenuContent>
             </DropdownMenu>

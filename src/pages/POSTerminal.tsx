@@ -1,9 +1,17 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
+import { useReactToPrint } from 'react-to-print';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
+import {
+  Command,
+  CommandEmpty,
+  CommandGroup,
+  CommandInput,
+  CommandItem,
+  CommandList,
+} from '@/components/ui/command';
 import {
   Select,
   SelectContent,
@@ -37,6 +45,8 @@ import {
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { useToast } from '@/hooks/use-toast';
 import { useAuth } from '@/contexts/AuthContext';
+import { cn } from '@/lib/utils';
+import { useTranslation } from 'react-i18next';
 import {
   searchProducts,
   getProductByBarcode,
@@ -57,16 +67,16 @@ import {
   updateHeldOrderName,
 } from '@/db/api';
 import type { Product, Customer, CartItem, PaymentMethod, HeldOrder, Category } from '@/types/database';
-import { Search, Trash2, Plus, Minus, DollarSign, CreditCard, Smartphone, Banknote, Tag, Clock, Pause } from 'lucide-react';
+import { Search, Trash2, Plus, Minus, DollarSign, CreditCard, Smartphone, Banknote, Tag, Clock, Pause, Package, X, Check, ChevronsUpDown } from 'lucide-react';
 import HoldOrderDialog from '@/components/pos/HoldOrderDialog';
 import WaitingOrdersDialog from '@/components/pos/WaitingOrdersDialog';
-import CategoryTabs from '@/components/pos/CategoryTabs';
-import FavoriteProducts from '@/components/pos/FavoriteProducts';
 import Numpad from '@/components/pos/Numpad';
 import QuickCustomerCreate from '@/components/pos/QuickCustomerCreate';
 import CustomerInfoBadge from '@/components/pos/CustomerInfoBadge';
+import Receipt from '@/components/Receipt';
 
 export default function POSTerminal() {
+  const { t } = useTranslation();
   const { toast } = useToast();
   const { profile } = useAuth();
   const searchInputRef = useRef<HTMLInputElement>(null);
@@ -76,6 +86,8 @@ export default function POSTerminal() {
   const [cart, setCart] = useState<CartItem[]>([]);
   const [selectedCustomer, setSelectedCustomer] = useState<Customer | null>(null);
   const [customers, setCustomers] = useState<Customer[]>([]);
+  const [customerComboboxOpen, setCustomerComboboxOpen] = useState(false);
+  const [customerSearchTerm, setCustomerSearchTerm] = useState('');
   const [discount, setDiscount] = useState({ type: 'amount', value: 0 });
   const [paymentDialogOpen, setPaymentDialogOpen] = useState(false);
   const [payments, setPayments] = useState<{ method: PaymentMethod; amount: number }[]>([]);
@@ -97,6 +109,7 @@ export default function POSTerminal() {
   const [categories, setCategories] = useState<Category[]>([]);
   const [selectedCategory, setSelectedCategory] = useState<string | null>(null);
   const [favoriteProducts, setFavoriteProducts] = useState<Product[]>([]);
+  const [allProducts, setAllProducts] = useState<Product[]>([]);
   const [numpadOpen, setNumpadOpen] = useState(false);
   const [numpadConfig, setNumpadConfig] = useState<{
     type: 'quantity' | 'discount';
@@ -105,6 +118,27 @@ export default function POSTerminal() {
     max?: number;
   } | null>(null);
   const [selectedCartIndex, setSelectedCartIndex] = useState<number>(-1);
+  
+  // Receipt printing state
+  const receiptRef = useRef<HTMLDivElement>(null);
+  const [receiptData, setReceiptData] = useState<{
+    orderNumber: string;
+    items: CartItem[];
+    customer: Customer | null;
+    subtotal: number;
+    discountAmount: number;
+    total: number;
+    paidAmount: number;
+    changeAmount: number;
+    paymentMethod: string;
+    dateTime: string;
+    cashierName?: string;
+  } | null>(null);
+
+  const handlePrint = useReactToPrint({
+    contentRef: receiptRef,
+    documentTitle: `Receipt-${receiptData?.orderNumber || 'Order'}`,
+  });
 
   // Load functions - defined before useEffect
   const loadCustomers = useCallback(async () => {
@@ -136,6 +170,15 @@ export default function POSTerminal() {
     }
   }, []);
 
+  const loadAllProducts = useCallback(async () => {
+    try {
+      const results = await searchProducts('');
+      setAllProducts(results);
+    } catch (error) {
+      console.error('Error loading all products:', error);
+    }
+  }, []);
+
   const loadHeldOrders = useCallback(async () => {
     try {
       const data = await getHeldOrders();
@@ -162,9 +205,10 @@ export default function POSTerminal() {
     loadCustomers();
     loadCategories();
     loadFavoriteProducts();
+    loadAllProducts();
     checkShift();
     loadHeldOrders();
-  }, [loadCustomers, loadCategories, loadFavoriteProducts, checkShift, loadHeldOrders]);
+  }, [loadCustomers, loadCategories, loadFavoriteProducts, loadAllProducts, checkShift, loadHeldOrders]);
 
   // Keyboard shortcuts
   useEffect(() => {
@@ -173,8 +217,15 @@ export default function POSTerminal() {
       const target = e.target as HTMLElement;
       const isInput = target.tagName === 'INPUT' || target.tagName === 'TEXTAREA';
       
-      // F2: Open payment modal
+      // F2: Focus search input
       if (e.key === 'F2') {
+        e.preventDefault();
+        searchInputRef.current?.focus();
+        return;
+      }
+      
+      // F9: Open payment modal
+      if (e.key === 'F9') {
         e.preventDefault();
         if (cart.length > 0 && !paymentDialogOpen) {
           setPaymentDialogOpen(true);
@@ -286,11 +337,11 @@ export default function POSTerminal() {
       });
       setCurrentShift(shift);
       setShiftDialogOpen(false);
-      toast({ title: 'Success', description: 'Shift opened successfully' });
+      toast({ title: t('common.success'), description: t('pos.shift_opened') });
     } catch (error) {
       toast({
-        title: 'Error',
-        description: 'Failed to open shift',
+        title: t('common.error'),
+        description: t('pos.shift_open_failed'),
         variant: 'destructive',
       });
     }
@@ -308,8 +359,8 @@ export default function POSTerminal() {
 
     if (cart.length === 0) {
       toast({
-        title: 'Cannot Hold Empty Cart',
-        description: 'Please add items to the cart before holding the order',
+        title: 'Xatolik',
+        description: 'Savatcha bo\'sh. Buyurtmani saqlash uchun mahsulot qo\'shing',
         variant: 'destructive',
       });
       return;
@@ -330,8 +381,9 @@ export default function POSTerminal() {
       });
 
       toast({
-        title: 'Order Held',
-        description: 'Order moved to waiting list',
+        title: '✅ Buyurtma saqlandi!',
+        description: 'Buyurtma kutish ro\'yxatiga ko\'chirildi',
+        className: 'bg-green-50 border-green-200',
       });
 
       // Clear cart and reset state
@@ -345,8 +397,8 @@ export default function POSTerminal() {
     } catch (error) {
       console.error('Error holding order:', error);
       toast({
-        title: 'Error',
-        description: 'Failed to hold order',
+        title: t('common.error'),
+        description: t('pos.hold_order_failed'),
         variant: 'destructive',
       });
     }
@@ -365,54 +417,11 @@ export default function POSTerminal() {
 
   const restoreOrder = async (order: HeldOrder) => {
     try {
-      // Validate product availability
-      const unavailableProducts: string[] = [];
-      const adjustedItems: CartItem[] = [];
-
-      for (const item of order.items) {
-        const currentProduct = await getProductByBarcode(item.product.barcode || '');
-        
-        if (!currentProduct) {
-          unavailableProducts.push(item.product.name);
-          continue;
-        }
-
-        // Check stock and adjust quantity if needed
-        let quantity = item.quantity;
-        if (currentProduct.current_stock > 0 && quantity > currentProduct.current_stock) {
-          quantity = currentProduct.current_stock;
-          toast({
-            title: 'Quantity Adjusted',
-            description: `${item.product.name}: reduced to ${quantity} (available stock)`,
-          });
-        }
-
-        adjustedItems.push({
-          ...item,
-          product: currentProduct,
-          quantity,
-        });
-      }
-
-      if (unavailableProducts.length > 0) {
-        toast({
-          title: 'Some Products Unavailable',
-          description: `Skipped: ${unavailableProducts.join(', ')}`,
-          variant: 'destructive',
-        });
-      }
-
-      if (adjustedItems.length === 0) {
-        toast({
-          title: 'Cannot Restore Order',
-          description: 'No products available from this order',
-          variant: 'destructive',
-        });
-        return;
-      }
-
-      // Restore cart state
-      setCart(adjustedItems);
+      // Trust the saved data - restore items directly without validation
+      // Simply take the order.items array and set it directly to cart
+      setCart([...order.items]);
+      
+      // Restore discount
       setDiscount(order.discount || { type: 'amount', value: 0 });
       
       // Restore customer if exists
@@ -424,21 +433,25 @@ export default function POSTerminal() {
       // Mark order as restored
       await updateHeldOrderStatus(order.id, 'RESTORED');
 
-      toast({
-        title: 'Order Restored',
-        description: 'Waiting order restored to cart',
-      });
+      // Remove from heldOrders by reloading
+      loadHeldOrders();
 
-      // Close dialogs and reload
+      // Close dialogs
       setWaitingOrdersDialogOpen(false);
       setRestoreConfirmOpen(false);
       setOrderToRestore(null);
-      loadHeldOrders();
+
+      // Show success toast
+      toast({
+        title: '✅ Buyurtma qayta tiklandi',
+        description: `${order.items.length} ta mahsulot savatga qaytarildi`,
+        className: 'bg-green-50 border-green-200',
+      });
     } catch (error) {
       console.error('Error restoring order:', error);
       toast({
-        title: 'Error',
-        description: 'Failed to restore order',
+        title: 'Xatolik',
+        description: 'Buyurtmani qayta tiklashda xatolik yuz berdi',
         variant: 'destructive',
       });
     }
@@ -602,8 +615,23 @@ export default function POSTerminal() {
   };
 
   const handleQuantityInputChange = (productId: string, value: string) => {
-    // Allow empty string while typing
-    setEditingQuantity({ ...editingQuantity, [productId]: value });
+    // Get the value as a string
+    const stringValue = value || '';
+    
+    // Store the value in editing state (allow empty string while typing)
+    setEditingQuantity({ ...editingQuantity, [productId]: stringValue });
+    
+    // If valid number, update cart quantity for real-time total calculation
+    if (stringValue !== '') {
+      const numValue = Number(stringValue);
+      if (!isNaN(numValue) && numValue >= 1) {
+        const cartItem = cart.find(item => item.product.id === productId);
+        if (cartItem && cartItem.quantity !== numValue) {
+          // Only update if different to avoid unnecessary re-renders
+          updateQuantity(productId, numValue);
+        }
+      }
+    }
   };
 
   const handleQuantityInputBlur = (productId: string) => {
@@ -612,18 +640,25 @@ export default function POSTerminal() {
     
     if (!cartItem) return;
     
+    // If field is left empty or 0, reset it to 1 automatically
+    if (!value || value.trim() === '' || value === '0') {
+      updateQuantity(productId, 1);
+      const newEditingQuantity = { ...editingQuantity };
+      delete newEditingQuantity[productId];
+      setEditingQuantity(newEditingQuantity);
+      return;
+    }
+    
     // Parse the input value
     const parsedValue = parseInt(value, 10);
     
     // Validate: must be a valid integer >= 1
-    if (isNaN(parsedValue) || parsedValue < 1 || value.trim() === '') {
-      // Restore previous valid value
-      setEditingQuantity({ ...editingQuantity, [productId]: cartItem.quantity.toString() });
-      toast({
-        title: 'Invalid Quantity',
-        description: 'Quantity must be at least 1',
-        variant: 'destructive',
-      });
+    if (isNaN(parsedValue) || parsedValue < 1) {
+      // Reset to 1 if invalid
+      updateQuantity(productId, 1);
+      const newEditingQuantity = { ...editingQuantity };
+      delete newEditingQuantity[productId];
+      setEditingQuantity(newEditingQuantity);
       return;
     }
     
@@ -636,7 +671,7 @@ export default function POSTerminal() {
     setEditingQuantity(newEditingQuantity);
   };
 
-  const handleQuantityInputKeyDown = (productId: string, e: React.KeyboardEvent<HTMLInputElement>) => {
+  const handleQuantityInputKeyDown = (_productId: string, e: React.KeyboardEvent<HTMLInputElement>) => {
     if (e.key === 'Enter') {
       e.currentTarget.blur();
     }
@@ -665,10 +700,46 @@ export default function POSTerminal() {
   const handleNumpadApply = (value: number) => {
     if (!numpadConfig) return;
     
+    // Force type conversion: explicitly convert to number using Number()
+    const numValue = Number(value);
+    
+    // Validate: Only show error if value is actually invalid
+    if (isNaN(numValue) || !isFinite(numValue)) {
+      toast({
+        title: 'Invalid Value',
+        description: 'Please enter a valid number',
+        variant: 'destructive',
+      });
+      setNumpadConfig(null);
+      return;
+    }
+    
     if (numpadConfig.type === 'quantity' && numpadConfig.productId) {
-      updateQuantity(numpadConfig.productId, value);
+      // Refactor validation: Ensure validation logic checks the converted number
+      // Only adjust if the converted number is actually less than 1
+      const validQuantity = Math.max(1, Math.floor(numValue));
+      
+      // Fix the error: Remove error if the converted input is actually valid
+      // Only show adjustment message if value was actually changed
+      if (validQuantity !== Math.floor(numValue) && numValue < 1) {
+        toast({
+          title: 'Quantity Adjusted',
+          description: `Quantity must be at least 1. Set to ${validQuantity}`,
+        });
+      }
+      // No error if value is valid (e.g., 8 is valid, so no error shown)
+      updateQuantity(numpadConfig.productId, validQuantity);
     } else if (numpadConfig.type === 'discount' && numpadConfig.productId) {
-      updateLineDiscount(numpadConfig.productId, value);
+      // Ensure discount is not negative
+      const validDiscount = Math.max(0, numValue);
+      // Only show message if discount was adjusted
+      if (validDiscount !== numValue && numValue < 0) {
+        toast({
+          title: 'Discount Adjusted',
+          description: 'Discount cannot be negative. Set to 0',
+        });
+      }
+      updateLineDiscount(numpadConfig.productId, validDiscount);
     }
     
     setNumpadConfig(null);
@@ -742,6 +813,8 @@ export default function POSTerminal() {
   const handleCustomerCreated = (customer: Customer) => {
     setCustomers([...customers, customer]);
     setSelectedCustomer(customer);
+    setCustomerComboboxOpen(false);
+    setCustomerSearchTerm('');
     toast({
       title: 'Customer Added',
       description: `${customer.name} has been added and selected`,
@@ -766,6 +839,18 @@ export default function POSTerminal() {
         variant: 'destructive',
       });
       return;
+    }
+
+    // 1. Stock Validation (Before Sale)
+    for (const cartItem of cart) {
+      if (cartItem.quantity > cartItem.product.current_stock) {
+        toast({
+          title: 'Error',
+          description: `Error: Not enough stock for ${cartItem.product.name}`,
+          variant: 'destructive',
+        });
+        return;
+      }
     }
 
     const { subtotal, discountAmount, total } = calculateTotals();
@@ -886,7 +971,7 @@ export default function POSTerminal() {
       );
 
       // Call the atomic RPC function
-      const result = await createOrder(order, orderItems, orderPaymentsData);
+      await createOrder(order, orderItems, orderPaymentsData);
 
       // Success message based on payment type
       let successMessage = '';
@@ -903,13 +988,89 @@ export default function POSTerminal() {
           : `Order ${orderNumber} completed successfully`;
       }
 
+      // Prepare receipt data
+      const paymentMethodLabel = paymentMethod === 'cash' ? 'Cash' :
+                                paymentMethod === 'card' ? 'Card' :
+                                paymentMethod === 'qr' ? 'QR Pay' :
+                                paymentMethod === 'mixed' ? 'Mixed' :
+                                paymentMethod === 'credit' ? 'Credit' : 'Unknown';
+      
+      setReceiptData({
+        orderNumber,
+        items: cart,
+        customer: selectedCustomer,
+        subtotal,
+        discountAmount,
+        total,
+        paidAmount,
+        changeAmount,
+        paymentMethod: paymentMethodLabel,
+        dateTime: new Date().toLocaleString('en-US', {
+          year: 'numeric',
+          month: '2-digit',
+          day: '2-digit',
+          hour: '2-digit',
+          minute: '2-digit',
+          second: '2-digit',
+        }),
+        cashierName: profile?.full_name || profile?.username,
+      });
+
+      // 3. Record Sale (Log to console)
+      const saleRecord = {
+        timestamp: new Date().toISOString(),
+        orderNumber,
+        totalAmount: total,
+        itemsSold: cart.map(item => ({
+          productName: item.product.name,
+          quantity: item.quantity,
+          unitPrice: Number(item.product.sale_price),
+          total: item.total,
+        })),
+        paymentMethod,
+        cashier: profile?.full_name || profile?.username,
+      };
+      console.log('Sale Record:', saleRecord);
+
+      // 4. Update Local Product State (Stock Deduction) - BEFORE clearing cart
+      // Store cart items for stock update (before cart is cleared)
+      const cartItemsForStockUpdate = [...cart];
+      
+      // Clone the products arrays and update stock
+      const updateProductsWithStockDeduction = (products: Product[]) => {
+        const updatedProducts = products.map(product => {
+          const cartItem = cartItemsForStockUpdate.find(item => item.product.id === product.id);
+          if (cartItem) {
+            const newStock = product.current_stock - cartItem.quantity;
+            return {
+              ...product,
+              current_stock: Math.max(0, newStock), // Ensure stock doesn't go negative
+            };
+          }
+          return product;
+        });
+        return updatedProducts;
+      };
+
+      // Update allProducts state to reflect stock changes immediately
+      setAllProducts(prevProducts => {
+        const updated = updateProductsWithStockDeduction(prevProducts);
+        return updated;
+      });
+
+      // Also update favoriteProducts if needed
+      setFavoriteProducts(prevFavorites => updateProductsWithStockDeduction(prevFavorites));
+
+      // Update searchResults if user is searching
+      setSearchResults(prevResults => updateProductsWithStockDeduction(prevResults));
+
       toast({
-        title: '✅ Order Completed Successfully',
+        title: '✅ Sotuv amalga oshirildi!',
         description: successMessage,
         className: 'bg-green-50 border-green-200',
       });
 
-      // Clear cart and reset state
+      // 5. Cleanup - Clear cart and reset state (AFTER stock update)
       setCart([]);
       setPayments([]);
       setDiscount({ type: 'amount', value: 0 });
@@ -923,6 +1084,25 @@ export default function POSTerminal() {
       if (creditAmountValue > 0) {
         loadCustomers();
       }
+
+      // Reload products from database after a delay to ensure sync (but don't overwrite immediate updates)
+      setTimeout(() => {
+        loadAllProducts();
+      }, 500);
+
+      // Trigger print after a short delay to ensure receipt data is set
+      setTimeout(() => {
+        if (receiptRef.current) {
+          handlePrint();
+        }
+      }, 100);
+
+      // Trigger print after a short delay to ensure receipt data is set
+      setTimeout(() => {
+        if (receiptRef.current) {
+          handlePrint();
+        }
+      }, 100);
     } catch (error) {
       console.error('Order completion error:', error);
       
@@ -995,23 +1175,24 @@ export default function POSTerminal() {
       return;
     }
 
-    // Determine credit amount (default to full total if not specified)
-    const creditAmountValue = creditAmount ? Number(creditAmount) : total;
+    // Calculate initial payment and debt amount
+    const initialPayment = creditAmount ? Number(creditAmount) : 0;
+    const debtAmount = total - initialPayment;
     
-    // Validate credit amount
-    if (creditAmountValue < 0) {
+    // Validate initial payment
+    if (initialPayment < 0) {
       toast({
-        title: 'Invalid Credit Amount',
-        description: 'Credit amount cannot be negative',
+        title: t('common.error'),
+        description: t('pos.error_negative_payment'),
         variant: 'destructive',
       });
       return;
     }
 
-    if (creditAmountValue > total) {
+    if (initialPayment > total) {
       toast({
-        title: 'Invalid Credit Amount',
-        description: 'Credit amount cannot exceed order total',
+        title: t('common.error'),
+        description: t('pos.error_payment_exceeds_total'),
         variant: 'destructive',
       });
       return;
@@ -1019,37 +1200,19 @@ export default function POSTerminal() {
 
     // Check credit limit if set
     if (selectedCustomer.credit_limit > 0) {
-      const newBalance = (selectedCustomer.balance || 0) + creditAmountValue;
+      const currentBalance = selectedCustomer.balance || 0;
+      const newBalance = currentBalance + debtAmount;
       if (newBalance > selectedCustomer.credit_limit) {
         toast({
-          title: 'Credit Limit Exceeded',
-          description: `Customer's credit limit is ${selectedCustomer.credit_limit.toFixed(2)} UZS. New balance would be ${newBalance.toFixed(2)} UZS.`,
+          title: t('pos.credit_limit_exceeded_title'),
+          description: `${t('pos.credit_limit_exceeded_desc')} ${formatCurrency(selectedCustomer.credit_limit)}. ${t('pos.new_debt_label')} ${formatCurrency(newBalance)}`,
           variant: 'destructive',
         });
         return;
       }
     }
 
-    // If partial credit, need to collect remaining amount
-    if (creditAmountValue < total) {
-      const remainingAmount = total - creditAmountValue;
-      
-      toast({
-        title: 'Partial Credit Confirmed',
-        description: `${creditAmountValue.toFixed(2)} UZS on credit. Please collect remaining ${remainingAmount.toFixed(2)} UZS.`,
-        className: 'bg-blue-50 border-blue-200',
-      });
-
-      // Close payment dialog and switch to mixed payment tab
-      // Store credit amount in payments array for later processing
-      setPayments([{ method: 'credit' as PaymentMethod, amount: creditAmountValue }]);
-      
-      // Keep dialog open but switch to mixed tab to collect remaining payment
-      // User will need to add remaining payment methods
-      return;
-    }
-
-    // Full credit sale - process immediately
+    // Process credit sale (full or partial)
     try {
       const orderItems = cart.map((item) => ({
         product_id: item.product.id,
@@ -1061,43 +1224,142 @@ export default function POSTerminal() {
         total: item.total,
       }));
 
-      // Call the credit order RPC function (legacy - for full credit only)
-      const result = await createCreditOrder({
-        customer_id: selectedCustomer.id,
-        cashier_id: profile.id,
-        shift_id: currentShift.id,
-        items: orderItems,
-        subtotal,
-        discount_amount: discountAmount,
-        discount_percent: discount.type === 'percent' ? discount.value : 0,
-        tax_amount: 0,
-        total_amount: total,
-        notes: null,
-      });
+      let result;
+      
+      // If partial payment (initialPayment > 0), use createOrder with mixed payments
+      if (initialPayment > 0) {
+        const orderNumber = await generateOrderNumber();
+        
+        const order = {
+          order_number: orderNumber,
+          customer_id: selectedCustomer.id,
+          cashier_id: profile.id,
+          shift_id: currentShift.id,
+          subtotal,
+          discount_amount: discountAmount,
+          discount_percent: discount.type === 'percent' ? discount.value : 0,
+          tax_amount: 0,
+          total_amount: total,
+          paid_amount: initialPayment,
+          credit_amount: debtAmount,
+          change_amount: 0,
+          status: 'completed' as const,
+          payment_status: 'partially_paid' as const,
+          notes: null,
+        };
+
+        const orderPaymentsData = await Promise.all([
+          {
+            payment_number: await generatePaymentNumber(),
+            payment_method: 'cash' as PaymentMethod,
+            amount: initialPayment,
+            reference_number: null,
+            notes: null,
+          },
+          {
+            payment_number: await generatePaymentNumber(),
+            payment_method: 'credit' as PaymentMethod,
+            amount: debtAmount,
+            reference_number: null,
+            notes: null,
+          }
+        ]);
+
+        await createOrder(order, orderItems, orderPaymentsData);
+        
+        result = {
+          success: true,
+          order_number: orderNumber,
+          new_balance: (selectedCustomer.balance || 0) + debtAmount,
+        };
+      } else {
+        // Full credit sale - use createCreditOrder
+        result = await createCreditOrder({
+          customer_id: selectedCustomer.id,
+          cashier_id: profile.id,
+          shift_id: currentShift.id,
+          items: orderItems,
+          subtotal,
+          discount_amount: discountAmount,
+          discount_percent: discount.type === 'percent' ? discount.value : 0,
+          tax_amount: 0,
+          total_amount: total,
+          notes: undefined,
+        });
+      }
 
       if (!result.success) {
         throw new Error(result.error || 'Failed to create credit order');
       }
 
+      // Prepare receipt data for credit sale
+      setReceiptData({
+        orderNumber: result.order_number || 'N/A',
+        items: cart,
+        customer: selectedCustomer,
+        subtotal,
+        discountAmount,
+        total,
+        paidAmount: initialPayment,
+        changeAmount: 0,
+        paymentMethod: initialPayment > 0 ? 'Mixed (Cash + Credit)' : 'Credit',
+        dateTime: new Date().toLocaleString('en-US', {
+          year: 'numeric',
+          month: '2-digit',
+          day: '2-digit',
+          hour: '2-digit',
+          minute: '2-digit',
+          second: '2-digit',
+        }),
+        cashierName: profile?.full_name || profile?.username,
+      });
+
       // Success!
+      const successMessage = initialPayment > 0
+        ? t('pos.order_created_partial', { number: result.order_number }) + ` ${formatCurrency(initialPayment)}, ${t('pos.credit_amount_label')} ${formatCurrency(debtAmount)}. ${t('pos.new_debt_label')} ${formatCurrency(result.new_balance || (selectedCustomer.balance || 0) + debtAmount)}`
+        : t('pos.order_created_credit', { number: result.order_number }) + ` ${formatCurrency(result.new_balance || (selectedCustomer.balance || 0) + debtAmount)}`;
+      
       toast({
-        title: '✅ Credit Sale Completed',
-        description: `Order ${result.order_number} created ON CREDIT. Customer balance: ${result.new_balance?.toFixed(2)} UZS`,
+        title: `✅ ${t('pos.credit_written')}`,
+        description: successMessage,
         className: 'bg-green-50 border-green-200',
       });
 
-      // Clear cart and reset state
+      // Update customer balance in state immediately
+      if (selectedCustomer) {
+        const newBalance = result.new_balance || (selectedCustomer.balance || 0) + debtAmount;
+        const updatedCustomer = {
+          ...selectedCustomer,
+          balance: newBalance,
+        };
+        setSelectedCustomer(updatedCustomer);
+        
+        // Also update in customers list
+        setCustomers(prevCustomers =>
+          prevCustomers.map(c =>
+            c.id === selectedCustomer.id ? updatedCustomer : c
+          )
+        );
+      }
+
+      // Clear cart and reset state (but keep customer selected to show updated balance)
       setCart([]);
       setPayments([]);
       setDiscount({ type: 'amount', value: 0 });
-      setSelectedCustomer(null);
       setPaymentDialogOpen(false);
       setCashReceived('');
       setCreditAmount('');
       setSelectedCartIndex(-1);
 
-      // Refresh customer data to show updated balance
+      // Refresh customer data to ensure sync
       loadCustomers();
+
+      // Trigger print after a short delay
+      setTimeout(() => {
+        if (receiptRef.current) {
+          handlePrint();
+        }
+      }, 100);
     } catch (error) {
       console.error('Credit sale error:', error);
       
@@ -1114,27 +1376,55 @@ export default function POSTerminal() {
     }
   };
 
-  const handlePayment = async () => {
-    // This is the old function - keeping for backward compatibility
-    // but it should not be called anymore
-    console.warn('handlePayment called - this should use handleCompletePayment instead');
-  };
 
   const { subtotal, lineDiscountsTotal, globalDiscountAmount, discountAmount, total } = calculateTotals();
   const paidAmount = payments.reduce((sum, p) => sum + p.amount, 0);
   const remainingAmount = total - paidAmount;
+
+  // Currency formatting helper for Uzbekistan market
+  const formatCurrency = (value: number): string => {
+    // Check if whole number
+    const isWholeNumber = Math.abs(value % 1) < 0.01;
+    
+    // Format number with 2 decimal places
+    const numStr = isWholeNumber 
+      ? Math.round(value).toString() 
+      : value.toFixed(2);
+    
+    // Split into integer and decimal parts
+    const parts = numStr.split('.');
+    const integerPart = parts[0];
+    const decimalPart = parts[1];
+    
+    // Add space as thousand separator
+    const formattedInteger = integerPart.replace(/\B(?=(\d{3})+(?!\d))/g, ' ');
+    
+    // Combine parts
+    const formatted = isWholeNumber 
+      ? formattedInteger 
+      : `${formattedInteger}.${decimalPart}`;
+    
+    return `${formatted} so'm`;
+  };
+
+  // Get products to display (search results or all products filtered by category)
+  const displayProducts = searchResults.length > 0 
+    ? searchResults 
+    : (selectedCategory 
+        ? allProducts.filter(p => p.category_id === selectedCategory)
+        : allProducts);
 
   return (
     <>
       <Dialog open={shiftDialogOpen} onOpenChange={setShiftDialogOpen}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>Open Shift</DialogTitle>
-            <DialogDescription>Enter the opening cash amount to start your shift</DialogDescription>
+            <DialogTitle>{t('pos.open_shift')}</DialogTitle>
+            <DialogDescription>{t('pos.opening_cash')}</DialogDescription>
           </DialogHeader>
           <div className="space-y-4 py-4">
             <div className="space-y-2">
-              <Label htmlFor="opening-cash">Opening Cash Amount</Label>
+              <Label htmlFor="opening-cash">{t('pos.opening_cash')}</Label>
               <Input
                 id="opening-cash"
                 type="number"
@@ -1147,163 +1437,369 @@ export default function POSTerminal() {
           </div>
           <DialogFooter>
             <Button onClick={handleOpenShift} disabled={!openingCash}>
-              Open Shift
+              {t('pos.open_shift')}
             </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
 
-      <div className="grid grid-cols-1 xl:grid-cols-3 gap-6 h-[calc(100vh-8rem)]">
-        <div className="xl:col-span-2 space-y-4 overflow-y-auto">
-          <FavoriteProducts products={favoriteProducts} onAddToCart={addToCart} />
-          
-          <Card>
-            <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-4">
-              <CardTitle>Product Search</CardTitle>
-              <Popover>
-                <PopoverTrigger asChild>
-                  <Button variant="outline" size="sm" className="h-8 gap-2">
-                    <span className="text-xs">⌨️ Shortcuts</span>
-                  </Button>
-                </PopoverTrigger>
-                <PopoverContent className="w-80" align="end">
-                  <div className="space-y-3">
-                    <h4 className="font-semibold text-sm">Keyboard Shortcuts</h4>
-                    <div className="space-y-2 text-xs">
-                      <div className="flex justify-between">
-                        <span className="text-muted-foreground">Add first result</span>
-                        <kbd className="px-2 py-1 bg-muted rounded">ENTER</kbd>
-                      </div>
-                      <div className="flex justify-between">
-                        <span className="text-muted-foreground">Process payment</span>
-                        <kbd className="px-2 py-1 bg-muted rounded">F2</kbd>
-                      </div>
-                      <div className="flex justify-between">
-                        <span className="text-muted-foreground">Hold order</span>
-                        <kbd className="px-2 py-1 bg-muted rounded">F3</kbd>
-                      </div>
-                      <div className="flex justify-between">
-                        <span className="text-muted-foreground">Close / Clear</span>
-                        <kbd className="px-2 py-1 bg-muted rounded">ESC</kbd>
-                      </div>
-                      <div className="flex justify-between">
-                        <span className="text-muted-foreground">Navigate cart</span>
-                        <kbd className="px-2 py-1 bg-muted rounded">↑ ↓</kbd>
-                      </div>
-                      <div className="flex justify-between">
-                        <span className="text-muted-foreground">Adjust quantity</span>
-                        <kbd className="px-2 py-1 bg-muted rounded">+ -</kbd>
-                      </div>
-                      <div className="flex justify-between">
-                        <span className="text-muted-foreground">Add favorites</span>
-                        <kbd className="px-2 py-1 bg-muted rounded">ALT+1-8</kbd>
-                      </div>
-                    </div>
-                  </div>
-                </PopoverContent>
-              </Popover>
-            </CardHeader>
-            <CardContent className="space-y-4">
-              <div className="flex gap-2">
-                <div className="flex-1 relative">
-                  <Search className="absolute left-3 top-3 h-4 w-4 text-muted-foreground" />
-                  <Input
-                    ref={searchInputRef}
-                    placeholder="Search products by name, SKU, or barcode... (Press ENTER to add first result)"
-                    value={searchTerm}
-                    onChange={(e) => handleSearch(e.target.value)}
-                    onKeyDown={(e) => {
-                      if (e.key === 'Enter' && searchTerm) {
-                        handleBarcodeSearch(searchTerm);
-                      }
+      {/* Split View Layout - Full Screen - Fixed Height Container */}
+      {/* Negative margins to counteract MainLayout padding */}
+      <div className="flex flex-col flex-1 min-h-0 -m-4 xl:-m-6">
+        {/* Main Content Area - Flex Container */}
+        <div className="flex flex-row min-h-0 overflow-hidden gap-3 p-3 flex-1">
+          {/* Left Column - Product Catalog (58%) */}
+          <div className="w-[58%] flex flex-col min-h-0 border-r bg-background rounded-lg overflow-hidden">
+            {/* Search Header - Fixed Height */}
+            <div className="flex-shrink-0 p-3 border-b bg-white dark:bg-gray-900">
+              <div className="relative mb-2">
+                <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+                <Input
+                  ref={searchInputRef}
+                  placeholder={t('pos.search_placeholder')}
+                  value={searchTerm}
+                  onChange={(e) => handleSearch(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' && searchTerm) {
+                      handleBarcodeSearch(searchTerm);
+                    }
+                  }}
+                  className={`pl-10 ${searchTerm ? 'pr-10' : ''} h-12 text-base font-medium`}
+                  autoFocus
+                />
+                {searchTerm && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setSearchTerm('');
+                      setSearchResults([]);
+                      searchInputRef.current?.focus();
                     }}
-                    className="pl-9"
-                  />
-                </div>
+                    className="absolute right-3 top-1/2 transform -translate-y-1/2 h-5 w-5 flex items-center justify-center text-muted-foreground hover:text-foreground hover:bg-gray-100 dark:hover:bg-gray-800 rounded transition-colors"
+                  >
+                    <X className="h-4 w-4" />
+                  </button>
+                )}
               </div>
               
+              {/* Category Tabs - Horizontal Scrollable - Fixed Height */}
               {categories.length > 0 && (
-                <CategoryTabs
-                  categories={categories}
-                  selectedCategory={selectedCategory}
-                  onSelectCategory={handleCategoryChange}
-                />
-              )}
-              
-              {searchResults.length > 0 && (
-                <div className="grid grid-cols-2 md:grid-cols-3 gap-2 max-h-48 overflow-y-auto">
-                  {searchResults.map((product) => (
+                <div className="overflow-x-auto">
+                  <div className="flex gap-2">
                     <button
-                      key={product.id}
-                      type="button"
-                      className="h-auto py-3 px-4 flex flex-col items-start gap-1 rounded-lg bg-blue-600 hover:bg-blue-500 active:bg-blue-700 transition-colors border border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-400 focus:ring-offset-2"
-                      onClick={() => {
-                        addToCart(product);
-                        setSearchTerm('');
-                        setSearchResults([]);
-                      }}
+                      onClick={() => handleCategoryChange(null)}
+                      className={`px-3 py-1.5 rounded-lg text-sm font-medium whitespace-nowrap transition-colors flex-shrink-0 ${
+                        selectedCategory === null
+                          ? 'bg-primary text-primary-foreground'
+                          : 'bg-muted hover:bg-muted/80'
+                      }`}
                     >
-                      <span className="font-semibold text-sm text-white leading-tight">{product.name}</span>
-                      <span className="text-xs text-slate-100 font-medium">{Number(product.sale_price).toFixed(2)} UZS</span>
-                      <span className="text-xs text-slate-200">Stock: {product.current_stock}</span>
+                      {t('pos.all_categories')}
                     </button>
-                  ))}
+                    {categories.map((category) => (
+                      <button
+                        key={category.id}
+                        onClick={() => handleCategoryChange(category.id)}
+                        className={`px-3 py-1.5 rounded-lg text-sm font-medium whitespace-nowrap transition-colors flex-shrink-0 ${
+                          selectedCategory === category.id
+                            ? 'bg-primary text-primary-foreground'
+                            : 'bg-muted hover:bg-muted/80'
+                        }`}
+                      >
+                        {category.name}
+                      </button>
+                    ))}
+                  </div>
                 </div>
               )}
-            </CardContent>
-          </Card>
+            </div>
 
-          <Card>
-            <CardHeader>
-              <CardTitle>Shopping Cart</CardTitle>
-            </CardHeader>
-            <CardContent>
-              {cart.length === 0 ? (
-                <div className="text-center py-8 text-muted-foreground">Cart is empty</div>
+            {/* Product List - Scrollable - Takes Remaining Space */}
+            <div className="flex-1 min-h-0 overflow-y-auto">
+              {displayProducts.length > 0 ? (
+                <div className="w-full">
+                  {/* Header Row */}
+                  <div className="grid grid-cols-12 items-center gap-4 px-4 py-2 bg-gray-50 dark:bg-gray-900 border-b border-gray-200 dark:border-gray-700 sticky top-0 z-10">
+                    <div className="col-span-6">
+                      <span className="text-xs font-bold text-gray-400 dark:text-gray-500 uppercase">Mahsulot Nomi</span>
+                    </div>
+                    <div className="col-span-3 text-right">
+                      <span className="text-xs font-bold text-gray-400 dark:text-gray-500 uppercase">Narxi</span>
+                    </div>
+                    <div className="col-span-3 text-right">
+                      <span className="text-xs font-bold text-gray-400 dark:text-gray-500 uppercase">Ombor</span>
+                    </div>
+                  </div>
+                  
+                  {/* Product Rows */}
+                  <div className="divide-y divide-gray-200 dark:divide-gray-700">
+                    {displayProducts.map((product) => (
+                      <button
+                        key={product.id}
+                        type="button"
+                        onClick={() => {
+                          addToCart(product);
+                          setSearchTerm('');
+                          setSearchResults([]);
+                        }}
+                        className="w-full grid grid-cols-12 items-center gap-4 p-3 border-b border-gray-200 dark:border-gray-700 hover:bg-blue-50 dark:hover:bg-blue-900/20 cursor-pointer transition-colors bg-white dark:bg-gray-800"
+                      >
+                        {/* Column 1: Product Name (Span 6) */}
+                        <div className="col-span-6">
+                          <h3 className="font-bold text-gray-800 dark:text-gray-100 text-sm truncate text-left">
+                            {product.name}
+                          </h3>
+                        </div>
+                        
+                        {/* Column 2: Price (Span 3) */}
+                        <div className="col-span-3 text-right">
+                          <p className="font-bold text-blue-600 dark:text-blue-400 text-sm">
+                            {formatCurrency(Number(product.sale_price))}
+                          </p>
+                        </div>
+                        
+                        {/* Column 3: Stock (Span 3) */}
+                        <div className="col-span-3 text-right">
+                          <span className={`text-xs px-2 py-1 rounded ${
+                            product.current_stock === 0
+                              ? 'text-red-600 font-bold bg-red-50 dark:bg-red-900/30 dark:text-red-400'
+                              : product.current_stock < 10
+                              ? 'text-orange-500 font-medium'
+                              : 'text-green-600'
+                          }`}>
+                            {product.current_stock}
+                          </span>
+                        </div>
+                      </button>
+                    ))}
+                  </div>
+                </div>
               ) : (
-                <div className="space-y-2">
-                  {cart.map((item, index) => {
-                    const isSelected = index === selectedCartIndex;
-                    const discountPercent = item.subtotal > 0 ? (item.discount_amount / item.subtotal) * 100 : 0;
-                    
-                    return (
-                      <div 
-                        key={item.product.id} 
-                        className={`flex flex-col gap-2 p-3 border-2 rounded-lg transition-colors ${
-                          isSelected ? 'border-blue-500 bg-blue-50 dark:bg-blue-950/20' : 'border-border'
+                <div className="flex items-center justify-center h-full text-muted-foreground p-3">
+                  <div className="text-center">
+                    <Package className="h-12 w-12 mx-auto mb-3 opacity-50" />
+                    <p className="text-base font-medium">{t('pos.no_products')}</p>
+                    <p className="text-xs mt-1">{t('pos.try_searching')}</p>
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+
+          {/* Right Column - Cart & Checkout (42%) */}
+          <div className="w-[42%] h-[calc(100vh-80px)] flex flex-col relative overflow-hidden bg-gray-50 dark:bg-gray-950 rounded-lg">
+            {/* Top Section - Customer & Hold Order - Fixed Height */}
+            <div className="flex-shrink-0 p-3 border-b bg-white dark:bg-gray-900 space-y-2">
+              <div className="space-y-2">
+              <Label className="text-sm font-semibold">{t('pos.customer')}</Label>
+              <div className="flex gap-2">
+                <Popover 
+                  open={customerComboboxOpen} 
+                  onOpenChange={(open) => {
+                    setCustomerComboboxOpen(open);
+                    if (!open) {
+                      // Reset search when closing
+                      setCustomerSearchTerm('');
+                    }
+                  }}
+                >
+                  <PopoverTrigger asChild>
+                    <Button
+                      variant="outline"
+                      role="combobox"
+                      aria-expanded={customerComboboxOpen}
+                      className="flex-1 justify-between"
+                    >
+                      {selectedCustomer 
+                        ? `${selectedCustomer.name}${selectedCustomer.phone ? ` - ${selectedCustomer.phone}` : ''}`
+                        : t('pos.select_customer')}
+                      <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
+                    </Button>
+                  </PopoverTrigger>
+                  <PopoverContent className="w-[--radix-popover-trigger-width] p-0" align="start">
+                    <Command 
+                      shouldFilter={false} 
+                      className="[&_[data-slot=command-input-wrapper]]:border-b [&_[data-slot=command-input-wrapper]]:border-border/40 [&_[data-slot=command-input-wrapper]]:bg-transparent [&_[data-slot=command-input-wrapper]_svg]:text-gray-400 [&_[data-slot=command-input-wrapper]_svg]:opacity-60"
+                    >
+                      <CommandInput 
+                        placeholder={t('pos.search_customer')} 
+                        value={customerSearchTerm}
+                        onValueChange={setCustomerSearchTerm}
+                        className="border-0 focus:ring-0 focus:ring-offset-0 focus-visible:ring-0 focus-visible:ring-offset-0 outline-none bg-transparent shadow-none ring-0"
+                      />
+                      <CommandList>
+                        <CommandEmpty>{t('pos.no_customer_found')}</CommandEmpty>
+                        <CommandGroup>
+                          <CommandItem
+                            value="walk-in"
+                            onSelect={() => {
+                              setSelectedCustomer(null);
+                              setCustomerComboboxOpen(false);
+                              setCustomerSearchTerm('');
+                            }}
+                          >
+                            <Check
+                              className={cn(
+                                "mr-2 h-4 w-4",
+                                !selectedCustomer ? "opacity-100" : "opacity-0"
+                              )}
+                            />
+                            {t('pos.walk_in_customer')}
+                          </CommandItem>
+                          {customers
+                            .filter((customer) => {
+                              if (!customerSearchTerm) return true;
+                              const searchLower = customerSearchTerm.toLowerCase();
+                              return (
+                                customer.name.toLowerCase().includes(searchLower) ||
+                                (customer.phone && customer.phone.toLowerCase().includes(searchLower)) ||
+                                customer.id.toLowerCase().includes(searchLower)
+                              );
+                            })
+                            .map((customer) => (
+                              <CommandItem
+                                key={customer.id}
+                                value={`${customer.id}-${customer.name}-${customer.phone || ''}`}
+                                onSelect={() => {
+                                  setSelectedCustomer(customer);
+                                  setCustomerComboboxOpen(false);
+                                  setCustomerSearchTerm('');
+                                }}
+                              >
+                                <Check
+                                  className={cn(
+                                    "mr-2 h-4 w-4",
+                                    selectedCustomer?.id === customer.id ? "opacity-100" : "opacity-0"
+                                  )}
+                                />
+                                <span className="flex-1">
+                                  <span className="font-medium">{customer.name}</span>
+                                  {customer.phone && (
+                                    <span className="text-muted-foreground"> - {customer.phone}</span>
+                                  )}
+                                  {customer.id && (
+                                    <span className="text-xs text-muted-foreground ml-1">
+                                      ({customer.id.slice(0, 8)})
+                                    </span>
+                                  )}
+                                </span>
+                              </CommandItem>
+                            ))}
+                        </CommandGroup>
+                      </CommandList>
+                    </Command>
+                  </PopoverContent>
+                </Popover>
+                <QuickCustomerCreate onCustomerCreated={handleCustomerCreated} />
+              </div>
+              {selectedCustomer && (
+                <div className="pt-1">
+                  <CustomerInfoBadge customer={selectedCustomer} />
+                </div>
+              )}
+              </div>
+              
+              <div className="flex gap-2">
+                <Button
+                variant="outline"
+                className="flex-1 bg-yellow-500 hover:bg-yellow-600 text-white border-yellow-600"
+                onClick={() => {
+                  // If there are held orders, open the waiting orders dialog
+                  if (heldOrders.length > 0) {
+                    setWaitingOrdersDialogOpen(true);
+                    return;
+                  }
+                  
+                  // If cart is empty, show error
+                  if (cart.length === 0) {
+                    toast({
+                      title: 'Xatolik',
+                      description: 'Savatcha bo\'sh. Buyurtmani saqlash uchun mahsulot qo\'shing',
+                      variant: 'destructive',
+                    });
+                    return;
+                  }
+                  
+                  // If cart has items, open hold order dialog
+                  setHoldOrderDialogOpen(true);
+                }}
+              >
+                <Pause className="h-4 w-4 mr-2" />
+                {heldOrders.length > 0 
+                  ? `${t('pos.hold_order')} (${heldOrders.length})`
+                  : t('pos.hold_order')}
+              </Button>
+              <Button
+                variant="outline"
+                size="icon"
+                onClick={() => setWaitingOrdersDialogOpen(true)}
+                className="relative"
+              >
+                <Clock className="h-4 w-4" />
+                {heldOrders.length > 0 && (
+                  <Badge
+                    variant="destructive"
+                    className="absolute -top-2 -right-2 h-5 w-5 p-0 flex items-center justify-center rounded-full text-xs"
+                  >
+                    {heldOrders.length}
+                  </Badge>
+                )}
+                </Button>
+              </div>
+            </div>
+
+            {/* Middle Section - Cart Items List (Scrollable) - Takes Remaining Space */}
+            <div className="flex-1 overflow-y-auto">
+              {cart.length === 0 ? (
+                <div className="flex items-center justify-center py-8 text-muted-foreground">
+                  <div className="text-center">
+                    <Package className="h-10 w-10 mx-auto mb-2 opacity-50" />
+                    <p className="text-sm font-medium">{t('pos.cart_empty')}</p>
+                    <p className="text-xs mt-1">{t('pos.add_products')}</p>
+                  </div>
+                </div>
+              ) : (
+              <div className="divide-y divide-gray-100 dark:divide-gray-700">
+                {cart.map((item, index) => {
+                  const isSelected = index === selectedCartIndex;
+                  
+                  return (
+                    <div key={item.product.id} className="relative">
+                      {/* Main Row */}
+                      <div
+                        className={`flex items-center justify-between p-3 border-b border-gray-100 bg-white dark:bg-gray-800 last:border-0 transition-colors ${
+                          isSelected ? 'bg-primary/5 border-primary' : ''
                         }`}
                         onClick={() => setSelectedCartIndex(index)}
                       >
-                        <div className="flex items-start gap-2">
-                          <div className="flex-1">
-                            <p className="font-medium">{item.product.name}</p>
-                            <p className="text-sm text-muted-foreground">
-                              {Number(item.product.sale_price).toFixed(2)} UZS × {item.quantity} = {item.subtotal.toFixed(2)} UZS
-                            </p>
-                            {item.discount_amount > 0 && (
-                              <p className="text-xs text-destructive mt-1">
-                                Discount: {item.discount_amount.toFixed(2)} UZS ({discountPercent.toFixed(1)}%)
-                              </p>
-                            )}
-                          </div>
-                          <div className="flex items-center gap-2">
-                            <Button
-                              variant="outline"
-                              size="icon"
-                              className="h-8 w-8"
+                        {/* Left Side - Product Info */}
+                        <div className="flex flex-col flex-1 min-w-0 mr-3">
+                          <p className="font-medium text-sm truncate">{item.product.name}</p>
+                          <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">
+                            {formatCurrency(Number(item.product.sale_price))}
+                          </p>
+                        </div>
+                        
+                        {/* Right Side - Controls */}
+                        <div className="flex items-center gap-2">
+                          {/* Quantity Group */}
+                          <div className="flex items-center">
+                            <button
+                              type="button"
+                              className="h-8 w-8 flex items-center justify-center rounded bg-gray-100 dark:bg-gray-700 hover:bg-gray-200 dark:hover:bg-gray-600 transition-colors"
                               onClick={(e) => {
                                 e.stopPropagation();
                                 updateQuantity(item.product.id, item.quantity - 1);
                               }}
                             >
-                              <Minus className="h-4 w-4" />
-                            </Button>
+                              <Minus className="h-3 w-3" />
+                            </button>
                             <Input
                               type="number"
                               min="1"
                               value={editingQuantity[item.product.id] !== undefined 
                                 ? editingQuantity[item.product.id] 
-                                : item.quantity}
+                                : (item.quantity || 1).toString()}
                               onChange={(e) => handleQuantityInputChange(item.product.id, e.target.value)}
                               onBlur={() => handleQuantityInputBlur(item.product.id)}
                               onKeyDown={(e) => handleQuantityInputKeyDown(item.product.id, e)}
@@ -1311,206 +1807,139 @@ export default function POSTerminal() {
                                 e.stopPropagation();
                                 openQuantityNumpad(item.product.id, item.quantity, item.product.current_stock);
                               }}
-                              className="w-16 h-8 text-center p-1 cursor-pointer"
-                              readOnly
+                              className="h-8 w-16 text-center border-y border-gray-200 dark:border-gray-600 text-sm focus:outline-none rounded-none bg-white dark:bg-gray-800"
                             />
-                            <Button
-                              variant="outline"
-                              size="icon"
-                              className="h-8 w-8"
+                            <button
+                              type="button"
+                              className="h-8 w-8 flex items-center justify-center rounded bg-gray-100 dark:bg-gray-700 hover:bg-gray-200 dark:hover:bg-gray-600 transition-colors"
                               onClick={(e) => {
                                 e.stopPropagation();
                                 updateQuantity(item.product.id, item.quantity + 1);
                               }}
                             >
-                              <Plus className="h-4 w-4" />
-                            </Button>
-                            <Button
-                              variant="ghost"
-                              size="icon"
-                              className="h-8 w-8"
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                removeFromCart(item.product.id);
-                              }}
-                            >
-                              <Trash2 className="h-4 w-4" />
-                            </Button>
+                              <Plus className="h-3 w-3" />
+                            </button>
                           </div>
-                        </div>
-                        
-                        <div className="flex items-center justify-between pt-2 border-t">
-                        <Popover>
-                          <PopoverTrigger asChild>
-                            <Button 
-                              variant="outline" 
-                              size="sm" 
-                              className="h-8 gap-2"
-                              onClick={(e) => e.stopPropagation()}
-                            >
-                              <Tag className="h-3 w-3" />
-                              <span className="text-xs">
-                                Discount: {item.discount_amount > 0 ? `${item.discount_amount.toFixed(2)} UZS` : '0'}
-                              </span>
-                            </Button>
-                          </PopoverTrigger>
-                          <PopoverContent className="w-64" align="start">
-                            <div className="space-y-3">
-                              <div className="space-y-1">
-                                <Label className="text-xs">Line Discount (UZS)</Label>
-                                <Input
-                                  type="number"
-                                  step="0.01"
-                                  min="0"
-                                  max={item.subtotal}
-                                  value={item.discount_amount}
-                                  onChange={(e) => {
-                                    const value = e.target.value === '' ? 0 : Number(e.target.value);
-                                    updateLineDiscount(item.product.id, value);
-                                  }}
-                                  onClick={() => openDiscountNumpad(item.product.id, item.discount_amount, item.subtotal)}
-                                  placeholder="0.00"
-                                  className="h-8 cursor-pointer"
-                                  readOnly
-                                />
-                                <p className="text-xs text-muted-foreground">
-                                  Max: {item.subtotal.toFixed(2)} UZS
-                                </p>
-                              </div>
-                              <div className="grid grid-cols-4 gap-2">
-                                <Button
-                                  variant="outline"
-                                  size="sm"
-                                  className="h-7 text-xs"
-                                  onClick={() => updateLineDiscount(item.product.id, item.subtotal * 0.05)}
-                                >
-                                  5%
-                                </Button>
-                                <Button
-                                  variant="outline"
-                                  size="sm"
-                                  className="h-7 text-xs"
-                                  onClick={() => updateLineDiscount(item.product.id, item.subtotal * 0.10)}
-                                >
-                                  10%
-                                </Button>
-                                <Button
-                                  variant="outline"
-                                  size="sm"
-                                  className="h-7 text-xs"
-                                  onClick={() => updateLineDiscount(item.product.id, item.subtotal * 0.15)}
-                                >
-                                  15%
-                                </Button>
-                                <Button
-                                  variant="outline"
-                                  size="sm"
-                                  className="h-7 text-xs"
-                                  onClick={() => updateLineDiscount(item.product.id, 0)}
-                                >
-                                  Clear
-                                </Button>
-                              </div>
-                            </div>
-                          </PopoverContent>
-                        </Popover>
-                        
-                        <div className="text-right">
-                          {item.discount_amount > 0 && (
-                            <p className="text-xs text-destructive line-through">
-                              {item.subtotal.toFixed(2)} UZS
+                          
+                          {/* Total Price */}
+                          <div className="min-w-[80px] text-right mr-2">
+                            <p className="font-bold text-sm">
+                              {formatCurrency(item.total)}
                             </p>
-                          )}
-                          <p className="font-bold text-lg">
-                            {item.total.toFixed(2)} UZS
+                          </div>
+                          
+                          {/* Delete Button */}
+                          <button
+                            type="button"
+                            className="text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20 p-2 rounded transition-colors"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              removeFromCart(item.product.id);
+                            }}
+                          >
+                            <Trash2 className="h-4 w-4" />
+                          </button>
+                        </div>
+                      </div>
+                      
+                      {/* Line Discount (if any) - Show as separate row below */}
+                      {item.discount_amount > 0 && (
+                        <div className="px-3 py-2 bg-yellow-50 dark:bg-yellow-900/20 border-t border-yellow-200 dark:border-yellow-800 flex items-center justify-between">
+                          <Popover>
+                            <PopoverTrigger asChild>
+                              <Button 
+                                variant="outline" 
+                                size="sm" 
+                                className="h-7 text-xs"
+                                onClick={(e) => e.stopPropagation()}
+                              >
+                                <Tag className="h-3 w-3 mr-1" />
+                                Discount: {formatCurrency(item.discount_amount)}
+                              </Button>
+                            </PopoverTrigger>
+                            <PopoverContent className="w-64" align="start">
+                              <div className="space-y-3">
+                                <div className="space-y-1">
+                                  <Label className="text-xs">{t('pos.line_discount')}</Label>
+                                  <Input
+                                    type="number"
+                                    step="0.01"
+                                    min="0"
+                                    max={item.subtotal}
+                                    value={item.discount_amount}
+                                    onChange={(e) => {
+                                      const value = e.target.value === '' ? 0 : Number(e.target.value);
+                                      updateLineDiscount(item.product.id, value);
+                                    }}
+                                    onClick={() => openDiscountNumpad(item.product.id, item.discount_amount, item.subtotal)}
+                                    placeholder="0.00"
+                                    className="h-8 cursor-pointer"
+                                    readOnly
+                                  />
+                                  <p className="text-xs text-muted-foreground">
+                                    {t('pos.max')}: {formatCurrency(item.subtotal)}
+                                  </p>
+                                </div>
+                                <div className="grid grid-cols-4 gap-2">
+                                  <Button
+                                    variant="outline"
+                                    size="sm"
+                                    className="h-7 text-xs"
+                                    onClick={() => updateLineDiscount(item.product.id, item.subtotal * 0.05)}
+                                  >
+                                    {t('pos.discount_5')}
+                                  </Button>
+                                  <Button
+                                    variant="outline"
+                                    size="sm"
+                                    className="h-7 text-xs"
+                                    onClick={() => updateLineDiscount(item.product.id, item.subtotal * 0.10)}
+                                  >
+                                    {t('pos.discount_10')}
+                                  </Button>
+                                  <Button
+                                    variant="outline"
+                                    size="sm"
+                                    className="h-7 text-xs"
+                                    onClick={() => updateLineDiscount(item.product.id, item.subtotal * 0.15)}
+                                  >
+                                    {t('pos.discount_15')}
+                                  </Button>
+                                  <Button
+                                    variant="outline"
+                                    size="sm"
+                                    className="h-7 text-xs"
+                                    onClick={() => updateLineDiscount(item.product.id, 0)}
+                                  >
+                                    {t('pos.clear')}
+                                  </Button>
+                                </div>
+                              </div>
+                            </PopoverContent>
+                          </Popover>
+                          <p className="text-xs text-destructive line-through">
+                            {formatCurrency(item.subtotal)}
                           </p>
                         </div>
-                      </div>
+                      )}
                     </div>
                   );
-                  })}
-                </div>
-              )}
-            </CardContent>
-          </Card>
-        </div>
-
-        <div className="space-y-4">
-          <Card>
-            <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-4">
-              <CardTitle>Order Summary</CardTitle>
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => setWaitingOrdersDialogOpen(true)}
-                className="relative"
-              >
-                <Clock className="h-4 w-4 mr-2" />
-                Waiting Orders
-                {heldOrders.length > 0 && (
-                  <Badge
-                    variant="destructive"
-                    className="ml-2 h-5 w-5 p-0 flex items-center justify-center rounded-full"
-                  >
-                    {heldOrders.length}
-                  </Badge>
-                )}
-              </Button>
-            </CardHeader>
-            <CardContent className="space-y-4">
-              <div className="space-y-2">
-                <Label>Customer (Optional)</Label>
-                <div className="flex gap-2 items-start">
-                  <Select
-                    value={selectedCustomer?.id || 'none'}
-                    onValueChange={(value) => {
-                      const customer = customers.find((c) => c.id === value);
-                      setSelectedCustomer(customer || null);
-                    }}
-                  >
-                    <SelectTrigger className="flex-1">
-                      <SelectValue placeholder="Select customer" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="none">Walk-in Customer</SelectItem>
-                      {customers.map((customer) => (
-                        <SelectItem key={customer.id} value={customer.id}>
-                          {customer.name}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                  <QuickCustomerCreate onCustomerCreated={handleCustomerCreated} />
-                </div>
-                {selectedCustomer && (
-                  <div className="pt-1 space-y-2">
-                    <CustomerInfoBadge customer={selectedCustomer} />
-                    {selectedCustomer.id !== 'none' && (selectedCustomer.balance || 0) > 0 && (
-                      <div className="p-2 bg-destructive/10 border border-destructive/20 rounded-md">
-                        <div className="flex justify-between items-center text-sm">
-                          <span className="text-destructive font-medium">Current Debt:</span>
-                          <span className="text-destructive font-bold">{(selectedCustomer.balance || 0).toFixed(2)} UZS</span>
-                        </div>
-                        {selectedCustomer.credit_limit > 0 && (
-                          <div className="flex justify-between items-center text-xs text-muted-foreground mt-1">
-                            <span>Credit Limit:</span>
-                            <span>{selectedCustomer.credit_limit.toFixed(2)} UZS</span>
-                          </div>
-                        )}
-                      </div>
-                    )}
-                  </div>
-                )}
+                })}
               </div>
+              )}
+            </div>
 
+            {/* Bottom Section - Totals & Actions (Fixed at Bottom - Always Visible) */}
+            <div className="flex-shrink-0 w-full bg-white dark:bg-gray-900 border-t p-4 z-10 space-y-4">
+              {/* Discount Input */}
               <div className="space-y-2">
-                <Label>Discount</Label>
+                <Label className="text-sm font-semibold">{t('pos.order_discount')}</Label>
                 <div className="flex gap-2">
                   <Select
                     value={discount.type}
                     onValueChange={(value) => setDiscount({ ...discount, type: value as 'amount' | 'percent' })}
                   >
-                    <SelectTrigger className="w-24">
+                    <SelectTrigger className="w-20">
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
@@ -1524,97 +1953,105 @@ export default function POSTerminal() {
                     value={discount.value}
                     onChange={(e) => setDiscount({ ...discount, value: Number(e.target.value) })}
                     placeholder="0.00"
+                    className="flex-1"
                   />
                 </div>
               </div>
 
-              <div className="space-y-2 pt-4 border-t">
-                <div className="flex justify-between">
-                  <span>Subtotal:</span>
-                  <span className="font-medium">{subtotal.toFixed(2)} UZS</span>
+              {/* Totals */}
+              <div className="space-y-2 pt-2 border-t">
+                <div className="flex justify-between text-sm">
+                  <span className="text-muted-foreground">{t('pos.subtotal')}:</span>
+                  <span className="font-medium">{formatCurrency(subtotal)}</span>
                 </div>
                 {lineDiscountsTotal > 0 && (
-                  <div className="flex justify-between text-destructive text-sm">
-                    <span>Line Discounts:</span>
-                    <span className="font-medium">-{lineDiscountsTotal.toFixed(2)} UZS</span>
+                  <div className="flex justify-between text-xs text-destructive">
+                    <span>{t('pos.line_discounts')}:</span>
+                    <span>-{formatCurrency(lineDiscountsTotal)}</span>
                   </div>
                 )}
                 {globalDiscountAmount > 0 && (
-                  <div className="flex justify-between text-destructive text-sm">
-                    <span>Order Discount:</span>
-                    <span className="font-medium">-{globalDiscountAmount.toFixed(2)} UZS</span>
+                  <div className="flex justify-between text-xs text-destructive">
+                    <span>{t('pos.order_discount_label')}:</span>
+                    <span>-{formatCurrency(globalDiscountAmount)}</span>
                   </div>
                 )}
                 {discountAmount > 0 && (
-                  <div className="flex justify-between text-destructive font-medium">
-                    <span>Total Discount:</span>
-                    <span>-{discountAmount.toFixed(2)} UZS</span>
+                  <div className="flex justify-between text-sm text-destructive font-medium">
+                    <span>{t('pos.total_discount')}:</span>
+                    <span>-{formatCurrency(discountAmount)}</span>
                   </div>
                 )}
-                <div className="flex justify-between text-lg font-bold pt-2 border-t">
-                  <span>Total:</span>
-                  <span>{total.toFixed(2)} UZS</span>
+                <div className="flex justify-between text-2xl font-bold pt-2 border-t">
+                  <span>{t('pos.total')}:</span>
+                  <span className="text-primary">{formatCurrency(total)}</span>
                 </div>
               </div>
 
-              <div className="flex gap-2">
+              {/* Action Buttons */}
+              <div className="space-y-2 pt-1">
                 <Button
-                  variant="outline"
-                  className="flex-1 h-12"
+                  className="w-full h-14 bg-green-600 hover:bg-green-700 text-white text-lg font-bold"
+                  size="lg"
+                  disabled={cart.length === 0}
+                  onClick={() => setPaymentDialogOpen(true)}
+                >
+                  <DollarSign className="h-6 w-6 mr-2" />
+                  {t('pos.pay_checkout')}
+                </Button>
+                <Button
+                  variant="destructive"
+                  className="w-full h-12 text-base font-semibold"
                   size="lg"
                   disabled={cart.length === 0}
                   onClick={() => {
                     if (cart.length === 0) {
                       toast({
-                        title: 'Cannot Hold Empty Cart',
-                        description: 'Please add items to the cart',
+                        title: t('pos.cart_empty'),
                         variant: 'destructive',
                       });
                       return;
                     }
-                    setHoldOrderDialogOpen(true);
+                    setCart([]);
+                    setDiscount({ type: 'amount', value: 0 });
+                    setSelectedCustomer(null);
+                    toast({
+                      title: 'Cart cleared',
+                      description: 'All items removed from cart',
+                    });
                   }}
                 >
-                  <Pause className="h-5 w-5 mr-2" />
-                  Hold Order
-                </Button>
-                <Button
-                  className="flex-1 h-12"
-                  size="lg"
-                  disabled={cart.length === 0}
-                  onClick={() => setPaymentDialogOpen(true)}
-                >
-                  <DollarSign className="h-5 w-5 mr-2" />
-                  Process Payment
+                  <X className="h-5 w-5 mr-2" />
+                  {t('pos.clear_cart')}
                 </Button>
               </div>
-            </CardContent>
-          </Card>
+            </div>
+          </div>
         </div>
       </div>
 
       <Dialog open={paymentDialogOpen} onOpenChange={setPaymentDialogOpen}>
         <DialogContent className="max-w-2xl">
           <DialogHeader>
-            <DialogTitle>Process Payment</DialogTitle>
-            <DialogDescription>Total Amount: ${total.toFixed(2)}</DialogDescription>
+            <DialogTitle>{t('pos.process_payment')}</DialogTitle>
+            <DialogDescription>{t('pos.total_amount')}: {formatCurrency(total)}</DialogDescription>
           </DialogHeader>
           <Tabs defaultValue="cash" className="w-full">
             <TabsList className="grid w-full grid-cols-5">
-              <TabsTrigger value="cash">Cash</TabsTrigger>
-              <TabsTrigger value="card">Card</TabsTrigger>
-              <TabsTrigger value="qr">QR Pay</TabsTrigger>
-              <TabsTrigger value="mixed">Mixed</TabsTrigger>
+              <TabsTrigger value="cash">{t('pos.cash')}</TabsTrigger>
+              <TabsTrigger value="card">{t('pos.card')}</TabsTrigger>
+              <TabsTrigger value="qr">{t('pos.qr_pay')}</TabsTrigger>
+              <TabsTrigger value="mixed">{t('pos.mixed')}</TabsTrigger>
               <TabsTrigger 
                 value="credit" 
                 disabled={!selectedCustomer || selectedCustomer.id === 'none'}
               >
-                Credit
+                {t('pos.credit')}
               </TabsTrigger>
             </TabsList>
             <TabsContent value="cash" className="space-y-4">
               <div className="space-y-2">
-                <Label>Cash Received</Label>
+                <Label>{t('pos.cash_received')}</Label>
                 <Input
                   type="number"
                   step="0.01"
@@ -1624,16 +2061,23 @@ export default function POSTerminal() {
                   autoFocus
                 />
               </div>
-              {cashReceived && (
-                <div className="p-4 bg-muted rounded-lg">
-                  <div className="flex justify-between text-lg font-bold">
-                    <span>Change:</span>
-                    <span className={Number(cashReceived) >= total ? 'text-green-600' : 'text-destructive'}>
-                      {(Number(cashReceived) - total).toFixed(2)} UZS
-                    </span>
+              {Number(cashReceived) > 0 && (() => {
+                const changeAmount = Number(cashReceived) - total;
+                const isSufficient = changeAmount >= 0;
+                return (
+                  <div className="p-4 bg-muted rounded-lg">
+                    {isSufficient ? (
+                      <div className="text-2xl text-green-600 font-bold text-center">
+                        Qaytim: {formatCurrency(changeAmount)}
+                      </div>
+                    ) : (
+                      <div className="text-lg text-red-500 font-semibold text-center">
+                        Yetmayapti: {formatCurrency(Math.abs(changeAmount))}
+                      </div>
+                    )}
                   </div>
-                </div>
-              )}
+                );
+              })()}
               <Button
                 className="w-full"
                 onClick={() => handleCompletePayment('cash')}
@@ -1652,36 +2096,36 @@ export default function POSTerminal() {
                 onClick={() => handleCompletePayment('card')}
               >
                 <CreditCard className="h-5 w-5 mr-2" />
-                Process Card Payment
+                {t('pos.process_card_payment')}
               </Button>
             </TabsContent>
             <TabsContent value="qr" className="space-y-4">
               <div className="p-4 bg-muted rounded-lg space-y-2">
                 <p className="text-sm text-muted-foreground">Amount to charge:</p>
-                <p className="text-2xl font-bold">{total.toFixed(2)} UZS</p>
+                <p className="text-2xl font-bold">{formatCurrency(total)}</p>
               </div>
               <Button
                 className="w-full"
                 onClick={() => handleCompletePayment('qr')}
               >
                 <Smartphone className="h-5 w-5 mr-2" />
-                Process QR Payment
+                {t('pos.process_qr_payment')}
               </Button>
             </TabsContent>
             <TabsContent value="mixed" className="space-y-4">
               <div className="p-4 bg-muted rounded-lg space-y-2">
                 <div className="flex justify-between">
-                  <span className="text-sm text-muted-foreground">Total:</span>
-                  <span className="font-bold">{total.toFixed(2)} UZS</span>
+                  <span className="text-sm text-muted-foreground">{t('pos.order_total')}:</span>
+                  <span className="font-bold">{formatCurrency(total)}</span>
                 </div>
                 <div className="flex justify-between">
-                  <span className="text-sm text-muted-foreground">Paid:</span>
-                  <span className="font-bold">{paidAmount.toFixed(2)} UZS</span>
+                  <span className="text-sm text-muted-foreground">{t('pos.cash_received')}:</span>
+                  <span className="font-bold">{formatCurrency(paidAmount)}</span>
                 </div>
                 <div className="flex justify-between">
-                  <span className="text-sm text-muted-foreground">Remaining:</span>
+                  <span className="text-sm text-muted-foreground">{t('pos.remaining_to_pay')}:</span>
                   <span className={`font-bold ${remainingAmount > 0 ? 'text-destructive' : 'text-green-600'}`}>
-                    {remainingAmount.toFixed(2)} UZS
+                    {formatCurrency(remainingAmount)}
                   </span>
                 </div>
               </div>
@@ -1695,7 +2139,7 @@ export default function POSTerminal() {
                   disabled={remainingAmount <= 0}
                 >
                   <Banknote className="h-4 w-4 mr-2" />
-                  Add Cash
+                  {t('pos.add_cash')}
                 </Button>
                 <Button
                   variant="outline"
@@ -1705,17 +2149,17 @@ export default function POSTerminal() {
                   disabled={remainingAmount <= 0}
                 >
                   <CreditCard className="h-4 w-4 mr-2" />
-                  Add Card
+                  {t('pos.add_card')}
                 </Button>
               </div>
               {payments.length > 0 && (
                 <div className="space-y-2">
-                  <Label>Payment Methods:</Label>
+                  <Label>{t('pos.payment_methods')}:</Label>
                   {payments.map((payment, index) => (
                     <div key={index} className="flex justify-between items-center p-2 border rounded">
                       <span className="capitalize">{payment.method}</span>
                       <div className="flex items-center gap-2">
-                        <span>{payment.amount.toFixed(2)} UZS</span>
+                        <span>{formatCurrency(payment.amount)}</span>
                         <Button
                           variant="ghost"
                           size="sm"
@@ -1740,160 +2184,98 @@ export default function POSTerminal() {
             </TabsContent>
             <TabsContent value="credit" className="space-y-4">
               {!selectedCustomer || selectedCustomer.id === 'none' ? (
-                <div className="p-4 bg-muted rounded-lg text-center">
-                  <p className="text-sm text-muted-foreground">
-                    Credit sales are only available for registered customers.
-                  </p>
-                  <p className="text-sm text-muted-foreground mt-2">
-                    Please select a customer to continue.
+                <div className="p-8 bg-muted rounded-lg text-center">
+                  <p className="text-base font-semibold text-destructive">
+                    {t('pos.select_customer_first')}
                   </p>
                 </div>
-              ) : (
-                <>
-                  <div className="p-4 bg-muted rounded-lg space-y-3">
-                    <div className="flex justify-between">
-                      <span className="text-sm text-muted-foreground">Customer:</span>
-                      <span className="font-semibold">{selectedCustomer.name}</span>
+              ) : (() => {
+                // Calculate values
+                const initialPayment = creditAmount ? Number(creditAmount) : 0;
+                const debtAmount = total - initialPayment;
+                const currentBalance = selectedCustomer.balance || 0;
+                const newBalance = currentBalance + debtAmount;
+                const creditLimitExceeded = selectedCustomer.credit_limit > 0 && newBalance > selectedCustomer.credit_limit;
+                
+                return (
+                  <>
+                    {/* Initial Payment Input */}
+                    <div className="space-y-2">
+                      <Label htmlFor="initial-payment">{t('pos.initial_payment')}</Label>
+                      <Input
+                        id="initial-payment"
+                        type="number"
+                        step="0.01"
+                        min="0"
+                        max={total}
+                        value={creditAmount}
+                        onChange={(e) => {
+                          const value = e.target.value;
+                          const numValue = Number(value);
+                          if (value === '' || (numValue >= 0 && numValue <= total)) {
+                            setCreditAmount(value);
+                          }
+                        }}
+                        placeholder="0.00"
+                        autoFocus
+                        disabled={creditLimitExceeded}
+                      />
+                      <p className="text-xs text-muted-foreground">
+                        {t('pos.initial_payment_desc')}
+                      </p>
                     </div>
-                    <div className="flex justify-between">
-                      <span className="text-sm text-muted-foreground">Current Balance:</span>
-                      <span className={`font-bold ${(selectedCustomer.balance || 0) > 0 ? 'text-destructive' : 'text-muted-foreground'}`}>
-                        {(selectedCustomer.balance || 0).toFixed(2)} UZS
-                      </span>
-                    </div>
-                    {selectedCustomer.credit_limit > 0 && (
-                      <div className="flex justify-between">
-                        <span className="text-sm text-muted-foreground">Credit Limit:</span>
-                        <span className="font-semibold">{selectedCustomer.credit_limit.toFixed(2)} UZS</span>
-                      </div>
-                    )}
-                    <div className="flex justify-between">
-                      <span className="text-sm text-muted-foreground">Available Credit:</span>
-                      <span className="font-semibold text-primary">
-                        {(() => {
-                          const maxCredit = selectedCustomer.credit_limit > 0 
-                            ? Math.min(total, selectedCustomer.credit_limit - (selectedCustomer.balance || 0))
-                            : total;
-                          return Math.max(0, maxCredit).toFixed(2);
-                        })()} UZS
-                      </span>
-                    </div>
-                  </div>
 
-                  <div className="space-y-2">
-                    <Label htmlFor="credit-amount">Credit Amount (UZS)</Label>
-                    <Input
-                      id="credit-amount"
-                      type="number"
-                      step="0.01"
-                      min="0"
-                      max={(() => {
-                        const maxCredit = selectedCustomer.credit_limit > 0 
-                          ? Math.min(total, selectedCustomer.credit_limit - (selectedCustomer.balance || 0))
-                          : total;
-                        return Math.max(0, maxCredit);
-                      })()}
-                      value={creditAmount}
-                      onChange={(e) => {
-                        const value = e.target.value;
-                        const numValue = Number(value);
-                        const maxCredit = selectedCustomer.credit_limit > 0 
-                          ? Math.min(total, selectedCustomer.credit_limit - (selectedCustomer.balance || 0))
-                          : total;
-                        
-                        if (value === '' || (numValue >= 0 && numValue <= Math.max(0, maxCredit))) {
-                          setCreditAmount(value);
-                        }
-                      }}
-                      placeholder={`Max: ${(() => {
-                        const maxCredit = selectedCustomer.credit_limit > 0 
-                          ? Math.min(total, selectedCustomer.credit_limit - (selectedCustomer.balance || 0))
-                          : total;
-                        return Math.max(0, maxCredit).toFixed(2);
-                      })()}`}
-                      autoFocus
-                    />
-                    <p className="text-xs text-muted-foreground">
-                      Enter the amount to be paid on credit. Leave empty or enter full amount for complete credit sale.
-                    </p>
-                  </div>
-
-                  <div className="p-4 bg-muted rounded-lg space-y-2">
-                    <div className="flex justify-between">
-                      <span className="text-sm text-muted-foreground">Order Total:</span>
-                      <span className="font-bold">{total.toFixed(2)} UZS</span>
-                    </div>
-                    <div className="flex justify-between">
-                      <span className="text-sm text-muted-foreground">Credit Amount:</span>
-                      <span className="font-bold text-primary">
-                        {(creditAmount ? Number(creditAmount) : total).toFixed(2)} UZS
-                      </span>
-                    </div>
-                    {creditAmount && Number(creditAmount) < total && (
-                      <div className="flex justify-between border-t pt-2">
-                        <span className="text-sm font-medium">Remaining to Pay:</span>
-                        <span className="font-bold text-destructive">
-                          {(total - Number(creditAmount)).toFixed(2)} UZS
+                    {/* Visual Summary Card */}
+                    <div className="p-4 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg space-y-3">
+                      <div className="flex justify-between items-center">
+                        <span className="text-sm text-gray-600 dark:text-gray-400">{t('pos.old_debt')}:</span>
+                        <span className="text-sm font-medium text-gray-700 dark:text-gray-300">
+                          {formatCurrency(currentBalance)}
                         </span>
                       </div>
+                      <div className="flex justify-between items-center">
+                        <span className="text-sm text-orange-600 dark:text-orange-400">+ {t('pos.current_debt')}:</span>
+                        <span className="text-sm font-medium text-orange-600 dark:text-orange-400">
+                          {formatCurrency(debtAmount)}
+                        </span>
+                      </div>
+                      <div className="border-t border-gray-200 dark:border-gray-700 pt-2 flex justify-between items-center">
+                        <span className="text-base font-bold text-red-600 dark:text-red-400">= {t('pos.total_debt')}:</span>
+                        <span className="text-base font-bold text-red-600 dark:text-red-400">
+                          {formatCurrency(newBalance)}
+                        </span>
+                      </div>
+                    </div>
+
+                    {/* Credit Limit Warning */}
+                    {creditLimitExceeded && (
+                      <div className="p-3 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-lg">
+                        <p className="text-sm text-red-600 dark:text-red-400 font-medium">
+                          {t('pos.credit_limit_warning')} {formatCurrency(selectedCustomer.credit_limit)}
+                        </p>
+                      </div>
                     )}
-                    <div className="flex justify-between border-t pt-2">
-                      <span className="text-sm text-muted-foreground">New Balance:</span>
-                      <span className={`font-bold ${
-                        ((selectedCustomer.balance || 0) + (creditAmount ? Number(creditAmount) : total)) > (selectedCustomer.credit_limit || 0) && selectedCustomer.credit_limit > 0 
-                          ? 'text-destructive' 
-                          : 'text-primary'
-                      }`}>
-                        {((selectedCustomer.balance || 0) + (creditAmount ? Number(creditAmount) : total)).toFixed(2)} UZS
-                      </span>
-                    </div>
-                  </div>
-
-                  {selectedCustomer.credit_limit > 0 && 
-                   ((selectedCustomer.balance || 0) + (creditAmount ? Number(creditAmount) : total)) > selectedCustomer.credit_limit && (
-                    <div className="p-3 bg-destructive/10 border border-destructive/20 rounded-lg">
-                      <p className="text-sm text-destructive font-medium">
-                        ⚠️ Credit Limit Exceeded
-                      </p>
-                      <p className="text-xs text-destructive/80 mt-1">
-                        This credit amount would exceed the customer's credit limit.
-                      </p>
-                    </div>
-                  )}
-
-                  {creditAmount && Number(creditAmount) < total && (
-                    <div className="p-3 bg-blue-50 border border-blue-200 rounded-lg">
-                      <p className="text-sm text-blue-900 font-medium">
-                        ℹ️ Partial Credit Payment
-                      </p>
-                      <p className="text-xs text-blue-700 mt-1">
-                        After confirming, you'll need to collect the remaining {(total - Number(creditAmount)).toFixed(2)} UZS via Cash, Card, or QR.
-                      </p>
-                    </div>
-                  )}
 
                   <Button
                     className="w-full"
                     onClick={handleCreditSale}
                     disabled={
                       selectedCustomer.status !== 'active' ||
-                      (selectedCustomer.credit_limit > 0 && 
-                       ((selectedCustomer.balance || 0) + (creditAmount ? Number(creditAmount) : total)) > selectedCustomer.credit_limit) ||
-                      (creditAmount && Number(creditAmount) < 0)
+                      creditLimitExceeded ||
+                      (creditAmount ? Number(creditAmount) < 0 || Number(creditAmount) > total : false)
                     }
                   >
                     <Tag className="h-5 w-5 mr-2" />
-                    {creditAmount && Number(creditAmount) < total 
-                      ? 'Continue with Partial Credit' 
-                      : 'Sell on Credit'}
+                    {t('pos.write_credit_and_close')}
                   </Button>
                   {selectedCustomer.status !== 'active' && (
                     <p className="text-xs text-center text-destructive">
-                      Customer account is inactive
+                      {t('pos.customer_inactive')}
                     </p>
                   )}
-                </>
-              )}
+                  </>
+                );
+              })()}
             </TabsContent>
           </Tabs>
         </DialogContent>
@@ -1928,22 +2310,41 @@ export default function POSTerminal() {
       <AlertDialog open={restoreConfirmOpen} onOpenChange={setRestoreConfirmOpen}>
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>Replace Current Cart?</AlertDialogTitle>
+            <AlertDialogTitle>{t('pos.replace_cart')}</AlertDialogTitle>
             <AlertDialogDescription>
-              You have items in the current cart. Do you want to replace them with the waiting order?
-              Current cart items will be lost.
+              {t('pos.replace_cart_desc')}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogCancel onClick={() => setOrderToRestore(null)}>
-              Cancel
+              {t('pos.cancel')}
             </AlertDialogCancel>
             <AlertDialogAction onClick={() => orderToRestore && restoreOrder(orderToRestore)}>
-              Replace Cart
+              {t('pos.replace')}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+
+      {/* Hidden Receipt Component for Printing */}
+      {receiptData && (
+        <div style={{ position: 'absolute', left: '-9999px', top: 0 }}>
+          <Receipt
+            ref={receiptRef}
+            orderNumber={receiptData.orderNumber}
+            items={receiptData.items}
+            customer={receiptData.customer}
+            subtotal={receiptData.subtotal}
+            discountAmount={receiptData.discountAmount}
+            total={receiptData.total}
+            paidAmount={receiptData.paidAmount}
+            changeAmount={receiptData.changeAmount}
+            paymentMethod={receiptData.paymentMethod}
+            dateTime={receiptData.dateTime}
+            cashierName={receiptData.cashierName}
+          />
+        </div>
+      )}
     </>
   );
 }

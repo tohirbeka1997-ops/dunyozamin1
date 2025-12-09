@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import { useNavigate, useParams } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -18,6 +19,7 @@ import type { ProductWithCategory } from '@/types/database';
 import { ArrowLeft, Pencil, Package, AlertTriangle, TrendingUp, TrendingDown } from 'lucide-react';
 
 export default function ProductDetail() {
+  const { t } = useTranslation();
   const { id } = useParams();
   const navigate = useNavigate();
   const { toast } = useToast();
@@ -43,8 +45,8 @@ export default function ProductDetail() {
       setMovements(movementsData);
     } catch (error) {
       toast({
-        title: 'Error',
-        description: 'Failed to load product details',
+        title: t('common.error'),
+        description: t('products.detail.failed_to_load'),
         variant: 'destructive',
       });
       navigate('/products');
@@ -67,12 +69,12 @@ export default function ProductDetail() {
 
   const getStockStatus = () => {
     if (product.current_stock <= 0) {
-      return { label: 'Out of Stock', color: 'bg-destructive text-destructive-foreground' };
+      return { label: t('products.detail.out_of_stock'), color: 'bg-destructive text-destructive-foreground' };
     }
     if (product.current_stock <= product.min_stock_level) {
-      return { label: 'Low Stock', color: 'bg-warning text-warning-foreground' };
+      return { label: t('products.detail.low_stock'), color: 'bg-warning text-warning-foreground' };
     }
-    return { label: 'In Stock', color: 'bg-success text-success-foreground' };
+    return { label: t('products.detail.in_stock'), color: 'bg-success text-success-foreground' };
   };
 
   const stockStatus = getStockStatus();
@@ -98,20 +100,20 @@ export default function ProductDetail() {
             <ArrowLeft className="h-5 w-5" />
           </Button>
           <div>
-            <h1 className="text-3xl font-bold">Product Details</h1>
-            <p className="text-muted-foreground">View product information and history</p>
+            <h1 className="text-3xl font-bold">{t('products.detail.title')}</h1>
+            <p className="text-muted-foreground">{t('products.detail.subtitle')}</p>
           </div>
         </div>
         <Button onClick={() => navigate(`/products/${id}/edit`)}>
           <Pencil className="h-4 w-4 mr-2" />
-          Edit Product
+          {t('products.detail.edit_product')}
         </Button>
       </div>
 
       <div className="grid grid-cols-1 xl:grid-cols-3 gap-6">
         <Card className="xl:col-span-2">
           <CardHeader>
-            <CardTitle>Product Information</CardTitle>
+            <CardTitle>{t('products.detail.product_information')}</CardTitle>
           </CardHeader>
           <CardContent className="space-y-6">
             <div className="flex items-start gap-6">
@@ -135,7 +137,7 @@ export default function ProductDetail() {
                 </div>
                 <div className="flex flex-wrap gap-2">
                   <Badge variant={product.is_active ? 'default' : 'secondary'}>
-                    {product.is_active ? 'Active' : 'Inactive'}
+                    {product.is_active ? t('products.detail.active') : t('products.detail.inactive')}
                   </Badge>
                   <Badge className={stockStatus.color} variant="secondary">
                     {stockStatus.label}
@@ -149,21 +151,21 @@ export default function ProductDetail() {
 
             <div className="grid grid-cols-2 md:grid-cols-4 gap-4 pt-4 border-t">
               <div>
-                <p className="text-sm text-muted-foreground">SKU</p>
+                <p className="text-sm text-muted-foreground">{t('products.sku')}</p>
                 <p className="font-mono font-medium">{product.sku}</p>
               </div>
               {product.barcode && (
                 <div>
-                  <p className="text-sm text-muted-foreground">Barcode</p>
+                  <p className="text-sm text-muted-foreground">{t('products.barcode')}</p>
                   <p className="font-mono font-medium">{product.barcode}</p>
                 </div>
               )}
               <div>
-                <p className="text-sm text-muted-foreground">Unit</p>
+                <p className="text-sm text-muted-foreground">{t('products.unit')}</p>
                 <p className="font-medium">{product.unit}</p>
               </div>
               <div>
-                <p className="text-sm text-muted-foreground">Min Stock Level</p>
+                <p className="text-sm text-muted-foreground">{t('products.min_stock_level')}</p>
                 <p className="font-medium">{product.min_stock_level} {product.unit}</p>
               </div>
             </div>
@@ -173,7 +175,7 @@ export default function ProductDetail() {
         <div className="space-y-6">
           <Card>
             <CardHeader>
-              <CardTitle>Current Stock</CardTitle>
+              <CardTitle>{t('products.detail.current_stock')}</CardTitle>
             </CardHeader>
             <CardContent>
               <div className="text-center">
@@ -182,7 +184,7 @@ export default function ProductDetail() {
                 {product.current_stock <= product.min_stock_level && (
                   <div className="mt-4 flex items-center justify-center gap-2 text-warning">
                     <AlertTriangle className="h-4 w-4" />
-                    <span className="text-sm">Low stock alert</span>
+                    <span className="text-sm">{t('products.detail.low_stock_alert')}</span>
                   </div>
                 )}
               </div>
@@ -191,19 +193,19 @@ export default function ProductDetail() {
 
           <Card>
             <CardHeader>
-              <CardTitle>Pricing</CardTitle>
+              <CardTitle>{t('products.pricing')}</CardTitle>
             </CardHeader>
             <CardContent className="space-y-4">
               <div>
-                <p className="text-sm text-muted-foreground">Purchase Price</p>
+                <p className="text-sm text-muted-foreground">{t('products.purchase_price')}</p>
                 <p className="text-xl font-bold">${Number(product.purchase_price).toFixed(2)}</p>
               </div>
               <div>
-                <p className="text-sm text-muted-foreground">Sale Price</p>
+                <p className="text-sm text-muted-foreground">{t('products.sale_price')}</p>
                 <p className="text-xl font-bold">${Number(product.sale_price).toFixed(2)}</p>
               </div>
               <div className="pt-4 border-t">
-                <p className="text-sm text-muted-foreground">Profit Margin</p>
+                <p className="text-sm text-muted-foreground">{t('products.detail.profit_margin')}</p>
                 <p className="text-2xl font-bold text-success">{margin}%</p>
               </div>
             </CardContent>
@@ -215,27 +217,27 @@ export default function ProductDetail() {
         <Tabs defaultValue="movements" className="w-full">
           <CardHeader>
             <TabsList>
-              <TabsTrigger value="movements">Inventory Movements</TabsTrigger>
-              <TabsTrigger value="sales">Sales History</TabsTrigger>
-              <TabsTrigger value="purchases">Purchase History</TabsTrigger>
+              <TabsTrigger value="movements">{t('products.detail.inventory_movements')}</TabsTrigger>
+              <TabsTrigger value="sales">{t('products.detail.sales_history')}</TabsTrigger>
+              <TabsTrigger value="purchases">{t('products.detail.purchase_history')}</TabsTrigger>
             </TabsList>
           </CardHeader>
           <CardContent>
             <TabsContent value="movements" className="mt-0">
               {movements.length === 0 ? (
                 <div className="text-center py-8 text-muted-foreground">
-                  No inventory movements yet
+                  {t('products.detail.no_movements')}
                 </div>
               ) : (
                 <Table>
                   <TableHeader>
                     <TableRow>
-                      <TableHead>Date</TableHead>
-                      <TableHead>Type</TableHead>
-                      <TableHead>Movement #</TableHead>
-                      <TableHead className="text-right">Quantity</TableHead>
-                      <TableHead>User</TableHead>
-                      <TableHead>Notes</TableHead>
+                      <TableHead>{t('products.detail.table.date')}</TableHead>
+                      <TableHead>{t('products.detail.table.type')}</TableHead>
+                      <TableHead>{t('products.detail.table.movement_number')}</TableHead>
+                      <TableHead className="text-right">{t('products.detail.table.quantity')}</TableHead>
+                      <TableHead>{t('products.detail.table.user')}</TableHead>
+                      <TableHead>{t('products.detail.table.notes')}</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
@@ -278,13 +280,13 @@ export default function ProductDetail() {
 
             <TabsContent value="sales" className="mt-0">
               <div className="text-center py-8 text-muted-foreground">
-                Sales history will be displayed here
+                {t('products.detail.sales_history_placeholder')}
               </div>
             </TabsContent>
 
             <TabsContent value="purchases" className="mt-0">
               <div className="text-center py-8 text-muted-foreground">
-                Purchase history will be displayed here
+                {t('products.detail.purchase_history_placeholder')}
               </div>
             </TabsContent>
           </CardContent>

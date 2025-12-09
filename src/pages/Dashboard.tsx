@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Button } from '@/components/ui/button';
@@ -41,6 +42,7 @@ interface MetricCardProps {
 }
 
 function MetricCard({ title, value, subtitle, icon, loading, error }: MetricCardProps) {
+  const { t } = useTranslation();
   return (
     <Card>
       <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
@@ -56,7 +58,7 @@ function MetricCard({ title, value, subtitle, icon, loading, error }: MetricCard
         ) : error ? (
           <>
             <div className="text-2xl font-bold text-muted-foreground">–</div>
-            <p className="text-xs text-destructive">Error loading metric</p>
+            <p className="text-xs text-destructive">{t('dashboard.error_loading_metric')}</p>
           </>
         ) : (
           <>
@@ -77,6 +79,7 @@ interface DateRange {
 }
 
 export default function Dashboard() {
+  const { t } = useTranslation();
   const { toast } = useToast();
   
   // Date range state
@@ -159,8 +162,8 @@ export default function Dashboard() {
       setShowCustomDatePicker(false);
     } else {
       toast({
-        title: 'Invalid Date Range',
-        description: 'Please select both start and end dates',
+        title: t('dashboard.errors.invalid_date_range'),
+        description: t('dashboard.errors.select_both_dates'),
         variant: 'destructive',
       });
     }
@@ -241,10 +244,10 @@ export default function Dashboard() {
 
   // Format date for display
   const formatDateRange = (): string => {
-    if (datePreset === 'today') return 'Today';
-    if (datePreset === 'yesterday') return 'Yesterday';
-    if (datePreset === 'last7days') return 'Last 7 Days';
-    if (datePreset === 'thisMonth') return 'This Month';
+    if (datePreset === 'today') return t('dashboard.filters.today');
+    if (datePreset === 'yesterday') return t('dashboard.filters.yesterday');
+    if (datePreset === 'last7days') return t('dashboard.filters.last_7_days');
+    if (datePreset === 'thisMonth') return t('dashboard.filters.this_month');
     return `${format(dateRange.from, 'MMM dd')} - ${format(dateRange.to, 'MMM dd, yyyy')}`;
   };
 
@@ -253,21 +256,21 @@ export default function Dashboard() {
       {/* Header with Date Range Selector */}
       <div className="flex flex-col gap-4 xl:flex-row xl:items-center xl:justify-between">
         <div>
-          <h1 className="text-3xl font-bold">Dashboard</h1>
-          <p className="text-muted-foreground">Overview of your POS system</p>
+          <h1 className="text-3xl font-bold">{t('dashboard.title')}</h1>
+          <p className="text-muted-foreground">{t('dashboard.subtitle')}</p>
         </div>
         
         <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
           <Select value={datePreset} onValueChange={(value) => handlePresetChange(value as DateRangePreset)}>
             <SelectTrigger className="w-full sm:w-48">
-              <SelectValue placeholder="Select period" />
+              <SelectValue placeholder={t('dashboard.filters.select_period')} />
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value="today">Today</SelectItem>
-              <SelectItem value="yesterday">Yesterday</SelectItem>
-              <SelectItem value="last7days">Last 7 Days</SelectItem>
-              <SelectItem value="thisMonth">This Month</SelectItem>
-              <SelectItem value="custom">Custom Range</SelectItem>
+              <SelectItem value="today">{t('dashboard.filters.today')}</SelectItem>
+              <SelectItem value="yesterday">{t('dashboard.filters.yesterday')}</SelectItem>
+              <SelectItem value="last7days">{t('dashboard.filters.last_7_days')}</SelectItem>
+              <SelectItem value="thisMonth">{t('dashboard.filters.this_month')}</SelectItem>
+              <SelectItem value="custom">{t('dashboard.filters.custom_range')}</SelectItem>
             </SelectContent>
           </Select>
 
@@ -278,13 +281,13 @@ export default function Dashboard() {
                   <CalendarIcon className="mr-2 h-4 w-4" />
                   {customDateFrom && customDateTo
                     ? `${format(customDateFrom, 'MMM dd')} - ${format(customDateTo, 'MMM dd')}`
-                    : 'Pick dates'}
+                    : t('dashboard.filters.pick_dates')}
                 </Button>
               </PopoverTrigger>
               <PopoverContent className="w-auto p-4" align="end">
                 <div className="space-y-4">
                   <div>
-                    <p className="text-sm font-medium mb-2">From Date</p>
+                    <p className="text-sm font-medium mb-2">{t('dashboard.filters.from_date')}</p>
                     <Calendar
                       mode="single"
                       selected={customDateFrom}
@@ -293,7 +296,7 @@ export default function Dashboard() {
                     />
                   </div>
                   <div>
-                    <p className="text-sm font-medium mb-2">To Date</p>
+                    <p className="text-sm font-medium mb-2">{t('dashboard.filters.to_date')}</p>
                     <Calendar
                       mode="single"
                       selected={customDateTo}
@@ -302,7 +305,7 @@ export default function Dashboard() {
                     />
                   </div>
                   <Button onClick={applyCustomDateRange} className="w-full">
-                    Apply Date Range
+                    {t('dashboard.filters.apply_date_range')}
                   </Button>
                 </div>
               </PopoverContent>
@@ -313,42 +316,42 @@ export default function Dashboard() {
 
       {/* Period Label */}
       <div className="text-sm text-muted-foreground">
-        Showing data for: <span className="font-medium text-foreground">{formatDateRange()}</span>
+        {t('dashboard.showing_data_for')}: <span className="font-medium text-foreground">{formatDateRange()}</span>
       </div>
 
       {/* Row 1: Main KPI Cards */}
       <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
         <MetricCard
-          title="Total Sales"
+          title={t('dashboard.cards.total_sales.title')}
           value={formatCurrency(analytics?.total_sales || 0)}
-          subtitle={`${analytics?.total_orders || 0} orders`}
+          subtitle={`${analytics?.total_orders || 0} ${t('dashboard.cards.total_sales.orders')}`}
           icon={<DollarSign className="h-4 w-4 text-muted-foreground" />}
           loading={loading}
           error={analyticsError}
         />
 
         <MetricCard
-          title="Orders"
+          title={t('dashboard.cards.orders.title')}
           value={analytics?.total_orders || 0}
-          subtitle="Completed orders"
+          subtitle={t('dashboard.cards.orders.subtitle')}
           icon={<ShoppingCart className="h-4 w-4 text-muted-foreground" />}
           loading={loading}
           error={analyticsError}
         />
 
         <MetricCard
-          title="Low Stock Items"
+          title={t('dashboard.cards.low_stock.title')}
           value={analytics?.low_stock_count || 0}
-          subtitle="Items need restocking"
+          subtitle={t('dashboard.cards.low_stock.subtitle')}
           icon={<AlertTriangle className="h-4 w-4 text-warning" />}
           loading={loading}
           error={analyticsError}
         />
 
         <MetricCard
-          title="Active Customers"
+          title={t('dashboard.cards.active_customers.title')}
           value={analytics?.active_customers || 0}
-          subtitle="Customers with orders"
+          subtitle={t('dashboard.cards.active_customers.subtitle')}
           icon={<Users className="h-4 w-4 text-muted-foreground" />}
           loading={loading}
           error={analyticsError}
@@ -358,25 +361,25 @@ export default function Dashboard() {
       {/* Row 2: Additional KPI Cards */}
       <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
         <MetricCard
-          title="Average Order Value"
+          title={t('dashboard.cards.average_order_value.title')}
           value={formatCurrency(analytics?.average_order_value || 0)}
-          subtitle="Per order"
+          subtitle={t('dashboard.cards.average_order_value.subtitle')}
           icon={<TrendingUp className="h-4 w-4 text-muted-foreground" />}
           loading={loading}
           error={analyticsError}
         />
 
         <MetricCard
-          title="Items Sold"
+          title={t('dashboard.cards.items_sold.title')}
           value={analytics?.items_sold || 0}
-          subtitle="Total quantity"
+          subtitle={t('dashboard.cards.items_sold.subtitle')}
           icon={<Package className="h-4 w-4 text-muted-foreground" />}
           loading={loading}
           error={analyticsError}
         />
 
         <MetricCard
-          title="Returns"
+          title={t('dashboard.cards.returns.title')}
           value={analytics?.returns_count || 0}
           subtitle={formatCurrency(analytics?.returns_amount || 0)}
           icon={<RotateCcw className="h-4 w-4 text-muted-foreground" />}
@@ -385,9 +388,9 @@ export default function Dashboard() {
         />
 
         <MetricCard
-          title="Pending Purchase Orders"
+          title={t('dashboard.cards.pending_purchase_orders.title')}
           value={analytics?.pending_purchase_orders || 0}
-          subtitle="Draft or Approved"
+          subtitle={t('dashboard.cards.pending_purchase_orders.subtitle')}
           icon={<FileText className="h-4 w-4 text-muted-foreground" />}
           loading={loading}
           error={analyticsError}
@@ -398,9 +401,9 @@ export default function Dashboard() {
       {totalCustomerDebt > 0 && (
         <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
           <MetricCard
-            title="Total Customer Debt"
+            title={t('dashboard.cards.total_customer_debt.title')}
             value={formatCurrency(totalCustomerDebt)}
-            subtitle="Outstanding balance"
+            subtitle={t('dashboard.cards.total_customer_debt.subtitle')}
             icon={<DollarSign className="h-4 w-4 text-destructive" />}
             loading={loading}
             error={analyticsError}
@@ -415,7 +418,7 @@ export default function Dashboard() {
           <CardHeader>
             <CardTitle className="flex items-center gap-2">
               <BarChart3 className="h-5 w-5" />
-              Sales Over Time
+              {t('dashboard.charts.sales_over_time')}
             </CardTitle>
           </CardHeader>
           <CardContent>
@@ -425,11 +428,11 @@ export default function Dashboard() {
               </div>
             ) : chartsError ? (
               <div className="h-80 flex items-center justify-center">
-                <p className="text-sm text-muted-foreground">Failed to load chart data</p>
+                <p className="text-sm text-muted-foreground">{t('dashboard.charts.failed_to_load')}</p>
               </div>
             ) : dailySales.length === 0 ? (
               <div className="h-80 flex items-center justify-center">
-                <p className="text-sm text-muted-foreground">No sales data in this period</p>
+                <p className="text-sm text-muted-foreground">{t('dashboard.charts.no_sales_data')}</p>
               </div>
             ) : (
               <ResponsiveContainer width="100%" height={320}>
@@ -445,7 +448,7 @@ export default function Dashboard() {
                     className="text-xs"
                   />
                   <Tooltip
-                    formatter={(value: number) => [formatCurrency(value), 'Sales']}
+                    formatter={(value: number) => [formatCurrency(value), t('dashboard.charts.sales')]}
                     labelFormatter={(label) => format(new Date(label), 'MMM dd, yyyy')}
                   />
                   <Line
@@ -466,7 +469,7 @@ export default function Dashboard() {
           <CardHeader>
             <CardTitle className="flex items-center gap-2">
               <Package className="h-5 w-5" />
-              Top 5 Products
+              {t('dashboard.charts.top_5_products')}
             </CardTitle>
           </CardHeader>
           <CardContent>
@@ -476,11 +479,11 @@ export default function Dashboard() {
               </div>
             ) : chartsError ? (
               <div className="h-80 flex items-center justify-center">
-                <p className="text-sm text-muted-foreground">Failed to load chart data</p>
+                <p className="text-sm text-muted-foreground">{t('dashboard.charts.failed_to_load')}</p>
               </div>
             ) : topProducts.length === 0 ? (
               <div className="h-80 flex items-center justify-center">
-                <p className="text-sm text-muted-foreground">No product sales in this period</p>
+                <p className="text-sm text-muted-foreground">{t('dashboard.charts.no_product_sales')}</p>
               </div>
             ) : (
               <ResponsiveContainer width="100%" height={320}>
@@ -500,8 +503,8 @@ export default function Dashboard() {
                   />
                   <Tooltip
                     formatter={(value: number, name: string) => {
-                      if (name === 'total_amount') return [formatCurrency(value), 'Total Sales'];
-                      return [value, 'Quantity'];
+                      if (name === 'total_amount') return [formatCurrency(value), t('dashboard.charts.total_sales')];
+                      return [value, t('dashboard.charts.quantity')];
                     }}
                   />
                   <Bar dataKey="total_amount" fill="hsl(var(--primary))" radius={[0, 4, 4, 0]} />
@@ -515,32 +518,32 @@ export default function Dashboard() {
       {/* Quick Actions */}
       <Card>
         <CardHeader>
-          <CardTitle>Quick Actions</CardTitle>
+          <CardTitle>{t('dashboard.quick_actions.title')}</CardTitle>
         </CardHeader>
         <CardContent>
           <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
             <Link to="/pos">
               <Button className="w-full h-24 flex flex-col gap-2" size="lg">
                 <ShoppingCart className="h-8 w-8" />
-                <span>Open POS Terminal</span>
+                <span>{t('dashboard.quick_actions.open_pos')}</span>
               </Button>
             </Link>
             <Link to="/products">
               <Button variant="outline" className="w-full h-24 flex flex-col gap-2" size="lg">
                 <Package className="h-8 w-8" />
-                <span>Manage Products</span>
+                <span>{t('dashboard.quick_actions.manage_products')}</span>
               </Button>
             </Link>
             <Link to="/orders">
               <Button variant="outline" className="w-full h-24 flex flex-col gap-2" size="lg">
                 <TrendingUp className="h-8 w-8" />
-                <span>View Orders</span>
+                <span>{t('dashboard.quick_actions.view_orders')}</span>
               </Button>
             </Link>
             <Link to="/reports">
               <Button variant="outline" className="w-full h-24 flex flex-col gap-2" size="lg">
                 <BarChart3 className="h-8 w-8" />
-                <span>View Reports</span>
+                <span>{t('dashboard.quick_actions.view_reports')}</span>
               </Button>
             </Link>
           </div>
@@ -553,7 +556,7 @@ export default function Dashboard() {
           <CardHeader>
             <CardTitle className="flex items-center gap-2">
               <AlertTriangle className="h-5 w-5 text-warning" />
-              Low Stock Alert
+              {t('dashboard.low_stock_alert.title')}
             </CardTitle>
           </CardHeader>
           <CardContent>
@@ -583,7 +586,7 @@ export default function Dashboard() {
           </CardHeader>
           <CardContent>
             <p className="text-sm text-muted-foreground">
-              Unable to load low stock products. Please try refreshing the page.
+              {t('dashboard.low_stock_alert.load_error')}
             </p>
           </CardContent>
         </Card>
@@ -602,7 +605,7 @@ export default function Dashboard() {
                   <div>
                     <p className="font-medium">{product.name}</p>
                     <p className="text-sm text-muted-foreground">
-                      SKU: {product.sku} | Category: {product.category?.name || 'N/A'}
+                      {t('dashboard.low_stock_alert.sku')}: {product.sku} | {t('dashboard.low_stock_alert.category')}: {product.category?.name || t('dashboard.low_stock_alert.na')}
                     </p>
                   </div>
                   <div className="text-right">
@@ -610,7 +613,7 @@ export default function Dashboard() {
                       {product.current_stock || 0} {product.unit}
                     </p>
                     <p className="text-xs text-muted-foreground">
-                      Min: {product.min_stock_level || 0}
+                      {t('dashboard.low_stock_alert.min')}: {product.min_stock_level || 0}
                     </p>
                   </div>
                 </div>
@@ -618,7 +621,7 @@ export default function Dashboard() {
               {lowStockProducts.length > 5 && (
                 <Link to="/inventory">
                   <Button variant="link" className="w-full">
-                    View all {lowStockProducts.length} low stock items →
+                    {t('dashboard.low_stock_alert.view_all', { count: lowStockProducts.length })} →
                   </Button>
                 </Link>
               )}
@@ -634,7 +637,7 @@ export default function Dashboard() {
             <div className="flex items-center gap-2 text-destructive">
               <AlertTriangle className="h-5 w-5" />
               <p className="text-sm">
-                Failed to load some dashboard data. Please try refreshing the page.
+                {t('dashboard.errors.failed_to_load')}
               </p>
             </div>
           </CardContent>
