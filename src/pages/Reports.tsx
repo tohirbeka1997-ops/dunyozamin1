@@ -20,70 +20,71 @@ export default function Reports() {
 
   const reportSections = [
     {
-      title: 'Sales Reports',
-      description: 'Track sales performance, revenue, and profit',
+      title: 'Sotuv hisobotlari',
+      description: 'Sotuv samaradorligi, daromad va foydani kuzatish',
       icon: TrendingUp,
       color: 'text-primary',
       bgColor: 'bg-primary/10',
       reports: [
-        { name: 'Daily Sales Report', path: '/reports/sales/daily', icon: BarChart3 },
-        { name: 'Product Sales Report', path: '/reports/sales/products', icon: Package },
-        { name: 'Customer Sales Report', path: '/reports/sales/customers', icon: Users },
+        { name: 'Kunlik sotuv hisobotlari', path: '/reports/sales/daily', icon: BarChart3 },
+        { name: 'Mahsulotlar bo\'yicha sotuvlar', path: '/reports/sales/products', icon: Package },
+        { name: 'Mijozlar bo\'yicha sotuvlar', path: '/reports/sales/customers', icon: Users },
       ],
     },
     {
-      title: 'Inventory Reports',
-      description: 'Monitor stock levels, movements, and valuation',
+      title: 'Ombor hisobotlari',
+      description: 'Ombor qoldig\'i, harakatlar va baholashni kuzatish',
       icon: Package,
       color: 'text-success',
       bgColor: 'bg-success/10',
       reports: [
-        { name: 'Stock Levels Report', path: '/reports/inventory/stock-levels', icon: Package },
-        { name: 'Inventory Movement Report', path: '/reports/inventory/movements', icon: Activity },
-        { name: 'Valuation Report', path: '/reports/inventory/valuation', icon: DollarSign },
+        { name: 'Ombor qoldiq hisobotlari', path: '/reports/inventory/stock-levels', icon: Package },
+        { name: 'Tovar harakatlari hisobotlari', path: '/reports/inventory/movements', icon: Activity },
+        // FIXED: Baholash hisobotlari navigation path - ensures it navigates to valuation report
+        { name: 'Baholash hisobotlari', path: '/reports/inventory/valuation', icon: DollarSign },
       ],
     },
     {
-      title: 'Purchase Reports',
-      description: 'Analyze purchase orders and supplier performance',
+      title: 'Xarid hisobotlari',
+      description: 'Xarid buyurtmalari va yetkazib beruvchilar faoliyatini tahlil qilish',
       icon: ShoppingCart,
       color: 'text-warning',
       bgColor: 'bg-warning/10',
       reports: [
-        { name: 'Purchase Order Summary', path: '/reports/purchase/summary', icon: FileText },
-        { name: 'Supplier Performance', path: '/reports/purchase/suppliers', icon: Truck },
+        { name: 'Xarid buyurtmalari umumiy hisobot', path: '/reports/purchase/summary', icon: FileText },
+        { name: 'Yetkazib beruvchilar samaradorligi', path: '/reports/purchase/suppliers', icon: Truck },
       ],
     },
     {
-      title: 'Employee Reports',
-      description: 'Review employee performance and activity',
+      title: 'Xodimlar hisobotlari',
+      description: 'Xodimlarning faoliyati va samaradorligini ko\'rib chiqish',
       icon: Users,
       color: 'text-info',
       bgColor: 'bg-info/10',
       reports: [
-        { name: 'Cashier Performance', path: '/reports/employee/cashier', icon: UserCheck },
-        { name: 'Login Activity Log', path: '/reports/employee/activity', icon: Activity },
+        { name: 'Kassir faoliyati', path: '/reports/employee/cashier', icon: UserCheck },
+        { name: 'Tizimga kirishlar jurnali', path: '/reports/employee/activity', icon: Activity },
       ],
     },
     {
-      title: 'Financial Reports',
-      description: 'View profit & loss, payment breakdowns',
+      title: 'Moliyaviy hisobotlar',
+      description: 'Foyda va zarar, to\'lov tafsilotlarini ko\'rish',
       icon: DollarSign,
       color: 'text-accent',
       bgColor: 'bg-accent/10',
       reports: [
-        { name: 'Profit & Loss Report', path: '/reports/financial/profit-loss', icon: PieChart },
-        { name: 'Payment Method Breakdown', path: '/reports/financial/payment-methods', icon: DollarSign },
+        { name: 'Foyda va zarar hisobotlari', path: '/reports/financial/profit-loss', icon: PieChart },
+        { name: 'To\'lov usullari bo\'yicha tahlil', path: '/reports/financial/payment-methods', icon: DollarSign },
       ],
     },
     {
-      title: 'Export Center',
-      description: 'Export all reports to Excel, PDF, or CSV',
+      title: 'Eksport markazi',
+      description: 'Barcha hisobotlarni Excel, PDF yoki CSV formatida eksport qilish',
       icon: FileDown,
       color: 'text-muted-foreground',
       bgColor: 'bg-muted',
       reports: [
-        { name: 'Export Manager', path: '/reports/export', icon: FileDown },
+        { name: 'Eksport boshqaruvchisi', path: '/reports/export', icon: FileDown },
       ],
     },
   ];
@@ -91,9 +92,9 @@ export default function Reports() {
   return (
     <div className="space-y-6">
       <div>
-        <h1 className="text-3xl font-bold">Reports</h1>
+        <h1 className="text-3xl font-bold">Hisobotlar</h1>
         <p className="text-muted-foreground">
-          Comprehensive analytics and reporting for your business
+          Biznesingiz uchun keng qamrovli tahlil va hisobotlar
         </p>
       </div>
 
@@ -120,6 +121,7 @@ export default function Reports() {
                     return (
                       <button
                         key={report.name}
+                        // Navigation handler - uses report.path which is '/reports/inventory/valuation' for Baholash hisobotlari
                         onClick={() => navigate(report.path)}
                         className="w-full flex items-center gap-3 p-3 rounded-lg hover:bg-muted transition-colors text-left"
                       >

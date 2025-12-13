@@ -51,8 +51,8 @@ export default function InventoryMovementReport() {
       setMovements(movementsData);
     } catch (error) {
       toast({
-        title: 'Error',
-        description: 'Failed to load inventory movements',
+        title: 'Xatolik',
+        description: 'Ombor harakatlarini yuklab bo\'lmadi',
         variant: 'destructive',
       });
     } finally {
@@ -72,10 +72,10 @@ export default function InventoryMovementReport() {
 
   const getMovementTypeBadge = (type: string) => {
     const types: Record<string, { label: string; className: string }> = {
-      sale: { label: 'Sale', className: 'bg-primary' },
-      purchase: { label: 'Purchase', className: 'bg-success' },
-      adjustment: { label: 'Adjustment', className: 'bg-warning' },
-      return: { label: 'Return', className: 'bg-secondary' },
+      sale: { label: 'Sotuv', className: 'bg-primary' },
+      purchase: { label: 'Xarid', className: 'bg-success' },
+      adjustment: { label: 'Tuzatish', className: 'bg-warning' },
+      return: { label: 'Qaytarish', className: 'bg-secondary' },
     };
     return types[type] || { label: type, className: 'bg-muted' };
   };
@@ -103,8 +103,8 @@ export default function InventoryMovementReport() {
             <ArrowLeft className="h-4 w-4" />
           </Button>
           <div>
-            <h1 className="text-3xl font-bold">Inventory Movement Report</h1>
-            <p className="text-muted-foreground">Track all stock movements and changes</p>
+            <h1 className="text-3xl font-bold">Ombor harakatlari hisobotlari</h1>
+            <p className="text-muted-foreground">Ombordagi barcha harakatlar va o'zgarishlarni kuzating</p>
           </div>
         </div>
         <div className="flex gap-2">
@@ -123,7 +123,7 @@ export default function InventoryMovementReport() {
         <CardContent className="pt-6">
           <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
             <div>
-              <label className="text-sm text-muted-foreground">From Date</label>
+              <label className="text-sm text-muted-foreground">Boshlanish sanasi</label>
               <Input
                 type="date"
                 value={dateFrom}
@@ -131,7 +131,7 @@ export default function InventoryMovementReport() {
               />
             </div>
             <div>
-              <label className="text-sm text-muted-foreground">To Date</label>
+              <label className="text-sm text-muted-foreground">Tugash sanasi</label>
               <Input
                 type="date"
                 value={dateTo}
@@ -139,24 +139,24 @@ export default function InventoryMovementReport() {
               />
             </div>
             <div>
-              <label className="text-sm text-muted-foreground">Movement Type</label>
+              <label className="text-sm text-muted-foreground">Harakat turi</label>
               <Select value={typeFilter} onValueChange={setTypeFilter}>
                 <SelectTrigger>
-                  <SelectValue placeholder="All Types" />
+                  <SelectValue placeholder="Barcha turlar" />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="all">All Types</SelectItem>
-                  <SelectItem value="sale">Sale</SelectItem>
-                  <SelectItem value="purchase">Purchase</SelectItem>
-                  <SelectItem value="adjustment">Adjustment</SelectItem>
-                  <SelectItem value="return">Return</SelectItem>
+                  <SelectItem value="all">Barcha turlar</SelectItem>
+                  <SelectItem value="sale">Sotuv</SelectItem>
+                  <SelectItem value="purchase">Xarid</SelectItem>
+                  <SelectItem value="adjustment">Tuzatish</SelectItem>
+                  <SelectItem value="return">Qaytarish</SelectItem>
                 </SelectContent>
               </Select>
             </div>
             <div>
-              <label className="text-sm text-muted-foreground">Search</label>
+              <label className="text-sm text-muted-foreground">Qidirish</label>
               <Input
-                placeholder="Search by product or reference..."
+                placeholder="Mahsulot yoki raqam bo'yicha qidirish..."
                 value={searchTerm}
                 onChange={(e) => setSearchTerm(e.target.value)}
               />
@@ -169,20 +169,20 @@ export default function InventoryMovementReport() {
         <CardContent className="p-0">
           {filteredMovements.length === 0 ? (
             <div className="text-center py-12">
-              <p className="text-muted-foreground">No inventory movements found</p>
+              <p className="text-muted-foreground">Ombor harakatlari topilmadi</p>
             </div>
           ) : (
             <Table>
               <TableHeader>
                 <TableRow>
-                  <TableHead>Date</TableHead>
-                  <TableHead>Product</TableHead>
-                  <TableHead>Type</TableHead>
-                  <TableHead className="text-right">Quantity Change</TableHead>
-                  <TableHead className="text-right">Before</TableHead>
-                  <TableHead className="text-right">After</TableHead>
-                  <TableHead>Reference</TableHead>
-                  <TableHead>Performed By</TableHead>
+                  <TableHead>Sana</TableHead>
+                  <TableHead>Mahsulot</TableHead>
+                  <TableHead>Turi</TableHead>
+                  <TableHead className="text-right">Miqdor o'zgarishi</TableHead>
+                  <TableHead className="text-right">Oldin</TableHead>
+                  <TableHead className="text-right">Keyin</TableHead>
+                  <TableHead>Havola</TableHead>
+                  <TableHead>Foydalanuvchi</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -195,8 +195,9 @@ export default function InventoryMovementReport() {
                       <TableCell>
                         {format(new Date(movement.created_at), 'MMM dd, yyyy HH:mm')}
                       </TableCell>
+                      {/* FIX: Escaped apostrophe in string to prevent JSX parsing error */}
                       <TableCell className="font-medium">
-                        {movement.product?.name || 'Unknown Product'}
+                        {movement.product?.name || "Noma'lum mahsulot"}
                       </TableCell>
                       <TableCell>
                         <Badge className={badge.className}>{badge.label}</Badge>
@@ -217,7 +218,7 @@ export default function InventoryMovementReport() {
                         {movement.reference_type || '-'}
                       </TableCell>
                       <TableCell>
-                        {movement.user?.full_name || 'System'}
+                        {movement.user?.full_name || 'Tizim'}
                       </TableCell>
                     </TableRow>
                   );

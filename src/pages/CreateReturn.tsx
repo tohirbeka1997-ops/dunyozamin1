@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
@@ -21,10 +21,15 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table';
-import { getOrders, getOrderForReturn, createSalesReturn } from '@/db/api';
+import { getOrders, getOrderForReturn, createSalesReturn, getSalesReturnByOrderId } from '@/db/api';
 import type { Order, OrderWithDetails, OrderItem } from '@/types/database';
 import { Search, ArrowLeft, Package, AlertCircle } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
+import { useInventoryStore } from '@/store/inventoryStore';
+import { useAuth } from '@/contexts/AuthContext';
+import { formatMoneyUZS } from '@/lib/format';
+import { useQueryClient } from '@tanstack/react-query';
+import { invalidateDashboardQueries } from '@/utils/dashboard';
 
 interface ReturnItem {
   product_id: string;
@@ -40,6 +45,10 @@ export default function CreateReturn() {
   const { t } = useTranslation();
   const { toast } = useToast();
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
+  const { profile } = useAuth();
+  const { addMovement } = useInventoryStore();
+  const queryClient = useQueryClient();
   const [step, setStep] = useState(1);
   const [loading, setLoading] = useState(false);
   
@@ -58,7 +67,13 @@ export default function CreateReturn() {
 
   useEffect(() => {
     loadOrders();
-  }, []);
+    
+    // Check if orderId is provided in query string
+    const orderId = searchParams.get('orderId');
+    if (orderId) {
+      handleOrderIdFromQuery(orderId);
+    }
+  }, [searchParams]);
 
   const loadOrders = async () => {
     try {
@@ -71,6 +86,59 @@ export default function CreateReturn() {
       toast({
         title: t('common.error'),
         description: t('sales_returns.create.failed_to_load_orders'),
+        variant: 'destructive',
+      });
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleOrderIdFromQuery = async (orderId: string) => {
+    try {
+      setLoading(true);
+      
+      // First, check if a return already exists for this order
+      const existingReturn = await getSalesReturnByOrderId(orderId);
+      if (existingReturn) {
+        toast({
+          title: 'Qaytarish mavjud',
+          description: `Bu buyurtma bo'yicha qaytarish allaqachon yaratilgan: ${existingReturn.return_number}. Qaytarish tafsilotlariga o'tilmoqda...`,
+          variant: 'default',
+        });
+        navigate(`/returns/${existingReturn.id}`);
+        return;
+      }
+      
+      // Load order details and prefill the form
+      const orderData = await getOrderForReturn(orderId);
+      if (!orderData) {
+        toast({
+          title: t('common.error'),
+          description: 'Buyurtma topilmadi',
+          variant: 'destructive',
+        });
+        return;
+      }
+      
+      setSelectedOrder(orderData);
+      
+      // Initialize return items from order items
+      const items: ReturnItem[] = (orderData.items || []).map((item: any) => ({
+        product_id: item.product_id,
+        product_name: item.product?.name || item.product_name,
+        sku: item.product?.sku || '',
+        sold_quantity: item.quantity,
+        return_quantity: 0,
+        unit_price: Number(item.unit_price),
+        line_total: 0,
+      }));
+      
+      setReturnItems(items);
+      setStep(2); // Skip to step 2 (item selection) since order is already selected
+    } catch (error) {
+      toast({
+        title: t('common.error'),
+        description: error instanceof Error ? error.message : 'Buyurtmani yuklab bo\'lmadi',
         variant: 'destructive',
       });
     } finally {
@@ -176,6 +244,16 @@ export default function CreateReturn() {
       return;
     }
     
+    // Validate store credit requires a registered customer
+    if (refundMethod === 'credit' && (!selectedOrder.customer_id || !selectedOrder.customer)) {
+      toast({
+        title: t('common.error'),
+        description: t('sales_returns.create.store_credit_requires_customer'),
+        variant: 'destructive',
+      });
+      return;
+    }
+    
     // Validate refund amount
     const { totalRefund } = calculateTotals();
     if (totalRefund <= 0) {
@@ -190,9 +268,19 @@ export default function CreateReturn() {
     try {
       setLoading(true);
       
+      if (!profile?.id) {
+        toast({
+          title: t('common.error'),
+          description: 'User profile not found. Please log in again.',
+          variant: 'destructive',
+        });
+        return;
+      }
+
       await createSalesReturn({
         order_id: selectedOrder.id,
         customer_id: selectedOrder.customer_id,
+        cashier_id: profile.id,
         total_amount: totalRefund,
         refund_method: refundMethod as 'cash' | 'card' | 'credit',
         reason: reason.trim(),
@@ -204,13 +292,28 @@ export default function CreateReturn() {
           line_total: item.line_total,
         })),
       });
+
+      // Invalidate dashboard queries
+      invalidateDashboardQueries(queryClient);
+
+      // Record inventory movements for returned items
+      itemsToReturn.forEach((item) => {
+        if (item.return_quantity > 0) {
+          addMovement({
+            product_id: item.product_id,
+            quantity: item.return_quantity, // return = IN (positive)
+            type: 'sale_return',
+            reason: `Return from order ${selectedOrder.order_number}`,
+          });
+        }
+      });
       
       toast({
         title: t('common.success'),
         description: t('sales_returns.create.success'),
       });
       
-      navigate('/sales-returns');
+      navigate('/returns');
     } catch (error) {
       console.error('Error creating return:', error);
       toast({
@@ -295,7 +398,7 @@ export default function CreateReturn() {
                       <TableCell className="font-medium">{order.order_number}</TableCell>
                       <TableCell>{order.customer?.name || t('pos.walk_in_customer')}</TableCell>
                       <TableCell>{new Date(order.created_at).toLocaleDateString()}</TableCell>
-                      <TableCell className="text-right">${Number(order.total_amount).toFixed(2)}</TableCell>
+                      <TableCell className="text-right">{formatMoneyUZS(order.total_amount)}</TableCell>
                       <TableCell className="text-right">
                         <Button size="sm" onClick={() => handleSelectOrder(order.id)}>
                           {t('sales_returns.create.select')}
@@ -333,7 +436,7 @@ export default function CreateReturn() {
                 </div>
                 <div>
                   <Label className="text-muted-foreground">{t('sales_returns.create.total_amount')}</Label>
-                  <p className="font-medium">${Number(selectedOrder.total_amount).toFixed(2)}</p>
+                  <p className="font-medium">{formatMoneyUZS(selectedOrder.total_amount)}</p>
                 </div>
               </div>
             </CardContent>
@@ -371,9 +474,9 @@ export default function CreateReturn() {
                           className="w-20 text-center"
                         />
                       </TableCell>
-                      <TableCell className="text-right">${item.unit_price.toFixed(2)}</TableCell>
+                      <TableCell className="text-right">{formatMoneyUZS(item.unit_price)}</TableCell>
                       <TableCell className="text-right font-medium">
-                        ${item.line_total.toFixed(2)}
+                        {formatMoneyUZS(item.line_total)}
                       </TableCell>
                     </TableRow>
                   ))}
@@ -383,15 +486,15 @@ export default function CreateReturn() {
               <div className="mt-6 space-y-2 border-t pt-4">
                 <div className="flex justify-between text-sm">
                   <span>{t('sales_returns.create.subtotal')}:</span>
-                  <span className="font-medium">${subtotal.toFixed(2)}</span>
+                  <span className="font-medium">{formatMoneyUZS(subtotal)}</span>
                 </div>
                 <div className="flex justify-between text-sm">
                   <span>{t('sales_returns.create.tax')}:</span>
-                  <span className="font-medium">${taxAmount.toFixed(2)}</span>
+                  <span className="font-medium">{formatMoneyUZS(taxAmount)}</span>
                 </div>
                 <div className="flex justify-between text-lg font-bold border-t pt-2">
                   <span>{t('sales_returns.create.total_refund')}:</span>
-                  <span>${totalRefund.toFixed(2)}</span>
+                  <span>{formatMoneyUZS(totalRefund)}</span>
                 </div>
               </div>
 
@@ -480,7 +583,7 @@ export default function CreateReturn() {
                       {t('sales_returns.create.summary.items_to_return')}: {returnItems.filter(i => i.return_quantity > 0).length}
                     </p>
                     <p className="text-sm font-medium">
-                      {t('sales_returns.create.summary.total_refund')}: ${totalRefund.toFixed(2)}
+                      {t('sales_returns.create.summary.total_refund')}: {formatMoneyUZS(totalRefund)}
                     </p>
                   </div>
                 </div>

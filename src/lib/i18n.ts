@@ -1,34 +1,28 @@
 import i18n from 'i18next';
 import { initReactI18next } from 'react-i18next';
-import LanguageDetector from 'i18next-browser-languagedetector';
 
 import uzTranslations from '../locales/uz.json';
-import enTranslations from '../locales/en.json';
 
+// Force Uzbek language only - no language switching
 i18n
-  .use(LanguageDetector)
   .use(initReactI18next)
   .init({
     resources: {
       uz: {
         translation: uzTranslations,
       },
-      en: {
-        translation: enTranslations,
-      },
     },
+    lng: 'uz',
     fallbackLng: 'uz',
-    defaultNS: 'translation',
+    debug: false,
     interpolation: {
       escapeValue: false,
-    },
-    detection: {
-      order: ['localStorage', 'navigator'],
-      caches: ['localStorage'],
     },
   });
 
 export default i18n;
+
+
 
 
 

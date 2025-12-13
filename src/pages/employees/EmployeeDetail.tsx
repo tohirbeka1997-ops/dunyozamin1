@@ -40,6 +40,7 @@ import type {
 import { format } from 'date-fns';
 import { useToast } from '@/hooks/use-toast';
 import PageBreadcrumb from '@/components/common/PageBreadcrumb';
+import { formatMoneyUZS } from '@/lib/format';
 
 export default function EmployeeDetail() {
   const navigate = useNavigate();
@@ -75,8 +76,8 @@ export default function EmployeeDetail() {
     } catch (error) {
       console.error('Error loading employee data:', error);
       toast({
-        title: 'Error',
-        description: 'Failed to load employee data',
+        title: 'Xatolik',
+        description: 'Xodim ma\'lumotlarini yuklab bo\'lmadi',
         variant: 'destructive',
       });
     } finally {
@@ -86,9 +87,9 @@ export default function EmployeeDetail() {
 
   const getRoleBadge = (role: string) => {
     const roles: Record<string, { label: string; className: string }> = {
-      admin: { label: 'Admin', className: 'bg-destructive' },
+      admin: { label: 'Administrator', className: 'bg-destructive' },
       manager: { label: 'Manager', className: 'bg-primary' },
-      cashier: { label: 'Cashier', className: 'bg-muted' },
+      cashier: { label: 'Kassir', className: 'bg-muted' },
     };
     const roleData = roles[role] || { label: role, className: 'bg-muted' };
     return <Badge className={roleData.className}>{roleData.label}</Badge>;
@@ -96,10 +97,10 @@ export default function EmployeeDetail() {
 
   const getStatusBadge = (isActive: boolean) => {
     return isActive ? (
-      <Badge className="bg-success">Active</Badge>
+      <Badge className="bg-success">Faol</Badge>
     ) : (
       <Badge variant="outline" className="text-muted-foreground">
-        Disabled
+        O'chirilgan
       </Badge>
     );
   };
@@ -115,7 +116,7 @@ export default function EmployeeDetail() {
   if (loading) {
     return (
       <div className="flex h-96 items-center justify-center">
-        <div className="text-muted-foreground">Loading employee data...</div>
+        <div className="text-muted-foreground">Xodim ma'lumotlari yuklanmoqda...</div>
       </div>
     );
   }
@@ -123,7 +124,7 @@ export default function EmployeeDetail() {
   if (!employee) {
     return (
       <div className="flex h-96 items-center justify-center">
-        <div className="text-muted-foreground">Employee not found</div>
+        <div className="text-muted-foreground">Xodim topilmadi</div>
       </div>
     );
   }
@@ -133,7 +134,7 @@ export default function EmployeeDetail() {
       <PageBreadcrumb
         items={[
           { label: 'Dashboard', href: '/' },
-          { label: 'Employees', href: '/employees' },
+          { label: 'Xodimlar', href: '/employees' },
           { label: employee.full_name || employee.username, href: '#' },
         ]}
       />
@@ -142,7 +143,7 @@ export default function EmployeeDetail() {
         <div className="flex items-center gap-4">
           <Button variant="ghost" size="sm" onClick={() => navigate('/employees')}>
             <ArrowLeft className="mr-2 h-4 w-4" />
-            Back
+            Orqaga
           </Button>
           <div>
             <h1 className="text-3xl font-bold">{employee.full_name || employee.username}</h1>
@@ -151,14 +152,14 @@ export default function EmployeeDetail() {
         </div>
         <Button onClick={() => navigate(`/employees/${id}/edit`)}>
           <Edit className="mr-2 h-4 w-4" />
-          Edit Employee
+          Xodimni tahrirlash
         </Button>
       </div>
 
       <div className="grid gap-6 xl:grid-cols-4">
         <Card>
           <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="text-sm font-medium">Role</CardTitle>
+            <CardTitle className="text-sm font-medium">Lavozimi</CardTitle>
             <User className="h-4 w-4 text-muted-foreground" />
           </CardHeader>
           <CardContent>{getRoleBadge(employee.role)}</CardContent>
@@ -166,7 +167,7 @@ export default function EmployeeDetail() {
 
         <Card>
           <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="text-sm font-medium">Status</CardTitle>
+            <CardTitle className="text-sm font-medium">Holati</CardTitle>
             <Activity className="h-4 w-4 text-muted-foreground" />
           </CardHeader>
           <CardContent>{getStatusBadge(employee.is_active)}</CardContent>
@@ -174,21 +175,21 @@ export default function EmployeeDetail() {
 
         <Card>
           <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="text-sm font-medium">Last Login</CardTitle>
+            <CardTitle className="text-sm font-medium">Oxirgi kirish</CardTitle>
             <Clock className="h-4 w-4 text-muted-foreground" />
           </CardHeader>
           <CardContent>
             <div className="text-sm">
               {employee.last_login
                 ? format(new Date(employee.last_login), 'MMM dd, yyyy HH:mm')
-                : 'Never'}
+                : 'Hech qachon'}
             </div>
           </CardContent>
         </Card>
 
         <Card>
           <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="text-sm font-medium">Joined</CardTitle>
+            <CardTitle className="text-sm font-medium">Qo'shilgan sana</CardTitle>
             <Calendar className="h-4 w-4 text-muted-foreground" />
           </CardHeader>
           <CardContent>
@@ -199,22 +200,22 @@ export default function EmployeeDetail() {
 
       <Card>
         <CardHeader>
-          <CardTitle>Contact Information</CardTitle>
+          <CardTitle>Kontakt ma'lumotlari</CardTitle>
         </CardHeader>
         <CardContent>
           <div className="grid gap-4 xl:grid-cols-2">
             <div className="flex items-center gap-3">
               <Phone className="h-5 w-5 text-muted-foreground" />
               <div>
-                <div className="text-sm font-medium">Phone</div>
-                <div className="text-sm text-muted-foreground">{employee.phone || 'Not set'}</div>
+                <div className="text-sm font-medium">Telefon</div>
+                <div className="text-sm text-muted-foreground">{employee.phone || 'O\'rnatilmagan'}</div>
               </div>
             </div>
             <div className="flex items-center gap-3">
               <Mail className="h-5 w-5 text-muted-foreground" />
               <div>
                 <div className="text-sm font-medium">Email</div>
-                <div className="text-sm text-muted-foreground">{employee.email || 'Not set'}</div>
+                <div className="text-sm text-muted-foreground">{employee.email || 'O\'rnatilmagan'}</div>
               </div>
             </div>
           </div>
@@ -223,60 +224,60 @@ export default function EmployeeDetail() {
 
       <Tabs defaultValue="performance" className="space-y-6">
         <TabsList>
-          <TabsTrigger value="performance">Performance</TabsTrigger>
-          <TabsTrigger value="sessions">Time Tracking</TabsTrigger>
-          <TabsTrigger value="activity">Activity Log</TabsTrigger>
+          <TabsTrigger value="performance">Faoliyat</TabsTrigger>
+          <TabsTrigger value="sessions">Vaqt kuzatuv</TabsTrigger>
+          <TabsTrigger value="activity">Faoliyat jurnali</TabsTrigger>
         </TabsList>
 
         <TabsContent value="performance" className="space-y-6">
           <div className="grid gap-6 xl:grid-cols-4">
             <Card>
               <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-                <CardTitle className="text-sm font-medium">Total Sales</CardTitle>
+                <CardTitle className="text-sm font-medium">Jami sotuvlar</CardTitle>
                 <ShoppingCart className="h-4 w-4 text-muted-foreground" />
               </CardHeader>
               <CardContent>
                 <div className="text-2xl font-bold">{performance?.total_sales || 0}</div>
-                <p className="text-xs text-muted-foreground">Completed orders</p>
+                <p className="text-xs text-muted-foreground">Yakunlangan buyurtmalar</p>
               </CardContent>
             </Card>
 
             <Card>
               <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-                <CardTitle className="text-sm font-medium">Total Revenue</CardTitle>
+                <CardTitle className="text-sm font-medium">Jami daromad</CardTitle>
                 <DollarSign className="h-4 w-4 text-muted-foreground" />
               </CardHeader>
               <CardContent>
                 <div className="text-2xl font-bold">
-                  {Number(performance?.total_revenue || 0).toLocaleString()} UZS
+                  {formatMoneyUZS(performance?.total_revenue || 0)}
                 </div>
-                <p className="text-xs text-muted-foreground">Gross revenue</p>
+                <p className="text-xs text-muted-foreground">Yalpi daromad</p>
               </CardContent>
             </Card>
 
             <Card>
               <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-                <CardTitle className="text-sm font-medium">Avg Order Value</CardTitle>
+                <CardTitle className="text-sm font-medium">O'rtacha buyurtma summasi</CardTitle>
                 <TrendingUp className="h-4 w-4 text-muted-foreground" />
               </CardHeader>
               <CardContent>
                 <div className="text-2xl font-bold">
-                  {Number(performance?.average_order_amount || 0).toLocaleString()} UZS
+                  {formatMoneyUZS(performance?.average_order_amount || 0)}
                 </div>
-                <p className="text-xs text-muted-foreground">Per transaction</p>
+                <p className="text-xs text-muted-foreground">Har bir operatsiya uchun</p>
               </CardContent>
             </Card>
 
             <Card>
               <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-                <CardTitle className="text-sm font-medium">Net Revenue</CardTitle>
+                <CardTitle className="text-sm font-medium">Sof daromad</CardTitle>
                 <DollarSign className="h-4 w-4 text-muted-foreground" />
               </CardHeader>
               <CardContent>
                 <div className="text-2xl font-bold">
-                  {Number(performance?.net_revenue || 0).toLocaleString()} UZS
+                  {formatMoneyUZS(performance?.net_revenue || 0)}
                 </div>
-                <p className="text-xs text-muted-foreground">After returns</p>
+                <p className="text-xs text-muted-foreground">Qaytarilgandan keyin</p>
               </CardContent>
             </Card>
           </div>
@@ -284,22 +285,22 @@ export default function EmployeeDetail() {
           <div className="grid gap-6 xl:grid-cols-2">
             <Card>
               <CardHeader>
-                <CardTitle>Returns Summary</CardTitle>
+                <CardTitle>Qaytarishlar yig'indisi</CardTitle>
               </CardHeader>
               <CardContent>
                 <div className="space-y-4">
                   <div className="flex items-center justify-between">
-                    <span className="text-sm text-muted-foreground">Total Returns</span>
+                    <span className="text-sm text-muted-foreground">Jami qaytarishlar</span>
                     <span className="font-semibold">{performance?.total_returns || 0}</span>
                   </div>
                   <div className="flex items-center justify-between">
-                    <span className="text-sm text-muted-foreground">Return Amount</span>
+                    <span className="text-sm text-muted-foreground">Qaytarish summasi</span>
                     <span className="font-semibold">
-                      {Number(performance?.return_amount || 0).toLocaleString()} UZS
+                      {formatMoneyUZS(performance?.return_amount || 0)}
                     </span>
                   </div>
                   <div className="flex items-center justify-between">
-                    <span className="text-sm text-muted-foreground">Return Rate</span>
+                    <span className="text-sm text-muted-foreground">Qaytarish foizi</span>
                     <span className="font-semibold">
                       {performance?.total_sales
                         ? (
@@ -316,20 +317,20 @@ export default function EmployeeDetail() {
 
             <Card>
               <CardHeader>
-                <CardTitle>Transaction Summary</CardTitle>
+                <CardTitle>Operatsiyalar yig'indisi</CardTitle>
               </CardHeader>
               <CardContent>
                 <div className="space-y-4">
                   <div className="flex items-center justify-between">
-                    <span className="text-sm text-muted-foreground">Total Transactions</span>
+                    <span className="text-sm text-muted-foreground">Jami operatsiyalar</span>
                     <span className="font-semibold">{performance?.transaction_count || 0}</span>
                   </div>
                   <div className="flex items-center justify-between">
-                    <span className="text-sm text-muted-foreground">Completed Sales</span>
+                    <span className="text-sm text-muted-foreground">Yakunlangan sotuvlar</span>
                     <span className="font-semibold">{performance?.total_sales || 0}</span>
                   </div>
                   <div className="flex items-center justify-between">
-                    <span className="text-sm text-muted-foreground">Success Rate</span>
+                    <span className="text-sm text-muted-foreground">Muvaffaqiyat foizi</span>
                     <span className="font-semibold">
                       {performance?.transaction_count
                         ? (
@@ -350,20 +351,20 @@ export default function EmployeeDetail() {
         <TabsContent value="sessions">
           <Card>
             <CardHeader>
-              <CardTitle>Login Sessions</CardTitle>
+              <CardTitle>Kirish sessiyalari</CardTitle>
             </CardHeader>
             <CardContent>
               {sessions.length === 0 ? (
-                <div className="py-8 text-center text-muted-foreground">No sessions found</div>
+                <div className="py-8 text-center text-muted-foreground">Sessiyalar topilmadi</div>
               ) : (
                 <div className="overflow-x-auto">
                   <Table>
                     <TableHeader>
                       <TableRow>
-                        <TableHead>Login Time</TableHead>
-                        <TableHead>Logout Time</TableHead>
-                        <TableHead>Duration</TableHead>
-                        <TableHead>IP Address</TableHead>
+                        <TableHead>Kirish vaqti</TableHead>
+                        <TableHead>Chiqish vaqti</TableHead>
+                        <TableHead>Davomiyligi</TableHead>
+                        <TableHead>IP manzil</TableHead>
                       </TableRow>
                     </TableHeader>
                     <TableBody>
@@ -375,7 +376,7 @@ export default function EmployeeDetail() {
                           <TableCell>
                             {session.logout_time
                               ? format(new Date(session.logout_time), 'MMM dd, yyyy HH:mm')
-                              : 'Active'}
+                              : 'Faol'}
                           </TableCell>
                           <TableCell>{formatDuration(session.duration)}</TableCell>
                           <TableCell>{session.ip_address || '-'}</TableCell>
@@ -392,20 +393,20 @@ export default function EmployeeDetail() {
         <TabsContent value="activity">
           <Card>
             <CardHeader>
-              <CardTitle>Activity Log</CardTitle>
+              <CardTitle>Faoliyat jurnali</CardTitle>
             </CardHeader>
             <CardContent>
               {activityLogs.length === 0 ? (
-                <div className="py-8 text-center text-muted-foreground">No activity logs found</div>
+                <div className="py-8 text-center text-muted-foreground">Faoliyat jurnali topilmadi</div>
               ) : (
                 <div className="overflow-x-auto">
                   <Table>
                     <TableHeader>
                       <TableRow>
-                        <TableHead>Timestamp</TableHead>
-                        <TableHead>Action</TableHead>
-                        <TableHead>Description</TableHead>
-                        <TableHead>Document</TableHead>
+                        <TableHead>Vaqt belgisi</TableHead>
+                        <TableHead>Amal</TableHead>
+                        <TableHead>Tavsif</TableHead>
+                        <TableHead>Hujjat</TableHead>
                       </TableRow>
                     </TableHeader>
                     <TableBody>

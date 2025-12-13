@@ -21,18 +21,18 @@ import {
   createProduct,
   updateProduct,
   generateSKU,
-  createStockAdjustment,
 } from '@/db/api';
-import { useAuth } from '@/contexts/AuthContext';
-import type { Product, Category } from '@/types/database';
+import type { Category } from '@/types/database';
 import { ArrowLeft, Save } from 'lucide-react';
+import { useInventoryStore } from '@/store/inventoryStore';
+import MoneyInput from '@/components/common/MoneyInput';
 
 export default function ProductForm() {
   const { t } = useTranslation();
   const { id } = useParams();
   const navigate = useNavigate();
   const { toast } = useToast();
-  const { profile } = useAuth();
+  const { addMovement } = useInventoryStore();
   const [loading, setLoading] = useState(false);
   const [categories, setCategories] = useState<Category[]>([]);
   const [formData, setFormData] = useState({
@@ -42,8 +42,8 @@ export default function ProductForm() {
     description: '',
     category_id: '',
     unit: 'pcs',
-    purchase_price: '',
-    sale_price: '',
+    purchase_price: null as number | null,
+    sale_price: null as number | null,
     min_stock_level: '0',
     initial_stock: '0',
     image_url: '',
@@ -82,9 +82,9 @@ export default function ProductForm() {
           barcode: product.barcode || '',
           description: product.description || '',
           category_id: product.category_id || '',
-          unit: product.unit,
-          purchase_price: product.purchase_price.toString(),
-          sale_price: product.sale_price.toString(),
+          unit: product.unit || 'pcs',
+          purchase_price: product.purchase_price,
+          sale_price: product.sale_price,
           min_stock_level: product.min_stock_level.toString(),
           initial_stock: '0',
           image_url: product.image_url || '',
@@ -113,8 +113,8 @@ export default function ProductForm() {
   };
 
   const calculateMargin = () => {
-    const purchase = Number(formData.purchase_price) || 0;
-    const sale = Number(formData.sale_price) || 0;
+    const purchase = formData.purchase_price || 0;
+    const sale = formData.sale_price || 0;
     if (purchase === 0) return 0;
     return (((sale - purchase) / purchase) * 100).toFixed(2);
   };
@@ -138,8 +138,8 @@ export default function ProductForm() {
       return false;
     }
 
-    const purchasePrice = Number(formData.purchase_price);
-    const salePrice = Number(formData.sale_price);
+      const purchasePrice = formData.purchase_price || 0;
+      const salePrice = formData.sale_price || 0;
 
     if (purchasePrice < 0 || salePrice < 0) {
       toast({
@@ -184,9 +184,9 @@ export default function ProductForm() {
         barcode: formData.barcode.trim() || null,
         description: formData.description.trim() || null,
         category_id: formData.category_id || null,
-        unit: formData.unit,
-        purchase_price: Number(formData.purchase_price),
-        sale_price: Number(formData.sale_price),
+        unit: formData.unit || 'pcs',
+        purchase_price: formData.purchase_price || 0,
+        sale_price: formData.sale_price || 0,
         min_stock_level: Number(formData.min_stock_level),
         image_url: formData.image_url.trim() || null,
         is_active: formData.is_active,
@@ -199,15 +199,16 @@ export default function ProductForm() {
           description: t('productForm.updated_success'),
         });
       } else {
-        const newProduct = await createProduct(productData);
-        
-        const initialStock = Number(formData.initial_stock);
-        if (initialStock > 0 && profile) {
-          await createStockAdjustment({
+        const initialStock = Number(formData.initial_stock) || 0;
+        const newProduct = await createProduct(productData, initialStock);
+
+        // Add initial stock movement to inventory store
+        if (initialStock > 0) {
+          addMovement({
             product_id: newProduct.id,
             quantity: initialStock,
-            reason: 'initial_stock',
-            notes: t('productForm.initial_stock_note'),
+            type: 'initial',
+            reason: 'Initial stock on product creation',
           });
         }
 
@@ -375,33 +376,27 @@ export default function ProductForm() {
           </CardHeader>
           <CardContent className="space-y-4">
             <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-              <div className="space-y-2">
-                <Label htmlFor="purchase_price">{t('productForm.purchase_price_label')}</Label>
-                <Input
-                  id="purchase_price"
-                  type="number"
-                  step="0.01"
-                  min="0"
-                  value={formData.purchase_price}
-                  onChange={(e) => setFormData({ ...formData, purchase_price: e.target.value })}
-                  placeholder="0.00"
-                  required
-                />
-              </div>
+              <MoneyInput
+                id="purchase_price"
+                label={t('productForm.purchase_price_label')}
+                value={formData.purchase_price}
+                onValueChange={(val) => setFormData({ ...formData, purchase_price: val })}
+                placeholder="0"
+                allowZero={true}
+                min={0}
+                required
+              />
 
-              <div className="space-y-2">
-                <Label htmlFor="sale_price">{t('productForm.sale_price_label')}</Label>
-                <Input
-                  id="sale_price"
-                  type="number"
-                  step="0.01"
-                  min="0"
-                  value={formData.sale_price}
-                  onChange={(e) => setFormData({ ...formData, sale_price: e.target.value })}
-                  placeholder="0.00"
-                  required
-                />
-              </div>
+              <MoneyInput
+                id="sale_price"
+                label={t('productForm.sale_price_label')}
+                value={formData.sale_price}
+                onValueChange={(val) => setFormData({ ...formData, sale_price: val })}
+                placeholder="0"
+                allowZero={true}
+                min={0}
+                required
+              />
 
               <div className="space-y-2">
                 <Label>{t('productForm.profit_margin_label')}</Label>

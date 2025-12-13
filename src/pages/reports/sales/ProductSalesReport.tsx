@@ -24,6 +24,7 @@ import { FileDown, ArrowLeft, TrendingUp, TrendingDown } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 import { useNavigate } from 'react-router-dom';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
+import { formatMoneyUZS } from '@/lib/format';
 
 interface ProductSalesData {
   product_id: string;
@@ -117,8 +118,8 @@ export default function ProductSalesReport() {
       setCategories(categoriesData);
     } catch (error) {
       toast({
-        title: 'Error',
-        description: 'Failed to load product sales data',
+        title: 'Xatolik',
+        description: 'Mahsulotlar bo\'yicha sotuv ma\'lumotlarini yuklab bo\'lmadi',
         variant: 'destructive',
       });
     } finally {
@@ -167,8 +168,8 @@ export default function ProductSalesReport() {
             <ArrowLeft className="h-4 w-4" />
           </Button>
           <div>
-            <h1 className="text-3xl font-bold">Product Sales Report</h1>
-            <p className="text-muted-foreground">Analyze product performance and profitability</p>
+            <h1 className="text-3xl font-bold">Mahsulotlar bo'yicha sotuv hisobotlari</h1>
+            <p className="text-muted-foreground">Mahsulotlarning sotuv samaradorligi va foydaliligini tahlil qilish</p>
           </div>
         </div>
         <div className="flex gap-2">
@@ -187,7 +188,7 @@ export default function ProductSalesReport() {
         <CardContent className="pt-6">
           <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
             <div>
-              <label className="text-sm text-muted-foreground">From Date</label>
+              <label className="text-sm text-muted-foreground">Boshlanish sanasi</label>
               <Input
                 type="date"
                 value={dateFrom}
@@ -195,7 +196,7 @@ export default function ProductSalesReport() {
               />
             </div>
             <div>
-              <label className="text-sm text-muted-foreground">To Date</label>
+              <label className="text-sm text-muted-foreground">Tugash sanasi</label>
               <Input
                 type="date"
                 value={dateTo}
@@ -203,13 +204,13 @@ export default function ProductSalesReport() {
               />
             </div>
             <div>
-              <label className="text-sm text-muted-foreground">Category</label>
+              <label className="text-sm text-muted-foreground">Kategoriya</label>
               <Select value={categoryFilter} onValueChange={setCategoryFilter}>
                 <SelectTrigger>
-                  <SelectValue placeholder="All Categories" />
+                  <SelectValue placeholder="Barcha kategoriyalar" />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="all">All Categories</SelectItem>
+                  <SelectItem value="all">Barcha kategoriyalar</SelectItem>
                   {categories.map((category) => (
                     <SelectItem key={category.id} value={category.id}>
                       {category.name}
@@ -219,9 +220,9 @@ export default function ProductSalesReport() {
               </Select>
             </div>
             <div>
-              <label className="text-sm text-muted-foreground">Search</label>
+              <label className="text-sm text-muted-foreground">Qidirish</label>
               <Input
-                placeholder="Search by name or SKU..."
+                placeholder="Nomi yoki SKU bo'yicha qidirish..."
                 value={searchTerm}
                 onChange={(e) => setSearchTerm(e.target.value)}
               />
@@ -235,7 +236,7 @@ export default function ProductSalesReport() {
           <CardHeader>
             <CardTitle className="flex items-center gap-2">
               <TrendingUp className="h-5 w-5 text-success" />
-              Top 10 Best-Selling Products
+              Eng ko'p sotilgan 10 ta mahsulot
             </CardTitle>
           </CardHeader>
           <CardContent>
@@ -255,7 +256,7 @@ export default function ProductSalesReport() {
           <CardHeader>
             <CardTitle className="flex items-center gap-2">
               <TrendingDown className="h-5 w-5 text-warning" />
-              Slow-Moving Products
+              Sezilarli sotilmayotgan mahsulotlar
             </CardTitle>
           </CardHeader>
           <CardContent>
@@ -266,7 +267,7 @@ export default function ProductSalesReport() {
                     <p className="font-medium">{product.product_name}</p>
                     <p className="text-sm text-muted-foreground">{product.sku}</p>
                   </div>
-                  <Badge variant="outline">{product.quantity_sold} sold</Badge>
+                  <Badge variant="outline">{product.quantity_sold} sotilgan</Badge>
                 </div>
               ))}
             </div>
@@ -278,19 +279,19 @@ export default function ProductSalesReport() {
         <CardContent className="p-0">
           {filteredProducts.length === 0 ? (
             <div className="text-center py-12">
-              <p className="text-muted-foreground">No product sales data found</p>
+              <p className="text-muted-foreground">Mahsulotlar bo'yicha sotuv maʼlumotlari topilmadi</p>
             </div>
           ) : (
             <Table>
               <TableHeader>
                 <TableRow>
-                  <TableHead>Product Name</TableHead>
+                  <TableHead>Mahsulot nomi</TableHead>
                   <TableHead>SKU</TableHead>
-                  <TableHead>Category</TableHead>
-                  <TableHead className="text-right">Qty Sold</TableHead>
-                  <TableHead className="text-right">Revenue</TableHead>
-                  <TableHead className="text-right">Profit</TableHead>
-                  <TableHead className="text-right">Margin %</TableHead>
+                  <TableHead>Kategoriya</TableHead>
+                  <TableHead className="text-right">Sotilgan miqdor</TableHead>
+                  <TableHead className="text-right">Daromad</TableHead>
+                  <TableHead className="text-right">Foyda</TableHead>
+                  <TableHead className="text-right">Foyda foizi</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -300,9 +301,9 @@ export default function ProductSalesReport() {
                     <TableCell>{product.sku}</TableCell>
                     <TableCell>{product.category}</TableCell>
                     <TableCell className="text-right">{product.quantity_sold}</TableCell>
-                    <TableCell className="text-right">${product.revenue.toFixed(2)}</TableCell>
+                    <TableCell className="text-right">{formatMoneyUZS(product.revenue)}</TableCell>
                     <TableCell className={`text-right ${product.profit >= 0 ? 'text-success' : 'text-destructive'}`}>
-                      ${product.profit.toFixed(2)}
+                      {formatMoneyUZS(product.profit)}
                     </TableCell>
                     <TableCell className="text-right">
                       <Badge 

@@ -1,9 +1,15 @@
-import { supabase } from './supabase';
+// Mock API implementation - No Supabase dependency
+// This file provides mock implementations for UI development only
+
+import { addToOutbox, saveLocalOrder } from '@/offline/db';
+
 import type {
   Profile,
   Category,
   Supplier,
-  SupplierWithPOs,
+  SupplierWithBalance,
+  SupplierPayment,
+  SupplierLedgerEntry,
   Product,
   Customer,
   Shift,
@@ -12,7 +18,6 @@ import type {
   Payment,
   CustomerPayment,
   SalesReturn,
-  SalesReturnItem,
   InventoryMovement,
   PurchaseOrder,
   PurchaseOrderItem,
@@ -21,354 +26,1096 @@ import type {
   ShiftWithCashier,
   PurchaseOrderWithDetails,
   SalesReturnWithDetails,
-  EmployeeSession,
   EmployeeSessionWithProfile,
-  EmployeeActivityLog,
   EmployeeActivityLogWithProfile,
-  EmployeePerformance,
+  HeldOrder,
+  CartItem,
+  Expense,
+  ExpenseWithDetails,
+  ExpenseCategory,
+  ExpensePaymentMethod,
 } from '@/types/database';
 
-// Auth functions
+// ============================================================================
+// MOCK IN-MEMORY DATABASE
+// ============================================================================
+
+// Load held orders from localStorage on initialization
+const loadHeldOrdersFromStorage = (): HeldOrder[] => {
+  try {
+    const stored = localStorage.getItem('pos_held_orders');
+    if (stored) {
+      return JSON.parse(stored);
+    }
+  } catch (error) {
+    console.error('Error loading held orders from storage:', error);
+  }
+  return [];
+};
+
+// Save held orders to localStorage
+const saveHeldOrdersToStorage = (orders: HeldOrder[]) => {
+  try {
+    localStorage.setItem('pos_held_orders', JSON.stringify(orders));
+  } catch (error) {
+    console.error('Error saving held orders to storage:', error);
+  }
+};
+
+const mockDB = {
+  products: [] as Product[],
+  categories: [
+    {
+      id: 'cat-1',
+      name: "Kategoriya yo'q",
+      description: null,
+      color: null,
+      icon: null,
+      parent_id: null,
+      created_at: new Date().toISOString(),
+    },
+    {
+      id: 'cat-2',
+      name: 'Ichimliklar',
+      description: null,
+      color: null,
+      icon: null,
+      parent_id: null,
+      created_at: new Date().toISOString(),
+    },
+    {
+      id: 'cat-3',
+      name: 'Mevalar',
+      description: null,
+      color: null,
+      icon: null,
+      parent_id: null,
+      created_at: new Date().toISOString(),
+    },
+  ] as Category[],
+  customers: [] as Customer[],
+  orders: [] as Order[],
+  inventoryMovements: [] as InventoryMovement[],
+  heldOrders: loadHeldOrdersFromStorage() as HeldOrder[],
+  expenses: [] as Expense[],
+};
+
+// ============================================================================
+// EXPENSES STORAGE (localStorage)
+// ============================================================================
+
+const STORAGE_KEY_EXPENSES = 'pos_expenses';
+
+// Load expenses from localStorage on initialization
+const loadExpensesFromStorage = (): Expense[] => {
+  try {
+    const stored = localStorage.getItem(STORAGE_KEY_EXPENSES);
+    if (stored) {
+      return JSON.parse(stored);
+    }
+  } catch (error) {
+    console.error('Error loading expenses from storage:', error);
+  }
+  return [];
+};
+
+// Save expenses to localStorage
+const saveExpensesToStorage = (expenses: Expense[]): void => {
+  try {
+    localStorage.setItem(STORAGE_KEY_EXPENSES, JSON.stringify(expenses));
+  } catch (error) {
+    console.error('Error saving expenses to storage:', error);
+    throw new Error('Failed to save expense data');
+  }
+};
+
+// Initialize expenses from storage
+mockDB.expenses = loadExpensesFromStorage();
+
+// SKU Generation counter (increments per day)
+let skuCounter = 0;
+let lastSKUDate = new Date().toISOString().split('T')[0];
+
+// ============================================================================
+// HELPER FUNCTIONS
+// ============================================================================
+
+const generateId = () => {
+  return `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+};
+
+const generateSKUHelper = (): string => {
+  const today = new Date().toISOString().split('T')[0].replace(/-/g, '');
+  const datePart = today.substring(0, 8); // YYYYMMDD
+  
+  // Reset counter if new day
+  if (lastSKUDate !== today.substring(0, 8)) {
+    skuCounter = 0;
+    lastSKUDate = today.substring(0, 8);
+  }
+  
+  skuCounter++;
+  const sequence = String(skuCounter).padStart(3, '0');
+  
+  return `SKU-${datePart}-${sequence}`;
+};
+
+const delay = (ms: number = 100) => new Promise(resolve => setTimeout(resolve, ms));
+
+// ============================================================================
+// AUTH FUNCTIONS (Mock)
+// ============================================================================
+
 export const getCurrentUser = async () => {
-  const { data: { user }, error } = await supabase.auth.getUser();
-  if (error) throw error;
-  return user;
+  await delay();
+  return {
+    id: 'mock-user-id',
+    email: 'mock@example.com',
+  } as any;
 };
 
 export const getCurrentProfile = async () => {
-  const user = await getCurrentUser();
-  if (!user) return null;
-  
-  const { data, error } = await supabase
-    .from('profiles')
-    .select('*')
-    .eq('id', user.id)
-    .maybeSingle();
-  
-  if (error) throw error;
-  return data as Profile | null;
+  await delay();
+  return {
+    id: 'mock-user-id',
+    username: 'mockuser',
+    full_name: 'Mock User',
+    phone: null,
+    email: 'mock@example.com',
+    role: 'admin' as const,
+    is_active: true,
+    last_login: new Date().toISOString(),
+    created_at: new Date().toISOString(),
+    updated_at: new Date().toISOString(),
+  } as Profile;
 };
 
-export const signIn = async (username: string, password: string) => {
-  const email = `${username}@miaoda.com`;
-  const { data, error } = await supabase.auth.signInWithPassword({
-    email,
-    password,
-  });
-  if (error) throw error;
-  return data;
+export const signIn = async (_username: string, _password: string) => {
+  await delay(300);
+  return { user: await getCurrentUser(), session: null };
 };
 
-export const signUp = async (username: string, password: string, fullName?: string) => {
-  const email = `${username}@miaoda.com`;
-  const { data, error } = await supabase.auth.signUp({
-    email,
-    password,
-  });
-  if (error) throw error;
-  
-  if (data.user && fullName) {
-    await supabase
-      .from('profiles')
-      .update({ full_name: fullName })
-      .eq('id', data.user.id);
-  }
-  
-  return data;
+export const signUp = async (_username: string, _password: string, _fullName?: string) => {
+  await delay(300);
+  return { user: await getCurrentUser(), session: null };
 };
 
 export const signOut = async () => {
-  const { error } = await supabase.auth.signOut();
-  if (error) throw error;
+  await delay();
 };
 
-// Profile functions
+// ============================================================================
+// PROFILE FUNCTIONS (Mock)
+// ============================================================================
+
 export const getProfiles = async () => {
-  const { data, error } = await supabase
-    .from('profiles')
-    .select('*')
-    .order('created_at', { ascending: false });
-  
-  if (error) throw error;
-  return Array.isArray(data) ? data as Profile[] : [];
+  await delay();
+  return [] as Profile[];
 };
 
 export const updateProfile = async (id: string, updates: Partial<Profile>) => {
-  const { data, error } = await supabase
-    .from('profiles')
-    .update(updates)
-    .eq('id', id)
-    .select()
-    .maybeSingle();
-  
-  if (error) throw error;
-  return data as Profile;
+  await delay();
+  return { ...updates, id } as Profile;
 };
 
-// Category functions
+// ============================================================================
+// CATEGORY FUNCTIONS
+// ============================================================================
+
 export const getCategories = async () => {
-  const { data, error } = await supabase
-    .from('categories')
-    .select('*')
-    .order('name', { ascending: true });
-  
-  if (error) throw error;
-  return Array.isArray(data) ? data as Category[] : [];
+  await delay();
+  return [...mockDB.categories] as Category[];
 };
 
 export const createCategory = async (category: Omit<Category, 'id' | 'created_at'>) => {
-  const { data, error } = await supabase
-    .from('categories')
-    .insert(category)
-    .select()
-    .maybeSingle();
-  
-  if (error) throw error;
-  return data as Category;
+  await delay();
+  const newCategory: Category = {
+    ...category,
+    id: generateId(),
+    created_at: new Date().toISOString(),
+  };
+  mockDB.categories.push(newCategory);
+  return newCategory;
 };
 
 export const updateCategory = async (id: string, updates: Partial<Category>) => {
-  const { data, error } = await supabase
-    .from('categories')
-    .update(updates)
-    .eq('id', id)
-    .select()
-    .maybeSingle();
-  
-  if (error) throw error;
-  return data as Category;
+  await delay();
+  const index = mockDB.categories.findIndex(c => c.id === id);
+  if (index === -1) throw new Error('Category not found');
+  mockDB.categories[index] = { ...mockDB.categories[index], ...updates };
+  return mockDB.categories[index];
 };
 
 export const deleteCategory = async (id: string) => {
-  const { error } = await supabase
-    .from('categories')
-    .delete()
-    .eq('id', id);
-  
-  if (error) throw error;
+  await delay();
+  const index = mockDB.categories.findIndex(c => c.id === id);
+  if (index === -1) throw new Error('Category not found');
+  mockDB.categories.splice(index, 1);
 };
 
 export const getCategoryProductCount = async (categoryId: string): Promise<number> => {
-  const { count, error } = await supabase
-    .from('products')
-    .select('*', { count: 'exact', head: true })
-    .eq('category_id', categoryId);
-  
-  if (error) throw error;
-  return count || 0;
+  await delay();
+  return mockDB.products.filter(p => p.category_id === categoryId).length;
 };
 
 export const getCategoryById = async (id: string) => {
-  const { data, error } = await supabase
-    .from('categories')
-    .select('*')
-    .eq('id', id)
-    .maybeSingle();
-  
-  if (error) throw error;
-  if (!data) throw new Error('Category not found');
-  return data as Category;
+  await delay();
+  const category = mockDB.categories.find(c => c.id === id);
+  if (!category) throw new Error('Category not found');
+  return category;
 };
 
 export const getProductsByCategoryId = async (categoryId: string) => {
-  const { data, error } = await supabase
-    .from('products')
-    .select('*')
-    .eq('category_id', categoryId)
-    .order('name', { ascending: true });
-  
-  if (error) throw error;
-  return Array.isArray(data) ? data as Product[] : [];
+  await delay();
+  return mockDB.products.filter(p => p.category_id === categoryId) as Product[];
 };
 
-// Supplier functions
-export const getSuppliers = async (includeInactive = false) => {
-  let query = supabase
-    .from('suppliers')
-    .select('*')
-    .order('name', { ascending: true });
+// ============================================================================
+// PRODUCT FUNCTIONS
+// ============================================================================
+
+// Simple event emitter for product updates (for real-time stock synchronization)
+class ProductUpdateEmitter {
+  private listeners: Set<() => void> = new Set();
+
+  subscribe(callback: () => void): () => void {
+    this.listeners.add(callback);
+    return () => {
+      this.listeners.delete(callback);
+    };
+  }
+
+  emit(): void {
+    this.listeners.forEach(callback => callback());
+  }
+}
+
+// Global emitter instance - exported for use in hooks
+export const productUpdateEmitter = new ProductUpdateEmitter();
+
+// Make available on window for cross-module access
+if (typeof window !== 'undefined') {
+  (window as any).productUpdateEmitter = productUpdateEmitter;
+}
+
+/**
+ * Calculate current stock for a product from inventory movements
+ * This is the source of truth for stock calculation
+ * Stock = sum of all movement quantities for the product
+ */
+const calculateProductStockFromMovements = (productId: string): number => {
+  const movements = mockDB.inventoryMovements.filter(m => m.product_id === productId);
+  // Sum all movement quantities (negative for sales, positive for purchases/returns)
+  const stockFromMovements = movements.reduce((sum, movement) => {
+    return sum + (movement.quantity || 0);
+  }, 0);
   
-  if (!includeInactive) {
-    query = query.eq('status', 'active');
+  // Get base stock from product (for initial stock or products without movements)
+  const product = mockDB.products.find(p => p.id === productId);
+  const baseStock = product?.current_stock || 0;
+  
+  // If we have movements, use movement-based calculation
+  // Otherwise, use the product's current_stock as fallback
+  if (movements.length > 0) {
+    return stockFromMovements;
   }
   
-  const { data, error } = await query;
-  
-  if (error) throw error;
-  return Array.isArray(data) ? data as Supplier[] : [];
+  return baseStock;
 };
 
-export const getSupplierById = async (id: string) => {
-  const { data, error } = await supabase
-    .from('suppliers')
-    .select(`
-      *,
-      purchase_orders:purchase_orders(*)
-    `)
-    .eq('id', id)
-    .maybeSingle();
+/**
+ * Get product stock summary - returns current stock calculated from movements
+ * This ensures stock is always accurate and reflects all inventory changes
+ */
+export const getProductStockSummary = async (): Promise<Record<string, number>> => {
+  await delay();
+  const stockMap: Record<string, number> = {};
   
-  if (error) throw error;
-  if (!data) throw new Error('Supplier not found');
-  return data as SupplierWithPOs;
+  // Calculate stock for all products
+  mockDB.products.forEach(product => {
+    stockMap[product.id] = calculateProductStockFromMovements(product.id);
+  });
+  
+  return stockMap;
 };
 
-export const searchSuppliers = async (searchTerm: string, includeInactive = false) => {
-  let query = supabase
-    .from('suppliers')
-    .select('*')
-    .or(`name.ilike.%${searchTerm}%,phone.ilike.%${searchTerm}%,email.ilike.%${searchTerm}%`)
-    .order('name', { ascending: true })
-    .limit(10);
+export const getProducts = async (
+  includeInactive = false,
+  filters?: {
+    searchTerm?: string;
+    categoryId?: string;
+    status?: 'active' | 'inactive' | 'all';
+    stockStatus?: 'all' | 'low' | 'out';
+    sortBy?: 'name' | 'created_at' | 'current_stock' | 'sale_price';
+    sortOrder?: 'asc' | 'desc';
+    limit?: number;
+    offset?: number;
+  }
+) => {
+  await delay();
   
-  if (!includeInactive) {
-    query = query.eq('status', 'active');
+  let products = [...mockDB.products];
+  
+  // Filter by active status
+  if (!includeInactive && (!filters?.status || filters.status === 'active')) {
+    products = products.filter(p => p.is_active);
+  } else if (filters?.status === 'inactive') {
+    products = products.filter(p => !p.is_active);
   }
   
-  const { data, error } = await query;
-  
-  if (error) throw error;
-  return Array.isArray(data) ? data as Supplier[] : [];
-};
-
-export const createSupplier = async (supplier: Omit<Supplier, 'id' | 'created_at' | 'updated_at'>) => {
-  const { data, error } = await supabase
-    .from('suppliers')
-    .insert(supplier)
-    .select()
-    .maybeSingle();
-  
-  if (error) throw error;
-  if (!data) throw new Error('Failed to create supplier');
-  return data as Supplier;
-};
-
-export const updateSupplier = async (id: string, updates: Partial<Supplier>) => {
-  const { data, error } = await supabase
-    .from('suppliers')
-    .update(updates)
-    .eq('id', id)
-    .select()
-    .maybeSingle();
-  
-  if (error) throw error;
-  if (!data) throw new Error('Failed to update supplier');
-  return data as Supplier;
-};
-
-export const deleteSupplier = async (id: string) => {
-  // Check if supplier has any purchase orders
-  const { data: pos, error: checkError } = await supabase
-    .from('purchase_orders')
-    .select('id')
-    .eq('supplier_id', id)
-    .limit(1);
-  
-  if (checkError) throw checkError;
-  
-  if (pos && pos.length > 0) {
-    throw new Error('Cannot delete supplier with existing purchase orders');
+  // Search filter
+  if (filters?.searchTerm) {
+    const term = filters.searchTerm.toLowerCase();
+    products = products.filter(p =>
+      p.name.toLowerCase().includes(term) ||
+      p.sku.toLowerCase().includes(term) ||
+      (p.barcode && p.barcode.toLowerCase().includes(term))
+    );
   }
   
-  const { error } = await supabase
-    .from('suppliers')
-    .delete()
-    .eq('id', id);
-  
-  if (error) throw error;
-};
-
-// Product functions
-export const getProducts = async (includeInactive = false) => {
-  let query = supabase
-    .from('products')
-    .select('*, category:categories(*)');
-  
-  if (!includeInactive) {
-    query = query.eq('is_active', true);
+  // Category filter
+  if (filters?.categoryId && filters.categoryId !== 'all') {
+    products = products.filter(p => p.category_id === filters.categoryId);
   }
   
-  const { data, error } = await query.order('created_at', { ascending: false });
+  // Stock status filter
+  if (filters?.stockStatus && filters.stockStatus !== 'all') {
+    if (filters.stockStatus === 'out') {
+      products = products.filter(p => p.current_stock === 0);
+    } else if (filters.stockStatus === 'low') {
+      products = products.filter(p => p.current_stock > 0 && p.current_stock <= p.min_stock_level);
+    }
+  }
   
-  if (error) throw error;
-  return Array.isArray(data) ? data as ProductWithCategory[] : [];
+  // Sort
+  const sortBy = filters?.sortBy || 'created_at';
+  const sortOrder = filters?.sortOrder || 'desc';
+  products.sort((a, b) => {
+    let aVal: any = a[sortBy];
+    let bVal: any = b[sortBy];
+    
+    if (sortBy === 'created_at') {
+      aVal = new Date(aVal).getTime();
+      bVal = new Date(bVal).getTime();
+    }
+    
+    if (sortOrder === 'asc') {
+      return aVal > bVal ? 1 : -1;
+    } else {
+      return aVal < bVal ? 1 : -1;
+    }
+  });
+  
+  // Pagination
+  const offset = filters?.offset || 0;
+  const limit = filters?.limit || 50;
+  const paginated = products.slice(offset, offset + limit);
+  
+  // Calculate current stock from inventory movements (source of truth)
+  const stockSummary = await getProductStockSummary();
+  
+  // Add category relation and update stock from movements
+  const productsWithCategory: ProductWithCategory[] = paginated.map(p => ({
+    ...p,
+    current_stock: stockSummary[p.id] ?? p.current_stock, // Use calculated stock, fallback to stored stock
+    category: mockDB.categories.find(c => c.id === p.category_id) || undefined,
+  }));
+  
+  return productsWithCategory;
 };
 
 export const getProductById = async (id: string) => {
-  const { data, error } = await supabase
-    .from('products')
-    .select('*, category:categories(*)')
-    .eq('id', id)
-    .maybeSingle();
+  await delay();
+  const product = mockDB.products.find(p => p.id === id);
+  if (!product) return null;
   
-  if (error) throw error;
-  return data as ProductWithCategory | null;
+  return {
+    ...product,
+    category: mockDB.categories.find(c => c.id === product.category_id) || null,
+  } as ProductWithCategory;
 };
 
 export const getProductByBarcode = async (barcode: string) => {
-  const { data, error } = await supabase
-    .from('products')
-    .select('*, category:categories(*)')
-    .eq('barcode', barcode)
-    .eq('is_active', true)
-    .maybeSingle();
+  await delay();
+  const product = mockDB.products.find(p => p.barcode === barcode && p.is_active);
+  if (!product) return null;
   
-  if (error) throw error;
-  return data as ProductWithCategory | null;
+  return {
+    ...product,
+    category: mockDB.categories.find(c => c.id === product.category_id) || null,
+  } as ProductWithCategory;
 };
 
 export const searchProducts = async (searchTerm: string) => {
-  const { data, error } = await supabase
-    .from('products')
-    .select('*, category:categories(*)')
-    .or(`name.ilike.%${searchTerm}%,sku.ilike.%${searchTerm}%,barcode.ilike.%${searchTerm}%`)
-    .eq('is_active', true)
-    .order('name', { ascending: true })
-    .limit(20);
+  await delay();
+  const term = searchTerm.toLowerCase();
+  const products = mockDB.products
+    .filter(p =>
+      p.is_active &&
+      (p.name.toLowerCase().includes(term) ||
+       p.sku.toLowerCase().includes(term) ||
+       (p.barcode && p.barcode.toLowerCase().includes(term)))
+    )
+    .slice(0, 20);
   
-  if (error) throw error;
-  return Array.isArray(data) ? data as ProductWithCategory[] : [];
+  return products.map(p => ({
+    ...p,
+    category: mockDB.categories.find(c => c.id === p.category_id) || null,
+  })) as ProductWithCategory[];
 };
 
 export const generateSKU = async () => {
-  const { data, error } = await supabase.rpc('generate_sku');
-  if (error) throw error;
-  return data as string;
+  await delay();
+  return generateSKUHelper();
 };
 
-export const createProduct = async (product: Omit<Product, 'id' | 'created_at' | 'updated_at' | 'current_stock'>) => {
-  const { data, error } = await supabase
-    .from('products')
-    .insert(product)
-    .select()
-    .maybeSingle();
+export const createProduct = async (
+  product: Omit<Product, 'id' | 'created_at' | 'updated_at' | 'current_stock'>,
+  initialStock?: number
+) => {
+  await delay();
   
-  if (error) throw error;
-  return data as Product;
+  const unit = product.unit || 'pcs';
+  
+  const newProduct: Product = {
+    ...product,
+    id: generateId(),
+    sku: product.sku || generateSKUHelper(),
+    unit: unit,
+    current_stock: initialStock || 0,
+    created_at: new Date().toISOString(),
+    updated_at: new Date().toISOString(),
+  };
+  
+  mockDB.products.push(newProduct);
+  
+  // Create inventory movement if initial stock > 0
+  if (initialStock && initialStock > 0) {
+    mockDB.inventoryMovements.push({
+      id: generateId(),
+      product_id: newProduct.id,
+      movement_number: `MOV-${Date.now()}`,
+      movement_type: 'adjustment',
+      quantity: initialStock,
+      before_quantity: 0,
+      after_quantity: initialStock,
+      reference_type: 'product_creation',
+      reference_id: newProduct.id,
+      reason: 'Initial stock on product creation',
+      notes: `Initial stock: ${initialStock} ${unit}`,
+      created_by: 'mock-user-id',
+      created_at: new Date().toISOString(),
+    } as InventoryMovement);
+  }
+  
+  return newProduct;
 };
 
 export const updateProduct = async (id: string, updates: Partial<Product>) => {
-  const { data, error } = await supabase
-    .from('products')
-    .update(updates)
-    .eq('id', id)
-    .select()
-    .maybeSingle();
+  await delay();
+  const index = mockDB.products.findIndex(p => p.id === id);
+  if (index === -1) throw new Error('Product not found');
   
-  if (error) throw error;
-  return data as Product;
+  // Ensure unit defaults to 'pcs' if not provided or empty
+  const safeUpdates = {
+    ...updates,
+    unit: updates.unit || mockDB.products[index].unit || 'pcs',
+  };
+  
+  mockDB.products[index] = {
+    ...mockDB.products[index],
+    ...safeUpdates,
+    updated_at: new Date().toISOString(),
+  };
+  
+  return mockDB.products[index];
 };
 
 export const deleteProduct = async (id: string) => {
-  const { error } = await supabase
-    .from('products')
-    .update({ is_active: false })
-    .eq('id', id);
+  await delay();
+  const index = mockDB.products.findIndex(p => p.id === id);
+  if (index === -1) throw new Error('Product not found');
   
-  if (error) throw error;
+  // Check if product has orders (mock check)
+  const hasOrders = false; // Mock: no orders
+  
+  if (hasOrders) {
+    // Soft delete
+    mockDB.products[index].is_active = false;
+    mockDB.products[index].updated_at = new Date().toISOString();
+  } else {
+    // Hard delete
+    mockDB.products.splice(index, 1);
+  }
 };
 
-// Customer functions
+// ============================================================================
+// INVENTORY FUNCTIONS
+// ============================================================================
+
+export const getInventory = async (filters?: {
+  searchTerm?: string;
+  categoryId?: string;
+  stockStatus?: string;
+  sortBy?: string;
+  sortOrder?: 'asc' | 'desc';
+}) => {
+  await delay();
+  return getProducts(false, filters as any);
+};
+
+export const getLowStockProducts = async () => {
+  await delay();
+  const products = mockDB.products.filter(
+    p => p.is_active && p.current_stock <= p.min_stock_level
+  );
+  
+  return products.map(p => ({
+    ...p,
+    category: mockDB.categories.find(c => c.id === p.category_id) || null,
+  })) as ProductWithCategory[];
+};
+
+export const getInventoryMovements = async (productId: string) => {
+  await delay();
+  const movements = mockDB.inventoryMovements.filter(m => m.product_id === productId);
+  
+  return movements.map(m => ({
+    ...m,
+    product: mockDB.products.find(p => p.id === m.product_id) || null,
+    created_by_profile: null,
+  })) as any[];
+};
+
+export const getAllInventoryMovements = async (filters?: {
+  productId?: string;
+  movementType?: string;
+  startDate?: string;
+  endDate?: string;
+}) => {
+  await delay();
+  let movements = [...mockDB.inventoryMovements];
+  
+  if (filters?.productId) {
+    movements = movements.filter(m => m.product_id === filters.productId);
+  }
+  
+  if (filters?.movementType && filters.movementType !== 'all') {
+    movements = movements.filter(m => m.movement_type === filters.movementType);
+  }
+  
+  if (filters?.startDate) {
+    movements = movements.filter(m => m.created_at >= filters.startDate!);
+  }
+  
+  if (filters?.endDate) {
+    movements = movements.filter(m => m.created_at <= filters.endDate!);
+  }
+  
+  return movements.map(m => ({
+    ...m,
+    product: mockDB.products.find(p => p.id === m.product_id) || null,
+    user: null,
+  })) as any[];
+};
+
+export const createStockAdjustment = async (adjustment: {
+  product_id: string;
+  quantity: number;
+  reason: string;
+  notes?: string;
+}) => {
+  await delay();
+  
+  const product = mockDB.products.find(p => p.id === adjustment.product_id);
+  if (!product) throw new Error('Product not found');
+  
+  // Update product stock
+  product.current_stock += adjustment.quantity;
+  product.updated_at = new Date().toISOString();
+  
+  // Create movement record
+  const oldStock = product.current_stock - adjustment.quantity;
+  const movement: InventoryMovement = {
+    id: generateId(),
+    product_id: adjustment.product_id,
+    movement_number: `MOV-${Date.now()}`,
+    movement_type: 'adjustment',
+    quantity: adjustment.quantity,
+    before_quantity: oldStock,
+    after_quantity: product.current_stock,
+    reference_type: 'manual_adjustment',
+    reference_id: null,
+    reason: adjustment.reason,
+    notes: adjustment.notes || null,
+    created_by: 'mock-user-id',
+    created_at: new Date().toISOString(),
+  };
+  
+  mockDB.inventoryMovements.push(movement);
+  
+  // Emit product update event for real-time stock updates
+  productUpdateEmitter.emit();
+  
+  return movement;
+};
+
+export const getProductPurchaseHistory = async (_productId: string) => {
+  await delay();
+  return [] as any[];
+};
+
+export const getProductSalesHistory = async (_productId: string) => {
+  await delay();
+  return [] as any[];
+};
+
+// ============================================================================
+// SUPPLIER FUNCTIONS (Mock)
+// ============================================================================
+
+const STORAGE_KEY_SUPPLIERS = 'pos_suppliers';
+const STORAGE_KEY_SUPPLIER_PAYMENTS = 'pos_supplier_payments';
+
+// Get suppliers from localStorage
+const getStoredSuppliers = (): Supplier[] => {
+  try {
+    const stored = localStorage.getItem(STORAGE_KEY_SUPPLIERS);
+    if (stored) {
+      return JSON.parse(stored);
+    }
+  } catch (error) {
+    console.warn('Failed to read suppliers from localStorage:', error);
+  }
+  return [];
+};
+
+// Save suppliers to localStorage
+const saveSuppliers = (suppliers: Supplier[]): void => {
+  try {
+    localStorage.setItem(STORAGE_KEY_SUPPLIERS, JSON.stringify(suppliers));
+  } catch (error) {
+    console.error('Failed to save suppliers to localStorage:', error);
+    throw new Error('Failed to save supplier data');
+  }
+};
+
+const getStoredSupplierPayments = (): SupplierPayment[] => {
+  try {
+    const stored = localStorage.getItem(STORAGE_KEY_SUPPLIER_PAYMENTS);
+    if (stored) {
+      return JSON.parse(stored);
+    }
+  } catch (error) {
+    console.warn('Failed to read supplier payments from localStorage:', error);
+  }
+  return [];
+};
+
+const saveSupplierPayments = (payments: SupplierPayment[]): void => {
+  try {
+    localStorage.setItem(STORAGE_KEY_SUPPLIER_PAYMENTS, JSON.stringify(payments));
+  } catch (error) {
+    console.error('Failed to save supplier payments to localStorage:', error);
+    throw new Error('Failed to save supplier payment data');
+  }
+};
+
+export const getSuppliers = async (includeInactive = false): Promise<SupplierWithBalance[]> => {
+  await delay();
+  const suppliers = getStoredSuppliers();
+  
+  // Calculate balance for each supplier
+  const payments = getStoredSupplierPayments();
+  const purchaseOrders = getStoredPurchaseOrders();
+  
+  // Filter by status if needed
+  let filtered = suppliers;
+  if (!includeInactive) {
+    filtered = suppliers.filter(s => s.status === 'active');
+  }
+  
+  // Calculate balance: sum of received PO amounts - sum of payments
+  // IMPORTANT: Balance is ALWAYS calculated from transactions, never stored
+  const suppliersWithBalance = filtered.map(supplier => {
+    // Get all received POs for this supplier (ONLY when status is received/partially_received)
+    const receivedPOs = purchaseOrders.filter(
+      po => po.supplier_id === supplier.id && 
+      (po.status === 'received' || po.status === 'partially_received')
+    );
+    const totalDebt = receivedPOs.reduce((sum, po) => sum + po.total_amount, 0);
+    
+    // Get all payments for this supplier
+    const supplierPayments = payments.filter(p => p.supplier_id === supplier.id);
+    const totalPaid = supplierPayments.reduce((sum, p) => sum + p.amount, 0);
+    
+    // Balance = debt - paid (positive = we owe, negative = they owe us)
+    // This is the ONLY source of truth - calculated from transactions
+    const balance = totalDebt - totalPaid;
+    
+    return {
+      ...supplier,
+      balance, // Always calculated, never stored
+    };
+  });
+  
+  // Always sort alphabetically by name for consistent results
+  return suppliersWithBalance.sort((a, b) => a.name.localeCompare(b.name));
+};
+
+export const getSupplierById = async (id: string): Promise<SupplierWithBalance> => {
+  await delay();
+  const suppliers = getStoredSuppliers();
+  const supplier = suppliers.find(s => s.id === id);
+  
+  if (!supplier) {
+    throw new Error('Supplier not found');
+  }
+  
+  // Calculate balance dynamically
+  const payments = getStoredSupplierPayments();
+  const purchaseOrders = getStoredPurchaseOrders();
+  
+  // Get all received POs for this supplier
+  const receivedPOs = purchaseOrders.filter(
+    po => po.supplier_id === supplier.id && 
+    (po.status === 'received' || po.status === 'partially_received')
+  );
+  const totalDebt = receivedPOs.reduce((sum, po) => sum + po.total_amount, 0);
+  
+  // Get all payments for this supplier
+  const supplierPayments = payments.filter(p => p.supplier_id === supplier.id);
+  const totalPaid = supplierPayments.reduce((sum, p) => sum + p.amount, 0);
+  
+  // Balance = debt - paid (positive = we owe, negative = they owe us)
+  const balance = totalDebt - totalPaid;
+  
+  return {
+    ...supplier,
+    balance, // Always calculated from transactions, never stored
+  };
+};
+
+export const searchSuppliers = async (searchTerm: string, includeInactive = false) => {
+  await delay();
+  const suppliers = getStoredSuppliers();
+  const term = searchTerm.toLowerCase().trim();
+  
+  if (!term) {
+    return includeInactive ? suppliers : suppliers.filter(s => s.status === 'active');
+  }
+  
+  // Search by name, phone, or email (case-insensitive)
+  const filtered = suppliers.filter(supplier => {
+    const matchesSearch =
+      supplier.name.toLowerCase().includes(term) ||
+      (supplier.phone && supplier.phone.toLowerCase().includes(term)) ||
+      (supplier.email && supplier.email.toLowerCase().includes(term));
+    
+    const matchesStatus = includeInactive || supplier.status === 'active';
+    
+    return matchesSearch && matchesStatus;
+  });
+  
+  // Return up to 10 results, sorted by name
+  return filtered.sort((a, b) => a.name.localeCompare(b.name)).slice(0, 10);
+};
+
+export const createSupplier = async (supplier: Omit<Supplier, 'id' | 'created_at' | 'updated_at'>): Promise<SupplierWithBalance> => {
+  await delay();
+  
+  // Validate required fields
+  if (!supplier.name || !supplier.name.trim()) {
+    throw new Error('Supplier name is required');
+  }
+  
+  // Validate email format if provided
+  if (supplier.email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(supplier.email)) {
+    throw new Error('Invalid email format');
+  }
+  
+  // Check for duplicate email (if email is provided)
+  if (supplier.email) {
+    const existing = getStoredSuppliers();
+    const duplicate = existing.find(s => s.email && s.email.toLowerCase() === supplier.email!.toLowerCase());
+    if (duplicate) {
+      throw new Error('Supplier with this email already exists');
+    }
+  }
+  
+  // Create new supplier
+  // NOTE: balance is NOT stored - it's calculated dynamically from transactions
+  const newSupplier: Supplier = {
+    ...supplier,
+    id: generateId(),
+    created_at: new Date().toISOString(),
+    updated_at: null,
+  };
+  
+  // Save to storage
+  const suppliers = getStoredSuppliers();
+  suppliers.push(newSupplier);
+  
+  try {
+    saveSuppliers(suppliers);
+    
+    // Verify the supplier was saved by reading it back immediately
+    const verifySuppliers = getStoredSuppliers();
+    const savedSupplier = verifySuppliers.find(s => s.id === newSupplier.id);
+    
+    if (!savedSupplier) {
+      console.error('createSupplier error: Supplier was not saved correctly', {
+        expectedId: newSupplier.id,
+        totalSuppliers: verifySuppliers.length,
+        supplierNames: verifySuppliers.map(s => s.name)
+      });
+      throw new Error('Failed to save supplier - verification failed');
+    }
+    
+    // Balance is not stored - it's calculated dynamically from transactions
+    // No need to check or set balance field
+    
+    console.log('createSupplier success: Supplier saved to localStorage', {
+      id: savedSupplier.id,
+      name: savedSupplier.name,
+      status: savedSupplier.status,
+      // Note: balance is calculated dynamically, not stored
+    });
+    
+    // Return supplier with calculated balance (always 0 for new supplier)
+    const supplierWithBalance: SupplierWithBalance = {
+      ...savedSupplier,
+      balance: 0, // New supplier has no transactions, balance is 0
+    };
+    return supplierWithBalance;
+  } catch (error) {
+    console.error('createSupplier error: Error saving supplier to localStorage', error);
+    throw error instanceof Error ? error : new Error('Failed to save supplier data');
+  }
+};
+
+export const updateSupplier = async (id: string, updates: Partial<Supplier>): Promise<SupplierWithBalance> => {
+  await delay();
+  
+  const suppliers = getStoredSuppliers();
+  const index = suppliers.findIndex(s => s.id === id);
+  
+  if (index === -1) {
+    throw new Error('Supplier not found');
+  }
+  
+  // Validate email format if being updated
+  if (updates.email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(updates.email)) {
+    throw new Error('Invalid email format');
+  }
+  
+  // Check for duplicate email (if email is being updated)
+  if (updates.email) {
+    const duplicate = suppliers.find(s => s.id !== id && s.email && s.email.toLowerCase() === updates.email!.toLowerCase());
+    if (duplicate) {
+      throw new Error('Supplier with this email already exists');
+    }
+  }
+  
+  // Update supplier
+  const updatedSupplier: Supplier = {
+    ...suppliers[index],
+    ...updates,
+    id, // Ensure ID doesn't change
+    updated_at: new Date().toISOString(),
+  };
+  
+  suppliers[index] = updatedSupplier;
+  saveSuppliers(suppliers);
+  
+  // Calculate balance dynamically (balance is never stored)
+  const payments = getStoredSupplierPayments();
+  const purchaseOrders = getStoredPurchaseOrders();
+  
+  const receivedPOs = purchaseOrders.filter(
+    po => po.supplier_id === updatedSupplier.id && 
+    (po.status === 'received' || po.status === 'partially_received')
+  );
+  const totalDebt = receivedPOs.reduce((sum, po) => sum + po.total_amount, 0);
+  const supplierPayments = payments.filter(p => p.supplier_id === updatedSupplier.id);
+  const totalPaid = supplierPayments.reduce((sum, p) => sum + p.amount, 0);
+  const balance = totalDebt - totalPaid;
+  
+  return {
+    ...updatedSupplier,
+    balance, // Always calculated from transactions
+  };
+};
+
+export const deleteSupplier = async (id: string): Promise<void> => {
+  await delay();
+  
+  const suppliers = getStoredSuppliers();
+  const index = suppliers.findIndex(s => s.id === id);
+  
+  if (index === -1) {
+    throw new Error('Supplier not found');
+  }
+  
+  // Check if supplier has purchase orders
+  // Note: Purchase orders are also stubbed, so we check if there's a storage key
+  // In a real implementation, we'd check the purchase_orders table
+  try {
+    const storedPOs = localStorage.getItem('pos_purchase_orders');
+    if (storedPOs) {
+      const purchaseOrders = JSON.parse(storedPOs) as PurchaseOrder[];
+      const hasPurchaseOrders = purchaseOrders.some(po => po.supplier_id === id);
+      if (hasPurchaseOrders) {
+        throw new Error('Cannot delete supplier with existing purchase orders');
+      }
+    }
+  } catch (error) {
+    // If error parsing, continue with deletion (graceful degradation)
+    console.warn('Could not check purchase orders for supplier deletion:', error);
+  }
+  
+  // Remove supplier
+  suppliers.splice(index, 1);
+  saveSuppliers(suppliers);
+};
+
+// ============================================================================
+// CUSTOMER FUNCTIONS (Mock)
+// ============================================================================
+
+const STORAGE_KEY_CUSTOMERS = 'pos_customers';
+const STORAGE_KEY_ORDERS = 'pos_orders';
+const STORAGE_KEY_ORDER_ITEMS = 'pos_order_items';
+const STORAGE_KEY_PAYMENTS = 'pos_payments';
+const STORAGE_KEY_SALES_RETURNS = 'pos_sales_returns';
+const STORAGE_KEY_SALES_RETURN_ITEMS = 'pos_sales_return_items';
+
+const getStoredCustomers = (): Customer[] => {
+  try {
+    const stored = localStorage.getItem(STORAGE_KEY_CUSTOMERS);
+    if (stored) {
+      return JSON.parse(stored);
+    }
+  } catch (error) {
+    console.warn('Failed to read customers from localStorage:', error);
+  }
+  return [];
+};
+
+const saveCustomers = (customers: Customer[]): void => {
+  try {
+    localStorage.setItem(STORAGE_KEY_CUSTOMERS, JSON.stringify(customers));
+  } catch (error) {
+    console.error('Failed to save customers to localStorage:', error);
+    throw new Error('Failed to save customer data');
+  }
+};
+
+const getStoredOrders = (): Order[] => {
+  try {
+    const stored = localStorage.getItem(STORAGE_KEY_ORDERS);
+    if (stored) {
+      return JSON.parse(stored);
+    }
+  } catch (error) {
+    console.warn('Failed to read orders from localStorage:', error);
+  }
+  return [];
+};
+
+const saveOrders = (orders: Order[]): void => {
+  try {
+    localStorage.setItem(STORAGE_KEY_ORDERS, JSON.stringify(orders));
+  } catch (error) {
+    console.error('Failed to save orders to localStorage:', error);
+    throw new Error('Failed to save order data');
+  }
+};
+
+const getStoredOrderItems = (): OrderItem[] => {
+  try {
+    const stored = localStorage.getItem(STORAGE_KEY_ORDER_ITEMS);
+    if (stored) {
+      return JSON.parse(stored);
+    }
+  } catch (error) {
+    console.warn('Failed to read order items from localStorage:', error);
+  }
+  return [];
+};
+
+const saveOrderItems = (items: OrderItem[]): void => {
+  try {
+    localStorage.setItem(STORAGE_KEY_ORDER_ITEMS, JSON.stringify(items));
+  } catch (error) {
+    console.error('Failed to save order items to localStorage:', error);
+    throw new Error('Failed to save order items data');
+  }
+};
+
+const getStoredPayments = (): Payment[] => {
+  try {
+    const stored = localStorage.getItem(STORAGE_KEY_PAYMENTS);
+    if (stored) {
+      return JSON.parse(stored);
+    }
+  } catch (error) {
+    console.warn('Failed to read payments from localStorage:', error);
+  }
+  return [];
+};
+
+const savePayments = (payments: Payment[]): void => {
+  try {
+    localStorage.setItem(STORAGE_KEY_PAYMENTS, JSON.stringify(payments));
+  } catch (error) {
+    console.error('Failed to save payments to localStorage:', error);
+    throw new Error('Failed to save payments data');
+  }
+};
+
+const getStoredSalesReturns = (): SalesReturn[] => {
+  try {
+    const stored = localStorage.getItem(STORAGE_KEY_SALES_RETURNS);
+    if (stored) {
+      return JSON.parse(stored);
+    }
+  } catch (error) {
+    console.warn('Failed to read sales returns from localStorage:', error);
+  }
+  return [];
+};
+
+const saveSalesReturns = (returns: SalesReturn[]): void => {
+  try {
+    localStorage.setItem(STORAGE_KEY_SALES_RETURNS, JSON.stringify(returns));
+  } catch (error) {
+    console.error('Failed to save sales returns to localStorage:', error);
+    throw new Error('Failed to save sales returns data');
+  }
+};
+
+const getStoredSalesReturnItems = (): SalesReturnItem[] => {
+  try {
+    const stored = localStorage.getItem(STORAGE_KEY_SALES_RETURN_ITEMS);
+    if (stored) {
+      return JSON.parse(stored);
+    }
+  } catch (error) {
+    console.warn('Failed to read sales return items from localStorage:', error);
+  }
+  return [];
+};
+
+const saveSalesReturnItems = (items: SalesReturnItem[]): void => {
+  try {
+    localStorage.setItem(STORAGE_KEY_SALES_RETURN_ITEMS, JSON.stringify(items));
+  } catch (error) {
+    console.error('Failed to save sales return items to localStorage:', error);
+    throw new Error('Failed to save sales return items data');
+  }
+};
+
 export const getCustomers = async (filters?: {
   searchTerm?: string;
   type?: string;
@@ -377,90 +1124,95 @@ export const getCustomers = async (filters?: {
   sortBy?: string;
   sortOrder?: 'asc' | 'desc';
 }) => {
-  let query = supabase
-    .from('customers')
-    .select('*');
+  await delay();
   
-  if (filters?.searchTerm) {
-    query = query.or(`name.ilike.%${filters.searchTerm}%,phone.ilike.%${filters.searchTerm}%,email.ilike.%${filters.searchTerm}%`);
-  }
+  let customers = getStoredCustomers();
   
-  if (filters?.type && filters.type !== 'all') {
-    query = query.eq('type', filters.type);
-  }
-  
-  if (filters?.status && filters.status !== 'all') {
-    query = query.eq('status', filters.status);
-  }
-  
-  if (filters?.hasDebt !== undefined) {
-    if (filters.hasDebt) {
-      query = query.gt('balance', 0);
-    } else {
-      query = query.lte('balance', 0);
+  // Apply filters
+  if (filters) {
+    if (filters.searchTerm) {
+      const search = filters.searchTerm.toLowerCase();
+      customers = customers.filter(c => 
+        c.name.toLowerCase().includes(search) ||
+        (c.phone && c.phone.toLowerCase().includes(search)) ||
+        (c.email && c.email.toLowerCase().includes(search)) ||
+        (c.company_name && c.company_name.toLowerCase().includes(search))
+      );
     }
+    
+    if (filters.type && filters.type !== 'all') {
+      customers = customers.filter(c => c.type === filters.type);
+    }
+    
+    if (filters.status && filters.status !== 'all') {
+      customers = customers.filter(c => c.status === filters.status);
+    }
+    
+    if (filters.hasDebt !== undefined) {
+      if (filters.hasDebt) {
+        customers = customers.filter(c => (c.balance || 0) > 0);
+      } else {
+        customers = customers.filter(c => (c.balance || 0) <= 0);
+      }
+    }
+    
+    // Apply sorting
+    const sortBy = filters.sortBy || 'created_at';
+    const sortOrder = filters.sortOrder || 'desc';
+    customers.sort((a, b) => {
+      let aVal: any = a[sortBy as keyof Customer];
+      let bVal: any = b[sortBy as keyof Customer];
+      
+      // Handle null/undefined values
+      if (aVal == null) aVal = '';
+      if (bVal == null) bVal = '';
+      
+      // Handle numeric comparison
+      if (typeof aVal === 'number' && typeof bVal === 'number') {
+        return sortOrder === 'asc' ? aVal - bVal : bVal - aVal;
+      }
+      
+      // String comparison
+      const aStr = String(aVal).toLowerCase();
+      const bStr = String(bVal).toLowerCase();
+      
+      if (sortOrder === 'asc') {
+        return aStr < bStr ? -1 : aStr > bStr ? 1 : 0;
+      } else {
+        return aStr > bStr ? -1 : aStr < bStr ? 1 : 0;
+      }
+    });
   }
   
-  const sortBy = filters?.sortBy || 'created_at';
-  const sortOrder = filters?.sortOrder || 'desc';
-  query = query.order(sortBy, { ascending: sortOrder === 'asc' });
-  
-  const { data, error } = await query;
-  
-  if (error) throw error;
-  return Array.isArray(data) ? data as Customer[] : [];
+  return customers;
 };
 
 export const getCustomerById = async (id: string) => {
-  const { data, error } = await supabase
-    .from('customers')
-    .select('*')
-    .eq('id', id)
-    .maybeSingle();
-  
-  if (error) throw error;
-  return data as Customer | null;
+  await delay();
+  const customers = getStoredCustomers();
+  const customer = customers.find(c => c.id === id);
+  if (!customer) {
+    throw new Error('Customer not found');
+  }
+  return customer;
 };
 
-export const getCustomerWithStats = async (id: string) => {
-  const customer = await getCustomerById(id);
-  if (!customer) return null;
-  
-  const { data: orders } = await supabase
-    .from('orders')
-    .select('total_amount')
-    .eq('customer_id', id)
-    .eq('status', 'completed');
-  
-  const { data: returns } = await supabase
-    .from('sales_returns')
-    .select('total_amount')
-    .eq('customer_id', id)
-    .eq('status', 'Completed');
-  
-  const orderCount = orders?.length || 0;
-  const totalReturns = returns?.reduce((sum, r) => sum + Number(r.total_amount), 0) || 0;
-  const avgOrderValue = orderCount > 0 ? customer.total_sales / orderCount : 0;
-  
-  return {
-    ...customer,
-    order_count: orderCount,
-    avg_order_value: avgOrderValue,
-    total_returns: totalReturns,
-  };
+export const getCustomerWithStats = async (_id: string) => {
+  await delay();
+  return null;
 };
 
 export const searchCustomers = async (searchTerm: string) => {
-  const { data, error } = await supabase
-    .from('customers')
-    .select('*')
-    .or(`name.ilike.%${searchTerm}%,phone.ilike.%${searchTerm}%`)
-    .eq('status', 'active')
-    .order('name', { ascending: true })
-    .limit(20);
+  await delay();
+  const customers = getStoredCustomers();
+  if (!searchTerm) return customers;
   
-  if (error) throw error;
-  return Array.isArray(data) ? data as Customer[] : [];
+  const search = searchTerm.toLowerCase();
+  return customers.filter(c => 
+    c.name.toLowerCase().includes(search) ||
+    (c.phone && c.phone.toLowerCase().includes(search)) ||
+    (c.email && c.email.toLowerCase().includes(search))
+  );
 };
 
 export const createCustomer = async (customer: {
@@ -476,523 +1228,504 @@ export const createCustomer = async (customer: {
   notes?: string | null;
   status?: 'active' | 'inactive';
 }) => {
-  const { data, error } = await supabase
-    .from('customers')
-    .insert({
-      name: customer.name,
-      phone: customer.phone || null,
-      email: customer.email || null,
-      address: customer.address || null,
-      type: customer.type || 'individual',
-      company_name: customer.company_name || null,
-      tax_number: customer.tax_number || null,
-      credit_limit: customer.credit_limit || 0,
-      allow_debt: customer.allow_debt || false,
-      status: customer.status || 'active',
-      notes: customer.notes || null,
-    })
-    .select()
-    .maybeSingle();
+  await delay();
   
-  if (error) {
-    console.error('Supabase error creating customer:', error);
-    throw new Error(error.message || 'Failed to create customer');
-  }
-  return data as Customer;
+  // Read existing customers
+  const customers = getStoredCustomers();
+  
+  // Create new customer object
+  const newCustomer: Customer = {
+    ...customer,
+    id: generateId(),
+    balance: 0,
+    total_sales: 0,
+    total_orders: 0,
+    last_order_date: null,
+    bonus_points: 0,
+    credit_limit: customer.credit_limit || 0,
+    allow_debt: customer.allow_debt ?? false,
+    status: customer.status || 'active',
+    type: customer.type || 'individual',
+    created_at: new Date().toISOString(),
+    updated_at: new Date().toISOString(),
+  };
+  
+  // Append to array and save
+  customers.push(newCustomer);
+  saveCustomers(customers);
+  
+  return newCustomer;
 };
 
-export const updateCustomer = async (id: string, updates: Partial<Customer>) => {
-  const { data, error } = await supabase
-    .from('customers')
-    .update(updates)
-    .eq('id', id)
-    .select()
-    .maybeSingle();
+export const updateCustomer = async (id: string, updates: Partial<Customer>): Promise<Customer> => {
+  await delay();
   
-  if (error) throw error;
-  return data as Customer;
+  const customers = getStoredCustomers();
+  const index = customers.findIndex(c => c.id === id);
+  
+  if (index === -1) {
+    throw new Error('Customer not found');
+  }
+  
+  // Update customer
+  const updatedCustomer: Customer = {
+    ...customers[index],
+    ...updates,
+    id,
+    updated_at: new Date().toISOString(),
+  };
+  
+  customers[index] = updatedCustomer;
+  saveCustomers(customers);
+  
+  return updatedCustomer;
 };
 
 export const deleteCustomer = async (id: string) => {
-  const { data: orders } = await supabase
-    .from('orders')
-    .select('id')
-    .eq('customer_id', id)
-    .limit(1);
+  await delay();
   
-  if (orders && orders.length > 0) {
-    await updateCustomer(id, { status: 'inactive' });
-    throw new Error('Customer has orders. Marked as inactive instead of deleting.');
+  const customers = getStoredCustomers();
+  const filtered = customers.filter(c => c.id !== id);
+  
+  if (filtered.length === customers.length) {
+    throw new Error('Customer not found');
   }
   
-  const { error } = await supabase
-    .from('customers')
-    .delete()
-    .eq('id', id);
-  
-  if (error) throw error;
+  saveCustomers(filtered);
 };
 
-export const getCustomerOrders = async (customerId: string) => {
-  const { data, error } = await supabase
-    .from('orders')
-    .select(`
-      *,
-      cashier:profiles(*),
-      items:order_items(*),
-      payments:payments(*)
-    `)
-    .eq('customer_id', customerId)
-    .order('created_at', { ascending: false });
-  
-  if (error) throw error;
-  return Array.isArray(data) ? data : [];
+export const getCustomerOrders = async (_customerId: string) => {
+  await delay();
+  return [] as any[];
 };
 
-export const getCustomerOrderPayments = async (customerId: string) => {
-  const { data: orders } = await supabase
-    .from('orders')
-    .select('id')
-    .eq('customer_id', customerId);
-  
-  if (!orders || orders.length === 0) {
-    return [];
-  }
-  
-  const orderIds = orders.map(o => o.id);
-  
-  const { data, error } = await supabase
-    .from('payments')
-    .select(`
-      *,
-      order:orders(order_number, customer_id)
-    `)
-    .in('order_id', orderIds)
-    .order('created_at', { ascending: false });
-  
-  if (error) throw error;
-  return Array.isArray(data) ? data : [];
+export const getCustomerOrderPayments = async (_customerId: string) => {
+  await delay();
+  return [] as any[];
 };
 
-export const getCustomerReturns = async (customerId: string) => {
-  const { data, error } = await supabase
-    .from('sales_returns')
-    .select(`
-      *,
-      order:orders(order_number),
-      items:sales_return_items(*)
-    `)
-    .eq('customer_id', customerId)
-    .order('created_at', { ascending: false });
-  
-  if (error) throw error;
-  return Array.isArray(data) ? data : [];
+export const getCustomerReturns = async (_customerId: string) => {
+  await delay();
+  return [] as any[];
 };
 
-// Inventory functions
-export const getInventory = async (filters?: {
-  searchTerm?: string;
-  categoryId?: string;
-  stockStatus?: string;
-  sortBy?: string;
-  sortOrder?: 'asc' | 'desc';
-}) => {
-  let query = supabase
-    .from('products')
-    .select(`
-      *,
-      category:categories(name)
-    `);
-  
-  if (filters?.searchTerm) {
-    query = query.or(`name.ilike.%${filters.searchTerm}%,sku.ilike.%${filters.searchTerm}%,barcode.ilike.%${filters.searchTerm}%`);
-  }
-  
-  if (filters?.categoryId && filters.categoryId !== 'all') {
-    query = query.eq('category_id', filters.categoryId);
-  }
-  
-  if (filters?.stockStatus && filters.stockStatus !== 'all') {
-    if (filters.stockStatus === 'out_of_stock') {
-      query = query.eq('current_stock', 0);
-    } else if (filters.stockStatus === 'low_stock') {
-      query = query.gt('current_stock', 0).filter('current_stock', 'lte', supabase.rpc('minimal_stock'));
-    }
-  }
-  
-  const sortBy = filters?.sortBy || 'name';
-  const sortOrder = filters?.sortOrder || 'asc';
-  query = query.order(sortBy, { ascending: sortOrder === 'asc' });
-  
-  const { data, error } = await query;
-  
-  if (error) throw error;
-  return Array.isArray(data) ? data : [];
+// ============================================================================
+// SHIFT FUNCTIONS (Mock)
+// ============================================================================
+
+export const getShifts = async (_limit = 50) => {
+  await delay();
+  return [] as ShiftWithCashier[];
 };
 
-export const getLowStockProducts = async () => {
-  try {
-    const { data, error } = await supabase
-      .from('products')
-      .select(`
-        *,
-        category:categories(id, name)
-      `)
-      .eq('is_active', true)
-      .order('current_stock', { ascending: true });
-    
-    if (error) {
-      console.error('Error fetching low stock products:', error);
-      return [];
-    }
-    
-    if (!Array.isArray(data)) {
-      return [];
-    }
-    
-    // Filter products where current_stock <= min_stock_level
-    const lowStockProducts = data.filter(p => 
-      Number(p.current_stock || 0) <= Number(p.min_stock_level || 0)
-    );
-    
-    return lowStockProducts as ProductWithCategory[];
-  } catch (error) {
-    console.error('Exception fetching low stock products:', error);
-    return [];
-  }
-};
-
-export const getInventoryMovements = async (productId: string) => {
-  const { data, error } = await supabase
-    .from('inventory_movements')
-    .select(`
-      *,
-      product:products(name, sku),
-      user:profiles(username, full_name)
-    `)
-    .eq('product_id', productId)
-    .order('created_at', { ascending: false });
-  
-  if (error) throw error;
-  return Array.isArray(data) ? data : [];
-};
-
-export const getAllInventoryMovements = async (filters?: {
-  productId?: string;
-  movementType?: string;
-  startDate?: string;
-  endDate?: string;
-}) => {
-  let query = supabase
-    .from('inventory_movements')
-    .select(`
-      *,
-      product:products(name, sku),
-      user:profiles(username, full_name)
-    `);
-  
-  if (filters?.productId) {
-    query = query.eq('product_id', filters.productId);
-  }
-  
-  if (filters?.movementType && filters.movementType !== 'all') {
-    query = query.eq('movement_type', filters.movementType);
-  }
-  
-  if (filters?.startDate) {
-    query = query.gte('created_at', filters.startDate);
-  }
-  
-  if (filters?.endDate) {
-    query = query.lte('created_at', filters.endDate);
-  }
-  
-  query = query.order('created_at', { ascending: false });
-  
-  const { data, error } = await query;
-  
-  if (error) throw error;
-  return Array.isArray(data) ? data : [];
-};
-
-export const createStockAdjustment = async (adjustment: {
-  product_id: string;
-  quantity: number;
-  reason: string;
-  notes?: string;
-}) => {
-  const { data, error } = await supabase.rpc('log_inventory_movement', {
-    p_product_id: adjustment.product_id,
-    p_movement_type: 'adjustment',
-    p_quantity: adjustment.quantity,
-    p_reference_type: 'manual_adjustment',
-    p_reference_id: null,
-    p_reason: adjustment.reason,
-    p_notes: adjustment.notes || null,
-    p_created_by: null,
-  });
-  
-  if (error) throw error;
-  return data;
-};
-
-export const getProductPurchaseHistory = async (productId: string) => {
-  const { data, error } = await supabase
-    .from('purchase_order_items')
-    .select(`
-      *,
-      purchase_order:purchase_orders(
-        po_number,
-        created_at,
-        supplier:suppliers(name)
-      )
-    `)
-    .eq('product_id', productId)
-    .order('created_at', { ascending: false });
-  
-  if (error) throw error;
-  return Array.isArray(data) ? data : [];
-};
-
-export const getProductSalesHistory = async (productId: string) => {
-  const { data, error } = await supabase
-    .from('order_items')
-    .select(`
-      *,
-      order:orders(
-        order_number,
-        created_at,
-        customer:customers(name)
-      )
-    `)
-    .eq('product_id', productId)
-    .order('created_at', { ascending: false });
-  
-  if (error) throw error;
-  return Array.isArray(data) ? data : [];
-};
-
-// Shift functions
-export const getShifts = async (limit = 50) => {
-  const { data, error } = await supabase
-    .from('shifts')
-    .select('*, cashier:profiles(*)')
-    .order('opened_at', { ascending: false })
-    .limit(limit);
-  
-  if (error) throw error;
-  return Array.isArray(data) ? data as ShiftWithCashier[] : [];
-};
-
-export const getActiveShift = async (cashierId: string) => {
-  const { data, error } = await supabase
-    .from('shifts')
-    .select('*')
-    .eq('cashier_id', cashierId)
-    .eq('status', 'open')
-    .maybeSingle();
-  
-  if (error) throw error;
-  return data as Shift | null;
+export const getActiveShift = async (_cashierId: string) => {
+  await delay();
+  return null;
 };
 
 export const generateShiftNumber = async () => {
-  const { data, error } = await supabase.rpc('generate_shift_number');
-  if (error) throw error;
-  return data as string;
+  await delay();
+  return `SHIFT-${Date.now()}`;
 };
 
 export const createShift = async (shift: Omit<Shift, 'id' | 'closed_at' | 'closing_cash' | 'expected_cash' | 'cash_difference'>) => {
-  const { data, error } = await supabase
-    .from('shifts')
-    .insert(shift)
-    .select()
-    .maybeSingle();
-  
-  if (error) throw error;
-  return data as Shift;
+  await delay();
+  return { ...shift, id: generateId() } as Shift;
 };
 
-export const closeShift = async (id: string, closingCash: number, notes?: string) => {
-  const shift = await supabase
-    .from('shifts')
-    .select('*')
-    .eq('id', id)
-    .maybeSingle();
-  
-  if (shift.error) throw shift.error;
-  if (!shift.data) throw new Error('Shift not found');
-  
-  const orders = await supabase
-    .from('orders')
-    .select('total_amount')
-    .eq('shift_id', id);
-  
-  if (orders.error) throw orders.error;
-  
-  const expectedCash = shift.data.opening_cash + 
-    (Array.isArray(orders.data) ? orders.data.reduce((sum, o) => sum + Number(o.total_amount), 0) : 0);
-  const cashDifference = closingCash - expectedCash;
-  
-  const { data, error } = await supabase
-    .from('shifts')
-    .update({
-      closed_at: new Date().toISOString(),
-      closing_cash: closingCash,
-      expected_cash: expectedCash,
-      cash_difference: cashDifference,
-      status: 'closed',
-      notes,
-    })
-    .eq('id', id)
-    .select()
-    .maybeSingle();
-  
-  if (error) throw error;
-  return data as Shift;
+export const closeShift = async (_id: string, _closingCash: number, _notes?: string) => {
+  await delay();
+  return {} as Shift;
 };
 
-// Order functions
+// ============================================================================
+// ORDER FUNCTIONS (Mock)
+// ============================================================================
+
 export const getOrders = async (limit = 100) => {
-  const { data, error } = await supabase
-    .from('orders')
-    .select(`
-      *,
-      customer:customers(*),
-      cashier:profiles(*),
-      items:order_items(*, product:products(*, category:categories(*))),
-      payments:payments(*)
-    `)
-    .order('created_at', { ascending: false })
-    .limit(limit);
+  await delay();
+  const orders = getStoredOrders();
+  const orderItems = getStoredOrderItems();
+  const payments = getStoredPayments();
+  const customers = getStoredCustomers();
   
-  if (error) throw error;
-  return Array.isArray(data) ? data as OrderWithDetails[] : [];
+  // Sort by created_at descending and limit
+  const sortedOrders = orders
+    .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
+    .slice(0, limit);
+  
+  // Build OrderWithDetails
+  return sortedOrders.map(order => ({
+    ...order,
+    items: orderItems.filter(item => item.order_id === order.id),
+    payments: payments.filter(payment => payment.order_id === order.id),
+    customer: order.customer_id ? customers.find(c => c.id === order.customer_id) : undefined,
+  })) as OrderWithDetails[];
 };
 
 export const getOrderById = async (id: string) => {
-  const { data, error } = await supabase
-    .from('orders')
-    .select(`
-      *,
-      customer:customers(*),
-      cashier:profiles(*),
-      items:order_items(*, product:products(*)),
-      payments:payments(*)
-    `)
-    .eq('id', id)
-    .maybeSingle();
+  await delay();
+  const orders = getStoredOrders();
+  const order = orders.find(o => o.id === id);
+  if (!order) return null;
   
-  if (error) throw error;
-  return data as OrderWithDetails | null;
+  const orderItems = getStoredOrderItems();
+  const payments = getStoredPayments();
+  const customers = getStoredCustomers();
+  const profiles = await getProfiles();
+  
+  return {
+    ...order,
+    items: orderItems.filter(item => item.order_id === order.id),
+    payments: payments.filter(payment => payment.order_id === order.id),
+    customer: order.customer_id ? customers.find(c => c.id === order.customer_id) : undefined,
+    cashier: order.cashier_id ? profiles.find(p => p.id === order.cashier_id) : undefined,
+  } as OrderWithDetails;
 };
 
 export const getOrderByNumber = async (orderNumber: string) => {
-  const { data, error } = await supabase
-    .from('orders')
-    .select(`
-      *,
-      customer:customers(*),
-      cashier:profiles(*),
-      items:order_items(*, product:products(*)),
-      payments:payments(*)
-    `)
-    .eq('order_number', orderNumber)
-    .maybeSingle();
+  await delay();
+  const orders = getStoredOrders();
+  const order = orders.find(o => o.order_number === orderNumber);
+  if (!order) return null;
   
-  if (error) throw error;
-  return data as OrderWithDetails | null;
+  const orderItems = getStoredOrderItems();
+  const payments = getStoredPayments();
+  const customers = getStoredCustomers();
+  
+  return {
+    ...order,
+    items: orderItems.filter(item => item.order_id === order.id),
+    payments: payments.filter(payment => payment.order_id === order.id),
+    customer: order.customer_id ? customers.find(c => c.id === order.customer_id) : undefined,
+  } as OrderWithDetails;
 };
 
 export const getOrdersByCustomer = async (customerId: string) => {
-  const { data, error } = await supabase
-    .from('orders')
-    .select(`
-      *,
-      customer:customers(*),
-      cashier:profiles(*),
-      items:order_items(*, product:products(*)),
-      payments:payments(*)
-    `)
-    .eq('customer_id', customerId)
-    .order('created_at', { ascending: false });
+  await delay();
+  const orders = getStoredOrders();
+  const customerOrders = orders.filter(o => o.customer_id === customerId);
+  const orderItems = getStoredOrderItems();
+  const payments = getStoredPayments();
+  const customers = getStoredCustomers();
   
-  if (error) throw error;
-  return Array.isArray(data) ? data as OrderWithDetails[] : [];
+  return customerOrders.map(order => ({
+    ...order,
+    items: orderItems.filter(item => item.order_id === order.id),
+    payments: payments.filter(payment => payment.order_id === order.id),
+    customer: customers.find(c => c.id === order.customer_id),
+  })) as OrderWithDetails[];
 };
 
 export const generateOrderNumber = async () => {
-  const { data, error } = await supabase.rpc('generate_order_number');
-  if (error) throw error;
-  return data as string;
+  await delay();
+  const today = new Date().toISOString().split('T')[0].replace(/-/g, '');
+  const timestamp = Date.now().toString().slice(-6);
+  return `ORD-${today}-${timestamp}`;
 };
 
-// Complete POS order atomically using RPC
 export const completePOSOrder = async (
   order: Omit<Order, 'id' | 'created_at'>,
   items: Omit<OrderItem, 'id' | 'order_id'>[],
   payments: Omit<Payment, 'id' | 'order_id' | 'created_at'>[]
 ) => {
-  const { data, error } = await supabase.rpc('complete_pos_order', {
-    p_order: order,
-    p_items: items,
-    p_payments: payments,
+  await delay();
+  
+  const orderId = generateId();
+  const orderNumber = await generateOrderNumber();
+  const createdAt = new Date().toISOString();
+  const isOnline = navigator.onLine;
+  
+  // Create full order object
+  const fullOrder: Order = {
+    ...order,
+    id: orderId,
+    order_number: orderNumber,
+    created_at: createdAt,
+  };
+  
+  // Create order items with order_id
+  const orderItems: OrderItem[] = items.map(item => ({
+    ...item,
+    id: generateId(),
+    order_id: orderId,
+  }));
+  
+  // Create payments with order_id
+  const orderPayments: Payment[] = payments.map(payment => ({
+    ...payment,
+    id: generateId(),
+    order_id: orderId,
+    created_at: createdAt,
+  }));
+  
+  // If offline, save to IndexedDB and add to outbox
+  if (!isOnline) {
+    // Save to IndexedDB
+    await saveLocalOrder(orderId, fullOrder, orderItems, orderPayments);
+    
+    // Add to outbox for sync
+    const idempotencyKey = generateUUID();
+    await addToOutbox({
+      type: 'CREATE_ORDER',
+      payload: {
+        order: fullOrder,
+        items: orderItems,
+        payments: orderPayments,
+      },
+      idempotencyKey,
+      entityId: orderId,
+    });
+    
+    // Also save to localStorage for immediate UI update
+    const orders = getStoredOrders();
+    orders.push(fullOrder);
+    saveOrders(orders);
+    
+    const existingItems = getStoredOrderItems();
+    existingItems.push(...orderItems);
+    saveOrderItems(existingItems);
+    
+    const existingPayments = getStoredPayments();
+    existingPayments.push(...orderPayments);
+    savePayments(existingPayments);
+    
+    // Return success (optimistic)
+    return {
+      order_id: orderId,
+      order_number: orderNumber,
+    };
+  }
+  
+  // Online: save to localStorage (existing behavior)
+  const orders = getStoredOrders();
+  orders.push(fullOrder);
+  saveOrders(orders);
+  
+  const existingItems = getStoredOrderItems();
+  existingItems.push(...orderItems);
+  saveOrderItems(existingItems);
+  
+  const existingPayments = getStoredPayments();
+  existingPayments.push(...orderPayments);
+  savePayments(existingPayments);
+  
+  // Update product stock: decrease stock for each sold item
+  orderItems.forEach((item) => {
+    const product = mockDB.products.find(p => p.id === item.product_id);
+    if (product) {
+      // Decrease stock by sold quantity (atomic-like operation in mock)
+      product.current_stock = Math.max(0, product.current_stock - item.quantity);
+      product.updated_at = createdAt;
+      
+      // Create inventory movement record
+      const movement: InventoryMovement = {
+        id: generateId(),
+        product_id: item.product_id,
+        movement_number: `MOV-${Date.now()}-${generateId().slice(0, 8)}`,
+        movement_type: 'sale',
+        quantity: -item.quantity, // Negative for sales (stock decrease)
+        before_quantity: product.current_stock + item.quantity,
+        after_quantity: product.current_stock,
+        reference_type: 'order',
+        reference_id: orderId,
+        reason: `POS sale - Order ${orderNumber}`,
+        notes: null,
+        created_by: order.cashier_id,
+        created_at: createdAt,
+      };
+      mockDB.inventoryMovements.push(movement);
+    } else {
+      console.warn(`Product ${item.product_id} not found when updating stock for order ${orderNumber}`);
+    }
   });
   
-  if (error) {
-    console.error('RPC error:', error);
-    throw new Error(error.message || 'Failed to complete order');
-  }
+  // Emit product update event for real-time stock updates
+  productUpdateEmitter.emit();
   
-  if (!data) {
-    throw new Error('No response from server');
-  }
-  
-  // Parse the response
-  const response = typeof data === 'string' ? JSON.parse(data) : data;
-  
-  if (!response.success) {
-    throw new Error(response.error || 'Failed to complete order');
+  // Update customer balance if credit sale
+  if (order.customer_id) {
+    // Calculate credit amount (total - non-credit payments)
+    const nonCreditPayments = orderPayments
+      .filter(p => p.payment_method !== 'credit')
+      .reduce((sum, p) => sum + p.amount, 0);
+    
+    const creditAmount = fullOrder.total_amount - nonCreditPayments;
+    
+    // Only update if there's credit (unpaid portion)
+    if (creditAmount > 0) {
+      const customers = getStoredCustomers();
+      const customerIndex = customers.findIndex(c => c.id === order.customer_id);
+      
+      if (customerIndex >= 0) {
+        const customer = customers[customerIndex];
+        const currentBalance = customer.balance || 0;
+        const currentTotalSales = customer.total_sales || 0;
+        const currentTotalOrders = customer.total_orders || 0;
+        
+        customers[customerIndex] = {
+          ...customer,
+          balance: currentBalance + creditAmount,
+          total_sales: currentTotalSales + fullOrder.total_amount,
+          total_orders: currentTotalOrders + 1,
+          last_order_date: createdAt,
+          updated_at: createdAt,
+        };
+        saveCustomers(customers);
+      }
+    } else {
+      // Full payment - still update total_sales and last_order_date
+      const customers = getStoredCustomers();
+      const customerIndex = customers.findIndex(c => c.id === order.customer_id);
+      
+      if (customerIndex >= 0) {
+        const customer = customers[customerIndex];
+        customers[customerIndex] = {
+          ...customer,
+          total_sales: (customer.total_sales || 0) + fullOrder.total_amount,
+          total_orders: (customer.total_orders || 0) + 1,
+          last_order_date: createdAt,
+          updated_at: createdAt,
+        };
+        saveCustomers(customers);
+      }
+    }
   }
   
   return {
-    id: response.order_id,
-    order_number: response.order_number,
-    message: response.message,
+    id: orderId,
+    order_number: orderNumber,
+    message: 'Order completed successfully',
   };
 };
 
-// Legacy createOrder function (kept for backward compatibility)
 export const createOrder = async (
   order: Omit<Order, 'id' | 'created_at'>,
   items: Omit<OrderItem, 'id' | 'order_id'>[],
   payments: Omit<Payment, 'id' | 'order_id' | 'created_at'>[]
 ) => {
-  // Use the new atomic RPC function
   return completePOSOrder(order, items, payments);
 };
 
-export const updateOrderStatus = async (id: string, status: string) => {
-  const { data, error } = await supabase
-    .from('orders')
-    .update({ status })
-    .eq('id', id)
-    .select()
-    .maybeSingle();
+export const updateOrderStatus = async (id: string, status: string): Promise<Order> => {
+  await delay();
+  const orders = getStoredOrders();
+  const index = orders.findIndex(o => o.id === id);
   
-  if (error) throw error;
-  return data as Order;
+  if (index === -1) {
+    throw new Error('Buyurtma topilmadi');
+  }
+  
+  const updatedOrder: Order = {
+    ...orders[index],
+    status: status as Order['status'],
+    updated_at: new Date().toISOString(),
+  };
+  
+  orders[index] = updatedOrder;
+  saveOrders(orders);
+  
+  return updatedOrder;
 };
 
-// Payment functions
+/**
+ * Cancel an order (sets status to 'voided' or 'cancelled')
+ */
+export const cancelOrder = async (id: string): Promise<Order> => {
+  await delay();
+  const orders = getStoredOrders();
+  const index = orders.findIndex(o => o.id === id);
+  
+  if (index === -1) {
+    throw new Error('Buyurtma topilmadi');
+  }
+  
+  const order = orders[index];
+  
+  // Check if order can be cancelled
+  if (order.status === 'voided' || order.status === 'cancelled') {
+    throw new Error('Buyurtma allaqachon bekor qilingan');
+  }
+  
+  // Only allow cancelling completed orders (or pending if business rules allow)
+  if (order.status !== 'completed' && order.status !== 'pending') {
+    throw new Error(`'${order.status}' holatidagi buyurtmani bekor qilib bo'lmaydi`);
+  }
+  
+  const updatedOrder: Order = {
+    ...order,
+    status: 'voided',
+    updated_at: new Date().toISOString(),
+  };
+  
+  orders[index] = updatedOrder;
+  saveOrders(orders);
+  
+  return updatedOrder;
+};
+
+// ============================================================================
+// PAYMENT FUNCTIONS (Mock)
+// ============================================================================
+
 export const generatePaymentNumber = async () => {
-  const { data, error } = await supabase.rpc('generate_payment_number');
-  if (error) throw error;
-  return data as string;
+  await delay();
+  return `PAY-${Date.now()}`;
 };
 
-// Purchase order functions
-// Purchase Orders
+// ============================================================================
+// PURCHASE ORDER FUNCTIONS (Mock)
+// ============================================================================
+
+const STORAGE_KEY_PURCHASE_ORDERS = 'pos_purchase_orders';
+const STORAGE_KEY_PURCHASE_ORDER_ITEMS = 'pos_purchase_order_items';
+
+// Get purchase orders from localStorage
+const getStoredPurchaseOrders = (): PurchaseOrder[] => {
+  try {
+    const stored = localStorage.getItem(STORAGE_KEY_PURCHASE_ORDERS);
+    if (stored) {
+      return JSON.parse(stored);
+    }
+  } catch (error) {
+    console.warn('Failed to read purchase orders from localStorage:', error);
+  }
+  return [];
+};
+
+// Save purchase orders to localStorage
+const savePurchaseOrders = (orders: PurchaseOrder[]): void => {
+  try {
+    localStorage.setItem(STORAGE_KEY_PURCHASE_ORDERS, JSON.stringify(orders));
+  } catch (error) {
+    console.error('Failed to save purchase orders to localStorage:', error);
+    throw new Error('Failed to save purchase order data');
+  }
+};
+
+// Get purchase order items from localStorage
+const getStoredPurchaseOrderItems = (): PurchaseOrderItem[] => {
+  try {
+    const stored = localStorage.getItem(STORAGE_KEY_PURCHASE_ORDER_ITEMS);
+    if (stored) {
+      return JSON.parse(stored);
+    }
+  } catch (error) {
+    console.warn('Failed to read purchase order items from localStorage:', error);
+  }
+  return [];
+};
+
+// Save purchase order items to localStorage
+const savePurchaseOrderItems = (items: PurchaseOrderItem[]): void => {
+  try {
+    localStorage.setItem(STORAGE_KEY_PURCHASE_ORDER_ITEMS, JSON.stringify(items));
+  } catch (error) {
+    console.error('Failed to save purchase order items to localStorage:', error);
+    throw new Error('Failed to save purchase order items data');
+  }
+};
+
 export const getPurchaseOrders = async (filters?: {
   status?: string;
   supplier_id?: string;
@@ -1000,162 +1733,295 @@ export const getPurchaseOrders = async (filters?: {
   date_to?: string;
   search?: string;
 }) => {
-  let query = supabase
-    .from('purchase_orders')
-    .select(`
-      *,
-      supplier:suppliers(*),
-      items:purchase_order_items(*),
-      created_by_profile:profiles!purchase_orders_created_by_fkey(id, username, full_name),
-      approved_by_profile:profiles!purchase_orders_approved_by_fkey(id, username, full_name)
-    `)
-    .order('created_at', { ascending: false });
+  await delay();
+  const orders = getStoredPurchaseOrders();
+  const items = getStoredPurchaseOrderItems();
+  const suppliers = getStoredSuppliers();
   
+  let filtered = orders;
+  
+  // Apply filters
   if (filters?.status) {
-    query = query.eq('status', filters.status);
+    filtered = filtered.filter(po => po.status === filters.status);
   }
-  
   if (filters?.supplier_id) {
-    query = query.eq('supplier_id', filters.supplier_id);
+    filtered = filtered.filter(po => po.supplier_id === filters.supplier_id);
   }
-  
   if (filters?.date_from) {
-    query = query.gte('order_date', filters.date_from);
+    filtered = filtered.filter(po => po.order_date >= filters.date_from!);
   }
-  
   if (filters?.date_to) {
-    query = query.lte('order_date', filters.date_to);
+    filtered = filtered.filter(po => po.order_date <= filters.date_to!);
   }
-  
   if (filters?.search) {
-    query = query.or(`po_number.ilike.%${filters.search}%,supplier_name.ilike.%${filters.search}%`);
+    const searchLower = filters.search.toLowerCase();
+    filtered = filtered.filter(po => 
+      po.po_number.toLowerCase().includes(searchLower) ||
+      (po.supplier_name && po.supplier_name.toLowerCase().includes(searchLower))
+    );
   }
   
-  const { data, error } = await query;
+  // Get supplier payments to calculate paid_amount
+  const payments = getStoredSupplierPayments();
   
-  if (error) throw error;
-  return Array.isArray(data) ? data as PurchaseOrderWithDetails[] : [];
+  // Build PurchaseOrderWithDetails with payment info
+  return filtered.map(po => {
+    // Calculate paid amount for this PO
+    const poPayments = payments.filter(p => p.purchase_order_id === po.id);
+    const paidAmount = poPayments.reduce((sum, p) => sum + p.amount, 0);
+    const remainingAmount = po.total_amount - paidAmount;
+    
+    // Determine payment status
+    let paymentStatus: 'UNPAID' | 'PARTIALLY_PAID' | 'PAID' = 'UNPAID';
+    if (paidAmount >= po.total_amount) {
+      paymentStatus = 'PAID';
+    } else if (paidAmount > 0) {
+      paymentStatus = 'PARTIALLY_PAID';
+    }
+    
+    return {
+      ...po,
+      items: items.filter(item => item.purchase_order_id === po.id),
+      supplier: po.supplier_id ? suppliers.find(s => s.id === po.supplier_id) : undefined,
+      paid_amount: paidAmount,
+      remaining_amount: remainingAmount,
+      payment_status: paymentStatus,
+    };
+  }) as PurchaseOrderWithDetails[];
 };
 
 export const getPurchaseOrderById = async (id: string) => {
-  const { data, error } = await supabase
-    .from('purchase_orders')
-    .select(`
-      *,
-      supplier:suppliers(*),
-      items:purchase_order_items(*),
-      created_by_profile:profiles!purchase_orders_created_by_fkey(id, username, full_name),
-      approved_by_profile:profiles!purchase_orders_approved_by_fkey(id, username, full_name)
-    `)
-    .eq('id', id)
-    .maybeSingle();
+  await delay();
+  const orders = getStoredPurchaseOrders();
+  const items = getStoredPurchaseOrderItems();
+  const suppliers = getStoredSuppliers();
+  const payments = getStoredSupplierPayments();
   
-  if (error) throw error;
-  if (!data) throw new Error('Purchase order not found');
-  return data as PurchaseOrderWithDetails;
+  const order = orders.find(po => po.id === id);
+  if (!order) {
+    throw new Error('Purchase order not found');
+  }
+  
+  // Calculate paid amount for this PO
+  const poPayments = payments.filter(p => p.purchase_order_id === id);
+  const paidAmount = poPayments.reduce((sum, p) => sum + p.amount, 0);
+  const remainingAmount = order.total_amount - paidAmount;
+  
+  // Determine payment status
+  let paymentStatus: 'UNPAID' | 'PARTIALLY_PAID' | 'PAID' = 'UNPAID';
+  if (paidAmount >= order.total_amount) {
+    paymentStatus = 'PAID';
+  } else if (paidAmount > 0) {
+    paymentStatus = 'PARTIALLY_PAID';
+  }
+  
+  return {
+    ...order,
+    items: items.filter(item => item.purchase_order_id === id),
+    supplier: order.supplier_id ? suppliers.find(s => s.id === order.supplier_id) : undefined,
+    paid_amount: paidAmount,
+    remaining_amount: remainingAmount,
+    payment_status: paymentStatus,
+  } as PurchaseOrderWithDetails;
 };
 
 export const generatePONumber = async () => {
-  const { data, error } = await supabase.rpc('generate_po_number');
-  if (error) throw error;
-  return data as string;
+  await delay();
+  const year = new Date().getFullYear();
+  const orders = getStoredPurchaseOrders();
+  const yearPrefix = `PO-${year}-`;
+  const yearOrders = orders.filter(po => po.po_number.startsWith(yearPrefix));
+  const nextNum = yearOrders.length + 1;
+  return `${yearPrefix}${String(nextNum).padStart(5, '0')}`;
 };
 
 export const createPurchaseOrder = async (
   purchaseOrder: Omit<PurchaseOrder, 'id' | 'created_at' | 'updated_at'>,
-  items: Omit<PurchaseOrderItem, 'id' | 'purchase_order_id'>[]
+  orderItems: Omit<PurchaseOrderItem, 'id' | 'purchase_order_id'>[]
 ) => {
-  const { data: poData, error: poError } = await supabase
-    .from('purchase_orders')
-    .insert(purchaseOrder)
-    .select()
-    .maybeSingle();
+  await delay();
   
-  if (poError) throw poError;
-  if (!poData) throw new Error('Failed to create purchase order');
+  const poId = generateId();
+  const createdAt = new Date().toISOString();
   
-  const poItems = items.map(item => ({
+  // Create full purchase order
+  const fullPO: PurchaseOrder = {
+    ...purchaseOrder,
+    id: poId,
+    created_at: createdAt,
+    updated_at: createdAt, // Set to created_at initially
+  };
+  
+  // Create purchase order items
+  const fullItems: PurchaseOrderItem[] = orderItems.map(item => ({
     ...item,
-    purchase_order_id: poData.id,
+    id: generateId(),
+    purchase_order_id: poId,
+    received_qty: 0, // Initialize received_qty to 0
   }));
   
-  const { error: itemsError } = await supabase
-    .from('purchase_order_items')
-    .insert(poItems);
+  // Save to storage
+  const orders = getStoredPurchaseOrders();
+  orders.push(fullPO);
+  savePurchaseOrders(orders);
   
-  if (itemsError) throw itemsError;
+  const items = getStoredPurchaseOrderItems();
+  items.push(...fullItems);
+  savePurchaseOrderItems(items);
   
-  return poData as PurchaseOrder;
+  console.log('Purchase order created:', poId, 'with', fullItems.length, 'items');
+  
+  return fullPO;
 };
 
 export const updatePurchaseOrder = async (
   id: string,
   purchaseOrder: Partial<PurchaseOrder>,
-  items?: Omit<PurchaseOrderItem, 'id' | 'purchase_order_id'>[]
+  orderItems?: Omit<PurchaseOrderItem, 'id' | 'purchase_order_id'>[]
 ) => {
-  const { data: poData, error: poError } = await supabase
-    .from('purchase_orders')
-    .update(purchaseOrder)
-    .eq('id', id)
-    .select()
-    .maybeSingle();
+  await delay();
   
-  if (poError) throw poError;
-  if (!poData) throw new Error('Failed to update purchase order');
+  const orders = getStoredPurchaseOrders();
+  const index = orders.findIndex(po => po.id === id);
   
-  if (items) {
-    // Delete existing items
-    const { error: deleteError } = await supabase
-      .from('purchase_order_items')
-      .delete()
-      .eq('purchase_order_id', id);
-    
-    if (deleteError) throw deleteError;
-    
-    // Insert new items
-    const poItems = items.map(item => ({
-      ...item,
-      purchase_order_id: id,
-    }));
-    
-    const { error: itemsError } = await supabase
-      .from('purchase_order_items')
-      .insert(poItems);
-    
-    if (itemsError) throw itemsError;
+  if (index === -1) {
+    throw new Error('Purchase order not found');
   }
   
-  return poData as PurchaseOrder;
+  // Update purchase order
+  const updated = {
+    ...orders[index],
+    ...purchaseOrder,
+    id,
+    updated_at: new Date().toISOString(),
+  };
+  orders[index] = updated;
+  savePurchaseOrders(orders);
+  
+  // Update items if provided
+  if (orderItems) {
+    const items = getStoredPurchaseOrderItems();
+    // Remove old items
+    const filteredItems = items.filter(item => item.purchase_order_id !== id);
+    // Add new items
+    const newItems: PurchaseOrderItem[] = orderItems.map(item => ({
+      ...item,
+      id: generateId(),
+      purchase_order_id: id,
+      received_qty: 0, // Reset received_qty when updating items
+    }));
+    filteredItems.push(...newItems);
+    savePurchaseOrderItems(filteredItems);
+  }
+  
+  return updated;
 };
 
-export const approvePurchaseOrder = async (id: string, approvedBy: string) => {
-  const { data, error } = await supabase
-    .from('purchase_orders')
-    .update({
-      status: 'approved',
-      approved_by: approvedBy,
-      approved_at: new Date().toISOString(),
-    })
-    .eq('id', id)
-    .select()
-    .maybeSingle();
+export const approvePurchaseOrder = async (id: string, _approvedBy: string) => {
+  await delay();
   
-  if (error) throw error;
-  if (!data) throw new Error('Failed to approve purchase order');
-  return data as PurchaseOrder;
+  const orders = getStoredPurchaseOrders();
+  const index = orders.findIndex(po => po.id === id);
+  
+  if (index === -1) {
+    throw new Error('Purchase order not found');
+  }
+  
+  if (orders[index].status !== 'draft') {
+    throw new Error('Only draft purchase orders can be approved');
+  }
+  
+  orders[index].status = 'approved';
+  orders[index].updated_at = new Date().toISOString();
+  savePurchaseOrders(orders);
+  
+  return orders[index];
 };
 
 export const cancelPurchaseOrder = async (id: string) => {
-  const { data, error } = await supabase
-    .from('purchase_orders')
-    .update({ status: 'cancelled' })
-    .eq('id', id)
-    .select()
-    .maybeSingle();
+  await delay();
   
-  if (error) throw error;
-  if (!data) throw new Error('Failed to cancel purchase order');
-  return data as PurchaseOrder;
+  const orders = getStoredPurchaseOrders();
+  const index = orders.findIndex(po => po.id === id);
+  
+  if (index === -1) {
+    throw new Error('Purchase order not found');
+  }
+  
+  const po = orders[index];
+  
+  // If already cancelled, return early
+  if (po.status === 'cancelled') {
+    return po;
+  }
+  
+  // If PO was received (or partially received), we need to reverse:
+  // 1. Inventory stock (decrease by received quantities)
+  // 2. Supplier debt (decrease by PO total_amount)
+  if (po.status === 'received' || po.status === 'partially_received') {
+    // Get purchase order items to reverse inventory
+    const poItems = getStoredPurchaseOrderItems();
+    const itemsForPO = poItems.filter(item => item.purchase_order_id === id);
+    
+    // Reverse inventory for each item that was received
+    for (const item of itemsForPO) {
+      if (item.received_qty > 0) {
+        const product = mockDB.products.find(p => p.id === item.product_id);
+        if (product) {
+          // Reverse stock: decrease by received quantity
+          const beforeStock = product.current_stock;
+          const afterStock = Math.max(0, beforeStock - item.received_qty); // Prevent negative stock
+          
+          product.current_stock = afterStock;
+          product.updated_at = new Date().toISOString();
+          
+          // Create reversal inventory movement
+          const movement: InventoryMovement = {
+            id: generateId(),
+            product_id: item.product_id,
+            movement_number: `MOV-${Date.now()}-${generateId().slice(0, 8)}`,
+            movement_type: 'adjustment',
+            quantity: -item.received_qty, // Negative for reversal
+            before_quantity: beforeStock,
+            after_quantity: afterStock,
+            reference_type: 'purchase_order',
+            reference_id: id,
+            reason: 'Purchase order cancelled - reversing received goods',
+            notes: `Reversed ${item.received_qty} units from cancelled PO ${po.po_number}`,
+            created_by: 'mock-user-id',
+            created_at: new Date().toISOString(),
+          };
+          mockDB.inventoryMovements.push(movement);
+          
+          console.log(`Reversed inventory for product ${item.product_id}: ${beforeStock} -> ${afterStock} (-${item.received_qty})`);
+        }
+      }
+      
+      // Reset received quantity
+      item.received_qty = 0;
+    }
+    
+    // Save updated items
+    const allItems = getStoredPurchaseOrderItems();
+    const otherItems = allItems.filter(item => item.purchase_order_id !== id);
+    otherItems.push(...itemsForPO);
+    savePurchaseOrderItems(otherItems);
+    
+    // NOTE: Supplier debt is automatically reversed because:
+    // - Balance = SUM(received POs) - SUM(payments)
+    // - When PO status changes from 'received' to 'cancelled', it's no longer counted in received POs
+    // - So debt automatically decreases by PO.total_amount
+    // - We do NOT need to manually adjust balance - it's calculated from transactions
+  }
+  
+  // Update PO status to cancelled
+  po.status = 'cancelled';
+  po.updated_at = new Date().toISOString();
+  savePurchaseOrders(orders);
+  
+  console.log(`Purchase order ${id} cancelled. Inventory and debt reversed if PO was received.`);
+  
+  return po;
 };
 
 export const receiveGoods = async (
@@ -1164,139 +2030,210 @@ export const receiveGoods = async (
     item_id: string;
     received_qty: number;
     notes?: string;
+    product_id?: string; // Optional: if provided, use it directly
   }>,
   receivedDate?: string
 ) => {
-  const { data, error } = await supabase.rpc('receive_goods', {
-    p_po_id: poId,
-    p_items: items,
-    p_received_date: receivedDate || new Date().toISOString().split('T')[0],
-  });
+  await delay();
+  const createdAt = receivedDate ? new Date(receivedDate).toISOString() : new Date().toISOString();
   
-  if (error) throw error;
-  return data;
-};
-
-// Dashboard statistics
-export const getDashboardStats = async () => {
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
+  // Get purchase order to check status (idempotency check)
+  const orders = getStoredPurchaseOrders();
+  const po = orders.find(p => p.id === poId);
   
-  // Initialize default values
-  let todaySales = 0;
-  let todayOrdersCount = 0;
-  let lowStockCount = 0;
-  let activeCustomers = 0;
-  
-  // Query 1: Today's orders and sales
-  try {
-    const { data: todayOrders, error: ordersError } = await supabase
-      .from('orders')
-      .select('total_amount')
-      .gte('created_at', today.toISOString())
-      .eq('status', 'completed');
-    
-    if (!ordersError && Array.isArray(todayOrders)) {
-      todaySales = todayOrders.reduce((sum, o) => sum + (Number(o.total_amount) || 0), 0);
-      todayOrdersCount = todayOrders.length;
-    } else if (ordersError) {
-      console.error('Error fetching today\'s orders:', ordersError);
-    }
-  } catch (error) {
-    console.error('Exception fetching today\'s orders:', error);
+  if (!po) {
+    throw new Error('Purchase order not found');
   }
   
-  // Query 2: Low stock products
-  try {
-    const { data: lowStockData, error: lowStockError } = await supabase
-      .from('products')
-      .select('id, current_stock, min_stock_level')
-      .eq('is_active', true);
-    
-    if (!lowStockError && Array.isArray(lowStockData)) {
-      // Filter products where current_stock <= min_stock_level
-      lowStockCount = lowStockData.filter(p => 
-        Number(p.current_stock) <= Number(p.min_stock_level)
-      ).length;
-    } else if (lowStockError) {
-      console.error('Error fetching low stock products:', lowStockError);
-    }
-  } catch (error) {
-    console.error('Exception fetching low stock products:', error);
+  // IDEMPOTENCY CHECK: Prevent double receiving
+  // IMPORTANT: Only check "already received" for EXISTING POs that are fully received
+  // This check does NOT apply to NEW POs being created and received in one step
+  // The check is based on:
+  // 1. Status is 'received' (fully received)
+  // 2. AND all items have received_qty >= ordered_qty (double-check)
+  const poItems = getStoredPurchaseOrderItems();
+  const poItemsForOrder = poItems.filter(item => item.purchase_order_id === poId);
+  const allItemsFullyReceived = poItemsForOrder.length > 0 && 
+    poItemsForOrder.every(item => item.received_qty >= item.ordered_qty);
+  
+  // Only block if PO is already fully received (status + all items received)
+  // This prevents the error when creating NEW POs that are immediately received
+  if (po.status === 'received' && allItemsFullyReceived) {
+    throw new Error('Purchase order has already been fully received. Cannot receive again.');
   }
   
-  // Query 3: Active customers
-  try {
-    const { data: customersData, error: customersError, count } = await supabase
-      .from('customers')
-      .select('id', { count: 'exact', head: true });
-    
-    if (!customersError && count !== null) {
-      activeCustomers = count;
-    } else if (!customersError && Array.isArray(customersData)) {
-      activeCustomers = customersData.length;
-    } else {
-      console.error('Error fetching customers:', customersError);
-      // Fallback: try counting without head option
-      const { data: fallbackData } = await supabase
-        .from('customers')
-        .select('id');
-      activeCustomers = Array.isArray(fallbackData) ? fallbackData.length : 0;
-    }
-  } catch (error) {
-    console.error('Exception fetching customers:', error);
+  if (po.status === 'cancelled') {
+    throw new Error('Cannot receive goods for a cancelled purchase order');
   }
+  
+  // IDEMPOTENCY: Track previous status to detect if this is the first time receiving
+  // This ensures we don't double-count inventory or debt
+  // If PO was already received, the idempotency check above prevents processing
+  
+  // Note: poItemsForOrder was already fetched above for the idempotency check
+  // Reuse it here to avoid duplicate filtering
+  
+  // Track which items were successfully processed
+  const processedItems: string[] = [];
+  const errors: string[] = [];
+  
+  // Process each received item
+  for (const receiveItem of items) {
+    // Find the purchase order item
+    const poItem = poItemsForOrder.find(pi => pi.id === receiveItem.item_id);
+    
+    if (!poItem) {
+      errors.push(`Purchase order item ${receiveItem.item_id} not found`);
+      continue;
+    }
+    
+    // Get product_id from purchase order item
+    const productId = receiveItem.product_id || poItem.product_id;
+    
+    if (!productId) {
+      errors.push(`Product ID not found for item ${receiveItem.item_id}`);
+      continue;
+    }
+    
+    // Validate received quantity doesn't exceed ordered quantity
+    const newReceivedQty = poItem.received_qty + receiveItem.received_qty;
+    if (newReceivedQty > poItem.ordered_qty) {
+      errors.push(
+        `Received quantity (${newReceivedQty}) exceeds ordered quantity (${poItem.ordered_qty}) for product ${poItem.product_name}`
+      );
+      continue;
+    }
+    
+    // Find product and update stock
+    // IMPORTANT: This updates the product's current_stock, which is what the Inventory page displays
+    const product = mockDB.products.find(p => p.id === productId);
+    if (!product) {
+      errors.push(`Product ${productId} not found in inventory`);
+      continue;
+    }
+    
+    // Calculate stock values before update
+    const beforeStock = product.current_stock;
+    const afterStock = beforeStock + receiveItem.received_qty;
+    
+    // Update product stock (atomic operation in mock)
+    // This is the critical update that increases inventory quantities
+    product.current_stock = afterStock;
+    product.updated_at = createdAt;
+    
+    // Update purchase order item received_qty
+    poItem.received_qty = newReceivedQty;
+    
+    // Create inventory movement record
+    const movement: InventoryMovement = {
+      id: generateId(),
+      product_id: productId,
+      movement_number: `MOV-${Date.now()}-${generateId().slice(0, 8)}`,
+      movement_type: 'purchase',
+      quantity: receiveItem.received_qty, // Positive for purchases (stock increase)
+      before_quantity: beforeStock,
+      after_quantity: afterStock,
+      reference_type: 'purchase_order',
+      reference_id: poId,
+      reason: 'Purchase order received',
+      notes: receiveItem.notes || `Received ${receiveItem.received_qty} units from PO ${po.po_number}`,
+      created_by: 'mock-user-id',
+      created_at: createdAt,
+    };
+    mockDB.inventoryMovements.push(movement);
+    
+    processedItems.push(receiveItem.item_id);
+    console.log(`Stock updated for product ${productId}: ${beforeStock} -> ${afterStock} (+${receiveItem.received_qty})`);
+  }
+  
+  // If any errors occurred, throw (atomicity: all or nothing)
+  if (errors.length > 0) {
+    throw new Error(`Failed to receive goods: ${errors.join('; ')}`);
+  }
+  
+  // Save updated purchase order items
+  const allItems = getStoredPurchaseOrderItems();
+  const otherItems = allItems.filter(item => item.purchase_order_id !== poId);
+  otherItems.push(...poItemsForOrder);
+  savePurchaseOrderItems(otherItems);
+  
+  // Update purchase order status based on received quantities
+  const allReceived = poItemsForOrder.every(item => item.received_qty >= item.ordered_qty);
+  const someReceived = poItemsForOrder.some(item => item.received_qty > 0);
+  
+  let newStatus: PurchaseOrder['status'] = po.status;
+  if (allReceived) {
+    newStatus = 'received';
+  } else if (someReceived) {
+    newStatus = 'partially_received';
+  }
+  
+  // Update purchase order status
+  po.status = newStatus;
+  po.updated_at = createdAt;
+  savePurchaseOrders(orders);
+  
+  // IMPORTANT: Supplier debt is created ONLY when PO status becomes 'received' or 'partially_received'
+  // Debt = SUM of all received PO amounts
+  // This happens automatically when we calculate balance from transactions
+  // No manual debt creation needed - it's derived from PO status
+  
+  // IMPORTANT: Supplier debt is created when PO status becomes 'received' or 'partially_received'
+  // Debt = SUM of all received PO amounts
+  // Balance is calculated dynamically: balance = debt - payments
+  // We do NOT store balance - it's always calculated from transactions
+  // This ensures accounting accuracy and prevents inconsistencies
+  
+  // Emit product update event for real-time stock updates
+  productUpdateEmitter.emit();
+  
+  console.log(`Purchase order ${poId} received. Status: ${newStatus}. Processed ${processedItems.length} items.`);
   
   return {
-    today_sales: todaySales,
-    today_orders: todayOrdersCount,
-    low_stock_count: lowStockCount,
-    active_customers: activeCustomers,
-    total_revenue: todaySales,
+    success: true,
+    message: 'Goods received successfully',
+    new_status: newStatus,
+    processed_items: processedItems.length,
+  };
+};
+
+// ============================================================================
+// DASHBOARD FUNCTIONS (Mock)
+// ============================================================================
+
+export const getDashboardStats = async () => {
+  await delay();
+  return {
+    today_sales: 0,
+    today_orders: 0,
+    low_stock_count: 0,
+    active_customers: 0,
+    total_revenue: 0,
     total_profit: 0,
   };
 };
 
-// Sales Returns functions
+// ============================================================================
+// SALES RETURNS FUNCTIONS (Mock)
+// ============================================================================
+
 export const getSalesReturnById = async (id: string) => {
-  const { data, error } = await supabase
-    .from('sales_returns')
-    .select(`
-      *,
-      order:orders(id, order_number, total_amount, created_at),
-      customer:customers(id, name, phone, email),
-      cashier:profiles(id, username, email)
-    `)
-    .eq('id', id)
-    .maybeSingle();
+  await delay();
+  const returns = getStoredSalesReturns();
+  const returnItems = getStoredSalesReturnItems();
+  const orders = getStoredOrders();
+  const customers = getStoredCustomers();
   
-  if (error) {
-    console.error('Error fetching sales return:', error);
-    throw new Error(error.message || 'Failed to fetch sales return');
-  }
-  
-  if (!data) {
+  const salesReturn = returns.find(r => r.id === id);
+  if (!salesReturn) {
     throw new Error('Sales return not found');
   }
   
-  // Get return items with product details
-  const { data: items, error: itemsError } = await supabase
-    .from('sales_return_items')
-    .select(`
-      *,
-      product:products(name, sku, barcode)
-    `)
-    .eq('return_id', id)
-    .order('created_at', { ascending: true });
-  
-  if (itemsError) {
-    console.error('Error fetching return items:', itemsError);
-    throw new Error(itemsError.message || 'Failed to fetch return items');
-  }
-  
   return {
-    ...data,
-    items: Array.isArray(items) ? items : [],
+    ...salesReturn,
+    items: returnItems.filter(item => item.return_id === id),
+    order: orders.find(o => o.id === salesReturn.order_id),
+    customer: salesReturn.customer_id ? customers.find(c => c.id === salesReturn.customer_id) : undefined,
   } as SalesReturnWithDetails;
 };
 
@@ -1305,41 +2242,39 @@ export const getSalesReturns = async (filters?: {
   startDate?: string;
   endDate?: string;
   customerId?: string;
-}) => {
-  let query = supabase
-    .from('sales_returns')
-    .select(`
-      *,
-      order:orders(order_number),
-      customer:customers(name),
-      cashier:profiles(username)
-    `)
-    .order('created_at', { ascending: false });
+}): Promise<SalesReturnWithDetails[]> => {
+  await delay();
+  let returns = getStoredSalesReturns();
+  const returnItems = getStoredSalesReturnItems();
+  const orders = getStoredOrders();
+  const customers = getStoredCustomers();
   
-  if (filters?.status) {
-    query = query.eq('status', filters.status);
+  // Apply filters
+  if (filters) {
+    if (filters.status) {
+      returns = returns.filter(r => r.status === filters.status);
+    }
+    if (filters.startDate) {
+      const start = new Date(filters.startDate);
+      returns = returns.filter(r => new Date(r.created_at) >= start);
+    }
+    if (filters.endDate) {
+      const end = new Date(filters.endDate);
+      end.setHours(23, 59, 59, 999);
+      returns = returns.filter(r => new Date(r.created_at) <= end);
+    }
+    if (filters.customerId) {
+      returns = returns.filter(r => r.customer_id === filters.customerId);
+    }
   }
   
-  if (filters?.startDate) {
-    query = query.gte('created_at', filters.startDate);
-  }
-  
-  if (filters?.endDate) {
-    query = query.lte('created_at', filters.endDate);
-  }
-  
-  if (filters?.customerId) {
-    query = query.eq('customer_id', filters.customerId);
-  }
-  
-  const { data, error } = await query;
-  
-  if (error) {
-    console.error('Error fetching sales returns:', error);
-    throw new Error(error.message || 'Failed to fetch sales returns');
-  }
-  
-  return Array.isArray(data) ? data : [];
+  // Build SalesReturnWithDetails
+  return returns.map(ret => ({
+    ...ret,
+    items: returnItems.filter(item => item.return_id === ret.id),
+    order: orders.find(o => o.id === ret.order_id),
+    customer: ret.customer_id ? customers.find(c => c.id === ret.customer_id) : undefined,
+  })) as SalesReturnWithDetails[];
 };
 
 export const updateSalesReturn = async (
@@ -1350,65 +2285,75 @@ export const updateSalesReturn = async (
     status?: string;
   }
 ) => {
-  const { data, error } = await supabase
-    .from('sales_returns')
-    .update({
-      ...updates,
-      updated_at: new Date().toISOString(),
-    })
-    .eq('id', id)
-    .select()
-    .maybeSingle();
+  await delay();
+  const returns = getStoredSalesReturns();
+  const index = returns.findIndex(r => r.id === id);
   
-  if (error) {
-    console.error('Error updating sales return:', error);
-    throw new Error(error.message || 'Failed to update sales return');
-  }
-  
-  if (!data) {
+  if (index === -1) {
     throw new Error('Sales return not found');
   }
   
-  return data as SalesReturn;
+  const updatedReturn: SalesReturn = {
+    ...returns[index],
+    ...updates,
+    updated_at: new Date().toISOString(),
+  };
+  
+  returns[index] = updatedReturn;
+  saveSalesReturns(returns);
+  
+  return updatedReturn;
 };
 
 export const deleteSalesReturn = async (id: string) => {
-  const { data, error } = await supabase.rpc('delete_sales_return_with_inventory', {
-    p_return_id: id,
-  });
+  await delay();
+  const returns = getStoredSalesReturns();
+  const filtered = returns.filter(r => r.id !== id);
   
-  if (error) {
-    console.error('Error deleting sales return:', error);
-    throw new Error(error.message || 'Failed to delete sales return');
+  if (filtered.length === returns.length) {
+    throw new Error('Sales return not found');
   }
   
-  return data;
+  saveSalesReturns(filtered);
+  
+  // Also delete related items
+  const items = getStoredSalesReturnItems();
+  const filteredItems = items.filter(item => item.return_id !== id);
+  saveSalesReturnItems(filteredItems);
 };
 
 export const getOrderForReturn = async (orderId: string) => {
-  const { data, error } = await supabase
-    .from('orders')
-    .select(`
-      *,
-      customer:customers(*),
-      cashier:profiles(*),
-      items:order_items(
-        *,
-        product:products(name, sku, barcode, image_url)
-      )
-    `)
-    .eq('id', orderId)
-    .maybeSingle();
+  await delay();
+  const orders = getStoredOrders();
+  const order = orders.find(o => o.id === orderId);
   
-  if (error) throw error;
-  if (!data) throw new Error('Order not found');
+  if (!order) {
+    throw new Error('Order not found');
+  }
   
-  return data as OrderWithDetails;
+  const orderItems = getStoredOrderItems();
+  const payments = getStoredPayments();
+  const customers = getStoredCustomers();
+  
+  return {
+    ...order,
+    items: orderItems.filter(item => item.order_id === order.id),
+    payments: payments.filter(payment => payment.order_id === order.id),
+    customer: order.customer_id ? customers.find(c => c.id === order.customer_id) : undefined,
+  } as OrderWithDetails;
+};
+
+export const generateReturnNumber = async (): Promise<string> => {
+  await delay();
+  const today = new Date().toISOString().split('T')[0].replace(/-/g, '');
+  const timestamp = Date.now().toString().slice(-6);
+  return `RET-${today}-${timestamp}`;
 };
 
 export const createSalesReturn = async (returnData: {
   order_id: string;
   customer_id: string | null;
+  cashier_id: string;
   total_amount: number;
   refund_method: 'cash' | 'card' | 'credit';
   reason: string;
@@ -1420,113 +2365,181 @@ export const createSalesReturn = async (returnData: {
     line_total: number;
   }>;
 }) => {
-  const user = await getCurrentUser();
-  if (!user) throw new Error('User not authenticated');
+  await delay();
   
-  // Validate inputs
-  if (!returnData.order_id) {
-    throw new Error('Order ID is required');
-  }
+  const returnId = generateId();
+  const returnNumber = await generateReturnNumber();
+  const createdAt = new Date().toISOString();
   
-  if (returnData.total_amount <= 0) {
-    throw new Error('Refund amount must be greater than 0');
-  }
+  // Create sales return
+  // Status is 'Completed' immediately since all inventory/financial adjustments are done at creation time
+  const salesReturn: SalesReturn = {
+    id: returnId,
+    return_number: returnNumber,
+    order_id: returnData.order_id,
+    customer_id: returnData.customer_id,
+    cashier_id: returnData.cashier_id,
+    total_amount: returnData.total_amount,
+    refund_method: returnData.refund_method,
+    status: 'Completed',
+    reason: returnData.reason,
+    notes: returnData.notes,
+    created_at: createdAt,
+    updated_at: createdAt,
+  };
   
-  if (!returnData.refund_method) {
-    throw new Error('Refund method is required');
-  }
+  // Create return items
+  const returnItems: SalesReturnItem[] = returnData.items.map(item => ({
+    id: generateId(),
+    return_id: returnId,
+    product_id: item.product_id,
+    quantity: item.quantity,
+    unit_price: item.unit_price,
+    line_total: item.line_total,
+    created_at: createdAt,
+  }));
   
-  if (!['cash', 'card', 'credit'].includes(returnData.refund_method)) {
-    throw new Error('Invalid refund method. Must be cash, card, or credit');
-  }
+  // Save to localStorage
+  const returns = getStoredSalesReturns();
+  returns.push(salesReturn);
+  saveSalesReturns(returns);
   
-  if (!returnData.reason || returnData.reason.trim() === '') {
-    throw new Error('Reason for return is required');
-  }
+  const existingItems = getStoredSalesReturnItems();
+  existingItems.push(...returnItems);
+  saveSalesReturnItems(existingItems);
   
-  if (!returnData.items || returnData.items.length === 0) {
-    throw new Error('At least one item must be returned');
-  }
-  
-  // Call RPC function to create return with inventory updates
-  const { data, error } = await supabase.rpc('create_sales_return_with_inventory', {
-    p_order_id: returnData.order_id,
-    p_customer_id: returnData.customer_id,
-    p_total_amount: returnData.total_amount,
-    p_refund_method: returnData.refund_method,
-    p_reason: returnData.reason,
-    p_notes: returnData.notes || null,
-    p_cashier_id: user.id,
-    p_items: returnData.items,
+  // Update product stock: increase stock for each returned item (reverse of sale)
+  returnItems.forEach((item) => {
+    const product = mockDB.products.find(p => p.id === item.product_id);
+    if (product) {
+      // Increase stock by returned quantity (atomic-like operation in mock)
+      product.current_stock = product.current_stock + item.quantity;
+      product.updated_at = createdAt;
+      
+      // Create inventory movement record
+      const movement: InventoryMovement = {
+        id: generateId(),
+        product_id: item.product_id,
+        movement_number: `MOV-${Date.now()}-${generateId().slice(0, 8)}`,
+        movement_type: 'return',
+        quantity: item.quantity, // Positive for returns (stock increase)
+        before_quantity: product.current_stock - item.quantity,
+        after_quantity: product.current_stock,
+        reference_type: 'sales_return',
+        reference_id: returnId,
+        reason: `Sales return - ${returnData.reason}`,
+        notes: returnData.notes,
+        created_by: returnData.cashier_id,
+        created_at: createdAt,
+      };
+      mockDB.inventoryMovements.push(movement);
+    } else {
+      console.warn(`Product ${item.product_id} not found when updating stock for return ${returnNumber}`);
+    }
   });
   
-  if (error) {
-    console.error('Error creating sales return:', error);
-    throw new Error(error.message || 'Failed to create return');
+  // Emit product update event for real-time stock updates
+  productUpdateEmitter.emit();
+  
+  // If refund method is store credit, decrease customer's outstanding balance (qarz kamayadi)
+  // Positive balance = customer owes store, so return decreases the debt
+  if (returnData.refund_method === 'credit' && returnData.customer_id) {
+    const customers = getStoredCustomers();
+    const customerIndex = customers.findIndex(c => c.id === returnData.customer_id);
+    
+    if (customerIndex >= 0) {
+      const customer = customers[customerIndex];
+      const currentBalance = customer.balance || 0;
+      const newBalance = currentBalance - returnData.total_amount; // Debt decreases
+      
+      customers[customerIndex] = {
+        ...customer,
+        balance: newBalance,
+        updated_at: createdAt,
+      };
+      saveCustomers(customers);
+    } else {
+      // Customer not found - this shouldn't happen if validation is correct, but handle gracefully
+      console.warn(`Customer ${returnData.customer_id} not found when processing store credit return`);
+    }
   }
   
-  if (!data) {
-    throw new Error('Failed to create return - no data returned');
-  }
-  
-  return data as SalesReturn;
+  return salesReturn;
 };
 
 export const updateSalesReturnStatus = async (id: string, status: string) => {
-  const { error } = await supabase
-    .from('sales_returns')
-    .update({ status, updated_at: new Date().toISOString() })
-    .eq('id', id);
+  await delay();
+  const returns = getStoredSalesReturns();
+  const index = returns.findIndex(r => r.id === id);
   
-  if (error) throw error;
+  if (index === -1) {
+    throw new Error('Sales return not found');
+  }
+  
+  returns[index] = {
+    ...returns[index],
+    status,
+    updated_at: new Date().toISOString(),
+  };
+  
+  saveSalesReturns(returns);
 };
 
 export const cancelSalesReturn = async (id: string) => {
+  await delay();
   await updateSalesReturnStatus(id, 'Cancelled');
 };
 
 export const completeSalesReturn = async (id: string) => {
+  await delay();
   await updateSalesReturnStatus(id, 'Completed');
 };
 
 export const getSalesReturnsByOrderId = async (orderId: string) => {
-  const { data, error } = await supabase
-    .from('sales_returns')
-    .select('*')
-    .eq('order_id', orderId)
-    .order('created_at', { ascending: false });
-  
-  if (error) throw error;
-  return Array.isArray(data) ? data as SalesReturn[] : [];
+  await delay();
+  const returns = getStoredSalesReturns();
+  return returns.filter(r => r.order_id === orderId);
 };
 
-// ==================== Employee Management ====================
+/**
+ * Get a single sales return by order ID (returns the first one if multiple exist)
+ * Returns null if no return exists for this order
+ */
+export const getSalesReturnByOrderId = async (orderId: string): Promise<SalesReturnWithDetails | null> => {
+  await delay();
+  const returns = getStoredSalesReturns();
+  const returnItems = getStoredSalesReturnItems();
+  const orders = getStoredOrders();
+  const customers = getStoredCustomers();
+  
+  const salesReturn = returns.find(r => r.order_id === orderId);
+  if (!salesReturn) {
+    return null; // No return exists for this order
+  }
+  
+  return {
+    ...salesReturn,
+    items: returnItems.filter(item => item.return_id === salesReturn.id),
+    order: orders.find(o => o.id === salesReturn.order_id),
+    customer: salesReturn.customer_id ? customers.find(c => c.id === salesReturn.customer_id) : undefined,
+  } as SalesReturnWithDetails;
+};
 
-// Get all employees
+// ============================================================================
+// EMPLOYEE FUNCTIONS (Mock)
+// ============================================================================
+
 export const getAllEmployees = async () => {
-  const { data, error } = await supabase
-    .from('profiles')
-    .select('*')
-    .order('created_at', { ascending: false });
-  
-  if (error) throw error;
-  return Array.isArray(data) ? data as Profile[] : [];
+  await delay();
+  return [] as Profile[];
 };
 
-// Get employee by ID
-export const getEmployeeById = async (id: string) => {
-  const { data, error } = await supabase
-    .from('profiles')
-    .select('*')
-    .eq('id', id)
-    .maybeSingle();
-  
-  if (error) throw error;
-  return data as Profile | null;
+export const getEmployeeById = async (_id: string) => {
+  await delay();
+  return null;
 };
 
-// Create employee
-export const createEmployee = async (employeeData: {
+export const createEmployee = async (_employeeData: {
   username: string;
   password: string;
   full_name: string;
@@ -1535,329 +2548,250 @@ export const createEmployee = async (employeeData: {
   role: 'admin' | 'manager' | 'cashier';
   is_active?: boolean;
 }) => {
-  const email = `${employeeData.username}@miaoda.com`;
-  
-  // Create auth user
-  const { data: authData, error: authError } = await supabase.auth.signUp({
-    email,
-    password: employeeData.password,
-  });
-  
-  if (authError) throw authError;
-  if (!authData.user) throw new Error('Failed to create user');
-  
-  // Update profile with additional data
-  const { data: profileData, error: profileError } = await supabase
-    .from('profiles')
-    .update({
-      full_name: employeeData.full_name,
-      phone: employeeData.phone || null,
-      email: employeeData.email || null,
-      role: employeeData.role,
-      is_active: employeeData.is_active !== undefined ? employeeData.is_active : true,
-    })
-    .eq('id', authData.user.id)
-    .select()
-    .maybeSingle();
-  
-  if (profileError) throw profileError;
-  return profileData as Profile;
+  await delay();
+  return {} as Profile;
 };
 
-// Update employee
 export const updateEmployee = async (id: string, updates: Partial<Profile>) => {
-  const { data, error } = await supabase
-    .from('profiles')
-    .update(updates)
-    .eq('id', id)
-    .select()
-    .maybeSingle();
-  
-  if (error) throw error;
-  return data as Profile;
+  await delay();
+  return { ...updates, id } as Profile;
 };
 
-// Deactivate employee
-export const deactivateEmployee = async (id: string) => {
-  return updateEmployee(id, { is_active: false });
+export const deactivateEmployee = async (_id: string) => {
+  await delay();
+  return {} as Profile;
 };
 
-// Activate employee
-export const activateEmployee = async (id: string) => {
-  return updateEmployee(id, { is_active: true });
+export const activateEmployee = async (_id: string) => {
+  await delay();
+  return {} as Profile;
 };
 
-// Delete employee (soft delete by deactivating)
-export const deleteEmployee = async (id: string) => {
-  return deactivateEmployee(id);
+export const deleteEmployee = async (_id: string) => {
+  await delay();
 };
 
-// ==================== Employee Sessions ====================
-
-// Get employee sessions
-export const getEmployeeSessions = async (employeeId?: string) => {
-  let query = supabase
-    .from('employee_sessions')
-    .select(`
-      *,
-      employee:profiles(*)
-    `)
-    .order('login_time', { ascending: false });
-  
-  if (employeeId) {
-    query = query.eq('employee_id', employeeId);
-  }
-  
-  const { data, error } = await query;
-  
-  if (error) throw error;
-  return Array.isArray(data) ? data as EmployeeSessionWithProfile[] : [];
+export const getEmployeeSessions = async (_employeeId?: string) => {
+  await delay();
+  return [] as EmployeeSessionWithProfile[];
 };
 
-// Start employee session
-export const startEmployeeSession = async (employeeId: string, ipAddress?: string) => {
-  const { data, error } = await supabase.rpc('start_employee_session', {
-    p_employee_id: employeeId,
-    p_ip_address: ipAddress || null,
-  });
-  
-  if (error) throw error;
-  return data as string; // Returns session ID
+export const startEmployeeSession = async (_employeeId: string, _ipAddress?: string) => {
+  await delay();
+  return generateId();
 };
 
-// End employee session
-export const endEmployeeSession = async (sessionId: string, ipAddress?: string) => {
-  const { data, error } = await supabase.rpc('end_employee_session', {
-    p_session_id: sessionId,
-    p_ip_address: ipAddress || null,
-  });
-  
-  if (error) throw error;
-  return data as boolean;
+export const endEmployeeSession = async (_sessionId: string, _ipAddress?: string) => {
+  await delay();
+  return true;
 };
 
-// ==================== Employee Activity Logs ====================
-
-// Get employee activity logs
-export const getEmployeeActivityLogs = async (employeeId?: string) => {
-  let query = supabase
-    .from('employee_activity_logs')
-    .select(`
-      *,
-      employee:profiles(*)
-    `)
-    .order('created_at', { ascending: false });
-  
-  if (employeeId) {
-    query = query.eq('employee_id', employeeId);
-  }
-  
-  const { data, error } = await query;
-  
-  if (error) throw error;
-  return Array.isArray(data) ? data as EmployeeActivityLogWithProfile[] : [];
+export const getEmployeeActivityLogs = async (_employeeId?: string) => {
+  await delay();
+  return [] as EmployeeActivityLogWithProfile[];
 };
 
-// Log employee activity
 export const logEmployeeActivity = async (
-  employeeId: string,
-  actionType: string,
-  description: string,
-  documentId?: string,
-  documentType?: string,
-  ipAddress?: string
+  _employeeId: string,
+  _actionType: string,
+  _description: string,
+  _documentId?: string,
+  _documentType?: string,
+  _ipAddress?: string
 ) => {
-  const { data, error } = await supabase.rpc('log_employee_activity', {
-    p_employee_id: employeeId,
-    p_action_type: actionType,
-    p_description: description,
-    p_document_id: documentId || null,
-    p_document_type: documentType || null,
-    p_ip_address: ipAddress || null,
-  });
-  
-  if (error) throw error;
-  return data as string; // Returns log ID
+  await delay();
+  return generateId();
 };
 
-// ==================== Employee Performance ====================
-
-// Get employee performance metrics
 export const getEmployeePerformance = async (
-  employeeId: string,
-  startDate?: string,
-  endDate?: string
+  _employeeId: string,
+  _startDate?: string,
+  _endDate?: string
 ) => {
-  const { data, error } = await supabase.rpc('get_employee_performance', {
-    p_employee_id: employeeId,
-    p_start_date: startDate || null,
-    p_end_date: endDate || null,
-  });
-  
-  if (error) throw error;
-  return Array.isArray(data) && data.length > 0 ? data[0] as EmployeePerformance : null;
+  await delay();
+  return null;
 };
 
-// ==================== Settings Management ====================
+// ============================================================================
+// SETTINGS FUNCTIONS (Mock)
+// ============================================================================
 
-// Get all settings by category
-export const getSettingsByCategory = async (category: string) => {
-  const { data, error } = await supabase
-    .from('settings')
-    .select('*')
-    .eq('category', category)
-    .order('key', { ascending: true });
-  
-  if (error) throw error;
-  
-  // Convert to key-value object
-  const settings: Record<string, unknown> = {};
-  if (Array.isArray(data)) {
-    data.forEach((setting) => {
-      settings[setting.key] = setting.value;
-    });
-  }
-  
-  return settings;
+export const getSettingsByCategory = async (_category: string) => {
+  await delay();
+  return {} as Record<string, unknown>;
 };
 
-// Get single setting value
-export const getSetting = async (category: string, key: string) => {
-  const { data, error } = await supabase.rpc('get_setting', {
-    p_category: category,
-    p_key: key,
-  });
-  
-  if (error) throw error;
-  return data;
+export const getSetting = async (_category: string, _key: string) => {
+  await delay();
+  return null;
 };
 
-// Update single setting
 export const updateSetting = async (
-  category: string,
-  key: string,
-  value: unknown,
-  updatedBy: string
+  _category: string,
+  _key: string,
+  _value: unknown,
+  _updatedBy: string
 ) => {
-  const { data, error } = await supabase.rpc('update_setting', {
-    p_category: category,
-    p_key: key,
-    p_value: value,
-    p_updated_by: updatedBy,
-  });
-  
-  if (error) throw error;
-  return data as boolean;
+  await delay();
+  return true;
 };
 
-// Bulk update settings for a category
 export const bulkUpdateSettings = async (
-  category: string,
-  settings: Record<string, unknown>,
-  updatedBy: string
+  _category: string,
+  _settings: Record<string, unknown>,
+  _updatedBy: string
 ) => {
-  const { data, error } = await supabase.rpc('bulk_update_settings', {
-    p_category: category,
-    p_settings: settings,
-    p_updated_by: updatedBy,
-  });
-  
-  if (error) throw error;
-  return data as number;
+  await delay();
+  return 0;
 };
 
 // ============================================================================
-// Held Orders (Park Sale / Kutish)
+// HELD ORDERS FUNCTIONS (Mock)
 // ============================================================================
 
-// Generate held order number
 export const generateHeldNumber = async (): Promise<string> => {
-  const { data, error } = await supabase.rpc('generate_held_number');
-  if (error) throw error;
-  return data as string;
+  await delay();
+  
+  // Find the highest number in existing held orders
+  const existingNumbers = mockDB.heldOrders
+    .filter(order => order.held_number.match(/^HOLD-\d+$/))
+    .map(order => {
+      const match = order.held_number.match(/^HOLD-(\d+)$/);
+      return match ? parseInt(match[1], 10) : 0;
+    });
+  
+  const nextNumber = existingNumbers.length > 0 
+    ? Math.max(...existingNumbers) + 1 
+    : 1;
+  
+  return `HOLD-${String(nextNumber).padStart(3, '0')}`;
 };
 
-// Save held order
-export const saveHeldOrder = async (heldOrder: {
+export const saveHeldOrder = async (heldOrderData: {
   held_number: string;
   cashier_id: string;
   shift_id: string | null;
   customer_id: string | null;
   customer_name: string | null;
-  items: unknown;
-  discount: unknown;
+  items: CartItem[];
+  discount: { type: 'amount' | 'percent'; value: number } | null;
   note: string | null;
-}) => {
-  const { data, error } = await supabase
-    .from('held_orders')
-    .insert(heldOrder)
-    .select()
-    .single();
+}): Promise<HeldOrder> => {
+  await delay();
   
-  if (error) throw error;
-  return data;
+  const newHeldOrder: HeldOrder = {
+    id: generateId(),
+    held_number: heldOrderData.held_number,
+    cashier_id: heldOrderData.cashier_id,
+    shift_id: heldOrderData.shift_id,
+    customer_id: heldOrderData.customer_id,
+    customer_name: heldOrderData.customer_name,
+    items: heldOrderData.items,
+    discount: heldOrderData.discount,
+    note: heldOrderData.note,
+    status: 'HELD',
+    created_at: new Date().toISOString(),
+    updated_at: null,
+  };
+  
+  mockDB.heldOrders.push(newHeldOrder);
+  saveHeldOrdersToStorage(mockDB.heldOrders);
+  
+  return newHeldOrder;
 };
 
-// Get all held orders (only HELD status)
-export const getHeldOrders = async () => {
-  const { data, error } = await supabase
-    .from('held_orders')
-    .select('*')
-    .eq('status', 'HELD')
-    .order('created_at', { ascending: false });
+export const getHeldOrders = async (): Promise<HeldOrder[]> => {
+  await delay();
   
-  if (error) throw error;
-  return Array.isArray(data) ? data : [];
+  // Reload from storage to ensure we have latest data
+  mockDB.heldOrders = loadHeldOrdersFromStorage();
+  
+  // Return only HELD orders, sorted by created_at DESC (newest first)
+  return mockDB.heldOrders
+    .filter(order => order.status === 'HELD')
+    .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
 };
 
-// Get held order by ID
-export const getHeldOrderById = async (id: string) => {
-  const { data, error } = await supabase
-    .from('held_orders')
-    .select('*')
-    .eq('id', id)
-    .maybeSingle();
+export const getHeldOrderById = async (id: string): Promise<HeldOrder | null> => {
+  await delay();
   
-  if (error) throw error;
-  return data;
+  // Reload from storage
+  mockDB.heldOrders = loadHeldOrdersFromStorage();
+  
+  const order = mockDB.heldOrders.find(order => order.id === id);
+  return order || null;
 };
 
-// Update held order status (for restore or cancel)
-export const updateHeldOrderStatus = async (id: string, status: 'RESTORED' | 'CANCELLED') => {
-  const { data, error } = await supabase
-    .from('held_orders')
-    .update({ status })
-    .eq('id', id)
-    .select()
-    .maybeSingle();
+export const updateHeldOrderStatus = async (
+  id: string, 
+  status: 'RESTORED' | 'CANCELLED'
+): Promise<HeldOrder> => {
+  await delay();
   
-  if (error) throw error;
-  return data;
+  // Reload from storage
+  mockDB.heldOrders = loadHeldOrdersFromStorage();
+  
+  const index = mockDB.heldOrders.findIndex(order => order.id === id);
+  if (index === -1) {
+    throw new Error('Held order not found');
+  }
+  
+  mockDB.heldOrders[index] = {
+    ...mockDB.heldOrders[index],
+    status,
+    updated_at: new Date().toISOString(),
+  };
+  
+  saveHeldOrdersToStorage(mockDB.heldOrders);
+  
+  return mockDB.heldOrders[index];
 };
 
-export const updateHeldOrderName = async (id: string, customerName: string) => {
-  const { data, error } = await supabase
-    .from('held_orders')
-    .update({ customer_name: customerName })
-    .eq('id', id)
-    .select()
-    .maybeSingle();
+export const updateHeldOrderName = async (
+  id: string, 
+  customerName: string
+): Promise<HeldOrder> => {
+  await delay();
   
-  if (error) throw error;
-  return data;
+  // Reload from storage
+  mockDB.heldOrders = loadHeldOrdersFromStorage();
+  
+  const index = mockDB.heldOrders.findIndex(order => order.id === id);
+  if (index === -1) {
+    throw new Error('Held order not found');
+  }
+  
+  mockDB.heldOrders[index] = {
+    ...mockDB.heldOrders[index],
+    customer_name: customerName || null,
+    updated_at: new Date().toISOString(),
+  };
+  
+  saveHeldOrdersToStorage(mockDB.heldOrders);
+  
+  return mockDB.heldOrders[index];
 };
 
-// Delete held order (hard delete)
-export const deleteHeldOrder = async (id: string) => {
-  const { error } = await supabase
-    .from('held_orders')
-    .delete()
-    .eq('id', id);
+export const deleteHeldOrder = async (id: string): Promise<void> => {
+  await delay();
   
-  if (error) throw error;
+  // Reload from storage
+  mockDB.heldOrders = loadHeldOrdersFromStorage();
+  
+  const index = mockDB.heldOrders.findIndex(order => order.id === id);
+  if (index === -1) {
+    throw new Error('Held order not found');
+  }
+  
+  // Actually delete the order (not just mark as CANCELLED)
+  mockDB.heldOrders.splice(index, 1);
+  saveHeldOrdersToStorage(mockDB.heldOrders);
 };
 
-// Enhanced Dashboard Analytics Functions
+// ============================================================================
+// DASHBOARD ANALYTICS FUNCTIONS (Mock)
+// ============================================================================
+
 export interface DashboardAnalytics {
   total_sales: number;
   total_orders: number;
@@ -1884,222 +2818,177 @@ export interface TopProduct {
 }
 
 export const getDashboardAnalytics = async (startDate: Date, endDate: Date): Promise<DashboardAnalytics> => {
+  await delay();
+  
+  // Normalize dates to start/end of day
   const start = new Date(startDate);
   start.setHours(0, 0, 0, 0);
   const end = new Date(endDate);
   end.setHours(23, 59, 59, 999);
-
-  let totalSales = 0;
-  let totalOrders = 0;
-  let lowStockCount = 0;
-  let activeCustomers = 0;
-  let itemsSold = 0;
-  let returnsCount = 0;
-  let returnsAmount = 0;
-  let pendingPurchaseOrders = 0;
-
-  // Query 1: Orders and sales in date range
-  try {
-    const { data: orders, error } = await supabase
-      .from('orders')
-      .select('id, total_amount, customer_id')
-      .gte('created_at', start.toISOString())
-      .lte('created_at', end.toISOString())
-      .eq('status', 'completed');
-
-    if (!error && Array.isArray(orders)) {
-      totalSales = orders.reduce((sum, o) => sum + (Number(o.total_amount) || 0), 0);
-      totalOrders = orders.length;
-      
-      // Count unique customers
-      const uniqueCustomers = new Set(orders.filter(o => o.customer_id).map(o => o.customer_id));
-      activeCustomers = uniqueCustomers.size;
-    }
-  } catch (error) {
-    console.error('Error fetching orders:', error);
-  }
-
-  // Query 2: Items sold (sum of quantities from order_items)
-  try {
-    const { data: orderItems, error } = await supabase
-      .from('order_items')
-      .select('quantity, order:orders!inner(created_at, status)')
-      .gte('order.created_at', start.toISOString())
-      .lte('order.created_at', end.toISOString())
-      .eq('order.status', 'completed');
-
-    if (!error && Array.isArray(orderItems)) {
-      itemsSold = orderItems.reduce((sum, item) => sum + (Number(item.quantity) || 0), 0);
-    }
-  } catch (error) {
-    console.error('Error fetching order items:', error);
-  }
-
-  // Query 3: Low stock products
-  try {
-    const { data: products, error } = await supabase
-      .from('products')
-      .select('id, current_stock, min_stock_level')
-      .eq('is_active', true);
-
-    if (!error && Array.isArray(products)) {
-      lowStockCount = products.filter(p => 
-        Number(p.current_stock) <= Number(p.min_stock_level)
-      ).length;
-    }
-  } catch (error) {
-    console.error('Error fetching low stock products:', error);
-  }
-
-  // Query 4: Sales returns in date range
-  try {
-    const { data: returns, error } = await supabase
-      .from('sales_returns')
-      .select('id, refund_amount')
-      .gte('return_date', start.toISOString())
-      .lte('return_date', end.toISOString());
-
-    if (!error && Array.isArray(returns)) {
-      returnsCount = returns.length;
-      returnsAmount = returns.reduce((sum, r) => sum + (Number(r.refund_amount) || 0), 0);
-    }
-  } catch (error) {
-    console.error('Error fetching sales returns:', error);
-  }
-
-  // Query 5: Pending purchase orders
-  try {
-    const { data: pos, error } = await supabase
-      .from('purchase_orders')
-      .select('id')
-      .in('status', ['draft', 'approved']);
-
-    if (!error && Array.isArray(pos)) {
-      pendingPurchaseOrders = pos.length;
-    }
-  } catch (error) {
-    console.error('Error fetching purchase orders:', error);
-  }
-
-  const averageOrderValue = totalOrders > 0 ? totalSales / totalOrders : 0;
-
+  
+  // Get all data
+  const orders = getStoredOrders();
+  const orderItems = getStoredOrderItems();
+  const returns = getStoredSalesReturns();
+  const purchaseOrders = getStoredPurchaseOrders();
+  const products = mockDB.products;
+  const customers = getStoredCustomers();
+  
+  // Filter orders by date range and status (only completed/paid orders)
+  const completedOrders = orders.filter(order => {
+    const orderDate = new Date(order.created_at);
+    return orderDate >= start && orderDate <= end && order.status === 'completed';
+  });
+  
+  // Total sales: sum of completed orders' total_amount
+  const total_sales = completedOrders.reduce((sum, order) => sum + (order.total_amount || 0), 0);
+  
+  // Total orders count
+  const total_orders = completedOrders.length;
+  
+  // Average order value
+  const average_order_value = total_orders > 0 ? total_sales / total_orders : 0;
+  
+  // Items sold: sum of quantities from order items for completed orders
+  const completedOrderIds = new Set(completedOrders.map(o => o.id));
+  const items_sold = orderItems
+    .filter(item => completedOrderIds.has(item.order_id))
+    .reduce((sum, item) => sum + (item.quantity || 0), 0);
+  
+  // Active customers: customers with at least 1 order in period
+  const customerIdsWithOrders = new Set(completedOrders.map(o => o.customer_id).filter(Boolean));
+  const active_customers = customerIdsWithOrders.size;
+  
+  // Returns: count and amount in date range
+  const returnsInPeriod = returns.filter(ret => {
+    const returnDate = new Date(ret.created_at);
+    return returnDate >= start && returnDate <= end;
+  });
+  const returns_count = returnsInPeriod.length;
+  const returns_amount = returnsInPeriod.reduce((sum, ret) => sum + (ret.total_amount || 0), 0);
+  
+  // Low stock count: products with stock <= min_stock_level
+  const low_stock_count = products.filter(
+    p => p.is_active && (p.current_stock || 0) <= (p.min_stock_level || 0)
+  ).length;
+  
+  // Pending purchase orders: count of POs with status 'draft' or 'approved'
+  const pending_purchase_orders = purchaseOrders.filter(
+    po => po.status === 'draft' || po.status === 'approved'
+  ).length;
+  
   return {
-    total_sales: totalSales,
-    total_orders: totalOrders,
-    low_stock_count: lowStockCount,
-    active_customers: activeCustomers,
-    average_order_value: averageOrderValue,
-    items_sold: itemsSold,
-    returns_count: returnsCount,
-    returns_amount: returnsAmount,
-    pending_purchase_orders: pendingPurchaseOrders,
+    total_sales,
+    total_orders,
+    low_stock_count,
+    active_customers,
+    average_order_value: Math.round(average_order_value),
+    items_sold,
+    returns_count,
+    returns_amount,
+    pending_purchase_orders,
   };
 };
 
 export const getDailySalesData = async (startDate: Date, endDate: Date): Promise<DailySales[]> => {
+  await delay();
+  
+  // Normalize dates
   const start = new Date(startDate);
   start.setHours(0, 0, 0, 0);
   const end = new Date(endDate);
   end.setHours(23, 59, 59, 999);
-
-  try {
-    const { data: orders, error } = await supabase
-      .from('orders')
-      .select('created_at, total_amount')
-      .gte('created_at', start.toISOString())
-      .lte('created_at', end.toISOString())
-      .eq('status', 'completed')
-      .order('created_at', { ascending: true });
-
-    if (error || !Array.isArray(orders)) {
-      console.error('Error fetching daily sales:', error);
-      return [];
-    }
-
-    // Group by date
-    const salesByDate = new Map<string, { total: number; count: number }>();
-    
-    orders.forEach(order => {
-      const date = new Date(order.created_at).toISOString().split('T')[0];
-      const existing = salesByDate.get(date) || { total: 0, count: 0 };
-      existing.total += Number(order.total_amount) || 0;
-      existing.count += 1;
-      salesByDate.set(date, existing);
+  
+  // Get completed orders in date range
+  const orders = getStoredOrders();
+  const completedOrders = orders.filter(order => {
+    const orderDate = new Date(order.created_at);
+    return orderDate >= start && orderDate <= end && order.status === 'completed';
+  });
+  
+  // Group by date (YYYY-MM-DD)
+  const dailyMap = new Map<string, { total_sales: number; order_count: number }>();
+  
+  completedOrders.forEach(order => {
+    const dateStr = new Date(order.created_at).toISOString().split('T')[0];
+    const existing = dailyMap.get(dateStr) || { total_sales: 0, order_count: 0 };
+    dailyMap.set(dateStr, {
+      total_sales: existing.total_sales + (order.total_amount || 0),
+      order_count: existing.order_count + 1,
     });
-
-    // Convert to array and fill missing dates with 0
-    const result: DailySales[] = [];
-    const currentDate = new Date(start);
-    
-    while (currentDate <= end) {
-      const dateStr = currentDate.toISOString().split('T')[0];
-      const data = salesByDate.get(dateStr) || { total: 0, count: 0 };
-      result.push({
-        date: dateStr,
-        total_sales: data.total,
-        order_count: data.count,
-      });
-      currentDate.setDate(currentDate.getDate() + 1);
-    }
-
-    return result;
-  } catch (error) {
-    console.error('Exception fetching daily sales:', error);
-    return [];
+  });
+  
+  // Fill missing dates with 0 (no gaps in chart)
+  const result: DailySales[] = [];
+  const current = new Date(start);
+  while (current <= end) {
+    const dateStr = current.toISOString().split('T')[0];
+    const data = dailyMap.get(dateStr) || { total_sales: 0, order_count: 0 };
+    result.push({
+      date: dateStr,
+      total_sales: data.total_sales,
+      order_count: data.order_count,
+    });
+    current.setDate(current.getDate() + 1);
   }
+  
+  return result;
 };
 
 export const getTopProducts = async (startDate: Date, endDate: Date, limit: number = 5): Promise<TopProduct[]> => {
+  await delay();
+  
+  // Normalize dates
   const start = new Date(startDate);
   start.setHours(0, 0, 0, 0);
   const end = new Date(endDate);
   end.setHours(23, 59, 59, 999);
-
-  try {
-    const { data: orderItems, error } = await supabase
-      .from('order_items')
-      .select('product_id, product_name, quantity, subtotal, order:orders!inner(created_at, status)')
-      .gte('order.created_at', start.toISOString())
-      .lte('order.created_at', end.toISOString())
-      .eq('order.status', 'completed');
-
-    if (error || !Array.isArray(orderItems)) {
-      console.error('Error fetching top products:', error);
-      return [];
-    }
-
-    // Aggregate by product
-    const productMap = new Map<string, { name: string; quantity: number; amount: number }>();
-    
-    orderItems.forEach(item => {
-      const existing = productMap.get(item.product_id) || { 
-        name: item.product_name, 
-        quantity: 0, 
-        amount: 0 
-      };
-      existing.quantity += Number(item.quantity) || 0;
-      existing.amount += Number(item.subtotal) || 0;
-      productMap.set(item.product_id, existing);
+  
+  // Get completed orders in date range
+  const orders = getStoredOrders();
+  const completedOrders = orders.filter(order => {
+    const orderDate = new Date(order.created_at);
+    return orderDate >= start && orderDate <= end && order.status === 'completed';
+  });
+  const completedOrderIds = new Set(completedOrders.map(o => o.id));
+  
+  // Get order items for completed orders
+  const orderItems = getStoredOrderItems();
+  const itemsInPeriod = orderItems.filter(item => completedOrderIds.has(item.order_id));
+  
+  // Aggregate by product
+  const productMap = new Map<string, { product_name: string; quantity_sold: number; total_amount: number }>();
+  
+  itemsInPeriod.forEach(item => {
+    const existing = productMap.get(item.product_id) || {
+      product_name: item.product_name,
+      quantity_sold: 0,
+      total_amount: 0,
+    };
+    productMap.set(item.product_id, {
+      product_name: item.product_name,
+      quantity_sold: existing.quantity_sold + (item.quantity || 0),
+      total_amount: existing.total_amount + (item.total || 0),
     });
-
-    // Convert to array and sort by total amount
-    const products: TopProduct[] = Array.from(productMap.entries()).map(([id, data]) => ({
-      product_id: id,
-      product_name: data.name,
-      quantity_sold: data.quantity,
-      total_amount: data.amount,
-    }));
-
-    products.sort((a, b) => b.total_amount - a.total_amount);
-
-    return products.slice(0, limit);
-  } catch (error) {
-    console.error('Exception fetching top products:', error);
-    return [];
-  }
+  });
+  
+  // Convert to array and sort by total_amount descending
+  const topProducts: TopProduct[] = Array.from(productMap.entries())
+    .map(([product_id, data]) => ({
+      product_id,
+      product_name: data.product_name,
+      quantity_sold: data.quantity_sold,
+      total_amount: data.total_amount,
+    }))
+    .sort((a, b) => b.total_amount - a.total_amount)
+    .slice(0, limit);
+  
+  return topProducts;
 };
 
-// ==================== CUSTOMER CREDIT / DEBT FUNCTIONS ====================
+// ============================================================================
+// CUSTOMER CREDIT/DEBT FUNCTIONS (Mock)
+// ============================================================================
 
 export const createCreditOrder = async (orderData: {
   customer_id: string;
@@ -2121,33 +3010,109 @@ export const createCreditOrder = async (orderData: {
   total_amount: number;
   notes?: string;
 }): Promise<{ success: boolean; order_id?: string; order_number?: string; new_balance?: number; error?: string }> => {
-  try {
-    const { data, error } = await supabase.rpc('create_credit_order', {
-      p_customer_id: orderData.customer_id,
-      p_cashier_id: orderData.cashier_id,
-      p_shift_id: orderData.shift_id,
-      p_items: orderData.items,
-      p_subtotal: orderData.subtotal,
-      p_discount_amount: orderData.discount_amount,
-      p_discount_percent: orderData.discount_percent,
-      p_tax_amount: orderData.tax_amount,
-      p_total_amount: orderData.total_amount,
-      p_notes: orderData.notes || null,
-    });
-
-    if (error) {
-      console.error('Error creating credit order:', error);
-      return { success: false, error: error.message };
-    }
-
-    return data as { success: boolean; order_id?: string; order_number?: string; new_balance?: number; error?: string };
-  } catch (error) {
-    console.error('Exception creating credit order:', error);
-    return { success: false, error: 'Failed to create credit order' };
+  await delay();
+  
+  const orderId = generateId();
+  const orderNumber = await generateOrderNumber();
+  const createdAt = new Date().toISOString();
+  
+  // Create order
+  const fullOrder: Order = {
+    id: orderId,
+    order_number: orderNumber,
+    customer_id: orderData.customer_id,
+    cashier_id: orderData.cashier_id,
+    shift_id: orderData.shift_id,
+    subtotal: orderData.subtotal,
+    discount_amount: orderData.discount_amount,
+    discount_percent: orderData.discount_percent,
+    tax_amount: orderData.tax_amount,
+    total_amount: orderData.total_amount,
+    paid_amount: 0,
+    credit_amount: orderData.total_amount,
+    change_amount: 0,
+    status: 'completed',
+    payment_status: 'unpaid',
+    notes: orderData.notes || null,
+    created_at: createdAt,
+  };
+  
+  // Create order items
+  const orderItems: OrderItem[] = orderData.items.map(item => ({
+    id: generateId(),
+    order_id: orderId,
+    product_id: item.product_id,
+    product_name: item.product_name,
+    quantity: item.quantity,
+    unit_price: item.unit_price,
+    subtotal: item.subtotal,
+    discount_amount: item.discount_amount,
+    total: item.total,
+  }));
+  
+  // Create credit payment
+  const creditPayment: Payment = {
+    id: generateId(),
+    order_id: orderId,
+    payment_number: await generatePaymentNumber(),
+    payment_method: 'credit',
+    amount: orderData.total_amount,
+    reference_number: null,
+    notes: orderData.notes || null,
+    created_at: createdAt,
+  };
+  
+  // Save to localStorage
+  const orders = getStoredOrders();
+  orders.push(fullOrder);
+  saveOrders(orders);
+  
+  const existingItems = getStoredOrderItems();
+  existingItems.push(...orderItems);
+  saveOrderItems(existingItems);
+  
+  const existingPayments = getStoredPayments();
+  existingPayments.push(creditPayment);
+  savePayments(existingPayments);
+  
+  // Update customer balance
+  const customers = getStoredCustomers();
+  const customerIndex = customers.findIndex(c => c.id === orderData.customer_id);
+  
+  if (customerIndex >= 0) {
+    const customer = customers[customerIndex];
+    const currentBalance = customer.balance || 0;
+    const currentTotalSales = customer.total_sales || 0;
+    const currentTotalOrders = customer.total_orders || 0;
+    const newBalance = currentBalance + orderData.total_amount;
+    
+    customers[customerIndex] = {
+      ...customer,
+      balance: newBalance,
+      total_sales: currentTotalSales + orderData.total_amount,
+      total_orders: currentTotalOrders + 1,
+      last_order_date: createdAt,
+      updated_at: createdAt,
+    };
+    saveCustomers(customers);
+    
+    return {
+      success: true,
+      order_id: orderId,
+      order_number: orderNumber,
+      new_balance: newBalance,
+    };
   }
+  
+  return {
+    success: true,
+    order_id: orderId,
+    order_number: orderNumber,
+    new_balance: orderData.total_amount,
+  };
 };
 
-export const receiveCustomerPayment = async (paymentData: {
+export const receiveCustomerPayment = async (_paymentData: {
   customer_id: string;
   amount: number;
   payment_method: 'cash' | 'card' | 'qr';
@@ -2155,88 +3120,472 @@ export const receiveCustomerPayment = async (paymentData: {
   notes?: string;
   received_by?: string;
 }): Promise<{ success: boolean; payment_number?: string; old_balance?: number; new_balance?: number; error?: string }> => {
-  try {
-    const { data, error } = await supabase.rpc('receive_customer_payment', {
-      p_customer_id: paymentData.customer_id,
-      p_amount: paymentData.amount,
-      p_payment_method: paymentData.payment_method,
-      p_reference_number: paymentData.reference_number || null,
-      p_notes: paymentData.notes || null,
-      p_received_by: paymentData.received_by || null,
-    });
-
-    if (error) {
-      console.error('Error receiving customer payment:', error);
-      return { success: false, error: error.message };
-    }
-
-    return data as { success: boolean; payment_number?: string; old_balance?: number; new_balance?: number; error?: string };
-  } catch (error) {
-    console.error('Exception receiving customer payment:', error);
-    return { success: false, error: 'Failed to receive payment' };
-  }
+  await delay();
+  return { success: true, payment_number: await generatePaymentNumber() };
 };
 
-export const getCustomerPayments = async (customerId: string): Promise<CustomerPayment[]> => {
-  try {
-    const { data, error } = await supabase
-      .from('customer_payments')
-      .select('*')
-      .eq('customer_id', customerId)
-      .order('created_at', { ascending: false });
-
-    if (error) {
-      console.error('Error fetching customer payments:', error);
-      return [];
-    }
-
-    return Array.isArray(data) ? data : [];
-  } catch (error) {
-    console.error('Exception fetching customer payments:', error);
-    return [];
-  }
+export const getCustomerPayments = async (_customerId: string): Promise<CustomerPayment[]> => {
+  await delay();
+  return [];
 };
 
 export const getCustomersWithDebt = async (): Promise<Customer[]> => {
-  try {
-    const { data, error } = await supabase
-      .from('customers')
-      .select('*')
-      .gt('balance', 0)
-      .eq('status', 'active')
-      .order('balance', { ascending: false });
-
-    if (error) {
-      console.error('Error fetching customers with debt:', error);
-      return [];
-    }
-
-    return Array.isArray(data) ? data : [];
-  } catch (error) {
-    console.error('Exception fetching customers with debt:', error);
-    return [];
-  }
+  await delay();
+  return [];
 };
 
 export const getTotalCustomerDebt = async (): Promise<number> => {
-  try {
-    const { data, error } = await supabase
-      .from('customers')
-      .select('balance')
-      .gt('balance', 0)
-      .eq('status', 'active');
+  await delay();
+  const customers = getStoredCustomers();
+  // Sum all positive balances (debt)
+  return customers.reduce((sum, customer) => sum + Math.max(0, customer.balance || 0), 0);
+};
 
-    if (error) {
-      console.error('Error fetching total customer debt:', error);
-      return 0;
-    }
+// ============================================================================
+// SUPPLIER PAYMENTS & LEDGER
+// ============================================================================
 
-    if (!Array.isArray(data)) return 0;
+/**
+ * Generate unique payment number
+ */
+const generateSupplierPaymentNumber = (): string => {
+  const today = new Date();
+  const datePart = today.toISOString().split('T')[0].replace(/-/g, '');
+  const timestamp = Date.now().toString().slice(-6);
+  return `SPAY-${datePart}-${timestamp}`;
+};
 
-    const total = data.reduce((sum, customer) => sum + (Number(customer.balance) || 0), 0);
-    return total;
-  } catch (error) {
-    console.error('Exception fetching total customer debt:', error);
-    return 0;
+/**
+ * Create a supplier payment
+ */
+export const createSupplierPayment = async (paymentData: {
+  supplier_id: string;
+  purchase_order_id?: string | null;
+  amount: number;
+  payment_method: 'cash' | 'card' | 'transfer' | 'click' | 'payme' | 'uzum';
+  paid_at?: string;
+  note?: string | null;
+  created_by?: string | null;
+}): Promise<{ success: boolean; payment?: SupplierPayment; new_balance?: number; error?: string }> => {
+  await delay();
+  
+  // Validate amount
+  if (!paymentData.amount || paymentData.amount <= 0) {
+    return {
+      success: false,
+      error: 'Payment amount must be greater than zero',
+    };
   }
+  
+  // Validate supplier exists
+  const suppliers = getStoredSuppliers();
+  const supplier = suppliers.find(s => s.id === paymentData.supplier_id);
+  if (!supplier) {
+    return {
+      success: false,
+      error: 'Supplier not found',
+    };
+  }
+  
+  // If purchase_order_id is provided, validate PO exists and is not cancelled
+  if (paymentData.purchase_order_id) {
+    const orders = getStoredPurchaseOrders();
+    const po = orders.find(p => p.id === paymentData.purchase_order_id);
+    if (!po) {
+      return {
+        success: false,
+        error: 'Purchase order not found',
+      };
+    }
+    if (po.status === 'cancelled') {
+      return {
+        success: false,
+        error: 'Cannot pay for a cancelled purchase order',
+      };
+    }
+  }
+  
+  // Create payment record
+  const payment: SupplierPayment = {
+    id: generateId(),
+    payment_number: generateSupplierPaymentNumber(),
+    supplier_id: paymentData.supplier_id,
+    purchase_order_id: paymentData.purchase_order_id || null,
+    amount: paymentData.amount,
+    payment_method: paymentData.payment_method,
+    paid_at: paymentData.paid_at || new Date().toISOString(),
+    note: paymentData.note || null,
+    created_by: paymentData.created_by || null,
+    created_at: new Date().toISOString(),
+  };
+  
+  // Save payment
+  const payments = getStoredSupplierPayments();
+  payments.push(payment);
+  saveSupplierPayments(payments);
+  
+  // Calculate new supplier balance from transactions
+  // IMPORTANT: Balance is NEVER stored - always calculated from transactions
+  const purchaseOrders = getStoredPurchaseOrders();
+  const receivedPOs = purchaseOrders.filter(
+    po => po.supplier_id === paymentData.supplier_id && 
+    (po.status === 'received' || po.status === 'partially_received')
+  );
+  const totalDebt = receivedPOs.reduce((sum, po) => sum + po.total_amount, 0);
+  const allPayments = payments.filter(p => p.supplier_id === paymentData.supplier_id);
+  const totalPaid = allPayments.reduce((sum, p) => sum + p.amount, 0);
+  const newBalance = totalDebt - totalPaid;
+  
+  // Do NOT store balance - it's calculated dynamically
+  // Balance is the source of truth from transactions only
+  
+  console.log(`Supplier payment created: ${payment.payment_number} for supplier ${paymentData.supplier_id}, amount: ${paymentData.amount}`);
+  
+  return {
+    success: true,
+    payment,
+    new_balance: newBalance,
+  };
+};
+
+/**
+ * Get supplier payments
+ */
+export const getSupplierPayments = async (supplierId: string): Promise<SupplierPayment[]> => {
+  await delay();
+  const payments = getStoredSupplierPayments();
+  return payments
+    .filter(p => p.supplier_id === supplierId)
+    .sort((a, b) => new Date(b.paid_at).getTime() - new Date(a.paid_at).getTime());
+};
+
+/**
+ * Get supplier ledger (transaction history)
+ */
+export const getSupplierLedger = async (
+  supplierId: string,
+  dateFrom?: string,
+  dateTo?: string
+): Promise<SupplierLedgerEntry[]> => {
+  await delay();
+  
+  const purchaseOrders = getStoredPurchaseOrders();
+  const payments = getStoredSupplierPayments();
+  
+  const ledger: SupplierLedgerEntry[] = [];
+  let runningBalance = 0;
+  
+  // Get all received POs for this supplier
+  const receivedPOs = purchaseOrders.filter(
+    po => po.supplier_id === supplierId && 
+    (po.status === 'received' || po.status === 'partially_received')
+  );
+  
+  // Add PO entries (DEBIT - increases debt)
+  for (const po of receivedPOs) {
+    if (dateFrom && po.order_date < dateFrom) continue;
+    if (dateTo && po.order_date > dateTo) continue;
+    
+    runningBalance += po.total_amount;
+    ledger.push({
+      date: po.order_date,
+      type: 'PURCHASE',
+      reference: po.po_number,
+      debit: po.total_amount,
+      credit: 0,
+      balance: runningBalance,
+      purchase_order_id: po.id,
+    });
+  }
+  
+  // Get all payments for this supplier
+  const supplierPayments = payments.filter(p => p.supplier_id === supplierId);
+  
+  // Add payment entries (CREDIT - decreases debt)
+  for (const payment of supplierPayments) {
+    const paymentDate = payment.paid_at.split('T')[0];
+    if (dateFrom && paymentDate < dateFrom) continue;
+    if (dateTo && paymentDate > dateTo) continue;
+    
+    runningBalance -= payment.amount;
+    ledger.push({
+      date: paymentDate,
+      type: 'PAYMENT',
+      reference: payment.payment_number,
+      debit: 0,
+      credit: payment.amount,
+      balance: runningBalance,
+      payment_id: payment.id,
+      purchase_order_id: payment.purchase_order_id,
+    });
+  }
+  
+  // Sort by date (oldest first)
+  ledger.sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
+  
+  // Recalculate running balance in correct order
+  let recalculatedBalance = 0;
+  for (const entry of ledger) {
+    recalculatedBalance += entry.debit - entry.credit;
+    entry.balance = recalculatedBalance;
+  }
+  
+  return ledger;
+};
+
+// ============================================================================
+// EXPENSES API
+// ============================================================================
+
+/**
+ * Generate expense number
+ */
+const generateExpenseNumber = (): string => {
+  const today = new Date().toISOString().split('T')[0].replace(/-/g, '');
+  const year = today.substring(0, 4);
+  const yearPrefix = `EXP-${year}-`;
+  
+  // Get existing expenses with same prefix from storage
+  const storedExpenses = loadExpensesFromStorage();
+  const existingExpenses = storedExpenses.filter(e => e.expense_number.startsWith(yearPrefix));
+  const nextNum = existingExpenses.length > 0
+    ? Math.max(...existingExpenses.map(e => {
+        const numStr = e.expense_number.replace(yearPrefix, '');
+        return parseInt(numStr, 10) || 0;
+      })) + 1
+    : 1;
+  
+  return `${yearPrefix}${String(nextNum).padStart(5, '0')}`;
+};
+
+/**
+ * Get all expenses
+ */
+export const getExpenses = async (filters?: {
+  dateFrom?: string;
+  dateTo?: string;
+  category?: ExpenseCategory;
+  paymentMethod?: ExpensePaymentMethod;
+  employeeId?: string;
+  search?: string;
+}): Promise<ExpenseWithDetails[]> => {
+  await delay();
+  
+  // Load from storage instead of mockDB
+  let expenses = [...loadExpensesFromStorage()];
+  
+  // Apply filters
+  if (filters?.dateFrom) {
+    expenses = expenses.filter(e => e.expense_date >= filters.dateFrom!);
+  }
+  if (filters?.dateTo) {
+    expenses = expenses.filter(e => e.expense_date <= filters.dateTo!);
+  }
+  if (filters?.category) {
+    expenses = expenses.filter(e => e.category === filters.category);
+  }
+  if (filters?.paymentMethod) {
+    expenses = expenses.filter(e => e.payment_method === filters.paymentMethod);
+  }
+  if (filters?.employeeId) {
+    expenses = expenses.filter(e => e.employee_id === filters.employeeId);
+  }
+  if (filters?.search) {
+    const searchLower = filters.search.toLowerCase();
+    expenses = expenses.filter(e =>
+      e.expense_number.toLowerCase().includes(searchLower) ||
+      e.note?.toLowerCase().includes(searchLower) ||
+      e.category.toLowerCase().includes(searchLower)
+    );
+  }
+  
+  // Sort by date (newest first)
+  expenses.sort((a, b) => new Date(b.expense_date).getTime() - new Date(a.expense_date).getTime());
+  
+  // Enrich with profile data
+  const profiles = await getProfiles();
+  return expenses.map(expense => ({
+    ...expense,
+    employee: expense.employee_id ? profiles.find(p => p.id === expense.employee_id) : undefined,
+    created_by_profile: expense.created_by ? profiles.find(p => p.id === expense.created_by) : undefined,
+  }));
+};
+
+/**
+ * Get expense by ID
+ */
+export const getExpenseById = async (id: string): Promise<ExpenseWithDetails | null> => {
+  await delay();
+  const expenses = loadExpensesFromStorage();
+  const expense = expenses.find(e => e.id === id);
+  if (!expense) return null;
+  
+  const profiles = await getProfiles();
+  return {
+    ...expense,
+    employee: expense.employee_id ? profiles.find(p => p.id === expense.employee_id) : undefined,
+    created_by_profile: expense.created_by ? profiles.find(p => p.id === expense.created_by) : undefined,
+  };
+};
+
+/**
+ * Create expense
+ */
+export const createExpense = async (expenseData: {
+  expense_date: string;
+  category: ExpenseCategory;
+  amount: number;
+  payment_method: ExpensePaymentMethod;
+  note?: string | null;
+  employee_id?: string | null;
+  created_by?: string | null;
+  status?: ExpenseStatus;
+}): Promise<Expense> => {
+  await delay();
+  
+  const expense: Expense = {
+    id: generateId(),
+    expense_number: generateExpenseNumber(),
+    expense_date: expenseData.expense_date,
+    category: expenseData.category,
+    amount: expenseData.amount,
+    payment_method: expenseData.payment_method,
+    note: expenseData.note || null,
+    employee_id: expenseData.employee_id || null,
+    created_by: expenseData.created_by || null,
+    status: expenseData.status || 'approved',
+    created_at: new Date().toISOString(),
+    updated_at: new Date().toISOString(),
+  };
+  
+  // Save to storage
+  const expenses = loadExpensesFromStorage();
+  expenses.push(expense);
+  saveExpensesToStorage(expenses);
+  
+  // Also update mockDB for consistency
+  mockDB.expenses = expenses;
+  
+  return expense;
+};
+
+/**
+ * Update expense
+ */
+export const updateExpense = async (
+  id: string,
+  updates: {
+    expense_date?: string;
+    category?: ExpenseCategory;
+    amount?: number;
+    payment_method?: ExpensePaymentMethod;
+    note?: string | null;
+    employee_id?: string | null;
+    status?: ExpenseStatus;
+  }
+): Promise<Expense> => {
+  await delay();
+  
+  const expenses = loadExpensesFromStorage();
+  const expenseIndex = expenses.findIndex(e => e.id === id);
+  if (expenseIndex === -1) {
+    throw new Error('Expense not found');
+  }
+  
+  const expense = expenses[expenseIndex];
+  const updated: Expense = {
+    ...expense,
+    ...updates,
+    updated_at: new Date().toISOString(),
+  };
+  
+  expenses[expenseIndex] = updated;
+  saveExpensesToStorage(expenses);
+  
+  // Also update mockDB for consistency
+  mockDB.expenses = expenses;
+  
+  return updated;
+};
+
+/**
+ * Delete expense
+ */
+export const deleteExpense = async (id: string): Promise<void> => {
+  await delay();
+  
+  const expenses = loadExpensesFromStorage();
+  const expenseIndex = expenses.findIndex(e => e.id === id);
+  if (expenseIndex === -1) {
+    throw new Error('Expense not found');
+  }
+  
+  expenses.splice(expenseIndex, 1);
+  saveExpensesToStorage(expenses);
+  
+  // Also update mockDB for consistency
+  mockDB.expenses = expenses;
+};
+
+/**
+ * Get expense statistics
+ */
+export const getExpenseStats = async (filters?: {
+  dateFrom?: string;
+  dateTo?: string;
+}): Promise<{
+  total: number;
+  today: number;
+  monthly: number;
+  topCategory: { category: ExpenseCategory; amount: number } | null;
+}> => {
+  await delay();
+  
+  // Load ALL expenses from storage (for today/monthly calculations)
+  const allExpenses = [...loadExpensesFromStorage()];
+  
+  // Apply date filters only for "total" calculation
+  let filteredExpenses = [...allExpenses];
+  if (filters?.dateFrom) {
+    filteredExpenses = filteredExpenses.filter(e => e.expense_date >= filters.dateFrom!);
+  }
+  if (filters?.dateTo) {
+    filteredExpenses = filteredExpenses.filter(e => e.expense_date <= filters.dateTo!);
+  }
+  
+  // Total for filtered range
+  const total = filteredExpenses.reduce((sum, e) => sum + e.amount, 0);
+  
+  // Today's expenses (ALWAYS unfiltered - all expenses for today)
+  const today = new Date().toISOString().split('T')[0];
+  const todayExpenses = allExpenses.filter(e => e.expense_date === today);
+  const todayTotal = todayExpenses.reduce((sum, e) => sum + e.amount, 0);
+  
+  // Monthly expenses (ALWAYS unfiltered - all expenses for current month)
+  const now = new Date();
+  const monthStart = new Date(now.getFullYear(), now.getMonth(), 1).toISOString().split('T')[0];
+  const monthEnd = new Date(now.getFullYear(), now.getMonth() + 1, 0).toISOString().split('T')[0];
+  const monthlyExpenses = allExpenses.filter(e => e.expense_date >= monthStart && e.expense_date <= monthEnd);
+  const monthlyTotal = monthlyExpenses.reduce((sum, e) => sum + e.amount, 0);
+  
+  // Top category (from filtered expenses if filters applied, otherwise all)
+  const categoryTotals = new Map<ExpenseCategory, number>();
+  filteredExpenses.forEach(e => {
+    const current = categoryTotals.get(e.category) || 0;
+    categoryTotals.set(e.category, current + e.amount);
+  });
+  
+  let topCategory: { category: ExpenseCategory; amount: number } | null = null;
+  categoryTotals.forEach((amount, category) => {
+    if (!topCategory || amount > topCategory.amount) {
+      topCategory = { category, amount };
+    }
+  });
+  
+  return {
+    total,
+    today: todayTotal,
+    monthly: monthlyTotal,
+    topCategory,
+  };
 };

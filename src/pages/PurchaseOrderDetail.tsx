@@ -12,10 +12,12 @@ import {
   TableRow,
 } from '@/components/ui/table';
 import { useToast } from '@/hooks/use-toast';
-import { getPurchaseOrderById, receiveGoods, updatePurchaseOrder } from '@/db/api';
+import { getPurchaseOrderById, receiveGoods, updatePurchaseOrder, approvePurchaseOrder, cancelPurchaseOrder, productUpdateEmitter } from '@/db/api';
 import type { PurchaseOrderWithDetails } from '@/types/database';
-import { ArrowLeft, Edit, Package, X, FileText } from 'lucide-react';
+import { ArrowLeft, Edit, Package, X, FileText, DollarSign, CheckCircle } from 'lucide-react';
 import { format } from 'date-fns';
+import { formatMoneyUZS } from '@/lib/format';
+import PaySupplierDialog from '@/components/suppliers/PaySupplierDialog';
 import {
   Dialog,
   DialogContent,
@@ -35,6 +37,7 @@ export default function PurchaseOrderDetail() {
   const [showReceiveDialog, setShowReceiveDialog] = useState(false);
   const [showCancelDialog, setShowCancelDialog] = useState(false);
   const [processing, setProcessing] = useState(false);
+  const [payDialogOpen, setPayDialogOpen] = useState(false);
 
   useEffect(() => {
     if (id) {
@@ -73,6 +76,10 @@ export default function PurchaseOrderDetail() {
 
       await receiveGoods(id, receiveItems);
 
+      // Emit product update event to refresh inventory pages
+      // This ensures inventory quantities update immediately across all open pages
+      productUpdateEmitter.emit();
+
       toast({
         title: 'Success',
         description: 'Goods received successfully. Stock has been updated.',
@@ -84,6 +91,28 @@ export default function PurchaseOrderDetail() {
       toast({
         title: 'Error',
         description: error.message || 'Failed to receive goods',
+        variant: 'destructive',
+      });
+    } finally {
+      setProcessing(false);
+    }
+  };
+
+  const handleApprove = async () => {
+    if (!purchaseOrder || !id) return;
+
+    try {
+      setProcessing(true);
+      await approvePurchaseOrder(id, 'current-user-id'); // TODO: Get actual user ID from auth context
+      toast({
+        title: 'Muvaffaqiyatli',
+        description: 'Xarid buyurtmasi tasdiqlandi',
+      });
+      loadPurchaseOrder(); // Refresh to show updated status
+    } catch (error: any) {
+      toast({
+        title: 'Xatolik',
+        description: error.message || 'Xarid buyurtmasini tasdiqlab bo\'lmadi',
         variant: 'destructive',
       });
     } finally {
@@ -152,6 +181,7 @@ export default function PurchaseOrderDetail() {
     );
   }
 
+  const canApprove = purchaseOrder.status === 'draft';
   const canEdit = purchaseOrder.status === 'draft' || purchaseOrder.status === 'approved';
   const canReceive =
     purchaseOrder.status === 'approved' || purchaseOrder.status === 'partially_received';
@@ -170,6 +200,12 @@ export default function PurchaseOrderDetail() {
           </div>
         </div>
         <div className="flex gap-2">
+          {canApprove && (
+            <Button onClick={handleApprove} disabled={processing}>
+              <CheckCircle className="h-4 w-4 mr-2" />
+              Tasdiqlash
+            </Button>
+          )}
           {canEdit && (
             <Button variant="outline" onClick={() => navigate(`/purchase-orders/${id}/edit`)}>
               <Edit className="h-4 w-4 mr-2" />
@@ -309,9 +345,9 @@ export default function PurchaseOrderDetail() {
                           {item.received_qty}
                         </span>
                       </TableCell>
-                      <TableCell className="text-right">${item.unit_cost.toFixed(2)}</TableCell>
+                      <TableCell className="text-right">{formatMoneyUZS(item.unit_cost)}</TableCell>
                       <TableCell className="text-right font-medium">
-                        ${item.line_total.toFixed(2)}
+                        {formatMoneyUZS(item.line_total)}
                       </TableCell>
                     </TableRow>
                   ))}
@@ -331,22 +367,65 @@ export default function PurchaseOrderDetail() {
               <div className="space-y-2">
                 <div className="flex justify-between text-sm">
                   <span className="text-muted-foreground">Subtotal</span>
-                  <span className="font-medium">${purchaseOrder.subtotal.toFixed(2)}</span>
+                  <span className="font-medium">{formatMoneyUZS(purchaseOrder.subtotal)}</span>
                 </div>
                 <div className="flex justify-between text-sm">
                   <span className="text-muted-foreground">Discount</span>
-                  <span className="font-medium">${purchaseOrder.discount.toFixed(2)}</span>
+                  <span className="font-medium">{formatMoneyUZS(purchaseOrder.discount)}</span>
                 </div>
                 <div className="flex justify-between text-sm">
                   <span className="text-muted-foreground">Tax</span>
-                  <span className="font-medium">${purchaseOrder.tax.toFixed(2)}</span>
+                  <span className="font-medium">{formatMoneyUZS(purchaseOrder.tax)}</span>
                 </div>
                 <div className="border-t pt-2 flex justify-between">
                   <span className="font-semibold">Total</span>
                   <span className="font-bold text-lg">
-                    ${purchaseOrder.total_amount.toFixed(2)}
+                    {formatMoneyUZS(purchaseOrder.total_amount)}
                   </span>
                 </div>
+                {(purchaseOrder.status === 'received' || purchaseOrder.status === 'partially_received') && (
+                  <>
+                    <div className="border-t pt-2 space-y-2">
+                      <div className="flex justify-between text-sm">
+                        <span className="text-muted-foreground">To'langan:</span>
+                        <span className="font-medium">{formatMoneyUZS(purchaseOrder.paid_amount ?? 0)}</span>
+                      </div>
+                      <div className="flex justify-between text-sm">
+                        <span className="text-muted-foreground">Qoldiq:</span>
+                        <span className={`font-medium ${(purchaseOrder.remaining_amount ?? purchaseOrder.total_amount) > 0 ? 'text-destructive' : 'text-success'}`}>
+                          {formatMoneyUZS(purchaseOrder.remaining_amount ?? purchaseOrder.total_amount)}
+                        </span>
+                      </div>
+                      <div className="flex justify-between text-sm">
+                        <span className="text-muted-foreground">To'lov holati:</span>
+                        <Badge className={
+                          purchaseOrder.payment_status === 'PAID' 
+                            ? 'bg-success text-success-foreground'
+                            : purchaseOrder.payment_status === 'PARTIALLY_PAID'
+                            ? 'bg-warning text-warning-foreground'
+                            : 'bg-destructive text-destructive-foreground'
+                        }>
+                          {purchaseOrder.payment_status === 'PAID' ? 'To\'langan' :
+                           purchaseOrder.payment_status === 'PARTIALLY_PAID' ? 'Qisman to\'langan' :
+                           'To\'lanmagan'}
+                        </Badge>
+                      </div>
+                      {(purchaseOrder.remaining_amount ?? purchaseOrder.total_amount) > 0 && purchaseOrder.supplier && (
+                        <div className="pt-2">
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            className="w-full"
+                            onClick={() => setPayDialogOpen(true)}
+                          >
+                            <DollarSign className="h-4 w-4 mr-2" />
+                            To'lov qilish
+                          </Button>
+                        </div>
+                      )}
+                    </div>
+                  </>
+                )}
               </div>
 
               <div className="pt-4 border-t space-y-2">
@@ -436,6 +515,19 @@ export default function PurchaseOrderDetail() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {/* Pay Supplier Dialog */}
+      {purchaseOrder && purchaseOrder.supplier && (
+        <PaySupplierDialog
+          supplier={purchaseOrder.supplier}
+          purchaseOrder={purchaseOrder}
+          open={payDialogOpen}
+          onOpenChange={setPayDialogOpen}
+          onSuccess={() => {
+            loadPurchaseOrder(); // Reload to refresh payment info
+          }}
+        />
+      )}
     </div>
   );
 }

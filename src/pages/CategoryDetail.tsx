@@ -17,6 +17,7 @@ import { useToast } from '@/hooks/use-toast';
 import { getCategoryById, getProductsByCategoryId } from '@/db/api';
 import type { Category, Product } from '@/types/database';
 import { ArrowLeft, Pencil, Package, FolderTree } from 'lucide-react';
+import { formatMoneyUZS, formatNumberUZ } from '@/lib/format';
 
 export default function CategoryDetail() {
   const { t } = useTranslation();
@@ -118,7 +119,7 @@ export default function CategoryDetail() {
           </CardHeader>
           <CardContent>
             <div className="text-2xl font-bold">
-              ${products.reduce((sum, p) => sum + (Number(p.sale_price) * p.current_stock), 0).toFixed(2)}
+              {formatMoneyUZS(products.reduce((sum, p) => sum + (Number(p.sale_price) * p.current_stock), 0))}
             </div>
             <p className="text-xs text-muted-foreground">{t('categoryDetail.inventory_value')}</p>
           </CardContent>
@@ -229,9 +230,9 @@ export default function CategoryDetail() {
                           )}
                         </TableCell>
                         <TableCell className="text-right">
-                          ${Number(product.sale_price).toFixed(2)}
+                          {formatMoneyUZS(product.sale_price)}
                         </TableCell>
-                        <TableCell className="text-right">{product.current_stock}</TableCell>
+                        <TableCell className="text-right">{formatNumberUZ(product.current_stock)}</TableCell>
                         <TableCell>{getStockStatusBadge(product)}</TableCell>
                         <TableCell className="text-right">
                           <Button

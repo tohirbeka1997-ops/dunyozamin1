@@ -1,7 +1,10 @@
-import React from 'react';
-import type { CartItem, Customer } from '@/types/database';
+// src/components/Receipt.tsx
 
-interface ReceiptProps {
+import React, { forwardRef } from "react";
+import type { CartItem, Customer } from '@/types/database';
+import { formatMoneyUZS } from '@/lib/format';
+
+type ReceiptProps = {
   orderNumber: string;
   items: CartItem[];
   customer: Customer | null;
@@ -13,215 +16,98 @@ interface ReceiptProps {
   paymentMethod: string;
   dateTime: string;
   cashierName?: string;
-}
+};
 
-export default React.forwardRef<HTMLDivElement, ReceiptProps>(
-  function Receipt(
-    {
-      orderNumber,
-      items,
-      customer,
-      subtotal,
-      discountAmount,
-      total,
-      paidAmount,
-      changeAmount,
-      paymentMethod,
-      dateTime,
-      cashierName,
-    },
-    ref
-  ) {
-    return (
-      <div
-        ref={ref}
-        className="receipt-container"
-        style={{
-          width: '200px',
-          maxWidth: '200px',
-          margin: '0 auto',
-          padding: '10px',
-          fontFamily: 'monospace',
-          fontSize: '10px',
-          color: '#000',
-          backgroundColor: '#fff',
-        }}
-      >
-        {/* Store Name */}
-        <div style={{ textAlign: 'center', marginBottom: '10px' }}>
-          <h2 style={{ fontWeight: 'bold', fontSize: '14px', margin: '5px 0' }}>
-            POS SYSTEM
-          </h2>
-          <p style={{ fontSize: '9px', margin: '2px 0' }}>
-            Point of Sale Terminal
-          </p>
+const Receipt = forwardRef<HTMLDivElement, ReceiptProps>((props, ref) => {
+  const {
+    orderNumber,
+    items,
+    customer,
+    subtotal,
+    discountAmount,
+    total,
+    paidAmount,
+    changeAmount,
+    paymentMethod,
+    dateTime,
+    cashierName,
+  } = props;
+
+  return (
+    <div ref={ref} className="p-8 max-w-md mx-auto bg-white">
+      <div className="text-center mb-4">
+        <h2 className="text-2xl font-bold">Chek</h2>
+        <p className="text-sm text-gray-600">Order: {orderNumber}</p>
+        <p className="text-xs text-gray-500">{dateTime}</p>
+      </div>
+
+      {customer && (
+        <div className="mb-4 border-b pb-2">
+          <p className="font-semibold">Mijoz: {customer.name}</p>
+          {customer.phone && <p className="text-sm">Tel: {customer.phone}</p>}
         </div>
+      )}
 
-        {/* Separator */}
-        <div
-          style={{
-            borderTop: '1px dashed #000',
-            margin: '8px 0',
-          }}
-        />
-
-        {/* Order Info */}
-        <div style={{ marginBottom: '8px' }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '3px' }}>
-            <span>Order #:</span>
-            <span style={{ fontWeight: 'bold' }}>{orderNumber}</span>
-          </div>
-          <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '3px' }}>
-            <span>Date:</span>
-            <span>{dateTime}</span>
-          </div>
-          {cashierName && (
-            <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '3px' }}>
-              <span>Cashier:</span>
-              <span>{cashierName}</span>
+      <div className="mb-4 border-b pb-2">
+        {items.map((item, index) => (
+          <div key={index} className="flex justify-between py-1">
+            <div className="flex-1">
+              <p className="font-medium">{item.product.name}</p>
+              <p className="text-xs text-gray-600">
+                {item.quantity} x {formatMoneyUZS(item.product.sale_price)}
+              </p>
             </div>
-          )}
+            <p className="font-semibold">
+              {formatMoneyUZS(item.subtotal - (item.discount_amount || 0))}
+            </p>
+          </div>
+        ))}
+      </div>
+
+      <div className="space-y-1 text-sm mb-4">
+        <div className="flex justify-between">
+          <span>Subtotal:</span>
+          <span>{formatMoneyUZS(subtotal)}</span>
         </div>
-
-        {/* Customer Info */}
-        {customer && (
-          <>
-            <div style={{ marginBottom: '8px' }}>
-              <div style={{ fontWeight: 'bold', marginBottom: '3px' }}>Customer:</div>
-              <div>{customer.name}</div>
-              {customer.phone && <div>{customer.phone}</div>}
-            </div>
-            <div
-              style={{
-                borderTop: '1px dashed #000',
-                margin: '8px 0',
-              }}
-            />
-          </>
+        {discountAmount > 0 && (
+          <div className="flex justify-between text-red-600">
+            <span>Chegirma:</span>
+            <span>-{formatMoneyUZS(discountAmount)}</span>
+          </div>
         )}
-
-        {/* Items */}
-        <div style={{ marginBottom: '8px' }}>
-          <div style={{ fontWeight: 'bold', marginBottom: '5px', textAlign: 'center' }}>
-            ITEMS
-          </div>
-          {items.map((item, index) => (
-            <div key={index} style={{ marginBottom: '5px' }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '2px' }}>
-                <span style={{ fontWeight: 'bold' }}>{item.product.name}</span>
-              </div>
-              <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '9px', marginBottom: '2px' }}>
-                <span>
-                  {item.quantity} × {Number(item.product.sale_price).toFixed(2)}
-                </span>
-                <span>{item.subtotal.toFixed(2)} UZS</span>
-              </div>
-              {item.discount_amount > 0 && (
-                <div style={{ fontSize: '8px', color: '#666', marginLeft: '5px' }}>
-                  Disc: -{item.discount_amount.toFixed(2)} UZS
-                </div>
-              )}
-            </div>
-          ))}
+        <div className="flex justify-between font-bold text-lg border-t pt-2">
+          <span>Jami:</span>
+          <span>{formatMoneyUZS(total)}</span>
         </div>
-
-        {/* Separator */}
-        <div
-          style={{
-            borderTop: '1px dashed #000',
-            margin: '8px 0',
-          }}
-        />
-
-        {/* Totals */}
-        <div style={{ marginBottom: '8px' }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '3px' }}>
-            <span>Subtotal:</span>
-            <span>{subtotal.toFixed(2)} UZS</span>
-          </div>
-          {discountAmount > 0 && (
-            <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '3px' }}>
-              <span>Discount:</span>
-              <span>-{discountAmount.toFixed(2)} UZS</span>
-            </div>
-          )}
-          <div
-            style={{
-              display: 'flex',
-              justifyContent: 'space-between',
-              marginTop: '5px',
-              paddingTop: '5px',
-              borderTop: '1px solid #000',
-              fontWeight: 'bold',
-              fontSize: '12px',
-            }}
-          >
-            <span>TOTAL:</span>
-            <span>{total.toFixed(2)} UZS</span>
-          </div>
+        <div className="flex justify-between">
+          <span>To'landi:</span>
+          <span>{formatMoneyUZS(paidAmount)}</span>
         </div>
-
-        {/* Payment Info */}
-        <div
-          style={{
-            borderTop: '1px dashed #000',
-            margin: '8px 0',
-            paddingTop: '8px',
-          }}
-        >
-          <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '3px' }}>
-            <span>Payment:</span>
-            <span style={{ textTransform: 'uppercase' }}>{paymentMethod}</span>
+        {changeAmount > 0 && (
+          <div className="flex justify-between">
+            <span>Qaytim:</span>
+            <span>{formatMoneyUZS(changeAmount)}</span>
           </div>
-          <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '3px' }}>
-            <span>Paid:</span>
-            <span>{paidAmount.toFixed(2)} UZS</span>
-          </div>
-          {changeAmount > 0 && (
-            <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '3px' }}>
-              <span>Change:</span>
-              <span>{changeAmount.toFixed(2)} UZS</span>
-            </div>
-          )}
-        </div>
-
-        {/* Separator */}
-        <div
-          style={{
-            borderTop: '1px dashed #000',
-            margin: '10px 0',
-          }}
-        />
-
-        {/* Footer */}
-        <div style={{ textAlign: 'center', marginTop: '10px' }}>
-          <p style={{ fontSize: '9px', margin: '5px 0' }}>
-            Thank you for your purchase!
-          </p>
-          <p style={{ fontSize: '8px', margin: '5px 0', color: '#666' }}>
-            Have a nice day
-          </p>
-        </div>
-
-        {/* Barcode placeholder */}
-        <div
-          style={{
-            textAlign: 'center',
-            marginTop: '15px',
-            padding: '10px',
-            border: '1px dashed #ccc',
-            fontSize: '8px',
-          }}
-        >
-          <div style={{ marginBottom: '5px' }}>Barcode/QR Code</div>
-          <div style={{ fontFamily: 'monospace', letterSpacing: '2px' }}>
-            {orderNumber}
-          </div>
+        )}
+        <div className="flex justify-between text-xs text-gray-600 mt-2">
+          <span>To'lov usuli:</span>
+          <span>{paymentMethod}</span>
         </div>
       </div>
-    );
-  }
-);
 
+      {cashierName && (
+        <div className="text-center text-xs text-gray-500 border-t pt-2">
+          Kassir: {cashierName}
+        </div>
+      )}
 
+      <div className="text-center text-xs text-gray-400 mt-4">
+        Rahmat!
+      </div>
+    </div>
+  );
+});
 
+Receipt.displayName = 'Receipt';
+
+export default Receipt;

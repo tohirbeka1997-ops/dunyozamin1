@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import {
   Dialog,
   DialogContent,
@@ -24,6 +25,8 @@ import { Label } from '@/components/ui/label';
 import type { HeldOrder } from '@/types/database';
 import { Clock, User, FileText, RotateCcw, Trash2, Edit2, AlertTriangle } from 'lucide-react';
 import { formatDistanceToNow, differenceInMinutes } from 'date-fns';
+import { uz } from 'date-fns/locale';
+import { formatMoneyUZS } from '@/lib/format';
 
 interface WaitingOrdersDialogProps {
   open: boolean;
@@ -42,6 +45,7 @@ export default function WaitingOrdersDialog({
   onCancel,
   onRename,
 }: WaitingOrdersDialogProps) {
+  const { t } = useTranslation();
   const [cancelOrderId, setCancelOrderId] = useState<string | null>(null);
   const [renameOrderId, setRenameOrderId] = useState<string | null>(null);
   const [renameName, setRenameName] = useState('');
@@ -101,20 +105,20 @@ export default function WaitingOrdersDialog({
       <Dialog open={open} onOpenChange={onOpenChange}>
         <DialogContent className="max-w-3xl max-h-[80vh]">
           <DialogHeader>
-            <DialogTitle>Waiting Orders</DialogTitle>
+            <DialogTitle>{t('pos.waitingOrders.title')}</DialogTitle>
             <DialogDescription>
               {heldOrders.length === 0
-                ? 'No orders on hold'
-                : `${heldOrders.length} order${heldOrders.length > 1 ? 's' : ''} waiting`}
+                ? t('pos.waitingOrders.empty')
+                : t('pos.waitingOrders.counter', { count: heldOrders.length })}
             </DialogDescription>
           </DialogHeader>
           <ScrollArea className="h-[500px] pr-4">
             {heldOrders.length === 0 ? (
               <div className="flex flex-col items-center justify-center py-12 text-center">
                 <Clock className="h-12 w-12 text-muted-foreground mb-4" />
-                <p className="text-muted-foreground">No orders on hold</p>
+                <p className="text-muted-foreground">{t('pos.waitingOrders.empty')}</p>
                 <p className="text-sm text-muted-foreground mt-2">
-                  Held orders will appear here
+                  {t('pos.waitingOrders.emptyDescription')}
                 </p>
               </div>
             ) : (
@@ -150,16 +154,17 @@ export default function WaitingOrdersDialog({
                             <span>
                               {formatDistanceToNow(new Date(order.created_at), {
                                 addSuffix: true,
+                                locale: uz,
                               })}
                             </span>
                           </div>
                         </div>
                         <div className="text-right">
                           <p className="text-lg font-bold">
-                            {calculateTotal(order).toFixed(2)} UZS
+                            {formatMoneyUZS(calculateTotal(order))}
                           </p>
                           <p className="text-xs text-muted-foreground">
-                            {order.items.length} item{order.items.length > 1 ? 's' : ''}
+                            {t('pos.waitingOrders.items', { count: order.items.length })}
                           </p>
                         </div>
                       </div>
@@ -177,15 +182,18 @@ export default function WaitingOrdersDialog({
                           size="sm"
                           className="flex-1"
                           onClick={() => onRestore(order)}
+                          title={t('pos.waitingOrders.restore')}
                         >
                           <RotateCcw className="h-4 w-4 mr-2" />
-                          Restore
+                          {t('pos.waitingOrders.restore')}
                         </Button>
                         {onRename && (
                           <Button
                             variant="outline"
                             size="sm"
                             onClick={() => openRenameDialog(order)}
+                            title={t('pos.waitingOrders.edit')}
+                            aria-label={t('pos.waitingOrders.edit')}
                           >
                             <Edit2 className="h-4 w-4" />
                           </Button>
@@ -194,6 +202,8 @@ export default function WaitingOrdersDialog({
                           variant="outline"
                           size="sm"
                           onClick={() => setCancelOrderId(order.id)}
+                          title={t('pos.waitingOrders.delete')}
+                          aria-label={t('pos.waitingOrders.delete')}
                         >
                           <Trash2 className="h-4 w-4" />
                         </Button>
@@ -210,15 +220,15 @@ export default function WaitingOrdersDialog({
       <AlertDialog open={!!cancelOrderId} onOpenChange={(open) => !open && setCancelOrderId(null)}>
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>Delete Waiting Order?</AlertDialogTitle>
+            <AlertDialogTitle>{t('pos.waitingOrders.deleteConfirmTitle')}</AlertDialogTitle>
             <AlertDialogDescription>
-              This will permanently delete this waiting order. This action cannot be undone.
+              {t('pos.waitingOrders.deleteConfirmDescription')}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
-            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogCancel>{t('pos.waitingOrders.cancel')}</AlertDialogCancel>
             <AlertDialogAction onClick={handleCancelConfirm}>
-              Delete
+              {t('pos.waitingOrders.delete')}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
@@ -227,19 +237,19 @@ export default function WaitingOrdersDialog({
       <Dialog open={!!renameOrderId} onOpenChange={(open) => !open && setRenameOrderId(null)}>
         <DialogContent className="max-w-md">
           <DialogHeader>
-            <DialogTitle>Rename Waiting Order</DialogTitle>
+            <DialogTitle>{t('pos.waitingOrders.renameTitle')}</DialogTitle>
             <DialogDescription>
-              Update the customer name or identifier for this order
+              {t('pos.waitingOrders.renameDescription')}
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-4 py-4">
             <div className="space-y-2">
-              <Label htmlFor="rename-input">Customer Name</Label>
+              <Label htmlFor="rename-input">{t('pos.waitingOrders.customerName')}</Label>
               <Input
                 id="rename-input"
                 value={renameName}
                 onChange={(e) => setRenameName(e.target.value)}
-                placeholder="Enter customer name"
+                placeholder={t('pos.waitingOrders.customerNamePlaceholder')}
                 autoFocus
                 onKeyDown={(e) => {
                   if (e.key === 'Enter') {
@@ -251,10 +261,10 @@ export default function WaitingOrdersDialog({
           </div>
           <div className="flex justify-end gap-2">
             <Button variant="outline" onClick={() => setRenameOrderId(null)}>
-              Cancel
+              {t('pos.waitingOrders.cancel')}
             </Button>
             <Button onClick={handleRenameConfirm} disabled={!renameName.trim()}>
-              Save
+              {t('pos.waitingOrders.save')}
             </Button>
           </div>
         </DialogContent>

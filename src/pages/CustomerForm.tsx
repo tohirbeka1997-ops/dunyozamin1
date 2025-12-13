@@ -60,8 +60,8 @@ export default function CustomerForm() {
       });
     } catch (error) {
       toast({
-        title: 'Error',
-        description: 'Failed to load customer',
+        title: 'Xatolik',
+        description: 'Mijozni yuklab bo\'lmadi',
         variant: 'destructive',
       });
       navigate('/customers');
@@ -76,8 +76,8 @@ export default function CustomerForm() {
     // Validation
     if (!formData.name.trim()) {
       toast({
-        title: 'Validation Error',
-        description: 'Customer name is required',
+        title: 'Validatsiya xatosi',
+        description: 'Mijoz ismi kiritilishi shart',
         variant: 'destructive',
       });
       return;
@@ -85,8 +85,8 @@ export default function CustomerForm() {
 
     if (formData.type === 'company' && !formData.company_name.trim()) {
       toast({
-        title: 'Validation Error',
-        description: 'Company name is required for company type',
+        title: 'Validatsiya xatosi',
+        description: 'Yuridik shaxs turi uchun kompaniya nomi kiritilishi shart',
         variant: 'destructive',
       });
       return;
@@ -98,22 +98,22 @@ export default function CustomerForm() {
       if (id) {
         await updateCustomer(id, formData);
         toast({
-          title: 'Success',
-          description: 'Customer updated successfully',
+          title: 'Muvaffaqiyatli',
+          description: 'Mijoz muvaffaqiyatli yangilandi',
         });
       } else {
         await createCustomer(formData);
         toast({
-          title: 'Success',
-          description: 'Customer created successfully',
+          title: 'Muvaffaqiyatli',
+          description: 'Mijoz muvaffaqiyatli yaratildi',
         });
       }
 
       navigate('/customers');
     } catch (error) {
       toast({
-        title: 'Error',
-        description: error instanceof Error ? error.message : 'Failed to save customer',
+        title: 'Xatolik',
+        description: error instanceof Error ? error.message : 'Mijozni saqlab bo\'lmadi',
         variant: 'destructive',
       });
     } finally {
@@ -140,9 +140,9 @@ export default function CustomerForm() {
           <ArrowLeft className="h-4 w-4" />
         </Button>
         <div>
-          <h1 className="text-3xl font-bold">{id ? 'Edit Customer' : 'New Customer'}</h1>
+          <h1 className="text-3xl font-bold">{id ? 'Mijozni tahrirlash' : 'Yangi mijoz qo\'shish'}</h1>
           <p className="text-muted-foreground">
-            {id ? 'Update customer information' : 'Add a new customer to your database'}
+            {id ? 'Mijoz ma\'lumotlarini yangilash' : 'Bazaga yangi mijoz qo\'shish'}
           </p>
         </div>
       </div>
@@ -151,40 +151,40 @@ export default function CustomerForm() {
         <div className="grid gap-6">
           <Card>
             <CardHeader>
-              <CardTitle>Basic Information</CardTitle>
+              <CardTitle>Asosiy ma'lumotlar</CardTitle>
             </CardHeader>
             <CardContent className="space-y-4">
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <div className="space-y-2">
                   <Label htmlFor="name">
-                    Customer Name <span className="text-destructive">*</span>
+                    To'liq ismi <span className="text-destructive">*</span>
                   </Label>
                   <Input
                     id="name"
                     value={formData.name}
                     onChange={(e) => handleChange('name', e.target.value)}
-                    placeholder="Enter customer name"
+                    placeholder="Mijoz ismini kiriting"
                     required
                   />
                 </div>
 
                 <div className="space-y-2">
                   <Label htmlFor="type">
-                    Type <span className="text-destructive">*</span>
+                    Mijoz turi <span className="text-destructive">*</span>
                   </Label>
                   <Select value={formData.type} onValueChange={(value) => handleChange('type', value)}>
                     <SelectTrigger id="type">
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
-                      <SelectItem value="individual">Individual</SelectItem>
-                      <SelectItem value="company">Company</SelectItem>
+                      <SelectItem value="individual">Jismoniy shaxs</SelectItem>
+                      <SelectItem value="company">Yuridik shaxs</SelectItem>
                     </SelectContent>
                   </Select>
                 </div>
 
                 <div className="space-y-2">
-                  <Label htmlFor="phone">Phone</Label>
+                  <Label htmlFor="phone">Telefon raqami</Label>
                   <Input
                     id="phone"
                     type="tel"
@@ -207,26 +207,26 @@ export default function CustomerForm() {
 
                 <div className="space-y-2">
                   <Label htmlFor="status">
-                    Status <span className="text-destructive">*</span>
+                    Holati <span className="text-destructive">*</span>
                   </Label>
                   <Select value={formData.status} onValueChange={(value) => handleChange('status', value)}>
                     <SelectTrigger id="status">
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
-                      <SelectItem value="active">Active</SelectItem>
-                      <SelectItem value="inactive">Inactive</SelectItem>
+                      <SelectItem value="active">Faol</SelectItem>
+                      <SelectItem value="inactive">Faol emas</SelectItem>
                     </SelectContent>
                   </Select>
                 </div>
 
                 <div className="space-y-2">
-                  <Label htmlFor="address">Address</Label>
+                  <Label htmlFor="address">Manzil</Label>
                   <Input
                     id="address"
                     value={formData.address}
                     onChange={(e) => handleChange('address', e.target.value)}
-                    placeholder="Enter address"
+                    placeholder="Manzilni kiriting"
                   />
                 </div>
               </div>
@@ -236,30 +236,30 @@ export default function CustomerForm() {
           {formData.type === 'company' && (
             <Card>
               <CardHeader>
-                <CardTitle>Company Information</CardTitle>
+                <CardTitle>Kompaniya ma'lumotlari</CardTitle>
               </CardHeader>
               <CardContent className="space-y-4">
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                   <div className="space-y-2">
                     <Label htmlFor="company_name">
-                      Company Name <span className="text-destructive">*</span>
+                      Kompaniya nomi <span className="text-destructive">*</span>
                     </Label>
                     <Input
                       id="company_name"
                       value={formData.company_name}
                       onChange={(e) => handleChange('company_name', e.target.value)}
-                      placeholder="Enter company name"
+                      placeholder="Kompaniya nomini kiriting"
                       required={formData.type === 'company'}
                     />
                   </div>
 
                   <div className="space-y-2">
-                    <Label htmlFor="tax_number">Tax ID / INN</Label>
+                    <Label htmlFor="tax_number">STIR / INN</Label>
                     <Input
                       id="tax_number"
                       value={formData.tax_number}
                       onChange={(e) => handleChange('tax_number', e.target.value)}
-                      placeholder="Enter tax ID"
+                      placeholder="STIR raqamini kiriting"
                     />
                   </div>
                 </div>
@@ -269,16 +269,16 @@ export default function CustomerForm() {
 
           <Card>
             <CardHeader>
-              <CardTitle>Additional Information</CardTitle>
+              <CardTitle>Qo'shimcha ma'lumotlar</CardTitle>
             </CardHeader>
             <CardContent>
               <div className="space-y-2">
-                <Label htmlFor="notes">Notes</Label>
+                <Label htmlFor="notes">Izoh</Label>
                 <Textarea
                   id="notes"
                   value={formData.notes}
                   onChange={(e) => handleChange('notes', e.target.value)}
-                  placeholder="Add any additional notes about this customer..."
+                  placeholder="Bu mijoz haqida qo'shimcha izohlar qo'shing..."
                   rows={4}
                 />
               </div>
@@ -287,11 +287,11 @@ export default function CustomerForm() {
 
           <div className="flex items-center justify-end gap-4">
             <Button type="button" variant="outline" onClick={() => navigate('/customers')}>
-              Cancel
+              Bekor qilish
             </Button>
             <Button type="submit" disabled={saving}>
               <Save className="h-4 w-4 mr-2" />
-              {saving ? 'Saving...' : id ? 'Update Customer' : 'Create Customer'}
+              {saving ? 'Saqlanmoqda...' : id ? 'Yangilash' : 'Saqlash'}
             </Button>
           </div>
         </div>

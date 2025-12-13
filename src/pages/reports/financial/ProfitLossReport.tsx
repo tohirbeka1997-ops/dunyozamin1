@@ -16,6 +16,7 @@ import { useToast } from '@/hooks/use-toast';
 import { useNavigate } from 'react-router-dom';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend } from 'recharts';
 import { format, subDays, eachDayOfInterval, startOfWeek, endOfWeek, startOfMonth, endOfMonth } from 'date-fns';
+import { formatMoneyUZS } from '@/lib/format';
 
 export default function ProfitLossReport() {
   const navigate = useNavigate();
@@ -224,32 +225,32 @@ export default function ProfitLossReport() {
             <div className="space-y-4">
               <div className="flex justify-between items-center pb-2 border-b">
                 <span className="font-medium">Gross Sales</span>
-                <span className="font-bold">${grossSales.toFixed(2)}</span>
+                <span className="font-bold">{formatMoneyUZS(grossSales)}</span>
               </div>
               <div className="flex justify-between items-center pb-2 border-b">
                 <span className="text-muted-foreground">Less: Discounts</span>
-                <span className="text-destructive">-${totalDiscounts.toFixed(2)}</span>
+                <span className="text-destructive">-{formatMoneyUZS(totalDiscounts)}</span>
               </div>
               <div className="flex justify-between items-center pb-2 border-b">
                 <span className="font-medium">Net Sales</span>
-                <span className="font-bold">${netSales.toFixed(2)}</span>
+                <span className="font-bold">{formatMoneyUZS(netSales)}</span>
               </div>
               <div className="flex justify-between items-center pb-2 border-b">
                 <span className="text-muted-foreground">Less: Cost of Goods Sold</span>
-                <span className="text-destructive">-${cogs.toFixed(2)}</span>
+                <span className="text-destructive">-{formatMoneyUZS(cogs)}</span>
               </div>
               <div className="flex justify-between items-center pb-2 border-b">
                 <span className="font-medium">Gross Profit</span>
-                <span className="font-bold text-success">${grossProfit.toFixed(2)}</span>
+                <span className="font-bold text-success">{formatMoneyUZS(grossProfit)}</span>
               </div>
               <div className="flex justify-between items-center pb-2 border-b">
                 <span className="text-muted-foreground">Less: Returns</span>
-                <span className="text-destructive">-${returns.toFixed(2)}</span>
+                <span className="text-destructive">-{formatMoneyUZS(returns)}</span>
               </div>
               <div className="flex justify-between items-center pt-2">
                 <span className="text-lg font-bold">Final Profit</span>
                 <span className={`text-lg font-bold ${finalProfit >= 0 ? 'text-success' : 'text-destructive'}`}>
-                  ${finalProfit.toFixed(2)}
+                  {formatMoneyUZS(finalProfit)}
                 </span>
               </div>
             </div>
@@ -284,7 +285,7 @@ export default function ProfitLossReport() {
                 <div className="flex justify-between items-center mb-2">
                   <span className="text-sm text-muted-foreground">Average Order Value</span>
                   <span className="font-bold">
-                    ${completedOrders.length > 0 ? (grossSales / completedOrders.length).toFixed(2) : '0.00'}
+                    {completedOrders.length > 0 ? formatMoneyUZS(grossSales / completedOrders.length) : formatMoneyUZS(0)}
                   </span>
                 </div>
               </div>

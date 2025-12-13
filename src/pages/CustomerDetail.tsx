@@ -18,6 +18,7 @@ import type { Customer, OrderWithDetails, CustomerPayment } from '@/types/databa
 import { ArrowLeft, Edit, Mail, Phone, MapPin, Building2, FileText, ShoppingCart, DollarSign, CreditCard } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 import ReceivePaymentDialog from '@/components/customers/ReceivePaymentDialog';
+import { formatMoneyUZS } from '@/lib/format';
 
 export default function CustomerDetail() {
   const { id } = useParams<{ id: string }>();
@@ -109,11 +110,11 @@ export default function CustomerDetail() {
 
   const getBalanceBadge = (balance: number) => {
     if (balance > 0) {
-      return <Badge variant="destructive">${balance.toFixed(2)} Debt</Badge>;
+      return <Badge variant="destructive">{formatMoneyUZS(balance)} Debt</Badge>;
     } else if (balance < 0) {
-      return <Badge className="bg-success text-success-foreground">${Math.abs(balance).toFixed(2)} Credit</Badge>;
+      return <Badge className="bg-success text-success-foreground">{formatMoneyUZS(Math.abs(balance))} Credit</Badge>;
     } else {
-      return <Badge variant="outline">$0.00</Badge>;
+      return <Badge variant="outline">{formatMoneyUZS(0)}</Badge>;
     }
   };
 
@@ -169,7 +170,7 @@ export default function CustomerDetail() {
             <DollarSign className="h-4 w-4 text-muted-foreground" />
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold">${Number(customer.total_sales).toFixed(2)}</div>
+            <div className="text-2xl font-bold">{formatMoneyUZS(customer.total_sales)}</div>
             <p className="text-xs text-muted-foreground">Lifetime value</p>
           </CardContent>
         </Card>
@@ -380,7 +381,7 @@ export default function CustomerDetail() {
                         <TableCell className="font-medium">{order.order_number}</TableCell>
                         <TableCell>{new Date(order.created_at).toLocaleDateString()}</TableCell>
                         <TableCell className="text-right font-medium">
-                          ${Number(order.total_amount).toFixed(2)}
+                          {formatMoneyUZS(order.total_amount)}
                         </TableCell>
                         <TableCell>
                           <Badge

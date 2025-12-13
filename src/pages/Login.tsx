@@ -1,25 +1,44 @@
 import { useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useLocation } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog';
 import { useToast } from '@/hooks/use-toast';
-import { signIn, signUp } from '@/db/api';
+import { useAuth } from '@/contexts/AuthContext';
+import { useTranslation } from 'react-i18next';
 import { Store } from 'lucide-react';
 
 export default function Login() {
   const navigate = useNavigate();
+  const location = useLocation();
   const { toast } = useToast();
+  const { login, signUp, resetPassword } = useAuth();
+  const { t } = useTranslation();
   const [loading, setLoading] = useState(false);
+  const [forgotPasswordOpen, setForgotPasswordOpen] = useState(false);
+  const [forgotPasswordEmail, setForgotPasswordEmail] = useState('');
+  const [forgotPasswordLoading, setForgotPasswordLoading] = useState(false);
+
+  // Get redirect path from location state or default to /
+  const from = (location.state as { from?: { pathname?: string } })?.from?.pathname || '/';
 
   const [signInData, setSignInData] = useState({
-    username: '',
+    email: '',
     password: '',
   });
 
   const [signUpData, setSignUpData] = useState({
+    email: '',
     username: '',
     password: '',
     confirmPassword: '',
@@ -28,11 +47,22 @@ export default function Login() {
 
   const handleSignIn = async (e: React.FormEvent) => {
     e.preventDefault();
-    
-    if (!signInData.username || !signInData.password) {
+
+    if (!signInData.email || !signInData.password) {
       toast({
-        title: 'Error',
-        description: 'Please fill in all fields',
+        title: t('auth.required_field'),
+        description: t('auth.fill_all_fields'),
+        variant: 'destructive',
+      });
+      return;
+    }
+
+    // Validate email format
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!emailRegex.test(signInData.email)) {
+      toast({
+        title: t('auth.required_field'),
+        description: t('auth.invalid_email_format'),
         variant: 'destructive',
       });
       return;
@@ -40,16 +70,16 @@ export default function Login() {
 
     setLoading(true);
     try {
-      await signIn(signInData.username, signInData.password);
+      await login(signInData.email, signInData.password);
       toast({
-        title: 'Success',
-        description: 'Signed in successfully',
+        title: t('auth.successful'),
+        description: t('auth.signed_in_success'),
       });
-      navigate('/');
+      navigate(from, { replace: true });
     } catch (error) {
       toast({
-        title: 'Error',
-        description: error instanceof Error ? error.message : 'Failed to sign in',
+        title: t('auth.something_went_wrong'),
+        description: error instanceof Error ? error.message : t('auth.failed_to_sign_in'),
         variant: 'destructive',
       });
     } finally {
@@ -60,19 +90,21 @@ export default function Login() {
   const handleSignUp = async (e: React.FormEvent) => {
     e.preventDefault();
 
-    if (!signUpData.username || !signUpData.password || !signUpData.confirmPassword) {
+    if (!signUpData.email || !signUpData.password || !signUpData.confirmPassword) {
       toast({
-        title: 'Error',
-        description: 'Please fill in all required fields',
+        title: t('auth.required_field'),
+        description: t('auth.fill_required_fields'),
         variant: 'destructive',
       });
       return;
     }
 
-    if (!/^[a-zA-Z0-9_]+$/.test(signUpData.username)) {
+    // Validate email format
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!emailRegex.test(signUpData.email)) {
       toast({
-        title: 'Error',
-        description: 'Username can only contain letters, numbers, and underscores',
+        title: t('auth.required_field'),
+        description: t('auth.invalid_email_format'),
         variant: 'destructive',
       });
       return;
@@ -80,8 +112,8 @@ export default function Login() {
 
     if (signUpData.password !== signUpData.confirmPassword) {
       toast({
-        title: 'Error',
-        description: 'Passwords do not match',
+        title: t('auth.required_field'),
+        description: t('auth.passwords_no_match'),
         variant: 'destructive',
       });
       return;
@@ -89,8 +121,8 @@ export default function Login() {
 
     if (signUpData.password.length < 6) {
       toast({
-        title: 'Error',
-        description: 'Password must be at least 6 characters',
+        title: t('auth.required_field'),
+        description: t('auth.min_6_characters'),
         variant: 'destructive',
       });
       return;
@@ -98,29 +130,66 @@ export default function Login() {
 
     setLoading(true);
     try {
-      await signUp(signUpData.username, signUpData.password, signUpData.fullName);
+      await signUp(
+        signUpData.email,
+        signUpData.password,
+        signUpData.fullName || undefined,
+        signUpData.username || undefined
+      );
       toast({
-        title: 'Success',
-        description: 'Account created successfully. You can now sign in.',
+        title: t('auth.successful'),
+        description: t('auth.account_created_success'),
       });
-      setSignInData({
-        username: signUpData.username,
-        password: signUpData.password,
-      });
-      setSignUpData({
-        username: '',
-        password: '',
-        confirmPassword: '',
-        fullName: '',
-      });
+      navigate(from, { replace: true });
     } catch (error) {
       toast({
-        title: 'Error',
-        description: error instanceof Error ? error.message : 'Failed to create account',
+        title: t('auth.something_went_wrong'),
+        description: error instanceof Error ? error.message : t('auth.failed_to_create_account'),
         variant: 'destructive',
       });
     } finally {
       setLoading(false);
+    }
+  };
+
+  const handleForgotPassword = async () => {
+    if (!forgotPasswordEmail) {
+      toast({
+        title: t('auth.required_field'),
+        description: t('auth.enter_email'),
+        variant: 'destructive',
+      });
+      return;
+    }
+
+    // Validate email format
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!emailRegex.test(forgotPasswordEmail)) {
+      toast({
+        title: t('auth.required_field'),
+        description: t('auth.invalid_email_format'),
+        variant: 'destructive',
+      });
+      return;
+    }
+
+    setForgotPasswordLoading(true);
+    try {
+      await resetPassword(forgotPasswordEmail);
+      toast({
+        title: t('auth.successful'),
+        description: t('auth.forgot_password_dialog.reset_link_sent'),
+      });
+      setForgotPasswordOpen(false);
+      setForgotPasswordEmail('');
+    } catch (error) {
+      toast({
+        title: t('auth.something_went_wrong'),
+        description: error instanceof Error ? error.message : t('auth.forgot_password_dialog.email_not_found'),
+        variant: 'destructive',
+      });
+    } finally {
+      setForgotPasswordLoading(false);
     }
   };
 
@@ -133,71 +202,106 @@ export default function Login() {
               <Store className="h-8 w-8 text-primary-foreground" />
             </div>
           </div>
-          <CardTitle className="text-2xl font-bold">POS System</CardTitle>
-          <CardDescription>Point of Sale Management System</CardDescription>
+          <CardTitle className="text-2xl font-bold">{t('auth.pos_system')}</CardTitle>
+          <CardDescription>{t('auth.point_of_sale_management')}</CardDescription>
         </CardHeader>
         <CardContent>
           <Tabs defaultValue="signin" className="w-full">
             <TabsList className="grid w-full grid-cols-2">
-              <TabsTrigger value="signin">Sign In</TabsTrigger>
-              <TabsTrigger value="signup">Sign Up</TabsTrigger>
+              <TabsTrigger value="signin">{t('auth.sign_in')}</TabsTrigger>
+              <TabsTrigger value="signup">{t('auth.sign_up')}</TabsTrigger>
             </TabsList>
-            
+
             <TabsContent value="signin">
               <form onSubmit={handleSignIn} className="space-y-4">
                 <div className="space-y-2">
-                  <Label htmlFor="signin-username">Username</Label>
+                  <Label htmlFor="signin-email">{t('auth.email')}</Label>
                   <Input
-                    id="signin-username"
-                    type="text"
-                    placeholder="Enter your username"
-                    value={signInData.username}
-                    onChange={(e) => setSignInData({ ...signInData, username: e.target.value })}
+                    id="signin-email"
+                    type="email"
+                    placeholder={t('auth.enter_email')}
+                    value={signInData.email}
+                    onChange={(e) => setSignInData({ ...signInData, email: e.target.value })}
                     disabled={loading}
-                    autoComplete="username"
+                    autoComplete="email"
                   />
                 </div>
                 <div className="space-y-2">
-                  <Label htmlFor="signin-password">Password</Label>
+                  <Label htmlFor="signin-password">{t('auth.password')}</Label>
                   <Input
                     id="signin-password"
                     type="password"
-                    placeholder="Enter your password"
+                    placeholder={t('auth.enter_password')}
                     value={signInData.password}
                     onChange={(e) => setSignInData({ ...signInData, password: e.target.value })}
                     disabled={loading}
                     autoComplete="current-password"
                   />
                 </div>
+                <div className="flex items-center justify-end">
+                  <button
+                    type="button"
+                    onClick={() => setForgotPasswordOpen(true)}
+                    className="text-sm text-primary hover:underline"
+                  >
+                    {t('auth.forgot_password')}
+                  </button>
+                </div>
                 <Button type="submit" className="w-full" disabled={loading}>
-                  {loading ? 'Signing in...' : 'Sign In'}
+                  {loading ? t('auth.signing_in') : t('auth.sign_in')}
                 </Button>
+                <div className="text-center text-sm text-muted-foreground">
+                  {t('auth.dont_have_account')}{' '}
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const tabs = document.querySelector('[role="tablist"]');
+                      const signupTab = tabs?.querySelector('[value="signup"]') as HTMLElement;
+                      signupTab?.click();
+                    }}
+                    className="text-primary hover:underline"
+                  >
+                    {t('auth.create_account')}
+                  </button>
+                </div>
               </form>
             </TabsContent>
-            
+
             <TabsContent value="signup">
               <form onSubmit={handleSignUp} className="space-y-4">
                 <div className="space-y-2">
-                  <Label htmlFor="signup-username">Username *</Label>
+                  <Label htmlFor="signup-email">{t('auth.email')} *</Label>
+                  <Input
+                    id="signup-email"
+                    type="email"
+                    placeholder={t('auth.enter_email')}
+                    value={signUpData.email}
+                    onChange={(e) => setSignUpData({ ...signUpData, email: e.target.value })}
+                    disabled={loading}
+                    autoComplete="email"
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="signup-username">{t('auth.username')}</Label>
                   <Input
                     id="signup-username"
                     type="text"
-                    placeholder="Choose a username"
+                    placeholder={t('auth.choose_username')}
                     value={signUpData.username}
                     onChange={(e) => setSignUpData({ ...signUpData, username: e.target.value })}
                     disabled={loading}
                     autoComplete="username"
                   />
                   <p className="text-xs text-muted-foreground">
-                    Only letters, numbers, and underscores allowed
+                    {t('auth.username_helper')}
                   </p>
                 </div>
                 <div className="space-y-2">
-                  <Label htmlFor="signup-fullname">Full Name</Label>
+                  <Label htmlFor="signup-fullname">{t('auth.full_name')}</Label>
                   <Input
                     id="signup-fullname"
                     type="text"
-                    placeholder="Enter your full name (optional)"
+                    placeholder={t('auth.enter_full_name')}
                     value={signUpData.fullName}
                     onChange={(e) => setSignUpData({ ...signUpData, fullName: e.target.value })}
                     disabled={loading}
@@ -205,11 +309,11 @@ export default function Login() {
                   />
                 </div>
                 <div className="space-y-2">
-                  <Label htmlFor="signup-password">Password *</Label>
+                  <Label htmlFor="signup-password">{t('auth.password')} *</Label>
                   <Input
                     id="signup-password"
                     type="password"
-                    placeholder="Create a password"
+                    placeholder={t('auth.create_password')}
                     value={signUpData.password}
                     onChange={(e) => setSignUpData({ ...signUpData, password: e.target.value })}
                     disabled={loading}
@@ -217,11 +321,11 @@ export default function Login() {
                   />
                 </div>
                 <div className="space-y-2">
-                  <Label htmlFor="signup-confirm">Confirm Password *</Label>
+                  <Label htmlFor="signup-confirm">{t('auth.confirm_password')} *</Label>
                   <Input
                     id="signup-confirm"
                     type="password"
-                    placeholder="Confirm your password"
+                    placeholder={t('auth.confirm_password_placeholder')}
                     value={signUpData.confirmPassword}
                     onChange={(e) => setSignUpData({ ...signUpData, confirmPassword: e.target.value })}
                     disabled={loading}
@@ -229,13 +333,75 @@ export default function Login() {
                   />
                 </div>
                 <Button type="submit" className="w-full" disabled={loading}>
-                  {loading ? 'Creating account...' : 'Sign Up'}
+                  {loading ? t('auth.creating_account') : t('auth.sign_up')}
                 </Button>
+                <div className="text-center text-sm text-muted-foreground">
+                  {t('auth.already_have_account')}{' '}
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const tabs = document.querySelector('[role="tablist"]');
+                      const signinTab = tabs?.querySelector('[value="signin"]') as HTMLElement;
+                      signinTab?.click();
+                    }}
+                    className="text-primary hover:underline"
+                  >
+                    {t('auth.go_to_login')}
+                  </button>
+                </div>
               </form>
             </TabsContent>
           </Tabs>
         </CardContent>
       </Card>
+
+      {/* Forgot Password Dialog */}
+      <Dialog open={forgotPasswordOpen} onOpenChange={setForgotPasswordOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>{t('auth.forgot_password_dialog.title')}</DialogTitle>
+            <DialogDescription>
+              {t('auth.forgot_password_dialog.description')}
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4 py-4">
+            <div className="space-y-2">
+              <Label htmlFor="forgot-password-email">{t('auth.forgot_password_dialog.email_label')}</Label>
+              <Input
+                id="forgot-password-email"
+                type="email"
+                placeholder={t('auth.forgot_password_dialog.email_placeholder')}
+                value={forgotPasswordEmail}
+                onChange={(e) => setForgotPasswordEmail(e.target.value)}
+                disabled={forgotPasswordLoading}
+                autoComplete="email"
+              />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => {
+                setForgotPasswordOpen(false);
+                setForgotPasswordEmail('');
+              }}
+              disabled={forgotPasswordLoading}
+            >
+              {t('auth.forgot_password_dialog.cancel')}
+            </Button>
+            <Button
+              type="button"
+              onClick={handleForgotPassword}
+              disabled={forgotPasswordLoading}
+            >
+              {forgotPasswordLoading
+                ? t('auth.forgot_password_dialog.sending')
+                : t('auth.forgot_password_dialog.send_reset_link')}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

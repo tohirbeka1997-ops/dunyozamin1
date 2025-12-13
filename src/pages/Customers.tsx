@@ -1,5 +1,5 @@
-import { useState, useEffect } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useState, useEffect, useCallback } from 'react';
+import { useNavigate, useLocation } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
@@ -35,9 +35,11 @@ import type { Customer } from '@/types/database';
 import { Search, Plus, Eye, Edit, Trash2, Download, ArrowUpDown, DollarSign } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 import ReceivePaymentDialog from '@/components/customers/ReceivePaymentDialog';
+import { formatMoneyUZS } from '@/lib/format';
 
 export default function Customers() {
   const navigate = useNavigate();
+  const location = useLocation();
   const { toast } = useToast();
   const [customers, setCustomers] = useState<Customer[]>([]);
   const [loading, setLoading] = useState(true);
@@ -50,11 +52,7 @@ export default function Customers() {
   const [paymentDialogOpen, setPaymentDialogOpen] = useState(false);
   const [selectedCustomerForPayment, setSelectedCustomerForPayment] = useState<Customer | null>(null);
 
-  useEffect(() => {
-    loadCustomers();
-  }, [searchTerm, typeFilter, statusFilter, debtFilter, sortBy, sortOrder]);
-
-  const loadCustomers = async () => {
+  const loadCustomers = useCallback(async () => {
     try {
       setLoading(true);
       const hasDebt = debtFilter === 'with_debt' ? true : debtFilter === 'no_debt' ? false : undefined;
@@ -69,27 +67,39 @@ export default function Customers() {
       setCustomers(data);
     } catch (error) {
       toast({
-        title: 'Error',
-        description: 'Failed to load customers',
+        title: 'Xatolik',
+        description: 'Mijozlarni yuklab bo\'lmadi',
         variant: 'destructive',
       });
     } finally {
       setLoading(false);
     }
-  };
+  }, [searchTerm, typeFilter, statusFilter, debtFilter, sortBy, sortOrder, toast]);
+
+  // Load customers on mount and when filters change
+  useEffect(() => {
+    loadCustomers();
+  }, [loadCustomers]);
+
+  // Reload customers when navigating to this page (e.g., after creating a customer)
+  useEffect(() => {
+    if (location.pathname === '/customers') {
+      loadCustomers();
+    }
+  }, [location.pathname, loadCustomers]);
 
   const handleDelete = async (id: string, name: string) => {
     try {
       await deleteCustomer(id);
       toast({
-        title: 'Success',
-        description: `Customer "${name}" deleted successfully`,
+        title: 'Muvaffaqiyatli',
+        description: `"${name}" muvaffaqiyatli o'chirildi`,
       });
       loadCustomers();
     } catch (error) {
       toast({
-        title: 'Error',
-        description: error instanceof Error ? error.message : 'Failed to delete customer',
+        title: 'Xatolik',
+        description: error instanceof Error ? error.message : 'Mijozni o\'chirib bo\'lmadi',
         variant: 'destructive',
       });
     }
@@ -115,34 +125,34 @@ export default function Customers() {
 
   const getBalanceBadge = (balance: number) => {
     if (balance > 0) {
-      return <Badge variant="destructive">${balance.toFixed(2)} Debt</Badge>;
+      return <Badge variant="destructive">{formatMoneyUZS(balance)} Qarz</Badge>;
     } else if (balance < 0) {
-      return <Badge className="bg-success text-success-foreground">${Math.abs(balance).toFixed(2)} Credit</Badge>;
+      return <Badge className="bg-success text-success-foreground">{formatMoneyUZS(Math.abs(balance))} Avans</Badge>;
     } else {
-      return <Badge variant="outline">$0.00</Badge>;
+      return <Badge variant="outline">{formatMoneyUZS(0)}</Badge>;
     }
   };
 
   const getStatusBadge = (status: string) => {
     return status === 'active' ? (
-      <Badge className="bg-success text-success-foreground">Active</Badge>
+      <Badge className="bg-success text-success-foreground">Faol</Badge>
     ) : (
-      <Badge variant="outline">Inactive</Badge>
+      <Badge variant="outline">Faol emas</Badge>
     );
   };
 
   const getTypeBadge = (type: string) => {
     return type === 'company' ? (
-      <Badge variant="secondary">Company</Badge>
+      <Badge variant="secondary">Yuridik shaxs</Badge>
     ) : (
-      <Badge variant="outline">Individual</Badge>
+      <Badge variant="outline">Jismoniy shaxs</Badge>
     );
   };
 
   const handleExport = () => {
     toast({
-      title: 'Export',
-      description: 'Export functionality coming soon',
+      title: 'Eksport qilish',
+      description: 'Eksport funksiyasi tez orada qo\'shiladi',
     });
   };
 
@@ -150,17 +160,17 @@ export default function Customers() {
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-3xl font-bold">Customers</h1>
-          <p className="text-muted-foreground">Manage your customer database</p>
+          <h1 className="text-3xl font-bold">Mijozlar</h1>
+          <p className="text-muted-foreground">Mijozlar bazasini boshqarish</p>
         </div>
         <div className="flex items-center gap-2">
           <Button variant="outline" onClick={handleExport}>
             <Download className="h-4 w-4 mr-2" />
-            Export
+            Eksport qilish
           </Button>
           <Button onClick={() => navigate('/customers/new')}>
             <Plus className="h-4 w-4 mr-2" />
-            Add Customer
+            Yangi mijoz qo'shish
           </Button>
         </div>
       </div>
@@ -172,7 +182,7 @@ export default function Customers() {
               <div className="relative md:col-span-2">
                 <Search className="absolute left-3 top-3 h-4 w-4 text-muted-foreground" />
                 <Input
-                  placeholder="Search by name, phone, or email..."
+                  placeholder="Ism, telefon yoki email bo'yicha qidirish..."
                   value={searchTerm}
                   onChange={(e) => setSearchTerm(e.target.value)}
                   className="pl-9"
@@ -181,34 +191,34 @@ export default function Customers() {
 
               <Select value={typeFilter} onValueChange={setTypeFilter}>
                 <SelectTrigger>
-                  <SelectValue placeholder="Type" />
+                  <SelectValue placeholder="Mijoz turi" />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="all">All Types</SelectItem>
-                  <SelectItem value="individual">Individual</SelectItem>
-                  <SelectItem value="company">Company</SelectItem>
+                  <SelectItem value="all">Barcha turlar</SelectItem>
+                  <SelectItem value="individual">Jismoniy shaxs</SelectItem>
+                  <SelectItem value="company">Yuridik shaxs</SelectItem>
                 </SelectContent>
               </Select>
 
               <Select value={statusFilter} onValueChange={setStatusFilter}>
                 <SelectTrigger>
-                  <SelectValue placeholder="Status" />
+                  <SelectValue placeholder="Holati" />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="all">All Status</SelectItem>
-                  <SelectItem value="active">Active</SelectItem>
-                  <SelectItem value="inactive">Inactive</SelectItem>
+                  <SelectItem value="all">Barcha holatlar</SelectItem>
+                  <SelectItem value="active">Faol</SelectItem>
+                  <SelectItem value="inactive">Faol emas</SelectItem>
                 </SelectContent>
               </Select>
 
               <Select value={debtFilter} onValueChange={setDebtFilter}>
                 <SelectTrigger>
-                  <SelectValue placeholder="Balance" />
+                  <SelectValue placeholder="Balans" />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="all">All Balances</SelectItem>
-                  <SelectItem value="with_debt">With Debt</SelectItem>
-                  <SelectItem value="no_debt">No Debt</SelectItem>
+                  <SelectItem value="all">Barcha balanslar</SelectItem>
+                  <SelectItem value="with_debt">Qarzdor</SelectItem>
+                  <SelectItem value="no_debt">Qarz yo'q</SelectItem>
                 </SelectContent>
               </Select>
             </div>
@@ -219,10 +229,10 @@ export default function Customers() {
               </div>
             ) : customers.length === 0 ? (
               <div className="text-center py-12">
-                <p className="text-muted-foreground">No customers found</p>
+                <p className="text-muted-foreground">Mijozlar topilmadi</p>
                 <Button className="mt-4" onClick={() => navigate('/customers/new')}>
                   <Plus className="h-4 w-4 mr-2" />
-                  Add First Customer
+                  Birinchi mijozni qo'shish
                 </Button>
               </div>
             ) : (
@@ -231,32 +241,32 @@ export default function Customers() {
                   <TableRow>
                     <TableHead>
                       <Button variant="ghost" size="sm" onClick={() => handleSort('name')}>
-                        Name
+                        Ismi
                         <ArrowUpDown className="ml-2 h-4 w-4" />
                       </Button>
                     </TableHead>
-                    <TableHead>Phone</TableHead>
-                    <TableHead>Type</TableHead>
+                    <TableHead>Telefon</TableHead>
+                    <TableHead>Mijoz turi</TableHead>
                     <TableHead className="text-right">
                       <Button variant="ghost" size="sm" onClick={() => handleSort('total_sales')}>
-                        Total Sales
+                        Jami savdo
                         <ArrowUpDown className="ml-2 h-4 w-4" />
                       </Button>
                     </TableHead>
                     <TableHead className="text-right">
                       <Button variant="ghost" size="sm" onClick={() => handleSort('balance')}>
-                        Balance
+                        Balans
                         <ArrowUpDown className="ml-2 h-4 w-4" />
                       </Button>
                     </TableHead>
                     <TableHead>
                       <Button variant="ghost" size="sm" onClick={() => handleSort('last_order_date')}>
-                        Last Order
+                        Oxirgi buyurtma
                         <ArrowUpDown className="ml-2 h-4 w-4" />
                       </Button>
                     </TableHead>
-                    <TableHead>Status</TableHead>
-                    <TableHead className="text-right">Actions</TableHead>
+                    <TableHead>Holati</TableHead>
+                    <TableHead className="text-right">Amallar</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
@@ -273,7 +283,7 @@ export default function Customers() {
                       <TableCell>{customer.phone || '-'}</TableCell>
                       <TableCell>{getTypeBadge(customer.type)}</TableCell>
                       <TableCell className="text-right font-medium">
-                        ${Number(customer.total_sales).toFixed(2)}
+                        {formatMoneyUZS(customer.total_sales)}
                       </TableCell>
                       <TableCell className="text-right">
                         {getBalanceBadge(Number(customer.balance))}
@@ -295,13 +305,14 @@ export default function Customers() {
                               className="text-green-600 hover:text-green-700 hover:bg-green-50"
                             >
                               <DollarSign className="h-4 w-4 mr-1" />
-                              Receive Payment
+                              To'lov qabul qilish
                             </Button>
                           )}
                           <Button
                             variant="ghost"
                             size="icon"
                             onClick={() => navigate(`/customers/${customer.id}`)}
+                            title="Ko'rish"
                           >
                             <Eye className="h-4 w-4" />
                           </Button>
@@ -309,29 +320,29 @@ export default function Customers() {
                             variant="ghost"
                             size="icon"
                             onClick={() => navigate(`/customers/${customer.id}/edit`)}
+                            title="Tahrirlash"
                           >
                             <Edit className="h-4 w-4" />
                           </Button>
                           <AlertDialog>
                             <AlertDialogTrigger asChild>
-                              <Button variant="ghost" size="icon">
+                              <Button variant="ghost" size="icon" title="O'chirish">
                                 <Trash2 className="h-4 w-4" />
                               </Button>
                             </AlertDialogTrigger>
                             <AlertDialogContent>
                               <AlertDialogHeader>
-                                <AlertDialogTitle>Delete Customer?</AlertDialogTitle>
+                                <AlertDialogTitle>Mijozni o'chirish?</AlertDialogTitle>
                                 <AlertDialogDescription>
-                                  Are you sure you want to delete "{customer.name}"? If this customer has
-                                  orders, they will be marked as inactive instead.
+                                  "{customer.name}" ni o'chirishni xohlaysizmi? Agar bu mijozning buyurtmalari bo'lsa, ular faol emas deb belgilanadi.
                                 </AlertDialogDescription>
                               </AlertDialogHeader>
                               <AlertDialogFooter>
-                                <AlertDialogCancel>Cancel</AlertDialogCancel>
+                                <AlertDialogCancel>Bekor qilish</AlertDialogCancel>
                                 <AlertDialogAction
                                   onClick={() => handleDelete(customer.id, customer.name)}
                                 >
-                                  Delete
+                                  O'chirish
                                 </AlertDialogAction>
                               </AlertDialogFooter>
                             </AlertDialogContent>

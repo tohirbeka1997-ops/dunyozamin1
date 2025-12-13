@@ -40,11 +40,43 @@ export interface Supplier {
   address: string | null;
   note: string | null;
   status: 'active' | 'inactive';
+  // NOTE: balance is NOT stored - it's calculated dynamically from transactions
+  // balance = SUM(received_purchase_orders.total_amount) - SUM(supplier_payments.amount)
+  // balance > 0 = we owe supplier (debt), balance < 0 = supplier owes us (advance)
   created_at: string;
   updated_at: string | null;
 }
 
-export interface SupplierWithPOs extends Supplier {
+// Extended Supplier with computed balance (for UI display)
+export interface SupplierWithBalance extends Supplier {
+  balance: number; // Computed from transactions, never stored
+}
+
+export interface SupplierPayment {
+  id: string;
+  payment_number: string;
+  supplier_id: string;
+  purchase_order_id: string | null; // nullable: can pay without linking to PO
+  amount: number;
+  payment_method: 'cash' | 'card' | 'transfer' | 'click' | 'payme' | 'uzum';
+  paid_at: string;
+  note: string | null;
+  created_by: string | null;
+  created_at: string;
+}
+
+export interface SupplierLedgerEntry {
+  date: string;
+  type: 'PURCHASE' | 'PAYMENT';
+  reference: string; // PO number or payment number
+  debit: number; // Purchase amount (increases debt)
+  credit: number; // Payment amount (decreases debt)
+  balance: number; // Running balance after this entry
+  purchase_order_id?: string | null;
+  payment_id?: string | null;
+}
+
+export interface SupplierWithPOs extends SupplierWithBalance {
   purchase_orders?: PurchaseOrder[];
 }
 
@@ -227,6 +259,9 @@ export interface PurchaseOrder {
   tax: number;
   total_amount: number;
   status: PurchaseOrderStatus;
+  payment_status?: 'UNPAID' | 'PARTIALLY_PAID' | 'PAID'; // Computed from payments
+  paid_amount?: number; // Computed: sum of supplier_payments for this PO
+  remaining_amount?: number; // Computed: total_amount - paid_amount
   invoice_number: string | null;
   received_by: string | null;
   created_by: string | null;
@@ -281,6 +316,30 @@ export interface SalesReturnWithDetails extends SalesReturn {
   customer?: Customer;
   cashier?: Profile;
   items?: SalesReturnItem[];
+}
+
+export type ExpenseCategory = 'Ijara' | 'Oylik maosh' | 'Kommunal' | 'Transport' | 'Soliq' | 'Marketing' | 'Boshqa';
+export type ExpensePaymentMethod = 'cash' | 'card' | 'bank_transfer' | 'other';
+export type ExpenseStatus = 'approved' | 'pending';
+
+export interface Expense {
+  id: string;
+  expense_number: string;
+  expense_date: string;
+  category: ExpenseCategory;
+  amount: number;
+  payment_method: ExpensePaymentMethod;
+  note: string | null;
+  employee_id: string | null;
+  created_by: string | null;
+  status: ExpenseStatus;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ExpenseWithDetails extends Expense {
+  employee?: Profile;
+  created_by_profile?: Profile;
 }
 
 // Cart item for POS terminal

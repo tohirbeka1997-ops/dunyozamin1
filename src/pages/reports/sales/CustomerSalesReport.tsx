@@ -16,6 +16,7 @@ import type { OrderWithDetails, Customer } from '@/types/database';
 import { FileDown, ArrowLeft } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 import { useNavigate } from 'react-router-dom';
+import { formatMoneyUZS } from '@/lib/format';
 
 interface CustomerSalesData {
   customer_id: string;
@@ -56,7 +57,7 @@ export default function CustomerSalesReport() {
 
       filtered.forEach((order) => {
         const customerId = order.customer_id || 'walk-in';
-        const customerName = order.customer?.name || 'Walk-in Customer';
+        const customerName = order.customer?.name || 'Tasodifiy mijoz';
         const existing = customerMap.get(customerId);
         
         const amount = Number(order.total_amount);
@@ -84,8 +85,8 @@ export default function CustomerSalesReport() {
       setCustomerSales(salesData);
     } catch (error) {
       toast({
-        title: 'Error',
-        description: 'Failed to load customer sales data',
+        title: 'Xatolik',
+        description: 'Mijozlar bo\'yicha sotuv ma\'lumotlarini yuklab bo\'lmadi',
         variant: 'destructive',
       });
     } finally {
@@ -126,8 +127,8 @@ export default function CustomerSalesReport() {
             <ArrowLeft className="h-4 w-4" />
           </Button>
           <div>
-            <h1 className="text-3xl font-bold">Customer Sales Report</h1>
-            <p className="text-muted-foreground">Analyze customer purchase behavior and loyalty</p>
+            <h1 className="text-3xl font-bold">Mijozlar bo'yicha sotuv hisobotlari</h1>
+            <p className="text-muted-foreground">Mijozlarning xarid qilish odatlari va sodiqligini tahlil qilish</p>
           </div>
         </div>
         <div className="flex gap-2">
@@ -147,8 +148,8 @@ export default function CustomerSalesReport() {
           <CardContent className="pt-6">
             <div className="flex items-center justify-between">
               <div>
-                <p className="text-sm text-muted-foreground">Total Revenue</p>
-                <p className="text-2xl font-bold">${totalRevenue.toFixed(2)}</p>
+                <p className="text-sm text-muted-foreground">Umumiy tushum</p>
+                <p className="text-2xl font-bold">{formatMoneyUZS(totalRevenue)}</p>
               </div>
             </div>
           </CardContent>
@@ -157,7 +158,7 @@ export default function CustomerSalesReport() {
           <CardContent className="pt-6">
             <div className="flex items-center justify-between">
               <div>
-                <p className="text-sm text-muted-foreground">Total Orders</p>
+                <p className="text-sm text-muted-foreground">Umumiy buyurtmalar</p>
                 <p className="text-2xl font-bold">{totalOrders}</p>
               </div>
             </div>
@@ -167,8 +168,8 @@ export default function CustomerSalesReport() {
           <CardContent className="pt-6">
             <div className="flex items-center justify-between">
               <div>
-                <p className="text-sm text-muted-foreground">Outstanding Balance</p>
-                <p className="text-2xl font-bold text-warning">${totalOutstanding.toFixed(2)}</p>
+                <p className="text-sm text-muted-foreground">Qoldiq qarz</p>
+                <p className="text-2xl font-bold text-warning">{formatMoneyUZS(totalOutstanding)}</p>
               </div>
             </div>
           </CardContent>
@@ -179,7 +180,7 @@ export default function CustomerSalesReport() {
         <CardContent className="pt-6">
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
             <div>
-              <label className="text-sm text-muted-foreground">From Date</label>
+              <label className="text-sm text-muted-foreground">Boshlanish sanasi</label>
               <Input
                 type="date"
                 value={dateFrom}
@@ -187,7 +188,7 @@ export default function CustomerSalesReport() {
               />
             </div>
             <div>
-              <label className="text-sm text-muted-foreground">To Date</label>
+              <label className="text-sm text-muted-foreground">Tugash sanasi</label>
               <Input
                 type="date"
                 value={dateTo}
@@ -195,9 +196,9 @@ export default function CustomerSalesReport() {
               />
             </div>
             <div>
-              <label className="text-sm text-muted-foreground">Search Customer</label>
+              <label className="text-sm text-muted-foreground">Mijozni qidirish</label>
               <Input
-                placeholder="Search by customer name..."
+                placeholder="Mijoz ismi bo'yicha qidirish..."
                 value={searchTerm}
                 onChange={(e) => setSearchTerm(e.target.value)}
               />
@@ -210,31 +211,31 @@ export default function CustomerSalesReport() {
         <CardContent className="p-0">
           {filteredCustomers.length === 0 ? (
             <div className="text-center py-12">
-              <p className="text-muted-foreground">No customer sales data found</p>
+              <p className="text-muted-foreground">Mijozlar bo'yicha sotuv ma'lumotlari topilmadi</p>
             </div>
           ) : (
             <Table>
               <TableHeader>
                 <TableRow>
-                  <TableHead>Customer</TableHead>
-                  <TableHead className="text-right">Total Purchases</TableHead>
-                  <TableHead className="text-right">Number of Orders</TableHead>
-                  <TableHead className="text-right">Avg Order Value</TableHead>
-                  <TableHead className="text-right">Outstanding Balance</TableHead>
+                  <TableHead>Mijoz</TableHead>
+                  <TableHead className="text-right">Umumiy xarid summasi</TableHead>
+                  <TableHead className="text-right">Buyurtmalar soni</TableHead>
+                  <TableHead className="text-right">O'rtacha buyurtma qiymati</TableHead>
+                  <TableHead className="text-right">Qoldiq qarz</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
                 {filteredCustomers.map((customer) => (
                   <TableRow key={customer.customer_id}>
                     <TableCell className="font-medium">{customer.customer_name}</TableCell>
-                    <TableCell className="text-right">${customer.total_purchases.toFixed(2)}</TableCell>
+                    <TableCell className="text-right">{formatMoneyUZS(customer.total_purchases)}</TableCell>
                     <TableCell className="text-right">{customer.order_count}</TableCell>
-                    <TableCell className="text-right">${customer.average_order_value.toFixed(2)}</TableCell>
+                    <TableCell className="text-right">{formatMoneyUZS(customer.average_order_value)}</TableCell>
                     <TableCell className="text-right">
                       {customer.outstanding_balance > 0 ? (
-                        <Badge className="bg-warning">${customer.outstanding_balance.toFixed(2)}</Badge>
+                        <Badge className="bg-warning">{formatMoneyUZS(customer.outstanding_balance)}</Badge>
                       ) : (
-                        <span className="text-muted-foreground">$0.00</span>
+                        <span className="text-muted-foreground">{formatMoneyUZS(0)}</span>
                       )}
                     </TableCell>
                   </TableRow>

@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useLocation } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
@@ -19,15 +19,18 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table';
-import { getSalesReturns, getCustomers } from '@/db/api';
-import type { Customer } from '@/types/database';
-import { Plus, Search, Eye, Printer, RotateCcw, Edit, Trash2 } from 'lucide-react';
+import { getSalesReturns, getCustomers, getSalesReturnById } from '@/db/api';
+import type { Customer, SalesReturnWithDetails } from '@/types/database';
+import { Plus, Search, Eye, Printer, RotateCcw, Edit } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
+import { formatMoneyUZS } from '@/lib/format';
+import { printHtml } from '@/lib/print';
 
 export default function SalesReturns() {
   const { toast } = useToast();
   const navigate = useNavigate();
-  const [returns, setReturns] = useState<any[]>([]);
+  const location = useLocation();
+  const [returns, setReturns] = useState<SalesReturnWithDetails[]>([]);
   const [customers, setCustomers] = useState<Customer[]>([]);
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState('');
@@ -35,10 +38,18 @@ export default function SalesReturns() {
   const [endDate, setEndDate] = useState('');
   const [selectedCustomer, setSelectedCustomer] = useState('all');
   const [selectedStatus, setSelectedStatus] = useState('all');
+  const [printingReturnId, setPrintingReturnId] = useState<string | null>(null);
 
   useEffect(() => {
     loadData();
   }, []);
+
+  // Reload data when navigating to this page (e.g., after creating a return)
+  useEffect(() => {
+    if (location.pathname === '/returns' || location.pathname === '/sales-returns') {
+      loadData();
+    }
+  }, [location.pathname]);
 
   const loadData = async () => {
     try {
@@ -50,9 +61,11 @@ export default function SalesReturns() {
       setReturns(returnsData);
       setCustomers(customersData);
     } catch (error) {
+      console.error('Error loading sales returns:', error);
+      const errorMessage = error instanceof Error ? error.message : 'Qaytarishlarni yuklab bo\'lmadi';
       toast({
-        title: 'Error',
-        description: 'Failed to load sales returns',
+        title: 'Xatolik',
+        description: errorMessage,
         variant: 'destructive',
       });
     } finally {
@@ -73,9 +86,11 @@ export default function SalesReturns() {
       const data = await getSalesReturns(filters);
       setReturns(data);
     } catch (error) {
+      console.error('Error searching sales returns:', error);
+      const errorMessage = error instanceof Error ? error.message : 'Qaytarishlarni qidirib bo\'lmadi';
       toast({
-        title: 'Error',
-        description: 'Failed to search returns',
+        title: 'Xatolik',
+        description: errorMessage,
         variant: 'destructive',
       });
     } finally {
@@ -86,14 +101,164 @@ export default function SalesReturns() {
   const getStatusBadge = (status: string) => {
     switch (status) {
       case 'Completed':
-        return <Badge className="bg-success text-success-foreground">Completed</Badge>;
+        return <Badge className="bg-success text-success-foreground">Yakunlangan</Badge>;
       case 'Pending':
-        return <Badge className="bg-primary text-primary-foreground">Pending</Badge>;
+        return <Badge className="bg-primary text-primary-foreground">Kutilmoqda</Badge>;
       case 'Cancelled':
-        return <Badge variant="destructive">Cancelled</Badge>;
+        return <Badge variant="destructive">Bekor qilingan</Badge>;
       default:
         return <Badge variant="outline">{status}</Badge>;
     }
+  };
+
+  const handlePrint = async (returnId: string) => {
+    try {
+      setPrintingReturnId(returnId);
+      const returnData = await getSalesReturnById(returnId);
+      
+      // Generate HTML content for the receipt
+      const htmlContent = generateReturnReceiptHTML(returnData, 'thermal');
+      printHtml('Qaytarish cheki', htmlContent, 'thermal');
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : 'Chop etishda xatolik yuz berdi';
+      toast({
+        title: 'Xatolik',
+        description: errorMessage,
+        variant: 'destructive',
+      });
+    } finally {
+      setPrintingReturnId(null);
+    }
+  };
+
+  const generateReturnReceiptHTML = (returnData: SalesReturnWithDetails, variant: 'thermal' | 'a4'): string => {
+    // Create a temporary wrapper to render React component
+    // For simplicity, we'll generate HTML string directly
+    const storeName = 'POS tizimi';
+    const dateTime = new Date(returnData.created_at).toLocaleString('uz-UZ', {
+      day: '2-digit',
+      month: '2-digit',
+      year: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
+    });
+    const cashierName = returnData.cashier?.username || returnData.cashier?.full_name || '-';
+    const customerName = returnData.customer?.name || 'Yangi mijoz';
+    const orderNumber = returnData.order?.order_number || '-';
+    const isPending = returnData.status === 'Pending';
+    
+    const statusLabels: Record<string, string> = {
+      Completed: 'Yakunlangan',
+      Pending: 'Kutilmoqda',
+      Cancelled: 'Bekor qilingan',
+    };
+    
+    if (variant === 'a4') {
+      return `
+        <div class="return-receipt-a4">
+          ${isPending ? '<div class="text-center mb-4 p-2 bg-yellow-100 border-2 border-yellow-400 rounded"><p class="font-bold text-yellow-800">QORALAMA / JARAYONDA</p></div>' : ''}
+          <div class="text-center mb-6">
+            <h1 class="text-2xl font-bold mb-2">${storeName}</h1>
+            <p class="text-sm text-muted-foreground">Sotuv qaytarilishi cheki</p>
+          </div>
+          <div class="grid grid-cols-2 gap-4 mb-6 text-sm">
+            <div><p class="font-semibold">Qaytarish raqami:</p><p class="font-mono">${returnData.return_number}</p></div>
+            <div><p class="font-semibold">Buyurtma raqami:</p><p class="font-mono">${orderNumber}</p></div>
+            <div><p class="font-semibold">Sana va vaqt:</p><p>${dateTime}</p></div>
+            <div><p class="font-semibold">Holati:</p><p>${statusLabels[returnData.status] || returnData.status}</p></div>
+            <div><p class="font-semibold">Kassir:</p><p>${cashierName}</p></div>
+            <div><p class="font-semibold">Mijoz:</p><p>${customerName}</p></div>
+          </div>
+          ${returnData.reason ? `<div class="mb-6"><p class="font-semibold mb-2">Qaytarish sababi:</p><p class="text-sm">${returnData.reason}</p></div>` : ''}
+          <div class="mb-6">
+            <table class="w-full border-collapse">
+              <thead>
+                <tr class="border-b-2 border-gray-300">
+                  <th class="text-left py-2 px-2">Mahsulot</th>
+                  <th class="text-center py-2 px-2">Miqdor</th>
+                  <th class="text-right py-2 px-2">Narx</th>
+                  <th class="text-right py-2 px-2">Jami</th>
+                </tr>
+              </thead>
+              <tbody>
+                ${returnData.items?.map(item => `
+                  <tr class="border-b border-gray-200">
+                    <td class="py-2 px-2">${item.product?.name || item.product_name || '-'}</td>
+                    <td class="text-center py-2 px-2">${item.quantity}</td>
+                    <td class="text-right py-2 px-2">${formatMoneyUZS(item.unit_price)}</td>
+                    <td class="text-right py-2 px-2 font-medium">${formatMoneyUZS(item.line_total)}</td>
+                  </tr>
+                `).join('') || ''}
+              </tbody>
+            </table>
+          </div>
+          <div class="mb-6 space-y-2 text-sm">
+            <div class="flex justify-between font-bold text-lg border-t-2 border-gray-300 pt-2">
+              <span>Jami qaytarilgan summa:</span>
+              <span>${formatMoneyUZS(returnData.total_amount)}</span>
+            </div>
+          </div>
+          ${returnData.notes ? `<div class="mb-6"><p class="font-semibold mb-2">Izoh:</p><p class="text-sm text-muted-foreground">${returnData.notes}</p></div>` : ''}
+          <div class="text-center mt-8 pt-4 border-t border-gray-300">
+            <p class="text-sm text-muted-foreground">Rahmat!</p>
+            <p class="text-xs text-muted-foreground mt-2">${dateTime}</p>
+          </div>
+        </div>
+      `;
+    }
+    
+    // Thermal format
+    return `
+      <div class="return-receipt-thermal">
+        ${isPending ? '<div class="text-center mb-2 p-1 border border-yellow-400 rounded"><p class="text-xs font-bold text-yellow-800">QORALAMA</p></div>' : ''}
+        <div class="text-center mb-2">
+          <h2 class="text-lg font-bold">${storeName}</h2>
+          <p class="text-xs">Sotuv qaytarilishi cheki</p>
+        </div>
+        <div class="text-center mb-3 text-xs">
+          <p class="font-mono">${returnData.return_number}</p>
+          <p class="font-mono">Buyurtma: ${orderNumber}</p>
+          <p>${dateTime}</p>
+        </div>
+        <div class="mb-3 text-xs space-y-1">
+          <div class="flex justify-between">
+            <span>Holati:</span>
+            <span class="font-semibold">${statusLabels[returnData.status] || returnData.status}</span>
+          </div>
+          <div class="flex justify-between">
+            <span>Kassir:</span>
+            <span>${cashierName}</span>
+          </div>
+          <div class="flex justify-between">
+            <span>Mijoz:</span>
+            <span>${customerName}</span>
+          </div>
+        </div>
+        ${returnData.reason ? `<div class="mb-3 text-xs"><p class="font-semibold">Sabab:</p><p>${returnData.reason}</p></div>` : ''}
+        <div class="border-t border-b border-dashed border-gray-400 py-2 mb-3">
+          ${returnData.items?.map(item => `
+            <div class="mb-2 text-xs">
+              <div class="font-medium">${item.product?.name || item.product_name || '-'}</div>
+              <div class="flex justify-between mt-1">
+                <span class="text-gray-600">${item.quantity} x ${formatMoneyUZS(item.unit_price)}</span>
+                <span class="font-semibold">${formatMoneyUZS(item.line_total)}</span>
+              </div>
+            </div>
+          `).join('') || ''}
+        </div>
+        <div class="mb-3 text-xs">
+          <div class="flex justify-between font-bold border-t border-gray-400 pt-1 mt-1">
+            <span>JAMI QAYTARILGAN:</span>
+            <span>${formatMoneyUZS(returnData.total_amount)}</span>
+          </div>
+        </div>
+        ${returnData.notes ? `<div class="mb-3 text-xs border-t border-dashed border-gray-400 pt-2"><p class="font-semibold">Izoh:</p><p class="text-gray-600">${returnData.notes}</p></div>` : ''}
+        <div class="text-center mt-4 pt-2 border-t border-dashed border-gray-400">
+          <p class="text-xs">Rahmat!</p>
+          <p class="text-xs text-gray-500 mt-1">${dateTime}</p>
+        </div>
+      </div>
+    `;
   };
 
   const filteredReturns = returns.filter((ret) => {
@@ -114,60 +279,60 @@ export default function SalesReturns() {
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-3xl font-bold">Sales Returns</h1>
-          <p className="text-muted-foreground">Manage product returns and refunds</p>
+          <h1 className="text-3xl font-bold">Sotuv qaytarishlari</h1>
+          <p className="text-muted-foreground">Qaytarish va pulni qaytarishni boshqarish</p>
         </div>
-        <Button onClick={() => navigate('/sales-returns/create')}>
+        <Button onClick={() => navigate('/returns/create')}>
           <Plus className="h-4 w-4 mr-2" />
-          New Sales Return
+          Yangi qaytarish
         </Button>
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
         <Card>
           <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="text-sm font-medium">Total Returned</CardTitle>
+            <CardTitle className="text-sm font-medium">Jami qaytarilgan</CardTitle>
             <RotateCcw className="h-4 w-4 text-muted-foreground" />
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold">${totalReturned.toFixed(2)}</div>
-            <p className="text-xs text-muted-foreground">{filteredReturns.length} returns</p>
+            <div className="text-2xl font-bold">{formatMoneyUZS(totalReturned)}</div>
+            <p className="text-xs text-muted-foreground">{filteredReturns.length} qaytarish</p>
           </CardContent>
         </Card>
 
         <Card>
           <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="text-sm font-medium">Completed</CardTitle>
+            <CardTitle className="text-sm font-medium">Yakunlangan</CardTitle>
             <RotateCcw className="h-4 w-4 text-muted-foreground" />
           </CardHeader>
           <CardContent>
             <div className="text-2xl font-bold">{completedReturns}</div>
-            <p className="text-xs text-muted-foreground">Processed returns</p>
+            <p className="text-xs text-muted-foreground">Qayta ishlangan qaytarishlar</p>
           </CardContent>
         </Card>
 
         <Card>
           <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="text-sm font-medium">Pending</CardTitle>
+            <CardTitle className="text-sm font-medium">Kutilmoqda</CardTitle>
             <RotateCcw className="h-4 w-4 text-muted-foreground" />
           </CardHeader>
           <CardContent>
             <div className="text-2xl font-bold">{pendingReturns}</div>
-            <p className="text-xs text-muted-foreground">Awaiting processing</p>
+            <p className="text-xs text-muted-foreground">Qayta ishlash kutilmoqda</p>
           </CardContent>
         </Card>
       </div>
 
       <Card>
         <CardHeader>
-          <CardTitle>Filters</CardTitle>
+          <CardTitle>Filtrlar</CardTitle>
         </CardHeader>
         <CardContent>
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-4">
             <div className="relative">
               <Search className="absolute left-3 top-3 h-4 w-4 text-muted-foreground" />
               <Input
-                placeholder="Search returns..."
+                placeholder="Qaytarishlarni qidirish..."
                 value={searchTerm}
                 onChange={(e) => setSearchTerm(e.target.value)}
                 className="pl-9"
@@ -178,22 +343,22 @@ export default function SalesReturns() {
               type="date"
               value={startDate}
               onChange={(e) => setStartDate(e.target.value)}
-              placeholder="Start Date"
+              placeholder="Boshlanish sanasi"
             />
 
             <Input
               type="date"
               value={endDate}
               onChange={(e) => setEndDate(e.target.value)}
-              placeholder="End Date"
+              placeholder="Tugash sanasi"
             />
 
             <Select value={selectedCustomer} onValueChange={setSelectedCustomer}>
               <SelectTrigger>
-                <SelectValue placeholder="All Customers" />
+                <SelectValue placeholder="Barcha mijozlar" />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="all">All Customers</SelectItem>
+                <SelectItem value="all">Barcha mijozlar</SelectItem>
                 {customers.map((customer) => (
                   <SelectItem key={customer.id} value={customer.id}>
                     {customer.name}
@@ -204,13 +369,13 @@ export default function SalesReturns() {
 
             <Select value={selectedStatus} onValueChange={setSelectedStatus}>
               <SelectTrigger>
-                <SelectValue placeholder="All Status" />
+                <SelectValue placeholder="Barcha holatlar" />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="all">All Status</SelectItem>
-                <SelectItem value="Pending">Pending</SelectItem>
-                <SelectItem value="Completed">Completed</SelectItem>
-                <SelectItem value="Cancelled">Cancelled</SelectItem>
+                <SelectItem value="all">Barcha holatlar</SelectItem>
+                <SelectItem value="Pending">Kutilmoqda</SelectItem>
+                <SelectItem value="Completed">Yakunlangan</SelectItem>
+                <SelectItem value="Cancelled">Bekor qilingan</SelectItem>
               </SelectContent>
             </Select>
           </div>
@@ -227,16 +392,16 @@ export default function SalesReturns() {
                 loadData();
               }}
             >
-              Reset
+              Tozalash
             </Button>
-            <Button onClick={handleSearch}>Apply Filters</Button>
+            <Button onClick={handleSearch}>Filtrni qo'llash</Button>
           </div>
         </CardContent>
       </Card>
 
       <Card>
         <CardHeader>
-          <CardTitle>Returns List ({filteredReturns.length})</CardTitle>
+          <CardTitle>Qaytarishlar ro'yxati ({filteredReturns.length})</CardTitle>
         </CardHeader>
         <CardContent>
           {loading ? (
@@ -246,24 +411,24 @@ export default function SalesReturns() {
           ) : filteredReturns.length === 0 ? (
             <div className="text-center py-12">
               <RotateCcw className="h-12 w-12 mx-auto text-muted-foreground mb-4" />
-              <p className="text-muted-foreground">No returns found</p>
-              <Button className="mt-4" onClick={() => navigate('/sales-returns/create')}>
+              <p className="text-muted-foreground">Qaytarishlar topilmadi</p>
+              <Button className="mt-4" onClick={() => navigate('/returns/create')}>
                 <Plus className="h-4 w-4 mr-2" />
-                Create First Return
+                Birinchi qaytarishni yaratish
               </Button>
             </div>
           ) : (
             <Table>
               <TableHeader>
                 <TableRow>
-                  <TableHead>Return Number</TableHead>
-                  <TableHead>Order Number</TableHead>
-                  <TableHead>Customer</TableHead>
-                  <TableHead>Date & Time</TableHead>
-                  <TableHead className="text-right">Amount</TableHead>
-                  <TableHead>Status</TableHead>
-                  <TableHead>Cashier</TableHead>
-                  <TableHead className="text-right">Actions</TableHead>
+                  <TableHead>Qaytarish raqami</TableHead>
+                  <TableHead>Buyurtma raqami</TableHead>
+                  <TableHead>Mijoz</TableHead>
+                  <TableHead>Sana va vaqt</TableHead>
+                  <TableHead className="text-right">Summa</TableHead>
+                  <TableHead>Holati</TableHead>
+                  <TableHead>Kassir</TableHead>
+                  <TableHead className="text-right">Amallar</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -271,12 +436,12 @@ export default function SalesReturns() {
                   <TableRow key={ret.id}>
                     <TableCell className="font-medium">{ret.return_number}</TableCell>
                     <TableCell>{ret.order?.order_number || '-'}</TableCell>
-                    <TableCell>{ret.customer?.name || 'Walk-in'}</TableCell>
+                    <TableCell>{ret.customer?.name || 'Yangi mijoz'}</TableCell>
                     <TableCell>
-                      {new Date(ret.created_at).toLocaleString()}
+                      {new Date(ret.created_at).toLocaleString('uz-UZ')}
                     </TableCell>
                     <TableCell className="text-right font-medium">
-                      ${Number(ret.total_amount).toFixed(2)}
+                      {formatMoneyUZS(ret.total_amount)}
                     </TableCell>
                     <TableCell>{getStatusBadge(ret.status)}</TableCell>
                     <TableCell>{ret.cashier?.username || '-'}</TableCell>
@@ -285,8 +450,8 @@ export default function SalesReturns() {
                         <Button
                           variant="ghost"
                           size="icon"
-                          onClick={() => navigate(`/sales-returns/${ret.id}`)}
-                          title="View Details"
+                          onClick={() => navigate(`/returns/${ret.id}`)}
+                          title="Tafsilotlarni ko'rish"
                         >
                           <Eye className="h-4 w-4" />
                         </Button>
@@ -294,8 +459,8 @@ export default function SalesReturns() {
                           <Button
                             variant="ghost"
                             size="icon"
-                            onClick={() => navigate(`/sales-returns/${ret.id}/edit`)}
-                            title="Edit Return"
+                            onClick={() => navigate(`/returns/${ret.id}/edit`)}
+                            title="Qaytarishni tahrirlash"
                           >
                             <Edit className="h-4 w-4" />
                           </Button>
@@ -303,15 +468,15 @@ export default function SalesReturns() {
                         <Button
                           variant="ghost"
                           size="icon"
-                          onClick={() => {
-                            toast({
-                              title: 'Print',
-                              description: 'Print functionality coming soon',
-                            });
-                          }}
-                          title="Print"
+                          onClick={() => handlePrint(ret.id)}
+                          disabled={printingReturnId === ret.id}
+                          title="Chop etish"
                         >
-                          <Printer className="h-4 w-4" />
+                          {printingReturnId === ret.id ? (
+                            <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-primary" />
+                          ) : (
+                            <Printer className="h-4 w-4" />
+                          )}
                         </Button>
                       </div>
                     </TableCell>

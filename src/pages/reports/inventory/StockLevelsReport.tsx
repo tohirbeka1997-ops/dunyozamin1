@@ -68,8 +68,8 @@ export default function StockLevelsReport() {
       setCategories(categoriesData);
     } catch (error) {
       toast({
-        title: 'Error',
-        description: 'Failed to load stock levels',
+        title: 'Xatolik',
+        description: 'Ombor darajalarini yuklab bo\'lmadi',
         variant: 'destructive',
       });
     } finally {
@@ -82,11 +82,11 @@ export default function StockLevelsReport() {
     const minStock = Number(product.min_stock_level);
 
     if (stock === 0) {
-      return { label: 'Out of Stock', className: 'bg-destructive text-destructive-foreground' };
+      return { label: 'Tugagan', className: 'bg-destructive text-destructive-foreground' };
     } else if (stock <= minStock) {
-      return { label: 'Low Stock', className: 'bg-warning text-warning-foreground' };
+      return { label: 'Kam zaxira', className: 'bg-warning text-warning-foreground' };
     } else {
-      return { label: 'In Stock', className: 'bg-success text-success-foreground' };
+      return { label: 'Omborda bor', className: 'bg-success text-success-foreground' };
     }
   };
 
@@ -131,8 +131,8 @@ export default function StockLevelsReport() {
             <ArrowLeft className="h-4 w-4" />
           </Button>
           <div>
-            <h1 className="text-3xl font-bold">Stock Levels Report</h1>
-            <p className="text-muted-foreground">Monitor inventory stock levels and alerts</p>
+            <h1 className="text-3xl font-bold">Ombor darajalari hisobotlari</h1>
+            <p className="text-muted-foreground">Ombordagi mahsulot darajalari va ogohlantirishlarni kuzating</p>
           </div>
         </div>
         <div className="flex gap-2">
@@ -153,10 +153,10 @@ export default function StockLevelsReport() {
             <div className="flex items-center gap-3">
               <AlertTriangle className="h-5 w-5 text-warning" />
               <div>
-                <p className="font-medium">Stock Alerts</p>
+                <p className="font-medium">Ombor ogohlantirishlari</p>
                 <p className="text-sm text-muted-foreground">
-                  {outOfStock > 0 && `${outOfStock} products out of stock. `}
-                  {lowStock > 0 && `${lowStock} products low on stock.`}
+                  {outOfStock > 0 && `${outOfStock} ta mahsulot zaxirasi tugagan. `}
+                  {lowStock > 0 && `${lowStock} ta mahsulot zaxirasi kam.`}
                 </p>
               </div>
             </div>
@@ -169,7 +169,7 @@ export default function StockLevelsReport() {
           <CardContent className="pt-6">
             <div className="flex items-center justify-between">
               <div>
-                <p className="text-sm text-muted-foreground">In Stock</p>
+                <p className="text-sm text-muted-foreground">Omborda bor</p>
                 <p className="text-2xl font-bold text-success">{inStock}</p>
               </div>
               <div className="h-12 w-12 rounded-full bg-success/10 flex items-center justify-center">
@@ -182,7 +182,7 @@ export default function StockLevelsReport() {
           <CardContent className="pt-6">
             <div className="flex items-center justify-between">
               <div>
-                <p className="text-sm text-muted-foreground">Low Stock</p>
+                <p className="text-sm text-muted-foreground">Kam zaxira</p>
                 <p className="text-2xl font-bold text-warning">{lowStock}</p>
               </div>
               <div className="h-12 w-12 rounded-full bg-warning/10 flex items-center justify-center">
@@ -195,7 +195,7 @@ export default function StockLevelsReport() {
           <CardContent className="pt-6">
             <div className="flex items-center justify-between">
               <div>
-                <p className="text-sm text-muted-foreground">Out of Stock</p>
+                <p className="text-sm text-muted-foreground">Zaxira tugagan</p>
                 <p className="text-2xl font-bold text-destructive">{outOfStock}</p>
               </div>
               <div className="h-12 w-12 rounded-full bg-destructive/10 flex items-center justify-center">
@@ -210,13 +210,13 @@ export default function StockLevelsReport() {
         <CardContent className="pt-6">
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
             <div>
-              <label className="text-sm text-muted-foreground">Category</label>
+              <label className="text-sm text-muted-foreground">Kategoriya</label>
               <Select value={categoryFilter} onValueChange={setCategoryFilter}>
                 <SelectTrigger>
-                  <SelectValue placeholder="All Categories" />
+                  <SelectValue placeholder="Barcha kategoriyalar" />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="all">All Categories</SelectItem>
+                  <SelectItem value="all">Barcha kategoriyalar</SelectItem>
                   {categories.map((category) => (
                     <SelectItem key={category.id} value={category.id}>
                       {category.name}
@@ -226,23 +226,23 @@ export default function StockLevelsReport() {
               </Select>
             </div>
             <div>
-              <label className="text-sm text-muted-foreground">Stock Status</label>
+              <label className="text-sm text-muted-foreground">Ombor holati</label>
               <Select value={statusFilter} onValueChange={setStatusFilter}>
                 <SelectTrigger>
-                  <SelectValue placeholder="All Status" />
+                  <SelectValue placeholder="Barcha holatlar" />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="all">All Status</SelectItem>
-                  <SelectItem value="ok">In Stock</SelectItem>
-                  <SelectItem value="low">Low Stock</SelectItem>
-                  <SelectItem value="out_of_stock">Out of Stock</SelectItem>
+                  <SelectItem value="all">Barcha holatlar</SelectItem>
+                  <SelectItem value="ok">Omborda bor</SelectItem>
+                  <SelectItem value="low">Kam zaxira</SelectItem>
+                  <SelectItem value="out_of_stock">Tugagan</SelectItem>
                 </SelectContent>
               </Select>
             </div>
             <div>
-              <label className="text-sm text-muted-foreground">Search</label>
+              <label className="text-sm text-muted-foreground">Qidirish</label>
               <Input
-                placeholder="Search by name, SKU, or barcode..."
+                placeholder="Nomi, SKU yoki shtrixkod bo'yicha qidirish..."
                 value={searchTerm}
                 onChange={(e) => setSearchTerm(e.target.value)}
               />
@@ -255,18 +255,18 @@ export default function StockLevelsReport() {
         <CardContent className="p-0">
           {filteredProducts.length === 0 ? (
             <div className="text-center py-12">
-              <p className="text-muted-foreground">No products found</p>
+              <p className="text-muted-foreground">Mahsulotlar topilmadi</p>
             </div>
           ) : (
             <Table>
               <TableHeader>
                 <TableRow>
-                  <TableHead>Product Name</TableHead>
+                  <TableHead>Mahsulot nomi</TableHead>
                   <TableHead>SKU</TableHead>
-                  <TableHead>Category</TableHead>
-                  <TableHead className="text-right">Current Stock</TableHead>
-                  <TableHead className="text-right">Min Stock</TableHead>
-                  <TableHead>Status</TableHead>
+                  <TableHead>Kategoriya</TableHead>
+                  <TableHead className="text-right">Joriy zaxira</TableHead>
+                  <TableHead className="text-right">Minimal zaxira</TableHead>
+                  <TableHead>Holati</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>

@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -19,54 +19,43 @@ import {
   TableRow,
 } from '@/components/ui/table';
 import { Badge } from '@/components/ui/badge';
-import { getProducts, getCategories, deleteProduct } from '@/db/api';
-import type { ProductWithCategory, Category } from '@/types/database';
+import { deleteProduct, productUpdateEmitter } from '@/db/api';
+import { useProducts } from '@/hooks/useProducts';
+import type { ProductWithCategory } from '@/types/database';
 import { Plus, Search, Pencil, Trash2, Eye, AlertTriangle, Package } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 import { Link, useNavigate } from 'react-router-dom';
+import { formatUnit } from '@/utils/formatters';
+import { formatMoneyUZS, formatNumberUZ } from '@/lib/format';
 
 export default function Products() {
   const { t } = useTranslation();
   const { toast } = useToast();
   const navigate = useNavigate();
-  const [products, setProducts] = useState<ProductWithCategory[]>([]);
-  const [categories, setCategories] = useState<Category[]>([]);
-  const [loading, setLoading] = useState(true);
+  const { products, categories, loading, error, refetch } = useProducts(true);
   const [searchTerm, setSearchTerm] = useState('');
   const [categoryFilter, setCategoryFilter] = useState('all');
   const [statusFilter, setStatusFilter] = useState('all');
   const [stockFilter, setStockFilter] = useState('all');
 
+  // Show error toast if loading fails
   useEffect(() => {
-    loadData();
-  }, []);
-
-  const loadData = async () => {
-    try {
-      setLoading(true);
-      const [productsData, categoriesData] = await Promise.all([
-        getProducts(true),
-        getCategories(),
-      ]);
-      setProducts(productsData);
-      setCategories(categoriesData);
-    } catch (error) {
+    if (error) {
       toast({
         title: t('common.error'),
         description: t('products.failed_to_load'),
         variant: 'destructive',
       });
-    } finally {
-      setLoading(false);
     }
-  };
+  }, [error, toast, t]);
 
   const handleDelete = async (id: string, name: string) => {
     if (!confirm(t('products.delete_confirm', { name }))) return;
     try {
       await deleteProduct(id);
       toast({ title: t('common.success'), description: t('products.product_deleted') });
-      loadData();
+      // Trigger product refetch
+      await refetch();
     } catch (error) {
       toast({
         title: t('common.error'),
@@ -86,27 +75,30 @@ export default function Products() {
     return { label: t('products.in_stock_label'), color: 'bg-success text-success-foreground' };
   };
 
-  const filteredProducts = products.filter((product) => {
-    const matchesSearch =
-      searchTerm === '' ||
-      product.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      product.sku.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      (product.barcode && product.barcode.toLowerCase().includes(searchTerm.toLowerCase()));
+  // Memoize filtered products to prevent recalculation on every render
+  const filteredProducts = useMemo(() => {
+    return products.filter((product) => {
+      const matchesSearch =
+        searchTerm === '' ||
+        product.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
+        product.sku.toLowerCase().includes(searchTerm.toLowerCase()) ||
+        (product.barcode && product.barcode.toLowerCase().includes(searchTerm.toLowerCase()));
 
-    const matchesCategory = categoryFilter === 'all' || product.category_id === categoryFilter;
+      const matchesCategory = categoryFilter === 'all' || product.category_id === categoryFilter;
 
-    const matchesStatus =
-      statusFilter === 'all' ||
-      (statusFilter === 'active' && product.is_active) ||
-      (statusFilter === 'inactive' && !product.is_active);
+      const matchesStatus =
+        statusFilter === 'all' ||
+        (statusFilter === 'active' && product.is_active) ||
+        (statusFilter === 'inactive' && !product.is_active);
 
-    const matchesStock =
-      stockFilter === 'all' ||
-      (stockFilter === 'low' && product.current_stock <= product.min_stock_level) ||
-      (stockFilter === 'out' && product.current_stock <= 0);
+      const matchesStock =
+        stockFilter === 'all' ||
+        (stockFilter === 'low' && product.current_stock <= product.min_stock_level) ||
+        (stockFilter === 'out' && product.current_stock <= 0);
 
-    return matchesSearch && matchesCategory && matchesStatus && matchesStock;
-  });
+      return matchesSearch && matchesCategory && matchesStatus && matchesStock;
+    });
+  }, [products, searchTerm, categoryFilter, statusFilter, stockFilter]);
 
   return (
     <div className="space-y-6">
@@ -254,20 +246,20 @@ export default function Products() {
                             <span className="text-muted-foreground text-sm">-</span>
                           )}
                         </TableCell>
-                        <TableCell>{product.unit}</TableCell>
+                        <TableCell>{formatUnit(product.unit)}</TableCell>
                         <TableCell className="text-right">
-                          ${Number(product.purchase_price).toFixed(2)}
+                          {formatMoneyUZS(product.purchase_price)}
                         </TableCell>
                         <TableCell className="text-right font-medium">
-                          ${Number(product.sale_price).toFixed(2)}
+                          {formatMoneyUZS(product.sale_price)}
                         </TableCell>
                         <TableCell className="text-right">
                           <div className="flex items-center justify-end gap-2">
                             {product.current_stock <= product.min_stock_level && (
                               <AlertTriangle className="h-4 w-4 text-warning" />
                             )}
-                            <span className="font-medium">{product.current_stock}</span>
-                            <span className="text-xs text-muted-foreground">{product.unit}</span>
+                            <span className="font-medium">{formatNumberUZ(product.current_stock)}</span>
+                            <span className="text-xs text-muted-foreground">{formatUnit(product.unit)}</span>
                           </div>
                         </TableCell>
                         <TableCell>

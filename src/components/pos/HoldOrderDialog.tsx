@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import {
   Dialog,
   DialogContent,
@@ -23,6 +24,7 @@ export default function HoldOrderDialog({
   onOpenChange,
   onConfirm,
 }: HoldOrderDialogProps) {
+  const { t } = useTranslation();
   const [customerName, setCustomerName] = useState('');
   const [note, setNote] = useState('');
 
@@ -42,29 +44,29 @@ export default function HoldOrderDialog({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-w-md">
         <DialogHeader>
-          <DialogTitle>Hold Order</DialogTitle>
+          <DialogTitle>{t('pos.holdOrder.title')}</DialogTitle>
           <DialogDescription>
-            Save this order to the waiting list. You can restore it later.
+            {t('pos.holdOrder.description')}
           </DialogDescription>
         </DialogHeader>
         <div className="space-y-4 py-4">
           <div className="space-y-2">
-            <Label htmlFor="customer-name">Customer Name / Label (Optional)</Label>
+            <Label htmlFor="customer-name">{t('pos.holdOrder.customerNameLabel')}</Label>
             <Input
               id="customer-name"
-              placeholder="e.g., Green T-shirt guy, Table 3, Tohirbek"
+              placeholder={t('pos.holdOrder.customerNamePlaceholder')}
               value={customerName}
               onChange={(e) => setCustomerName(e.target.value)}
             />
             <p className="text-xs text-muted-foreground">
-              Add a label to easily identify this order later
+              {t('pos.holdOrder.customerNameHelper')}
             </p>
           </div>
           <div className="space-y-2">
-            <Label htmlFor="note">Note (Optional)</Label>
+            <Label htmlFor="note">{t('pos.holdOrder.noteLabel')}</Label>
             <Textarea
               id="note"
-              placeholder="Add any notes about this order..."
+              placeholder={t('pos.holdOrder.notePlaceholder')}
               value={note}
               onChange={(e) => setNote(e.target.value)}
               rows={3}
@@ -73,10 +75,10 @@ export default function HoldOrderDialog({
         </div>
         <DialogFooter>
           <Button variant="outline" onClick={handleCancel}>
-            Cancel
+            {t('pos.holdOrder.cancel')}
           </Button>
           <Button onClick={handleConfirm}>
-            Hold Order
+            {t('pos.holdOrder.confirm')}
           </Button>
         </DialogFooter>
       </DialogContent>

@@ -30,12 +30,21 @@ import ProductSalesReport from './pages/reports/sales/ProductSalesReport';
 import CustomerSalesReport from './pages/reports/sales/CustomerSalesReport';
 import StockLevelsReport from './pages/reports/inventory/StockLevelsReport';
 import InventoryMovementReport from './pages/reports/inventory/InventoryMovementReport';
+import ValuationReport from './pages/reports/inventory/ValuationReport';
 import ProfitLossReport from './pages/reports/financial/ProfitLossReport';
 import PaymentMethodReport from './pages/reports/financial/PaymentMethodReport';
+import CashierPerformanceReport from './pages/reports/employee/CashierPerformanceReport';
+import LoginActivityReport from './pages/reports/employee/LoginActivityReport';
+import PurchaseOrderSummaryReport from './pages/reports/purchase/PurchaseOrderSummaryReport';
+import SupplierPerformanceReport from './pages/reports/purchase/SupplierPerformanceReport';
+import ExportManager from './pages/reports/export/ExportManager';
 import Employees from './pages/Employees';
 import EmployeeForm from './pages/employees/EmployeeForm';
 import EmployeeDetail from './pages/employees/EmployeeDetail';
 import Settings from './pages/Settings';
+import ReceiptBarcodePage from './pages/tools/ReceiptBarcodePage';
+import ResetPassword from './pages/ResetPassword';
+import Expenses from './pages/Expenses';
 
 export interface RouteConfig {
   name: string;
@@ -51,6 +60,20 @@ const routes: RouteConfig[] = [
     name: 'Login',
     path: '/login',
     element: <Login />,
+    visible: false,
+    requireAuth: false,
+  },
+  {
+    name: 'Reset Password',
+    path: '/reset-password',
+    element: <ResetPassword />,
+    visible: false,
+    requireAuth: false,
+  },
+  {
+    name: 'Reset Password (Auth)',
+    path: '/auth/reset-password',
+    element: <ResetPassword />,
     visible: false,
     requireAuth: false,
   },
@@ -128,9 +151,45 @@ const routes: RouteConfig[] = [
   },
   {
     name: 'Sales Returns',
-    path: '/sales-returns',
+    path: '/returns',
     element: <SalesReturns />,
     visible: true,
+    requireAuth: true,
+  },
+  {
+    name: 'Create Return',
+    path: '/returns/create',
+    element: <CreateReturn />,
+    visible: false,
+    requireAuth: true,
+  },
+  {
+    name: 'Edit Return',
+    path: '/returns/:id/edit',
+    element: <EditReturn />,
+    visible: false,
+    requireAuth: true,
+  },
+  {
+    name: 'Return Detail',
+    path: '/returns/:id',
+    element: <ReturnDetail />,
+    visible: false,
+    requireAuth: true,
+  },
+  {
+    name: 'Expenses',
+    path: '/expenses',
+    element: <Expenses />,
+    visible: true,
+    requireAuth: true,
+  },
+  // Backward compatibility: keep /sales-returns routes
+  {
+    name: 'Sales Returns',
+    path: '/sales-returns',
+    element: <SalesReturns />,
+    visible: false,
     requireAuth: true,
   },
   {
@@ -318,10 +377,60 @@ const routes: RouteConfig[] = [
     requireAuth: true,
     allowedRoles: ['admin', 'manager'],
   },
+  // FIXED: Valuation Report route - handles '/reports/inventory/valuation' path
+  // This route must be defined before any catch-all routes in App.tsx
+  {
+    name: 'Valuation Report',
+    path: '/reports/inventory/valuation',
+    element: <ValuationReport />,
+    visible: false,
+    requireAuth: true,
+    allowedRoles: ['admin', 'manager'],
+  },
   {
     name: 'Payment Method Report',
     path: '/reports/financial/payment-methods',
     element: <PaymentMethodReport />,
+    visible: false,
+    requireAuth: true,
+    allowedRoles: ['admin', 'manager'],
+  },
+  {
+    name: 'Cashier Performance Report',
+    path: '/reports/employee/cashier',
+    element: <CashierPerformanceReport />,
+    visible: false,
+    requireAuth: true,
+    allowedRoles: ['admin', 'manager'],
+  },
+  {
+    name: 'Login Activity Report',
+    path: '/reports/employee/activity',
+    element: <LoginActivityReport />,
+    visible: false,
+    requireAuth: true,
+    allowedRoles: ['admin', 'manager'],
+  },
+  {
+    name: 'Purchase Order Summary Report',
+    path: '/reports/purchase/summary',
+    element: <PurchaseOrderSummaryReport />,
+    visible: false,
+    requireAuth: true,
+    allowedRoles: ['admin', 'manager'],
+  },
+  {
+    name: 'Supplier Performance Report',
+    path: '/reports/purchase/suppliers',
+    element: <SupplierPerformanceReport />,
+    visible: false,
+    requireAuth: true,
+    allowedRoles: ['admin', 'manager'],
+  },
+  {
+    name: 'Export Manager',
+    path: '/reports/export',
+    element: <ExportManager />,
     visible: false,
     requireAuth: true,
     allowedRoles: ['admin', 'manager'],
@@ -365,6 +474,14 @@ const routes: RouteConfig[] = [
     visible: true,
     requireAuth: true,
     allowedRoles: ['admin'],
+  },
+  {
+    name: 'Receipt & Barcode Tools',
+    path: '/tools/receipt-barcode',
+    element: <ReceiptBarcodePage />,
+    visible: true,
+    requireAuth: true,
+    allowedRoles: ['admin', 'manager'],
   },
 ];
 

@@ -22,6 +22,10 @@ import { useToast } from '@/hooks/use-toast';
 import { receiveCustomerPayment } from '@/db/api';
 import type { Customer } from '@/types/database';
 import { DollarSign } from 'lucide-react';
+import { formatMoneyUZS } from '@/lib/format';
+import MoneyInput from '@/components/common/MoneyInput';
+import { useQueryClient } from '@tanstack/react-query';
+import { invalidateDashboardQueries } from '@/utils/dashboard';
 
 type CustomerPaymentMethod = 'cash' | 'card' | 'qr';
 
@@ -39,16 +43,15 @@ export default function ReceivePaymentDialog({
   onSuccess,
 }: ReceivePaymentDialogProps) {
   const { toast } = useToast();
-  const [amount, setAmount] = useState('');
+  const [amount, setAmount] = useState<number | undefined>(undefined);
   const [paymentMethod, setPaymentMethod] = useState<CustomerPaymentMethod>('cash');
   const [note, setNote] = useState('');
   const [loading, setLoading] = useState(false);
+  const queryClient = useQueryClient();
 
   const handleSubmit = async () => {
-    const paymentAmount = Number(amount);
-
     // Validation
-    if (!paymentAmount || paymentAmount <= 0) {
+    if (amount === undefined || amount === null || amount <= 0) {
       toast({
         title: 'Invalid Amount',
         description: 'Please enter a valid payment amount greater than zero.',
@@ -57,10 +60,10 @@ export default function ReceivePaymentDialog({
       return;
     }
 
-    if (paymentAmount > (customer.balance || 0)) {
+    if (amount > (customer.balance || 0)) {
       toast({
         title: 'Amount Exceeds Balance',
-        description: `Payment amount cannot exceed customer balance of ${(customer.balance || 0).toFixed(2)} UZS.`,
+        description: `Payment amount cannot exceed customer balance of ${formatMoneyUZS(customer.balance || 0)}.`,
         variant: 'destructive',
       });
       return;
@@ -70,7 +73,7 @@ export default function ReceivePaymentDialog({
       setLoading(true);
       const result = await receiveCustomerPayment({
         customer_id: customer.id,
-        amount: paymentAmount,
+        amount: amount,
         payment_method: paymentMethod,
         notes: note.trim() || null,
       });
@@ -79,14 +82,17 @@ export default function ReceivePaymentDialog({
         throw new Error(result.error || 'Failed to receive payment');
       }
 
+      // Invalidate dashboard queries
+      invalidateDashboardQueries(queryClient);
+
       toast({
         title: '✅ Payment Received',
-        description: `Payment of ${paymentAmount.toFixed(2)} UZS received. New balance: ${result.new_balance?.toFixed(2)} UZS`,
+        description: `Payment of ${formatMoneyUZS(amount)} received. New balance: ${formatMoneyUZS(result.new_balance || 0)}`,
         className: 'bg-green-50 border-green-200',
       });
 
       // Reset form
-      setAmount('');
+      setAmount(undefined);
       setPaymentMethod('cash');
       setNote('');
       onOpenChange(false);
@@ -121,27 +127,21 @@ export default function ReceivePaymentDialog({
             <div className="flex justify-between">
               <span className="text-sm text-muted-foreground">Current Balance:</span>
               <span className="font-bold text-destructive">
-                {(customer.balance || 0).toFixed(2)} UZS
+                {formatMoneyUZS(customer.balance || 0)}
               </span>
             </div>
           </div>
 
-          <div className="space-y-2">
-            <Label htmlFor="amount">Payment Amount *</Label>
-            <Input
-              id="amount"
-              type="number"
-              step="0.01"
-              min="0"
-              max={customer.balance || 0}
-              value={amount}
-              onChange={(e) => setAmount(e.target.value)}
-              placeholder="0.00"
-            />
-            <p className="text-xs text-muted-foreground">
-              Maximum: {(customer.balance || 0).toFixed(2)} UZS
-            </p>
-          </div>
+          <MoneyInput
+            id="amount"
+            label="Payment Amount"
+            value={amount ?? null}
+            onValueChange={(val) => setAmount(val ?? undefined)}
+            placeholder="0"
+            required
+            min={1}
+            max={customer.balance || undefined}
+          />
 
           <div className="space-y-2">
             <Label htmlFor="method">Payment Method *</Label>
@@ -168,12 +168,12 @@ export default function ReceivePaymentDialog({
             />
           </div>
 
-          {amount && Number(amount) > 0 && (
+          {amount && amount > 0 && (
             <div className="p-3 bg-primary/10 border border-primary/20 rounded-lg">
               <div className="flex justify-between items-center">
                 <span className="text-sm font-medium">New Balance:</span>
                 <span className="text-lg font-bold text-primary">
-                  {((customer.balance || 0) - Number(amount)).toFixed(2)} UZS
+                  {formatMoneyUZS((customer.balance || 0) - amount)}
                 </span>
               </div>
             </div>
@@ -183,7 +183,7 @@ export default function ReceivePaymentDialog({
           <Button variant="outline" onClick={() => onOpenChange(false)} disabled={loading}>
             Cancel
           </Button>
-          <Button onClick={handleSubmit} disabled={loading || !amount || Number(amount) <= 0}>
+          <Button onClick={handleSubmit} disabled={loading || !amount || amount <= 0}>
             <DollarSign className="h-4 w-4 mr-2" />
             {loading ? 'Processing...' : 'Receive Payment'}
           </Button>

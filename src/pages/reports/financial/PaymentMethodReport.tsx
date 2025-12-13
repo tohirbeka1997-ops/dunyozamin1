@@ -16,6 +16,7 @@ import { FileDown, ArrowLeft, CreditCard, Banknote, Wallet } from 'lucide-react'
 import { useToast } from '@/hooks/use-toast';
 import { useNavigate } from 'react-router-dom';
 import { PieChart, Pie, Cell, ResponsiveContainer, Legend, Tooltip } from 'recharts';
+import { formatMoneyUZS } from '@/lib/format';
 
 interface PaymentMethodData {
   method: string;
@@ -195,7 +196,7 @@ export default function PaymentMethodReport() {
                     cx="50%"
                     cy="50%"
                     labelLine={false}
-                    label={(entry) => `${entry.name}: ${entry.value.toFixed(0)}`}
+                    label={(entry) => `${entry.name}: ${formatMoneyUZS(entry.value)}`}
                     outerRadius={100}
                     fill="#8884d8"
                     dataKey="value"
@@ -233,7 +234,7 @@ export default function PaymentMethodReport() {
                     </div>
                   </div>
                   <div className="text-right">
-                    <p className="font-bold">${item.total.toFixed(2)}</p>
+                    <p className="font-bold">{formatMoneyUZS(item.total)}</p>
                     <p className="text-sm text-muted-foreground">{item.percentage.toFixed(1)}%</p>
                   </div>
                 </div>
@@ -265,9 +266,9 @@ export default function PaymentMethodReport() {
                   <TableRow key={item.method}>
                     <TableCell className="font-medium">{item.method}</TableCell>
                     <TableCell className="text-right">{item.count}</TableCell>
-                    <TableCell className="text-right">${item.total.toFixed(2)}</TableCell>
+                    <TableCell className="text-right">{formatMoneyUZS(item.total)}</TableCell>
                     <TableCell className="text-right">{item.percentage.toFixed(1)}%</TableCell>
-                    <TableCell className="text-right">${(item.total / item.count).toFixed(2)}</TableCell>
+                    <TableCell className="text-right">{formatMoneyUZS(item.total / item.count)}</TableCell>
                   </TableRow>
                 ))}
               </TableBody>

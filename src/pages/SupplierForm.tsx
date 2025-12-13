@@ -13,7 +13,7 @@ import {
   SelectValue,
 } from '@/components/ui/select';
 import { useToast } from '@/hooks/use-toast';
-import { getSupplierById, createSupplier, updateSupplier } from '@/db/api';
+import { getSupplierById, createSupplier, updateSupplier, getSuppliers } from '@/db/api';
 import type { Supplier } from '@/types/database';
 import { ArrowLeft, Save } from 'lucide-react';
 
@@ -53,8 +53,8 @@ export default function SupplierForm() {
       setStatus(data.status);
     } catch (error) {
       toast({
-        title: 'Error',
-        description: 'Failed to load supplier',
+        title: 'Xatolik',
+        description: 'Yetkazib beruvchini yuklab bo\'lmadi',
         variant: 'destructive',
       });
       navigate('/suppliers');
@@ -67,11 +67,11 @@ export default function SupplierForm() {
     const newErrors: Record<string, string> = {};
 
     if (!name.trim()) {
-      newErrors.name = 'Supplier name is required';
+      newErrors.name = 'Yetkazib beruvchi nomi majburiy';
     }
 
     if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
-      newErrors.email = 'Invalid email format';
+      newErrors.email = 'Email formati noto\'g\'ri';
     }
 
     setErrors(newErrors);
@@ -83,8 +83,8 @@ export default function SupplierForm() {
 
     if (!validateForm()) {
       toast({
-        title: 'Validation Error',
-        description: 'Please fix the errors in the form',
+        title: 'Validatsiya xatosi',
+        description: 'Iltimos, formadagi xatolarni tuzating',
         variant: 'destructive',
       });
       return;
@@ -93,6 +93,7 @@ export default function SupplierForm() {
     try {
       setLoading(true);
 
+      // NOTE: balance is NOT stored - it's calculated dynamically from transactions
       const supplierData: Omit<Supplier, 'id' | 'created_at' | 'updated_at'> = {
         name: name.trim(),
         contact_person: contactPerson.trim() || null,
@@ -103,25 +104,74 @@ export default function SupplierForm() {
         status,
       };
 
+      // Log the payload before sending
+      console.log('createSupplier payload:', supplierData);
+
       if (isEditMode && id) {
-        await updateSupplier(id, supplierData);
+        const updated = await updateSupplier(id, supplierData);
+        console.log('createSupplier result (update):', updated);
+        
+        if (!updated || !updated.id) {
+          throw new Error('Supplier update failed - no ID returned');
+        }
+        
         toast({
-          title: 'Success',
-          description: 'Supplier updated successfully',
+          title: 'Muvaffaqiyatli',
+          description: 'Yetkazib beruvchi muvaffaqiyatli yangilandi',
         });
+        
+        // Navigate back to suppliers list
+        navigate('/suppliers', { state: { refresh: Date.now() } });
       } else {
-        await createSupplier(supplierData);
+        const created = await createSupplier(supplierData);
+        console.log('createSupplier result (create):', created);
+        
+        // STRICT validation: Only show success if supplier has ID
+        if (!created) {
+          throw new Error('Supplier creation failed - no data returned');
+        }
+        
+        if (!created.id) {
+          throw new Error('Supplier creation failed - no ID returned');
+        }
+        
+        // Verify supplier exists in storage
+        const verifySuppliers = await getSuppliers(true);
+        const verified = verifySuppliers.find(s => s.id === created.id);
+        
+        if (!verified) {
+          console.error('createSupplier error: Supplier not found after creation', {
+            createdId: created.id,
+            allSuppliers: verifySuppliers.map(s => ({ id: s.id, name: s.name }))
+          });
+          throw new Error('Supplier creation failed - supplier not found in storage');
+        }
+        
+        console.log('Supplier verified in storage:', verified);
+        
+        // Show success toast ONLY after verification
         toast({
-          title: 'Success',
-          description: 'Supplier created successfully',
+          title: 'Muvaffaqiyatli',
+          description: 'Yetkazib beruvchi muvaffaqiyatli yaratildi',
+        });
+        
+        // Navigate with refresh state to trigger list reload
+        navigate('/suppliers', { 
+          state: { 
+            refresh: Date.now(),
+            createdSupplierId: created.id 
+          } 
         });
       }
-
-      navigate('/suppliers');
-    } catch (error: any) {
+    } catch (error: unknown) {
+      console.error('Error saving supplier:', error);
+      const errorMessage = error instanceof Error 
+        ? error.message 
+        : 'Yetkazib beruvchini saqlashda xatolik yuz berdi';
+      
       toast({
-        title: 'Error',
-        description: error.message || 'Failed to save supplier',
+        title: 'Xatolik',
+        description: errorMessage,
         variant: 'destructive',
       });
     } finally {
@@ -145,10 +195,10 @@ export default function SupplierForm() {
         </Button>
         <div>
           <h1 className="text-3xl font-bold">
-            {isEditMode ? 'Edit Supplier' : 'New Supplier'}
+            {isEditMode ? 'Yetkazib beruvchini tahrirlash' : 'Yangi yetkazib beruvchi'}
           </h1>
           <p className="text-muted-foreground">
-            {isEditMode ? 'Update supplier information' : 'Add a new supplier to your system'}
+            {isEditMode ? 'Yetkazib beruvchi ma\'lumotlarini yangilash' : 'Tizimingizga yangi yetkazib beruvchi qo\'shing'}
           </p>
         </div>
       </div>
@@ -158,19 +208,19 @@ export default function SupplierForm() {
           <div className="lg:col-span-2">
             <Card>
               <CardHeader>
-                <CardTitle>Supplier Information</CardTitle>
+                <CardTitle>Yetkazib beruvchi maʼlumotlari</CardTitle>
               </CardHeader>
               <CardContent className="space-y-4">
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                   <div className="space-y-2">
                     <Label htmlFor="name">
-                      Supplier Name <span className="text-destructive">*</span>
+                      Yetkazib beruvchi nomi <span className="text-destructive">*</span>
                     </Label>
                     <Input
                       id="name"
                       value={name}
                       onChange={(e) => setName(e.target.value)}
-                      placeholder="Enter supplier name"
+                      placeholder="Yetkazib beruvchi nomini kiriting"
                       className={errors.name ? 'border-destructive' : ''}
                     />
                     {errors.name && (
@@ -179,22 +229,22 @@ export default function SupplierForm() {
                   </div>
 
                   <div className="space-y-2">
-                    <Label htmlFor="contact-person">Contact Person</Label>
+                    <Label htmlFor="contact-person">Mas'ul shaxs</Label>
                     <Input
                       id="contact-person"
                       value={contactPerson}
                       onChange={(e) => setContactPerson(e.target.value)}
-                      placeholder="Enter contact person name"
+                      placeholder="Mas'ul shaxs nomini kiriting"
                     />
                   </div>
 
                   <div className="space-y-2">
-                    <Label htmlFor="phone">Phone</Label>
+                    <Label htmlFor="phone">Telefon</Label>
                     <Input
                       id="phone"
                       value={phone}
                       onChange={(e) => setPhone(e.target.value)}
-                      placeholder="Enter phone number"
+                      placeholder="Telefon raqamini kiriting"
                     />
                   </div>
 
@@ -205,7 +255,7 @@ export default function SupplierForm() {
                       type="email"
                       value={email}
                       onChange={(e) => setEmail(e.target.value)}
-                      placeholder="Enter email address"
+                      placeholder="Email manzilini kiriting"
                       className={errors.email ? 'border-destructive' : ''}
                     />
                     {errors.email && (
@@ -215,23 +265,23 @@ export default function SupplierForm() {
                 </div>
 
                 <div className="space-y-2">
-                  <Label htmlFor="address">Address</Label>
+                  <Label htmlFor="address">Manzil</Label>
                   <Textarea
                     id="address"
                     value={address}
                     onChange={(e) => setAddress(e.target.value)}
-                    placeholder="Enter supplier address"
+                    placeholder="Yetkazib beruvchi manzilini kiriting"
                     rows={3}
                   />
                 </div>
 
                 <div className="space-y-2">
-                  <Label htmlFor="note">Notes</Label>
+                  <Label htmlFor="note">Izohlar</Label>
                   <Textarea
                     id="note"
                     value={note}
                     onChange={(e) => setNote(e.target.value)}
-                    placeholder="Add any additional notes..."
+                    placeholder="Qo'shimcha izoh kiriting..."
                     rows={3}
                   />
                 </div>
@@ -242,28 +292,28 @@ export default function SupplierForm() {
           <div>
             <Card>
               <CardHeader>
-                <CardTitle>Status</CardTitle>
+                <CardTitle>Holati</CardTitle>
               </CardHeader>
               <CardContent className="space-y-4">
                 <div className="space-y-2">
-                  <Label htmlFor="status">Supplier Status</Label>
+                  <Label htmlFor="status">Yetkazib beruvchi holati</Label>
                   <Select value={status} onValueChange={(value) => setStatus(value as 'active' | 'inactive')}>
                     <SelectTrigger id="status">
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
-                      <SelectItem value="active">Active</SelectItem>
-                      <SelectItem value="inactive">Inactive</SelectItem>
+                      <SelectItem value="active">Faol</SelectItem>
+                      <SelectItem value="inactive">Faol emas</SelectItem>
                     </SelectContent>
                   </Select>
                   <p className="text-sm text-muted-foreground">
-                    Only active suppliers will appear in purchase order forms
+                    Faqat faol yetkazib beruvchilar xarid buyurtmalarida ko'rinadi
                   </p>
                 </div>
 
                 <Button type="submit" className="w-full" disabled={loading}>
                   <Save className="h-4 w-4 mr-2" />
-                  {loading ? 'Saving...' : isEditMode ? 'Update Supplier' : 'Create Supplier'}
+                  {loading ? 'Saqlanmoqda...' : isEditMode ? 'Yetkazib beruvchini yangilash' : 'Yetkazib beruvchini yaratish'}
                 </Button>
               </CardContent>
             </Card>

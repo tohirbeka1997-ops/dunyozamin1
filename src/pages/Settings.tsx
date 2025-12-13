@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react';
+import { useTranslation } from 'react-i18next';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -21,10 +22,14 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog';
-import { Save, AlertTriangle, Building2, Monitor, CreditCard, Receipt, Package, Hash, Shield, Globe } from 'lucide-react';
+import { Save, AlertTriangle, Building2, Monitor, CreditCard, Receipt, Package, Hash, Shield, Globe, Wifi, WifiOff, RefreshCw, Trash2 } from 'lucide-react';
 import { getSettingsByCategory, bulkUpdateSettings } from '@/db/api';
 import { useAuth } from '@/contexts/AuthContext';
 import { useToast } from '@/hooks/use-toast';
+import { useNetworkStatus } from '@/hooks/useNetworkStatus';
+import { useSyncEngine } from '@/hooks/useSyncEngine';
+import { clearAllLocalData, getAllOutboxItems } from '@/offline/db';
+import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import type {
   CompanySettings,
   POSSettings,
@@ -37,6 +42,177 @@ import type {
   LocalizationSettings,
 } from '@/types/database';
 import PageBreadcrumb from '@/components/common/PageBreadcrumb';
+
+// Offline Settings Tab Component
+function OfflineSettingsTab() {
+  const { t } = useTranslation();
+  const { toast } = useToast();
+  const { isOnline, syncStatus, lastSyncAt, pendingCount } = useNetworkStatus();
+  const { syncNow, isSyncing } = useSyncEngine();
+  const [offlineEnabled, setOfflineEnabled] = useState(true); // Always enabled for now
+  const [clearingCache, setClearingCache] = useState(false);
+
+  const handleRetrySync = async () => {
+    await syncNow();
+    toast({
+      title: t('settings.offline.sync_started'),
+      description: t('settings.offline.sync_started_desc'),
+    });
+  };
+
+  const handleClearCache = async () => {
+    if (!confirm(t('settings.offline.clear_cache_confirm'))) {
+      return;
+    }
+
+    setClearingCache(true);
+    try {
+      await clearAllLocalData();
+      toast({
+        title: t('settings.offline.cache_cleared'),
+        description: t('settings.offline.cache_cleared_desc'),
+      });
+    } catch (error) {
+      toast({
+        title: t('settings.offline.error'),
+        description: t('settings.offline.failed_to_clear', { error: error instanceof Error ? error.message : t('common.error') }),
+        variant: 'destructive',
+      });
+    } finally {
+      setClearingCache(false);
+    }
+  };
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>{t('settings.offline.title')}</CardTitle>
+        <CardDescription>{t('settings.offline.description')}</CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-6">
+        {/* Status Alert */}
+        <Alert>
+          <Wifi className="h-4 w-4" />
+          <AlertTitle>{t('settings.offline.connection_status')}</AlertTitle>
+          <AlertDescription>
+            {isOnline ? (
+              <div className="space-y-1">
+                <p>{t('settings.offline.online')}</p>
+                {pendingCount > 0 && (
+                  <p className="text-sm text-muted-foreground">
+                    {t('settings.offline.pending_sync', { count: pendingCount })}
+                  </p>
+                )}
+              </div>
+            ) : (
+              <div className="space-y-1">
+                <p>{t('settings.offline.offline')}</p>
+                <p className="text-sm text-muted-foreground">
+                  {t('settings.offline.changes_will_sync')}
+                </p>
+              </div>
+            )}
+          </AlertDescription>
+        </Alert>
+
+        {/* Sync Status */}
+        <div className="space-y-2">
+          <Label>{t('settings.offline.sync_status')}</Label>
+          <div className="flex items-center gap-2">
+            {syncStatus === 'syncing' || isSyncing ? (
+              <div className="flex items-center gap-2">
+                <RefreshCw className="h-4 w-4 animate-spin" />
+                <span>{t('settings.offline.syncing')}</span>
+              </div>
+            ) : syncStatus === 'failed' ? (
+              <div className="flex items-center gap-2 text-destructive">
+                <AlertTriangle className="h-4 w-4" />
+                <span>{t('settings.offline.sync_failed')}</span>
+              </div>
+            ) : syncStatus === 'success' ? (
+              <div className="flex items-center gap-2 text-green-600">
+                <Wifi className="h-4 w-4" />
+                <span>{t('settings.offline.synced')}</span>
+              </div>
+            ) : (
+              <div className="flex items-center gap-2 text-muted-foreground">
+                <WifiOff className="h-4 w-4" />
+                <span>{t('settings.offline.idle')}</span>
+              </div>
+            )}
+          </div>
+          {lastSyncAt && (
+            <p className="text-xs text-muted-foreground">
+              {t('settings.offline.last_sync').replace('{{date}}', new Date(lastSyncAt).toLocaleString())}
+            </p>
+          )}
+        </div>
+
+        {/* Offline Mode Toggle */}
+        <div className="flex items-center justify-between">
+          <div className="space-y-0.5">
+            <Label htmlFor="offline-enabled">{t('settings.offline.enable_offline_mode')}</Label>
+            <p className="text-xs text-muted-foreground">
+              {t('settings.offline.enable_offline_desc')}
+            </p>
+          </div>
+          <Switch
+            id="offline-enabled"
+            checked={offlineEnabled}
+            onCheckedChange={setOfflineEnabled}
+            disabled
+          />
+        </div>
+
+        {/* Actions */}
+        <div className="space-y-3 border-t pt-6">
+          <div className="flex items-center justify-between">
+            <div className="space-y-0.5">
+              <Label>{t('settings.offline.manual_sync')}</Label>
+              <p className="text-xs text-muted-foreground">
+                {t('settings.offline.manual_sync_desc')}
+              </p>
+            </div>
+            <Button
+              variant="outline"
+              onClick={handleRetrySync}
+              disabled={!isOnline || isSyncing || pendingCount === 0}
+            >
+              <RefreshCw className={`h-4 w-4 mr-2 ${isSyncing ? 'animate-spin' : ''}`} />
+              {t('settings.offline.retry_sync')}
+            </Button>
+          </div>
+
+          <div className="flex items-center justify-between">
+            <div className="space-y-0.5">
+              <Label>{t('settings.offline.clear_cache')}</Label>
+              <p className="text-xs text-muted-foreground">
+                {t('settings.offline.clear_cache_desc')}
+              </p>
+            </div>
+            <Button
+              variant="destructive"
+              onClick={handleClearCache}
+              disabled={clearingCache}
+            >
+              <Trash2 className="h-4 w-4 mr-2" />
+              {clearingCache ? t('settings.offline.clearing') : t('settings.offline.clear_cache')}
+            </Button>
+          </div>
+        </div>
+
+        {/* Info */}
+        <Alert>
+          <AlertTriangle className="h-4 w-4" />
+          <AlertTitle>{t('settings.offline.about_offline')}</AlertTitle>
+          <AlertDescription className="text-xs">
+            {t('settings.offline.about_offline_desc')}
+          </AlertDescription>
+        </Alert>
+      </CardContent>
+    </Card>
+  );
+}
 
 export default function Settings() {
   const { profile } = useAuth();
@@ -215,49 +391,53 @@ export default function Settings() {
     <div className="space-y-6">
       <PageBreadcrumb
         items={[
-          { label: 'Dashboard', href: '/' },
-          { label: 'Settings', href: '/settings' },
+          { label: 'Bosh sahifa', href: '/' },
+          { label: 'Sozlamalar', href: '/settings' },
         ]}
       />
 
       <div>
-        <h1 className="text-3xl font-bold">Settings</h1>
-        <p className="text-muted-foreground">Manage system configuration and preferences</p>
+        <h1 className="text-3xl font-bold">Sozlamalar</h1>
+        <p className="text-muted-foreground">Tizim sozlamalari va ustuvorliklarini boshqarish</p>
       </div>
 
       <Tabs value={activeTab} onValueChange={handleTabChange} className="space-y-6">
-        <TabsList className="grid w-full grid-cols-4 xl:grid-cols-8">
+        <TabsList className="grid w-full grid-cols-4 xl:grid-cols-9">
           <TabsTrigger value="company" className="gap-2">
             <Building2 className="h-4 w-4" />
-            <span className="hidden xl:inline">Company</span>
+            <span className="hidden xl:inline">Kompaniya</span>
           </TabsTrigger>
           <TabsTrigger value="pos" className="gap-2">
             <Monitor className="h-4 w-4" />
-            <span className="hidden xl:inline">POS</span>
+            <span className="hidden xl:inline">POS tizimi</span>
           </TabsTrigger>
           <TabsTrigger value="payment" className="gap-2">
             <CreditCard className="h-4 w-4" />
-            <span className="hidden xl:inline">Payment</span>
+            <span className="hidden xl:inline">To'lov</span>
           </TabsTrigger>
           <TabsTrigger value="receipt" className="gap-2">
             <Receipt className="h-4 w-4" />
-            <span className="hidden xl:inline">Receipt</span>
+            <span className="hidden xl:inline">Chek</span>
           </TabsTrigger>
           <TabsTrigger value="inventory" className="gap-2">
             <Package className="h-4 w-4" />
-            <span className="hidden xl:inline">Inventory</span>
+            <span className="hidden xl:inline">Ombor</span>
           </TabsTrigger>
           <TabsTrigger value="numbering" className="gap-2">
             <Hash className="h-4 w-4" />
-            <span className="hidden xl:inline">Numbering</span>
+            <span className="hidden xl:inline">Raqamlashtirish</span>
           </TabsTrigger>
           <TabsTrigger value="security" className="gap-2">
             <Shield className="h-4 w-4" />
-            <span className="hidden xl:inline">Security</span>
+            <span className="hidden xl:inline">Xavfsizlik</span>
           </TabsTrigger>
           <TabsTrigger value="localization" className="gap-2">
             <Globe className="h-4 w-4" />
-            <span className="hidden xl:inline">Localization</span>
+            <span className="hidden xl:inline">Mahalliylashtirish</span>
+          </TabsTrigger>
+          <TabsTrigger value="offline" className="gap-2">
+            <Wifi className="h-4 w-4" />
+            <span className="hidden xl:inline">Offline & Sync</span>
           </TabsTrigger>
         </TabsList>
 
@@ -265,16 +445,16 @@ export default function Settings() {
         <TabsContent value="company">
           <Card>
             <CardHeader>
-              <CardTitle>Company Profile</CardTitle>
+              <CardTitle>Kompaniya profili</CardTitle>
               <CardDescription>
-                Company information displayed on receipts, invoices, and reports
+                Cheklar, hisob-fakturalar va hisobotlarda ko'rinadigan kompaniya ma'lumotlari
               </CardDescription>
             </CardHeader>
             <CardContent className="space-y-6">
               <div className="grid gap-6 xl:grid-cols-2">
                 <div className="space-y-2">
                   <Label htmlFor="company_name">
-                    Company Name <span className="text-destructive">*</span>
+                    Kompaniya nomi <span className="text-destructive">*</span>
                   </Label>
                   <Input
                     id="company_name"
@@ -283,12 +463,12 @@ export default function Settings() {
                       setCompanySettings({ ...companySettings, name: e.target.value });
                       setHasUnsavedChanges(true);
                     }}
-                    placeholder="Enter company name"
+                    placeholder="Kompaniya nomini kiriting"
                   />
                 </div>
 
                 <div className="space-y-2">
-                  <Label htmlFor="legal_name">Legal Name</Label>
+                  <Label htmlFor="legal_name">Yuridik nomi</Label>
                   <Input
                     id="legal_name"
                     value={companySettings.legal_name}
@@ -296,12 +476,12 @@ export default function Settings() {
                       setCompanySettings({ ...companySettings, legal_name: e.target.value });
                       setHasUnsavedChanges(true);
                     }}
-                    placeholder="Legal company name"
+                    placeholder="Kompaniyaning yuridik nomi"
                   />
                 </div>
 
                 <div className="space-y-2">
-                  <Label htmlFor="phone">Phone Number</Label>
+                  <Label htmlFor="phone">Telefon raqami</Label>
                   <Input
                     id="phone"
                     value={companySettings.phone}
@@ -314,7 +494,7 @@ export default function Settings() {
                 </div>
 
                 <div className="space-y-2">
-                  <Label htmlFor="email">Email</Label>
+                  <Label htmlFor="email">Elektron pochta</Label>
                   <Input
                     id="email"
                     type="email"
@@ -328,7 +508,7 @@ export default function Settings() {
                 </div>
 
                 <div className="space-y-2">
-                  <Label htmlFor="website">Website</Label>
+                  <Label htmlFor="website">Veb-sayt</Label>
                   <Input
                     id="website"
                     value={companySettings.website}
@@ -341,7 +521,7 @@ export default function Settings() {
                 </div>
 
                 <div className="space-y-2">
-                  <Label htmlFor="tax_id">Tax ID / INN / VAT</Label>
+                  <Label htmlFor="tax_id">STIR / INN / QQS</Label>
                   <Input
                     id="tax_id"
                     value={companySettings.tax_id}
@@ -349,16 +529,16 @@ export default function Settings() {
                       setCompanySettings({ ...companySettings, tax_id: e.target.value });
                       setHasUnsavedChanges(true);
                     }}
-                    placeholder="Tax identification number"
+                    placeholder="Soliq identifikatsiya raqami"
                   />
                 </div>
               </div>
 
               <div className="space-y-4 border-t pt-6">
-                <h3 className="text-lg font-semibold">Address</h3>
+                <h3 className="text-lg font-semibold">Manzil</h3>
                 <div className="grid gap-6 xl:grid-cols-3">
                   <div className="space-y-2">
-                    <Label htmlFor="country">Country</Label>
+                    <Label htmlFor="country">Mamlakat</Label>
                     <Input
                       id="country"
                       value={companySettings.address_country}
@@ -366,12 +546,12 @@ export default function Settings() {
                         setCompanySettings({ ...companySettings, address_country: e.target.value });
                         setHasUnsavedChanges(true);
                       }}
-                      placeholder="Country"
+                      placeholder="Mamlakat"
                     />
                   </div>
 
                   <div className="space-y-2">
-                    <Label htmlFor="city">City</Label>
+                    <Label htmlFor="city">Shahar</Label>
                     <Input
                       id="city"
                       value={companySettings.address_city}
@@ -379,12 +559,12 @@ export default function Settings() {
                         setCompanySettings({ ...companySettings, address_city: e.target.value });
                         setHasUnsavedChanges(true);
                       }}
-                      placeholder="City"
+                      placeholder="Shahar"
                     />
                   </div>
 
                   <div className="space-y-2">
-                    <Label htmlFor="street">Street Address</Label>
+                    <Label htmlFor="street">Ko'cha manzili</Label>
                     <Input
                       id="street"
                       value={companySettings.address_street}
@@ -392,7 +572,7 @@ export default function Settings() {
                         setCompanySettings({ ...companySettings, address_street: e.target.value });
                         setHasUnsavedChanges(true);
                       }}
-                      placeholder="Street address"
+                      placeholder="Ko'cha manzili"
                     />
                   </div>
                 </div>
@@ -400,11 +580,11 @@ export default function Settings() {
 
               <div className="flex justify-end gap-3 border-t pt-6">
                 <Button variant="outline" onClick={() => loadAllSettings()}>
-                  Cancel
+                  Bekor qilish
                 </Button>
                 <Button onClick={() => handleSave('company', companySettings as unknown as Record<string, unknown>)} disabled={saving}>
                   <Save className="mr-2 h-4 w-4" />
-                  {saving ? 'Saving...' : 'Save Changes'}
+                  {saving ? 'Saqlanmoqda...' : 'O\'zgarishlarni saqlash'}
                 </Button>
               </div>
             </CardContent>
@@ -415,13 +595,13 @@ export default function Settings() {
         <TabsContent value="pos">
           <Card>
             <CardHeader>
-              <CardTitle>POS Terminal Settings</CardTitle>
-              <CardDescription>Configure POS terminal behavior and features</CardDescription>
+              <CardTitle>POS terminal sozlamalari</CardTitle>
+              <CardDescription>POS terminalining ishlash tartibi va funksiyalarini sozlash</CardDescription>
             </CardHeader>
             <CardContent className="space-y-6">
               <div className="grid gap-6 xl:grid-cols-2">
                 <div className="space-y-2">
-                  <Label htmlFor="pos_mode">POS Mode</Label>
+                  <Label htmlFor="pos_mode">POS rejimi</Label>
                   <Select
                     value={posSettings.mode}
                     onValueChange={(value: 'retail' | 'restaurant') => {
@@ -437,11 +617,11 @@ export default function Settings() {
                       <SelectItem value="restaurant">Restaurant</SelectItem>
                     </SelectContent>
                   </Select>
-                  <p className="text-xs text-muted-foreground">For future use</p>
+                  <p className="text-xs text-muted-foreground">Kelajakda foydalanish uchun</p>
                 </div>
 
                 <div className="space-y-2">
-                  <Label htmlFor="auto_logout">Auto Logout (minutes)</Label>
+                  <Label htmlFor="auto_logout">Avto chiqish (daqiqada)</Label>
                   <Input
                     id="auto_logout"
                     type="number"
@@ -459,7 +639,7 @@ export default function Settings() {
                 </div>
 
                 <div className="space-y-2">
-                  <Label htmlFor="quick_access">Quick Access Products Limit</Label>
+                  <Label htmlFor="quick_access">Tezkor kirish mahsulotlar limiti</Label>
                   <Input
                     id="quick_access"
                     type="number"
@@ -478,13 +658,13 @@ export default function Settings() {
               </div>
 
               <div className="space-y-4 border-t pt-6">
-                <h3 className="text-lg font-semibold">Features</h3>
+                <h3 className="text-lg font-semibold">Qo'shimcha imkoniyatlar</h3>
                 <div className="space-y-4">
                   <div className="flex items-center justify-between">
                     <div className="space-y-1">
-                      <Label>Enable Hold Order</Label>
+                      <Label>Buyurtmani ushlab turishni yoqish</Label>
                       <p className="text-sm text-muted-foreground">
-                        Allow cashiers to hold orders for later
+                        Kassirlarga buyurtmalarni keyinroq davom ettirish uchun ushlab turishga ruxsat berish
                       </p>
                     </div>
                     <Switch
@@ -498,9 +678,9 @@ export default function Settings() {
 
                   <div className="flex items-center justify-between">
                     <div className="space-y-1">
-                      <Label>Enable Mixed Payment</Label>
+                      <Label>Aralash to'lovni yoqish</Label>
                       <p className="text-sm text-muted-foreground">
-                        Allow multiple payment methods per order
+                        Bitta buyurtma uchun bir nechta to'lov usulidan foydalanishga ruxsat berish
                       </p>
                     </div>
                     <Switch
@@ -514,9 +694,9 @@ export default function Settings() {
 
                   <div className="flex items-center justify-between">
                     <div className="space-y-1">
-                      <Label>Require Customer for Credit Sales</Label>
+                      <Label>Qarzga sotishda mijozni tanlash majburiy</Label>
                       <p className="text-sm text-muted-foreground">
-                        Force customer selection when selling on credit
+                        Qarzga sotilganda albatta mijozni tanlashni talab qilish
                       </p>
                     </div>
                     <Switch
@@ -530,9 +710,9 @@ export default function Settings() {
 
                   <div className="flex items-center justify-between">
                     <div className="space-y-1">
-                      <Label>Show Low Stock Warning</Label>
+                      <Label>Qoldiq kamaysa ogohlantirish</Label>
                       <p className="text-sm text-muted-foreground">
-                        Display warning when product stock is low
+                        Mahsulot qoldig'i kam bo'lganda ogohlantirish ko'rsatish
                       </p>
                     </div>
                     <Switch
@@ -548,11 +728,11 @@ export default function Settings() {
 
               <div className="flex justify-end gap-3 border-t pt-6">
                 <Button variant="outline" onClick={() => loadAllSettings()}>
-                  Cancel
+                  Bekor qilish
                 </Button>
                 <Button onClick={() => handleSave('pos', posSettings as unknown as Record<string, unknown>)} disabled={saving}>
                   <Save className="mr-2 h-4 w-4" />
-                  {saving ? 'Saving...' : 'Save Changes'}
+                  {saving ? 'Saqlanmoqda...' : 'O\'zgarishlarni saqlash'}
                 </Button>
               </div>
             </CardContent>
@@ -564,52 +744,60 @@ export default function Settings() {
           <div className="space-y-6">
             <Card>
               <CardHeader>
-                <CardTitle>Payment Methods</CardTitle>
-                <CardDescription>Configure available payment methods</CardDescription>
+                <CardTitle>To'lov usullari</CardTitle>
+                <CardDescription>Mavjud to'lov usullarini sozlash</CardDescription>
               </CardHeader>
               <CardContent className="space-y-4">
                 <div className="space-y-4">
-                  {['cash', 'card', 'terminal', 'qr'].map((method) => (
-                    <div key={method} className="flex items-center justify-between">
-                      <div className="space-y-1">
-                        <Label className="capitalize">{method}</Label>
-                        <Input
-                          value={paymentSettings.method_labels?.[method] || method}
-                          onChange={(e) => {
-                            setPaymentSettings({
-                              ...paymentSettings,
-                              method_labels: {
-                                ...paymentSettings.method_labels,
-                                [method]: e.target.value,
-                              },
-                            });
+                  {['cash', 'card', 'terminal', 'qr'].map((method) => {
+                    const methodLabels: Record<string, string> = {
+                      cash: 'Naqd',
+                      card: 'Karta',
+                      terminal: 'Terminal',
+                      qr: 'QR to\'lov',
+                    };
+                    return (
+                      <div key={method} className="flex items-center justify-between">
+                        <div className="space-y-1">
+                          <Label>{methodLabels[method] || method}</Label>
+                          <Input
+                            value={paymentSettings.method_labels?.[method] || method}
+                            onChange={(e) => {
+                              setPaymentSettings({
+                                ...paymentSettings,
+                                method_labels: {
+                                  ...paymentSettings.method_labels,
+                                  [method]: e.target.value,
+                                },
+                              });
+                              setHasUnsavedChanges(true);
+                            }}
+                            placeholder="Ko'rsatish nomi"
+                            className="max-w-xs"
+                          />
+                        </div>
+                        <Switch
+                          checked={paymentSettings.methods?.includes(method)}
+                          onCheckedChange={(checked) => {
+                            const methods = checked
+                              ? [...(paymentSettings.methods || []), method]
+                              : (paymentSettings.methods || []).filter((m) => m !== method);
+                            setPaymentSettings({ ...paymentSettings, methods });
                             setHasUnsavedChanges(true);
                           }}
-                          placeholder="Display label"
-                          className="max-w-xs"
                         />
                       </div>
-                      <Switch
-                        checked={paymentSettings.methods?.includes(method)}
-                        onCheckedChange={(checked) => {
-                          const methods = checked
-                            ? [...(paymentSettings.methods || []), method]
-                            : (paymentSettings.methods || []).filter((m) => m !== method);
-                          setPaymentSettings({ ...paymentSettings, methods });
-                          setHasUnsavedChanges(true);
-                        }}
-                      />
-                    </div>
-                  ))}
+                    );
+                  })}
                 </div>
 
                 <div className="flex justify-end gap-3 border-t pt-6">
                   <Button variant="outline" onClick={() => loadAllSettings()}>
-                    Cancel
+                    Bekor qilish
                   </Button>
                   <Button onClick={() => handleSave('payment', paymentSettings as unknown as Record<string, unknown>)} disabled={saving}>
                     <Save className="mr-2 h-4 w-4" />
-                    {saving ? 'Saving...' : 'Save Changes'}
+                    {saving ? 'Saqlanmoqda...' : 'O\'zgarishlarni saqlash'}
                   </Button>
                 </div>
               </CardContent>
@@ -617,14 +805,14 @@ export default function Settings() {
 
             <Card>
               <CardHeader>
-                <CardTitle>Tax Settings</CardTitle>
-                <CardDescription>Configure tax calculation and display</CardDescription>
+                <CardTitle>Soliq sozlamalari</CardTitle>
+                <CardDescription>Soliq hisobini va ko'rsatishni sozlash</CardDescription>
               </CardHeader>
               <CardContent className="space-y-6">
                 <div className="flex items-center justify-between">
                   <div className="space-y-1">
-                    <Label>Enable Tax System</Label>
-                    <p className="text-sm text-muted-foreground">Apply taxes to sales</p>
+                    <Label>Soliq tizimini yoqish</Label>
+                    <p className="text-sm text-muted-foreground">Savdolarga soliq qo'llash</p>
                   </div>
                   <Switch
                     checked={taxSettings.enabled}
@@ -692,11 +880,11 @@ export default function Settings() {
 
                 <div className="flex justify-end gap-3 border-t pt-6">
                   <Button variant="outline" onClick={() => loadAllSettings()}>
-                    Cancel
+                    Bekor qilish
                   </Button>
                   <Button onClick={() => handleSave('tax', taxSettings as unknown as Record<string, unknown>)} disabled={saving}>
                     <Save className="mr-2 h-4 w-4" />
-                    {saving ? 'Saving...' : 'Save Changes'}
+                    {saving ? 'Saqlanmoqda...' : 'O\'zgarishlarni saqlash'}
                   </Button>
                 </div>
               </CardContent>
@@ -708,12 +896,12 @@ export default function Settings() {
         <TabsContent value="receipt">
           <Card>
             <CardHeader>
-              <CardTitle>Receipt & Printing</CardTitle>
-              <CardDescription>Configure receipt template and printing options</CardDescription>
+              <CardTitle>Chek va Chop etish</CardTitle>
+              <CardDescription>Chek shabloni va chop etish parametrlarini sozlash</CardDescription>
             </CardHeader>
             <CardContent className="space-y-6">
               <div className="space-y-2">
-                <Label htmlFor="paper_size">Paper Size</Label>
+                <Label htmlFor="paper_size">Qog'oz o'lchami</Label>
                 <Select
                   value={receiptSettings.paper_size}
                   onValueChange={(value: '58mm' | '80mm') => {
@@ -732,7 +920,7 @@ export default function Settings() {
               </div>
 
               <div className="space-y-2">
-                <Label htmlFor="header_text">Receipt Header Text</Label>
+                <Label htmlFor="header_text">Chek sarlavhasi matni</Label>
                 <Textarea
                   id="header_text"
                   value={receiptSettings.header_text}
@@ -740,13 +928,13 @@ export default function Settings() {
                     setReceiptSettings({ ...receiptSettings, header_text: e.target.value });
                     setHasUnsavedChanges(true);
                   }}
-                  placeholder="Thank you for shopping with us!"
+                  placeholder="Bizdan xarid qilganingiz uchun rahmat!"
                   rows={3}
                 />
               </div>
 
               <div className="space-y-2">
-                <Label htmlFor="footer_text">Receipt Footer Text</Label>
+                <Label htmlFor="footer_text">Chek pastki matni</Label>
                 <Textarea
                   id="footer_text"
                   value={receiptSettings.footer_text}
@@ -754,16 +942,16 @@ export default function Settings() {
                     setReceiptSettings({ ...receiptSettings, footer_text: e.target.value });
                     setHasUnsavedChanges(true);
                   }}
-                  placeholder="Returns accepted within 7 days with receipt"
+                  placeholder="Qaytarish faqat 7 kun ichida, chek bilan qabul qilinadi"
                   rows={3}
                 />
               </div>
 
               <div className="space-y-4 border-t pt-6">
-                <h3 className="text-lg font-semibold">Display Options</h3>
+                <h3 className="text-lg font-semibold">Ko'rsatish parametrlari</h3>
                 <div className="space-y-4">
                   <div className="flex items-center justify-between">
-                    <Label>Auto Print Receipt</Label>
+                    <Label>Chekni avtomatik chop etish</Label>
                     <Switch
                       checked={receiptSettings.auto_print}
                       onCheckedChange={(checked) => {
@@ -774,7 +962,7 @@ export default function Settings() {
                   </div>
 
                   <div className="flex items-center justify-between">
-                    <Label>Show Company Logo</Label>
+                    <Label>Kompaniya logosini ko'rsatish</Label>
                     <Switch
                       checked={receiptSettings.show_logo}
                       onCheckedChange={(checked) => {
@@ -785,7 +973,7 @@ export default function Settings() {
                   </div>
 
                   <div className="flex items-center justify-between">
-                    <Label>Show Cashier Name</Label>
+                    <Label>Kassir ismini ko'rsatish</Label>
                     <Switch
                       checked={receiptSettings.show_cashier}
                       onCheckedChange={(checked) => {
@@ -796,7 +984,7 @@ export default function Settings() {
                   </div>
 
                   <div className="flex items-center justify-between">
-                    <Label>Show Customer Name</Label>
+                    <Label>Mijoz ismini ko'rsatish</Label>
                     <Switch
                       checked={receiptSettings.show_customer}
                       onCheckedChange={(checked) => {
@@ -807,7 +995,7 @@ export default function Settings() {
                   </div>
 
                   <div className="flex items-center justify-between">
-                    <Label>Show Product SKU</Label>
+                    <Label>Mahsulot SKU ko'rsatish</Label>
                     <Switch
                       checked={receiptSettings.show_sku}
                       onCheckedChange={(checked) => {
@@ -821,11 +1009,11 @@ export default function Settings() {
 
               <div className="flex justify-end gap-3 border-t pt-6">
                 <Button variant="outline" onClick={() => loadAllSettings()}>
-                  Cancel
+                  Bekor qilish
                 </Button>
                 <Button onClick={() => handleSave('receipt', receiptSettings as unknown as Record<string, unknown>)} disabled={saving}>
                   <Save className="mr-2 h-4 w-4" />
-                  {saving ? 'Saving...' : 'Save Changes'}
+                  {saving ? 'Saqlanmoqda...' : 'O\'zgarishlarni saqlash'}
                 </Button>
               </div>
             </CardContent>
@@ -836,14 +1024,14 @@ export default function Settings() {
         <TabsContent value="inventory">
           <Card>
             <CardHeader>
-              <CardTitle>Inventory Settings</CardTitle>
-              <CardDescription>Configure inventory tracking and stock management</CardDescription>
+              <CardTitle>Ombor sozlamalari</CardTitle>
+              <CardDescription>Ombor hisobini yuritish va zaxiralarni boshqarishni sozlash</CardDescription>
             </CardHeader>
             <CardContent className="space-y-6">
               <div className="flex items-center justify-between">
                 <div className="space-y-1">
-                  <Label>Enable Inventory Tracking</Label>
-                  <p className="text-sm text-muted-foreground">Track product stock levels</p>
+                  <Label>Ombor hisobini yoqish</Label>
+                  <p className="text-sm text-muted-foreground">Mahsulot zaxiralarini kuzatish</p>
                 </div>
                 <Switch
                   checked={inventorySettings.tracking_enabled}
@@ -945,11 +1133,11 @@ export default function Settings() {
 
               <div className="flex justify-end gap-3 border-t pt-6">
                 <Button variant="outline" onClick={() => loadAllSettings()}>
-                  Cancel
+                  Bekor qilish
                 </Button>
                 <Button onClick={() => handleSave('inventory', inventorySettings as unknown as Record<string, unknown>)} disabled={saving}>
                   <Save className="mr-2 h-4 w-4" />
-                  {saving ? 'Saving...' : 'Save Changes'}
+                  {saving ? 'Saqlanmoqda...' : 'O\'zgarishlarni saqlash'}
                 </Button>
               </div>
             </CardContent>
@@ -960,13 +1148,13 @@ export default function Settings() {
         <TabsContent value="numbering">
           <Card>
             <CardHeader>
-              <CardTitle>Numbering & IDs</CardTitle>
-              <CardDescription>Configure auto-generated document numbers</CardDescription>
+              <CardTitle>Raqamlashtirish va identifikatorlar</CardTitle>
+              <CardDescription>Hujjatlar uchun avtomatik yaratiladigan raqamlarni sozlash</CardDescription>
             </CardHeader>
             <CardContent className="space-y-6">
               <div className="grid gap-6 xl:grid-cols-2">
                 <div className="space-y-2">
-                  <Label htmlFor="order_prefix">Order Number Prefix</Label>
+                  <Label htmlFor="order_prefix">Sotuv raqami prefiksi</Label>
                   <Input
                     id="order_prefix"
                     value={numberingSettings.order_prefix}
@@ -979,7 +1167,7 @@ export default function Settings() {
                 </div>
 
                 <div className="space-y-2">
-                  <Label htmlFor="order_format">Order Number Format</Label>
+                  <Label htmlFor="order_format">Sotuv raqami formati</Label>
                   <Input
                     id="order_format"
                     value={numberingSettings.order_format}
@@ -993,7 +1181,7 @@ export default function Settings() {
                 </div>
 
                 <div className="space-y-2">
-                  <Label htmlFor="return_prefix">Return Number Prefix</Label>
+                  <Label htmlFor="return_prefix">Qaytarish raqami prefiksi</Label>
                   <Input
                     id="return_prefix"
                     value={numberingSettings.return_prefix}
@@ -1006,7 +1194,7 @@ export default function Settings() {
                 </div>
 
                 <div className="space-y-2">
-                  <Label htmlFor="return_format">Return Number Format</Label>
+                  <Label htmlFor="return_format">Qaytarish raqami formati</Label>
                   <Input
                     id="return_format"
                     value={numberingSettings.return_format}
@@ -1020,7 +1208,7 @@ export default function Settings() {
                 </div>
 
                 <div className="space-y-2">
-                  <Label htmlFor="purchase_prefix">Purchase Order Prefix</Label>
+                  <Label htmlFor="purchase_prefix">Xarid buyurtmasi prefiksi</Label>
                   <Input
                     id="purchase_prefix"
                     value={numberingSettings.purchase_prefix}
@@ -1036,7 +1224,7 @@ export default function Settings() {
                 </div>
 
                 <div className="space-y-2">
-                  <Label htmlFor="purchase_format">Purchase Order Format</Label>
+                  <Label htmlFor="purchase_format">Xarid buyurtmasi formati</Label>
                   <Input
                     id="purchase_format"
                     value={numberingSettings.purchase_format}
@@ -1053,7 +1241,7 @@ export default function Settings() {
                 </div>
 
                 <div className="space-y-2">
-                  <Label htmlFor="movement_prefix">Movement Number Prefix</Label>
+                  <Label htmlFor="movement_prefix">Harakat (ombor ko'chirish) raqami prefiksi</Label>
                   <Input
                     id="movement_prefix"
                     value={numberingSettings.movement_prefix}
@@ -1069,7 +1257,7 @@ export default function Settings() {
                 </div>
 
                 <div className="space-y-2">
-                  <Label htmlFor="movement_format">Movement Number Format</Label>
+                  <Label htmlFor="movement_format">Harakat raqami formati</Label>
                   <Input
                     id="movement_format"
                     value={numberingSettings.movement_format}
@@ -1088,11 +1276,11 @@ export default function Settings() {
 
               <div className="flex justify-end gap-3 border-t pt-6">
                 <Button variant="outline" onClick={() => loadAllSettings()}>
-                  Cancel
+                  Bekor qilish
                 </Button>
                 <Button onClick={() => handleSave('numbering', numberingSettings as unknown as Record<string, unknown>)} disabled={saving}>
                   <Save className="mr-2 h-4 w-4" />
-                  {saving ? 'Saving...' : 'Save Changes'}
+                  {saving ? 'Saqlanmoqda...' : 'O\'zgarishlarni saqlash'}
                 </Button>
               </div>
             </CardContent>
@@ -1103,15 +1291,15 @@ export default function Settings() {
         <TabsContent value="security">
           <Card>
             <CardHeader>
-              <CardTitle>User & Security</CardTitle>
-              <CardDescription>Configure security policies and user management</CardDescription>
+              <CardTitle>Foydalanuvchi va xavfsizlik</CardTitle>
+              <CardDescription>Xavfsizlik siyosatlari va foydalanuvchi boshqaruvini sozlash</CardDescription>
             </CardHeader>
             <CardContent className="space-y-6">
               <div className="space-y-4">
-                <h3 className="text-lg font-semibold">Password Policy</h3>
+                <h3 className="text-lg font-semibold">Parol siyosati</h3>
                 <div className="grid gap-6 xl:grid-cols-2">
                   <div className="space-y-2">
-                    <Label htmlFor="min_password">Minimum Password Length</Label>
+                    <Label htmlFor="min_password">Parolning minimal uzunligi</Label>
                     <Input
                       id="min_password"
                       type="number"
@@ -1130,8 +1318,8 @@ export default function Settings() {
 
                   <div className="flex items-center justify-between">
                     <div className="space-y-1">
-                      <Label>Require Strong Password</Label>
-                      <p className="text-sm text-muted-foreground">Letters + numbers required</p>
+                      <Label>Kuchli parol talab qilinsin</Label>
+                      <p className="text-sm text-muted-foreground">Harf va raqamlar majburiy</p>
                     </div>
                     <Switch
                       checked={securitySettings.require_strong_password}
@@ -1145,10 +1333,10 @@ export default function Settings() {
               </div>
 
               <div className="space-y-4 border-t pt-6">
-                <h3 className="text-lg font-semibold">Session Management</h3>
+                <h3 className="text-lg font-semibold">Sessiyalarni boshqarish</h3>
                 <div className="grid gap-6 xl:grid-cols-2">
                   <div className="space-y-2">
-                    <Label htmlFor="max_attempts">Max Failed Login Attempts</Label>
+                    <Label htmlFor="max_attempts">Maksimal muvaffaqiyatsiz kirish urinishlari</Label>
                     <Input
                       id="max_attempts"
                       type="number"
@@ -1166,7 +1354,7 @@ export default function Settings() {
                   </div>
 
                   <div className="space-y-2">
-                    <Label htmlFor="session_timeout">Session Timeout (minutes)</Label>
+                    <Label htmlFor="session_timeout">Sessiya muddati (daqiqalarda)</Label>
                     <Input
                       id="session_timeout"
                       type="number"
@@ -1186,9 +1374,9 @@ export default function Settings() {
 
                 <div className="flex items-center justify-between">
                   <div className="space-y-1">
-                    <Label>Allow Multiple Sessions</Label>
+                    <Label>Bir nechta sessiyalarga ruxsat berish</Label>
                     <p className="text-sm text-muted-foreground">
-                      Users can log in from multiple devices
+                      Foydalanuvchilar bir nechta qurilmadan tizimga kira oladi
                     </p>
                   </div>
                   <Switch
@@ -1202,12 +1390,12 @@ export default function Settings() {
               </div>
 
               <div className="space-y-4 border-t pt-6">
-                <h3 className="text-lg font-semibold">Audit & Logging</h3>
+                <h3 className="text-lg font-semibold">Audit va jurnal yuritish</h3>
                 <div className="flex items-center justify-between">
                   <div className="space-y-1">
-                    <Label>Enable Activity Logging</Label>
+                    <Label>Faoliyat jurnalini yoqish</Label>
                     <p className="text-sm text-muted-foreground">
-                      Log key actions (orders, returns, inventory)
+                      Asosiy harakatlarni qayd etish (sotuvlar, qaytarishlar, ombor harakatlari)
                     </p>
                   </div>
                   <Switch
@@ -1222,11 +1410,11 @@ export default function Settings() {
 
               <div className="flex justify-end gap-3 border-t pt-6">
                 <Button variant="outline" onClick={() => loadAllSettings()}>
-                  Cancel
+                  Bekor qilish
                 </Button>
                 <Button onClick={() => handleSave('security', securitySettings as unknown as Record<string, unknown>)} disabled={saving}>
                   <Save className="mr-2 h-4 w-4" />
-                  {saving ? 'Saving...' : 'Save Changes'}
+                  {saving ? 'Saqlanmoqda...' : 'O\'zgarishlarni saqlash'}
                 </Button>
               </div>
             </CardContent>
@@ -1237,13 +1425,13 @@ export default function Settings() {
         <TabsContent value="localization">
           <Card>
             <CardHeader>
-              <CardTitle>Localization</CardTitle>
-              <CardDescription>Configure language and currency preferences</CardDescription>
+              <CardTitle>Mahalliylashtirish</CardTitle>
+              <CardDescription>Til va valyuta sozlamalarini boshqarish</CardDescription>
             </CardHeader>
             <CardContent className="space-y-6">
               <div className="grid gap-6 xl:grid-cols-2">
                 <div className="space-y-2">
-                  <Label htmlFor="language">Default Language</Label>
+                  <Label htmlFor="language">Asosiy til</Label>
                   <Select
                     value={localizationSettings.default_language}
                     onValueChange={(value: 'en' | 'uz' | 'ru') => {
@@ -1263,7 +1451,7 @@ export default function Settings() {
                 </div>
 
                 <div className="space-y-2">
-                  <Label htmlFor="currency">Default Currency</Label>
+                  <Label htmlFor="currency">Asosiy valyuta</Label>
                   <Input
                     id="currency"
                     value={localizationSettings.default_currency}
@@ -1279,7 +1467,7 @@ export default function Settings() {
                 </div>
 
                 <div className="space-y-2">
-                  <Label htmlFor="currency_symbol">Currency Symbol</Label>
+                  <Label htmlFor="currency_symbol">Valyuta belgisi</Label>
                   <Input
                     id="currency_symbol"
                     value={localizationSettings.currency_symbol}
@@ -1295,7 +1483,7 @@ export default function Settings() {
                 </div>
 
                 <div className="space-y-2">
-                  <Label htmlFor="currency_position">Currency Position</Label>
+                  <Label htmlFor="currency_position">Valyuta belgisi joylashuvi</Label>
                   <Select
                     value={localizationSettings.currency_position}
                     onValueChange={(value: 'before' | 'after') => {
@@ -1310,14 +1498,14 @@ export default function Settings() {
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
-                      <SelectItem value="before">Before Amount ($ 100)</SelectItem>
-                      <SelectItem value="after">After Amount (100 UZS)</SelectItem>
+                      <SelectItem value="before">Summadan oldin ($ 100)</SelectItem>
+                      <SelectItem value="after">Summadan keyin (100 UZS)</SelectItem>
                     </SelectContent>
                   </Select>
                 </div>
 
                 <div className="space-y-2">
-                  <Label htmlFor="thousand_sep">Thousand Separator</Label>
+                  <Label htmlFor="thousand_sep">Minglik ajratgich</Label>
                   <Input
                     id="thousand_sep"
                     value={localizationSettings.thousand_separator}
@@ -1334,7 +1522,7 @@ export default function Settings() {
                 </div>
 
                 <div className="space-y-2">
-                  <Label htmlFor="decimal_sep">Decimal Separator</Label>
+                  <Label htmlFor="decimal_sep">O'nlik ajratgich</Label>
                   <Input
                     id="decimal_sep"
                     value={localizationSettings.decimal_separator}
@@ -1353,18 +1541,23 @@ export default function Settings() {
 
               <div className="flex justify-end gap-3 border-t pt-6">
                 <Button variant="outline" onClick={() => loadAllSettings()}>
-                  Cancel
+                  Bekor qilish
                 </Button>
                 <Button
                   onClick={() => handleSave('localization', localizationSettings as unknown as Record<string, unknown>)}
                   disabled={saving}
                 >
                   <Save className="mr-2 h-4 w-4" />
-                  {saving ? 'Saving...' : 'Save Changes'}
+                  {saving ? 'Saqlanmoqda...' : 'O\'zgarishlarni saqlash'}
                 </Button>
               </div>
             </CardContent>
           </Card>
+        </TabsContent>
+
+        {/* Offline & Sync Tab */}
+        <TabsContent value="offline">
+          <OfflineSettingsTab />
         </TabsContent>
       </Tabs>
 

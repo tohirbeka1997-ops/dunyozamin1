@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { useReactToPrint } from 'react-to-print';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -23,7 +23,6 @@ import {
   Dialog,
   DialogContent,
   DialogDescription,
-  DialogFooter,
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog';
@@ -47,6 +46,11 @@ import { useToast } from '@/hooks/use-toast';
 import { useAuth } from '@/contexts/AuthContext';
 import { cn } from '@/lib/utils';
 import { useTranslation } from 'react-i18next';
+import { useShiftStore } from '@/store/shiftStore';
+import { useInventoryStore } from '@/store/inventoryStore';
+import { formatMoneyUZS } from '@/lib/format';
+import { useQueryClient } from '@tanstack/react-query';
+import { invalidateDashboardQueries } from '@/utils/dashboard';
 import {
   searchProducts,
   getProductByBarcode,
@@ -55,30 +59,31 @@ import {
   createCreditOrder,
   generateOrderNumber,
   generatePaymentNumber,
-  getActiveShift,
-  createShift,
-  generateShiftNumber,
   saveHeldOrder,
   getHeldOrders,
   generateHeldNumber,
-  updateHeldOrderStatus,
   deleteHeldOrder,
   getCategories,
   updateHeldOrderName,
 } from '@/db/api';
+import ShiftControl from '@/components/pos/ShiftControl';
 import type { Product, Customer, CartItem, PaymentMethod, HeldOrder, Category } from '@/types/database';
-import { Search, Trash2, Plus, Minus, DollarSign, CreditCard, Smartphone, Banknote, Tag, Clock, Pause, Package, X, Check, ChevronsUpDown } from 'lucide-react';
+import { Search, Trash2, Plus, Minus, DollarSign, CreditCard, Smartphone, Banknote, Tag, Clock, Pause, Package, X, Check, ChevronsUpDown, Lock } from 'lucide-react';
 import HoldOrderDialog from '@/components/pos/HoldOrderDialog';
 import WaitingOrdersDialog from '@/components/pos/WaitingOrdersDialog';
 import Numpad from '@/components/pos/Numpad';
 import QuickCustomerCreate from '@/components/pos/QuickCustomerCreate';
 import CustomerInfoBadge from '@/components/pos/CustomerInfoBadge';
 import Receipt from '@/components/Receipt';
+import MoneyInput from '@/components/common/MoneyInput';
 
 export default function POSTerminal() {
   const { t } = useTranslation();
   const { toast } = useToast();
   const { profile } = useAuth();
+  const { currentShift, addSale } = useShiftStore();
+  const { addMovement } = useInventoryStore();
+  const queryClient = useQueryClient();
   const searchInputRef = useRef<HTMLInputElement>(null);
   
   const [searchTerm, setSearchTerm] = useState('');
@@ -91,10 +96,7 @@ export default function POSTerminal() {
   const [discount, setDiscount] = useState({ type: 'amount', value: 0 });
   const [paymentDialogOpen, setPaymentDialogOpen] = useState(false);
   const [payments, setPayments] = useState<{ method: PaymentMethod; amount: number }[]>([]);
-  const [cashReceived, setCashReceived] = useState('');
-  const [currentShift, setCurrentShift] = useState<any>(null);
-  const [shiftDialogOpen, setShiftDialogOpen] = useState(false);
-  const [openingCash, setOpeningCash] = useState('');
+  const [cashReceived, setCashReceived] = useState<number | null>(null);
   const [editingQuantity, setEditingQuantity] = useState<{ [key: string]: string }>({});
   const [creditAmount, setCreditAmount] = useState<string>('');
   
@@ -188,27 +190,13 @@ export default function POSTerminal() {
     }
   }, []);
 
-  const checkShift = useCallback(async () => {
-    if (!profile) return;
-    try {
-      const shift = await getActiveShift(profile.id);
-      setCurrentShift(shift);
-      if (!shift) {
-        setShiftDialogOpen(true);
-      }
-    } catch (error) {
-      console.error('Error checking shift:', error);
-    }
-  }, [profile]);
-
   useEffect(() => {
     loadCustomers();
     loadCategories();
     loadFavoriteProducts();
     loadAllProducts();
-    checkShift();
     loadHeldOrders();
-  }, [loadCustomers, loadCategories, loadFavoriteProducts, loadAllProducts, checkShift, loadHeldOrders]);
+  }, [loadCustomers, loadCategories, loadFavoriteProducts, loadAllProducts, loadHeldOrders]);
 
   // Keyboard shortcuts
   useEffect(() => {
@@ -323,29 +311,6 @@ export default function POSTerminal() {
     }
   }, [cart.length]);
 
-  const handleOpenShift = async () => {
-    if (!profile || !openingCash) return;
-    try {
-      const shiftNumber = await generateShiftNumber();
-      const shift = await createShift({
-        shift_number: shiftNumber,
-        cashier_id: profile.id,
-        opened_at: new Date().toISOString(),
-        opening_cash: Number(openingCash),
-        status: 'open',
-        notes: null,
-      });
-      setCurrentShift(shift);
-      setShiftDialogOpen(false);
-      toast({ title: t('common.success'), description: t('pos.shift_opened') });
-    } catch (error) {
-      toast({
-        title: t('common.error'),
-        description: t('pos.shift_open_failed'),
-        variant: 'destructive',
-      });
-    }
-  };
 
   const handleHoldOrder = async (customerName: string, note: string) => {
     if (!profile || !currentShift) {
@@ -372,11 +337,11 @@ export default function POSTerminal() {
       await saveHeldOrder({
         held_number: heldNumber,
         cashier_id: profile.id,
-        shift_id: currentShift.id,
+        shift_id: currentShift?.id || null,
         customer_id: selectedCustomer?.id || null,
         customer_name: customerName || null,
         items: cart,
-        discount: discount.value > 0 ? discount : null,
+        discount: discount.value > 0 ? { type: discount.type as 'amount' | 'percent', value: discount.value } : null,
         note: note || null,
       });
 
@@ -430,10 +395,10 @@ export default function POSTerminal() {
         setSelectedCustomer(customer || null);
       }
 
-      // Mark order as restored
-      await updateHeldOrderStatus(order.id, 'RESTORED');
+      // Delete the held order (since we're restoring it, we don't want it in the list anymore)
+      await deleteHeldOrder(order.id);
 
-      // Remove from heldOrders by reloading
+      // Reload held orders list to remove the restored order
       loadHeldOrders();
 
       // Close dialogs
@@ -597,7 +562,7 @@ export default function POSTerminal() {
             lineDiscount = subtotal;
             toast({
               title: 'Discount Adjusted',
-              description: `Line discount reduced to ${lineDiscount.toFixed(2)} UZS (cannot exceed line subtotal)`,
+              description: `Line discount reduced to ${formatMoneyUZS(lineDiscount)} (cannot exceed line subtotal)`,
             });
           }
           
@@ -766,7 +731,7 @@ export default function POSTerminal() {
             validDiscount = item.subtotal;
             toast({
               title: 'Discount Adjusted',
-              description: `Maximum discount is ${item.subtotal.toFixed(2)} UZS (line subtotal)`,
+              description: `Maximum discount is ${formatMoneyUZS(item.subtotal)} (line subtotal)`,
             });
           }
           
@@ -785,7 +750,8 @@ export default function POSTerminal() {
     setCart(cart.filter((item) => item.product.id !== productId));
   };
 
-  const calculateTotals = () => {
+  // Memoize totals calculation to prevent recalculation on every render
+  const totals = useMemo(() => {
     const subtotal = cart.reduce((sum, item) => sum + item.subtotal, 0);
     const lineDiscountsTotal = cart.reduce((sum, item) => sum + item.discount_amount, 0);
     
@@ -808,7 +774,7 @@ export default function POSTerminal() {
       discountAmount: totalDiscountAmount, 
       total 
     };
-  };
+  }, [cart, discount]);
 
   const handleCustomerCreated = (customer: Customer) => {
     setCustomers([...customers, customer]);
@@ -853,7 +819,7 @@ export default function POSTerminal() {
       }
     }
 
-    const { subtotal, discountAmount, total } = calculateTotals();
+    const { subtotal, discountAmount, total } = totals;
 
     if (total <= 0) {
       toast({
@@ -879,13 +845,13 @@ export default function POSTerminal() {
     }
 
     if (paymentMethod === 'cash') {
-      const cashAmount = Number(cashReceived);
+      const cashAmount = cashReceived || 0;
       const requiredAmount = total - creditAmountValue;
       
       if (!cashAmount || cashAmount < requiredAmount) {
         toast({
           title: 'Insufficient Cash',
-          description: `Cash received (${cashAmount.toFixed(2)} UZS) must be greater than or equal to required amount (${requiredAmount.toFixed(2)} UZS)`,
+          description: `Cash received (${formatMoneyUZS(cashAmount)}) must be greater than or equal to required amount (${formatMoneyUZS(requiredAmount)})`,
           variant: 'destructive',
         });
         return;
@@ -918,7 +884,7 @@ export default function POSTerminal() {
       if (Math.abs(totalPaid - requiredAmount) > 0.01) {
         toast({
           title: 'Payment Mismatch',
-          description: `Payment amounts do not match required amount. Paid: ${totalPaid.toFixed(2)} UZS, Required: ${requiredAmount.toFixed(2)} UZS`,
+          description: `Payment amounts do not match required amount. Paid: ${formatMoneyUZS(totalPaid)}, Required: ${formatMoneyUZS(requiredAmount)}`,
           variant: 'destructive',
         });
         return;
@@ -934,7 +900,7 @@ export default function POSTerminal() {
         order_number: orderNumber,
         customer_id: selectedCustomer?.id || null,
         cashier_id: profile.id,
-        shift_id: currentShift.id,
+        shift_id: currentShift?.id || null,
         subtotal,
         discount_amount: discountAmount,
         discount_percent: discount.type === 'percent' ? discount.value : 0,
@@ -973,18 +939,36 @@ export default function POSTerminal() {
       // Call the atomic RPC function
       await createOrder(order, orderItems, orderPaymentsData);
 
+      // Invalidate dashboard queries
+      invalidateDashboardQueries(queryClient);
+
+      // Update shift totals
+      if (currentShift) {
+        addSale(total);
+      }
+
+      // Record inventory movements for each sold item
+      cart.forEach((item) => {
+        addMovement({
+          product_id: item.product.id,
+          quantity: -item.quantity, // sale = OUT (negative)
+          type: 'sale',
+          reason: `POS sale - Order ${orderNumber}`,
+        });
+      });
+
       // Success message based on payment type
       let successMessage = '';
       if (creditAmountValue > 0 && creditAmountValue < total) {
-        successMessage = `Order ${orderNumber} completed. ${creditAmountValue.toFixed(2)} UZS on credit, ${paidAmount.toFixed(2)} UZS paid.`;
+        successMessage = `Order ${orderNumber} completed. ${formatMoneyUZS(creditAmountValue)} on credit, ${formatMoneyUZS(paidAmount)} paid.`;
         if (changeAmount > 0) {
-          successMessage += ` Change: ${changeAmount.toFixed(2)} UZS`;
+          successMessage += ` Change: ${formatMoneyUZS(changeAmount)}`;
         }
       } else if (creditAmountValue === total) {
         successMessage = `Order ${orderNumber} completed ON CREDIT.`;
       } else {
         successMessage = changeAmount > 0 
-          ? `Order ${orderNumber} completed. Change: ${changeAmount.toFixed(2)} UZS`
+          ? `Order ${orderNumber} completed. Change: ${formatMoneyUZS(changeAmount)}`
           : `Order ${orderNumber} completed successfully`;
       }
 
@@ -1076,7 +1060,7 @@ export default function POSTerminal() {
       setDiscount({ type: 'amount', value: 0 });
       setSelectedCustomer(null);
       setPaymentDialogOpen(false);
-      setCashReceived('');
+      setCashReceived(null);
       setCreditAmount('');
       setSelectedCartIndex(-1);
 
@@ -1164,7 +1148,7 @@ export default function POSTerminal() {
       return;
     }
 
-    const { subtotal, discountAmount, total } = calculateTotals();
+    const { subtotal, discountAmount, total } = totals;
 
     if (total <= 0) {
       toast({
@@ -1234,7 +1218,7 @@ export default function POSTerminal() {
           order_number: orderNumber,
           customer_id: selectedCustomer.id,
           cashier_id: profile.id,
-          shift_id: currentShift.id,
+          shift_id: currentShift?.id || null,
           subtotal,
           discount_amount: discountAmount,
           discount_percent: discount.type === 'percent' ? discount.value : 0,
@@ -1267,6 +1251,9 @@ export default function POSTerminal() {
 
         await createOrder(order, orderItems, orderPaymentsData);
         
+        // Invalidate dashboard queries
+        invalidateDashboardQueries(queryClient);
+        
         result = {
           success: true,
           order_number: orderNumber,
@@ -1277,7 +1264,7 @@ export default function POSTerminal() {
         result = await createCreditOrder({
           customer_id: selectedCustomer.id,
           cashier_id: profile.id,
-          shift_id: currentShift.id,
+          shift_id: currentShift?.id || null,
           items: orderItems,
           subtotal,
           discount_amount: discountAmount,
@@ -1286,6 +1273,9 @@ export default function POSTerminal() {
           total_amount: total,
           notes: undefined,
         });
+        
+        // Invalidate dashboard queries
+        invalidateDashboardQueries(queryClient);
       }
 
       if (!result.success) {
@@ -1347,7 +1337,7 @@ export default function POSTerminal() {
       setPayments([]);
       setDiscount({ type: 'amount', value: 0 });
       setPaymentDialogOpen(false);
-      setCashReceived('');
+      setCashReceived(null);
       setCreditAmount('');
       setSelectedCartIndex(-1);
 
@@ -1377,35 +1367,18 @@ export default function POSTerminal() {
   };
 
 
-  const { subtotal, lineDiscountsTotal, globalDiscountAmount, discountAmount, total } = calculateTotals();
-  const paidAmount = payments.reduce((sum, p) => sum + p.amount, 0);
+  // Use memoized totals
+  const { subtotal, lineDiscountsTotal, globalDiscountAmount, discountAmount, total } = totals;
+  
+  // Memoize paid amount calculation
+  const paidAmount = useMemo(() => {
+    return payments.reduce((sum, p) => sum + p.amount, 0);
+  }, [payments]);
+  
   const remainingAmount = total - paidAmount;
 
-  // Currency formatting helper for Uzbekistan market
-  const formatCurrency = (value: number): string => {
-    // Check if whole number
-    const isWholeNumber = Math.abs(value % 1) < 0.01;
-    
-    // Format number with 2 decimal places
-    const numStr = isWholeNumber 
-      ? Math.round(value).toString() 
-      : value.toFixed(2);
-    
-    // Split into integer and decimal parts
-    const parts = numStr.split('.');
-    const integerPart = parts[0];
-    const decimalPart = parts[1];
-    
-    // Add space as thousand separator
-    const formattedInteger = integerPart.replace(/\B(?=(\d{3})+(?!\d))/g, ' ');
-    
-    // Combine parts
-    const formatted = isWholeNumber 
-      ? formattedInteger 
-      : `${formattedInteger}.${decimalPart}`;
-    
-    return `${formatted} so'm`;
-  };
+  // Use unified money formatter
+  const formatCurrency = (value: number): string => formatMoneyUZS(value);
 
   // Get products to display (search results or all products filtered by category)
   const displayProducts = searchResults.length > 0 
@@ -1414,42 +1387,40 @@ export default function POSTerminal() {
         ? allProducts.filter(p => p.category_id === selectedCategory)
         : allProducts);
 
+  // Show "No open shift" state if shift is not open
+  if (!currentShift) {
+    return (
+      <div className="flex flex-col items-center justify-center min-h-[60vh] space-y-6">
+        <div className="text-center space-y-4">
+          <div className="inline-flex items-center justify-center w-20 h-20 rounded-full bg-muted">
+            <Lock className="h-10 w-10 text-muted-foreground" />
+          </div>
+          <div>
+            <h2 className="text-2xl font-bold mb-2">Kassa yopiq</h2>
+            <p className="text-muted-foreground">
+              To start selling, please open a new shift.
+            </p>
+          </div>
+          <ShiftControl />
+        </div>
+      </div>
+    );
+  }
+
   return (
     <>
-      <Dialog open={shiftDialogOpen} onOpenChange={setShiftDialogOpen}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>{t('pos.open_shift')}</DialogTitle>
-            <DialogDescription>{t('pos.opening_cash')}</DialogDescription>
-          </DialogHeader>
-          <div className="space-y-4 py-4">
-            <div className="space-y-2">
-              <Label htmlFor="opening-cash">{t('pos.opening_cash')}</Label>
-              <Input
-                id="opening-cash"
-                type="number"
-                step="0.01"
-                value={openingCash}
-                onChange={(e) => setOpeningCash(e.target.value)}
-                placeholder="0.00"
-              />
-            </div>
-          </div>
-          <DialogFooter>
-            <Button onClick={handleOpenShift} disabled={!openingCash}>
-              {t('pos.open_shift')}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+      {/* Shift Control Header */}
+      <div className="mb-4 flex items-center justify-between p-3 bg-card border rounded-lg">
+        <ShiftControl />
+      </div>
 
       {/* Split View Layout - Full Screen - Fixed Height Container */}
       {/* Negative margins to counteract MainLayout padding */}
-      <div className="flex flex-col flex-1 min-h-0 -m-4 xl:-m-6">
-        {/* Main Content Area - Flex Container */}
-        <div className="flex flex-row min-h-0 overflow-hidden gap-3 p-3 flex-1">
-          {/* Left Column - Product Catalog (58%) */}
-          <div className="w-[58%] flex flex-col min-h-0 border-r bg-background rounded-lg overflow-hidden">
+      <div className="flex h-full flex-col -m-4 xl:-m-6">
+        {/* Main Content Area - Grid Container */}
+        <div className="mt-4 grid flex-1 min-h-0 grid-cols-[2.3fr,1fr] gap-4 p-3">
+          {/* Left Column - Product Catalog */}
+          <div className="flex flex-col min-h-0 rounded-xl border bg-white overflow-hidden">
             {/* Search Header - Fixed Height */}
             <div className="flex-shrink-0 p-3 border-b bg-white dark:bg-gray-900">
               <div className="relative mb-2">
@@ -1586,9 +1557,9 @@ export default function POSTerminal() {
             </div>
           </div>
 
-          {/* Right Column - Cart & Checkout (42%) */}
-          <div className="w-[42%] h-[calc(100vh-80px)] flex flex-col relative overflow-hidden bg-gray-50 dark:bg-gray-950 rounded-lg">
-            {/* Top Section - Customer & Hold Order - Fixed Height */}
+          {/* Right Column - Cart & Checkout */}
+          <div className="flex h-full flex-col rounded-xl border bg-white overflow-hidden">
+            {/* Top Section - Header: Customer Selection/Search (Fixed) */}
             <div className="flex-shrink-0 p-3 border-b bg-white dark:bg-gray-900 space-y-2">
               <div className="space-y-2">
               <Label className="text-sm font-semibold">{t('pos.customer')}</Label>
@@ -1748,8 +1719,8 @@ export default function POSTerminal() {
               </div>
             </div>
 
-            {/* Middle Section - Cart Items List (Scrollable) - Takes Remaining Space */}
-            <div className="flex-1 overflow-y-auto">
+            {/* Middle Section - Body: Cart Items List (Scrollable, flex-grow) */}
+            <div className="flex-1 min-h-0 overflow-y-auto">
               {cart.length === 0 ? (
                 <div className="flex items-center justify-center py-8 text-muted-foreground">
                   <div className="text-center">
@@ -1929,8 +1900,8 @@ export default function POSTerminal() {
               )}
             </div>
 
-            {/* Bottom Section - Totals & Actions (Fixed at Bottom - Always Visible) */}
-            <div className="flex-shrink-0 w-full bg-white dark:bg-gray-900 border-t p-4 z-10 space-y-4">
+            {/* Bottom Section - Footer: Checkout/Total Buttons (Fixed at Bottom) */}
+            <div className="shrink-0 border-t bg-white dark:bg-gray-900 p-4 shadow-sm mb-[30px]">
               {/* Discount Input */}
               <div className="space-y-2">
                 <Label className="text-sm font-semibold">{t('pos.order_discount')}</Label>
@@ -2017,7 +1988,7 @@ export default function POSTerminal() {
                     setSelectedCustomer(null);
                     toast({
                       title: 'Cart cleared',
-                      description: 'All items removed from cart',
+                      description: t('pos.cart_empty'),
                     });
                   }}
                 >
@@ -2050,19 +2021,16 @@ export default function POSTerminal() {
               </TabsTrigger>
             </TabsList>
             <TabsContent value="cash" className="space-y-4">
-              <div className="space-y-2">
-                <Label>{t('pos.cash_received')}</Label>
-                <Input
-                  type="number"
-                  step="0.01"
-                  value={cashReceived}
-                  onChange={(e) => setCashReceived(e.target.value)}
-                  placeholder="0.00"
-                  autoFocus
-                />
-              </div>
-              {Number(cashReceived) > 0 && (() => {
-                const changeAmount = Number(cashReceived) - total;
+              <MoneyInput
+                label={t('pos.cash_received')}
+                value={cashReceived}
+                onValueChange={setCashReceived}
+                placeholder="0"
+                allowZero={false}
+                min={0}
+              />
+              {cashReceived !== null && cashReceived > 0 && (() => {
+                const changeAmount = cashReceived - total;
                 const isSufficient = changeAmount >= 0;
                 return (
                   <div className="p-4 bg-muted rounded-lg">
@@ -2081,7 +2049,7 @@ export default function POSTerminal() {
               <Button
                 className="w-full"
                 onClick={() => handleCompletePayment('cash')}
-                disabled={!cashReceived || Number(cashReceived) < total}
+                disabled={!cashReceived || cashReceived < total}
               >
                 Complete Payment
               </Button>
@@ -2089,7 +2057,7 @@ export default function POSTerminal() {
             <TabsContent value="card" className="space-y-4">
               <div className="p-4 bg-muted rounded-lg space-y-2">
                 <p className="text-sm text-muted-foreground">Amount to charge:</p>
-                <p className="text-2xl font-bold">{total.toFixed(2)} UZS</p>
+                <p className="text-2xl font-bold">{formatMoneyUZS(total)}</p>
               </div>
               <Button
                 className="w-full"
@@ -2289,7 +2257,13 @@ export default function POSTerminal() {
 
       <WaitingOrdersDialog
         open={waitingOrdersDialogOpen}
-        onOpenChange={setWaitingOrdersDialogOpen}
+        onOpenChange={(open) => {
+          setWaitingOrdersDialogOpen(open);
+          // Refresh held orders when dialog opens
+          if (open) {
+            loadHeldOrders();
+          }
+        }}
         heldOrders={heldOrders}
         onRestore={handleRestoreOrder}
         onCancel={handleCancelHeldOrder}

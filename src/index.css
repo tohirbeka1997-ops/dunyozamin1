@@ -3,7 +3,32 @@
 @tailwind components;
 @tailwind utilities;
 
-/* Print styles for thermal receipt */
+/* Print Styles for Receipts and Labels */
+@media print {
+  @page {
+    margin: 0;
+    size: auto;
+  }
+
+  body {
+    margin: 0;
+    padding: 0;
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+
+  .no-break {
+    page-break-inside: avoid;
+    break-inside: avoid;
+  }
+
+  .print\\:break-inside-avoid {
+    page-break-inside: avoid;
+    break-inside: avoid;
+  }
+}
+
+/* Print styles for thermal receipt and labels */
 @media print {
   body * {
     visibility: hidden;
@@ -23,8 +48,25 @@
   }
   
   @page {
-    size: 58mm auto;
+    size: auto;
     margin: 0;
+  }
+
+  body {
+    margin: 0;
+    padding: 0;
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+
+  .no-break {
+    page-break-inside: avoid;
+    break-inside: avoid;
+  }
+
+  .print\\:break-inside-avoid {
+    page-break-inside: avoid;
+    break-inside: avoid;
   }
 }
 

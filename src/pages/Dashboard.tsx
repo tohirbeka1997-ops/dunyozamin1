@@ -1,5 +1,6 @@
-import { useEffect, useState } from 'react';
+import { useState, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
+import { useQuery } from '@tanstack/react-query';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Button } from '@/components/ui/button';
@@ -28,8 +29,10 @@ import {
   BarChart3,
 } from 'lucide-react';
 import { Link } from 'react-router-dom';
+import { formatUnit } from '@/utils/formatters';
 import { useToast } from '@/hooks/use-toast';
 import { format } from 'date-fns';
+import { formatMoneyUZS } from '@/lib/format';
 import { LineChart, Line, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
 
 interface MetricCardProps {
@@ -93,18 +96,49 @@ export default function Dashboard() {
   const [customDateTo, setCustomDateTo] = useState<Date | undefined>();
   const [showCustomDatePicker, setShowCustomDatePicker] = useState(false);
 
-  // Data state
-  const [analytics, setAnalytics] = useState<DashboardAnalytics | null>(null);
-  const [lowStockProducts, setLowStockProducts] = useState<ProductWithCategory[]>([]);
-  const [dailySales, setDailySales] = useState<DailySales[]>([]);
-  const [topProducts, setTopProducts] = useState<TopProduct[]>([]);
-  const [totalCustomerDebt, setTotalCustomerDebt] = useState<number>(0);
-  
-  // Loading and error state
-  const [loading, setLoading] = useState(true);
-  const [analyticsError, setAnalyticsError] = useState(false);
-  const [lowStockError, setLowStockError] = useState(false);
-  const [chartsError, setChartsError] = useState(false);
+  // Memoize date range string for query keys
+  const dateRangeKey = useMemo(() => {
+    return `${dateRange.from.toISOString()}_${dateRange.to.toISOString()}`;
+  }, [dateRange]);
+
+  // React Query hooks for dashboard data
+  const { data: analytics, isLoading: analyticsLoading, isError: analyticsError } = useQuery({
+    queryKey: ['dashboardAnalytics', dateRangeKey],
+    queryFn: () => getDashboardAnalytics(dateRange.from, dateRange.to),
+    refetchInterval: 30000, // Auto-refresh every 30 seconds
+    retry: 1,
+  });
+
+  const { data: lowStockProducts = [], isLoading: lowStockLoading, isError: lowStockError } = useQuery({
+    queryKey: ['lowStockProducts'],
+    queryFn: getLowStockProducts,
+    refetchInterval: 30000,
+    retry: 1,
+  });
+
+  const { data: dailySales = [], isLoading: chartsLoading, isError: chartsError } = useQuery({
+    queryKey: ['dailySales', dateRangeKey],
+    queryFn: () => getDailySalesData(dateRange.from, dateRange.to),
+    refetchInterval: 30000,
+    retry: 1,
+  });
+
+  const { data: topProducts = [], isLoading: topProductsLoading } = useQuery({
+    queryKey: ['topProducts', dateRangeKey],
+    queryFn: () => getTopProducts(dateRange.from, dateRange.to, 5),
+    refetchInterval: 30000,
+    retry: 1,
+  });
+
+  const { data: totalCustomerDebt = 0 } = useQuery({
+    queryKey: ['totalCustomerDebt'],
+    queryFn: getTotalCustomerDebt,
+    refetchInterval: 30000,
+    retry: 1,
+  });
+
+  // Combined loading state
+  const loading = analyticsLoading || lowStockLoading || chartsLoading || topProductsLoading;
 
   // Calculate date range based on preset
   const calculateDateRange = (preset: DateRangePreset): DateRange => {
@@ -169,78 +203,9 @@ export default function Dashboard() {
     }
   };
 
-  // Load dashboard data
-  useEffect(() => {
-    loadDashboardData();
-  }, [dateRange]);
 
-  const loadDashboardData = async () => {
-    setLoading(true);
-    setAnalyticsError(false);
-    setLowStockError(false);
-    setChartsError(false);
-
-    // Load analytics
-    try {
-      const analyticsData = await getDashboardAnalytics(dateRange.from, dateRange.to);
-      setAnalytics(analyticsData);
-    } catch (error) {
-      console.error('Failed to load analytics:', error);
-      setAnalyticsError(true);
-      setAnalytics({
-        total_sales: 0,
-        total_orders: 0,
-        low_stock_count: 0,
-        active_customers: 0,
-        average_order_value: 0,
-        items_sold: 0,
-        returns_count: 0,
-        returns_amount: 0,
-        pending_purchase_orders: 0,
-      });
-    }
-
-    // Load total customer debt
-    try {
-      const debt = await getTotalCustomerDebt();
-      setTotalCustomerDebt(debt);
-    } catch (error) {
-      console.error('Failed to load customer debt:', error);
-      setTotalCustomerDebt(0);
-    }
-
-    // Load low stock products
-    try {
-      const lowStockData = await getLowStockProducts();
-      setLowStockProducts(lowStockData || []);
-    } catch (error) {
-      console.error('Failed to load low stock products:', error);
-      setLowStockError(true);
-      setLowStockProducts([]);
-    }
-
-    // Load charts data
-    try {
-      const [salesData, productsData] = await Promise.all([
-        getDailySalesData(dateRange.from, dateRange.to),
-        getTopProducts(dateRange.from, dateRange.to, 5),
-      ]);
-      setDailySales(salesData);
-      setTopProducts(productsData);
-    } catch (error) {
-      console.error('Failed to load charts data:', error);
-      setChartsError(true);
-      setDailySales([]);
-      setTopProducts([]);
-    }
-
-    setLoading(false);
-  };
-
-  // Format currency
-  const formatCurrency = (amount: number): string => {
-    return `${amount.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} UZS`;
-  };
+  // Use unified money formatter
+  const formatCurrency = (amount: number): string => formatMoneyUZS(amount);
 
   // Format date for display
   const formatDateRange = (): string => {
@@ -326,7 +291,7 @@ export default function Dashboard() {
           value={formatCurrency(analytics?.total_sales || 0)}
           subtitle={`${analytics?.total_orders || 0} ${t('dashboard.cards.total_sales.orders')}`}
           icon={<DollarSign className="h-4 w-4 text-muted-foreground" />}
-          loading={loading}
+          loading={analyticsLoading}
           error={analyticsError}
         />
 
@@ -335,7 +300,7 @@ export default function Dashboard() {
           value={analytics?.total_orders || 0}
           subtitle={t('dashboard.cards.orders.subtitle')}
           icon={<ShoppingCart className="h-4 w-4 text-muted-foreground" />}
-          loading={loading}
+          loading={analyticsLoading}
           error={analyticsError}
         />
 
@@ -344,7 +309,7 @@ export default function Dashboard() {
           value={analytics?.low_stock_count || 0}
           subtitle={t('dashboard.cards.low_stock.subtitle')}
           icon={<AlertTriangle className="h-4 w-4 text-warning" />}
-          loading={loading}
+          loading={analyticsLoading}
           error={analyticsError}
         />
 
@@ -353,7 +318,7 @@ export default function Dashboard() {
           value={analytics?.active_customers || 0}
           subtitle={t('dashboard.cards.active_customers.subtitle')}
           icon={<Users className="h-4 w-4 text-muted-foreground" />}
-          loading={loading}
+          loading={analyticsLoading}
           error={analyticsError}
         />
       </div>
@@ -365,7 +330,7 @@ export default function Dashboard() {
           value={formatCurrency(analytics?.average_order_value || 0)}
           subtitle={t('dashboard.cards.average_order_value.subtitle')}
           icon={<TrendingUp className="h-4 w-4 text-muted-foreground" />}
-          loading={loading}
+          loading={analyticsLoading}
           error={analyticsError}
         />
 
@@ -374,7 +339,7 @@ export default function Dashboard() {
           value={analytics?.items_sold || 0}
           subtitle={t('dashboard.cards.items_sold.subtitle')}
           icon={<Package className="h-4 w-4 text-muted-foreground" />}
-          loading={loading}
+          loading={analyticsLoading}
           error={analyticsError}
         />
 
@@ -383,7 +348,7 @@ export default function Dashboard() {
           value={analytics?.returns_count || 0}
           subtitle={formatCurrency(analytics?.returns_amount || 0)}
           icon={<RotateCcw className="h-4 w-4 text-muted-foreground" />}
-          loading={loading}
+          loading={analyticsLoading}
           error={analyticsError}
         />
 
@@ -392,7 +357,7 @@ export default function Dashboard() {
           value={analytics?.pending_purchase_orders || 0}
           subtitle={t('dashboard.cards.pending_purchase_orders.subtitle')}
           icon={<FileText className="h-4 w-4 text-muted-foreground" />}
-          loading={loading}
+          loading={analyticsLoading}
           error={analyticsError}
         />
       </div>
@@ -405,7 +370,7 @@ export default function Dashboard() {
             value={formatCurrency(totalCustomerDebt)}
             subtitle={t('dashboard.cards.total_customer_debt.subtitle')}
             icon={<DollarSign className="h-4 w-4 text-destructive" />}
-            loading={loading}
+            loading={analyticsLoading}
             error={analyticsError}
           />
         </div>
@@ -422,7 +387,7 @@ export default function Dashboard() {
             </CardTitle>
           </CardHeader>
           <CardContent>
-            {loading ? (
+            {chartsLoading ? (
               <div className="h-80 flex items-center justify-center">
                 <Skeleton className="h-full w-full bg-muted" />
               </div>
@@ -473,7 +438,7 @@ export default function Dashboard() {
             </CardTitle>
           </CardHeader>
           <CardContent>
-            {loading ? (
+            {chartsLoading ? (
               <div className="h-80 flex items-center justify-center">
                 <Skeleton className="h-full w-full bg-muted" />
               </div>
@@ -610,7 +575,7 @@ export default function Dashboard() {
                   </div>
                   <div className="text-right">
                     <p className="font-bold text-warning">
-                      {product.current_stock || 0} {product.unit}
+                      {product.current_stock || 0} {formatUnit(product.unit)}
                     </p>
                     <p className="text-xs text-muted-foreground">
                       {t('dashboard.low_stock_alert.min')}: {product.min_stock_level || 0}

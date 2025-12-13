@@ -42,6 +42,8 @@ import type { Product, InventoryMovementWithDetails } from '@/types/database';
 import { ArrowLeft, Package, TrendingUp, TrendingDown, Edit } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 import { format } from 'date-fns';
+import { formatUnit } from '@/utils/formatters';
+import { formatMoneyUZS } from '@/lib/format';
 
 export default function InventoryDetail() {
   const { id } = useParams<{ id: string }>();
@@ -84,8 +86,8 @@ export default function InventoryDetail() {
       setSalesHistory(salesData);
     } catch (error) {
       toast({
-        title: 'Error',
-        description: 'Failed to load inventory details',
+        title: 'Xatolik',
+        description: 'Ombor tafsilotlarini yuklab bo\'lmadi',
         variant: 'destructive',
       });
     } finally {
@@ -96,8 +98,8 @@ export default function InventoryDetail() {
   const handleAdjustment = async () => {
     if (!id || !adjustmentForm.quantity || !adjustmentForm.reason) {
       toast({
-        title: 'Error',
-        description: 'Please fill in all required fields',
+        title: 'Xatolik',
+        description: 'Iltimos, barcha majburiy maydonlarni to\'ldiring',
         variant: 'destructive',
       });
       return;
@@ -116,8 +118,8 @@ export default function InventoryDetail() {
       });
 
       toast({
-        title: 'Success',
-        description: 'Stock adjusted successfully',
+        title: 'Muvaffaqiyatli',
+        description: 'Qoldiq muvaffaqiyatli to\'g\'rilandi',
       });
 
       setAdjustmentOpen(false);
@@ -130,8 +132,8 @@ export default function InventoryDetail() {
       loadData();
     } catch (error) {
       toast({
-        title: 'Error',
-        description: 'Failed to adjust stock',
+        title: 'Xatolik',
+        description: 'Qoldiqni to\'g\'rilab bo\'lmadi',
         variant: 'destructive',
       });
     }
@@ -144,20 +146,20 @@ export default function InventoryDetail() {
     const minStock = Number(product.min_stock_level);
 
     if (stock === 0) {
-      return <Badge variant="destructive">Out of Stock</Badge>;
+      return <Badge variant="destructive">Omborda yo'q</Badge>;
     } else if (stock <= minStock) {
-      return <Badge className="bg-warning text-warning-foreground">Low Stock</Badge>;
+      return <Badge className="bg-warning text-warning-foreground">Qoldiq kam</Badge>;
     } else {
-      return <Badge className="bg-success text-success-foreground">In Stock</Badge>;
+      return <Badge className="bg-success text-success-foreground">Omborda bor</Badge>;
     }
   };
 
   const getMovementTypeBadge = (type: string) => {
     const types: Record<string, { label: string; variant: 'default' | 'secondary' | 'destructive' | 'outline' }> = {
-      purchase: { label: 'Purchase', variant: 'default' },
-      sale: { label: 'Sale', variant: 'secondary' },
-      return: { label: 'Return', variant: 'outline' },
-      adjustment: { label: 'Adjustment', variant: 'outline' },
+      purchase: { label: 'Sotib olish', variant: 'default' },
+      sale: { label: 'Sotish', variant: 'secondary' },
+      return: { label: 'Qaytarish', variant: 'outline' },
+      adjustment: { label: 'To\'g\'rilash', variant: 'outline' },
       audit: { label: 'Audit', variant: 'outline' },
     };
     
@@ -186,9 +188,9 @@ export default function InventoryDetail() {
     return (
       <div className="space-y-6">
         <div className="text-center py-12">
-          <p className="text-muted-foreground">Product not found</p>
+          <p className="text-muted-foreground">Mahsulot topilmadi</p>
           <Button onClick={() => navigate('/inventory')} className="mt-4">
-            Back to Inventory
+            Omborga qaytish
           </Button>
         </div>
       </div>
@@ -213,19 +215,19 @@ export default function InventoryDetail() {
           <DialogTrigger asChild>
             <Button>
               <Edit className="h-4 w-4 mr-2" />
-              Adjust Stock
+              Qoldiqni to'g'rilash
             </Button>
           </DialogTrigger>
           <DialogContent>
             <DialogHeader>
-              <DialogTitle>Adjust Stock</DialogTitle>
+              <DialogTitle>Qoldiqni to'g'rilash</DialogTitle>
               <DialogDescription>
-                Make adjustments to the inventory for {product.name}
+                {product.name} uchun qoldiqni to'g'rilash
               </DialogDescription>
             </DialogHeader>
             <div className="space-y-4">
               <div className="space-y-2">
-                <Label>Adjustment Type</Label>
+                <Label>To'g'rilash turi</Label>
                 <Select
                   value={adjustmentForm.type}
                   onValueChange={(value) => setAdjustmentForm({ ...adjustmentForm, type: value })}
@@ -234,56 +236,56 @@ export default function InventoryDetail() {
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="increase">Increase</SelectItem>
-                    <SelectItem value="decrease">Decrease</SelectItem>
+                    <SelectItem value="increase">Qoldiqni oshirish</SelectItem>
+                    <SelectItem value="decrease">Qoldiqni kamaytirish</SelectItem>
                   </SelectContent>
                 </Select>
               </div>
               <div className="space-y-2">
-                <Label>Quantity</Label>
+                <Label>Miqdor</Label>
                 <Input
                   type="number"
                   min="0"
                   step="0.01"
                   value={adjustmentForm.quantity}
                   onChange={(e) => setAdjustmentForm({ ...adjustmentForm, quantity: e.target.value })}
-                  placeholder="Enter quantity"
+                  placeholder="Miqdorni kiriting"
                 />
               </div>
               <div className="space-y-2">
-                <Label>Reason</Label>
+                <Label>Sabab</Label>
                 <Select
                   value={adjustmentForm.reason}
                   onValueChange={(value) => setAdjustmentForm({ ...adjustmentForm, reason: value })}
                 >
                   <SelectTrigger>
-                    <SelectValue placeholder="Select reason" />
+                    <SelectValue placeholder="Sababni tanlang" />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="damaged">Damaged</SelectItem>
-                    <SelectItem value="lost">Lost</SelectItem>
-                    <SelectItem value="correction">Correction</SelectItem>
-                    <SelectItem value="audit">Inventory Count Difference</SelectItem>
-                    <SelectItem value="other">Other</SelectItem>
+                    <SelectItem value="damaged">Zararlangan</SelectItem>
+                    <SelectItem value="lost">Yo'qolgan</SelectItem>
+                    <SelectItem value="correction">To'g'rilash</SelectItem>
+                    <SelectItem value="audit">Inventarizatsiya farqi</SelectItem>
+                    <SelectItem value="other">Boshqa</SelectItem>
                   </SelectContent>
                 </Select>
               </div>
               <div className="space-y-2">
-                <Label>Notes (Optional)</Label>
+                <Label>Izoh (Ixtiyoriy)</Label>
                 <Textarea
                   value={adjustmentForm.notes}
                   onChange={(e) => setAdjustmentForm({ ...adjustmentForm, notes: e.target.value })}
-                  placeholder="Additional notes..."
+                  placeholder="Qo'shimcha izohlar..."
                   rows={3}
                 />
               </div>
             </div>
             <DialogFooter>
               <Button variant="outline" onClick={() => setAdjustmentOpen(false)}>
-                Cancel
+                Bekor qilish
               </Button>
               <Button onClick={handleAdjustment}>
-                Confirm Adjustment
+                Saqlash
               </Button>
             </DialogFooter>
           </DialogContent>
@@ -295,9 +297,9 @@ export default function InventoryDetail() {
           <CardContent className="pt-6">
             <div className="flex items-center justify-between">
               <div>
-                <p className="text-sm text-muted-foreground">Current Stock</p>
+                <p className="text-sm text-muted-foreground">Joriy qoldiq</p>
                 <p className="text-2xl font-bold">{Number(product.current_stock).toFixed(2)}</p>
-                <p className="text-sm text-muted-foreground">{product.unit}</p>
+                <p className="text-sm text-muted-foreground">{formatUnit(product.unit)}</p>
               </div>
               <Package className="h-8 w-8 text-muted-foreground" />
             </div>
@@ -308,9 +310,9 @@ export default function InventoryDetail() {
           <CardContent className="pt-6">
             <div className="flex items-center justify-between">
               <div>
-                <p className="text-sm text-muted-foreground">Min Stock Level</p>
+                <p className="text-sm text-muted-foreground">Minimal qoldiq</p>
                 <p className="text-2xl font-bold">{Number(product.min_stock_level).toFixed(2)}</p>
-                <p className="text-sm text-muted-foreground">{product.unit}</p>
+                <p className="text-sm text-muted-foreground">{formatUnit(product.unit)}</p>
               </div>
               <TrendingDown className="h-8 w-8 text-warning" />
             </div>
@@ -321,9 +323,9 @@ export default function InventoryDetail() {
           <CardContent className="pt-6">
             <div className="flex items-center justify-between">
               <div>
-                <p className="text-sm text-muted-foreground">Cost Price</p>
-                <p className="text-2xl font-bold">${Number(product.purchase_price).toFixed(2)}</p>
-                <p className="text-sm text-muted-foreground">per {product.unit}</p>
+                <p className="text-sm text-muted-foreground">Sotib olish narxi</p>
+                <p className="text-2xl font-bold">{formatMoneyUZS(product.purchase_price)}</p>
+                <p className="text-sm text-muted-foreground">{formatUnit(product.unit)} uchun</p>
               </div>
               <TrendingUp className="h-8 w-8 text-muted-foreground" />
             </div>
@@ -334,8 +336,8 @@ export default function InventoryDetail() {
           <CardContent className="pt-6">
             <div className="flex items-center justify-between">
               <div>
-                <p className="text-sm text-muted-foreground">Inventory Value</p>
-                <p className="text-2xl font-bold">${inventoryValue.toFixed(2)}</p>
+                <p className="text-sm text-muted-foreground">Ombordagi qiymat</p>
+                <p className="text-2xl font-bold">{formatMoneyUZS(inventoryValue)}</p>
                 <div className="mt-1">{getStockStatusBadge()}</div>
               </div>
               <Package className="h-8 w-8 text-muted-foreground" />
@@ -346,7 +348,7 @@ export default function InventoryDetail() {
 
       <Card>
         <CardHeader>
-          <CardTitle>Product Information</CardTitle>
+          <CardTitle>Mahsulot ma'lumotlari</CardTitle>
         </CardHeader>
         <CardContent>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -356,21 +358,21 @@ export default function InventoryDetail() {
             </div>
             {product.barcode && (
               <div>
-                <p className="text-sm text-muted-foreground">Barcode</p>
+                <p className="text-sm text-muted-foreground">Shtrix kod</p>
                 <p className="font-medium">{product.barcode}</p>
               </div>
             )}
             <div>
-              <p className="text-sm text-muted-foreground">Sale Price</p>
-              <p className="font-medium">${Number(product.sale_price).toFixed(2)}</p>
+              <p className="text-sm text-muted-foreground">Sotish narxi</p>
+              <p className="font-medium">{formatMoneyUZS(product.sale_price)}</p>
             </div>
             <div>
-              <p className="text-sm text-muted-foreground">Unit</p>
-              <p className="font-medium">{product.unit}</p>
+              <p className="text-sm text-muted-foreground">O'lchov birligi</p>
+              <p className="font-medium">{formatUnit(product.unit)}</p>
             </div>
             {product.description && (
               <div className="md:col-span-2">
-                <p className="text-sm text-muted-foreground">Description</p>
+                <p className="text-sm text-muted-foreground">Tavsif</p>
                 <p className="font-medium">{product.description}</p>
               </div>
             )}
@@ -380,33 +382,33 @@ export default function InventoryDetail() {
 
       <Tabs defaultValue="movements" className="space-y-4">
         <TabsList>
-          <TabsTrigger value="movements">Stock Movements</TabsTrigger>
-          <TabsTrigger value="purchases">Purchase History</TabsTrigger>
-          <TabsTrigger value="sales">Sales History</TabsTrigger>
+          <TabsTrigger value="movements">Qoldiq tarixi</TabsTrigger>
+          <TabsTrigger value="purchases">Sotib olish tarixi</TabsTrigger>
+          <TabsTrigger value="sales">Sotish tarixi</TabsTrigger>
         </TabsList>
 
         <TabsContent value="movements">
           <Card>
             <CardHeader>
-              <CardTitle>Movement History</CardTitle>
+              <CardTitle>Harakatlar tarixi</CardTitle>
             </CardHeader>
             <CardContent>
               {movements.length === 0 ? (
                 <div className="text-center py-12">
-                  <p className="text-muted-foreground">No movements recorded</p>
+                  <p className="text-muted-foreground">Hozircha qoldiq harakatlari yo'q</p>
                 </div>
               ) : (
                 <Table>
                   <TableHeader>
                     <TableRow>
-                      <TableHead>Date & Time</TableHead>
-                      <TableHead>Type</TableHead>
-                      <TableHead className="text-right">Before</TableHead>
-                      <TableHead className="text-right">Change</TableHead>
-                      <TableHead className="text-right">After</TableHead>
-                      <TableHead>Reference</TableHead>
-                      <TableHead>Reason</TableHead>
-                      <TableHead>User</TableHead>
+                      <TableHead>Sana va vaqt</TableHead>
+                      <TableHead>Turi</TableHead>
+                      <TableHead className="text-right">Oldin</TableHead>
+                      <TableHead className="text-right">O'zgarish</TableHead>
+                      <TableHead className="text-right">Keyin</TableHead>
+                      <TableHead>Hujjat raqami</TableHead>
+                      <TableHead>Sabab</TableHead>
+                      <TableHead>Foydalanuvchi</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
@@ -450,23 +452,23 @@ export default function InventoryDetail() {
         <TabsContent value="purchases">
           <Card>
             <CardHeader>
-              <CardTitle>Purchase History</CardTitle>
+              <CardTitle>Sotib olish tarixi</CardTitle>
             </CardHeader>
             <CardContent>
               {purchaseHistory.length === 0 ? (
                 <div className="text-center py-12">
-                  <p className="text-muted-foreground">No purchase history</p>
+                  <p className="text-muted-foreground">Sotib olish tarixi yo'q</p>
                 </div>
               ) : (
                 <Table>
                   <TableHeader>
                     <TableRow>
-                      <TableHead>PO Number</TableHead>
-                      <TableHead>Supplier</TableHead>
-                      <TableHead>Date</TableHead>
-                      <TableHead className="text-right">Quantity</TableHead>
-                      <TableHead className="text-right">Cost</TableHead>
-                      <TableHead className="text-right">Total</TableHead>
+                      <TableHead>Xarid raqami</TableHead>
+                      <TableHead>Ta'minotchi</TableHead>
+                      <TableHead>Sana</TableHead>
+                      <TableHead className="text-right">Miqdor</TableHead>
+                      <TableHead className="text-right">Narxi</TableHead>
+                      <TableHead className="text-right">Jami</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
@@ -483,10 +485,10 @@ export default function InventoryDetail() {
                           {Number(item.quantity).toFixed(2)}
                         </TableCell>
                         <TableCell className="text-right">
-                          ${Number(item.unit_cost).toFixed(2)}
+                          {formatMoneyUZS(item.unit_cost)}
                         </TableCell>
                         <TableCell className="text-right font-medium">
-                          ${(Number(item.quantity) * Number(item.unit_cost)).toFixed(2)}
+                          {formatMoneyUZS(Number(item.quantity) * Number(item.unit_cost))}
                         </TableCell>
                       </TableRow>
                     ))}
@@ -500,23 +502,23 @@ export default function InventoryDetail() {
         <TabsContent value="sales">
           <Card>
             <CardHeader>
-              <CardTitle>Sales History</CardTitle>
+              <CardTitle>Sotish tarixi</CardTitle>
             </CardHeader>
             <CardContent>
               {salesHistory.length === 0 ? (
                 <div className="text-center py-12">
-                  <p className="text-muted-foreground">No sales history</p>
+                  <p className="text-muted-foreground">Sotish tarixi yo'q</p>
                 </div>
               ) : (
                 <Table>
                   <TableHeader>
                     <TableRow>
-                      <TableHead>Order Number</TableHead>
-                      <TableHead>Customer</TableHead>
-                      <TableHead>Date</TableHead>
-                      <TableHead className="text-right">Quantity</TableHead>
-                      <TableHead className="text-right">Revenue</TableHead>
-                      <TableHead className="text-right">Profit</TableHead>
+                      <TableHead>Buyurtma raqami</TableHead>
+                      <TableHead>Mijoz</TableHead>
+                      <TableHead>Sana</TableHead>
+                      <TableHead className="text-right">Miqdor</TableHead>
+                      <TableHead className="text-right">Tushum</TableHead>
+                      <TableHead className="text-right">Foyda</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
@@ -538,11 +540,11 @@ export default function InventoryDetail() {
                             {Number(item.quantity).toFixed(2)}
                           </TableCell>
                           <TableCell className="text-right">
-                            ${revenue.toFixed(2)}
+                            {formatMoneyUZS(revenue)}
                           </TableCell>
                           <TableCell className="text-right font-medium">
                             <span className={profit >= 0 ? 'text-success' : 'text-destructive'}>
-                              ${profit.toFixed(2)}
+                              {formatMoneyUZS(profit)}
                             </span>
                           </TableCell>
                         </TableRow>

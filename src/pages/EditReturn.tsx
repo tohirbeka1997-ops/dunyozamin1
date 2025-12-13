@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
+import { useTranslation } from 'react-i18next';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Label } from '@/components/ui/label';
@@ -24,8 +25,10 @@ import type { SalesReturnWithDetails } from '@/types/database';
 import { ArrowLeft, Save } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 import { Skeleton } from '@/components/ui/skeleton';
+import { formatMoneyUZS } from '@/lib/format';
 
 export default function EditReturn() {
+  const { t } = useTranslation();
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const { toast } = useToast();
@@ -53,11 +56,11 @@ export default function EditReturn() {
     } catch (error) {
       console.error('Error loading return:', error);
       toast({
-        title: 'Error',
-        description: error instanceof Error ? error.message : 'Failed to load return details',
+        title: t('common.error'),
+        description: error instanceof Error ? error.message : t('sales_returns.create.failed_to_load_order_details'),
         variant: 'destructive',
       });
-      navigate('/sales-returns');
+      navigate('/returns');
     } finally {
       setLoading(false);
     }
@@ -69,8 +72,8 @@ export default function EditReturn() {
     // Validation
     if (!reason || reason.trim() === '') {
       toast({
-        title: 'Validation Error',
-        description: 'Reason for return is required',
+        title: t('sales_returns.create.reason_required_title'),
+        description: t('sales_returns.create.reason_required'),
         variant: 'destructive',
       });
       return;
@@ -84,16 +87,16 @@ export default function EditReturn() {
       });
       
       toast({
-        title: 'Success',
-        description: 'Return updated successfully',
+        title: t('common.success'),
+        description: t('toast.operation_failed'), // TODO: Add proper success message
       });
       
-      navigate(`/sales-returns/${id}`);
+      navigate(`/returns/${id}`);
     } catch (error) {
       console.error('Error updating return:', error);
       toast({
-        title: 'Error',
-        description: error instanceof Error ? error.message : 'Failed to update return',
+        title: t('common.error'),
+        description: error instanceof Error ? error.message : t('toast.operation_failed'),
         variant: 'destructive',
       });
     } finally {
@@ -130,8 +133,8 @@ export default function EditReturn() {
 
   if (!canEdit) {
     toast({
-      title: 'Cannot Edit',
-      description: 'Completed returns cannot be edited',
+      title: t('common.error'),
+      description: t('sales_returns.cannot_edit_completed', { defaultValue: 'Yakunlangan qaytarishlarni tahrirlab bo\'lmaydi' }),
       variant: 'destructive',
     });
     navigate(`/sales-returns/${id}`);
@@ -151,39 +154,39 @@ export default function EditReturn() {
             <ArrowLeft className="h-4 w-4" />
           </Button>
           <div>
-            <h1 className="text-2xl font-bold">Edit Return</h1>
+            <h1 className="text-2xl font-bold">{t('navigation.edit_return')}</h1>
             <p className="text-sm text-muted-foreground">
-              Return #{returnData.return_number}
+              {t('sales_returns.return_number')} #{returnData.return_number}
             </p>
           </div>
         </div>
         <Button onClick={handleSave} disabled={saving}>
           <Save className="h-4 w-4 mr-2" />
-          {saving ? 'Saving...' : 'Save Changes'}
+          {saving ? t('common.loading') : t('common.save')}
         </Button>
       </div>
 
       {/* Return Information (Read-only) */}
       <Card>
         <CardHeader>
-          <CardTitle>Return Information</CardTitle>
+          <CardTitle>{t('sales_returns.create.order_information')}</CardTitle>
         </CardHeader>
         <CardContent className="space-y-4">
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <div>
-              <Label className="text-muted-foreground">Order Number</Label>
-              <p className="font-medium">{returnData.order?.order_number || 'N/A'}</p>
+              <Label className="text-muted-foreground">{t('sales_returns.create.order_number')}</Label>
+              <p className="font-medium">{returnData.order?.order_number || t('common.no_data')}</p>
             </div>
             <div>
-              <Label className="text-muted-foreground">Customer</Label>
-              <p className="font-medium">{returnData.customer?.name || 'Walk-in Customer'}</p>
+              <Label className="text-muted-foreground">{t('sales_returns.create.customer')}</Label>
+              <p className="font-medium">{returnData.customer?.name || t('pos.walk_in_customer')}</p>
             </div>
             <div>
-              <Label className="text-muted-foreground">Total Amount</Label>
-              <p className="font-medium">${returnData.total_amount.toFixed(2)}</p>
+              <Label className="text-muted-foreground">{t('sales_returns.create.total_amount')}</Label>
+              <p className="font-medium">{formatMoneyUZS(returnData.total_amount)}</p>
             </div>
             <div>
-              <Label className="text-muted-foreground">Status</Label>
+              <Label className="text-muted-foreground">{t('common.status')}</Label>
               <p className="font-medium">{returnData.status}</p>
             </div>
           </div>
@@ -193,30 +196,30 @@ export default function EditReturn() {
       {/* Returned Items (Read-only) */}
       <Card>
         <CardHeader>
-          <CardTitle>Returned Items (Read-only)</CardTitle>
+          <CardTitle>{t('sales_returns.create.return_items')}</CardTitle>
         </CardHeader>
         <CardContent>
           <Table>
             <TableHeader>
               <TableRow>
-                <TableHead>Product</TableHead>
-                <TableHead>SKU</TableHead>
-                <TableHead className="text-center">Quantity</TableHead>
-                <TableHead className="text-right">Unit Price</TableHead>
-                <TableHead className="text-right">Total</TableHead>
+                <TableHead>{t('sales_returns.create.table.product')}</TableHead>
+                <TableHead>{t('sales_returns.create.table.sku')}</TableHead>
+                <TableHead className="text-center">{t('common.quantity')}</TableHead>
+                <TableHead className="text-right">{t('sales_returns.create.table.unit_price')}</TableHead>
+                <TableHead className="text-right">{t('common.total')}</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
               {returnData.items?.map((item) => (
                 <TableRow key={item.id}>
                   <TableCell className="font-medium">
-                    {item.product?.name || 'Unknown Product'}
+                    {item.product?.name || t('products.no_products_found')}
                   </TableCell>
-                  <TableCell>{item.product?.sku || 'N/A'}</TableCell>
+                  <TableCell>{item.product?.sku || t('common.no_data')}</TableCell>
                   <TableCell className="text-center">{item.quantity}</TableCell>
-                  <TableCell className="text-right">${item.unit_price.toFixed(2)}</TableCell>
+                  <TableCell className="text-right">{formatMoneyUZS(item.unit_price)}</TableCell>
                   <TableCell className="text-right font-medium">
-                    ${item.line_total.toFixed(2)}
+                    {formatMoneyUZS(item.line_total)}
                   </TableCell>
                 </TableRow>
               ))}
@@ -224,8 +227,8 @@ export default function EditReturn() {
           </Table>
           <div className="mt-4 flex justify-end">
             <div className="text-right">
-              <p className="text-sm text-muted-foreground">Total Refund</p>
-              <p className="text-2xl font-bold">${returnData.total_amount.toFixed(2)}</p>
+              <p className="text-sm text-muted-foreground">{t('sales_returns.create.total_refund')}</p>
+              <p className="text-2xl font-bold">{formatMoneyUZS(returnData.total_amount)}</p>
             </div>
           </div>
         </CardContent>
@@ -234,37 +237,37 @@ export default function EditReturn() {
       {/* Editable Fields */}
       <Card>
         <CardHeader>
-          <CardTitle>Return Details</CardTitle>
+          <CardTitle>{t('sales_returns.create.additional_information')}</CardTitle>
         </CardHeader>
         <CardContent className="space-y-4">
           <div className="space-y-2">
             <Label htmlFor="reason" className="flex items-center gap-1">
-              Reason for Return
+              {t('sales_returns.create.reason_for_return')}
               <span className="text-destructive">*</span>
             </Label>
             <Select value={reason} onValueChange={setReason}>
               <SelectTrigger className={!reason ? 'border-destructive' : ''}>
-                <SelectValue placeholder="Select reason" />
+                <SelectValue placeholder={t('sales_returns.create.select_reason')} />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="damaged">Damaged Product</SelectItem>
-                <SelectItem value="incorrect">Incorrect Item</SelectItem>
-                <SelectItem value="defective">Defective Product</SelectItem>
-                <SelectItem value="dissatisfaction">Customer Dissatisfaction</SelectItem>
-                <SelectItem value="expired">Expired Product</SelectItem>
-                <SelectItem value="other">Other</SelectItem>
+                <SelectItem value="damaged">{t('sales_returns.create.reasons.damaged')}</SelectItem>
+                <SelectItem value="incorrect">{t('sales_returns.create.reasons.incorrect')}</SelectItem>
+                <SelectItem value="defective">{t('sales_returns.create.reasons.defective')}</SelectItem>
+                <SelectItem value="dissatisfaction">{t('sales_returns.create.reasons.dissatisfaction')}</SelectItem>
+                <SelectItem value="expired">{t('sales_returns.create.reasons.expired')}</SelectItem>
+                <SelectItem value="other">{t('sales_returns.create.reasons.other')}</SelectItem>
               </SelectContent>
             </Select>
             {!reason && (
-              <p className="text-sm text-destructive">Please select a reason for the return</p>
+              <p className="text-sm text-destructive">{t('sales_returns.create.select_reason_error')}</p>
             )}
           </div>
 
           <div className="space-y-2">
-            <Label htmlFor="notes">Notes (Optional)</Label>
+            <Label htmlFor="notes">{t('sales_returns.create.notes_optional')}</Label>
             <Textarea
               id="notes"
-              placeholder="Add any additional notes..."
+              placeholder={t('sales_returns.create.notes_placeholder')}
               value={notes}
               onChange={(e) => setNotes(e.target.value)}
               rows={4}
@@ -279,11 +282,11 @@ export default function EditReturn() {
           variant="outline"
           onClick={() => navigate(`/sales-returns/${id}`)}
         >
-          Cancel
+          {t('common.cancel')}
         </Button>
         <Button onClick={handleSave} disabled={saving || !reason}>
           <Save className="h-4 w-4 mr-2" />
-          {saving ? 'Saving...' : 'Save Changes'}
+          {saving ? t('common.loading') : t('common.save')}
         </Button>
       </div>
     </div>

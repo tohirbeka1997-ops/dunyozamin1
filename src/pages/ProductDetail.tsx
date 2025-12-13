@@ -5,26 +5,21 @@ import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from '@/components/ui/table';
 import { useToast } from '@/hooks/use-toast';
-import { getProductById, getInventoryMovements } from '@/db/api';
+import { getProductById } from '@/db/api';
 import type { ProductWithCategory } from '@/types/database';
-import { ArrowLeft, Pencil, Package, AlertTriangle, TrendingUp, TrendingDown } from 'lucide-react';
+import { ArrowLeft, Pencil, Package, AlertTriangle } from 'lucide-react';
+import { useInventoryStore } from '@/store/inventoryStore';
+import StockMovementsHistory from '@/components/inventory/StockMovementsHistory';
+import { formatUnit } from '@/utils/formatters';
 
 export default function ProductDetail() {
   const { t } = useTranslation();
   const { id } = useParams();
   const navigate = useNavigate();
   const { toast } = useToast();
+  const { getCurrentStockByProductId, getMovementsByProductId } = useInventoryStore();
   const [product, setProduct] = useState<ProductWithCategory | null>(null);
-  const [movements, setMovements] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
@@ -33,16 +28,17 @@ export default function ProductDetail() {
     }
   }, [id]);
 
+  useEffect(() => {
+    // Load inventory from storage on mount
+    useInventoryStore.getState().loadFromStorage();
+  }, []);
+
   const loadData = async () => {
     if (!id) return;
     try {
       setLoading(true);
-      const [productData, movementsData] = await Promise.all([
-        getProductById(id),
-        getInventoryMovements(id),
-      ]);
+      const productData = await getProductById(id);
       setProduct(productData);
-      setMovements(movementsData);
     } catch (error) {
       toast({
         title: t('common.error'),
@@ -78,19 +74,6 @@ export default function ProductDetail() {
   };
 
   const stockStatus = getStockStatus();
-
-  const getMovementIcon = (type: string) => {
-    switch (type) {
-      case 'purchase':
-      case 'return':
-      case 'adjustment':
-        return <TrendingUp className="h-4 w-4 text-success" />;
-      case 'sale':
-        return <TrendingDown className="h-4 w-4 text-destructive" />;
-      default:
-        return <Package className="h-4 w-4" />;
-    }
-  };
 
   return (
     <div className="space-y-6">
@@ -162,11 +145,11 @@ export default function ProductDetail() {
               )}
               <div>
                 <p className="text-sm text-muted-foreground">{t('products.unit')}</p>
-                <p className="font-medium">{product.unit}</p>
+                <p className="font-medium">{formatUnit(product.unit)}</p>
               </div>
               <div>
                 <p className="text-sm text-muted-foreground">{t('products.min_stock_level')}</p>
-                <p className="font-medium">{product.min_stock_level} {product.unit}</p>
+                <p className="font-medium">{product.min_stock_level} {formatUnit(product.unit)}</p>
               </div>
             </div>
           </CardContent>
@@ -180,7 +163,7 @@ export default function ProductDetail() {
             <CardContent>
               <div className="text-center">
                 <div className="text-4xl font-bold">{product.current_stock}</div>
-                <div className="text-muted-foreground">{product.unit}</div>
+                <div className="text-muted-foreground">{formatUnit(product.unit)}</div>
                 {product.current_stock <= product.min_stock_level && (
                   <div className="mt-4 flex items-center justify-center gap-2 text-warning">
                     <AlertTriangle className="h-4 w-4" />
@@ -198,11 +181,11 @@ export default function ProductDetail() {
             <CardContent className="space-y-4">
               <div>
                 <p className="text-sm text-muted-foreground">{t('products.purchase_price')}</p>
-                <p className="text-xl font-bold">${Number(product.purchase_price).toFixed(2)}</p>
+                <p className="text-xl font-bold">{formatMoneyUZS(product.purchase_price)}</p>
               </div>
               <div>
                 <p className="text-sm text-muted-foreground">{t('products.sale_price')}</p>
-                <p className="text-xl font-bold">${Number(product.sale_price).toFixed(2)}</p>
+                <p className="text-xl font-bold">{formatMoneyUZS(product.sale_price)}</p>
               </div>
               <div className="pt-4 border-t">
                 <p className="text-sm text-muted-foreground">{t('products.detail.profit_margin')}</p>
@@ -218,63 +201,77 @@ export default function ProductDetail() {
           <CardHeader>
             <TabsList>
               <TabsTrigger value="movements">{t('products.detail.inventory_movements')}</TabsTrigger>
+              <TabsTrigger value="summary">{t('products.detail.stock_summary')}</TabsTrigger>
               <TabsTrigger value="sales">{t('products.detail.sales_history')}</TabsTrigger>
               <TabsTrigger value="purchases">{t('products.detail.purchase_history')}</TabsTrigger>
             </TabsList>
           </CardHeader>
           <CardContent>
+            <TabsContent value="summary" className="mt-0">
+              {(() => {
+                const movements = id ? getMovementsByProductId(id) : [];
+                const totalIn = movements
+                  .filter((m) => m.quantity > 0)
+                  .reduce((sum, m) => sum + m.quantity, 0);
+                const totalOut = Math.abs(
+                  movements
+                    .filter((m) => m.quantity < 0)
+                    .reduce((sum, m) => sum + m.quantity, 0)
+                );
+                const currentStock = id ? getCurrentStockByProductId(id) : 0;
+
+                return (
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                    <Card>
+                      <CardHeader className="pb-2">
+                        <CardTitle className="text-sm font-medium text-muted-foreground">
+                          Total In
+                        </CardTitle>
+                      </CardHeader>
+                      <CardContent>
+                        <div className="text-2xl font-bold text-success">
+                          +{totalIn} {formatUnit(product.unit)}
+                        </div>
+                      </CardContent>
+                    </Card>
+                    <Card>
+                      <CardHeader className="pb-2">
+                        <CardTitle className="text-sm font-medium text-muted-foreground">
+                          Total Out
+                        </CardTitle>
+                      </CardHeader>
+                      <CardContent>
+                        <div className="text-2xl font-bold text-destructive">
+                          -{totalOut} {formatUnit(product.unit)}
+                        </div>
+                      </CardContent>
+                    </Card>
+                    <Card>
+                      <CardHeader className="pb-2">
+                        <CardTitle className="text-sm font-medium text-muted-foreground">
+                          Current Stock
+                        </CardTitle>
+                      </CardHeader>
+                      <CardContent>
+                        <div className="text-2xl font-bold">
+                          {currentStock} {formatUnit(product.unit)}
+                        </div>
+                        <p className="text-xs text-muted-foreground mt-1">
+                          Calculated from movements
+                        </p>
+                      </CardContent>
+                    </Card>
+                  </div>
+                );
+              })()}
+            </TabsContent>
             <TabsContent value="movements" className="mt-0">
-              {movements.length === 0 ? (
+              {id ? (
+                <StockMovementsHistory productId={id} />
+              ) : (
                 <div className="text-center py-8 text-muted-foreground">
                   {t('products.detail.no_movements')}
                 </div>
-              ) : (
-                <Table>
-                  <TableHeader>
-                    <TableRow>
-                      <TableHead>{t('products.detail.table.date')}</TableHead>
-                      <TableHead>{t('products.detail.table.type')}</TableHead>
-                      <TableHead>{t('products.detail.table.movement_number')}</TableHead>
-                      <TableHead className="text-right">{t('products.detail.table.quantity')}</TableHead>
-                      <TableHead>{t('products.detail.table.user')}</TableHead>
-                      <TableHead>{t('products.detail.table.notes')}</TableHead>
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {movements.map((movement: any) => (
-                      <TableRow key={movement.id}>
-                        <TableCell>
-                          {new Date(movement.created_at).toLocaleString()}
-                        </TableCell>
-                        <TableCell>
-                          <div className="flex items-center gap-2">
-                            {getMovementIcon(movement.movement_type)}
-                            <span className="capitalize">{movement.movement_type}</span>
-                          </div>
-                        </TableCell>
-                        <TableCell className="font-mono text-sm">
-                          {movement.movement_number}
-                        </TableCell>
-                        <TableCell className="text-right">
-                          <span
-                            className={
-                              movement.quantity > 0 ? 'text-success' : 'text-destructive'
-                            }
-                          >
-                            {movement.quantity > 0 ? '+' : ''}
-                            {movement.quantity}
-                          </span>
-                        </TableCell>
-                        <TableCell>
-                          {movement.created_by_profile?.username || '-'}
-                        </TableCell>
-                        <TableCell className="text-muted-foreground">
-                          {movement.notes || '-'}
-                        </TableCell>
-                      </TableRow>
-                    ))}
-                  </TableBody>
-                </Table>
               )}
             </TabsContent>
 

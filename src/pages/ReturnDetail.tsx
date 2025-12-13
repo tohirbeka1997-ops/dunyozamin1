@@ -28,6 +28,7 @@ import type { SalesReturnWithDetails } from '@/types/database';
 import { ArrowLeft, Printer, Package, Edit, Trash2 } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 import { Skeleton } from '@/components/ui/skeleton';
+import { formatMoneyUZS } from '@/lib/format';
 
 export default function ReturnDetail() {
   const { id } = useParams<{ id: string }>();
@@ -57,7 +58,7 @@ export default function ReturnDetail() {
         description: error instanceof Error ? error.message : 'Failed to load return details',
         variant: 'destructive',
       });
-      navigate('/sales-returns');
+      navigate('/returns');
     } finally {
       setLoading(false);
     }
@@ -96,7 +97,7 @@ export default function ReturnDetail() {
         title: 'Success',
         description: 'Return deleted successfully. Inventory has been reversed.',
       });
-      navigate('/sales-returns');
+      navigate('/returns');
     } catch (error) {
       console.error('Error deleting return:', error);
       toast({
@@ -190,7 +191,7 @@ export default function ReturnDetail() {
           {canEdit && (
             <Button
               variant="outline"
-              onClick={() => navigate(`/sales-returns/${id}/edit`)}
+              onClick={() => navigate(`/returns/${id}/edit`)}
             >
               <Edit className="h-4 w-4 mr-2" />
               Edit
@@ -271,7 +272,7 @@ export default function ReturnDetail() {
               </div>
               <div>
                 <Label className="text-muted-foreground">Total Amount</Label>
-                <p className="font-medium text-lg">${returnData.total_amount.toFixed(2)}</p>
+                <p className="font-medium text-lg">{formatMoneyUZS(returnData.total_amount)}</p>
               </div>
               <div className="col-span-2">
                 <Label className="text-muted-foreground">Customer</Label>
@@ -342,9 +343,9 @@ export default function ReturnDetail() {
                     </TableCell>
                     <TableCell>{item.product?.sku || 'N/A'}</TableCell>
                     <TableCell className="text-center">{item.quantity}</TableCell>
-                    <TableCell className="text-right">${item.unit_price.toFixed(2)}</TableCell>
+                    <TableCell className="text-right">{formatMoneyUZS(item.unit_price)}</TableCell>
                     <TableCell className="text-right font-medium">
-                      ${item.line_total.toFixed(2)}
+                      {formatMoneyUZS(item.line_total)}
                     </TableCell>
                   </TableRow>
                 ))
@@ -360,7 +361,7 @@ export default function ReturnDetail() {
           <div className="mt-4 flex justify-end border-t pt-4">
             <div className="text-right">
               <p className="text-sm text-muted-foreground">Total Refund</p>
-              <p className="text-2xl font-bold">${returnData.total_amount.toFixed(2)}</p>
+              <p className="text-2xl font-bold">{formatMoneyUZS(returnData.total_amount)}</p>
             </div>
           </div>
         </CardContent>

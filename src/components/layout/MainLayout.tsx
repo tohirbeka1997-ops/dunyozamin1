@@ -31,10 +31,13 @@ import {
   User,
   Moon,
   Sun,
+  Truck,
+  FileText,
+  Wallet,
 } from 'lucide-react';
 import { useTheme } from '@/hooks/use-theme';
 import routes from '@/routes';
-import LanguageSwitcher from '@/components/common/LanguageSwitcher';
+import NetworkBadge from '@/components/common/NetworkBadge';
 
 const iconMap: Record<string, React.ReactNode> = {
   Dashboard: <LayoutDashboard className="h-5 w-5" />,
@@ -46,9 +49,12 @@ const iconMap: Record<string, React.ReactNode> = {
   Customers: <Users className="h-5 w-5" />,
   Inventory: <Warehouse className="h-5 w-5" />,
   'Purchase Orders': <ShoppingBag className="h-5 w-5" />,
+  Suppliers: <Truck className="h-5 w-5" />,
+  'Expenses': <Wallet className="h-5 w-5" />,
   Reports: <BarChart3 className="h-5 w-5" />,
   Employees: <UserCog className="h-5 w-5" />,
   Settings: <Settings className="h-5 w-5" />,
+  'Receipt & Barcode Tools': <FileText className="h-5 w-5" />,
 };
 
 const routeNameMap: Record<string, string> = {
@@ -62,14 +68,16 @@ const routeNameMap: Record<string, string> = {
   'Inventory': 'navigation.inventory',
   'Purchase Orders': 'navigation.purchase_orders',
   'Suppliers': 'navigation.suppliers',
+  'Expenses': 'navigation.expenses',
   'Reports': 'navigation.reports',
   'Employees': 'navigation.employees',
   'Settings': 'navigation.settings',
+  'Receipt & Barcode Tools': 'navigation.receipt_barcode_tools',
 };
 
 export default function MainLayout({ children }: { children: React.ReactNode }) {
   const { t } = useTranslation();
-  const { profile, signOut } = useAuth();
+  const { user, logout } = useAuth();
   const location = useLocation();
   const navigate = useNavigate();
   const { theme, setTheme } = useTheme();
@@ -77,14 +85,14 @@ export default function MainLayout({ children }: { children: React.ReactNode }) 
 
   const visibleRoutes = routes.filter((route) => {
     if (!route.visible) return false;
-    if (route.allowedRoles && profile && !route.allowedRoles.includes(profile.role)) {
+    if (route.allowedRoles && user && !route.allowedRoles.includes(user.role)) {
       return false;
     }
     return true;
   });
 
   const handleSignOut = async () => {
-    await signOut();
+    await logout();
     navigate('/login');
   };
 
@@ -135,8 +143,8 @@ export default function MainLayout({ children }: { children: React.ReactNode }) 
               <User className="h-5 w-5 text-primary" />
             </div>
             <div className="flex-1 min-w-0">
-              <p className="font-medium text-sm truncate">{profile?.full_name || profile?.username}</p>
-              <p className="text-xs text-muted-foreground capitalize">{profile?.role}</p>
+              <p className="font-medium text-sm truncate">{user?.full_name || user?.email}</p>
+              <p className="text-xs text-muted-foreground capitalize">{user?.role}</p>
             </div>
           </div>
           <Button variant="outline" size="sm" className="w-full" onClick={handleSignOut}>
@@ -149,7 +157,7 @@ export default function MainLayout({ children }: { children: React.ReactNode }) 
       {/* Main Content */}
       <div className="flex-1 flex flex-col overflow-hidden">
         {/* Header */}
-        <header className="h-16 border-b bg-card flex items-center justify-between px-4 xl:px-6">
+        <header className="h-16 border-b bg-card flex items-center justify-between px-4 xl:px-6 overflow-visible relative z-10">
           <div className="flex items-center gap-4">
             {/* Mobile Menu */}
             <Sheet open={mobileMenuOpen} onOpenChange={setMobileMenuOpen}>
@@ -186,8 +194,8 @@ export default function MainLayout({ children }: { children: React.ReactNode }) 
             </h2>
           </div>
 
-          <div className="flex items-center gap-2">
-            <LanguageSwitcher />
+          <div className="flex items-center gap-2 overflow-visible flex-shrink-0 ml-auto">
+            <NetworkBadge />
             <Button
               variant="ghost"
               size="icon"
@@ -205,8 +213,8 @@ export default function MainLayout({ children }: { children: React.ReactNode }) 
               <DropdownMenuContent align="end" className="w-56">
                 <DropdownMenuLabel>
                   <div>
-                    <p className="font-medium">{profile?.full_name || profile?.username}</p>
-                    <p className="text-xs text-muted-foreground capitalize">{profile?.role}</p>
+                    <p className="font-medium">{user?.full_name || user?.email}</p>
+                    <p className="text-xs text-muted-foreground capitalize">{user?.role}</p>
                   </div>
                 </DropdownMenuLabel>
                 <DropdownMenuSeparator />

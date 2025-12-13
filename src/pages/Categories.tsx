@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useMemo, useCallback } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useNavigate } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
@@ -201,7 +201,8 @@ export default function Categories() {
     return parent?.name;
   };
 
-  const sortCategories = (cats: Category[]) => {
+  // Memoize sort function
+  const sortCategories = useCallback((cats: Category[]) => {
     const sorted = [...cats];
     switch (sortBy) {
       case 'name-asc':
@@ -215,15 +216,17 @@ export default function Categories() {
       default:
         return sorted;
     }
-  };
+  }, [sortBy]);
 
-  const filteredCategories = sortCategories(
-    categories.filter((category) =>
+  // Memoize filtered categories to prevent recalculation on every render
+  const filteredCategories = useMemo(() => {
+    const filtered = categories.filter((category) =>
       searchTerm === '' ||
       category.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
       (category.description && category.description.toLowerCase().includes(searchTerm.toLowerCase()))
-    )
-  );
+    );
+    return sortCategories(filtered);
+  }, [categories, searchTerm, sortCategories]);
 
   const availableParentCategories = categories.filter(
     (cat) => !editingCategory || cat.id !== editingCategory.id

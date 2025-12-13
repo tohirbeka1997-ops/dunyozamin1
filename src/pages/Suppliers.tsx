@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useLocation } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
@@ -28,15 +28,17 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog';
 import { getSuppliers, deleteSupplier } from '@/db/api';
-import type { Supplier } from '@/types/database';
+import type { SupplierWithBalance } from '@/types/database';
 import { Plus, Search, Eye, Edit, Trash2 } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 import { format } from 'date-fns';
+import { formatMoneyUZS } from '@/lib/format';
 
 export default function Suppliers() {
   const navigate = useNavigate();
+  const location = useLocation();
   const { toast } = useToast();
-  const [suppliers, setSuppliers] = useState<Supplier[]>([]);
+  const [suppliers, setSuppliers] = useState<SupplierWithBalance[]>([]);
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState('');
   const [statusFilter, setStatusFilter] = useState<string>('all');
@@ -44,20 +46,60 @@ export default function Suppliers() {
   const [supplierToDelete, setSupplierToDelete] = useState<Supplier | null>(null);
   const [deleting, setDeleting] = useState(false);
 
+  // Reload suppliers when status filter changes or when navigating back to this page
   useEffect(() => {
+    // Always reload when pathname changes (including navigation from form)
     loadSuppliers();
-  }, [statusFilter]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [statusFilter, location.pathname]);
+
+  // Separate effect to handle refresh state changes
+  useEffect(() => {
+    if (location.state?.refresh) {
+      console.log('Refresh triggered from navigation state:', location.state);
+      loadSuppliers();
+      // Clear the state to prevent infinite loops
+      window.history.replaceState({}, document.title, location.pathname);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [location.state?.refresh]);
 
   const loadSuppliers = async () => {
     try {
       setLoading(true);
-      const includeInactive = statusFilter === 'all' || statusFilter === 'inactive';
-      const data = await getSuppliers(includeInactive);
-      setSuppliers(data);
+      // Always fetch all suppliers (including inactive) to ensure we get newly created ones
+      // Then filter client-side based on statusFilter
+      const data = await getSuppliers(true); // includeInactive = true to get all
+      
+      console.log('getSuppliers returned:', data.length, 'suppliers');
+      
+      // Apply client-side filtering based on statusFilter
+      let filteredData = data;
+      if (statusFilter === 'active') {
+        filteredData = data.filter(s => s.status === 'active');
+      } else if (statusFilter === 'inactive') {
+        filteredData = data.filter(s => s.status === 'inactive');
+      }
+      // 'all' shows everything, no additional filtering needed
+      
+      setSuppliers(filteredData);
+      console.log('Loaded suppliers:', filteredData.length, 'with filter:', statusFilter, 'from total:', data.length);
+      
+      // If we have a created supplier ID in state, verify it's in the list
+      if (location.state?.createdSupplierId) {
+        const createdId = location.state.createdSupplierId;
+        const found = filteredData.find(s => s.id === createdId);
+        if (found) {
+          console.log('Created supplier found in list:', found.name);
+        } else {
+          console.warn('Created supplier not found in filtered list:', createdId, 'Filter:', statusFilter);
+        }
+      }
     } catch (error) {
+      console.error('Error loading suppliers:', error);
       toast({
-        title: 'Error',
-        description: 'Failed to load suppliers',
+        title: 'Xatolik',
+        description: 'Yetkazib beruvchilarni yuklab bo\'lmadi',
         variant: 'destructive',
       });
     } finally {
@@ -69,7 +111,7 @@ export default function Suppliers() {
     loadSuppliers();
   };
 
-  const handleDeleteClick = (supplier: Supplier) => {
+  const handleDeleteClick = (supplier: SupplierWithBalance) => {
     setSupplierToDelete(supplier);
     setDeleteDialogOpen(true);
   };
@@ -81,16 +123,16 @@ export default function Suppliers() {
       setDeleting(true);
       await deleteSupplier(supplierToDelete.id);
       toast({
-        title: 'Success',
-        description: 'Supplier deleted successfully',
+        title: 'Muvaffaqiyatli',
+        description: 'Yetkazib beruvchi muvaffaqiyatli o\'chirildi',
       });
       setDeleteDialogOpen(false);
       setSupplierToDelete(null);
       loadSuppliers();
     } catch (error: any) {
       toast({
-        title: 'Error',
-        description: error.message || 'Failed to delete supplier',
+        title: 'Xatolik',
+        description: error.message || 'Yetkazib beruvchini o\'chirishda xatolik yuz berdi',
         variant: 'destructive',
       });
     } finally {
@@ -100,22 +142,21 @@ export default function Suppliers() {
 
   const getStatusBadge = (status: string) => {
     if (status === 'active') {
-      return <Badge className="bg-success text-success-foreground">Active</Badge>;
+      return <Badge className="bg-success text-success-foreground">Faol</Badge>;
     }
-    return <Badge className="bg-muted text-muted-foreground">Inactive</Badge>;
+    return <Badge className="bg-muted text-muted-foreground">Faol emas</Badge>;
   };
 
+  // Client-side filtering for search (status filtering is done in loadSuppliers)
   const filteredSuppliers = suppliers.filter((supplier) => {
-    const matchesSearch =
-      !searchTerm ||
-      supplier.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      (supplier.phone && supplier.phone.toLowerCase().includes(searchTerm.toLowerCase())) ||
-      (supplier.email && supplier.email.toLowerCase().includes(searchTerm.toLowerCase()));
-
-    const matchesStatus =
-      statusFilter === 'all' || supplier.status === statusFilter;
-
-    return matchesSearch && matchesStatus;
+    if (!searchTerm) return true;
+    
+    const term = searchTerm.toLowerCase();
+    return (
+      supplier.name.toLowerCase().includes(term) ||
+      (supplier.phone && supplier.phone.toLowerCase().includes(term)) ||
+      (supplier.email && supplier.email.toLowerCase().includes(term))
+    );
   });
 
   if (loading) {
@@ -130,12 +171,12 @@ export default function Suppliers() {
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-3xl font-bold">Suppliers</h1>
-          <p className="text-muted-foreground">Manage supplier information and contacts</p>
+          <h1 className="text-3xl font-bold">Yetkazib beruvchilar</h1>
+          <p className="text-muted-foreground">Yetkazib beruvchilar maʼlumotlari va kontaktlarini boshqarish</p>
         </div>
         <Button onClick={() => navigate('/suppliers/new')}>
           <Plus className="h-4 w-4 mr-2" />
-          New Supplier
+          Yangi yetkazib beruvchi
         </Button>
       </div>
 
@@ -147,25 +188,25 @@ export default function Suppliers() {
                 <div className="relative flex-1">
                   <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-muted-foreground" />
                   <Input
-                    placeholder="Search by name, phone, or email..."
+                    placeholder="Ism, telefon yoki email bo'yicha qidirish..."
                     value={searchTerm}
                     onChange={(e) => setSearchTerm(e.target.value)}
                     onKeyDown={(e) => e.key === 'Enter' && handleSearch()}
                     className="pl-9"
                   />
                 </div>
-                <Button onClick={handleSearch}>Search</Button>
+                <Button onClick={handleSearch}>Qidirish</Button>
               </div>
             </div>
 
             <Select value={statusFilter} onValueChange={setStatusFilter}>
               <SelectTrigger>
-                <SelectValue placeholder="Status" />
+                <SelectValue placeholder="Holati" />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="all">All Status</SelectItem>
-                <SelectItem value="active">Active</SelectItem>
-                <SelectItem value="inactive">Inactive</SelectItem>
+                <SelectItem value="all">Barcha holatlar</SelectItem>
+                <SelectItem value="active">Faol</SelectItem>
+                <SelectItem value="inactive">Faol emas</SelectItem>
               </SelectContent>
             </Select>
           </div>
@@ -176,22 +217,23 @@ export default function Suppliers() {
         <CardContent className="p-0">
           {filteredSuppliers.length === 0 ? (
             <div className="text-center py-12">
-              <p className="text-muted-foreground">No suppliers found</p>
+              <p className="text-muted-foreground">Yetkazib beruvchilar topilmadi</p>
               <Button onClick={() => navigate('/suppliers/new')} className="mt-4">
                 <Plus className="h-4 w-4 mr-2" />
-                Create First Supplier
+                Birinchi yetkazib beruvchini yaratish
               </Button>
             </div>
           ) : (
             <Table>
               <TableHeader>
                 <TableRow>
-                  <TableHead>Name</TableHead>
-                  <TableHead>Phone</TableHead>
+                  <TableHead>Nomi</TableHead>
+                  <TableHead>Telefon</TableHead>
                   <TableHead>Email</TableHead>
-                  <TableHead>Status</TableHead>
-                  <TableHead>Created Date</TableHead>
-                  <TableHead className="text-right">Actions</TableHead>
+                  <TableHead className="text-right">Balans</TableHead>
+                  <TableHead>Holati</TableHead>
+                  <TableHead>Yaratilgan sana</TableHead>
+                  <TableHead className="text-right">Amallar</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -200,6 +242,19 @@ export default function Suppliers() {
                     <TableCell className="font-medium">{supplier.name}</TableCell>
                     <TableCell>{supplier.phone || '-'}</TableCell>
                     <TableCell>{supplier.email || '-'}</TableCell>
+                    <TableCell className="text-right">
+                      <Badge 
+                        className={
+                          supplier.balance > 0 
+                            ? 'bg-destructive text-destructive-foreground' 
+                            : supplier.balance < 0 
+                            ? 'bg-success text-success-foreground' 
+                            : 'bg-muted text-muted-foreground'
+                        }
+                      >
+                        {formatMoneyUZS(supplier.balance)}
+                      </Badge>
+                    </TableCell>
                     <TableCell>{getStatusBadge(supplier.status)}</TableCell>
                     <TableCell>
                       {format(new Date(supplier.created_at), 'MMM dd, yyyy')}
@@ -210,6 +265,7 @@ export default function Suppliers() {
                           variant="ghost"
                           size="icon"
                           onClick={() => navigate(`/suppliers/${supplier.id}`)}
+                          title="Ko'rish"
                         >
                           <Eye className="h-4 w-4" />
                         </Button>
@@ -217,6 +273,7 @@ export default function Suppliers() {
                           variant="ghost"
                           size="icon"
                           onClick={() => navigate(`/suppliers/${supplier.id}/edit`)}
+                          title="Tahrirlash"
                         >
                           <Edit className="h-4 w-4" />
                         </Button>
@@ -224,6 +281,7 @@ export default function Suppliers() {
                           variant="ghost"
                           size="icon"
                           onClick={() => handleDeleteClick(supplier)}
+                          title="O'chirish"
                         >
                           <Trash2 className="h-4 w-4 text-destructive" />
                         </Button>
@@ -241,18 +299,17 @@ export default function Suppliers() {
       <Dialog open={deleteDialogOpen} onOpenChange={setDeleteDialogOpen}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>Delete Supplier</DialogTitle>
+            <DialogTitle>Yetkazib beruvchini o'chirish</DialogTitle>
             <DialogDescription>
-              Are you sure you want to delete "{supplierToDelete?.name}"? This action cannot be
-              undone.
+              "{supplierToDelete?.name}" ni o'chirishni tasdiqlaysizmi? Bu amalni bekor qilib bo'lmaydi.
             </DialogDescription>
           </DialogHeader>
           <DialogFooter>
             <Button variant="outline" onClick={() => setDeleteDialogOpen(false)}>
-              Cancel
+              Bekor qilish
             </Button>
             <Button variant="destructive" onClick={handleDeleteConfirm} disabled={deleting}>
-              {deleting ? 'Deleting...' : 'Delete'}
+              {deleting ? 'O\'chirilmoqda...' : 'O\'chirish'}
             </Button>
           </DialogFooter>
         </DialogContent>

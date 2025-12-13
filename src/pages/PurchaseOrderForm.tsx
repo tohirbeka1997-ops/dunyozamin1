@@ -30,6 +30,8 @@ import {
 } from '@/components/ui/table';
 import { useToast } from '@/hooks/use-toast';
 import { useAuth } from '@/contexts/AuthContext';
+import { formatUnit } from '@/utils/formatters';
+import { formatMoneyUZS } from '@/lib/format';
 import {
   getSuppliers,
   getProducts,
@@ -40,9 +42,10 @@ import {
   generatePONumber,
   createSupplier,
   searchSuppliers,
+  productUpdateEmitter,
 } from '@/db/api';
 import type {
-  Supplier,
+  SupplierWithBalance,
   ProductWithCategory,
   PurchaseOrderWithDetails,
   PurchaseOrder,
@@ -63,11 +66,12 @@ export default function PurchaseOrderForm() {
   const { id } = useParams();
   const navigate = useNavigate();
   const { toast } = useToast();
-  const { user } = useAuth();
+  const { profile: user } = useAuth();
+  const queryClient = useQueryClient();
   const isEditMode = !!id;
 
   const [loading, setLoading] = useState(false);
-  const [suppliers, setSuppliers] = useState<Supplier[]>([]);
+  const [suppliers, setSuppliers] = useState<SupplierWithBalance[]>([]);
   const [products, setProducts] = useState<ProductWithCategory[]>([]);
   const [existingPO, setExistingPO] = useState<PurchaseOrderWithDetails | null>(null);
 
@@ -128,10 +132,12 @@ export default function PurchaseOrderForm() {
           }
         }
       }
-    } catch (error) {
+    } catch (error: unknown) {
+      console.error('Load initial data error:', error);
+      
       toast({
-        title: 'Error',
-        description: 'Failed to load data',
+        title: 'Xatolik',
+        description: 'Ma\'lumotlarni yuklab bo\'lmadi',
         variant: 'destructive',
       });
     } finally {
@@ -143,8 +149,8 @@ export default function PurchaseOrderForm() {
     const existingItem = items.find((item) => item.product_id === product.id);
     if (existingItem) {
       toast({
-        title: 'Product already added',
-        description: 'This product is already in the order',
+        title: 'Mahsulot allaqachon qo\'shilgan',
+        description: 'Bu mahsulot allaqachon buyurtmada mavjud',
         variant: 'destructive',
       });
       return;
@@ -181,8 +187,8 @@ export default function PurchaseOrderForm() {
   const validateForm = () => {
     if (!supplierId) {
       toast({
-        title: 'Validation Error',
-        description: 'Please select a supplier from the dropdown',
+        title: 'Validatsiya xatosi',
+        description: 'Iltimos, ro\'yxatdan yetkazib beruvchini tanlang',
         variant: 'destructive',
       });
       return false;
@@ -190,8 +196,8 @@ export default function PurchaseOrderForm() {
 
     if (!orderDate) {
       toast({
-        title: 'Validation Error',
-        description: 'Please select an order date',
+        title: 'Validatsiya xatosi',
+        description: 'Iltimos, buyurtma sanasini tanlang',
         variant: 'destructive',
       });
       return false;
@@ -199,8 +205,8 @@ export default function PurchaseOrderForm() {
 
     if (items.length === 0) {
       toast({
-        title: 'Validation Error',
-        description: 'Please add at least one product',
+        title: 'Validatsiya xatosi',
+        description: 'Iltimos, kamida bitta mahsulot qo\'shing',
         variant: 'destructive',
       });
       return false;
@@ -209,8 +215,8 @@ export default function PurchaseOrderForm() {
     for (const item of items) {
       if (item.ordered_qty <= 0) {
         toast({
-          title: 'Validation Error',
-          description: 'Quantity must be greater than 0',
+          title: 'Validatsiya xatosi',
+          description: 'Miqdor 0 dan katta bo\'lishi kerak',
           variant: 'destructive',
         });
         return false;
@@ -218,8 +224,8 @@ export default function PurchaseOrderForm() {
 
       if (item.unit_cost < 0) {
         toast({
-          title: 'Validation Error',
-          description: 'Unit cost cannot be negative',
+          title: 'Validatsiya xatosi',
+          description: 'Birlik narxi manfiy bo\'lishi mumkin emas',
           variant: 'destructive',
         });
         return false;
@@ -232,8 +238,8 @@ export default function PurchaseOrderForm() {
   const handleCreateSupplier = async () => {
     if (!newSupplierName.trim()) {
       toast({
-        title: 'Validation Error',
-        description: 'Supplier name is required',
+        title: 'Validatsiya xatosi',
+        description: 'Yetkazib beruvchi nomi majburiy',
         variant: 'destructive',
       });
       return;
@@ -241,8 +247,8 @@ export default function PurchaseOrderForm() {
 
     if (newSupplierEmail && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(newSupplierEmail)) {
       toast({
-        title: 'Validation Error',
-        description: 'Invalid email format',
+        title: 'Validatsiya xatosi',
+        description: 'Email formati noto\'g\'ri',
         variant: 'destructive',
       });
       return;
@@ -261,8 +267,8 @@ export default function PurchaseOrderForm() {
       });
 
       toast({
-        title: 'Success',
-        description: 'Supplier created successfully',
+        title: 'Muvaffaqiyatli',
+        description: 'Yetkazib beruvchi muvaffaqiyatli yaratildi',
       });
 
       // Reload suppliers and select the new one
@@ -275,10 +281,16 @@ export default function PurchaseOrderForm() {
       setNewSupplierName('');
       setNewSupplierPhone('');
       setNewSupplierEmail('');
-    } catch (error: any) {
+    } catch (error: unknown) {
+      console.error('Create supplier error:', error);
+      
+      const errorMessage = error instanceof Error
+        ? error.message
+        : 'Yetkazib beruvchini yaratishda xatolik yuz berdi';
+      
       toast({
-        title: 'Error',
-        description: error.message || 'Failed to create supplier',
+        title: 'Xatolik',
+        description: errorMessage,
         variant: 'destructive',
       });
     } finally {
@@ -286,12 +298,13 @@ export default function PurchaseOrderForm() {
     }
   };
 
-  const handleSave = async (markAsReceived = false) => {
+  const handleSave = async (markAsReceived = false): Promise<void> => {
     if (!validateForm()) return;
 
     try {
       setLoading(true);
 
+      // Calculate subtotal safely
       const subtotal = calculateSubtotal();
       
       let poId: string;
@@ -323,14 +336,24 @@ export default function PurchaseOrderForm() {
 
         await updatePurchaseOrder(id, purchaseOrderData, itemsData);
         poId = id;
+        
+        // Invalidate dashboard queries
+        invalidateDashboardQueries(queryClient);
+        
         toast({
-          title: 'Success',
-          description: 'Purchase order updated successfully',
+          title: 'Muvaffaqiyatli',
+          description: isEditMode 
+            ? 'Xarid buyurtmasi muvaffaqiyatli yangilandi'
+            : 'Xarid buyurtmasi muvaffaqiyatli yaratildi',
         });
       } else {
         // Create new PO - generate PO number first
         const poNumber = await generatePONumber();
         
+        // IMPORTANT: When creating a NEW PO with markAsReceived=true:
+        // - Create with status='approved' (NOT 'received') to allow receiveGoods() to process it
+        // - Set received_qty=0 initially, let receiveGoods() handle the receiving
+        // - This prevents the "already received" error in receiveGoods()
         const purchaseOrderData: Omit<PurchaseOrder, 'id' | 'created_at' | 'updated_at'> = {
           po_number: poNumber,
           supplier_id: supplierId,
@@ -342,56 +365,85 @@ export default function PurchaseOrderForm() {
           discount: 0,
           tax: 0,
           total_amount: subtotal,
-          status: (markAsReceived ? 'received' : status) as PurchaseOrderStatus,
+          // For NEW PO: if markAsReceived, create as 'approved' so receiveGoods() can process it
+          // If NOT markAsReceived, use the selected status (usually 'draft')
+          status: (markAsReceived ? 'approved' : status) as PurchaseOrderStatus,
           invoice_number: null,
-          received_by: markAsReceived ? (user?.id || null) : null,
+          received_by: null, // Will be set by receiveGoods() if markAsReceived
           approved_by: null,
           approved_at: null,
           notes,
           created_by: user?.id || null,
         };
 
+        // IMPORTANT: Always set received_qty=0 when creating NEW PO
+        // receiveGoods() will update it when receiving
         const itemsData = items.map((item) => ({
           product_id: item.product_id,
           product_name: item.product_name,
           ordered_qty: item.ordered_qty,
-          received_qty: markAsReceived ? item.ordered_qty : 0,
+          received_qty: 0, // Always 0 for new PO - receiveGoods() will update it
           unit_cost: item.unit_cost,
           line_total: item.line_total,
         }));
 
         const newPO = await createPurchaseOrder(purchaseOrderData, itemsData);
         poId = newPO.id;
+        
+        // Invalidate dashboard queries
+        invalidateDashboardQueries(queryClient);
+        
         toast({
-          title: 'Success',
-          description: 'Purchase order created successfully',
+          title: 'Muvaffaqiyatli',
+          description: 'Xarid buyurtmasi muvaffaqiyatli yaratildi',
         });
       }
 
-      // If marking as received, call receive_goods RPC
+      // If marking as received, call receiveGoods() to update stock and status
+      // This works for both NEW and EXISTING POs
       if (markAsReceived) {
-        // Need to fetch the created PO to get item IDs
+        // Fetch the created/updated PO to get the actual item IDs
         const createdPO = await getPurchaseOrderById(poId);
-        if (createdPO && createdPO.items) {
-          const receiveItems = createdPO.items.map((item) => ({
-            item_id: item.id,
-            received_qty: item.ordered_qty,
-          }));
+        
+        // Map form items to receive items using actual PO item IDs
+        // For NEW PO: received_qty will be 0, so we receive the full ordered_qty
+        // For EXISTING PO: received_qty may be > 0, so we receive the remaining quantity
+        const receiveItems = (createdPO.items || []).map((poItem) => {
+          // Find the corresponding form item to get product_id
+          const formItem = items.find(fi => fi.product_id === poItem.product_id);
+          return {
+            item_id: poItem.id, // Use actual purchase order item ID
+            received_qty: poItem.ordered_qty - poItem.received_qty, // Receive remaining quantity
+            product_id: poItem.product_id, // Include product_id for stock update
+          };
+        });
 
-          await receiveGoods(poId, receiveItems, orderDate);
+        await receiveGoods(poId, receiveItems, orderDate);
 
-          toast({
-            title: 'Stock Updated',
-            description: 'Product stock has been updated',
-          });
-        }
+        // Invalidate dashboard queries
+        invalidateDashboardQueries(queryClient);
+
+        // Emit product update event to refresh inventory pages
+        // This ensures inventory quantities update immediately across all open pages
+        productUpdateEmitter.emit();
+
+        toast({
+          title: 'Muvaffaqiyatli',
+          description: 'Ombor muvaffaqiyatli yangilandi',
+        });
       }
 
       navigate('/purchase-orders');
-    } catch (error: any) {
+    } catch (error: unknown) {
+      console.error('Purchase order save error:', error);
+      
+      const errorMessage = error instanceof Error 
+        ? error.message 
+        : 'Xarid buyurtmasini saqlashda xatolik yuz berdi';
+      
       toast({
-        title: 'Error',
-        description: error.message || 'Failed to save purchase order',
+        title: 'Xatolik',
+        description: errorMessage,
         variant: 'destructive',
       });
     } finally {
@@ -427,12 +479,12 @@ export default function PurchaseOrderForm() {
           </Button>
           <div>
             <h1 className="text-3xl font-bold">
-              {isEditMode ? 'Edit Purchase Order' : 'New Purchase Order'}
+              {isEditMode ? 'Xarid buyurtmasini tahrirlash' : 'Yangi xarid buyurtmasi'}
             </h1>
             <p className="text-muted-foreground">
               {isReadOnly
-                ? 'This purchase order has been received and cannot be edited'
-                : 'Fill in the details below to create or update a purchase order'}
+                ? 'Bu xarid buyurtmasi qabul qilingan va tahrirlash mumkin emas'
+                : 'Xarid buyurtmasini yaratish yoki tahrirlash uchun quyidagi maʼlumotlarni toʻldiring'}
             </p>
           </div>
         </div>
@@ -443,18 +495,18 @@ export default function PurchaseOrderForm() {
           {/* Basic Information */}
           <Card>
             <CardHeader>
-              <CardTitle>Basic Information</CardTitle>
+              <CardTitle>Asosiy maʼlumotlar</CardTitle>
             </CardHeader>
             <CardContent className="space-y-4">
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <div className="space-y-2">
                   <Label htmlFor="supplier">
-                    Supplier <span className="text-destructive">*</span>
+                    Yetkazib beruvchi <span className="text-destructive">*</span>
                   </Label>
                   <div className="flex gap-2">
                     <Select value={supplierId} onValueChange={setSupplierId} disabled={isReadOnly}>
                       <SelectTrigger id="supplier" className="flex-1">
-                        <SelectValue placeholder="Select supplier" />
+                        <SelectValue placeholder="Yetkazib beruvchini tanlang" />
                       </SelectTrigger>
                       <SelectContent>
                         {suppliers.map((supplier) => (
@@ -470,7 +522,7 @@ export default function PurchaseOrderForm() {
                         variant="outline"
                         size="icon"
                         onClick={() => setShowSupplierModal(true)}
-                        title="Add New Supplier"
+                        title="Yangi yetkazib beruvchi qo'shish"
                       >
                         <UserPlus className="h-4 w-4" />
                       </Button>
@@ -480,7 +532,7 @@ export default function PurchaseOrderForm() {
 
                 <div className="space-y-2">
                   <Label htmlFor="order-date">
-                    Order Date <span className="text-destructive">*</span>
+                    Buyurtma sanasi <span className="text-destructive">*</span>
                   </Label>
                   <Input
                     id="order-date"
@@ -492,7 +544,7 @@ export default function PurchaseOrderForm() {
                 </div>
 
                 <div className="space-y-2">
-                  <Label htmlFor="expected-date">Expected Date</Label>
+                  <Label htmlFor="expected-date">Kutilayotgan sana</Label>
                   <Input
                     id="expected-date"
                     type="date"
@@ -503,7 +555,7 @@ export default function PurchaseOrderForm() {
                 </div>
 
                 <div className="space-y-2">
-                  <Label htmlFor="status">Status</Label>
+                  <Label htmlFor="status">Holati</Label>
                   <Select
                     value={status}
                     onValueChange={(value) => setStatus(value as 'draft' | 'approved')}
@@ -513,20 +565,20 @@ export default function PurchaseOrderForm() {
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
-                      <SelectItem value="draft">Draft</SelectItem>
-                      <SelectItem value="approved">Approved</SelectItem>
+                      <SelectItem value="draft">Qoralama</SelectItem>
+                      <SelectItem value="approved">Tasdiqlangan</SelectItem>
                     </SelectContent>
                   </Select>
                 </div>
               </div>
 
               <div className="space-y-2">
-                <Label htmlFor="notes">Notes</Label>
+                <Label htmlFor="notes">Izohlar</Label>
                 <Textarea
                   id="notes"
                   value={notes}
                   onChange={(e) => setNotes(e.target.value)}
-                  placeholder="Add any additional notes..."
+                  placeholder="Qo'shimcha izoh kiriting..."
                   rows={3}
                   disabled={isReadOnly}
                 />
@@ -538,7 +590,7 @@ export default function PurchaseOrderForm() {
           <Card>
             <CardHeader>
               <div className="flex items-center justify-between">
-                <CardTitle>Products</CardTitle>
+                <CardTitle>Mahsulotlar</CardTitle>
                 {!isReadOnly && (
                   <Button
                     variant="outline"
@@ -546,7 +598,7 @@ export default function PurchaseOrderForm() {
                     onClick={() => setShowProductSearch(!showProductSearch)}
                   >
                     <Plus className="h-4 w-4 mr-2" />
-                    Add Product
+                    Mahsulot qo'shish
                   </Button>
                 )}
               </div>
@@ -557,7 +609,7 @@ export default function PurchaseOrderForm() {
                   <div className="relative">
                     <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-muted-foreground" />
                     <Input
-                      placeholder="Search products by name, SKU, or barcode..."
+                      placeholder="Mahsulotni nom, SKU yoki shtrix kod bo'yicha qidirish..."
                       value={searchTerm}
                       onChange={(e) => setSearchTerm(e.target.value)}
                       className="pl-9"
@@ -575,11 +627,11 @@ export default function PurchaseOrderForm() {
                             <div>
                               <p className="font-medium">{product.name}</p>
                               <p className="text-sm text-muted-foreground">
-                                SKU: {product.sku} | Stock: {product.current_stock} {product.unit}
+                                SKU: {product.sku} | Stock: {product.current_stock} {formatUnit(product.unit)}
                               </p>
                             </div>
                             <p className="text-sm font-medium">
-                              ${product.purchase_price.toFixed(2)}
+                              {formatMoneyUZS(product.purchase_price)}
                             </p>
                           </div>
                         ))}
@@ -591,18 +643,18 @@ export default function PurchaseOrderForm() {
 
               {items.length === 0 ? (
                 <div className="text-center py-8 text-muted-foreground">
-                  <p>No products added yet</p>
-                  {!isReadOnly && <p className="text-sm mt-2">Click "Add Product" to get started</p>}
+                  <p>Hozircha mahsulot qo'shilmagan</p>
+                  {!isReadOnly && <p className="text-sm mt-2">Boshlash uchun "Mahsulot qo'shish" tugmasini bosing</p>}
                 </div>
               ) : (
                 <Table>
                   <TableHeader>
                     <TableRow>
-                      <TableHead>Product</TableHead>
-                      <TableHead className="text-right">Quantity</TableHead>
-                      <TableHead className="text-right">Unit Cost</TableHead>
-                      <TableHead className="text-right">Line Total</TableHead>
-                      {!isReadOnly && <TableHead className="text-right">Actions</TableHead>}
+                      <TableHead>Mahsulot</TableHead>
+                      <TableHead className="text-right">Miqdor</TableHead>
+                      <TableHead className="text-right">Birlik narxi</TableHead>
+                      <TableHead className="text-right">Jami</TableHead>
+                      {!isReadOnly && <TableHead className="text-right">Amallar</TableHead>}
                     </TableRow>
                   </TableHeader>
                   <TableBody>
@@ -627,7 +679,7 @@ export default function PurchaseOrderForm() {
                         </TableCell>
                         <TableCell className="text-right">
                           {isReadOnly ? (
-                            `$${item.unit_cost.toFixed(2)}`
+                            formatMoneyUZS(item.unit_cost)
                           ) : (
                             <Input
                               type="number"
@@ -642,7 +694,7 @@ export default function PurchaseOrderForm() {
                           )}
                         </TableCell>
                         <TableCell className="text-right font-medium">
-                          ${item.line_total.toFixed(2)}
+                          {formatMoneyUZS(item.line_total)}
                         </TableCell>
                         {!isReadOnly && (
                           <TableCell className="text-right">
@@ -668,25 +720,25 @@ export default function PurchaseOrderForm() {
         <div className="space-y-6">
           <Card>
             <CardHeader>
-              <CardTitle>Order Summary</CardTitle>
+              <CardTitle>Buyurtma yig'indisi</CardTitle>
             </CardHeader>
             <CardContent className="space-y-4">
               <div className="space-y-2">
                 <div className="flex justify-between text-sm">
-                  <span className="text-muted-foreground">Subtotal</span>
-                  <span className="font-medium">${calculateSubtotal().toFixed(2)}</span>
+                  <span className="text-muted-foreground">Oraliq summa</span>
+                  <span className="font-medium">{formatMoneyUZS(calculateSubtotal())}</span>
                 </div>
                 <div className="flex justify-between text-sm">
-                  <span className="text-muted-foreground">Discount</span>
-                  <span className="font-medium">$0.00</span>
+                  <span className="text-muted-foreground">Chegirma</span>
+                  <span className="font-medium">{formatMoneyUZS(0)}</span>
                 </div>
                 <div className="flex justify-between text-sm">
-                  <span className="text-muted-foreground">Tax</span>
-                  <span className="font-medium">$0.00</span>
+                  <span className="text-muted-foreground">Soliq</span>
+                  <span className="font-medium">{formatMoneyUZS(0)}</span>
                 </div>
                 <div className="border-t pt-2 flex justify-between">
-                  <span className="font-semibold">Total</span>
-                  <span className="font-bold text-lg">${calculateSubtotal().toFixed(2)}</span>
+                  <span className="font-semibold">Jami</span>
+                  <span className="font-bold text-lg">{formatMoneyUZS(calculateSubtotal())}</span>
                 </div>
               </div>
 
@@ -698,7 +750,7 @@ export default function PurchaseOrderForm() {
                     disabled={loading || items.length === 0}
                   >
                     <Save className="h-4 w-4 mr-2" />
-                    {isEditMode ? 'Update Purchase Order' : 'Save as Draft'}
+                    {isEditMode ? 'Xarid buyurtmasini yangilash' : 'Qoralama sifatida saqlash'}
                   </Button>
 
                   {!isEditMode && (
@@ -709,15 +761,15 @@ export default function PurchaseOrderForm() {
                       disabled={loading || items.length === 0}
                     >
                       <Package className="h-4 w-4 mr-2" />
-                      Save & Mark as Received
+                      Saqlash va qabul qilingan deb belgilash
                     </Button>
                   )}
                 </div>
               )}
 
               <div className="text-xs text-muted-foreground space-y-1">
-                <p>• Draft: Save without affecting stock</p>
-                <p>• Mark as Received: Update stock immediately</p>
+                <p>• Qoralama: Ombor miqdoriga ta'sir qilmaydi</p>
+                <p>• Qabul qilingan deb belgilash: Ombor qoldig'i darhol yangilanadi</p>
               </div>
             </CardContent>
           </Card>
@@ -728,30 +780,30 @@ export default function PurchaseOrderForm() {
       <Dialog open={showSupplierModal} onOpenChange={setShowSupplierModal}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>Add New Supplier</DialogTitle>
+            <DialogTitle>Yangi yetkazib beruvchi qo'shish</DialogTitle>
             <DialogDescription>
-              Create a new supplier to add to your purchase order
+              Xarid buyurtmangizga yangi yetkazib beruvchi qo'shing
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-4 py-4">
             <div className="space-y-2">
               <Label htmlFor="new-supplier-name">
-                Supplier Name <span className="text-destructive">*</span>
+                Yetkazib beruvchi nomi <span className="text-destructive">*</span>
               </Label>
               <Input
                 id="new-supplier-name"
                 value={newSupplierName}
                 onChange={(e) => setNewSupplierName(e.target.value)}
-                placeholder="Enter supplier name"
+                placeholder="Yetkazib beruvchi nomini kiriting"
               />
             </div>
             <div className="space-y-2">
-              <Label htmlFor="new-supplier-phone">Phone</Label>
+              <Label htmlFor="new-supplier-phone">Telefon</Label>
               <Input
                 id="new-supplier-phone"
                 value={newSupplierPhone}
                 onChange={(e) => setNewSupplierPhone(e.target.value)}
-                placeholder="Enter phone number"
+                placeholder="Telefon raqamini kiriting"
               />
             </div>
             <div className="space-y-2">
@@ -761,7 +813,7 @@ export default function PurchaseOrderForm() {
                 type="email"
                 value={newSupplierEmail}
                 onChange={(e) => setNewSupplierEmail(e.target.value)}
-                placeholder="Enter email address"
+                placeholder="Email manzilini kiriting"
               />
             </div>
           </div>
@@ -775,10 +827,10 @@ export default function PurchaseOrderForm() {
                 setNewSupplierEmail('');
               }}
             >
-              Cancel
+              Bekor qilish
             </Button>
             <Button onClick={handleCreateSupplier} disabled={creatingSupplier}>
-              {creatingSupplier ? 'Creating...' : 'Create Supplier'}
+              {creatingSupplier ? 'Yaratilmoqda...' : 'Yetkazib beruvchi yaratish'}
             </Button>
           </DialogFooter>
         </DialogContent>
