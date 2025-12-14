@@ -173,9 +173,9 @@ export default function DailySalesReport() {
       };
 
       if (format === 'excel') {
-        exportDailySalesToExcel(exportData, filters, summary, cashiers);
+        await exportDailySalesToExcel(exportData, filters, summary, cashiers);
       } else {
-        exportDailySalesToPDF(exportData, filters, summary, cashiers);
+        await exportDailySalesToPDF(exportData, filters, summary, cashiers);
       }
 
       toast({

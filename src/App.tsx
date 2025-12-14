@@ -2,19 +2,39 @@ import { BrowserRouter as Router, Routes, Route, Navigate, useLocation } from 'r
 import type { ReactNode } from 'react';
 import React from 'react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { AuthProvider, useAuth } from './contexts/AuthContext';
 import { Toaster } from './components/ui/toaster';
+import { ErrorBoundary } from './components/common/ErrorBoundary';
 import routes from './routes';
 import MainLayout from './components/layout/MainLayout';
 import { useSyncEngine } from './hooks/useSyncEngine';
 import { openOfflineDB } from './offline/db';
+import { ProtectedRoute } from './components/auth/ProtectedRoute';
+import { AuthProvider, useAuth } from './contexts/AuthContext';
 
-// Create QueryClient instance with default options
+// Create QueryClient instance with optimized defaults for POS
 const queryClient = new QueryClient({
   defaultOptions: {
     queries: {
-      retry: 1,
-      refetchOnWindowFocus: false,
+      retry: (failureCount, error) => {
+        // Don't retry on 4xx errors (client errors)
+        if (error && typeof error === 'object' && 'status' in error) {
+          const status = (error as { status: number }).status;
+          if (status >= 400 && status < 500) {
+            return false;
+          }
+        }
+        // Retry up to 1 time for network/server errors
+        return failureCount < 1;
+      },
+      retryDelay: (attemptIndex) => Math.min(1000 * 2 ** attemptIndex, 30000),
+      staleTime: 5 * 60 * 1000, // 5 minutes - data is fresh for 5 minutes
+      gcTime: 10 * 60 * 1000, // 10 minutes (formerly cacheTime) - keep unused data for 10 minutes
+      refetchOnWindowFocus: false, // POS doesn't need refetch on focus
+      refetchOnMount: true, // Refetch when component mounts (fresh data)
+      refetchOnReconnect: true, // Refetch when network reconnects
+    },
+    mutations: {
+      retry: false, // Mutations should not retry automatically
     },
   },
 });
@@ -27,11 +47,17 @@ function SyncEngineInitializer() {
     // Initialize IndexedDB on app start
     React.useEffect(() => {
       openOfflineDB().catch(error => {
-        console.error('Failed to initialize offline database:', error);
+        // Only log in development
+        if (import.meta.env.DEV) {
+          console.error('Failed to initialize offline database:', error);
+        }
       });
     }, []);
   } catch (error) {
-    console.error('Failed to initialize sync engine:', error);
+    // Only log in development
+    if (import.meta.env.DEV) {
+      console.error('Failed to initialize sync engine:', error);
+    }
   }
   
   return null;
@@ -39,15 +65,25 @@ function SyncEngineInitializer() {
 
 function App() {
   return (
-    <QueryClientProvider client={queryClient}>
-      <AuthProvider>
-        <Router>
-          <Toaster />
-          <SyncEngineInitializer />
-          <AppContent />
-        </Router>
-      </AuthProvider>
-    </QueryClientProvider>
+    <ErrorBoundary
+      onError={(error, errorInfo) => {
+        // Log to error tracking service in production
+        if (import.meta.env.PROD) {
+          // TODO: Send to error tracking service (e.g., Sentry)
+          // errorTrackingService.captureException(error, { extra: errorInfo });
+        }
+      }}
+    >
+      <QueryClientProvider client={queryClient}>
+        <AuthProvider>
+          <Router>
+            <Toaster />
+            <SyncEngineInitializer />
+            <AppContent />
+          </Router>
+        </AuthProvider>
+      </QueryClientProvider>
+    </ErrorBoundary>
   );
 }
 
@@ -61,15 +97,15 @@ function AppContent() {
               key={index}
               path={route.path}
               element={
-                <PrivateRoute allowedRoles={route.allowedRoles}>
+                <ProtectedRoute allowedRoles={route.allowedRoles as ('admin' | 'cashier' | 'manager')[] | undefined}>
                   <MainLayout>{route.element}</MainLayout>
-                </PrivateRoute>
+                </ProtectedRoute>
               }
             />
           );
         }
-        // For login and reset password routes, redirect if already logged in
-        if (route.path === '/login' || route.path === '/reset-password' || route.path === '/auth/reset-password') {
+        // For login, register, reset password routes, redirect if already logged in
+        if (route.path === '/login' || route.path === '/register' || route.path === '/reset-password' || route.path === '/auth/reset-password') {
           return (
             <Route
               key={index}
@@ -83,29 +119,6 @@ function AppContent() {
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>
   );
-}
-
-function PrivateRoute({ children, allowedRoles }: { children: ReactNode; allowedRoles?: string[] }) {
-  const { user, loading } = useAuth();
-  const location = useLocation();
-
-  if (loading) {
-    return (
-      <div className="flex items-center justify-center min-h-screen">
-        <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-primary" />
-      </div>
-    );
-  }
-
-  if (!user) {
-    return <Navigate to="/login" state={{ from: location }} replace />;
-  }
-
-  if (allowedRoles && user && !allowedRoles.includes(user.role)) {
-    return <Navigate to="/" replace />;
-  }
-
-  return <>{children}</>;
 }
 
 function PublicRoute({ children }: { children: ReactNode }) {

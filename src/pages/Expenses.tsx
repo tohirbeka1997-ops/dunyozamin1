@@ -74,29 +74,51 @@ export default function Expenses() {
     loadEmployees();
   }, []);
 
+  const { user, loading: authLoading } = useAuth();
+  const authReady = !authLoading;
+
   // Fetch expenses
-  const { data: expenses = [], isLoading } = useQuery({
+  const { data: expenses = [], isLoading, error: expensesError } = useQuery({
     queryKey: ['expenses', { dateFrom, dateTo, categoryFilter, paymentMethodFilter, employeeFilter, searchTerm }],
-    queryFn: () => getExpenses({
-      dateFrom: dateFrom || undefined,
-      dateTo: dateTo || undefined,
-      category: categoryFilter !== 'all' ? categoryFilter as ExpenseCategory : undefined,
-      paymentMethod: paymentMethodFilter !== 'all' ? paymentMethodFilter as ExpensePaymentMethod : undefined,
-      employeeId: employeeFilter !== 'all' ? employeeFilter : undefined,
-      search: searchTerm || undefined,
-    }),
+    queryFn: async () => {
+      try {
+        return await getExpenses({
+          dateFrom: dateFrom || undefined,
+          dateTo: dateTo || undefined,
+          category: categoryFilter !== 'all' ? categoryFilter as ExpenseCategory : undefined,
+          paymentMethod: paymentMethodFilter !== 'all' ? paymentMethodFilter as ExpensePaymentMethod : undefined,
+          employeeId: employeeFilter !== 'all' ? employeeFilter : undefined,
+          search: searchTerm || undefined,
+        });
+      } catch (error) {
+        const { logSupabaseError } = await import('@/lib/supabaseErrorLogger');
+        logSupabaseError(error, { table: 'expenses', operation: 'select', queryKey: 'expenses', userId: user?.id });
+        throw error;
+      }
+    },
+    enabled: authReady && !!user,
+    retry: 1,
   });
 
   // Calculate filtered total from expenses (for "Jami xarajatlar" card)
   const filteredTotal = expenses?.reduce((sum, e) => sum + (e?.amount || 0), 0) || 0;
 
   // Fetch stats - today and monthly are always unfiltered, total uses filtered data
-  const { data: stats, isLoading: statsLoading } = useQuery({
+  const { data: stats, isLoading: statsLoading, error: statsError } = useQuery({
     queryKey: ['expenseStats', { dateFrom, dateTo }],
-    queryFn: () => getExpenseStats({
-      dateFrom: dateFrom || undefined,
-      dateTo: dateTo || undefined,
-    }),
+    queryFn: async () => {
+      try {
+        return await getExpenseStats({
+          dateFrom: dateFrom || undefined,
+          dateTo: dateTo || undefined,
+        });
+      } catch (error) {
+        const { logSupabaseError } = await import('@/lib/supabaseErrorLogger');
+        logSupabaseError(error, { table: 'expenses', operation: 'getStats', queryKey: 'expenseStats', userId: user?.id });
+        throw error;
+      }
+    },
+    enabled: authReady && !!user,
     retry: 1,
   });
 
@@ -411,6 +433,17 @@ export default function Expenses() {
           {isLoading ? (
             <div className="flex justify-center py-8">
               <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary" />
+            </div>
+          ) : expensesError ? (
+            <div className="text-center py-12">
+              <AlertTriangle className="h-12 w-12 mx-auto text-destructive mb-4" />
+              <p className="text-lg font-semibold mb-2">Xatolik</p>
+              <p className="text-muted-foreground mb-4">
+                {expensesError instanceof Error ? expensesError.message : 'Xarajatlarni yuklab bo\'lmadi'}
+              </p>
+              <Button onClick={() => queryClient.invalidateQueries({ queryKey: ['expenses'] })} variant="outline">
+                Qayta urinish
+              </Button>
             </div>
           ) : !expenses || expenses.length === 0 ? (
             <div className="text-center py-12">

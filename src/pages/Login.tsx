@@ -5,29 +5,15 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from '@/components/ui/dialog';
 import { useToast } from '@/hooks/use-toast';
 import { useAuth } from '@/contexts/AuthContext';
-import { useTranslation } from 'react-i18next';
 import { Store } from 'lucide-react';
 
 export default function Login() {
   const navigate = useNavigate();
   const location = useLocation();
   const { toast } = useToast();
-  const { login, signUp, resetPassword } = useAuth();
-  const { t } = useTranslation();
-  const [loading, setLoading] = useState(false);
-  const [forgotPasswordOpen, setForgotPasswordOpen] = useState(false);
-  const [forgotPasswordEmail, setForgotPasswordEmail] = useState('');
-  const [forgotPasswordLoading, setForgotPasswordLoading] = useState(false);
+  const { signIn, signUp, loading } = useAuth();
 
   // Get redirect path from location state or default to /
   const from = (location.state as { from?: { pathname?: string } })?.from?.pathname || '/';
@@ -45,13 +31,15 @@ export default function Login() {
     fullName: '',
   });
 
+  const [isSubmitting, setIsSubmitting] = useState(false);
+
   const handleSignIn = async (e: React.FormEvent) => {
     e.preventDefault();
 
     if (!signInData.email || !signInData.password) {
       toast({
-        title: t('auth.required_field'),
-        description: t('auth.fill_all_fields'),
+        title: 'Xatolik',
+        description: 'Iltimos, barcha maydonlarni to\'ldiring',
         variant: 'destructive',
       });
       return;
@@ -61,29 +49,33 @@ export default function Login() {
     const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
     if (!emailRegex.test(signInData.email)) {
       toast({
-        title: t('auth.required_field'),
-        description: t('auth.invalid_email_format'),
+        title: 'Xatolik',
+        description: 'Noto\'g\'ri email formati',
         variant: 'destructive',
       });
       return;
     }
 
-    setLoading(true);
+    setIsSubmitting(true);
     try {
-      await login(signInData.email, signInData.password);
+      await signIn(signInData.email, signInData.password);
       toast({
-        title: t('auth.successful'),
-        description: t('auth.signed_in_success'),
+        title: 'Muvaffaqiyatli',
+        description: 'Tizimga muvaffaqiyatli kirdingiz',
       });
-      navigate(from, { replace: true });
+      // Wait a moment for auth state to update, then navigate
+      setTimeout(() => {
+        navigate(from, { replace: true });
+      }, 100);
     } catch (error) {
+      console.error('Sign in error:', error);
       toast({
-        title: t('auth.something_went_wrong'),
-        description: error instanceof Error ? error.message : t('auth.failed_to_sign_in'),
+        title: 'Xatolik',
+        description: error instanceof Error ? error.message : 'Kirishda xatolik yuz berdi',
         variant: 'destructive',
       });
     } finally {
-      setLoading(false);
+      setIsSubmitting(false);
     }
   };
 
@@ -92,8 +84,8 @@ export default function Login() {
 
     if (!signUpData.email || !signUpData.password || !signUpData.confirmPassword) {
       toast({
-        title: t('auth.required_field'),
-        description: t('auth.fill_required_fields'),
+        title: 'Xatolik',
+        description: 'Iltimos, barcha majburiy maydonlarni to\'ldiring',
         variant: 'destructive',
       });
       return;
@@ -103,8 +95,8 @@ export default function Login() {
     const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
     if (!emailRegex.test(signUpData.email)) {
       toast({
-        title: t('auth.required_field'),
-        description: t('auth.invalid_email_format'),
+        title: 'Xatolik',
+        description: 'Noto\'g\'ri email formati',
         variant: 'destructive',
       });
       return;
@@ -112,8 +104,8 @@ export default function Login() {
 
     if (signUpData.password !== signUpData.confirmPassword) {
       toast({
-        title: t('auth.required_field'),
-        description: t('auth.passwords_no_match'),
+        title: 'Xatolik',
+        description: 'Parollar mos kelmaydi',
         variant: 'destructive',
       });
       return;
@@ -121,14 +113,14 @@ export default function Login() {
 
     if (signUpData.password.length < 6) {
       toast({
-        title: t('auth.required_field'),
-        description: t('auth.min_6_characters'),
+        title: 'Xatolik',
+        description: 'Parol kamida 6 belgi bo\'lishi kerak',
         variant: 'destructive',
       });
       return;
     }
 
-    setLoading(true);
+    setIsSubmitting(true);
     try {
       await signUp(
         signUpData.email,
@@ -137,61 +129,25 @@ export default function Login() {
         signUpData.username || undefined
       );
       toast({
-        title: t('auth.successful'),
-        description: t('auth.account_created_success'),
+        title: 'Muvaffaqiyatli',
+        description: 'Hisob yaratildi va tizimga kirildi',
       });
-      navigate(from, { replace: true });
+      // Wait a moment for auth state to update, then navigate
+      setTimeout(() => {
+        navigate(from, { replace: true });
+      }, 100);
     } catch (error) {
+      console.error('Sign up error:', error);
       toast({
-        title: t('auth.something_went_wrong'),
-        description: error instanceof Error ? error.message : t('auth.failed_to_create_account'),
+        title: 'Xatolik',
+        description: error instanceof Error ? error.message : 'Hisob yaratishda xatolik yuz berdi',
         variant: 'destructive',
       });
     } finally {
-      setLoading(false);
+      setIsSubmitting(false);
     }
   };
 
-  const handleForgotPassword = async () => {
-    if (!forgotPasswordEmail) {
-      toast({
-        title: t('auth.required_field'),
-        description: t('auth.enter_email'),
-        variant: 'destructive',
-      });
-      return;
-    }
-
-    // Validate email format
-    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-    if (!emailRegex.test(forgotPasswordEmail)) {
-      toast({
-        title: t('auth.required_field'),
-        description: t('auth.invalid_email_format'),
-        variant: 'destructive',
-      });
-      return;
-    }
-
-    setForgotPasswordLoading(true);
-    try {
-      await resetPassword(forgotPasswordEmail);
-      toast({
-        title: t('auth.successful'),
-        description: t('auth.forgot_password_dialog.reset_link_sent'),
-      });
-      setForgotPasswordOpen(false);
-      setForgotPasswordEmail('');
-    } catch (error) {
-      toast({
-        title: t('auth.something_went_wrong'),
-        description: error instanceof Error ? error.message : t('auth.forgot_password_dialog.email_not_found'),
-        variant: 'destructive',
-      });
-    } finally {
-      setForgotPasswordLoading(false);
-    }
-  };
 
   return (
     <div className="min-h-screen flex items-center justify-center bg-muted/30 p-4">
@@ -202,66 +158,63 @@ export default function Login() {
               <Store className="h-8 w-8 text-primary-foreground" />
             </div>
           </div>
-          <CardTitle className="text-2xl font-bold">{t('auth.pos_system')}</CardTitle>
-          <CardDescription>{t('auth.point_of_sale_management')}</CardDescription>
+          <CardTitle className="text-2xl font-bold">POS Tizimi</CardTitle>
+          <CardDescription>Savdo nuqtasi boshqaruvi</CardDescription>
         </CardHeader>
         <CardContent>
           <Tabs defaultValue="signin" className="w-full">
             <TabsList className="grid w-full grid-cols-2">
-              <TabsTrigger value="signin">{t('auth.sign_in')}</TabsTrigger>
-              <TabsTrigger value="signup">{t('auth.sign_up')}</TabsTrigger>
+              <TabsTrigger value="signin">Kirish</TabsTrigger>
+              <TabsTrigger value="signup">Ro'yxatdan o'tish</TabsTrigger>
             </TabsList>
 
             <TabsContent value="signin">
               <form onSubmit={handleSignIn} className="space-y-4">
                 <div className="space-y-2">
-                  <Label htmlFor="signin-email">{t('auth.email')}</Label>
+                  <Label htmlFor="signin-email">Email</Label>
                   <Input
                     id="signin-email"
                     type="email"
-                    placeholder={t('auth.enter_email')}
+                    placeholder="Email kiriting"
                     value={signInData.email}
                     onChange={(e) => setSignInData({ ...signInData, email: e.target.value })}
-                    disabled={loading}
+                    disabled={isSubmitting || loading}
                     autoComplete="email"
                   />
                 </div>
                 <div className="space-y-2">
-                  <Label htmlFor="signin-password">{t('auth.password')}</Label>
+                  <Label htmlFor="signin-password">Parol</Label>
                   <Input
                     id="signin-password"
                     type="password"
-                    placeholder={t('auth.enter_password')}
+                    placeholder="Parol kiriting"
                     value={signInData.password}
                     onChange={(e) => setSignInData({ ...signInData, password: e.target.value })}
-                    disabled={loading}
+                    disabled={isSubmitting || loading}
                     autoComplete="current-password"
                   />
                 </div>
                 <div className="flex items-center justify-end">
                   <button
                     type="button"
-                    onClick={() => setForgotPasswordOpen(true)}
+                    onClick={() => navigate('/forgot-password')}
                     className="text-sm text-primary hover:underline"
+                    disabled={isSubmitting || loading}
                   >
-                    {t('auth.forgot_password')}
+                    Parolni unutdingizmi?
                   </button>
                 </div>
-                <Button type="submit" className="w-full" disabled={loading}>
-                  {loading ? t('auth.signing_in') : t('auth.sign_in')}
+                <Button type="submit" className="w-full" disabled={isSubmitting || loading}>
+                  {isSubmitting || loading ? 'Kirilmoqda...' : 'Kirish'}
                 </Button>
                 <div className="text-center text-sm text-muted-foreground">
-                  {t('auth.dont_have_account')}{' '}
+                  Hisobingiz yo'qmi?{' '}
                   <button
                     type="button"
-                    onClick={() => {
-                      const tabs = document.querySelector('[role="tablist"]');
-                      const signupTab = tabs?.querySelector('[value="signup"]') as HTMLElement;
-                      signupTab?.click();
-                    }}
+                    onClick={() => navigate('/register')}
                     className="text-primary hover:underline"
                   >
-                    {t('auth.create_account')}
+                    Ro'yxatdan o'tish
                   </button>
                 </div>
               </form>
@@ -270,73 +223,73 @@ export default function Login() {
             <TabsContent value="signup">
               <form onSubmit={handleSignUp} className="space-y-4">
                 <div className="space-y-2">
-                  <Label htmlFor="signup-email">{t('auth.email')} *</Label>
+                  <Label htmlFor="signup-email">Email *</Label>
                   <Input
                     id="signup-email"
                     type="email"
-                    placeholder={t('auth.enter_email')}
+                    placeholder="Email kiriting"
                     value={signUpData.email}
                     onChange={(e) => setSignUpData({ ...signUpData, email: e.target.value })}
-                    disabled={loading}
+                    disabled={isSubmitting || loading}
                     autoComplete="email"
                   />
                 </div>
                 <div className="space-y-2">
-                  <Label htmlFor="signup-username">{t('auth.username')}</Label>
+                  <Label htmlFor="signup-username">Foydalanuvchi nomi</Label>
                   <Input
                     id="signup-username"
                     type="text"
-                    placeholder={t('auth.choose_username')}
+                    placeholder="Foydalanuvchi nomi tanlang"
                     value={signUpData.username}
                     onChange={(e) => setSignUpData({ ...signUpData, username: e.target.value })}
-                    disabled={loading}
+                    disabled={isSubmitting || loading}
                     autoComplete="username"
                   />
                   <p className="text-xs text-muted-foreground">
-                    {t('auth.username_helper')}
+                    Ixtiyoriy, lekin tavsiya etiladi
                   </p>
                 </div>
                 <div className="space-y-2">
-                  <Label htmlFor="signup-fullname">{t('auth.full_name')}</Label>
+                  <Label htmlFor="signup-fullname">To'liq ism</Label>
                   <Input
                     id="signup-fullname"
                     type="text"
-                    placeholder={t('auth.enter_full_name')}
+                    placeholder="To'liq ism kiriting"
                     value={signUpData.fullName}
                     onChange={(e) => setSignUpData({ ...signUpData, fullName: e.target.value })}
-                    disabled={loading}
+                    disabled={isSubmitting || loading}
                     autoComplete="name"
                   />
                 </div>
                 <div className="space-y-2">
-                  <Label htmlFor="signup-password">{t('auth.password')} *</Label>
+                  <Label htmlFor="signup-password">Parol *</Label>
                   <Input
                     id="signup-password"
                     type="password"
-                    placeholder={t('auth.create_password')}
+                    placeholder="Parol yarating"
                     value={signUpData.password}
                     onChange={(e) => setSignUpData({ ...signUpData, password: e.target.value })}
-                    disabled={loading}
+                    disabled={isSubmitting || loading}
                     autoComplete="new-password"
                   />
                 </div>
                 <div className="space-y-2">
-                  <Label htmlFor="signup-confirm">{t('auth.confirm_password')} *</Label>
+                  <Label htmlFor="signup-confirm">Parolni tasdiqlash *</Label>
                   <Input
                     id="signup-confirm"
                     type="password"
-                    placeholder={t('auth.confirm_password_placeholder')}
+                    placeholder="Parolni qayta kiriting"
                     value={signUpData.confirmPassword}
                     onChange={(e) => setSignUpData({ ...signUpData, confirmPassword: e.target.value })}
-                    disabled={loading}
+                    disabled={isSubmitting || loading}
                     autoComplete="new-password"
                   />
                 </div>
-                <Button type="submit" className="w-full" disabled={loading}>
-                  {loading ? t('auth.creating_account') : t('auth.sign_up')}
+                <Button type="submit" className="w-full" disabled={isSubmitting || loading}>
+                  {isSubmitting || loading ? 'Yaratilmoqda...' : 'Ro\'yxatdan o\'tish'}
                 </Button>
                 <div className="text-center text-sm text-muted-foreground">
-                  {t('auth.already_have_account')}{' '}
+                  Allaqachon hisobingiz bormi?{' '}
                   <button
                     type="button"
                     onClick={() => {
@@ -346,7 +299,7 @@ export default function Login() {
                     }}
                     className="text-primary hover:underline"
                   >
-                    {t('auth.go_to_login')}
+                    Kirish
                   </button>
                 </div>
               </form>
@@ -355,53 +308,6 @@ export default function Login() {
         </CardContent>
       </Card>
 
-      {/* Forgot Password Dialog */}
-      <Dialog open={forgotPasswordOpen} onOpenChange={setForgotPasswordOpen}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>{t('auth.forgot_password_dialog.title')}</DialogTitle>
-            <DialogDescription>
-              {t('auth.forgot_password_dialog.description')}
-            </DialogDescription>
-          </DialogHeader>
-          <div className="space-y-4 py-4">
-            <div className="space-y-2">
-              <Label htmlFor="forgot-password-email">{t('auth.forgot_password_dialog.email_label')}</Label>
-              <Input
-                id="forgot-password-email"
-                type="email"
-                placeholder={t('auth.forgot_password_dialog.email_placeholder')}
-                value={forgotPasswordEmail}
-                onChange={(e) => setForgotPasswordEmail(e.target.value)}
-                disabled={forgotPasswordLoading}
-                autoComplete="email"
-              />
-            </div>
-          </div>
-          <DialogFooter>
-            <Button
-              type="button"
-              variant="outline"
-              onClick={() => {
-                setForgotPasswordOpen(false);
-                setForgotPasswordEmail('');
-              }}
-              disabled={forgotPasswordLoading}
-            >
-              {t('auth.forgot_password_dialog.cancel')}
-            </Button>
-            <Button
-              type="button"
-              onClick={handleForgotPassword}
-              disabled={forgotPasswordLoading}
-            >
-              {forgotPasswordLoading
-                ? t('auth.forgot_password_dialog.sending')
-                : t('auth.forgot_password_dialog.send_reset_link')}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
     </div>
   );
 }

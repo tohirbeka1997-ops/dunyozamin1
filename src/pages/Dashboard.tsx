@@ -1,6 +1,8 @@
 import { useState, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useQuery } from '@tanstack/react-query';
+import { useAuth } from '@/contexts/AuthContext';
+import { logSupabaseError } from '@/lib/supabaseErrorLogger';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Button } from '@/components/ui/button';
@@ -101,38 +103,81 @@ export default function Dashboard() {
     return `${dateRange.from.toISOString()}_${dateRange.to.toISOString()}`;
   }, [dateRange]);
 
-  // React Query hooks for dashboard data
-  const { data: analytics, isLoading: analyticsLoading, isError: analyticsError } = useQuery({
+  const { user, loading: authLoading } = useAuth();
+  const authReady = !authLoading;
+
+  // React Query hooks for dashboard data - only run when auth is ready
+  const { data: analytics, isLoading: analyticsLoading, isError: analyticsError, error: analyticsErrorObj } = useQuery({
     queryKey: ['dashboardAnalytics', dateRangeKey],
-    queryFn: () => getDashboardAnalytics(dateRange.from, dateRange.to),
-    refetchInterval: 30000, // Auto-refresh every 30 seconds
+    queryFn: async () => {
+      try {
+        return await getDashboardAnalytics(dateRange.from, dateRange.to);
+      } catch (error) {
+        logSupabaseError(error, { table: 'dashboard', operation: 'getAnalytics', queryKey: 'dashboardAnalytics', userId: user?.id });
+        throw error;
+      }
+    },
+    enabled: authReady && !!user,
+    refetchInterval: 30000,
     retry: 1,
   });
 
-  const { data: lowStockProducts = [], isLoading: lowStockLoading, isError: lowStockError } = useQuery({
+  const { data: lowStockProducts = [], isLoading: lowStockLoading, isError: lowStockError, error: lowStockErrorObj } = useQuery({
     queryKey: ['lowStockProducts'],
-    queryFn: getLowStockProducts,
+    queryFn: async () => {
+      try {
+        return await getLowStockProducts();
+      } catch (error) {
+        logSupabaseError(error, { table: 'products', operation: 'getLowStock', queryKey: 'lowStockProducts', userId: user?.id });
+        throw error;
+      }
+    },
+    enabled: authReady && !!user,
     refetchInterval: 30000,
     retry: 1,
   });
 
-  const { data: dailySales = [], isLoading: chartsLoading, isError: chartsError } = useQuery({
+  const { data: dailySales = [], isLoading: chartsLoading, isError: chartsError, error: chartsErrorObj } = useQuery({
     queryKey: ['dailySales', dateRangeKey],
-    queryFn: () => getDailySalesData(dateRange.from, dateRange.to),
+    queryFn: async () => {
+      try {
+        return await getDailySalesData(dateRange.from, dateRange.to);
+      } catch (error) {
+        logSupabaseError(error, { table: 'orders', operation: 'getDailySales', queryKey: 'dailySales', userId: user?.id });
+        throw error;
+      }
+    },
+    enabled: authReady && !!user,
     refetchInterval: 30000,
     retry: 1,
   });
 
-  const { data: topProducts = [], isLoading: topProductsLoading } = useQuery({
+  const { data: topProducts = [], isLoading: topProductsLoading, error: topProductsError } = useQuery({
     queryKey: ['topProducts', dateRangeKey],
-    queryFn: () => getTopProducts(dateRange.from, dateRange.to, 5),
+    queryFn: async () => {
+      try {
+        return await getTopProducts(dateRange.from, dateRange.to, 5);
+      } catch (error) {
+        logSupabaseError(error, { table: 'products', operation: 'getTopProducts', queryKey: 'topProducts', userId: user?.id });
+        throw error;
+      }
+    },
+    enabled: authReady && !!user,
     refetchInterval: 30000,
     retry: 1,
   });
 
-  const { data: totalCustomerDebt = 0 } = useQuery({
+  const { data: totalCustomerDebt = 0, error: debtError } = useQuery({
     queryKey: ['totalCustomerDebt'],
-    queryFn: getTotalCustomerDebt,
+    queryFn: async () => {
+      try {
+        return await getTotalCustomerDebt();
+      } catch (error) {
+        logSupabaseError(error, { table: 'customers', operation: 'getTotalDebt', queryKey: 'totalCustomerDebt', userId: user?.id });
+        throw error;
+      }
+    },
+    enabled: authReady && !!user,
     refetchInterval: 30000,
     retry: 1,
   });

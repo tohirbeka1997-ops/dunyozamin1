@@ -21,7 +21,24 @@ import { formatMoneyUZS } from '@/lib/format';
 export default function ShiftControl() {
   const { user } = useAuth();
   const { toast } = useToast();
-  const { currentShift, openShift, closeShift, addSale, addRefund } = useShiftStore();
+  const { currentShift, openShift, closeShift, addSale, addRefund, loadActiveShift } = useShiftStore();
+  
+  // Load active shift on mount
+  useEffect(() => {
+    if (user?.id) {
+      // First validate persisted shift
+      const { loadFromStorage, currentShift } = useShiftStore.getState();
+      if (currentShift && !currentShift.store_id) {
+        console.warn('[ShiftControl] Persisted shift missing store_id, clearing it');
+        useShiftStore.setState({ currentShift: null });
+      }
+      
+      // Then load active shift from database (will override persisted if needed)
+      loadActiveShift(user.id).catch((error) => {
+        console.error('Failed to load active shift:', error);
+      });
+    }
+  }, [user?.id, loadActiveShift]);
   
   const [openDialogOpen, setOpenDialogOpen] = useState(false);
   const [closeDialogOpen, setCloseDialogOpen] = useState(false);
@@ -39,7 +56,7 @@ export default function ShiftControl() {
     }
   }, [currentShift]);
 
-  const handleOpenShift = () => {
+  const handleOpenShift = async () => {
     if (!user) {
       toast({
         title: 'Error',
@@ -60,7 +77,7 @@ export default function ShiftControl() {
     }
 
     try {
-      openShift(cash, user.id);
+      await openShift(cash, user.id);
       setOpenDialogOpen(false);
       setOpeningCash('');
       toast({
@@ -76,7 +93,7 @@ export default function ShiftControl() {
     }
   };
 
-  const handleCloseShift = () => {
+  const handleCloseShift = async () => {
     if (!user) {
       toast({
         title: 'Error',
@@ -97,7 +114,7 @@ export default function ShiftControl() {
     }
 
     try {
-      closeShift(cash, shiftTotals, user.id);
+      await closeShift(cash, shiftTotals, user.id);
       setCloseDialogOpen(false);
       setClosingCash('');
       toast({

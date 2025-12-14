@@ -4,6 +4,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { ArrowLeft, FileDown, Download } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { useToast } from '@/hooks/use-toast';
+import { logger } from '@/utils/logger';
 import {
   exportDailySales,
   exportProductSales,
@@ -105,20 +106,32 @@ export default function ExportManager() {
       return;
     }
 
+    // Add timeout wrapper (30 seconds)
+    const exportWithTimeout = async (): Promise<void> => {
+      return Promise.race([
+        exportFn(),
+        new Promise<void>((_, reject) => {
+          setTimeout(() => {
+            reject(new Error('Eksport vaqti tugadi. Iltimos, qayta urinib ko\'ring.'));
+          }, 30000); // 30 second timeout
+        }),
+      ]);
+    };
+
     try {
       setIsExporting(true);
       setExportingKey(key);
-      console.log('export start', format, optionName);
+      logger.log('export start', format, optionName);
 
-      await exportFn();
+      await exportWithTimeout();
 
-      console.log('export done');
+      logger.log('export done');
       toast({
         title: 'Muvaffaqiyatli',
         description: `${optionName} ${format.toUpperCase()} formatida eksport qilindi`,
       });
     } catch (error) {
-      console.error('export error', error);
+      logger.error('export error', error);
       const errorMessage = error instanceof Error ? error.message : 'Eksportda xatolik yuz berdi';
       toast({
         title: 'Xatolik',

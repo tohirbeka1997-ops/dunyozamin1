@@ -31,6 +31,7 @@ import {
   AlertDialogTrigger,
 } from '@/components/ui/alert-dialog';
 import { getCustomers, deleteCustomer } from '@/db/api';
+import { useAuth } from '@/contexts/AuthContext';
 import type { Customer } from '@/types/database';
 import { Search, Plus, Eye, Edit, Trash2, Download, ArrowUpDown, DollarSign } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
@@ -41,8 +42,10 @@ export default function Customers() {
   const navigate = useNavigate();
   const location = useLocation();
   const { toast } = useToast();
+  const { user, loading: authLoading } = useAuth();
   const [customers, setCustomers] = useState<Customer[]>([]);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<Error | null>(null);
   const [searchTerm, setSearchTerm] = useState('');
   const [typeFilter, setTypeFilter] = useState('all');
   const [statusFilter, setStatusFilter] = useState('all');
@@ -53,8 +56,15 @@ export default function Customers() {
   const [selectedCustomerForPayment, setSelectedCustomerForPayment] = useState<Customer | null>(null);
 
   const loadCustomers = useCallback(async () => {
+    // Don't load if auth is still loading or user is not authenticated
+    if (authLoading || !user) {
+      setLoading(false);
+      return;
+    }
+
     try {
       setLoading(true);
+      setError(null);
       const hasDebt = debtFilter === 'with_debt' ? true : debtFilter === 'no_debt' ? false : undefined;
       const data = await getCustomers({
         searchTerm: searchTerm || undefined,
@@ -65,16 +75,21 @@ export default function Customers() {
         sortOrder,
       });
       setCustomers(data);
-    } catch (error) {
+    } catch (err) {
+      const error = err instanceof Error ? err : new Error('Failed to load customers');
+      console.error('Error loading customers:', error);
+      const { logSupabaseError } = await import('@/lib/supabaseErrorLogger');
+      logSupabaseError(error, { table: 'customers', operation: 'select', queryKey: 'loadCustomers', userId: user?.id });
+      setError(error);
       toast({
         title: 'Xatolik',
-        description: 'Mijozlarni yuklab bo\'lmadi',
+        description: error.message || 'Mijozlarni yuklab bo\'lmadi',
         variant: 'destructive',
       });
     } finally {
       setLoading(false);
     }
-  }, [searchTerm, typeFilter, statusFilter, debtFilter, sortBy, sortOrder, toast]);
+  }, [searchTerm, typeFilter, statusFilter, debtFilter, sortBy, sortOrder, toast, authLoading, user]);
 
   // Load customers on mount and when filters change
   useEffect(() => {
@@ -226,6 +241,17 @@ export default function Customers() {
             {loading ? (
               <div className="flex justify-center py-12">
                 <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary" />
+              </div>
+            ) : error ? (
+              <div className="text-center py-12">
+                <AlertTriangle className="h-12 w-12 mx-auto text-destructive mb-4" />
+                <p className="text-lg font-semibold mb-2">Xatolik</p>
+                <p className="text-muted-foreground mb-4">
+                  {error.message || 'Mijozlarni yuklab bo\'lmadi'}
+                </p>
+                <Button onClick={() => loadCustomers()} variant="outline">
+                  Qayta urinish
+                </Button>
               </div>
             ) : customers.length === 0 ? (
               <div className="text-center py-12">

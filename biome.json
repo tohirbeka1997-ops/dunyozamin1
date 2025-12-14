@@ -8,7 +8,8 @@
     "rules": {
       "recommended": false,
       "correctness": {
-        "noUndeclaredDependencies": "error"
+        "noUndeclaredDependencies": "error",
+        "useExhaustiveDependencies": "warn"
       },
       "suspicious": {
         "noRedeclare": "error"
@@ -19,6 +20,9 @@
     }
   },
   "formatter": {
-    "enabled": false
+    "enabled": true,
+    "indentStyle": "space",
+    "indentWidth": 2,
+    "lineWidth": 100
   }
 }

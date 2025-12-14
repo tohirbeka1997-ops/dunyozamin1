@@ -38,16 +38,12 @@ export default function Products() {
   const [statusFilter, setStatusFilter] = useState('all');
   const [stockFilter, setStockFilter] = useState('all');
 
-  // Show error toast if loading fails
+  // Log error to console (UI will show error state)
   useEffect(() => {
     if (error) {
-      toast({
-        title: t('common.error'),
-        description: t('products.failed_to_load'),
-        variant: 'destructive',
-      });
+      console.error('Products loading error:', error);
     }
-  }, [error, toast, t]);
+  }, [error]);
 
   const handleDelete = async (id: string, name: string) => {
     if (!confirm(t('products.delete_confirm', { name }))) return;
@@ -175,6 +171,17 @@ export default function Products() {
           {loading ? (
             <div className="flex justify-center py-8">
               <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary" />
+            </div>
+          ) : error ? (
+            <div className="text-center py-12">
+              <AlertTriangle className="h-12 w-12 mx-auto text-destructive mb-4" />
+              <p className="text-lg font-semibold mb-2">{t('common.error')}</p>
+              <p className="text-muted-foreground mb-4">
+                {error instanceof Error ? error.message : t('products.failed_to_load')}
+              </p>
+              <Button onClick={() => refetch()} variant="outline">
+                Qayta urinish
+              </Button>
             </div>
           ) : filteredProducts.length === 0 ? (
             <div className="text-center py-12">

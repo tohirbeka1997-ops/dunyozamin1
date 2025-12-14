@@ -1,15 +1,32 @@
 /**
  * Export functions for Export Manager page
  * Handles exports for all report types
+ * Libraries are lazy-loaded to reduce initial bundle size
  */
 
-import * as XLSX from 'xlsx';
-import jsPDF from 'jspdf';
-import autoTable from 'jspdf-autotable';
 import { formatMoneyUZS } from './format';
 import { downloadBlob, downloadCSV } from './exportHelpers';
 import { getOrders, getProfiles, getCustomers, getCategories, getProducts, getPurchaseOrders, getExpenses } from '@/db/api';
 import type { OrderWithDetails, Profile, Customer, Category, Product, SalesReturnWithDetails } from '@/types/database';
+
+/**
+ * Helper to lazy load XLSX with timeout
+ */
+const loadXLSX = async (): Promise<typeof import('xlsx')> => {
+  const XLSX = await import('xlsx');
+  return XLSX;
+};
+
+/**
+ * Helper to lazy load PDF libraries with timeout
+ */
+const loadPDF = async (): Promise<{ jsPDF: typeof import('jspdf').default; autoTable: typeof import('jspdf-autotable') }> => {
+  const [{ default: jsPDF }, autoTable] = await Promise.all([
+    import('jspdf'),
+    import('jspdf-autotable'),
+  ]);
+  return { jsPDF, autoTable };
+};
 
 /**
  * Format number to UZS string (1.000.000 so'm)
@@ -86,10 +103,10 @@ export const exportDailySales = async (
   if (format === 'excel') {
     // Use existing export function
     const { exportDailySalesToExcel } = await import('./export');
-    exportDailySalesToExcel(exportData, filters, summary, profilesData);
+    await exportDailySalesToExcel(exportData, filters, summary, profilesData);
   } else if (format === 'pdf') {
     const { exportDailySalesToPDF } = await import('./export');
-    exportDailySalesToPDF(exportData, filters, summary, profilesData);
+    await exportDailySalesToPDF(exportData, filters, summary, profilesData);
   } else {
     // CSV
     const headers = ['Hisob-faktura raqami', 'Sana/Vaqt', 'Kassir', 'To\'lov turi', 'Jami sotuv', 'Foyda', 'Holat'];

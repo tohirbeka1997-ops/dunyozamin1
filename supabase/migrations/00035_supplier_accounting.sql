@@ -388,3 +388,4 @@ COMMENT ON FUNCTION calculate_supplier_balance IS 'Calculates supplier balance f
 COMMENT ON COLUMN purchase_orders.payment_status IS 'Payment status: UNPAID, PARTIALLY_PAID, or PAID. Computed from supplier_payments.';
 
 
+

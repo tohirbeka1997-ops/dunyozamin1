@@ -51,6 +51,7 @@ import { useInventoryStore } from '@/store/inventoryStore';
 import { formatMoneyUZS } from '@/lib/format';
 import { useQueryClient } from '@tanstack/react-query';
 import { invalidateDashboardQueries } from '@/utils/dashboard';
+import { supabase } from '@/lib/supabase';
 import {
   searchProducts,
   getProductByBarcode,
@@ -67,7 +68,7 @@ import {
   updateHeldOrderName,
 } from '@/db/api';
 import ShiftControl from '@/components/pos/ShiftControl';
-import type { Product, Customer, CartItem, PaymentMethod, HeldOrder, Category } from '@/types/database';
+import type { Product, Customer, CartItem, PaymentMethod, HeldOrder, Category, Order, OrderItem } from '@/types/database';
 import { Search, Trash2, Plus, Minus, DollarSign, CreditCard, Smartphone, Banknote, Tag, Clock, Pause, Package, X, Check, ChevronsUpDown, Lock } from 'lucide-react';
 import HoldOrderDialog from '@/components/pos/HoldOrderDialog';
 import WaitingOrdersDialog from '@/components/pos/WaitingOrdersDialog';
@@ -80,8 +81,24 @@ import MoneyInput from '@/components/common/MoneyInput';
 export default function POSTerminal() {
   const { t } = useTranslation();
   const { toast } = useToast();
-  const { profile } = useAuth();
-  const { currentShift, addSale } = useShiftStore();
+  const { profile, user } = useAuth();
+  const { currentShift, addSale, loadActiveShift, loadFromStorage } = useShiftStore();
+  
+  // Ensure currentShift is always the latest from store (for reload scenarios)
+  const activeShift = currentShift;
+  
+  // CRITICAL: Load active shift from database on mount (ensures store_id is present)
+  useEffect(() => {
+    if (user?.id) {
+      // First validate persisted shift (clear if missing store_id)
+      loadFromStorage();
+      
+      // Then load fresh shift from database (will have store_id if it exists)
+      loadActiveShift(user.id).catch((error) => {
+        console.error('[POSTerminal] Failed to load active shift:', error);
+      });
+    }
+  }, [user?.id, loadActiveShift, loadFromStorage]);
   const { addMovement } = useInventoryStore();
   const queryClient = useQueryClient();
   const searchInputRef = useRef<HTMLInputElement>(null);
@@ -99,6 +116,7 @@ export default function POSTerminal() {
   const [cashReceived, setCashReceived] = useState<number | null>(null);
   const [editingQuantity, setEditingQuantity] = useState<{ [key: string]: string }>({});
   const [creditAmount, setCreditAmount] = useState<string>('');
+  const [isProcessingPayment, setIsProcessingPayment] = useState(false);
   
   // Held orders state
   const [heldOrders, setHeldOrders] = useState<HeldOrder[]>([]);
@@ -788,6 +806,11 @@ export default function POSTerminal() {
   };
 
   const handleCompletePayment = async (paymentMethod: 'cash' | 'card' | 'qr' | 'mixed') => {
+    // Prevent double submission
+    if (isProcessingPayment) {
+      return;
+    }
+
     // Validation
     if (!profile || !currentShift) {
       toast({
@@ -893,38 +916,118 @@ export default function POSTerminal() {
       changeAmount = totalPaid - requiredAmount;
     }
 
-    try {
-      const orderNumber = await generateOrderNumber();
+    setIsProcessingPayment(true);
+    
+    // Create timeout promise (30 seconds)
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      setTimeout(() => {
+        reject(new Error('Network timeout: Order creation took too long. Please try again.'));
+      }, 30000);
+    });
 
+    try {
+      console.log('[PAYMENT] Starting payment completion', { paymentMethod, total, cartItems: cart.length });
+      
+      const orderNumber = await generateOrderNumber();
+      console.log('[PAYMENT] Generated order number:', orderNumber);
+
+      // DEBUG: Log current shift to verify store_id is present (CRITICAL FOR DEBUGGING)
+      console.log('[PAYMENT] CURRENT SHIFT:', {
+        id: currentShift.id,
+        store_id: currentShift.store_id,
+        location_id: currentShift.location_id,
+        status: currentShift.status,
+        opened_at: currentShift.opened_at,
+        fullShift: currentShift
+      });
+      
+      // CRITICAL VALIDATION: Ensure shift has store_id (REQUIRED - NEVER NULL)
+      // If missing, reload from database (handles case where persisted shift is old/invalid)
+      let activeShift = currentShift;
+      if (!activeShift.store_id) {
+        console.error('[PAYMENT] ❌ Shift missing store_id. Full shift object:', JSON.stringify(activeShift, null, 2));
+        console.error('[PAYMENT] Attempting to reload shift from database...');
+        
+        if (!profile?.id) {
+          toast({
+            title: 'Error',
+            description: 'User profile not available. Cannot reload shift.',
+            variant: 'destructive',
+          });
+          throw new Error('User profile not available for shift reload');
+        }
+        
+        // Reload shift from database (will have store_id if it exists in DB)
+        await loadActiveShift(profile.id);
+        const reloadedShift = useShiftStore.getState().currentShift;
+        
+        if (!reloadedShift || !reloadedShift.store_id) {
+          toast({
+            title: 'Error',
+            description: 'Active shift is missing store_id. Please close and reopen the shift.',
+            variant: 'destructive',
+          });
+          throw new Error('Active shift is missing store_id. Please close and reopen the shift.');
+        }
+        
+        console.log('[PAYMENT] ✅ Shift reloaded successfully with store_id:', reloadedShift.store_id);
+        activeShift = reloadedShift; // Use reloaded shift
+      }
+
+      // Use store_id directly from activeShift (either original or reloaded)
+      const storeId = activeShift.store_id;
+      const locationId = activeShift.location_id || null;
+      
+      // Final validation before proceeding
+      if (!storeId) {
+        throw new Error('store_id is still missing after validation. This is a critical error.');
+      }
+      
+      console.log('[PAYMENT] ✅ Using store_id from shift:', { 
+        storeId, 
+        locationId, 
+        shiftId: activeShift.id,
+        shiftStatus: activeShift.status 
+      });
+
+      // Build order payload with ONLY existing columns (matching actual DB schema)
+      // Type assertion needed because TypeScript types may not match actual DB schema
       const order = {
+        store_id: storeId, // REQUIRED - from shift (CRITICAL: must be present)
+        location_id: locationId, // Optional - from shift
+        shift_id: activeShift.id, // REQUIRED - never null (using activeShift which has store_id)
         order_number: orderNumber,
         customer_id: selectedCustomer?.id || null,
         cashier_id: profile.id,
-        shift_id: currentShift?.id || null,
         subtotal,
-        discount_amount: discountAmount,
-        discount_percent: discount.type === 'percent' ? discount.value : 0,
-        tax_amount: 0,
-        total_amount: total,
+        total_amount: total, // RPC function expects 'total_amount' (not 'total')
         paid_amount: paidAmount,
-        credit_amount: creditAmountValue,
         change_amount: changeAmount,
         status: 'completed' as const,
-        payment_status: creditAmountValue === total ? 'on_credit' as const : 
-                       creditAmountValue === 0 ? 'paid' as const : 
-                       'partially_paid' as const,
+        // Additional fields for RPC function compatibility
+        discount_amount: discountAmount || 0,
+        discount_percent: discount.type === 'percent' ? discount.value : 0,
+        tax_amount: 0, // Not used currently
+        credit_amount: creditAmountValue || 0,
+        payment_status: 'paid' as const,
         notes: null,
-      };
+      } as unknown as Omit<Order, 'id' | 'created_at'>;
 
+      console.log('[PAYMENT] Order payload:', JSON.stringify(order, null, 2));
+
+      // Build order_items payload with ONLY existing columns (matching actual DB schema)
+      // Type assertion needed because TypeScript types may not match actual DB schema
       const orderItems = cart.map((item) => ({
         product_id: item.product.id,
         product_name: item.product.name,
         quantity: item.quantity,
         unit_price: Number(item.product.sale_price),
         subtotal: item.subtotal,
-        discount_amount: item.discount_amount,
         total: item.total,
-      }));
+        // REMOVED: discount_amount (does not exist in actual DB schema)
+      })) as Omit<OrderItem, 'id' | 'order_id'>[];
+
+      console.log('[PAYMENT] Order items:', orderItems.length, 'items');
 
       const orderPaymentsData = await Promise.all(
         orderPayments.map(async (payment) => ({
@@ -936,8 +1039,16 @@ export default function POSTerminal() {
         }))
       );
 
-      // Call the atomic RPC function
-      await createOrder(order, orderItems, orderPaymentsData);
+      console.log('[PAYMENT] Payments data:', orderPaymentsData.length, 'payments');
+
+      // Call the atomic RPC function with timeout
+      console.log('[PAYMENT] Calling createOrder...');
+      const result = await Promise.race([
+        createOrder(order, orderItems, orderPaymentsData),
+        timeoutPromise,
+      ]);
+      
+      console.log('[PAYMENT] createOrder result:', result);
 
       // Invalidate dashboard queries
       invalidateDashboardQueries(queryClient);
@@ -1048,6 +1159,8 @@ export default function POSTerminal() {
       // Update searchResults if user is searching
       setSearchResults(prevResults => updateProductsWithStockDeduction(prevResults));
 
+      console.log('[PAYMENT] Order completed successfully, cleaning up...');
+
       toast({
         title: '✅ Sotuv amalga oshirildi!',
         description: successMessage,
@@ -1059,10 +1172,12 @@ export default function POSTerminal() {
       setPayments([]);
       setDiscount({ type: 'amount', value: 0 });
       setSelectedCustomer(null);
-      setPaymentDialogOpen(false);
+      setPaymentDialogOpen(false); // Close modal
       setCashReceived(null);
       setCreditAmount('');
       setSelectedCartIndex(-1);
+      
+      console.log('[PAYMENT] Cleanup completed');
 
       // Refresh customer data if credit was used
       if (creditAmountValue > 0) {
@@ -1088,15 +1203,49 @@ export default function POSTerminal() {
         }
       }, 100);
     } catch (error) {
-      console.error('Order completion error:', error);
+      console.error('[PAYMENT] Order save failed', error);
+      console.error('[PAYMENT] Error details:', {
+        name: error instanceof Error ? error.name : 'Unknown',
+        message: error instanceof Error ? error.message : String(error),
+        stack: error instanceof Error ? error.stack : undefined,
+        error: error,
+      });
       
-      // Check for specific error types
+      // Extract detailed error message
       let errorMessage = 'Failed to complete order. Please try again.';
+      
       if (error instanceof Error) {
-        if (error.message.includes('stock')) {
+        errorMessage = error.message;
+        
+        // Handle specific error types
+        if (error.message.includes('timeout') || error.message.includes('Network timeout')) {
+          errorMessage = 'Network timeout: Order creation took too long. Please check your connection and try again.';
+        } else if (error.message.includes('stock') || error.message.includes('Stock')) {
           errorMessage = `Insufficient stock: ${error.message}`;
-        } else {
-          errorMessage = error.message;
+        } else if (error.message.includes('delay')) {
+          errorMessage = 'Order processing error. Please try again.';
+        } else if (error.message.includes('row-level security') || error.message.includes('RLS')) {
+          errorMessage = 'Permission denied: Your account may not have the required permissions. Please contact an administrator.';
+        } else if (error.message.includes('violates') || error.message.includes('constraint')) {
+          errorMessage = `Database error: ${error.message}. Please contact support.`;
+        }
+      } else if (error && typeof error === 'object') {
+        // Handle Supabase PostgrestError
+        if ('message' in error) {
+          errorMessage = String(error.message);
+        }
+        if ('code' in error) {
+          const code = String(error.code);
+          if (code === '42501' || code === 'PGRST301') {
+            errorMessage = 'Permission denied: Your account may not have the required permissions.';
+          } else if (code === '23505') {
+            errorMessage = 'Duplicate order number. Please try again.';
+          } else if (code === '23503') {
+            errorMessage = 'Invalid reference (customer, shift, or product not found).';
+          }
+        }
+        if ('hint' in error && error.hint) {
+          console.error('[PAYMENT] Supabase hint:', error.hint);
         }
       }
       
@@ -1104,7 +1253,12 @@ export default function POSTerminal() {
         title: '❌ Order Failed',
         description: errorMessage,
         variant: 'destructive',
+        duration: 5000,
       });
+    } finally {
+      // CRITICAL: Always reset processing state, even if there was an error
+      console.log('[PAYMENT] Resetting processing state');
+      setIsProcessingPayment(false);
     }
   };
 
@@ -1198,39 +1352,50 @@ export default function POSTerminal() {
 
     // Process credit sale (full or partial)
     try {
-      const orderItems = cart.map((item) => ({
-        product_id: item.product.id,
-        product_name: item.product.name,
-        quantity: item.quantity,
-        unit_price: Number(item.product.sale_price),
-        subtotal: item.subtotal,
-        discount_amount: item.discount_amount,
-        total: item.total,
-      }));
+        // Build order_items payload with ONLY existing columns
+        // Type assertion needed because TypeScript types may not match actual DB schema
+        const orderItems = cart.map((item) => ({
+          product_id: item.product.id,
+          product_name: item.product.name,
+          quantity: item.quantity,
+          unit_price: Number(item.product.sale_price),
+          subtotal: item.subtotal,
+          total: item.total,
+          // REMOVED: discount_amount (does not exist in actual DB schema)
+        })) as Omit<OrderItem, 'id' | 'order_id'>[];
 
       let result;
       
       // If partial payment (initialPayment > 0), use createOrder with mixed payments
       if (initialPayment > 0) {
+        if (!currentShift || !currentShift.id) {
+          throw new Error('Shift is required for credit sale');
+        }
+
+        // Get store_id from currentShift (REQUIRED)
+        if (!currentShift.store_id) {
+          console.error('[CREDIT SALE] CURRENT SHIFT:', currentShift);
+          throw new Error('Active shift is missing store_id. Please close and reopen the shift.');
+        }
+
         const orderNumber = await generateOrderNumber();
         
+        // Build order payload with ONLY existing columns
+        // Type assertion needed because TypeScript types may not match actual DB schema
         const order = {
+          store_id: currentShift.store_id, // REQUIRED - from currentShift
+          location_id: currentShift.location_id || null,
+          shift_id: currentShift.id, // REQUIRED - never null
           order_number: orderNumber,
           customer_id: selectedCustomer.id,
           cashier_id: profile.id,
-          shift_id: currentShift?.id || null,
           subtotal,
-          discount_amount: discountAmount,
-          discount_percent: discount.type === 'percent' ? discount.value : 0,
-          tax_amount: 0,
-          total_amount: total,
+          total: total, // Use 'total' instead of 'total_amount'
           paid_amount: initialPayment,
-          credit_amount: debtAmount,
           change_amount: 0,
           status: 'completed' as const,
-          payment_status: 'partially_paid' as const,
-          notes: null,
-        };
+          // REMOVED: discount_amount, discount_percent, tax_amount, total_amount, payment_status, notes, credit_amount
+        } as unknown as Omit<Order, 'id' | 'created_at'>;
 
         const orderPaymentsData = await Promise.all([
           {
@@ -2049,9 +2214,9 @@ export default function POSTerminal() {
               <Button
                 className="w-full"
                 onClick={() => handleCompletePayment('cash')}
-                disabled={!cashReceived || cashReceived < total}
+                disabled={isProcessingPayment || !cashReceived || cashReceived < total}
               >
-                Complete Payment
+                {isProcessingPayment ? 'Processing...' : 'Complete Payment'}
               </Button>
             </TabsContent>
             <TabsContent value="card" className="space-y-4">
@@ -2062,9 +2227,10 @@ export default function POSTerminal() {
               <Button
                 className="w-full"
                 onClick={() => handleCompletePayment('card')}
+                disabled={isProcessingPayment}
               >
                 <CreditCard className="h-5 w-5 mr-2" />
-                {t('pos.process_card_payment')}
+                {isProcessingPayment ? 'Processing...' : t('pos.process_card_payment')}
               </Button>
             </TabsContent>
             <TabsContent value="qr" className="space-y-4">
@@ -2075,9 +2241,10 @@ export default function POSTerminal() {
               <Button
                 className="w-full"
                 onClick={() => handleCompletePayment('qr')}
+                disabled={isProcessingPayment}
               >
                 <Smartphone className="h-5 w-5 mr-2" />
-                {t('pos.process_qr_payment')}
+                {isProcessingPayment ? 'Processing...' : t('pos.process_qr_payment')}
               </Button>
             </TabsContent>
             <TabsContent value="mixed" className="space-y-4">
@@ -2145,9 +2312,9 @@ export default function POSTerminal() {
               <Button
                 className="w-full"
                 onClick={() => handleCompletePayment('mixed')}
-                disabled={remainingAmount > 0}
+                disabled={isProcessingPayment || remainingAmount > 0}
               >
-                Complete Payment
+                {isProcessingPayment ? 'Processing...' : 'Complete Payment'}
               </Button>
             </TabsContent>
             <TabsContent value="credit" className="space-y-4">

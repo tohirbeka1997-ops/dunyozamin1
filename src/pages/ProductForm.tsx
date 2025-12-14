@@ -138,8 +138,8 @@ export default function ProductForm() {
       return false;
     }
 
-      const purchasePrice = formData.purchase_price || 0;
-      const salePrice = formData.sale_price || 0;
+    const purchasePrice = formData.purchase_price || 0;
+    const salePrice = formData.sale_price || 0;
 
     if (purchasePrice < 0 || salePrice < 0) {
       toast({
@@ -219,10 +219,11 @@ export default function ProductForm() {
       }
 
       navigate('/products');
-    } catch (error) {
+    } catch (error: any) {
+      console.error('Submit error:', error);
       toast({
         title: t('common.error'),
-        description: error instanceof Error ? error.message : t('productForm.failed_to_save'),
+        description: error.message || error.error_description || t('productForm.failed_to_save'),
         variant: 'destructive',
       });
     } finally {

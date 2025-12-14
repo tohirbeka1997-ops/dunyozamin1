@@ -2,6 +2,8 @@ export type ShiftStatus = 'open' | 'closed';
 
 export type Shift = {
   id: string;
+  store_id: string; // REQUIRED - store this shift belongs to
+  location_id: string | null; // Optional location
   opened_at: string; // ISO string
   closed_at: string | null;
   opened_by: string; // user.id

@@ -22,13 +22,17 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog';
-import { Save, AlertTriangle, Building2, Monitor, CreditCard, Receipt, Package, Hash, Shield, Globe, Wifi, WifiOff, RefreshCw, Trash2 } from 'lucide-react';
+import { Save, AlertTriangle, Building2, Monitor, CreditCard, Receipt, Package, Hash, Shield, Globe, Wifi, WifiOff, RefreshCw, Trash2, Database } from 'lucide-react';
 import { getSettingsByCategory, bulkUpdateSettings } from '@/db/api';
 import { useAuth } from '@/contexts/AuthContext';
 import { useToast } from '@/hooks/use-toast';
 import { useNetworkStatus } from '@/hooks/useNetworkStatus';
 import { useSyncEngine } from '@/hooks/useSyncEngine';
 import { clearAllLocalData, getAllOutboxItems } from '@/offline/db';
+import { resetDemoData, isResetDemoDataAvailable } from '@/lib/resetDemoData';
+import { resetDatabase, isDatabaseResetAvailable } from '@/lib/resetDatabase';
+import { clearAllBrowserStorageAndReload } from '@/lib/clearBrowserStorage';
+import { useQueryClient } from '@tanstack/react-query';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import type {
   CompanySettings,
@@ -217,11 +221,16 @@ function OfflineSettingsTab() {
 export default function Settings() {
   const { profile } = useAuth();
   const { toast } = useToast();
+  const queryClient = useQueryClient();
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false);
   const [showUnsavedDialog, setShowUnsavedDialog] = useState(false);
   const [activeTab, setActiveTab] = useState('company');
+  const [resettingDB, setResettingDB] = useState(false);
+  const [clearingLocal, setClearingLocal] = useState(false);
+  const [showResetConfirm, setShowResetConfirm] = useState(false);
+  const [resetConfirmText, setResetConfirmText] = useState('');
 
   const [companySettings, setCompanySettings] = useState<CompanySettings>({
     name: '',
@@ -402,7 +411,7 @@ export default function Settings() {
       </div>
 
       <Tabs value={activeTab} onValueChange={handleTabChange} className="space-y-6">
-        <TabsList className="grid w-full grid-cols-4 xl:grid-cols-9">
+        <TabsList className={`grid w-full grid-cols-4 ${profile?.role === 'admin' ? 'xl:grid-cols-10' : 'xl:grid-cols-9'}`}>
           <TabsTrigger value="company" className="gap-2">
             <Building2 className="h-4 w-4" />
             <span className="hidden xl:inline">Kompaniya</span>
@@ -439,6 +448,12 @@ export default function Settings() {
             <Wifi className="h-4 w-4" />
             <span className="hidden xl:inline">Offline & Sync</span>
           </TabsTrigger>
+          {profile?.role === 'admin' && (
+            <TabsTrigger value="reset" className="gap-2 text-destructive">
+              <AlertTriangle className="h-4 w-4" />
+              <span className="hidden xl:inline">System Reset</span>
+            </TabsTrigger>
+          )}
         </TabsList>
 
         {/* Company Profile Tab */}
@@ -1559,6 +1574,97 @@ export default function Settings() {
         <TabsContent value="offline">
           <OfflineSettingsTab />
         </TabsContent>
+
+        {/* System Reset (Danger Zone) - Admin only */}
+        {profile?.role === 'admin' && (
+          <TabsContent value="reset">
+            <Card className="border-destructive">
+              <CardHeader>
+                <CardTitle className="flex items-center gap-2 text-destructive">
+                  <AlertTriangle className="h-5 w-5" />
+                  SYSTEM RESET (DANGER ZONE)
+                </CardTitle>
+                <CardDescription>
+                  Admin-only utilities to reset the system. Use with extreme caution.
+                  All actions are irreversible.
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-6">
+                <Alert variant="destructive">
+                  <AlertTriangle className="h-4 w-4" />
+                  <AlertTitle>Danger Zone</AlertTitle>
+                  <AlertDescription>
+                    These operations will permanently delete data. Make sure you have backups
+                    and understand the consequences before proceeding.
+                  </AlertDescription>
+                </Alert>
+
+                {/* Clear Local App Data */}
+                <div className="space-y-4 border rounded-lg p-4">
+                  <div>
+                    <Label className="text-base font-semibold">Clear Local App Data</Label>
+                    <p className="text-sm text-muted-foreground mt-1 mb-3">
+                      Clears all data stored in your browser (localStorage, sessionStorage, IndexedDB, caches, React Query cache).
+                      This does NOT affect the Supabase database. The app will reload after clearing.
+                    </p>
+                    <Button
+                      variant="outline"
+                      onClick={async () => {
+                        if (!confirm('Clear all local app data? The app will reload.')) {
+                          return;
+                        }
+
+                        setClearingLocal(true);
+                        try {
+                          await clearAllBrowserStorageAndReload(queryClient);
+                        } catch (error) {
+                          setClearingLocal(false);
+                          toast({
+                            title: 'Error',
+                            description: error instanceof Error ? error.message : 'Failed to clear local data',
+                            variant: 'destructive',
+                          });
+                        }
+                      }}
+                      disabled={clearingLocal}
+                    >
+                      {clearingLocal ? (
+                        <>
+                          <RefreshCw className="mr-2 h-4 w-4 animate-spin" />
+                          Clearing...
+                        </>
+                      ) : (
+                        <>
+                          <Trash2 className="mr-2 h-4 w-4" />
+                          Clear Local Data
+                        </>
+                      )}
+                    </Button>
+                  </div>
+                </div>
+
+                {/* Reset Supabase Database */}
+                <div className="space-y-4 border-destructive border-2 rounded-lg p-4 bg-destructive/5">
+                  <div>
+                    <Label className="text-base font-semibold text-destructive">Reset Supabase Database</Label>
+                    <p className="text-sm text-muted-foreground mt-1 mb-3">
+                      Permanently deletes ALL data from the Supabase database (orders, products, customers, etc.).
+                      This action cannot be undone. Requires typing "DELETE" to confirm.
+                    </p>
+                    <Button
+                      variant="destructive"
+                      onClick={() => setShowResetConfirm(true)}
+                      disabled={resettingDB}
+                    >
+                      <Trash2 className="mr-2 h-4 w-4" />
+                      Reset Database
+                    </Button>
+                  </div>
+                </div>
+              </CardContent>
+            </Card>
+          </TabsContent>
+        )}
       </Tabs>
 
       <Dialog open={showUnsavedDialog} onOpenChange={setShowUnsavedDialog}>
@@ -1586,6 +1692,100 @@ export default function Settings() {
               }}
             >
               Discard Changes
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Database Reset Confirmation Dialog */}
+      <Dialog open={showResetConfirm} onOpenChange={setShowResetConfirm}>
+        <DialogContent className="sm:max-w-[500px]">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2 text-destructive">
+              <AlertTriangle className="h-5 w-5" />
+              Confirm Database Reset
+            </DialogTitle>
+            <DialogDescription className="space-y-2">
+              <p className="font-semibold">This will permanently delete ALL data from the database:</p>
+              <ul className="list-disc list-inside text-sm space-y-1 ml-2">
+                <li>All orders and sales</li>
+                <li>All products and inventory</li>
+                <li>All customers and suppliers</li>
+                <li>All expenses and payments</li>
+                <li>All purchase orders</li>
+                <li>All sales returns</li>
+              </ul>
+              <p className="font-semibold text-destructive mt-4">
+                This action CANNOT be undone.
+              </p>
+              <p className="mt-2">
+                Type <strong className="text-destructive">DELETE</strong> to confirm:
+              </p>
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4">
+            <Input
+              value={resetConfirmText}
+              onChange={(e) => setResetConfirmText(e.target.value)}
+              placeholder="Type DELETE to confirm"
+              className="font-mono"
+            />
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => {
+              setShowResetConfirm(false);
+              setResetConfirmText('');
+            }}>
+              Cancel
+            </Button>
+            <Button
+              variant="destructive"
+              onClick={async () => {
+                if (resetConfirmText !== 'DELETE') {
+                  toast({
+                    title: 'Invalid confirmation',
+                    description: 'You must type "DELETE" to confirm',
+                    variant: 'destructive',
+                  });
+                  return;
+                }
+
+                setResettingDB(true);
+                try {
+                  await resetDatabase({ confirmText: resetConfirmText });
+                  toast({
+                    title: 'Success',
+                    description: 'Database has been reset successfully. The app will reload.',
+                  });
+                  setShowResetConfirm(false);
+                  setResetConfirmText('');
+                  // Reload after a short delay
+                  setTimeout(() => {
+                    window.location.reload();
+                  }, 2000);
+                } catch (error) {
+                  toast({
+                    title: 'Error',
+                    description: error instanceof Error ? error.message : 'Failed to reset database',
+                    variant: 'destructive',
+                  });
+                } finally {
+                  setResettingDB(false);
+                }
+              }}
+              disabled={resettingDB || resetConfirmText !== 'DELETE'}
+            >
+              {resettingDB ? (
+                <>
+                  <RefreshCw className="mr-2 h-4 w-4 animate-spin" />
+                  Resetting...
+                </>
+              ) : (
+                <>
+                  <Trash2 className="mr-2 h-4 w-4" />
+                  Reset Database
+                </>
+              )}
             </Button>
           </DialogFooter>
         </DialogContent>

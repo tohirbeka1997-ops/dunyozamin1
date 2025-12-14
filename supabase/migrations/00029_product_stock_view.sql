@@ -78,3 +78,4 @@ COMMENT ON FUNCTION get_product_stock_summary() IS
 
 
 
+

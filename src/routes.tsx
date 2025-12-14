@@ -44,6 +44,9 @@ import EmployeeDetail from './pages/employees/EmployeeDetail';
 import Settings from './pages/Settings';
 import ReceiptBarcodePage from './pages/tools/ReceiptBarcodePage';
 import ResetPassword from './pages/ResetPassword';
+import ForgotPassword from './pages/ForgotPassword';
+import RegisterPage from './pages/RegisterPage';
+import ForbiddenPage from './pages/ForbiddenPage';
 import Expenses from './pages/Expenses';
 
 export interface RouteConfig {
@@ -60,6 +63,27 @@ const routes: RouteConfig[] = [
     name: 'Login',
     path: '/login',
     element: <Login />,
+    visible: false,
+    requireAuth: false,
+  },
+  {
+    name: 'Register',
+    path: '/register',
+    element: <RegisterPage />,
+    visible: false,
+    requireAuth: false,
+  },
+  {
+    name: 'Forbidden',
+    path: '/forbidden',
+    element: <ForbiddenPage />,
+    visible: false,
+    requireAuth: false,
+  },
+  {
+    name: 'Forgot Password',
+    path: '/forgot-password',
+    element: <ForgotPassword />,
     visible: false,
     requireAuth: false,
   },

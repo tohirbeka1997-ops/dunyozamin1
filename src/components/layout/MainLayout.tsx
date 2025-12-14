@@ -77,7 +77,7 @@ const routeNameMap: Record<string, string> = {
 
 export default function MainLayout({ children }: { children: React.ReactNode }) {
   const { t } = useTranslation();
-  const { user, logout } = useAuth();
+  const { user, profile, role, signOut } = useAuth();
   const location = useLocation();
   const navigate = useNavigate();
   const { theme, setTheme } = useTheme();
@@ -85,14 +85,14 @@ export default function MainLayout({ children }: { children: React.ReactNode }) 
 
   const visibleRoutes = routes.filter((route) => {
     if (!route.visible) return false;
-    if (route.allowedRoles && user && !route.allowedRoles.includes(user.role)) {
+    if (route.allowedRoles && user && !route.allowedRoles.includes(role)) {
       return false;
     }
     return true;
   });
 
   const handleSignOut = async () => {
-    await logout();
+    await signOut();
     navigate('/login');
   };
 
@@ -143,8 +143,8 @@ export default function MainLayout({ children }: { children: React.ReactNode }) 
               <User className="h-5 w-5 text-primary" />
             </div>
             <div className="flex-1 min-w-0">
-              <p className="font-medium text-sm truncate">{user?.full_name || user?.email}</p>
-              <p className="text-xs text-muted-foreground capitalize">{user?.role}</p>
+              <p className="font-medium text-sm truncate">{profile?.full_name || user?.email || 'User'}</p>
+              <p className="text-xs text-muted-foreground capitalize">{role}</p>
             </div>
           </div>
           <Button variant="outline" size="sm" className="w-full" onClick={handleSignOut}>
@@ -213,8 +213,8 @@ export default function MainLayout({ children }: { children: React.ReactNode }) 
               <DropdownMenuContent align="end" className="w-56">
                 <DropdownMenuLabel>
                   <div>
-                    <p className="font-medium">{user?.full_name || user?.email}</p>
-                    <p className="text-xs text-muted-foreground capitalize">{user?.role}</p>
+                    <p className="font-medium">{profile?.full_name || user?.email || 'User'}</p>
+                    <p className="text-xs text-muted-foreground capitalize">{role}</p>
                   </div>
                 </DropdownMenuLabel>
                 <DropdownMenuSeparator />

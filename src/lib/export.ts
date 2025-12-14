@@ -1,10 +1,8 @@
 /**
  * Export utility functions for reports
+ * Libraries are lazy-loaded to reduce initial bundle size
  */
 
-import * as XLSX from 'xlsx';
-import jsPDF from 'jspdf';
-import autoTable from 'jspdf-autotable';
 import { formatMoneyUZS } from './format';
 
 /**
@@ -17,7 +15,7 @@ export const formatUzs = (n: number): string => {
 /**
  * Export daily sales report to Excel
  */
-export const exportDailySalesToExcel = (
+export const exportDailySalesToExcel = async (
   orders: Array<{
     order_number: string;
     created_at: string;
@@ -41,7 +39,10 @@ export const exportDailySalesToExcel = (
     avgOrderValue: number;
   },
   cashiers: Array<{ id: string; username?: string }>
-): void => {
+): Promise<void> => {
+  // Lazy load XLSX library
+  const XLSX = await import('xlsx');
+  
   // Create workbook
   const wb = XLSX.utils.book_new();
 
@@ -110,7 +111,7 @@ export const exportDailySalesToExcel = (
 /**
  * Export daily sales report to PDF
  */
-export const exportDailySalesToPDF = (
+export const exportDailySalesToPDF = async (
   orders: Array<{
     order_number: string;
     created_at: string;
@@ -134,7 +135,13 @@ export const exportDailySalesToPDF = (
     avgOrderValue: number;
   },
   cashiers: Array<{ id: string; username?: string }>
-): void => {
+): Promise<void> => {
+  // Lazy load PDF libraries
+  const [{ default: jsPDF }, autoTable] = await Promise.all([
+    import('jspdf'),
+    import('jspdf-autotable'),
+  ]);
+  
   const doc = new jsPDF('landscape', 'mm', 'a4');
 
   // Title
