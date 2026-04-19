@@ -1,0 +1,343 @@
+# =============================================================================
+# Prometheus alert rules for the POS stack.
+# -----------------------------------------------------------------------------
+# Label contract (Bosqich 17):
+#   severity — page | warning | info   (routes to different receivers)
+#   service  — pos                      (inhibitions key on this)
+#   team     — ops                      (future: multi-team routing)
+# Annotations:
+#   summary     — single-line headline for Telegram / email subject
+#   description — multi-line context
+#   runbook     — full URL to a troubleshooting note (optional but recommended)
+# =============================================================================
+
+groups:
+  - name: pos-server.rules
+    rules:
+      - alert: PosServerDown
+        expr: up{job="pos-server"} == 0
+        for: 2m
+        labels:
+          severity: page
+          service: pos
+          team: ops
+        annotations:
+          summary: 'POS server is DOWN (instance {{ $labels.instance }})'
+          description: |
+            No successful /metrics scrape for 2 minutes. Check:
+              docker logs pos-server
+              docker inspect --format '{{.State.Health.Status}}' pos-server
+          runbook: 'https://runbooks.example.com/pos/server-down'
+
+      - alert: PosHighHttpErrorRate
+        # >5% 5xx over the last 5 minutes.
+        expr: |
+          (
+            sum(rate(pos_http_requests_total{status=~"5.."}[5m]))
+            /
+            sum(rate(pos_http_requests_total[5m]))
+          ) > 0.05
+        for: 10m
+        labels:
+          severity: warning
+          service: pos
+          team: ops
+        annotations:
+          summary: 'POS HTTP error rate > 5% (5m)'
+          description: 'Investigate pos-server logs; likely DB, crash loop, or upstream failure.'
+          runbook: 'https://runbooks.example.com/pos/http-errors'
+
+      - alert: PosHighRpcLatencyP95
+        expr: |
+          histogram_quantile(
+            0.95,
+            sum(rate(pos_rpc_call_duration_seconds_bucket[5m])) by (le, channel)
+          ) > 1
+        for: 10m
+        labels:
+          severity: warning
+          service: pos
+          team: ops
+        annotations:
+          summary: 'POS RPC p95 > 1s on {{ $labels.channel }}'
+          description: 'Channel {{ $labels.channel }} is slow; suspect missing index or N+1 query.'
+          runbook: 'https://runbooks.example.com/pos/slow-rpc'
+
+      - alert: PosRpcDeniedSpike
+        # >20 PERMISSION_DENIED per minute — possible misconfigured client or
+        # attack. Denied outcome is normal in small amounts.
+        expr: sum(rate(pos_rpc_calls_total{outcome="denied"}[5m])) > 20
+        for: 5m
+        labels:
+          severity: warning
+          service: pos
+          team: ops
+        annotations:
+          summary: 'Unusual spike in RPC permission-denied events'
+          description: 'Check sessions for role-mismatch or brute-force attempts.'
+
+      - alert: PosLoginFailuresSpike
+        expr: sum(rate(pos_auth_logins_total{outcome="invalid_credentials"}[5m])) > 0.2
+        for: 10m
+        labels:
+          severity: warning
+          service: pos
+          team: ops
+        annotations:
+          summary: 'Sustained login failures (possible brute-force)'
+          description: 'Enable rate-limit middleware or review access logs.'
+
+      - alert: PosDbSizeGrowingFast
+        # Main DB grew more than 200 MB in an hour. Usually means a log/inventory
+        # backfill; worth a look to be sure it isn't runaway data.
+        expr: deriv(pos_db_size_bytes[1h]) > 200 * 1024 * 1024 / 3600
+        for: 30m
+        labels:
+          severity: info
+          service: pos
+          team: ops
+        annotations:
+          summary: 'POS DB size growth > 200MB/h'
+
+      - alert: PosBackupStale
+        # Local snapshot older than 2 h. backupManager rotates every
+        # POS_BACKUP_INTERVAL_MIN (default 30min) so >2h means the runner is
+        # stuck or disabled.
+        expr: pos_backup_last_age_seconds > 7200 or pos_backup_last_age_seconds == -1
+        for: 15m
+        labels:
+          severity: warning
+          service: pos
+          team: ops
+        annotations:
+          summary: 'POS local backup is stale (>2h or missing)'
+          description: 'Check backupManager logs; restart pos-server if needed.'
+          runbook: 'https://runbooks.example.com/pos/backup-stale'
+
+      - alert: PosBackupOffsiteStale
+        # Off-site sync must happen at least every 36h. Includes "never ran"
+        # as an alert (gauge = -1) so a broken install is noticed on day 2.
+        expr: pos_backup_offsite_last_age_seconds > 129600 or pos_backup_offsite_last_age_seconds == -1
+        for: 30m
+        labels:
+          severity: page
+          service: pos
+          team: ops
+        annotations:
+          summary: 'Off-site backup missing for > 36h'
+          description: 'Check pos-backup-sync container or systemd timer (pos-backup-offsite).'
+          runbook: 'https://runbooks.example.com/pos/offsite-stale'
+
+      - alert: PosBackupCountLow
+        expr: pos_backup_local_count < 5
+        for: 30m
+        labels:
+          severity: info
+          service: pos
+          team: ops
+        annotations:
+          summary: 'Fewer than 5 local snapshots — runner might have been restarted recently'
+
+      # --- Restore drill (Bosqich 18) --------------------------------------
+      # A passing drill proves the off-site snapshot is actually usable.
+      # If the last success is > 10 days old either the cron didn't fire, the
+      # drill keeps failing, or someone disabled the workflow. All three are
+      # critical — backups you can't restore are just expensive noise.
+      - alert: PosRestoreDrillStale
+        expr: (time() - pos_backup_restore_drill_last_success_timestamp_seconds) > 10 * 24 * 3600
+        for: 1h
+        labels:
+          severity: page
+          service: pos
+          team: ops
+        annotations:
+          summary: 'No successful restore drill for > 10 days'
+          description: |
+            Off-site backups haven't been verified recently. Check:
+              * GitHub Actions → Restore drill workflow status
+              * /var/lib/pos/logs/restore-drill/ on the host
+              * rclone config still valid for the off-site remote
+          runbook: 'https://runbooks.example.com/pos/restore-drill-stale'
+
+      # The wrapper also pushes a direct alert on failure (fires within
+      # seconds, see restore-drill-prom.sh). This RULE is a belt-and-braces
+      # backup — if the AM push fails for any reason, the textfile gauge
+      # `pos_backup_restore_drill_last_status=0` still trips this one.
+      - alert: PosRestoreDrillLastRunFailed
+        expr: pos_backup_restore_drill_last_status == 0
+        for: 30m
+        labels:
+          severity: page
+          service: pos
+          team: ops
+        annotations:
+          summary: 'Last restore drill FAILED (see GH Actions)'
+          description: 'rc != 0 on the most recent run; investigate before the next scheduled drill.'
+          runbook: 'https://runbooks.example.com/pos/restore-drill-failed'
+
+      # --- Security (Bosqich 14) -------------------------------------------
+      - alert: PosRateLimitBlockedSpike
+        # Rate-limiting tripping regularly usually means (a) a misbehaving
+        # client in a retry loop, or (b) an attack. Either way, look.
+        expr: sum(rate(pos_rate_limit_blocked_total[5m])) > 1
+        for: 10m
+        labels:
+          severity: warning
+          service: pos
+          team: ops
+        annotations:
+          summary: 'Rate limiter firing > 1/s over 10m'
+          description: 'Check audit.log for the offending IP / username; adjust limits if this is a legitimate client.'
+
+      - alert: PosLoginRateLimited
+        # Per-minute sustained login 429s → credential-stuffing attempt.
+        expr: sum(rate(pos_rate_limit_blocked_total{kind="login"}[5m])) > 0.1
+        for: 10m
+        labels:
+          severity: page
+          service: pos
+          team: ops
+        annotations:
+          summary: 'Sustained login rate-limit blocks (possible credential stuffing)'
+          description: 'Review /var/lib/pos/logs/audit.log for `type=rate_limit.blocked` rows and the attacker IP.'
+          runbook: 'https://runbooks.example.com/pos/login-attack'
+
+      - alert: PosAuditDeniedSpike
+        # Burst of permission denials → UI bug OR privilege probing.
+        expr: sum(rate(pos_audit_events_total{type="auth.denied"}[5m])) > 0.5
+        for: 10m
+        labels:
+          severity: warning
+          service: pos
+          team: ops
+        annotations:
+          summary: 'Sustained permission-denied events (>0.5/s)'
+
+      # --- Multi-tenant (Bosqich 15+16) -----------------------------------
+      - alert: PosTenantDbOversize
+        # Per-tenant DB > 2 GiB → SQLite stays fine until ~140 TiB, but
+        # backup times + read-your-write latency degrade much earlier.
+        # Catch the first "big" tenant before it impacts everyone.
+        expr: pos_tenant_db_size_bytes > 2 * 1024 * 1024 * 1024
+        for: 30m
+        labels:
+          severity: warning
+          service: pos
+          team: ops
+        annotations:
+          summary: 'Tenant {{ $labels.tenant }} DB > 2 GiB'
+          description: 'Consider archiving old sales/inventory rows or splitting the tenant.'
+
+      - alert: PosTenantNoTrafficDuringBusinessHours
+        # No RPC calls for 30m in a normally-active tenant during local
+        # business hours. Either cashiers disconnected or the tenant was
+        # accidentally disabled. Low-severity so it doesn't page overnight.
+        expr: |
+          sum by (tenant) (rate(pos_tenant_rpc_calls_total[30m])) == 0
+          and ON() hour() >= 9 and hour() < 21
+        for: 30m
+        labels:
+          severity: warning
+          service: pos
+          team: ops
+        annotations:
+          summary: 'Tenant {{ $labels.tenant }} — no RPC traffic for 30m'
+          description: 'Possible terminal disconnect or accidental tenant disable.'
+
+  - name: host.rules
+    rules:
+      - alert: HostDiskSpaceLow
+        # Any mountpoint on the host with < 10% free.
+        expr: |
+          (
+            node_filesystem_avail_bytes{fstype!~"tmpfs|overlay|squashfs"} /
+            node_filesystem_size_bytes{fstype!~"tmpfs|overlay|squashfs"}
+          ) < 0.10
+        for: 15m
+        labels:
+          severity: page
+          service: pos
+          team: ops
+        annotations:
+          summary: 'Host disk < 10% free on {{ $labels.mountpoint }}'
+          description: 'Rotate logs / prune docker images / grow the volume.'
+          runbook: 'https://runbooks.example.com/pos/host-disk-low'
+
+      - alert: HostMemoryPressure
+        expr: (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes) < 0.10
+        for: 15m
+        labels:
+          severity: warning
+          service: pos
+          team: ops
+        annotations:
+          summary: 'Host MemAvailable < 10%'
+
+      - alert: HostLoadHigh
+        # load1 > 4x CPU cores for 10 minutes.
+        expr: node_load1 > (count(node_cpu_seconds_total{mode="system"}) by (instance) * 4)
+        for: 10m
+        labels:
+          severity: warning
+          service: pos
+          team: ops
+        annotations:
+          summary: 'High system load on {{ $labels.instance }}'
+
+  # =======================================================================
+  # Alertmanager self-monitoring (Bosqich 17)
+  # -----------------------------------------------------------------------
+  # Watchdog for the notification pipeline itself. Without these rules a
+  # broken bot token / expired SMTP password would silently eat every
+  # alert — worst-case failure mode for ops monitoring.
+  # =======================================================================
+  - name: alertmanager.rules
+    rules:
+      - alert: AlertmanagerDown
+        # If AM is down we can't even send this alert → but Prometheus
+        # keeps the firing state internally, so once AM recovers the
+        # backlog delivers. Still worth a page the moment the scrape
+        # returns no data for 5m.
+        expr: up{job="alertmanager"} == 0
+        for: 5m
+        labels:
+          severity: page
+          service: pos
+          team: ops
+        annotations:
+          summary: 'Alertmanager is DOWN — notifications are NOT being delivered'
+          description: |
+            Without Alertmanager, every alert below is invisible to on-call.
+            Check `docker logs pos-alertmanager` and restart the service.
+          runbook: 'https://runbooks.example.com/pos/alertmanager-down'
+
+      - alert: AlertmanagerNotificationsFailing
+        # Any single failed notification is worth investigating.
+        # `for: 15m` avoids paging on a single transient SMTP blip.
+        expr: rate(alertmanager_notifications_failed_total[10m]) > 0
+        for: 15m
+        labels:
+          severity: warning
+          service: pos
+          team: ops
+        annotations:
+          summary: 'Alertmanager notifications failing ({{ $labels.integration }})'
+          description: |
+            integration={{ $labels.integration }} — check credentials
+            (Telegram bot token / SMTP password) and outbound network rules.
+          runbook: 'https://runbooks.example.com/pos/notifications-failing'
+
+      - alert: AlertmanagerConfigReloadFailed
+        # A failed reload means the running config is stale after an edit.
+        # Pages immediately — a broken routing tree is silent death.
+        expr: alertmanager_config_last_reload_successful == 0
+        for: 5m
+        labels:
+          severity: page
+          service: pos
+          team: ops
+        annotations:
+          summary: 'Alertmanager config reload FAILED — running stale config'
+          description: |
+            Run `amtool check-config /etc/alertmanager/alertmanager.yml`
+            in the container and review the YAML for syntax errors.

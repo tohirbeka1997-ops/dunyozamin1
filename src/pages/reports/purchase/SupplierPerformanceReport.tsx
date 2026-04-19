@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
@@ -16,6 +16,11 @@ import { FileDown, ArrowLeft } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 import { useNavigate } from 'react-router-dom';
 import { formatMoneyUZS } from '@/lib/format';
+import { todayYMD } from '@/lib/datetime';
+import { useReportAutoRefresh } from '@/hooks/useReportAutoRefresh';
+import { useTableSort } from '@/hooks/useTableSort';
+import { compareScalar } from '@/lib/tableSort';
+import { SortableTableHead } from '@/components/reports/SortableTableHead';
 
 interface SupplierPerformance {
   supplier_id: string;
@@ -25,20 +30,32 @@ interface SupplierPerformance {
   average_order_value: number;
 }
 
+type SupplierPerfSortKey =
+  | 'supplier_name'
+  | 'total_orders'
+  | 'total_amount'
+  | 'average_order_value';
+
 export default function SupplierPerformanceReport() {
   const navigate = useNavigate();
   const { toast } = useToast();
   const [performance, setPerformance] = useState<SupplierPerformance[]>([]);
   const [loading, setLoading] = useState(true);
-  const [dateFrom, setDateFrom] = useState(new Date().toISOString().split('T')[0]);
-  const [dateTo, setDateTo] = useState(new Date().toISOString().split('T')[0]);
+  const [dateFrom, setDateFrom] = useState(todayYMD());
+  const [dateTo, setDateTo] = useState(todayYMD());
   const [searchTerm, setSearchTerm] = useState('');
+  const { sortKey, sortOrder, toggleSort } = useTableSort<SupplierPerfSortKey>(
+    'total_amount',
+    'desc'
+  );
+
+  useReportAutoRefresh(loadData);
 
   useEffect(() => {
     loadData();
   }, [dateFrom, dateTo]);
 
-  const loadData = async () => {
+  async function loadData() {
     try {
       setLoading(true);
       const [suppliersData, ordersData] = await Promise.all([
@@ -73,7 +90,6 @@ export default function SupplierPerformanceReport() {
       });
 
       const performanceData = Array.from(supplierMap.values());
-      performanceData.sort((a, b) => b.total_amount - a.total_amount);
       setPerformance(performanceData);
     } catch (error) {
       toast({
@@ -84,13 +100,36 @@ export default function SupplierPerformanceReport() {
     } finally {
       setLoading(false);
     }
-  };
+  }
 
-  const filteredSuppliers = performance.filter((supplier) => {
-    if (!searchTerm) return true;
-    const search = searchTerm.toLowerCase();
-    return supplier.supplier_name.toLowerCase().includes(search);
-  });
+  const filteredSuppliers = useMemo(() => {
+    return performance.filter((supplier) => {
+      if (!searchTerm) return true;
+      const search = searchTerm.toLowerCase();
+      return supplier.supplier_name.toLowerCase().includes(search);
+    });
+  }, [performance, searchTerm]);
+
+  const sortedSuppliers = useMemo(() => {
+    const list = [...filteredSuppliers];
+    const key = sortKey;
+    const ord = sortOrder;
+    list.sort((a, b) => {
+      switch (key) {
+        case 'supplier_name':
+          return compareScalar(a.supplier_name.toLowerCase(), b.supplier_name.toLowerCase(), ord);
+        case 'total_orders':
+          return compareScalar(a.total_orders, b.total_orders, ord);
+        case 'total_amount':
+          return compareScalar(a.total_amount, b.total_amount, ord);
+        case 'average_order_value':
+          return compareScalar(a.average_order_value, b.average_order_value, ord);
+        default:
+          return 0;
+      }
+    });
+    return list;
+  }, [filteredSuppliers, sortKey, sortOrder]);
 
   const totalOrders = performance.reduce((sum, p) => sum + p.total_orders, 0);
   const totalAmount = performance.reduce((sum, p) => sum + p.total_amount, 0);
@@ -190,7 +229,7 @@ export default function SupplierPerformanceReport() {
 
       <Card>
         <CardContent className="p-0">
-          {filteredSuppliers.length === 0 ? (
+          {sortedSuppliers.length === 0 ? (
             <div className="text-center py-12">
               <p className="text-muted-foreground">Yetkazib beruvchilar samaradorligi ma'lumotlari topilmadi</p>
             </div>
@@ -198,14 +237,49 @@ export default function SupplierPerformanceReport() {
             <Table>
               <TableHeader>
                 <TableRow>
-                  <TableHead>Yetkazib beruvchi</TableHead>
-                  <TableHead className="text-right">Buyurtmalar soni</TableHead>
-                  <TableHead className="text-right">Jami summa</TableHead>
-                  <TableHead className="text-right">O'rtacha buyurtma qiymati</TableHead>
+                  <SortableTableHead<SupplierPerfSortKey>
+                    columnKey="supplier_name"
+                    sortKey={sortKey}
+                    sortOrder={sortOrder}
+                    onSort={toggleSort}
+                    kind="string"
+                  >
+                    Yetkazib beruvchi
+                  </SortableTableHead>
+                  <SortableTableHead<SupplierPerfSortKey>
+                    columnKey="total_orders"
+                    sortKey={sortKey}
+                    sortOrder={sortOrder}
+                    onSort={toggleSort}
+                    kind="number"
+                    align="right"
+                  >
+                    Buyurtmalar soni
+                  </SortableTableHead>
+                  <SortableTableHead<SupplierPerfSortKey>
+                    columnKey="total_amount"
+                    sortKey={sortKey}
+                    sortOrder={sortOrder}
+                    onSort={toggleSort}
+                    kind="number"
+                    align="right"
+                  >
+                    Jami summa
+                  </SortableTableHead>
+                  <SortableTableHead<SupplierPerfSortKey>
+                    columnKey="average_order_value"
+                    sortKey={sortKey}
+                    sortOrder={sortOrder}
+                    onSort={toggleSort}
+                    kind="number"
+                    align="right"
+                  >
+                    O&apos;rtacha buyurtma qiymati
+                  </SortableTableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {filteredSuppliers.map((supplier) => (
+                {sortedSuppliers.map((supplier) => (
                   <TableRow key={supplier.supplier_id}>
                     <TableCell className="font-medium">{supplier.supplier_name}</TableCell>
                     <TableCell className="text-right">{supplier.total_orders}</TableCell>

@@ -1,0 +1,85 @@
+# =============================================================================
+# Docker build context'ni minimal ushlab turish uchun
+# =============================================================================
+# Qoida: faqat server ishlashi uchun kerakli narsalar image'ga kiradi.
+# Frontend dist, Electron binarylari, test fayllari — hammasi tashqarida.
+
+# --- Version control & IDE ---
+.git
+.gitignore
+.gitattributes
+.github
+.cursor
+.vscode
+.idea
+*.swp
+
+# --- Node / npm ---
+node_modules
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# --- Build artefaktlari ---
+dist
+dist-electron
+release
+build
+out
+coverage
+.nyc_output
+*.tsbuildinfo
+.cache
+
+# --- Environment (secrets) — serverda compose orqali beriladi ---
+.env
+.env.local
+.env.*.local
+# .env.example / .env.server.example — shart emas, lekin qoldiramiz (dokumentatsiya)
+
+# --- Electron-specific (serverda kerak emas) ---
+electron/dist
+electron/*.js.map
+electron/scripts/*-electron.*
+
+# --- Frontend / test ---
+src
+public
+e2e
+tests
+__tests__
+*.test.*
+*.spec.*
+vitest.config*
+playwright.config*
+vite.config*
+tsconfig*.json
+biome.json*
+postcss.config*
+tailwind.config*
+index.html
+components.json
+
+# --- Docs va tahlil fayllari (image ichida kerak emas) ---
+*.md
+!electron/db/README.md
+!electron/db/SCHEMA_COMPLETE.md
+docs
+scripts
+agent-tools
+
+# --- OS & temp ---
+.DS_Store
+Thumbs.db
+*.log
+*.prn
+.pos-data
+.pos-data-dev
+terminals
+agent-transcripts
+
+# --- Docker self ---
+Dockerfile
+.dockerignore
+docker-compose*.yaml
+docker-compose*.yml

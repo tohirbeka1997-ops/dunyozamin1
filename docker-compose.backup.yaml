@@ -1,0 +1,81 @@
+# =============================================================================
+# Optional off-site backup sidecar (rclone)
+# =============================================================================
+# Use this INSTEAD of the systemd timer when you prefer to keep everything
+# inside Docker (easier to ship between hosts / staging).
+#
+# Start:
+#   docker compose \
+#     -f docker-compose.yaml \
+#     -f docker-compose.prod.yaml \
+#     -f docker-compose.backup.yaml \
+#     --profile backup \
+#     up -d
+#
+# Layout:
+#   pos-backup-sync        — long-running container, self-schedules hourly.
+#   pos-backup-oneshot     — manual run, `docker compose run --rm pos-backup-oneshot`
+#
+# Both mount the same named volume (`pos-data`) as pos-server and read
+# /opt/pos/deploy/backup/rclone.conf from the host.
+# =============================================================================
+
+name: pos
+
+# Common bits reused by both services.
+x-backup-base: &backup-base
+  image: rclone/rclone:1.68
+  profiles: [backup]
+  user: "0:0"    # rclone image runs as rclone(1000); we need full access to the mounted vol
+  environment:
+    RCLONE_CONFIG: /config/rclone.conf
+    POS_DATA_DIR: /var/lib/pos
+    POS_BACKUP_REMOTE: ${POS_BACKUP_REMOTE:-offsite}
+    POS_BACKUP_REMOTE_PATH: ${POS_BACKUP_REMOTE_PATH:-pos-backups}
+    POS_BACKUP_REMOTE_RETENTION_DAYS: ${POS_BACKUP_REMOTE_RETENTION_DAYS:-30}
+    POS_HOST_SECRET: ${POS_HOST_SECRET}
+    POS_HOST_PORT: ${POS_HOST_PORT:-3333}
+    POS_BACKUP_RPC: "1"
+  volumes:
+    # Read-write: the script writes the sentinel file.
+    - pos-data:/var/lib/pos
+    # Read-only rclone config (host-managed).
+    - ./deploy/backup/rclone.conf:/config/rclone.conf:ro
+    # Script lives on the host — mount read-only into the container.
+    - ./deploy/scripts/backup-offsite.sh:/usr/local/bin/backup-offsite.sh:ro
+  entrypoint: ["/bin/sh"]
+
+services:
+  # ------------------------------------------------------------------
+  # Long-running sync — sleeps 1h between runs, restarts on failure.
+  # ------------------------------------------------------------------
+  pos-backup-sync:
+    <<: *backup-base
+    container_name: pos-backup-sync
+    restart: unless-stopped
+    # `apk add` is only done once per container start; cheap enough.
+    command:
+      - -c
+      - |
+        apk add --no-cache bash curl coreutils >/dev/null
+        echo "[pos-backup-sync] started; running hourly."
+        while :; do
+          # Sleep 60m first so we don't hammer the remote at every redeploy.
+          sleep 3600
+          bash /usr/local/bin/backup-offsite.sh || \
+            echo "[pos-backup-sync] run failed (exit $?) — will retry in 1h"
+        done
+
+  # ------------------------------------------------------------------
+  # One-shot — `docker compose run --rm pos-backup-oneshot` to trigger now.
+  # Also the target used by the restore-drill script.
+  # ------------------------------------------------------------------
+  pos-backup-oneshot:
+    <<: *backup-base
+    container_name: pos-backup-oneshot
+    restart: "no"
+    command:
+      - -c
+      - |
+        apk add --no-cache bash curl coreutils >/dev/null
+        bash /usr/local/bin/backup-offsite.sh

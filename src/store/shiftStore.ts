@@ -1,328 +1,322 @@
+/**
+ * Shift Store (Zustand) - Manages POS shift state and sales tracking
+ */
+
 import { create } from 'zustand';
-import { persist } from 'zustand/middleware';
-import { supabase } from '@/lib/supabase';
-import type { Shift } from '@/types/shift';
+import type { Shift } from '@/types/database';
+import { createShift, generateShiftNumber, closeShift as closeShiftAPI, getActiveShift, getCurrentShift } from '@/db/api';
 
-interface ShiftStore {
+interface ShiftState {
   currentShift: Shift | null;
-  pastShifts: Shift[];
-  loading: boolean;
-
-  openShift: (openingCash: number, userId: string) => Promise<void>;
-  closeShift: (
-    closingCash: number,
-    totals: { sales: number; refunds: number },
-    userId: string
-  ) => Promise<void>;
-  addSale: (amount: number) => void;
-  addRefund: (amount: number) => void;
-  loadActiveShift: (userId: string) => Promise<void>;
+  sales: any[]; // Sale records for the current shift
+  refunds: any[]; // Refund records for the current shift
+  
+  setCurrentShift: (shift: Shift | null) => void;
+  openShift: (openingCash: number, cashierId: string) => Promise<void>;
+  closeShift: (closingCash: number, totals: { sales: number; refunds: number }, cashierId: string) => Promise<void>;
+  addSale: (sale: any) => void;
+  addRefund: (refund: any) => void;
   loadFromStorage: () => void;
-  resetAllShifts: () => void; // DEV only
+  syncFromDatabase: (cashierId: string) => Promise<void>;
 }
 
-const STORAGE_KEY = 'pos_shifts';
+export const useShiftStore = create<ShiftState>((set, get) => ({
+  currentShift: null,
+  sales: [],
+  refunds: [],
 
-/**
- * Get store_id for user
- * Tries store_members first, then falls back to first store
- */
-const getStoreIdForUser = async (userId: string): Promise<string> => {
-  // Try to get store_id from store_members
-  const { data: memberData } = await supabase
-    .from('store_members')
-    .select('store_id')
-    .eq('user_id', userId)
-    .limit(1)
-    .single();
-
-  if (memberData?.store_id) {
-    return memberData.store_id;
-  }
-
-  // Fallback: get first store
-  const { data: storeData } = await supabase
-    .from('stores')
-    .select('id')
-    .limit(1)
-    .single();
-
-  if (storeData?.id) {
-    return storeData.id;
-  }
-
-  throw new Error('No store found. Please create a store first.');
-};
-
-
-export const useShiftStore = create<ShiftStore>()(
-  persist(
-    (set, get) => ({
-      currentShift: null,
-      pastShifts: [],
-      loading: false,
-
-      loadActiveShift: async (userId: string) => {
-        set({ loading: true });
-        try {
-          // Fetch active shift from Supabase with store_id (CRITICAL: store_id must be explicitly included)
-          // Using explicit field list ensures store_id is NEVER omitted
-          const { data, error } = await supabase
-            .from('shifts')
-            .select('id, store_id, location_id, opened_by, opened_at, closed_at, opening_cash, closing_cash, status, notes')
-            .eq('opened_by', userId)
-            .eq('status', 'open')
-            .order('opened_at', { ascending: false })
-            .limit(1)
-            .maybeSingle();
-          
-          // DEBUG: Log query result to verify store_id is present
-          console.log('[ShiftStore] loadActiveShift query result:', { 
-            hasData: !!data, 
-            hasStoreId: !!data?.store_id,
-            storeId: data?.store_id,
-            error: error?.message,
-            fullData: data 
-          });
-          
-          console.log('[ShiftStore] loadActiveShift query result:', { data, error });
-
-          if (error && error.code !== 'PGRST116') { // PGRST116 = no rows returned
-            console.error('[ShiftStore] Error loading active shift:', error);
-            throw error;
-          }
-
-          if (data) {
-            // Validate store_id exists (CRITICAL)
-            if (!data.store_id) {
-              console.error('[ShiftStore] Shift from database missing store_id. Full data:', JSON.stringify(data, null, 2));
-              throw new Error('Shift in database is missing store_id. Please contact administrator.');
-            }
-
-            // Map database shift to frontend Shift type
-            const shift: Shift = {
-              id: data.id,
-              store_id: data.store_id, // CRITICAL: include store_id (validated above)
-              location_id: data.location_id || null,
-              opened_at: data.opened_at,
-              closed_at: data.closed_at || null,
-              opened_by: data.opened_by, // Use opened_by from database
-              closed_by: null, // Not in DB schema, but in type
-              opening_cash: Number(data.opening_cash),
-              closing_cash: data.closing_cash ? Number(data.closing_cash) : null,
-              total_sales: 0, // Will be calculated from orders
-              total_refunds: 0, // Will be calculated from returns
-              status: data.status as 'open' | 'closed',
-            };
-
-            // DEBUG: Log loaded shift to confirm store_id is present
-            console.log('[ShiftStore] Loaded active shift:', { 
-              id: shift.id, 
-              store_id: shift.store_id, 
-              status: shift.status,
-              location_id: shift.location_id,
-              fullShift: shift
-            });
-            set({ currentShift: shift, loading: false });
-          } else {
-            console.log('[ShiftStore] No active shift found');
-            set({ currentShift: null, loading: false });
-          }
-        } catch (error) {
-          console.error('[ShiftStore] Failed to load active shift:', error);
-          set({ currentShift: null, loading: false });
-        }
-      },
-
-      openShift: async (openingCash: number, userId: string) => {
-        const state = get();
-        
-        // Check if there's already an open shift
-        if (state.currentShift) {
-          throw new Error('Shift already open');
-        }
-
-        set({ loading: true });
-
-        try {
-          // Get store_id for user
-          const storeId = await getStoreIdForUser(userId);
-
-          // Create shift in Supabase - EXACT schema match
-          const { data, error } = await supabase
-            .from('shifts')
-            .insert({
-              store_id: storeId,
-              opened_by: userId,
-              opened_at: new Date().toISOString(),
-              status: 'open',
-              opening_cash: openingCash,
-            })
-            .select('id, store_id, location_id, opened_by, opened_at, closed_at, opening_cash, closing_cash, status')
-            .single();
-
-          if (error) {
-            console.error('[ShiftStore] Error creating shift:', error);
-            throw new Error(`Failed to create shift: ${error.message}`);
-          }
-
-          if (!data) {
-            throw new Error('Failed to create shift: No data returned');
-          }
-
-          // Validate store_id exists
-          if (!data.store_id) {
-            console.error('[ShiftStore] Created shift missing store_id:', data);
-            throw new Error('Failed to create shift: store_id is missing. Please contact administrator.');
-          }
-
-          // Map database shift to frontend Shift type
-          const newShift: Shift = {
-            id: data.id,
-            store_id: data.store_id, // CRITICAL: include store_id (validated above)
-            location_id: data.location_id || null,
-            opened_at: data.opened_at,
-            closed_at: data.closed_at || null,
-            opened_by: data.opened_by, // Use opened_by from database
-            closed_by: null,
-            opening_cash: Number(data.opening_cash),
-            closing_cash: data.closing_cash ? Number(data.closing_cash) : null,
-            total_sales: 0,
-            total_refunds: 0,
-            status: data.status as 'open' | 'closed',
-          };
-
-          console.log('[ShiftStore] Shift opened:', { 
-            id: newShift.id, 
-            store_id: newShift.store_id, 
-            status: newShift.status,
-            location_id: newShift.location_id 
-          });
-          set({ currentShift: newShift, loading: false });
-        } catch (error) {
-          console.error('[ShiftStore] Failed to open shift:', error);
-          set({ loading: false });
-          throw error;
-        }
-      },
-
-      closeShift: async (
-        closingCash: number,
-        totals: { sales: number; refunds: number },
-        userId: string
-      ) => {
-        const state = get();
-        
-        if (!state.currentShift) {
-          throw new Error('No open shift to close');
-        }
-
-        set({ loading: true });
-
-        try {
-          // Update shift in Supabase
-          const { error } = await supabase
-            .from('shifts')
-            .update({
-              closed_at: new Date().toISOString(),
-              closing_cash: closingCash,
-              status: 'closed',
-              notes: `Sales: ${totals.sales}, Refunds: ${totals.refunds}`,
-            })
-            .eq('id', state.currentShift.id);
-
-          if (error) {
-            console.error('[ShiftStore] Error closing shift:', error);
-            throw new Error(`Failed to close shift: ${error.message}`);
-          }
-
-          const closedShift: Shift = {
-            ...state.currentShift,
-            closed_at: new Date().toISOString(),
-            closed_by: userId,
-            closing_cash: closingCash,
-            total_sales: totals.sales,
-            total_refunds: totals.refunds,
-            status: 'closed',
-          };
-
-          console.log('[ShiftStore] Shift closed:', closedShift);
-          set({
-            currentShift: null,
-            pastShifts: [closedShift, ...state.pastShifts],
-            loading: false,
-          });
-        } catch (error) {
-          console.error('[ShiftStore] Failed to close shift:', error);
-          set({ loading: false });
-          throw error;
-        }
-      },
-
-      addSale: (amount: number) => {
-        const state = get();
-        if (state.currentShift) {
-          set({
-            currentShift: {
-              ...state.currentShift,
-              total_sales: state.currentShift.total_sales + amount,
-            },
-          });
-        }
-      },
-
-      addRefund: (amount: number) => {
-        const state = get();
-        if (state.currentShift) {
-          set({
-            currentShift: {
-              ...state.currentShift,
-              total_refunds: state.currentShift.total_refunds + amount,
-            },
-          });
-        }
-      },
-
-      loadFromStorage: () => {
-        // This is handled by persist middleware automatically
-        // But we need to validate that persisted shift has store_id
-        const state = get();
-        if (state.currentShift) {
-          console.log('[ShiftStore] loadFromStorage - checking persisted shift:', {
-            id: state.currentShift.id,
-            hasStoreId: !!state.currentShift.store_id,
-            storeId: state.currentShift.store_id
-          });
-          
-          if (!state.currentShift.store_id) {
-            console.warn('[ShiftStore] Persisted shift missing store_id, clearing it. Full shift:', JSON.stringify(state.currentShift, null, 2));
-            // Clear invalid shift - component should call loadActiveShift to reload from database
-            set({ currentShift: null });
-          }
-        }
-      },
-
-      resetAllShifts: () => {
-        set({
-          currentShift: null,
-          pastShifts: [],
-        });
-      },
-    }),
-    {
-      name: STORAGE_KEY,
-      partialize: (state) => ({
-        currentShift: state.currentShift,
-        pastShifts: state.pastShifts,
-      }),
+  setCurrentShift: (shift: Shift | null) => {
+    set({ currentShift: shift });
+    // Persist to storage
+    try {
+      if (shift) {
+        localStorage.setItem('current_shift', JSON.stringify(shift));
+      } else {
+        localStorage.removeItem('current_shift');
+      }
+    } catch (error) {
+      console.warn('Failed to save current shift:', error);
     }
-  )
-);
+  },
 
+  openShift: async (openingCash: number, cashierId: string, warehouseId?: string) => {
+    try {
+      let newShift = null;
 
+      // CRITICAL: Use backend service via IPC (window.api or window.posApi)
+      if (typeof window !== 'undefined') {
+        // SINGLE WAREHOUSE SYSTEM: Always use main-warehouse-001
+        const MAIN_WAREHOUSE_ID = 'main-warehouse-001';
+        const finalWarehouseId = MAIN_WAREHOUSE_ID;
+        console.log('[ShiftStore] Using main warehouse:', finalWarehouseId);
 
+        // Try window.posApi.shifts.open (Electron)
+        if ((window as any).posApi?.shifts?.open) {
+          console.log('[ShiftStore] Opening shift via window.posApi...', { cashierId, warehouseId: finalWarehouseId });
+          const response = await (window as any).posApi.shifts.open({
+            cashier_id: cashierId,
+            user_id: cashierId,
+            warehouse_id: finalWarehouseId,
+            opening_cash: openingCash,
+          });
+          console.log('[ShiftStore] Response from backend:', response);
+          
+          // posApi.invoke() always returns { success, data | error }
+          if (response && response.success === false) {
+            const err = response.error;
+            const msg =
+              (typeof err === 'string' && err) ||
+              err?.message ||
+              err?.error ||
+              response.message ||
+              'Failed to open shift';
+            throw new Error(typeof msg === 'string' ? msg : JSON.stringify(msg));
+          }
 
+          // Unwrap { success: true, data }
+          newShift = response?.data ?? response;
+          console.log('[ShiftStore] ✅ Shift opened via window.posApi:', newShift);
+        }
+        // Fallback to window.api.shifts.open
+        else if ((window as any).api?.shifts?.open) {
+          console.log('[ShiftStore] Opening shift via window.api...', { cashierId, warehouseId: finalWarehouseId });
+          const response = await (window as any).api.shifts.open({
+            cashier_id: cashierId,
+            user_id: cashierId,
+            warehouse_id: finalWarehouseId,
+            opening_cash: openingCash,
+          });
+          console.log('[ShiftStore] Response from backend:', response);
+          
+          // Handle IPC response format
+          if (response && response.success === false) {
+            const errorMsg = response.error || response.message || 'Failed to open shift';
+            throw new Error(typeof errorMsg === 'string' ? errorMsg : JSON.stringify(errorMsg));
+          }
+          
+          // Handle error object format (from Electron IPC)
+          if (response && response.code) {
+            throw new Error(response.message || response.code);
+          }
+          
+          newShift = response;
+          console.log('[ShiftStore] ✅ Shift opened via window.api:', newShift);
+        }
+      }
 
+      // Fallback to mock API if backend not available (development mode)
+      if (!newShift) {
+        console.warn('[ShiftStore] Backend not available, using mock API');
+        const shiftNumber = await generateShiftNumber();
+        const MAIN_WAREHOUSE_ID = 'main-warehouse-001';
+        newShift = await createShift({
+          shift_number: shiftNumber,
+          cashier_id: cashierId,
+          user_id: cashierId,
+          warehouse_id: MAIN_WAREHOUSE_ID, // SINGLE WAREHOUSE SYSTEM
+          opened_at: new Date().toISOString(),
+          opening_cash: openingCash,
+          status: 'open',
+          notes: null,
+        });
+      }
 
+      if (!newShift) {
+        console.error('[ShiftStore] ❌ newShift is null/undefined');
+        throw new Error('Smenani ochib bo\'lmadi: Backend javob qaytarmadi');
+      }
 
+      if (!newShift.id) {
+        console.error('[ShiftStore] ❌ newShift has no ID:', newShift);
+        console.error('[ShiftStore] newShift keys:', Object.keys(newShift));
+        throw new Error('Smenani ochib bo\'lmadi: Smena ID topilmadi. Iltimos, qayta urinib ko\'ring.');
+      }
+
+      console.log('[ShiftStore] ✅ Shift opened successfully with ID:', newShift.id);
+      set({ currentShift: newShift });
+      
+      // Persist to storage
+      try {
+        localStorage.setItem('current_shift', JSON.stringify(newShift));
+      } catch (error) {
+        console.warn('Failed to save current shift:', error);
+      }
+
+      return newShift;
+    } catch (error) {
+      console.error('Error opening shift:', error);
+      throw error;
+    }
+  },
+
+  closeShift: async (closingCash: number, totals: { sales: number; refunds: number }, cashierId: string) => {
+    const { currentShift } = get();
+    if (!currentShift) {
+      throw new Error('No active shift to close');
+    }
+
+    console.log('[ShiftStore] closeShift called with:', {
+      currentShift_id: currentShift.id,
+      currentShift_status: currentShift.status,
+      currentShift_keys: Object.keys(currentShift),
+      closingCash,
+      totals,
+      cashierId
+    });
+
+    if (!currentShift.id) {
+      console.error('[ShiftStore] ❌ currentShift has no ID!', currentShift);
+      throw new Error('Smenani yopib bo\'lmadi: Smena ma\'lumotlari noto\'g\'ri. Iltimos, sahifani yangilang.');
+    }
+
+    // Check if shift is already closed
+    if (currentShift.status === 'closed') {
+      console.warn('[ShiftStore] ⚠️ Shift is already closed');
+      throw new Error('Bu smena allaqachon yopilgan');
+    }
+
+    try {
+      // Validate that closeShiftAPI is a function
+      if (typeof closeShiftAPI !== 'function') {
+        throw new Error('closeShift API function is not available');
+      }
+
+      const expectedCash = currentShift.opening_cash + totals.sales - totals.refunds;
+      const cashDifference = closingCash - expectedCash;
+
+      console.log('[ShiftStore] Calling closeShiftAPI with shiftId:', currentShift.id);
+      const closedShift = await closeShiftAPI(currentShift.id, closingCash);
+      
+      // Update the shift with closing information
+      const updatedShift: Shift = {
+        ...currentShift,
+        closed_at: new Date().toISOString(),
+        closing_cash: closingCash,
+        expected_cash: expectedCash,
+        cash_difference: cashDifference,
+        status: 'closed',
+      };
+
+      set({ currentShift: null });
+      
+      // Clear storage
+      try {
+        localStorage.removeItem('current_shift');
+        localStorage.removeItem('shift_sales');
+        localStorage.removeItem('shift_refunds');
+      } catch (error) {
+        console.warn('Failed to clear shift storage:', error);
+      }
+    } catch (error) {
+      console.error('Error closing shift:', error);
+      throw error;
+    }
+  },
+
+  addSale: (sale: any) => {
+    const { sales } = get();
+    const updated = [...sales, { ...sale, timestamp: new Date().toISOString() }];
+    set({ sales: updated });
+    
+    // Update current shift total_sales if it exists
+    const { currentShift } = get();
+    if (currentShift) {
+      const totalSales = updated.reduce((sum, s) => sum + (s.amount || 0), 0);
+      set({
+        currentShift: {
+          ...currentShift,
+          // Note: Shift type doesn't have total_sales, but we track it in state
+        },
+      });
+    }
+    
+    // Persist to storage
+    try {
+      localStorage.setItem('shift_sales', JSON.stringify(updated));
+    } catch (error) {
+      console.warn('Failed to save shift sales:', error);
+    }
+  },
+
+  addRefund: (refund: any) => {
+    const { refunds } = get();
+    const updated = [...refunds, { ...refund, timestamp: new Date().toISOString() }];
+    set({ refunds: updated });
+    
+    // Persist to storage
+    try {
+      localStorage.setItem('shift_refunds', JSON.stringify(updated));
+    } catch (error) {
+      console.warn('Failed to save shift refunds:', error);
+    }
+  },
+
+  loadFromStorage: () => {
+    // Load current shift and sales from localStorage (fallback)
+    try {
+      const storedShift = localStorage.getItem('current_shift');
+      const storedSales = localStorage.getItem('shift_sales');
+      const storedRefunds = localStorage.getItem('shift_refunds');
+      
+      if (storedShift) {
+        const shift = JSON.parse(storedShift);
+        set({ currentShift: shift });
+      }
+      
+      if (storedSales) {
+        const sales = JSON.parse(storedSales);
+        set({ sales });
+      }
+
+      if (storedRefunds) {
+        const refunds = JSON.parse(storedRefunds);
+        set({ refunds });
+      }
+    } catch (error) {
+      console.warn('Failed to load shift from storage:', error);
+    }
+  },
+
+  syncFromDatabase: async (cashierId: string) => {
+    // CRITICAL: Sync shift state from database (source of truth)
+    // This ensures UI reflects real database status after page refresh
+    try {
+      console.log('🔄 Syncing shift state from database for user:', cashierId);
+      
+      if (!cashierId) {
+        console.warn('⚠️ No cashierId provided, clearing shift state');
+        set({ currentShift: null });
+        return;
+      }
+
+      // Get shift for specific user
+      const activeShift = await getCurrentShift(cashierId);
+      
+      if (activeShift && activeShift.id) {
+        console.log('✅ Found active shift in database:', activeShift.id);
+        set({ currentShift: activeShift });
+        
+        // Also persist to localStorage for offline support
+        try {
+          localStorage.setItem('current_shift', JSON.stringify(activeShift));
+        } catch (error) {
+          console.warn('Failed to save active shift to localStorage:', error);
+        }
+      } else {
+        console.log('ℹ️ No active shift found in database');
+        set({ currentShift: null });
+        
+        // Clear localStorage if no shift in database
+        try {
+          localStorage.removeItem('current_shift');
+        } catch (error) {
+          console.warn('Failed to clear shift from localStorage:', error);
+        }
+      }
+    } catch (error) {
+      console.error('Error syncing shift from database:', error);
+      // On error, keep current state (don't clear it)
+    }
+  },
+}));
 

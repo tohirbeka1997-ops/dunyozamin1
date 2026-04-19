@@ -1,5 +1,5 @@
 import type { CartTotals } from '@/types/cart';
-import { formatMoneyUZS } from '@/lib/format';
+import { formatMoneyUZS, formatNumberUZ } from '@/lib/format';
 
 /**
  * Calculate VAT amount from subtotal
@@ -25,18 +25,23 @@ export const formatCurrency = (
  * Format currency without symbol (for calculations)
  */
 export const formatNumber = (amount: number): string => {
-  return new Intl.NumberFormat('en-US', {
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
-  }).format(amount);
+  // Project standard: dot thousand separators, no decimals
+  return formatNumberUZ(amount);
 };
 
 /**
  * Parse currency string to number
  */
 export const parseCurrency = (value: string): number => {
-  const cleaned = value.replace(/[^\d.-]/g, '');
-  const parsed = parseFloat(cleaned);
+  // Accept both "1,000" and "1.000" thousand separators
+  // UZS is whole-number currency, so we treat separators as thousands and drop decimals if any.
+  const cleaned = value
+    .replace(/\s/g, '')
+    .replace(/so'm/gi, '')
+    .replace(/,/g, '')
+    .replace(/\./g, '') // treat dot as thousands separator
+    .replace(/[^\d-]/g, '');
+  const parsed = parseInt(cleaned, 10);
   return isNaN(parsed) ? 0 : parsed;
 };
 

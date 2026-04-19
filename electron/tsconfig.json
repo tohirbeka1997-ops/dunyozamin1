@@ -1,0 +1,18 @@
+{
+  "compilerOptions": {
+    "target": "ES2020",
+    "module": "commonjs",
+    "lib": ["ES2020"],
+    "outDir": "./",
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
+    "resolveJsonModule": true,
+    "moduleResolution": "node",
+    "types": ["node", "better-sqlite3"]
+  },
+  "include": ["./**/*.ts", "../src/types/database.ts"],
+  "exclude": ["node_modules", "dist", "*.cjs", "setup.js"]
+}
+

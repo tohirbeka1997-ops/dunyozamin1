@@ -29,7 +29,10 @@ export default function FavoriteProducts({ products, onAddToCart }: FavoriteProd
               className="relative h-24 p-3 flex flex-col items-start justify-between rounded-lg bg-gradient-to-br from-blue-600 to-blue-700 hover:from-blue-500 hover:to-blue-600 active:from-blue-700 active:to-blue-800 transition-all border border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-400 focus:ring-offset-2 shadow-md hover:shadow-lg"
             >
               <div className="absolute top-2 right-2">
-                <Badge variant="secondary" className="text-xs px-1.5 py-0.5">
+                <Badge
+                  variant="outline"
+                  className="text-xs px-1.5 py-0.5 bg-white/20 text-white border-white/30 backdrop-blur-sm"
+                >
                   ALT+{index + 1}
                 </Badge>
               </div>

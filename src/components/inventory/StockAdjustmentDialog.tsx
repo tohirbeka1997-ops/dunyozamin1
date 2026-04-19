@@ -18,10 +18,18 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
-import { useInventoryStore } from '@/store/inventoryStore';
+import { createStockAdjustment } from '@/db/api';
 import type { Product } from '@/types/database';
 import { useToast } from '@/hooks/use-toast';
 import { formatUnit } from '@/utils/formatters';
+import {
+  clampQuantityForUnit,
+  formatQuantity,
+  getQuantityMin,
+  getQuantityStep,
+  isFractionalUnit,
+  normalizeQuantityInput,
+} from '@/utils/quantity';
 import { useQueryClient } from '@tanstack/react-query';
 import { invalidateDashboardQueries } from '@/utils/dashboard';
 
@@ -39,26 +47,39 @@ export default function StockAdjustmentDialog({
   onSuccess,
 }: StockAdjustmentDialogProps) {
   const { toast } = useToast();
-  const { addMovement, getCurrentStockByProductId } = useInventoryStore();
   const queryClient = useQueryClient();
   
   const [adjustmentType, setAdjustmentType] = useState<'increase' | 'decrease'>('increase');
   const [quantity, setQuantity] = useState('');
   const [reason, setReason] = useState('');
+  const [isSubmitting, setIsSubmitting] = useState(false);
 
-  const currentStock = getCurrentStockByProductId(product.id);
+  // Get current stock from product data (single source of truth from IPC)
+  const currentStock = product.current_stock ?? product.stock_quantity ?? 0;
+  const unit = product.unit;
+  const quantityMin = getQuantityMin(unit);
+  const quantityStep = getQuantityStep(unit);
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
 
-    const qty = Number(quantity);
-    if (!quantity || isNaN(qty) || qty <= 0) {
+    const normalized = normalizeQuantityInput(quantity);
+    const qtyRaw = Number(normalized);
+    if (!quantity || isNaN(qtyRaw) || qtyRaw <= 0) {
       toast({
         title: 'Xatolik',
         description: 'Miqdor musbat son bo\'lishi kerak',
         variant: 'destructive',
       });
       return;
+    }
+
+    const qty = clampQuantityForUnit(qtyRaw, unit);
+    if (qty !== qtyRaw) {
+      toast({
+        title: 'Miqdor tuzatildi',
+        description: `Miqdor ${formatQuantity(qty, unit)} ga o'rnatildi`,
+      });
     }
 
     if (adjustmentType === 'decrease') {
@@ -74,29 +95,42 @@ export default function StockAdjustmentDialog({
     }
 
     const movementQuantity = adjustmentType === 'increase' ? qty : -qty;
-    const movementType = adjustmentType === 'increase' ? 'manual_in' : 'manual_out';
 
-    addMovement({
-      product_id: product.id,
-      quantity: movementQuantity,
-      type: movementType,
-      reason: reason || `Manual ${adjustmentType === 'increase' ? 'increase' : 'decrease'}`,
-    });
+    try {
+      setIsSubmitting(true);
+      
+      // Call IPC handler to update stock in backend (mockProducts array)
+      await createStockAdjustment({
+        product_id: product.id,
+        quantity: movementQuantity,
+        reason: reason || `Manual ${adjustmentType === 'increase' ? 'increase' : 'decrease'}`,
+      });
 
-    // Invalidate dashboard queries (affects low stock count)
-    invalidateDashboardQueries(queryClient);
+      // Invalidate dashboard queries (affects low stock count)
+      invalidateDashboardQueries(queryClient);
 
-    toast({
-      title: 'Muvaffaqiyatli',
-      description: `Qoldiq ${adjustmentType === 'increase' ? 'oshirildi' : 'kamaytirildi'} ${qty} ${formatUnit(product.unit)} ga`,
-    });
+      toast({
+        title: 'Muvaffaqiyatli',
+        description: `Qoldiq ${adjustmentType === 'increase' ? 'oshirildi' : 'kamaytirildi'} ${qty} ${formatUnit(product.unit)} ga`,
+      });
 
-    // Reset form
-    setQuantity('');
-    setReason('');
-    setAdjustmentType('increase');
-    onOpenChange(false);
-    onSuccess?.();
+      // Reset form
+      setQuantity('');
+      setReason('');
+      setAdjustmentType('increase');
+      onOpenChange(false);
+      onSuccess?.();
+    } catch (error) {
+      console.error('Stock adjustment error:', error);
+      const msg = error instanceof Error ? error.message : String(error);
+      toast({
+        title: 'Xatolik',
+        description: `Qoldiqni to'g'rilab bo'lmadi. ${msg ? `(${msg})` : ''}`,
+        variant: 'destructive',
+      });
+    } finally {
+      setIsSubmitting(false);
+    }
   };
 
   return (
@@ -135,12 +169,13 @@ export default function StockAdjustmentDialog({
               <Input
                 id="quantity"
                 type="number"
-                step="0.01"
-                min="0"
+                step={quantityStep.toString()}
+                min={quantityMin.toString()}
                 value={quantity}
                 onChange={(e) => setQuantity(e.target.value)}
                 placeholder="Miqdorni kiriting"
                 autoFocus
+                inputMode={isFractionalUnit(unit) ? 'decimal' : 'numeric'}
               />
               {adjustmentType === 'decrease' && quantity && Number(quantity) > 0 && (
                 <p className="text-sm text-muted-foreground">
@@ -166,10 +201,12 @@ export default function StockAdjustmentDialog({
             </div>
           </div>
           <DialogFooter>
-            <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
+            <Button type="button" variant="outline" onClick={() => onOpenChange(false)} disabled={isSubmitting}>
               Bekor qilish
             </Button>
-            <Button type="submit">Saqlash</Button>
+            <Button type="submit" disabled={isSubmitting}>
+              {isSubmitting ? 'Saqlanmoqda...' : 'Saqlash'}
+            </Button>
           </DialogFooter>
         </form>
       </DialogContent>

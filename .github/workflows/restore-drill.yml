@@ -1,0 +1,124 @@
+name: Restore drill
+
+# =============================================================================
+# Weekly backup restore verification (Bosqich 18)
+# -----------------------------------------------------------------------------
+# SSH into the Hetzner host and run `deploy/scripts/restore-drill-prom.sh`.
+# The wrapper:
+#   1. Downloads the newest off-site snapshot,
+#   2. Runs PRAGMA integrity_check,
+#   3. Boots a throw-away pos-server container pointing at the restored DB,
+#   4. Hits /health and one RPC,
+#   5. Writes Prometheus textfile metrics (observable in Grafana), and
+#   6. On failure, pushes a synthetic alert to the local Alertmanager so
+#      on-call gets a Telegram page even if GitHub-level notifications are
+#      silenced.
+#
+# The workflow ITSELF also fails loudly (red check in the repo UI) so nobody
+# needs to watch Grafana; the Slack/email of a failing scheduled workflow is
+# still a useful second channel.
+#
+# Schedule: Sunday 04:00 UTC — low traffic, Sunday so a bad signal arrives
+# with 24h to spare before the weekly Monday stand-up. Override via
+# `workflow_dispatch` for manual verification.
+# =============================================================================
+
+on:
+  schedule:
+    # Minute Hour DayOfMonth Month DayOfWeek
+    - cron: '0 4 * * 0'
+  workflow_dispatch:
+    inputs:
+      reason:
+        description: 'Why running manually (goes to the drill log)'
+        required: false
+        default: 'ad-hoc verification'
+
+concurrency:
+  # A previous drill still running? Cancel it — we don't want two disposable
+  # pos-server containers racing for :33330 on the same host.
+  group: restore-drill
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  drill:
+    name: Restore drill (Hetzner)
+    runs-on: ubuntu-latest
+    # Hard ceiling: a drill that hangs longer than 20 minutes is itself a
+    # signal of a broken backup (e.g. huge tenant DBs, rclone retry loop).
+    timeout-minutes: 20
+    # Skip if the SSH secrets aren't set (fresh fork / staging repo).
+    if: ${{ vars.SKIP_DRILL != 'true' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Show drill reason (manual runs)
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          echo "Reason: ${{ github.event.inputs.reason }}"
+
+      - name: SSH → run restore-drill-prom.sh
+        id: ssh_drill
+        uses: appleboy/ssh-action@v1.0.3
+        env:
+          # Pass through the CI run URL so the server-side log has a link
+          # back to the exact workflow run that triggered it.
+          GH_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        with:
+          host: ${{ secrets.DEPLOY_HOST }}
+          username: ${{ secrets.DEPLOY_USER }}
+          key:  ${{ secrets.DEPLOY_SSH_KEY }}
+          port: ${{ secrets.DEPLOY_PORT || 22 }}
+          # Forward the env var through to the SSH session.
+          envs: GH_RUN_URL
+          # The script's exit code is preserved via `exit $?` at the end.
+          # A drill failure (rc != 0) bubbles up to the GitHub Actions step
+          # which then fails the workflow run — our second notification
+          # channel alongside the Alertmanager push.
+          script: |
+            set -uo pipefail
+            cd /opt/pos
+            echo "=============================================="
+            echo " Restore drill triggered by GitHub Actions"
+            echo "   run: ${GH_RUN_URL:-<local>}"
+            echo "=============================================="
+            # `restore-drill-prom.sh` reads /opt/pos/.env implicitly via the
+            # inner script for rclone + remote path + AM URL.
+            sudo bash deploy/scripts/restore-drill-prom.sh
+
+      - name: Collect drill log artifact
+        # Always run — we want logs even when the drill failed.
+        if: always()
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.DEPLOY_HOST }}
+          username: ${{ secrets.DEPLOY_USER }}
+          key:  ${{ secrets.DEPLOY_SSH_KEY }}
+          port: ${{ secrets.DEPLOY_PORT || 22 }}
+          script: |
+            set -e
+            # Surface the newest drill log tail in the workflow output so a
+            # dev can debug without needing to SSH in themselves.
+            LATEST=$(ls -1t /var/lib/pos/logs/restore-drill/drill-*.log 2>/dev/null | head -1)
+            if [ -z "$LATEST" ]; then
+              echo "No drill log found."
+              exit 0
+            fi
+            echo "----- $LATEST -----"
+            sudo tail -c 8192 "$LATEST" || true
+
+      # -------------------------------------------------------------------
+      # Only runs on failure. Posts a concise summary to the workflow
+      # annotations area — easier to spot than trawling log output.
+      # -------------------------------------------------------------------
+      - name: Emit annotation on failure
+        if: failure()
+        run: |
+          echo "::error title=Restore drill failed::\
+          Latest off-site backup could NOT be restored. \
+          SSH into ${{ secrets.DEPLOY_HOST }} and inspect \
+          /var/lib/pos/logs/restore-drill/ for the log. \
+          Alertmanager should have paged on-call already."

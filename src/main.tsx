@@ -4,6 +4,11 @@ import "./index.css";
 import "./lib/i18n";
 import App from "./App.tsx";
 import { AppWrapper } from "./components/common/PageMeta.tsx";
+import { installRemotePosApiIfConfigured } from "./lib/remotePosApi";
+import { initTelegramWebApp } from "./lib/telegramWebApp";
+
+installRemotePosApiIfConfigured();
+initTelegramWebApp();
 
 createRoot(document.getElementById("root")!).render(
   <StrictMode>

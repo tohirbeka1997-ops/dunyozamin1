@@ -5,7 +5,7 @@ Professional print-ready components for receipts and barcode labels.
 ## Components
 
 ### ReceiptPrintView
-Thermal receipt printer component (80mm width) for POS systems.
+Thermal receipt printer component (58/78/80mm width) for POS systems.
 
 **Features:**
 - Company header with logo support
@@ -71,10 +71,65 @@ return <Barcode value={value} format={type} width={2} height={50} displayValue={
 ## Print Styles
 
 Both components include print-optimized CSS that:
-- Sets proper page margins for thermal printers (80mm)
+- Sets proper page margins for thermal printers (58/78/80mm)
 - Prevents page breaks inside labels/receipts
 - Uses black/white colors for thermal printing
 - Sets appropriate paper sizes
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 

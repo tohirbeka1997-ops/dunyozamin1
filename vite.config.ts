@@ -5,72 +5,74 @@ import path from 'path';
 
 import { miaodaDevPlugin } from "miaoda-sc-plugin";
 
+const MIAODA_CDN = 'https://miaoda-resource-static.s3cdn.medo.dev';
+
+// Proxy miaoda CDN through Vite to avoid 500 from direct fetch; 500 -> 200 + empty script
+function miaodaProxyPlugin() {
+  return {
+    name: 'miaoda-proxy',
+    configureServer(server) {
+      server.middlewares.use('/__miaoda_proxy', async (req, res) => {
+        const urlPath = req.url?.replace(/^\//, '') || '';
+        const target = `${MIAODA_CDN}/${urlPath}`;
+        try {
+          const r = await fetch(target);
+          if (r.status >= 400) {
+            res.statusCode = 200;
+            res.setHeader('Content-Type', 'application/javascript');
+            res.end('/* miaoda script unavailable */');
+            return;
+          }
+          res.statusCode = r.status;
+          r.headers.forEach((v, k) => res.setHeader(k, v));
+          res.end(await r.arrayBuffer());
+        } catch (e) {
+          res.statusCode = 200;
+          res.setHeader('Content-Type', 'application/javascript');
+          res.end('/* miaoda script load failed */');
+        }
+      });
+    },
+    transformIndexHtml: {
+      order: 'post',
+      handler(html) {
+        return html.replace(
+          new RegExp(MIAODA_CDN.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '/([^"\'\\s]+)', 'g'),
+          '/__miaoda_proxy/$1'
+        );
+      },
+    },
+  };
+}
+
 // https://vite.dev/config/
-export default defineConfig({
-  plugins: [react(), svgr({
-      svgrOptions: {
-        icon: true, exportType: 'named', namedExport: 'ReactComponent', }, }), miaodaDevPlugin()],
+export default defineConfig(({ command }) => ({
+  // Electron production loads via file://, so assets must be relative (not /assets/...)
+  base: './',
+  plugins: [
+    react(),
+    svgr({
+      svgrOptions: { icon: true, exportType: 'named', namedExport: 'ReactComponent' },
+    }),
+    // This plugin injects dev tooling. Disable with VITE_DISABLE_MIAODA=1 if it causes 500 errors.
+    ...(command === 'serve' && !process.env.VITE_DISABLE_MIAODA ? [miaodaDevPlugin(), miaodaProxyPlugin()] : []),
+  ],
   resolve: {
     alias: {
       '@': path.resolve(__dirname, './src'),
     },
   },
+  server: {
+    port: 5173,
+    strictPort: true,
+  },
   build: {
     outDir: 'dist',
     emptyOutDir: true,
-    sourcemap: false, // Disable sourcemaps for production (enable only if needed for debugging)
-    target: 'esnext',
-    minify: 'esbuild',
     rollupOptions: {
       input: {
         main: path.resolve(__dirname, 'index.html'),
       },
-      output: {
-        manualChunks: (id) => {
-          // React and React DOM
-          if (id.includes('node_modules/react/') || id.includes('node_modules/react-dom/')) {
-            return 'react-vendor';
-          }
-          
-          // Radix UI / ShadCN components
-          if (id.includes('node_modules/@radix-ui/')) {
-            return 'radix-vendor';
-          }
-          
-          // Chart libraries
-          if (id.includes('node_modules/recharts/')) {
-            return 'charts-vendor';
-          }
-          
-          // Export libraries (will be lazy loaded, but chunk them separately if they end up in bundle)
-          if (id.includes('node_modules/xlsx/')) {
-            return 'xlsx-vendor';
-          }
-          if (id.includes('node_modules/jspdf/') || id.includes('node_modules/jspdf-autotable/')) {
-            return 'pdf-vendor';
-          }
-          
-          // React Query
-          if (id.includes('node_modules/@tanstack/react-query/')) {
-            return 'query-vendor';
-          }
-          
-          // Router
-          if (id.includes('node_modules/react-router/')) {
-            return 'router-vendor';
-          }
-          
-          // i18n
-          if (id.includes('node_modules/i18next/') || id.includes('node_modules/react-i18next/')) {
-            return 'i18n-vendor';
-          }
-          
-          // Other large dependencies
-          if (id.includes('node_modules/')) {
-            return 'vendor';
-          }
-        },
-      },
     },
   },
-});
+}));

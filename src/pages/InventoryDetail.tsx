@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
-import { useParams, useNavigate } from 'react-router-dom';
+import { useLocation, useParams, useNavigate, useSearchParams } from 'react-router-dom';
+import { useQuery, useQueryClient, useMutation } from '@tanstack/react-query';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
@@ -41,19 +42,92 @@ import {
 import type { Product, InventoryMovementWithDetails } from '@/types/database';
 import { ArrowLeft, Package, TrendingUp, TrendingDown, Edit } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
-import { format } from 'date-fns';
 import { formatUnit } from '@/utils/formatters';
 import { formatMoneyUZS } from '@/lib/format';
+import { formatDate, formatDateTime } from '@/lib/datetime';
+import { isElectron, requireElectron, handleIpcResponse } from '@/utils/electron';
+import { qk } from '@/lib/queryKeys';
+import {
+  clampQuantityForUnit,
+  formatQuantity,
+  getQuantityMin,
+  getQuantityStep,
+  isFractionalUnit,
+  normalizeQuantityInput,
+} from '@/utils/quantity';
+import { navigateBackTo, resolveBackTarget } from '@/lib/pageState';
+
+// Fetch product detail using React Query
+const fetchProductDetail = async (productId: string) => {
+  if (!productId) {
+    throw new Error('Product ID is required');
+  }
+
+  console.log('[InventoryDetail] Fetching product detail for:', productId);
+  
+  if (isElectron()) {
+    const api = requireElectron();
+    const productData = await handleIpcResponse(
+      api.inventory.getProductDetail(productId)
+    ) as Product;
+    
+    console.log('[InventoryDetail] Product detail fetched:', {
+      id: productData?.id,
+      name: productData?.name,
+      current_stock: productData?.current_stock,
+      purchase_price: productData?.purchase_price,
+      stock_value: productData?.stock_value,
+      min_stock_level: productData?.min_stock_level,
+    });
+    
+    return productData;
+  }
+  
+  // Fallback to getProductById if Electron API not available
+  console.warn('[InventoryDetail] Electron API not available, using getProductById');
+  return await getProductById(productId);
+};
+
+// Fetch product batches (partiyalar) using Electron IPC
+const fetchProductBatches = async (productId: string) => {
+  if (!productId) {
+    throw new Error('Product ID is required');
+  }
+  if (!isElectron()) {
+    return [];
+  }
+  const api = requireElectron();
+  const rows = await handleIpcResponse(
+    api.inventory.getBatchesByProduct(productId, 'main-warehouse-001')
+  );
+  return Array.isArray(rows) ? rows : [];
+};
+
+// Fetch batch reconciliation (Act Sverka) for this product
+const fetchProductBatchReconcile = async (productId: string) => {
+  if (!productId) {
+    throw new Error('Product ID is required');
+  }
+  if (!isElectron()) {
+    return null;
+  }
+  const api = requireElectron();
+  const rows = await handleIpcResponse(
+    api.inventory.getBatchReconcile(productId, 'main-warehouse-001')
+  );
+  const arr = Array.isArray(rows) ? rows : [];
+  return arr.length > 0 ? arr[0] : null;
+};
 
 export default function InventoryDetail() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
+  const location = useLocation();
+  const [searchParams, setSearchParams] = useSearchParams();
   const { toast } = useToast();
-  const [product, setProduct] = useState<Product | null>(null);
-  const [movements, setMovements] = useState<InventoryMovementWithDetails[]>([]);
-  const [purchaseHistory, setPurchaseHistory] = useState<any[]>([]);
-  const [salesHistory, setSalesHistory] = useState<any[]>([]);
-  const [loading, setLoading] = useState(true);
+  const queryClient = useQueryClient();
+  const activeTab = searchParams.get('tab') || 'movements';
+  const backTo = resolveBackTarget(location, '/inventory');
   const [adjustmentOpen, setAdjustmentOpen] = useState(false);
   const [adjustmentForm, setAdjustmentForm] = useState({
     type: 'increase',
@@ -62,61 +136,84 @@ export default function InventoryDetail() {
     notes: '',
   });
 
-  useEffect(() => {
-    if (id) {
-      loadData();
-    }
-  }, [id]);
+  // Use React Query to fetch product detail with automatic refetch
+  const { 
+    data: product, 
+    isLoading: loading, 
+    error: productError,
+    refetch: refetchProduct 
+  } = useQuery({
+    queryKey: ['inventoryDetail', id],
+    queryFn: () => fetchProductDetail(id!),
+    enabled: !!id,
+    refetchOnMount: true,
+    refetchOnWindowFocus: true,
+    retry: 1,
+  });
 
-  const loadData = async () => {
-    if (!id) return;
-    
-    try {
-      setLoading(true);
-      const [productData, movementsData, purchaseData, salesData] = await Promise.all([
-        getProductById(id),
-        getInventoryMovements(id),
-        getProductPurchaseHistory(id),
-        getProductSalesHistory(id),
-      ]);
+  // Fetch movements, purchase, and sales history
+  const resolvedProductId = product?.id || id;
+  
+  const { data: movementsData = [] } = useQuery({
+    queryKey: ['inventoryMovements', resolvedProductId],
+    queryFn: () => getInventoryMovements(resolvedProductId!),
+    enabled: !!resolvedProductId,
+    retry: 1,
+  });
+
+  const { data: purchaseHistoryData = [] } = useQuery({
+    queryKey: ['productPurchaseHistory', resolvedProductId],
+    queryFn: () => getProductPurchaseHistory(resolvedProductId!),
+    enabled: !!resolvedProductId,
+    retry: 1,
+  });
+
+  const { data: salesHistoryData = [] } = useQuery({
+    queryKey: ['productSalesHistory', resolvedProductId],
+    queryFn: () => getProductSalesHistory(resolvedProductId!),
+    enabled: !!resolvedProductId,
+    retry: 1,
+  });
+
+  const { data: batchesData = [] } = useQuery({
+    queryKey: ['productBatches', resolvedProductId],
+    queryFn: () => fetchProductBatches(resolvedProductId!),
+    enabled: !!resolvedProductId && isElectron(),
+    retry: 1,
+  });
+
+  const { data: batchReconcile } = useQuery({
+    queryKey: ['productBatchReconcile', resolvedProductId],
+    queryFn: () => fetchProductBatchReconcile(resolvedProductId!),
+    enabled: !!resolvedProductId && isElectron(),
+    retry: 1,
+  });
+
+  // Stock adjustment mutation
+  const adjustmentMutation = useMutation({
+    mutationFn: async (adjustment: {
+      product_id: string;
+      quantity: number;
+      reason: string;
+      notes?: string;
+    }) => {
+      return await createStockAdjustment(adjustment);
+    },
+    onSuccess: () => {
+      console.log('[InventoryDetail] Stock adjustment successful, invalidating queries...');
       
-      setProduct(productData);
-      setMovements(movementsData);
-      setPurchaseHistory(purchaseData);
-      setSalesHistory(salesData);
-    } catch (error) {
-      toast({
-        title: 'Xatolik',
-        description: 'Ombor tafsilotlarini yuklab bo\'lmadi',
-        variant: 'destructive',
-      });
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const handleAdjustment = async () => {
-    if (!id || !adjustmentForm.quantity || !adjustmentForm.reason) {
-      toast({
-        title: 'Xatolik',
-        description: 'Iltimos, barcha majburiy maydonlarni to\'ldiring',
-        variant: 'destructive',
-      });
-      return;
-    }
-
-    try {
-      const quantity = adjustmentForm.type === 'increase' 
-        ? Number(adjustmentForm.quantity) 
-        : -Number(adjustmentForm.quantity);
-
-      await createStockAdjustment({
-        product_id: id,
-        quantity,
-        reason: adjustmentForm.reason,
-        notes: adjustmentForm.notes || undefined,
-      });
-
+      // Invalidate all related queries
+      queryClient.invalidateQueries({ queryKey: ['inventoryDetail', id] });
+      queryClient.invalidateQueries({ queryKey: ['inventoryMovements', resolvedProductId] });
+      queryClient.invalidateQueries({ queryKey: ['productPurchaseHistory', resolvedProductId] });
+      queryClient.invalidateQueries({ queryKey: ['productSalesHistory', resolvedProductId] });
+      queryClient.invalidateQueries({ queryKey: ['productBatches', resolvedProductId] });
+      
+      // Also invalidate inventory list and products list
+      queryClient.invalidateQueries({ queryKey: qk.products, exact: false });
+      queryClient.invalidateQueries({ queryKey: qk.inventory, exact: false });
+      queryClient.invalidateQueries({ queryKey: qk.stock, exact: false });
+      
       toast({
         title: 'Muvaffaqiyatli',
         description: 'Qoldiq muvaffaqiyatli to\'g\'rilandi',
@@ -129,21 +226,91 @@ export default function InventoryDetail() {
         reason: '',
         notes: '',
       });
-      loadData();
-    } catch (error) {
+    },
+    onError: (error) => {
+      console.error('[InventoryDetail] Stock adjustment error:', error);
       toast({
         title: 'Xatolik',
-        description: 'Qoldiqni to\'g\'rilab bo\'lmadi',
+        description: error instanceof Error ? error.message : 'Qoldiqni to\'g\'rilab bo\'lmadi',
+        variant: 'destructive',
+      });
+    },
+  });
+
+  // Handle errors
+  useEffect(() => {
+    if (productError) {
+      console.error('[InventoryDetail] Error loading product:', productError);
+      toast({
+        title: 'Xatolik',
+        description: productError instanceof Error ? productError.message : 'Ombor tafsilotlarini yuklab bo\'lmadi',
         variant: 'destructive',
       });
     }
+  }, [productError, toast]);
+
+  // Navigate back if no ID
+  useEffect(() => {
+    if (!id) {
+      console.error('[InventoryDetail] No product ID provided');
+      toast({
+        title: 'Xatolik',
+        description: 'Mahsulot ID topilmadi',
+        variant: 'destructive',
+      });
+      navigate(backTo);
+    }
+  }, [id, navigate, toast, backTo]);
+
+  const handleAdjustment = async () => {
+    if (!id || !adjustmentForm.quantity || !adjustmentForm.reason) {
+      toast({
+        title: 'Xatolik',
+        description: 'Iltimos, barcha majburiy maydonlarni to\'ldiring',
+        variant: 'destructive',
+      });
+      return;
+    }
+
+    const normalized = normalizeQuantityInput(adjustmentForm.quantity);
+    const qtyRaw = Number(normalized);
+    if (!Number.isFinite(qtyRaw) || qtyRaw <= 0) {
+      toast({
+        title: 'Xatolik',
+        description: 'Miqdor musbat son bo\'lishi kerak',
+        variant: 'destructive',
+      });
+      return;
+    }
+
+    const unit = product?.unit;
+    const qty = clampQuantityForUnit(qtyRaw, unit);
+    if (qty !== qtyRaw) {
+      toast({
+        title: 'Miqdor tuzatildi',
+        description: `Miqdor ${formatQuantity(qty, unit)} ga o'rnatildi`,
+      });
+    }
+
+    const quantity = adjustmentForm.type === 'increase' 
+      ? qty 
+      : -qty;
+
+    adjustmentMutation.mutate({
+      product_id: id,
+      quantity,
+      reason: adjustmentForm.reason,
+      notes: adjustmentForm.notes || undefined,
+    });
   };
 
   const getStockStatusBadge = () => {
     if (!product) return null;
     
-    const stock = Number(product.current_stock);
-    const minStock = Number(product.min_stock_level);
+    // CRITICAL: Use real-time stock from backend (same as Inventory list)
+    // Ensure safe defaults (no NaN)
+    const stock = Number(product.current_stock ?? product.stock_available ?? product.available_stock ?? 0) || 0;
+    const minStock = Number(product.min_stock_level || 0) || 0;
 
     if (stock === 0) {
       return <Badge variant="destructive">Omborda yo'q</Badge>;
@@ -189,7 +356,7 @@ export default function InventoryDetail() {
       <div className="space-y-6">
         <div className="text-center py-12">
           <p className="text-muted-foreground">Mahsulot topilmadi</p>
-          <Button onClick={() => navigate('/inventory')} className="mt-4">
+          <Button onClick={() => navigate(backTo)} className="mt-4">
             Omborga qaytish
           </Button>
         </div>
@@ -197,13 +364,29 @@ export default function InventoryDetail() {
     );
   }
 
-  const inventoryValue = Number(product.current_stock) * Number(product.purchase_price);
+  // CRITICAL: Use real-time stock from backend (same as Inventory list)
+  // Ensure all values are numbers with safe defaults (no NaN)
+  const currentStock = Number(product.current_stock ?? product.stock_available ?? product.available_stock ?? 0) || 0;
+  const purchasePrice = Number(product.purchase_price || 0) || 0;
+  const salePrice = Number(product.sale_price || 0) || 0;
+  const minStockLevel = Number(product.min_stock_level || 0) || 0;
+  const quantityMin = getQuantityMin(product.unit);
+  const quantityStep = getQuantityStep(product.unit);
+  const quantityInputMode = isFractionalUnit(product.unit) ? 'decimal' : 'numeric';
+  // Use stock_value from backend if available, otherwise calculate
+  const inventoryValue = Number(product.stock_value ?? (currentStock * purchasePrice)) || 0;
+  
+  // Use data from React Query
+  const movements = Array.isArray(movementsData) ? movementsData : [];
+  const purchaseHistory = Array.isArray(purchaseHistoryData) ? purchaseHistoryData : [];
+  const salesHistory = Array.isArray(salesHistoryData) ? salesHistoryData : [];
+  const batches = Array.isArray(batchesData) ? batchesData : [];
 
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-4">
-          <Button variant="ghost" size="icon" onClick={() => navigate('/inventory')}>
+          <Button variant="ghost" size="icon" onClick={() => navigateBackTo(navigate, location, '/inventory')}>
             <ArrowLeft className="h-4 w-4" />
           </Button>
           <div>
@@ -245,8 +428,9 @@ export default function InventoryDetail() {
                 <Label>Miqdor</Label>
                 <Input
                   type="number"
-                  min="0"
-                  step="0.01"
+                  min={quantityMin.toString()}
+                  step={quantityStep.toString()}
+                  inputMode={quantityInputMode}
                   value={adjustmentForm.quantity}
                   onChange={(e) => setAdjustmentForm({ ...adjustmentForm, quantity: e.target.value })}
                   placeholder="Miqdorni kiriting"
@@ -298,7 +482,7 @@ export default function InventoryDetail() {
             <div className="flex items-center justify-between">
               <div>
                 <p className="text-sm text-muted-foreground">Joriy qoldiq</p>
-                <p className="text-2xl font-bold">{Number(product.current_stock).toFixed(2)}</p>
+                <p className="text-2xl font-bold">{Number(currentStock).toFixed(2)}</p>
                 <p className="text-sm text-muted-foreground">{formatUnit(product.unit)}</p>
               </div>
               <Package className="h-8 w-8 text-muted-foreground" />
@@ -311,7 +495,7 @@ export default function InventoryDetail() {
             <div className="flex items-center justify-between">
               <div>
                 <p className="text-sm text-muted-foreground">Minimal qoldiq</p>
-                <p className="text-2xl font-bold">{Number(product.min_stock_level).toFixed(2)}</p>
+                <p className="text-2xl font-bold">{minStockLevel.toFixed(2)}</p>
                 <p className="text-sm text-muted-foreground">{formatUnit(product.unit)}</p>
               </div>
               <TrendingDown className="h-8 w-8 text-warning" />
@@ -324,7 +508,7 @@ export default function InventoryDetail() {
             <div className="flex items-center justify-between">
               <div>
                 <p className="text-sm text-muted-foreground">Sotib olish narxi</p>
-                <p className="text-2xl font-bold">{formatMoneyUZS(product.purchase_price)}</p>
+                <p className="text-2xl font-bold">{formatMoneyUZS(purchasePrice)}</p>
                 <p className="text-sm text-muted-foreground">{formatUnit(product.unit)} uchun</p>
               </div>
               <TrendingUp className="h-8 w-8 text-muted-foreground" />
@@ -337,7 +521,7 @@ export default function InventoryDetail() {
             <div className="flex items-center justify-between">
               <div>
                 <p className="text-sm text-muted-foreground">Ombordagi qiymat</p>
-                <p className="text-2xl font-bold">{formatMoneyUZS(inventoryValue)}</p>
+                <p className="text-2xl font-bold">{formatMoneyUZS(inventoryValue || 0)}</p>
                 <div className="mt-1">{getStockStatusBadge()}</div>
               </div>
               <Package className="h-8 w-8 text-muted-foreground" />
@@ -364,7 +548,7 @@ export default function InventoryDetail() {
             )}
             <div>
               <p className="text-sm text-muted-foreground">Sotish narxi</p>
-              <p className="font-medium">{formatMoneyUZS(product.sale_price)}</p>
+              <p className="font-medium">{formatMoneyUZS(salePrice)}</p>
             </div>
             <div>
               <p className="text-sm text-muted-foreground">O'lchov birligi</p>
@@ -380,12 +564,132 @@ export default function InventoryDetail() {
         </CardContent>
       </Card>
 
-      <Tabs defaultValue="movements" className="space-y-4">
+      <Tabs
+        value={activeTab}
+        onValueChange={(value) => {
+          const next = new URLSearchParams(searchParams);
+          if (value === 'movements') next.delete('tab');
+          else next.set('tab', value);
+          setSearchParams(next, { replace: true });
+        }}
+        className="space-y-4"
+      >
         <TabsList>
+          <TabsTrigger value="batches">Partiyalar</TabsTrigger>
           <TabsTrigger value="movements">Qoldiq tarixi</TabsTrigger>
           <TabsTrigger value="purchases">Sotib olish tarixi</TabsTrigger>
           <TabsTrigger value="sales">Sotish tarixi</TabsTrigger>
         </TabsList>
+
+        <TabsContent value="batches">
+          <Card>
+            <CardHeader>
+              <CardTitle>Partiyalar (FIFO)</CardTitle>
+            </CardHeader>
+            <CardContent>
+              {(() => {
+                const stockFromMovements = Number(
+                  batchReconcile?.stock_from_movements ?? product?.current_stock ?? 0
+                );
+                const stockFromBatches = Number(
+                  batchReconcile?.stock_from_batches ??
+                    batches.reduce((s: number, b: any) => s + Number(b.remaining_qty || 0), 0)
+                );
+                const difference = Number(batchReconcile?.difference ?? stockFromMovements - stockFromBatches);
+
+                const totalQty = batches.reduce((s: number, b: any) => s + Number(b.remaining_qty || 0), 0);
+                const totalValue = batches.reduce(
+                  (s: number, b: any) => s + Number(b.remaining_qty || 0) * Number(b.unit_cost || 0),
+                  0
+                );
+
+                return (
+                  <>
+                    {/* Act Sverka summary should be visible even when there are no batches */}
+                    <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
+                      <div className="text-sm text-muted-foreground">
+                        Act sverka:{' '}
+                        <span className="font-medium text-foreground">
+                          movements {stockFromMovements.toFixed(2)}
+                        </span>
+                        {' • '}
+                        <span className="font-medium text-foreground">
+                          batches {stockFromBatches.toFixed(2)}
+                        </span>
+                        {' • '}
+                        <span className="font-medium text-foreground">
+                          farq {difference.toFixed(2)}
+                        </span>
+                        {' '}
+                        {Math.abs(difference) < 0.0001 ? (
+                          <Badge variant="default" className="ml-2">OK</Badge>
+                        ) : (
+                          <Badge variant="destructive" className="ml-2">FARQ</Badge>
+                        )}
+                      </div>
+
+                      <div className="text-sm text-muted-foreground">
+                        Jami qoldiq:{' '}
+                        <span className="font-medium text-foreground">{totalQty.toFixed(2)}</span>
+                      </div>
+
+                      <div className="text-sm text-muted-foreground">
+                        Jami qiymat:{' '}
+                        <span className="font-medium text-foreground">{formatMoneyUZS(totalValue)}</span>
+                      </div>
+                    </div>
+
+                    {batches.length === 0 ? (
+                      <div className="text-center py-12">
+                        <p className="text-muted-foreground">Partiyalar topilmadi</p>
+                        <p className="text-xs text-muted-foreground mt-1">
+                          Ehtimol batch (partiya) rejimi o‘chiq yoki bu mahsulotga hali kirim partiyasi yaratilmagan.
+                        </p>
+                      </div>
+                    ) : (
+                      <Table>
+                        <TableHeader>
+                          <TableRow>
+                            <TableHead>Sana</TableHead>
+                            <TableHead>Hujjat</TableHead>
+                            <TableHead>Ta'minotchi</TableHead>
+                            <TableHead className="text-right">Kirim</TableHead>
+                            <TableHead className="text-right">Qoldiq</TableHead>
+                            <TableHead className="text-right">Narx (cost)</TableHead>
+                            <TableHead>Valyuta</TableHead>
+                            <TableHead className="text-right">Kurs</TableHead>
+                            <TableHead>Status</TableHead>
+                          </TableRow>
+                        </TableHeader>
+                        <TableBody>
+                          {batches.map((b: any) => (
+                            <TableRow key={b.id}>
+                              <TableCell>{b.opened_at ? formatDateTime(b.opened_at) : '-'}</TableCell>
+                              <TableCell>{b.doc_no || '-'}</TableCell>
+                              <TableCell>{b.supplier_name || '-'}</TableCell>
+                              <TableCell className="text-right">{Number(b.initial_qty || 0).toFixed(2)}</TableCell>
+                              <TableCell className="text-right font-medium">{Number(b.remaining_qty || 0).toFixed(2)}</TableCell>
+                              <TableCell className="text-right">{formatMoneyUZS(Number(b.unit_cost || 0) || 0)}</TableCell>
+                              <TableCell>{b.currency || '-'}</TableCell>
+                              <TableCell className="text-right">
+                                {b.exchange_rate != null ? Number(b.exchange_rate || 0).toFixed(2) : '-'}
+                              </TableCell>
+                              <TableCell>
+                                <Badge variant={b.status === 'closed' ? 'secondary' : 'default'}>
+                                  {b.status || 'active'}
+                                </Badge>
+                              </TableCell>
+                            </TableRow>
+                          ))}
+                        </TableBody>
+                      </Table>
+                    )}
+                  </>
+                );
+              })()}
+            </CardContent>
+          </Card>
+        </TabsContent>
 
         <TabsContent value="movements">
           <Card>
@@ -415,7 +719,7 @@ export default function InventoryDetail() {
                     {movements.map((movement) => (
                       <TableRow key={movement.id}>
                         <TableCell>
-                          {format(new Date(movement.created_at), 'MMM dd, yyyy HH:mm')}
+                          {formatDateTime(movement.created_at)}
                         </TableCell>
                         <TableCell>{getMovementTypeBadge(movement.movement_type)}</TableCell>
                         <TableCell className="text-right">
@@ -478,7 +782,7 @@ export default function InventoryDetail() {
                         <TableCell>{item.purchase_order?.supplier?.name || '-'}</TableCell>
                         <TableCell>
                           {item.purchase_order?.created_at 
-                            ? format(new Date(item.purchase_order.created_at), 'MMM dd, yyyy')
+                            ? formatDate(item.purchase_order.created_at)
                             : '-'}
                         </TableCell>
                         <TableCell className="text-right">
@@ -524,7 +828,7 @@ export default function InventoryDetail() {
                   <TableBody>
                     {salesHistory.map((item: any) => {
                       const revenue = Number(item.quantity) * Number(item.unit_price);
-                      const cost = Number(item.quantity) * Number(product.purchase_price);
+                      const cost = Number(item.quantity) * purchasePrice;
                       const profit = revenue - cost;
                       
                       return (
@@ -533,7 +837,7 @@ export default function InventoryDetail() {
                           <TableCell>{item.order?.customer?.name || '-'}</TableCell>
                           <TableCell>
                             {item.order?.created_at 
-                              ? format(new Date(item.order.created_at), 'MMM dd, yyyy')
+                              ? formatDate(item.order.created_at)
                               : '-'}
                           </TableCell>
                           <TableCell className="text-right">

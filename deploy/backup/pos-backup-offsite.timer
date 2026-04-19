@@ -1,0 +1,14 @@
+[Unit]
+Description=POS — off-site backup sync (hourly)
+
+[Timer]
+# Every hour at minute 17 — spread away from other cron jobs that run on :00.
+OnCalendar=*-*-* *:17:00
+# Run immediately on boot if the previous run was missed (power loss scenario).
+Persistent=true
+# +/- 2 min jitter so fleets of POS servers don't hammer the object store together.
+RandomizedDelaySec=120
+Unit=pos-backup-offsite.service
+
+[Install]
+WantedBy=timers.target

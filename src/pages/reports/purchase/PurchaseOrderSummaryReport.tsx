@@ -16,27 +16,31 @@ import type { PurchaseOrderWithDetails } from '@/types/database';
 import { FileDown, ArrowLeft } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 import { useNavigate } from 'react-router-dom';
-import { format } from 'date-fns';
 import { formatMoneyUZS } from '@/lib/format';
+import { formatDate, todayYMD } from '@/lib/datetime';
+import { useReportAutoRefresh } from '@/hooks/useReportAutoRefresh';
 
 export default function PurchaseOrderSummaryReport() {
   const navigate = useNavigate();
   const { toast } = useToast();
   const [orders, setOrders] = useState<PurchaseOrderWithDetails[]>([]);
   const [loading, setLoading] = useState(true);
-  const [dateFrom, setDateFrom] = useState(new Date().toISOString().split('T')[0]);
-  const [dateTo, setDateTo] = useState(new Date().toISOString().split('T')[0]);
+  const [dateFrom, setDateFrom] = useState(todayYMD());
+  const [dateTo, setDateTo] = useState(todayYMD());
+
+  useReportAutoRefresh(loadData);
 
   useEffect(() => {
     loadData();
   }, [dateFrom, dateTo]);
 
-  const loadData = async () => {
+  async function loadData() {
     try {
       setLoading(true);
       const ordersData = await getPurchaseOrders({
         date_from: dateFrom,
         date_to: dateTo,
+        include_items: true,
       });
 
       setOrders(ordersData);
@@ -49,15 +53,15 @@ export default function PurchaseOrderSummaryReport() {
     } finally {
       setLoading(false);
     }
-  };
+  }
 
   const getStatusBadge = (status: string) => {
     const statusConfig: Record<string, { label: string; className: string }> = {
       draft: { label: 'Qoralama', className: 'bg-muted text-muted-foreground' },
-      approved: { label: 'Tasdiqlangan', className: 'bg-primary text-primary-foreground' },
-      partially_received: { label: 'Qisman qabul qilingan', className: 'bg-warning text-warning-foreground' },
-      received: { label: 'Qabul qilingan', className: 'bg-success text-success-foreground' },
-      cancelled: { label: 'Bekor qilingan', className: 'bg-destructive text-destructive-foreground' },
+      approved: { label: 'Tasdiqlangan', className: 'bg-primary text-white' },
+      partially_received: { label: 'Qisman qabul qilingan', className: 'bg-warning text-white' },
+      received: { label: 'Qabul qilingan', className: 'bg-success text-white' },
+      cancelled: { label: 'Bekor qilingan', className: 'bg-destructive text-white' },
     };
     
     const config = statusConfig[status] || { label: status, className: '' };
@@ -75,6 +79,13 @@ export default function PurchaseOrderSummaryReport() {
 
   const totalOrdered = orders.reduce((sum, o) => sum + Number(o.total_amount || 0), 0);
   const totalReceived = orders.reduce((sum, o) => sum + calculateReceivedAmount(o.items || []), 0);
+  const totalPaid = orders.reduce((sum, o) => sum + Number((o as any).paid_amount || 0), 0);
+  // Real payable debt is based on received goods minus paid amount (not on total_amount)
+  const totalDebt = orders.reduce((sum, o) => {
+    const received = calculateReceivedAmount(o.items || []);
+    const paid = Number((o as any).paid_amount || 0);
+    return sum + Math.max(0, received - paid);
+  }, 0);
 
   const handleExport = (format: 'excel' | 'pdf') => {
     toast({
@@ -130,8 +141,28 @@ export default function PurchaseOrderSummaryReport() {
           <CardContent className="pt-6">
             <div className="flex items-center justify-between">
               <div>
-                <p className="text-sm text-muted-foreground">Jami qabul qilingan summa</p>
+                <p className="text-sm text-muted-foreground">Jami qabul qilingan summa (tovar)</p>
                 <p className="text-2xl font-bold text-success">{formatMoneyUZS(totalReceived)}</p>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+        <Card>
+          <CardContent className="pt-6">
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-sm text-muted-foreground">Jami to'langan summa</p>
+                <p className="text-2xl font-bold">{formatMoneyUZS(totalPaid)}</p>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+        <Card>
+          <CardContent className="pt-6">
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-sm text-muted-foreground">Jami qarz (to'lash kerak)</p>
+                <p className="text-2xl font-bold text-destructive">{formatMoneyUZS(totalDebt)}</p>
               </div>
             </div>
           </CardContent>
@@ -176,24 +207,36 @@ export default function PurchaseOrderSummaryReport() {
                   <TableHead>Sana</TableHead>
                   <TableHead className="text-right">Buyurtma summasi</TableHead>
                   <TableHead className="text-right">Qabul qilingan summa</TableHead>
+                  <TableHead className="text-right">To'langan</TableHead>
+                  <TableHead className="text-right">Qarz</TableHead>
                   <TableHead>Holati</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
                 {orders.map((order) => {
                   const receivedAmount = calculateReceivedAmount(order.items || []);
+                  const paidAmount = Number((order as any).paid_amount || 0);
+                  const debtAmount = Math.max(0, receivedAmount - paidAmount);
                   return (
                     <TableRow key={order.id}>
                       <TableCell className="font-medium">{order.po_number}</TableCell>
                       <TableCell>{order.supplier?.name || order.supplier_name || '-'}</TableCell>
                       <TableCell>
-                        {format(new Date(order.order_date), 'MMM dd, yyyy')}
+                        {formatDate(order.order_date)}
                       </TableCell>
                       <TableCell className="text-right">
                         {formatMoneyUZS(order.total_amount)}
                       </TableCell>
                       <TableCell className="text-right">
                         {formatMoneyUZS(receivedAmount)}
+                      </TableCell>
+                      <TableCell className="text-right">
+                        {formatMoneyUZS(paidAmount)}
+                      </TableCell>
+                      <TableCell className="text-right">
+                        <span className={debtAmount > 0 ? 'text-destructive font-semibold' : ''}>
+                          {formatMoneyUZS(debtAmount)}
+                        </span>
                       </TableCell>
                       <TableCell>{getStatusBadge(order.status)}</TableCell>
                     </TableRow>

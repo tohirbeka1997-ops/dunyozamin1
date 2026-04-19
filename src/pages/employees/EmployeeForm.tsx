@@ -28,7 +28,7 @@ import type { Profile, UserRole } from '@/types/database';
 import { useToast } from '@/hooks/use-toast';
 import PageBreadcrumb from '@/components/common/PageBreadcrumb';
 
-type PermissionModule = 'products' | 'orders' | 'reports' | 'customers' | 'inventory' | 'settings';
+type PermissionModule = 'products' | 'orders' | 'reports' | 'customers' | 'inventory' | 'promotions' | 'settings';
 type PermissionAction = 'view' | 'add' | 'edit' | 'delete' | 'change_price';
 
 interface ModulePermissions {
@@ -41,13 +41,14 @@ interface ModulePermissions {
   };
 }
 
-const MODULES: PermissionModule[] = ['products', 'orders', 'reports', 'customers', 'inventory', 'settings'];
+const MODULES: PermissionModule[] = ['products', 'orders', 'reports', 'customers', 'inventory', 'promotions', 'settings'];
 const MODULE_LABELS: Record<PermissionModule, string> = {
   products: 'Mahsulotlar',
   orders: 'Buyurtmalar',
   reports: 'Hisobotlar',
   customers: 'Mijozlar',
   inventory: 'Ombor',
+  promotions: 'Aksiyalar',
   settings: 'Sozlamalar',
 };
 
@@ -86,6 +87,7 @@ export default function EmployeeForm() {
     reports: { view: false, add: false, edit: false, delete: false },
     customers: { view: false, add: false, edit: false, delete: false },
     inventory: { view: false, add: false, edit: false, delete: false },
+    promotions: { view: false, add: false, edit: false, delete: false },
     settings: { view: false, add: false, edit: false, delete: false },
   });
   const [errors, setErrors] = useState<Record<string, string>>({});
@@ -287,7 +289,7 @@ export default function EmployeeForm() {
       navigate('/employees');
     } catch (error: unknown) {
       console.error('Error saving employee:', error);
-      const errorMessage = error instanceof Error ? error.message : 'Failed to save employee';
+      const errorMessage = error instanceof Error ? error.message : 'Xodimni saqlab bo‘lmadi';
       toast({
         title: 'Xatolik',
         description: errorMessage,

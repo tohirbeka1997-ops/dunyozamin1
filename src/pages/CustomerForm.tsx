@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { useNavigate, useParams } from 'react-router-dom';
+import { useLocation, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
@@ -14,13 +14,21 @@ import {
 } from '@/components/ui/select';
 import { getCustomerById, createCustomer, updateCustomer } from '@/db/api';
 import type { Customer } from '@/types/database';
+import { useAuth } from '@/contexts/AuthContext';
 import { ArrowLeft, Save } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
+import { navigateBackTo, resolveBackTarget } from '@/lib/pageState';
 
 export default function CustomerForm() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
+  const location = useLocation();
+  const [searchParams] = useSearchParams();
   const { toast } = useToast();
+  const { profile } = useAuth();
+  const isAdmin = profile?.role === 'admin';
+  const fromParam = searchParams.get('from'); // 'pos' or null
+  const backTo = resolveBackTarget(location, '/customers');
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [formData, setFormData] = useState({
@@ -29,10 +37,12 @@ export default function CustomerForm() {
     email: '',
     address: '',
     type: 'individual' as 'individual' | 'company',
+    pricing_tier: 'retail' as 'retail' | 'master',
     company_name: '',
     tax_number: '',
     status: 'active' as 'active' | 'inactive',
     notes: '',
+    bonus_points: 0,
   });
 
   useEffect(() => {
@@ -53,10 +63,12 @@ export default function CustomerForm() {
         email: customer.email || '',
         address: customer.address || '',
         type: customer.type,
+        pricing_tier: (customer as any).pricing_tier === 'master' ? 'master' : 'retail',
         company_name: customer.company_name || '',
         tax_number: customer.tax_number || '',
         status: customer.status,
         notes: customer.notes || '',
+        bonus_points: Number((customer as Customer).bonus_points) || 0,
       });
     } catch (error) {
       toast({
@@ -64,7 +76,7 @@ export default function CustomerForm() {
         description: 'Mijozni yuklab bo\'lmadi',
         variant: 'destructive',
       });
-      navigate('/customers');
+      navigate(backTo);
     } finally {
       setLoading(false);
     }
@@ -96,20 +108,53 @@ export default function CustomerForm() {
       setSaving(true);
 
       if (id) {
-        await updateCustomer(id, formData);
+        await updateCustomer(id, {
+          name: formData.name,
+          phone: formData.phone || null,
+          email: formData.email || null,
+          address: formData.address || null,
+          type: formData.type,
+          pricing_tier: formData.pricing_tier,
+          company_name: formData.company_name || null,
+          tax_number: formData.tax_number || null,
+          status: formData.status,
+          notes: formData.notes || null,
+          ...(isAdmin ? { bonus_points: Math.max(0, Math.floor(Number(formData.bonus_points) || 0)) } : {}),
+        });
         toast({
           title: 'Muvaffaqiyatli',
           description: 'Mijoz muvaffaqiyatli yangilandi',
         });
+        navigate(backTo);
       } else {
-        await createCustomer(formData);
+        const newCustomer = await createCustomer({
+          name: formData.name,
+          phone: formData.phone || null,
+          email: formData.email || null,
+          address: formData.address || null,
+          type: formData.type,
+          pricing_tier: formData.pricing_tier,
+          company_name: formData.company_name || null,
+          tax_number: formData.tax_number || null,
+          status: formData.status,
+          notes: formData.notes || null,
+          ...(isAdmin ? { bonus_points: Math.max(0, Math.floor(Number(formData.bonus_points) || 0)) } : {}),
+        });
         toast({
           title: 'Muvaffaqiyatli',
           description: 'Mijoz muvaffaqiyatli yaratildi',
         });
+        
+        // If coming from POS, store customer ID and navigate back to POS
+        if (fromParam === 'pos') {
+          // Store customer ID in localStorage for POS to auto-select
+          localStorage.setItem('pos:lastCreatedCustomerId', newCustomer.id);
+          navigate('/pos');
+        } else {
+          // Otherwise navigate to customers list
+          navigate(backTo);
+        }
       }
-
-      navigate('/customers');
     } catch (error) {
       toast({
         title: 'Xatolik',
@@ -136,7 +181,7 @@ export default function CustomerForm() {
   return (
     <div className="space-y-6">
       <div className="flex items-center gap-4">
-        <Button variant="ghost" size="icon" onClick={() => navigate('/customers')}>
+        <Button variant="ghost" size="icon" onClick={() => navigateBackTo(navigate, location, '/customers')}>
           <ArrowLeft className="h-4 w-4" />
         </Button>
         <div>
@@ -182,6 +227,51 @@ export default function CustomerForm() {
                     </SelectContent>
                   </Select>
                 </div>
+
+                <div className="space-y-2">
+                  <Label htmlFor="pricing_tier">Narx turi</Label>
+                  <Select
+                    value={formData.pricing_tier}
+                    onValueChange={(value) => handleChange('pricing_tier', value)}
+                  >
+                    <SelectTrigger id="pricing_tier">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="retail">Oddiy mijoz</SelectItem>
+                      <SelectItem value="master">Usta</SelectItem>
+                    </SelectContent>
+                  </Select>
+                  <p className="text-xs text-muted-foreground">
+                    Usta bo‘lsa POS’da usta narxi avtomatik qo‘llanadi (min miqdor sharti bilan).
+                  </p>
+                </div>
+
+                {(id || isAdmin) && (
+                  <div className="space-y-2">
+                    <Label htmlFor="bonus_points">Bonus ball</Label>
+                    <Input
+                      id="bonus_points"
+                      type="number"
+                      min={0}
+                      step={1}
+                      value={formData.bonus_points}
+                      readOnly={!isAdmin}
+                      disabled={!isAdmin}
+                      onChange={(e) =>
+                        setFormData((prev) => ({
+                          ...prev,
+                          bonus_points: Math.max(0, Math.floor(Number(e.target.value) || 0)),
+                        }))
+                      }
+                    />
+                    <p className="text-xs text-muted-foreground">
+                      {isAdmin
+                        ? 'Sozlamalarda usta bonusi yoqilgan bo‘lsa, sotuvdan keyin ball avtomatik qo‘shiladi.'
+                        : 'Faqat admin bonusni tahrirlashi mumkin.'}
+                    </p>
+                  </div>
+                )}
 
                 <div className="space-y-2">
                   <Label htmlFor="phone">Telefon raqami</Label>
@@ -286,7 +376,11 @@ export default function CustomerForm() {
           </Card>
 
           <div className="flex items-center justify-end gap-4">
-            <Button type="button" variant="outline" onClick={() => navigate('/customers')}>
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => navigateBackTo(navigate, location, '/customers')}
+            >
               Bekor qilish
             </Button>
             <Button type="submit" disabled={saving}>

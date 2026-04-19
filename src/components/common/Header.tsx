@@ -16,12 +16,12 @@ const Header: React.FC = () => {
               {/* Please replace with your website logo */}
               <img
                 className="h-8 w-auto"
-                src={`https://miaoda-site-img.cdn.bcebos.com/placeholder/code_logo_default.png`}
-                alt="Website logo"
+                src="/images/logo/logo-icon.svg"
+                alt="POS Tizimi"
               />
               {/* Please replace with your website name */}
               <span className="ml-2 text-xl font-bold text-blue-600">
-                Website Name
+                POS Tizimi
               </span>
             </Link>
           </div>

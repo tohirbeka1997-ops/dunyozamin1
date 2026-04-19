@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
@@ -11,11 +11,13 @@ import {
   TableRow,
 } from '@/components/ui/table';
 import { getOrders, getProfiles } from '@/db/api';
-import type { Profile } from '@/types/database';
 import { FileDown, ArrowLeft } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 import { useNavigate } from 'react-router-dom';
 import { formatMoneyUZS } from '@/lib/format';
+import { useTableSort } from '@/hooks/useTableSort';
+import { compareScalar } from '@/lib/tableSort';
+import { SortableTableHead } from '@/components/reports/SortableTableHead';
 
 interface CashierPerformance {
   employee_id: string;
@@ -27,6 +29,13 @@ interface CashierPerformance {
   voided_orders: number;
 }
 
+type CashierSortKey =
+  | 'employee_name'
+  | 'order_count'
+  | 'total_revenue'
+  | 'total_profit'
+  | 'voided_orders';
+
 export default function CashierPerformanceReport() {
   const navigate = useNavigate();
   const { toast } = useToast();
@@ -34,6 +43,7 @@ export default function CashierPerformanceReport() {
   const [loading, setLoading] = useState(true);
   const [dateFrom, setDateFrom] = useState(new Date().toISOString().split('T')[0]);
   const [dateTo, setDateTo] = useState(new Date().toISOString().split('T')[0]);
+  const { sortKey, sortOrder, toggleSort } = useTableSort<CashierSortKey>('total_revenue', 'desc');
 
   useEffect(() => {
     loadData();
@@ -84,7 +94,6 @@ export default function CashierPerformanceReport() {
       });
 
       const performanceData = Array.from(cashierMap.values());
-      performanceData.sort((a, b) => b.total_revenue - a.total_revenue);
       setPerformance(performanceData);
     } catch (error) {
       toast({
@@ -100,12 +109,34 @@ export default function CashierPerformanceReport() {
   const calculateProfit = (order: any) => {
     const items = order.items || [];
     const totalCost = items.reduce((sum: number, item: any) => {
-      const product = item.product;
-      const cost = product?.purchase_price || 0;
+      const cost = Number(item?.cost_price ?? 0) || 0;
       return sum + (cost * Number(item.quantity));
     }, 0);
     return Number(order.total_amount) - totalCost;
   };
+
+  const sortedPerformance = useMemo(() => {
+    const list = [...performance];
+    const key = sortKey;
+    const ord = sortOrder;
+    list.sort((a, b) => {
+      switch (key) {
+        case 'employee_name':
+          return compareScalar(a.employee_name.toLowerCase(), b.employee_name.toLowerCase(), ord);
+        case 'order_count':
+          return compareScalar(a.order_count, b.order_count, ord);
+        case 'total_revenue':
+          return compareScalar(a.total_revenue, b.total_revenue, ord);
+        case 'total_profit':
+          return compareScalar(a.total_profit, b.total_profit, ord);
+        case 'voided_orders':
+          return compareScalar(a.voided_orders, b.voided_orders, ord);
+        default:
+          return 0;
+      }
+    });
+    return list;
+  }, [performance, sortKey, sortOrder]);
 
   const totalRevenue = performance.reduce((sum, p) => sum + p.total_revenue, 0);
   const totalOrders = performance.reduce((sum, p) => sum + p.order_count, 0);
@@ -208,7 +239,7 @@ export default function CashierPerformanceReport() {
 
       <Card>
         <CardContent className="p-0">
-          {performance.length === 0 ? (
+          {sortedPerformance.length === 0 ? (
             <div className="text-center py-12">
               <p className="text-muted-foreground">Kassir faoliyati ma'lumotlari topilmadi</p>
             </div>
@@ -216,15 +247,59 @@ export default function CashierPerformanceReport() {
             <Table>
               <TableHeader>
                 <TableRow>
-                  <TableHead>Xodim</TableHead>
-                  <TableHead className="text-right">Sotuvlar soni</TableHead>
-                  <TableHead className="text-right">Jami tushum</TableHead>
-                  <TableHead className="text-right">Jami foyda</TableHead>
-                  <TableHead className="text-right">Bekor qilingan</TableHead>
+                  <SortableTableHead<CashierSortKey>
+                    columnKey="employee_name"
+                    sortKey={sortKey}
+                    sortOrder={sortOrder}
+                    onSort={toggleSort}
+                    kind="string"
+                  >
+                    Xodim
+                  </SortableTableHead>
+                  <SortableTableHead<CashierSortKey>
+                    columnKey="order_count"
+                    sortKey={sortKey}
+                    sortOrder={sortOrder}
+                    onSort={toggleSort}
+                    kind="number"
+                    align="right"
+                  >
+                    Sotuvlar soni
+                  </SortableTableHead>
+                  <SortableTableHead<CashierSortKey>
+                    columnKey="total_revenue"
+                    sortKey={sortKey}
+                    sortOrder={sortOrder}
+                    onSort={toggleSort}
+                    kind="number"
+                    align="right"
+                  >
+                    Jami tushum
+                  </SortableTableHead>
+                  <SortableTableHead<CashierSortKey>
+                    columnKey="total_profit"
+                    sortKey={sortKey}
+                    sortOrder={sortOrder}
+                    onSort={toggleSort}
+                    kind="number"
+                    align="right"
+                  >
+                    Jami foyda
+                  </SortableTableHead>
+                  <SortableTableHead<CashierSortKey>
+                    columnKey="voided_orders"
+                    sortKey={sortKey}
+                    sortOrder={sortOrder}
+                    onSort={toggleSort}
+                    kind="number"
+                    align="right"
+                  >
+                    Bekor qilingan
+                  </SortableTableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {performance.map((perf) => (
+                {sortedPerformance.map((perf) => (
                   <TableRow key={perf.employee_id}>
                     <TableCell className="font-medium">{perf.employee_name}</TableCell>
                     <TableCell className="text-right">{perf.order_count}</TableCell>

@@ -1,92 +1,115 @@
+/**
+ * Inventory Store (Zustand) - Manages inventory movements and stock calculations
+ */
+
 import { create } from 'zustand';
-import { persist } from 'zustand/middleware';
-import type { InventoryMovement } from '@/types/inventory';
+import type { InventoryMovement } from '@/types/database';
 
 interface InventoryState {
   movements: InventoryMovement[];
-  loading: boolean;
-
-  // Actions
+  stockByProductId: Record<string, number>;
+  
   loadFromStorage: () => void;
-  addMovement: (movement: Omit<InventoryMovement, 'id' | 'created_at'>) => void;
-  resetInventory: () => void; // dev helper
-
-  // Derived helpers
   getCurrentStockByProductId: (productId: string) => number;
   getMovementsByProductId: (productId: string) => InventoryMovement[];
+  addMovement: (movement: InventoryMovement) => void;
 }
 
-const STORAGE_KEY = 'pos_inventory_movements';
-
-const generateId = (): string => {
-  if (typeof crypto !== 'undefined' && crypto.randomUUID) {
-    return crypto.randomUUID();
+const buildStockMap = (movements: InventoryMovement[]) => {
+  const map: Record<string, number> = {};
+  for (const m of movements) {
+    const id = m.product_id;
+    if (!id) continue;
+    map[id] = (map[id] || 0) + (m.quantity || 0);
   }
-  return `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+  return map;
 };
 
-export const useInventoryStore = create<InventoryState>()(
-  persist(
-    (set, get) => ({
-      movements: [],
-      loading: false,
+export const useInventoryStore = create<InventoryState>((set, get) => ({
+  movements: [],
+  stockByProductId: {},
 
-      loadFromStorage: () => {
-        // This is handled by persist middleware automatically
-        // But we can add custom logic here if needed
-        try {
-          const stored = localStorage.getItem(STORAGE_KEY);
-          if (stored) {
-            const parsed = JSON.parse(stored);
-            if (parsed?.state?.movements) {
-              set({ movements: parsed.state.movements });
-            }
-          }
-        } catch (error) {
-          console.warn('Failed to load inventory from storage:', error);
-          set({ movements: [] });
-        }
-      },
-
-      addMovement: (movement: Omit<InventoryMovement, 'id' | 'created_at'>) => {
-        const newMovement: InventoryMovement = {
-          ...movement,
-          id: generateId(),
-          created_at: new Date().toISOString(),
-        };
-
-        set((state) => ({
-          movements: [...state.movements, newMovement],
-        }));
-      },
-
-      getCurrentStockByProductId: (productId: string) => {
-        const state = get();
-        const productMovements = state.movements.filter(
-          (m) => m.product_id === productId
-        );
-        return productMovements.reduce((sum, m) => sum + m.quantity, 0);
-      },
-
-      getMovementsByProductId: (productId: string) => {
-        const state = get();
-        return state.movements
-          .filter((m) => m.product_id === productId)
-          .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
-      },
-
-      resetInventory: () => {
-        set({ movements: [] });
-      },
-    }),
-    {
-      name: STORAGE_KEY,
-      partialize: (state) => ({
-        movements: state.movements,
-      }),
+  loadFromStorage: () => {
+    // Stub implementation - in production, this would load from IndexedDB/SQLite
+    // For now, we'll load from localStorage as a fallback
+    try {
+      const stored = localStorage.getItem('inventory_movements');
+      if (stored) {
+        const movements = JSON.parse(stored);
+        set({ movements, stockByProductId: buildStockMap(movements) });
+      }
+    } catch (error) {
+      console.warn('Failed to load inventory from storage:', error);
     }
-  )
-);
+  },
+
+  getCurrentStockByProductId: (productId: string) => {
+    const { stockByProductId } = get();
+    return stockByProductId[productId] || 0;
+  },
+
+  getMovementsByProductId: (productId: string) => {
+    const { movements } = get();
+    return movements.filter(m => m.product_id === productId);
+  },
+
+  addMovement: (movement: InventoryMovement) => {
+    const { movements } = get();
+    const updated = [...movements, movement];
+    set({ movements: updated, stockByProductId: buildStockMap(updated) });
+    
+    // Persist to storage
+    try {
+      localStorage.setItem('inventory_movements', JSON.stringify(updated));
+    } catch (error) {
+      console.warn('Failed to save inventory movements:', error);
+    }
+  },
+}));
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 

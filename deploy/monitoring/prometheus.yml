@@ -1,0 +1,71 @@
+# Prometheus config for the POS stack.
+# Reloaded via POST http://localhost:9090/-/reload (after editing).
+
+global:
+  scrape_interval:     15s
+  evaluation_interval: 15s
+  external_labels:
+    env: prod
+    service: pos
+
+rule_files:
+  - /etc/prometheus/alerts.yml
+
+# =============================================================================
+# Alertmanager wiring (Bosqich 17)
+# =============================================================================
+# Prometheus pushes firing alerts to Alertmanager, which then handles
+# de-duplication, grouping, routing and notification channel fan-out.
+# The Alertmanager service lives on the same compose network; its service
+# name resolves via docker DNS to the container IP.
+#
+# If you disable the monitoring profile, Prometheus will repeatedly log
+# `context deadline exceeded` trying to reach alertmanager:9093 — that's
+# expected (same as any retry loop). To silence it completely, comment
+# this whole block out along with the service.
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets: ['alertmanager:9093']
+      timeout: 10s
+      # API v2 is mandatory from AM 0.27+. Explicit here so a future image
+      # upgrade doesn't silently break the wiring.
+      api_version: v2
+
+scrape_configs:
+  # --- POS server ----------------------------------------------------------
+  - job_name: pos-server
+    # Docker-internal DNS: the `pos-server` service name resolves to the
+    # container IP on the shared compose network. Loopback auth bypass
+    # applies (127.0.0.1 check in hostServer) only to calls coming from the
+    # same container, so we still pass a Bearer token for safety.
+    static_configs:
+      - targets: ['pos-server:3333']
+    metrics_path: /metrics
+    scheme: http
+    authorization:
+      type: Bearer
+      # Set POS_METRICS_SECRET (or POS_HOST_SECRET) in /opt/pos/.env; compose
+      # substitutes it at startup via $__file reference below. For a pure
+      # docker-compose setup you can hard-code here or use a secrets file.
+      credentials_file: /etc/prometheus/pos-metrics-token
+
+  # --- Node exporter (host metrics) ---------------------------------------
+  - job_name: node
+    static_configs:
+      - targets: ['172.17.0.1:9100']   # default docker-bridge gateway
+    # If your host's docker bridge differs, adjust or use 'host.docker.internal'
+    # on Docker Desktop, or switch node-exporter to the pos default network.
+
+  # --- Self-scrape (Prometheus's own metrics) -----------------------------
+  - job_name: prometheus
+    static_configs:
+      - targets: ['localhost:9090']
+
+  # --- Alertmanager self-metrics (Bosqich 17) -----------------------------
+  # Exposes notification send rate, bucket sizes, and configuration errors.
+  # Dashboards can alert on `alertmanager_notifications_failed_total > 0`
+  # to catch credential expiry before pages go missing.
+  - job_name: alertmanager
+    static_configs:
+      - targets: ['alertmanager:9093']

@@ -7,6 +7,7 @@ import { useCartStore } from '@/store/cart.store';
 import { useInventoryStore } from '@/store/inventoryStore';
 import { formatMoneyUZS, formatNumberUZ } from '@/lib/format';
 import { formatUnit } from '@/utils/formatters';
+import { getProductImageDisplayUrl } from '@/lib/productImageUrl';
 
 interface ProductGridProps {
   products: Product[];
@@ -39,11 +40,22 @@ const ProductItem = memo(({ product, onClick }: { product: Product; onClick: () 
           ? 'border-gray-200 bg-gray-50 opacity-50 cursor-not-allowed dark:border-gray-800 dark:bg-gray-900' 
           : isLowStock
           ? 'border-orange-200 bg-orange-50 hover:border-orange-300 hover:bg-orange-100 dark:border-orange-800 dark:bg-orange-950 dark:hover:border-orange-700'
-          : 'border-gray-200 bg-white hover:border-primary hover:bg-primary/5 dark:border-gray-800 dark:bg-gray-900 dark:hover:border-primary'
+          : 'border-gray-200 bg-card hover:border-primary hover:bg-primary/5 dark:border-gray-800 dark:bg-gray-900 dark:hover:border-primary'
         }
       `}
     >
       <div className="flex items-start justify-between gap-3">
+        <div className="h-12 w-12 rounded-lg bg-muted flex-shrink-0 overflow-hidden flex items-center justify-center">
+          {product.image_url ? (
+            <img
+              src={getProductImageDisplayUrl(product.image_url) || product.image_url}
+              alt=""
+              className="h-full w-full object-cover"
+            />
+          ) : (
+            <Package className="h-6 w-6 text-muted-foreground" />
+          )}
+        </div>
         <div className="flex-1 min-w-0">
           <h3 className="font-semibold text-base mb-1 truncate">{product.name}</h3>
           <div className="flex items-center gap-2 mb-2">

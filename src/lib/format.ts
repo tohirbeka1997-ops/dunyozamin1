@@ -83,3 +83,50 @@ export function formatNumberUZ(
   const sign = roundedValue < 0 ? '-' : '';
   return sign + formattedInteger;
 }
+
+/**
+ * Formats customer balance with type and styling information
+ * SINGLE SOURCE OF TRUTH for customer balance display
+ * 
+ * @param balance - Customer balance (number)
+ * @returns Object with type, label, color, and badge variant
+ * 
+ * Balance logic:
+ * - balance < 0: Debt (customer owes money) - RED
+ * - balance > 0: Positive balance (prepaid/credit) - GREEN
+ * - balance == 0: Zero balance - GRAY
+ */
+export function formatCustomerBalance(balance: number | null | undefined): {
+  type: 'debt' | 'balance' | 'zero';
+  label: string;
+  color: string;
+  variant: 'destructive' | 'default' | 'outline';
+} {
+  const balanceNum = Number(balance || 0);
+  
+  if (balanceNum < 0) {
+    // Debt (negative balance) - customer owes money
+    return {
+      type: 'debt',
+      label: `Qarz: ${formatMoneyUZS(Math.abs(balanceNum))}`,
+      color: 'text-destructive',
+      variant: 'destructive',
+    };
+  } else if (balanceNum > 0) {
+    // Positive balance (prepaid/credit) - customer has credit
+    return {
+      type: 'balance',
+      label: `Haq: ${formatMoneyUZS(balanceNum)}`,
+      color: 'text-success',
+      variant: 'default',
+    };
+  } else {
+    // Zero balance
+    return {
+      type: 'zero',
+      label: '0 so\'m',
+      color: 'text-muted-foreground',
+      variant: 'outline',
+    };
+  }
+}

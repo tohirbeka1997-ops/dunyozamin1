@@ -1,0 +1,31 @@
+# =============================================================================
+# POS Server — docker-compose production override (CI/CD)
+# =============================================================================
+# Used on the Hetzner host in place of building from source. The image is
+# pulled from GHCR by GitHub Actions.
+#
+# Usage:
+#   cp docker-compose.yaml           /opt/pos/docker-compose.yaml
+#   cp docker-compose.prod.yaml      /opt/pos/docker-compose.prod.yaml
+#   cp .env                          /opt/pos/.env
+#
+#   cd /opt/pos
+#   docker compose \
+#     -f docker-compose.yaml \
+#     -f docker-compose.prod.yaml \
+#     pull && docker compose up -d
+# =============================================================================
+
+name: pos
+
+services:
+  pos-server:
+    # Override the default locally-built image with the one published by CI.
+    # POS_IMAGE defaults to the "latest" tag on GHCR for this repo; pin to
+    # a SHA for zero-surprise deploys.
+    image: ${POS_IMAGE:-ghcr.io/OWNER/REPO:latest}
+    # NOTE: we intentionally do NOT `reset` the `build:` block from the base
+    # file — that requires compose 2.24+. Instead, always use
+    #   docker compose ... pull && docker compose ... up -d
+    # which bypasses the build step (pull_policy below is the belt-and-braces).
+    pull_policy: always

@@ -1,0 +1,34 @@
+# ============================================================================
+# systemd unit for pos-print-agent on Linux cashier PCs.
+# ----------------------------------------------------------------------------
+# Install:
+#   sudo cp scripts/pos-print-agent.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now pos-print-agent
+#
+# Adjust WorkingDirectory and User below to match your deployment.
+# ============================================================================
+[Unit]
+Description=POS Print Agent (local ESC/POS bridge)
+After=network.target
+
+[Service]
+Type=simple
+User=pos
+WorkingDirectory=/opt/pos-print-agent
+ExecStart=/usr/bin/node /opt/pos-print-agent/agent.js
+Restart=on-failure
+RestartSec=2s
+StandardOutput=append:/var/log/pos-print-agent.log
+StandardError=append:/var/log/pos-print-agent.log
+Environment=NODE_ENV=production
+
+# Harden: the agent only needs outbound HTTP + the printer device.
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+NoNewPrivileges=yes
+ReadWritePaths=/var/log
+
+[Install]
+WantedBy=multi-user.target

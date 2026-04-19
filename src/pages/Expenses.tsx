@@ -20,6 +20,7 @@ import {
 } from '@/components/ui/table';
 import { useToast } from '@/hooks/use-toast';
 import { useAuth } from '@/contexts/AuthContext';
+import { useConfirmDialog } from '@/contexts/ConfirmDialogContext';
 import { getExpenses, getExpenseStats, getProfiles, deleteExpense } from '@/db/api';
 import type { ExpenseWithDetails, Profile, ExpenseCategory, ExpensePaymentMethod } from '@/types/database';
 import { Search, Eye, Edit, Trash2, Plus, Wallet, TrendingDown, Calendar, Download } from 'lucide-react';
@@ -28,6 +29,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import ExpenseFormDialog from '@/components/expenses/ExpenseFormDialog';
 import { ErrorBoundary } from '@/components/common/ErrorBoundary';
 import { invalidateDashboardQueries } from '@/utils/dashboard';
+import { formatDate, todayYMD } from '@/lib/datetime';
 
 const EXPENSE_CATEGORIES: ExpenseCategory[] = [
   'Ijara',
@@ -50,6 +52,7 @@ export default function Expenses() {
   const { toast } = useToast();
   const { profile } = useAuth();
   const queryClient = useQueryClient();
+  const confirmDialog = useConfirmDialog();
   
   const [searchTerm, setSearchTerm] = useState('');
   const [dateFrom, setDateFrom] = useState<string>('');
@@ -57,6 +60,7 @@ export default function Expenses() {
   const [categoryFilter, setCategoryFilter] = useState<string>('all');
   const [paymentMethodFilter, setPaymentMethodFilter] = useState<string>('all');
   const [employeeFilter, setEmployeeFilter] = useState<string>('all');
+  const [sortBy, setSortBy] = useState<string>('expense_date-desc');
   const [formDialogOpen, setFormDialogOpen] = useState(false);
   const [editingExpense, setEditingExpense] = useState<ExpenseWithDetails | null>(null);
   const [employees, setEmployees] = useState<Profile[]>([]);
@@ -91,8 +95,7 @@ export default function Expenses() {
           search: searchTerm || undefined,
         });
       } catch (error) {
-        const { logSupabaseError } = await import('@/lib/supabaseErrorLogger');
-        logSupabaseError(error, { table: 'expenses', operation: 'select', queryKey: 'expenses', userId: user?.id });
+        console.error('Expenses error:', error);
         throw error;
       }
     },
@@ -102,6 +105,24 @@ export default function Expenses() {
 
   // Calculate filtered total from expenses (for "Jami xarajatlar" card)
   const filteredTotal = expenses?.reduce((sum, e) => sum + (e?.amount || 0), 0) || 0;
+
+  const sortedExpenses = (() => {
+    const list = Array.isArray(expenses) ? expenses : [];
+    const [field, dir] = String(sortBy || 'expense_date-desc').split('-');
+    const direction = dir === 'asc' ? 1 : -1;
+    return [...list].sort((a: any, b: any) => {
+      if (field === 'expense_date') {
+        return (new Date(a.expense_date).getTime() - new Date(b.expense_date).getTime()) * direction;
+      }
+      if (field === 'amount') {
+        return (Number(a.amount) - Number(b.amount)) * direction;
+      }
+      if (field === 'category') {
+        return String(a.category || '').localeCompare(String(b.category || ''), undefined, { numeric: true }) * direction;
+      }
+      return 0;
+    });
+  })();
 
   // Fetch stats - today and monthly are always unfiltered, total uses filtered data
   const { data: stats, isLoading: statsLoading, error: statsError } = useQuery({
@@ -113,8 +134,7 @@ export default function Expenses() {
           dateTo: dateTo || undefined,
         });
       } catch (error) {
-        const { logSupabaseError } = await import('@/lib/supabaseErrorLogger');
-        logSupabaseError(error, { table: 'expenses', operation: 'getStats', queryKey: 'expenseStats', userId: user?.id });
+        console.error('Expense stats error:', error);
         throw error;
       }
     },
@@ -154,7 +174,14 @@ export default function Expenses() {
   };
 
   const handleDelete = async (id: string, expenseNumber: string) => {
-    if (!confirm(`"${expenseNumber}" xarajatini o'chirishni tasdiqlaysizmi? Bu amalni qaytarib bo'lmaydi.`)) return;
+    const confirmed = await confirmDialog({
+      title: "Ogohlantirish",
+      description: `"${expenseNumber}" xarajatini o'chirishni tasdiqlaysizmi? Bu amalni qaytarib bo'lmaydi.`,
+      confirmText: "O'chirish",
+      cancelText: "Bekor qilish",
+      variant: 'destructive',
+    });
+    if (!confirmed) return;
     deleteMutation.mutate(id);
   };
 
@@ -230,7 +257,7 @@ export default function Expenses() {
     // Generate filename with date range
     const dateStr = dateFrom && dateTo 
       ? `${dateFrom}_${dateTo}`
-      : new Date().toISOString().split('T')[0];
+      : todayYMD();
     link.download = `xarajatlar_${dateStr}.csv`;
     
     document.body.appendChild(link);
@@ -347,7 +374,7 @@ export default function Expenses() {
           <CardTitle>Filtrlar</CardTitle>
         </CardHeader>
         <CardContent>
-          <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-7 gap-4">
+          <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-8 gap-4">
             <div className="relative">
               <Search className="absolute left-3 top-3 h-4 w-4 text-muted-foreground" />
               <Input
@@ -417,6 +444,20 @@ export default function Expenses() {
               </SelectContent>
             </Select>
 
+            <Select value={sortBy} onValueChange={setSortBy}>
+              <SelectTrigger>
+                <SelectValue placeholder="Saralash" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="expense_date-desc">Eng yangisi</SelectItem>
+                <SelectItem value="expense_date-asc">Eng eskisi</SelectItem>
+                <SelectItem value="amount-desc">Summa (Qimmat → Arzon)</SelectItem>
+                <SelectItem value="amount-asc">Summa (Arzon → Qimmat)</SelectItem>
+                <SelectItem value="category-asc">Kategoriya (A-Z)</SelectItem>
+                <SelectItem value="category-desc">Kategoriya (Z-A)</SelectItem>
+              </SelectContent>
+            </Select>
+
             <Button variant="outline" onClick={handleResetFilters}>
               Tozalash
             </Button>
@@ -471,7 +512,7 @@ export default function Expenses() {
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {expenses?.map((expense) => {
+                  {sortedExpenses.map((expense) => {
                     if (!expense || !expense.id) return null;
                     return (
                       <TableRow key={expense.id}>
@@ -479,7 +520,7 @@ export default function Expenses() {
                           {expense.expense_number || '-'}
                         </TableCell>
                         <TableCell>
-                          {expense.expense_date ? new Date(expense.expense_date).toLocaleDateString() : '-'}
+                          {expense.expense_date ? formatDate(expense.expense_date) : '-'}
                         </TableCell>
                         <TableCell>
                           <Badge variant="outline">{expense.category || 'Noma\'lum'}</Badge>

@@ -1,0 +1,3 @@
+# Optional: regenerate src/locales/en.json and ru.json from uz.json
+# pip install -r requirements-i18n.txt && npm run i18n:translate
+deep-translator>=1.11.4

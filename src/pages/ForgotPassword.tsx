@@ -6,36 +6,25 @@ import { Label } from '@/components/ui/label';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { useToast } from '@/hooks/use-toast';
-import { supabase } from '@/lib/supabase';
 import { useTranslation } from 'react-i18next';
-import { Store, ArrowLeft, Mail, CheckCircle2 } from 'lucide-react';
+import { Store, ArrowLeft, CheckCircle2, Copy } from 'lucide-react';
+import { requestPasswordReset } from '@/db/api';
 
 export default function ForgotPassword() {
   const navigate = useNavigate();
   const { toast } = useToast();
   const { t } = useTranslation();
   const [loading, setLoading] = useState(false);
-  const [email, setEmail] = useState('');
-  const [emailSent, setEmailSent] = useState(false);
+  const [identifier, setIdentifier] = useState(''); // Username or phone
+  const [resetData, setResetData] = useState<{ token_id: string; code: string; expires_at: string } | null>(null);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
 
-    if (!email) {
+    if (!identifier || !identifier.trim()) {
       toast({
         title: t('auth.required_field'),
-        description: t('auth.email_required'),
-        variant: 'destructive',
-      });
-      return;
-    }
-
-    // Validate email format
-    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-    if (!emailRegex.test(email)) {
-      toast({
-        title: t('auth.required_field'),
-        description: t('auth.invalid_email_format'),
+        description: 'Login yoki telefon raqam kiritilishi shart',
         variant: 'destructive',
       });
       return;
@@ -43,23 +32,16 @@ export default function ForgotPassword() {
 
     setLoading(true);
     try {
-      const { error } = await supabase.auth.resetPasswordForEmail(email, {
-        redirectTo: `${window.location.origin}/reset-password`,
-      });
-
-      if (error) {
-        throw error;
-      }
-
-      setEmailSent(true);
+      const result = await requestPasswordReset(identifier.trim());
+      setResetData(result);
       toast({
-        title: t('auth.forgot_password_form.link_sent'),
-        description: t('auth.forgot_password_form.check_email'),
+        title: 'Kod yaratildi',
+        description: 'Kodni nusxalab, parolni tiklashga o‘ting',
       });
-    } catch (error) {
+    } catch (error: any) {
       toast({
         title: t('auth.something_went_wrong'),
-        description: error instanceof Error ? error.message : t('auth.forgot_password_form.failed_to_send'),
+        description: error?.message || error?.error?.message || 'Parolni tiklash kodini so‘rab bo‘lmadi',
         variant: 'destructive',
       });
     } finally {
@@ -67,7 +49,26 @@ export default function ForgotPassword() {
     }
   };
 
-  if (emailSent) {
+  const handleCopyCode = () => {
+    if (resetData?.code) {
+      navigator.clipboard.writeText(resetData.code);
+      toast({
+        title: 'Nusxalandi',
+        description: 'Kod clipboard’ga nusxalandi',
+      });
+    }
+  };
+
+  const handleContinueToReset = () => {
+    if (resetData) {
+      navigate('/reset-password', { state: { token_id: resetData.token_id } });
+    }
+  };
+
+  if (resetData) {
+    const expiresAt = new Date(resetData.expires_at);
+    const minutesRemaining = Math.max(0, Math.ceil((expiresAt.getTime() - Date.now()) / 60000));
+
     return (
       <div className="min-h-screen flex items-center justify-center bg-muted/30 p-4">
         <Card className="w-full max-w-md">
@@ -77,20 +78,46 @@ export default function ForgotPassword() {
                 <CheckCircle2 className="h-8 w-8 text-green-600 dark:text-green-400" />
               </div>
             </div>
-            <CardTitle className="text-2xl font-bold">{t('auth.forgot_password_form.link_sent')}</CardTitle>
-            <CardDescription>{t('auth.forgot_password_form.check_email_desc')}</CardDescription>
+            <CardTitle className="text-2xl font-bold">Tiklash kodi yaratildi</CardTitle>
+            <CardDescription>Quyidagi kodni nusxalab, parolni tiklashga o‘ting</CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
             <Alert>
-              <Mail className="h-4 w-4" />
               <AlertDescription>
-                {t('auth.forgot_password_form.email_sent_to', { email })}
+                Tiklash kodi {minutesRemaining} daqiqadan so‘ng eskiradi
               </AlertDescription>
             </Alert>
-            <div className="text-sm text-muted-foreground space-y-2">
-              <p>{t('auth.forgot_password_form.email_instructions_1')}</p>
-              <p>{t('auth.forgot_password_form.email_instructions_2')}</p>
+            <div className="space-y-2">
+              <Label>Tiklash kodi</Label>
+              <div className="flex items-center gap-2">
+                <Input
+                  value={resetData.code}
+                  readOnly
+                  className="text-2xl font-mono text-center tracking-widest"
+                />
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="icon"
+                  onClick={handleCopyCode}
+                  title="Kodni nusxalash"
+                >
+                  <Copy className="h-4 w-4" />
+                </Button>
+              </div>
             </div>
+            <div className="text-sm text-muted-foreground space-y-2">
+              <p>1. Yuqoridagi tiklash kodini nusxalang</p>
+              <p>2. Pastdagi “Parolni tiklashga o‘tish” tugmasini bosing</p>
+              <p>3. Kodni va yangi parolni kiriting</p>
+            </div>
+            <Button
+              type="button"
+              className="w-full"
+              onClick={handleContinueToReset}
+            >
+              Parolni tiklashga o‘tish
+            </Button>
             <Button
               type="button"
               variant="outline"
@@ -105,11 +132,11 @@ export default function ForgotPassword() {
               variant="ghost"
               className="w-full"
               onClick={() => {
-                setEmailSent(false);
-                setEmail('');
+                setResetData(null);
+                setIdentifier('');
               }}
             >
-              {t('auth.forgot_password_form.send_another')}
+              Request Another Code
             </Button>
           </CardContent>
         </Card>
@@ -127,25 +154,25 @@ export default function ForgotPassword() {
             </div>
           </div>
           <CardTitle className="text-2xl font-bold">{t('auth.forgot_password_form.title')}</CardTitle>
-          <CardDescription>{t('auth.forgot_password_form.description')}</CardDescription>
+          <CardDescription>Enter your username or phone number to receive a reset code</CardDescription>
         </CardHeader>
         <CardContent>
           <form onSubmit={handleSubmit} className="space-y-4">
             <div className="space-y-2">
-              <Label htmlFor="email">{t('auth.email')}</Label>
+              <Label htmlFor="identifier">Login yoki telefon raqam</Label>
               <Input
-                id="email"
-                type="email"
-                placeholder={t('auth.email_placeholder')}
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
+                id="identifier"
+                type="text"
+                placeholder="Login yoki telefon raqam kiriting"
+                value={identifier}
+                onChange={(e) => setIdentifier(e.target.value)}
                 disabled={loading}
-                autoComplete="email"
+                autoComplete="username"
                 required
               />
             </div>
             <Button type="submit" className="w-full" disabled={loading}>
-              {loading ? t('auth.forgot_password_form.sending') : t('auth.forgot_password_form.send_link')}
+              {loading ? 'Kod yaratilmoqda...' : 'Tiklash kodini yaratish'}
             </Button>
             <Button
               type="button"

@@ -1,0 +1,93 @@
+# =============================================================================
+# POS Server — docker-compose (production baseline)
+# =============================================================================
+# Ishlatish:
+#   1) .env faylini yarating: cp .env.server.example .env
+#   2) POS_HOST_SECRET va VITE_POS_RPC_SECRET ni toldiring (bir xil qiymat).
+#   3) docker compose up -d --build
+#   4) docker compose logs -f pos-server
+#
+# Nginx + frontend oldinga qoyilsa — docker-compose.override.yaml yordamida
+# port mapping'ni 127.0.0.1:3333'ga cheklang (docker-compose.override.yaml.example
+# ga qarang).
+# =============================================================================
+
+name: pos
+
+services:
+  pos-server:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: pos-server:latest
+    container_name: pos-server
+    restart: unless-stopped
+
+    # ---------------------------------------------------------------------
+    # Environment — aksariyat qiymatlar .env faylidan olinadi.
+    # POS_HOST_SECRET va VITE_POS_RPC_SECRET bir xil bolishi SHART.
+    # ---------------------------------------------------------------------
+    environment:
+      NODE_ENV: production
+      POS_SERVER_MODE: "1"
+      POS_DATA_DIR: /var/lib/pos
+      POS_HOST_BIND: 0.0.0.0
+      POS_HOST_PORT: "3333"
+      POS_HOST_SECRET: ${POS_HOST_SECRET:?POS_HOST_SECRET is required}
+      POS_CORS_ORIGINS: ${POS_CORS_ORIGINS:-}
+      POS_BACKUP_ENABLED: ${POS_BACKUP_ENABLED:-1}
+      POS_BACKUP_INTERVAL_MIN: ${POS_BACKUP_INTERVAL_MIN:-30}
+      POS_BACKUP_MAX: ${POS_BACKUP_MAX:-48}
+      TZ: ${TZ:-Asia/Tashkent}
+
+    # ---------------------------------------------------------------------
+    # Volume: SQLite DB, backups, logs, config JSON shu yerda saqlanadi.
+    # Production: named volume (Docker managed) — backup qilish oson.
+    # ---------------------------------------------------------------------
+    volumes:
+      - pos-data:/var/lib/pos
+
+    # ---------------------------------------------------------------------
+    # Ports: public'ga ochmang. Nginx reverse-proxy orqali 443 port bilan
+    # servis qiling. Lokal test uchun override.yaml da 3333 ni ochish mumkin.
+    # ---------------------------------------------------------------------
+    ports:
+      - "127.0.0.1:3333:3333"
+
+    # ---------------------------------------------------------------------
+    # Healthcheck — /health endpoint.
+    # Dockerfile'dagi bilan bir xil, lekin compose'da logs uchun ham foydali.
+    # ---------------------------------------------------------------------
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3333/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      start_period: 15s
+      retries: 3
+
+    # ---------------------------------------------------------------------
+    # Log driver — journald/syslog o'rniga JSON file (ELK/Loki'ga oson qo'shiladi)
+    # ---------------------------------------------------------------------
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+
+    # ---------------------------------------------------------------------
+    # Security hardening
+    # ---------------------------------------------------------------------
+    read_only: false          # SQLite writable volume bor, lekin / read-only emas
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    ulimits:
+      nofile:
+        soft: 8192
+        hard: 16384
+
+volumes:
+  pos-data:
+    name: pos-data
+    driver: local

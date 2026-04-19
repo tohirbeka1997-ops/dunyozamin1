@@ -1,5 +1,6 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
+import i18n from '@/lib/i18n';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -22,18 +23,34 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog';
-import { Save, AlertTriangle, Building2, Monitor, CreditCard, Receipt, Package, Hash, Shield, Globe, Wifi, WifiOff, RefreshCw, Trash2, Database } from 'lucide-react';
+import {
+  Save,
+  AlertTriangle,
+  Building2,
+  Monitor,
+  CreditCard,
+  Receipt,
+  Package,
+  Hash,
+  Shield,
+  Globe,
+  Wifi,
+  RefreshCw,
+  Trash2,
+  Server,
+  Gift,
+  Loader2,
+  HardDrive,
+  Database,
+} from 'lucide-react';
 import { getSettingsByCategory, bulkUpdateSettings } from '@/db/api';
 import { useAuth } from '@/contexts/AuthContext';
 import { useToast } from '@/hooks/use-toast';
-import { useNetworkStatus } from '@/hooks/useNetworkStatus';
-import { useSyncEngine } from '@/hooks/useSyncEngine';
-import { clearAllLocalData, getAllOutboxItems } from '@/offline/db';
-import { resetDemoData, isResetDemoDataAvailable } from '@/lib/resetDemoData';
-import { resetDatabase, isDatabaseResetAvailable } from '@/lib/resetDatabase';
+// Removed: Network status, sync engine, offline DB, reset functions - no longer using Supabase
 import { clearAllBrowserStorageAndReload } from '@/lib/clearBrowserStorage';
 import { useQueryClient } from '@tanstack/react-query';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
+import { isElectron, requireElectron, handleIpcResponse } from '@/utils/electron';
 import type {
   CompanySettings,
   POSSettings,
@@ -47,25 +64,46 @@ import type {
 } from '@/types/database';
 import PageBreadcrumb from '@/components/common/PageBreadcrumb';
 
-// Offline Settings Tab Component
+async function clearAllLocalData() {
+  // Minimal safe implementation: clear browser storage and reload.
+  try {
+    localStorage.clear();
+    sessionStorage.clear();
+  } catch {}
+}
+
+async function resetDatabase(payload: { confirmText: string }) {
+  if (!isElectron()) {
+    throw new Error(i18n.t('settings.errors.dbResetDesktopOnly'));
+  }
+  const api = requireElectron();
+  // This will relaunch the app on success
+  return handleIpcResponse(api.settings.resetDatabase(payload));
+}
+
+function clearLocalMockDataForDbReset() {
+  // Some legacy modules still store data in localStorage (e.g., expenses/returns).
+  // Resetting SQLite alone won't clear these, so we remove them explicitly.
+  const keys = [
+    'pos_expenses',
+    'pos_sales_returns',
+    'pos_sales_return_items',
+  ];
+  try {
+    for (const k of keys) localStorage.removeItem(k);
+  } catch {
+    // ignore storage errors
+  }
+}
+
+/** Mahalliy maʼlumotlar — bulut sinxroni yo‘q; faqat brauzer qatlamini tozalash */
 function OfflineSettingsTab() {
   const { t } = useTranslation();
   const { toast } = useToast();
-  const { isOnline, syncStatus, lastSyncAt, pendingCount } = useNetworkStatus();
-  const { syncNow, isSyncing } = useSyncEngine();
-  const [offlineEnabled, setOfflineEnabled] = useState(true); // Always enabled for now
   const [clearingCache, setClearingCache] = useState(false);
 
-  const handleRetrySync = async () => {
-    await syncNow();
-    toast({
-      title: t('settings.offline.sync_started'),
-      description: t('settings.offline.sync_started_desc'),
-    });
-  };
-
   const handleClearCache = async () => {
-    if (!confirm(t('settings.offline.clear_cache_confirm'))) {
+    if (!confirm(t('settings.offline.clearConfirm'))) {
       return;
     }
 
@@ -73,13 +111,13 @@ function OfflineSettingsTab() {
     try {
       await clearAllLocalData();
       toast({
-        title: t('settings.offline.cache_cleared'),
-        description: t('settings.offline.cache_cleared_desc'),
+        title: t('settings.offline.toastClearedTitle'),
+        description: t('settings.offline.toastClearedDesc'),
       });
     } catch (error) {
       toast({
-        title: t('settings.offline.error'),
-        description: t('settings.offline.failed_to_clear', { error: error instanceof Error ? error.message : t('common.error') }),
+        title: t('settings.offline.toastErrTitle'),
+        description: error instanceof Error ? error.message : t('settings.offline.toastClearErr'),
         variant: 'destructive',
       });
     } finally {
@@ -90,128 +128,47 @@ function OfflineSettingsTab() {
   return (
     <Card>
       <CardHeader>
-        <CardTitle>{t('settings.offline.title')}</CardTitle>
+        <CardTitle className="flex items-center gap-2">
+          <HardDrive className="h-5 w-5" />
+          {t('settings.offline.title')}
+        </CardTitle>
         <CardDescription>{t('settings.offline.description')}</CardDescription>
       </CardHeader>
       <CardContent className="space-y-6">
-        {/* Status Alert */}
         <Alert>
           <Wifi className="h-4 w-4" />
-          <AlertTitle>{t('settings.offline.connection_status')}</AlertTitle>
-          <AlertDescription>
-            {isOnline ? (
-              <div className="space-y-1">
-                <p>{t('settings.offline.online')}</p>
-                {pendingCount > 0 && (
-                  <p className="text-sm text-muted-foreground">
-                    {t('settings.offline.pending_sync', { count: pendingCount })}
-                  </p>
-                )}
-              </div>
-            ) : (
-              <div className="space-y-1">
-                <p>{t('settings.offline.offline')}</p>
-                <p className="text-sm text-muted-foreground">
-                  {t('settings.offline.changes_will_sync')}
-                </p>
-              </div>
-            )}
+          <AlertTitle>{t('settings.offline.autonomousTitle')}</AlertTitle>
+          <AlertDescription className="text-sm space-y-2">
+            <p>
+              {t('settings.offline.autonomousP1a')}{' '}
+              <strong>{t('settings.offline.autonomousP1b')}</strong> {t('settings.offline.autonomousP1c')}
+            </p>
+            <p className="text-muted-foreground text-xs">{t('settings.offline.autonomousP2')}</p>
           </AlertDescription>
         </Alert>
 
-        {/* Sync Status */}
-        <div className="space-y-2">
-          <Label>{t('settings.offline.sync_status')}</Label>
-          <div className="flex items-center gap-2">
-            {syncStatus === 'syncing' || isSyncing ? (
-              <div className="flex items-center gap-2">
-                <RefreshCw className="h-4 w-4 animate-spin" />
-                <span>{t('settings.offline.syncing')}</span>
-              </div>
-            ) : syncStatus === 'failed' ? (
-              <div className="flex items-center gap-2 text-destructive">
-                <AlertTriangle className="h-4 w-4" />
-                <span>{t('settings.offline.sync_failed')}</span>
-              </div>
-            ) : syncStatus === 'success' ? (
-              <div className="flex items-center gap-2 text-green-600">
-                <Wifi className="h-4 w-4" />
-                <span>{t('settings.offline.synced')}</span>
-              </div>
-            ) : (
-              <div className="flex items-center gap-2 text-muted-foreground">
-                <WifiOff className="h-4 w-4" />
-                <span>{t('settings.offline.idle')}</span>
-              </div>
-            )}
-          </div>
-          {lastSyncAt && (
-            <p className="text-xs text-muted-foreground">
-              {t('settings.offline.last_sync').replace('{{date}}', new Date(lastSyncAt).toLocaleString())}
-            </p>
-          )}
-        </div>
-
-        {/* Offline Mode Toggle */}
-        <div className="flex items-center justify-between">
-          <div className="space-y-0.5">
-            <Label htmlFor="offline-enabled">{t('settings.offline.enable_offline_mode')}</Label>
-            <p className="text-xs text-muted-foreground">
-              {t('settings.offline.enable_offline_desc')}
-            </p>
-          </div>
-          <Switch
-            id="offline-enabled"
-            checked={offlineEnabled}
-            onCheckedChange={setOfflineEnabled}
-            disabled
-          />
-        </div>
-
-        {/* Actions */}
         <div className="space-y-3 border-t pt-6">
-          <div className="flex items-center justify-between">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
             <div className="space-y-0.5">
-              <Label>{t('settings.offline.manual_sync')}</Label>
-              <p className="text-xs text-muted-foreground">
-                {t('settings.offline.manual_sync_desc')}
-              </p>
-            </div>
-            <Button
-              variant="outline"
-              onClick={handleRetrySync}
-              disabled={!isOnline || isSyncing || pendingCount === 0}
-            >
-              <RefreshCw className={`h-4 w-4 mr-2 ${isSyncing ? 'animate-spin' : ''}`} />
-              {t('settings.offline.retry_sync')}
-            </Button>
-          </div>
-
-          <div className="flex items-center justify-between">
-            <div className="space-y-0.5">
-              <Label>{t('settings.offline.clear_cache')}</Label>
-              <p className="text-xs text-muted-foreground">
-                {t('settings.offline.clear_cache_desc')}
-              </p>
+              <Label>{t('settings.offline.clearTitle')}</Label>
+              <p className="text-xs text-muted-foreground max-w-xl">{t('settings.offline.clearDesc')}</p>
             </div>
             <Button
               variant="destructive"
+              className="shrink-0"
               onClick={handleClearCache}
               disabled={clearingCache}
             >
               <Trash2 className="h-4 w-4 mr-2" />
-              {clearingCache ? t('settings.offline.clearing') : t('settings.offline.clear_cache')}
+              {clearingCache ? t('settings.offline.clearing') : t('settings.offline.clearBtn')}
             </Button>
           </div>
         </div>
 
-        {/* Info */}
         <Alert>
           <AlertTriangle className="h-4 w-4" />
-          <AlertTitle>{t('settings.offline.about_offline')}</AlertTitle>
-          <AlertDescription className="text-xs">
-            {t('settings.offline.about_offline_desc')}
-          </AlertDescription>
+          <AlertTitle>{t('settings.offline.noteTitle')}</AlertTitle>
+          <AlertDescription className="text-xs">{t('settings.offline.noteDesc')}</AlertDescription>
         </Alert>
       </CardContent>
     </Card>
@@ -219,6 +176,7 @@ function OfflineSettingsTab() {
 }
 
 export default function Settings() {
+  const { t } = useTranslation();
   const { profile } = useAuth();
   const { toast } = useToast();
   const queryClient = useQueryClient();
@@ -231,6 +189,23 @@ export default function Settings() {
   const [clearingLocal, setClearingLocal] = useState(false);
   const [showResetConfirm, setShowResetConfirm] = useState(false);
   const [resetConfirmText, setResetConfirmText] = useState('');
+  /** Tab to activate after user discards unsaved changes */
+  const pendingTabRef = useRef<string | null>(null);
+
+  // Batch (partiya) mode config (DB settings)
+  const [batchCfgLoading, setBatchCfgLoading] = useState(false);
+  const [batchCfg, setBatchCfg] = useState<{
+    enabled: boolean;
+    cutoverAt: string | null;
+    costMode: string | null;
+  }>({ enabled: false, cutoverAt: null, costMode: null });
+
+  // HOST/CLIENT network mode config (local file in userData)
+  const [posNetConfig, setPosNetConfig] = useState<any>(null);
+  const [posNetLoading, setPosNetLoading] = useState(false);
+  const [posNetSaving, setPosNetSaving] = useState(false);
+  const [posNetTesting, setPosNetTesting] = useState(false);
+  const [posNetTestResult, setPosNetTestResult] = useState<{ ok: boolean; message: string } | null>(null);
 
   const [companySettings, setCompanySettings] = useState<CompanySettings>({
     name: '',
@@ -270,12 +245,13 @@ export default function Settings() {
   const [receiptSettings, setReceiptSettings] = useState<ReceiptSettings>({
     auto_print: true,
     header_text: '',
+    middle_text: '',
     footer_text: '',
     show_logo: true,
     show_cashier: true,
     show_customer: true,
     show_sku: true,
-    paper_size: '80mm',
+    paper_size: '78mm',
   });
 
   const [inventorySettings, setInventorySettings] = useState<InventorySettings>({
@@ -316,14 +292,145 @@ export default function Settings() {
     decimal_separator: '.',
   });
 
+  /** Usta (master-tier) mijoz loyalty — `settings.category` = sales */
+  const [masterLoyaltyEnabled, setMasterLoyaltyEnabled] = useState(false);
+  const [masterLoyaltyPointsPerUzs, setMasterLoyaltyPointsPerUzs] = useState(1000);
+  const [generalLoyaltyEnabled, setGeneralLoyaltyEnabled] = useState(false);
+  const [loyaltyEarnScope, setLoyaltyEarnScope] = useState<'master_only' | 'all_registered' | 'exclude_walk_in'>(
+    'master_only'
+  );
+  const [loyaltyEarnPointsPerUzs, setLoyaltyEarnPointsPerUzs] = useState(1000);
+  const [loyaltyMinOrderUzs, setLoyaltyMinOrderUzs] = useState(0);
+  const [loyaltyRedeemEnabled, setLoyaltyRedeemEnabled] = useState(false);
+  const [loyaltyRedeemPointsPerUzs, setLoyaltyRedeemPointsPerUzs] = useState(100);
+  const [loyaltyRedeemMinPoints, setLoyaltyRedeemMinPoints] = useState(1);
+  const [loyaltyRedeemMaxPercent, setLoyaltyRedeemMaxPercent] = useState(50);
+
   useEffect(() => {
     loadAllSettings();
+    loadPosNetConfig();
   }, []);
 
-  const loadAllSettings = async () => {
+  useEffect(() => {
+    if (batchCfg.enabled && inventorySettings.cost_calculation === 'average_cost') {
+      setInventorySettings((prev) => ({ ...prev, cost_calculation: 'latest_purchase' }));
+      setHasUnsavedChanges(true);
+    }
+  }, [batchCfg.enabled, inventorySettings.cost_calculation]);
+
+  const loadBatchConfig = async () => {
+    if (!isElectron()) return;
     try {
-      setLoading(true);
-      const [company, pos, payment, tax, receipt, inventory, numbering, security, localization] =
+      setBatchCfgLoading(true);
+      const api = requireElectron();
+      const enabled = await handleIpcResponse<any>(api.settings.get('inventory.batch_mode_enabled')).catch(() => false);
+      const cutoverAt = await handleIpcResponse<any>(api.settings.get('inventory.batch_cutover_at')).catch(() => null);
+      const costMode = await handleIpcResponse<any>(api.settings.get('inventory.batch_opening_cost_mode')).catch(
+        () => 'last_received_po_cost'
+      );
+      setBatchCfg({
+        enabled: !!enabled,
+        cutoverAt: cutoverAt ? String(cutoverAt) : null,
+        costMode: costMode ? String(costMode) : null,
+      });
+    } finally {
+      setBatchCfgLoading(false);
+    }
+  };
+
+  const loadPosNetConfig = async () => {
+    try {
+      setPosNetLoading(true);
+      setPosNetTestResult(null);
+      const api = (window as any)?.posApi?.appConfig;
+      if (!api?.get) return;
+      const res = await api.get();
+      if (res?.success) {
+        setPosNetConfig(res.data);
+      } else {
+        throw new Error(res?.error?.message || 'Failed to load POS network config');
+      }
+    } catch (e) {
+      console.error('Error loading pos-config.json:', e);
+      toast({
+        title: t('settings.offline.toastErrTitle'),
+        description: e instanceof Error ? e.message : t('settings.toast.netLoadErr'),
+        variant: 'destructive',
+      });
+    } finally {
+      setPosNetLoading(false);
+    }
+  };
+
+  const savePosNetConfig = async (patch: any) => {
+    try {
+      setPosNetSaving(true);
+      const api = (window as any)?.posApi?.appConfig;
+      if (!api?.set) throw new Error('posApi.appConfig.set not available');
+      const res = await api.set(patch);
+      if (res?.success) {
+        setPosNetConfig(res.data);
+        setHasUnsavedChanges(false);
+        toast({
+          title: t('settings.toast.netSavedTitle'),
+          description: t('settings.toast.netSavedDesc'),
+        });
+      } else {
+        throw new Error(res?.error?.message || 'Failed to save POS network config');
+      }
+    } catch (e) {
+      console.error('Error saving pos-config.json:', e);
+      toast({
+        title: t('settings.offline.toastErrTitle'),
+        description: e instanceof Error ? e.message : t('settings.toast.netSaveErr'),
+        variant: 'destructive',
+      });
+    } finally {
+      setPosNetSaving(false);
+    }
+  };
+
+  const testHostConnection = async () => {
+    try {
+      setPosNetTesting(true);
+      setPosNetTestResult(null);
+
+      const hostUrl: string = String(posNetConfig?.client?.hostUrl || '').replace(/\/+$/, '');
+      const secret: string = String(posNetConfig?.client?.secret || '');
+      if (!hostUrl) {
+        setPosNetTestResult({ ok: false, message: t('settings.network.errEmptyUrl') });
+        return;
+      }
+      if (!secret) {
+        setPosNetTestResult({ ok: false, message: t('settings.network.errEmptySecret') });
+        return;
+      }
+
+      const res = await fetch(`${hostUrl}/health`, {
+        method: 'GET',
+        headers: { Authorization: `Bearer ${secret}` },
+      });
+      const json = await res.json().catch(() => null);
+      if (res.ok && json?.ok) {
+        setPosNetTestResult({ ok: true, message: t('settings.network.testOkDetail') });
+      } else {
+        setPosNetTestResult({
+          ok: false,
+          message: `${t('settings.network.connFail')}: ${json?.error?.message || res.statusText}`,
+        });
+      }
+    } catch (e) {
+      setPosNetTestResult({ ok: false, message: e instanceof Error ? e.message : String(e) });
+    } finally {
+      setPosNetTesting(false);
+    }
+  };
+
+  const loadAllSettings = async (opts?: { silent?: boolean }) => {
+    const silent = !!opts?.silent;
+    try {
+      if (!silent) setLoading(true);
+      const [company, pos, payment, tax, receipt, inventory, numbering, security, localization, sales] =
         await Promise.all([
           getSettingsByCategory('company'),
           getSettingsByCategory('pos'),
@@ -334,6 +441,7 @@ export default function Settings() {
           getSettingsByCategory('numbering'),
           getSettingsByCategory('security'),
           getSettingsByCategory('localization'),
+          getSettingsByCategory('sales'),
         ]);
 
       setCompanySettings(company as unknown as CompanySettings);
@@ -345,34 +453,79 @@ export default function Settings() {
       setNumberingSettings(numbering as unknown as NumberingSettings);
       setSecuritySettings(security as unknown as SecuritySettings);
       setLocalizationSettings(localization as unknown as LocalizationSettings);
+
+      const salesRec = sales as Record<string, unknown>;
+      const en = salesRec['loyalty.master.enabled'];
+      setMasterLoyaltyEnabled(en === true || en === 1 || en === '1' || String(en).toLowerCase() === 'true');
+      const per = Number(salesRec['loyalty.master.points_per_uzs']);
+      setMasterLoyaltyPointsPerUzs(Number.isFinite(per) && per > 0 ? per : 1000);
+
+      const gen = salesRec['loyalty.general.enabled'];
+      setGeneralLoyaltyEnabled(gen === true || gen === 1 || gen === '1' || String(gen).toLowerCase() === 'true');
+      const scopeRaw = String(salesRec['loyalty.earn.scope'] || 'master_only').toLowerCase();
+      if (scopeRaw === 'all_registered' || scopeRaw === 'exclude_walk_in') {
+        setLoyaltyEarnScope(scopeRaw);
+      } else {
+        setLoyaltyEarnScope('master_only');
+      }
+      const ge = Number(salesRec['loyalty.earn.points_per_uzs']);
+      setLoyaltyEarnPointsPerUzs(Number.isFinite(ge) && ge > 0 ? ge : 1000);
+      const mo = Number(salesRec['loyalty.earn.min_order_uzs']);
+      setLoyaltyMinOrderUzs(Number.isFinite(mo) && mo >= 0 ? mo : 0);
+
+      const re = salesRec['loyalty.redeem.enabled'];
+      setLoyaltyRedeemEnabled(re === true || re === 1 || re === '1' || String(re).toLowerCase() === 'true');
+      const rpu = Number(salesRec['loyalty.redeem.points_per_uzs']);
+      setLoyaltyRedeemPointsPerUzs(Number.isFinite(rpu) && rpu > 0 ? rpu : 100);
+      const rmin = Number(salesRec['loyalty.redeem.min_points']);
+      setLoyaltyRedeemMinPoints(Number.isFinite(rmin) && rmin > 0 ? Math.floor(rmin) : 1);
+      const rmax = Number(salesRec['loyalty.redeem.max_percent_of_order']);
+      setLoyaltyRedeemMaxPercent(Number.isFinite(rmax) && rmax > 0 ? Math.min(100, rmax) : 50);
+
+      if (isElectron()) await loadBatchConfig();
     } catch (error) {
       console.error('Error loading settings:', error);
       toast({
-        title: 'Error',
-        description: 'Failed to load settings',
+        title: t('settings.offline.toastErrTitle'),
+        description: error instanceof Error ? error.message : t('settings.toast.loadErr'),
         variant: 'destructive',
       });
     } finally {
-      setLoading(false);
+      if (!silent) setLoading(false);
     }
   };
 
   const handleSave = async (category: string, settings: Record<string, unknown>) => {
-    if (!profile?.id) return;
+    if (!profile?.id) {
+      toast({
+        title: t('settings.toast.loginRequiredTitle'),
+        description: t('settings.toast.loginRequiredDesc'),
+        variant: 'destructive',
+      });
+      return;
+    }
 
     try {
       setSaving(true);
       await bulkUpdateSettings(category, settings, profile.id);
       setHasUnsavedChanges(false);
+      await queryClient.invalidateQueries({ queryKey: ['settings'] });
+      if (category === 'localization') {
+        const lang = settings.default_language;
+        if (lang === 'en' || lang === 'uz' || lang === 'ru') {
+          await i18n.changeLanguage(lang);
+          localStorage.setItem('pos:language', lang);
+        }
+      }
       toast({
-        title: 'Success',
-        description: 'Settings saved successfully',
+        title: t('settings.toast.savedTitle'),
+        description: t('settings.toast.savedDesc'),
       });
     } catch (error) {
       console.error('Error saving settings:', error);
       toast({
-        title: 'Error',
-        description: 'Failed to save settings',
+        title: t('settings.offline.toastErrTitle'),
+        description: error instanceof Error ? error.message : t('settings.toast.saveErr'),
         variant: 'destructive',
       });
     } finally {
@@ -381,7 +534,9 @@ export default function Settings() {
   };
 
   const handleTabChange = (value: string) => {
+    if (value === activeTab) return;
     if (hasUnsavedChanges) {
+      pendingTabRef.current = value;
       setShowUnsavedDialog(true);
       return;
     }
@@ -390,8 +545,9 @@ export default function Settings() {
 
   if (loading) {
     return (
-      <div className="flex h-96 items-center justify-center">
-        <div className="text-muted-foreground">Loading settings...</div>
+      <div className="flex h-96 flex-col items-center justify-center gap-3">
+        <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" aria-hidden />
+        <p className="text-sm text-muted-foreground">{t('settings.common.loading')}</p>
       </div>
     );
   }
@@ -400,58 +556,64 @@ export default function Settings() {
     <div className="space-y-6">
       <PageBreadcrumb
         items={[
-          { label: 'Bosh sahifa', href: '/' },
-          { label: 'Sozlamalar', href: '/settings' },
+          { label: t('settings.breadcrumb.home'), href: '/' },
+          { label: t('settings.breadcrumb.settings'), href: '/settings' },
         ]}
       />
 
       <div>
-        <h1 className="text-3xl font-bold">Sozlamalar</h1>
-        <p className="text-muted-foreground">Tizim sozlamalari va ustuvorliklarini boshqarish</p>
+        <h1 className="text-3xl font-bold">{t('settings.header.title')}</h1>
+        <p className="text-muted-foreground">{t('settings.header.subtitle')}</p>
       </div>
 
       <Tabs value={activeTab} onValueChange={handleTabChange} className="space-y-6">
         <TabsList className={`grid w-full grid-cols-4 ${profile?.role === 'admin' ? 'xl:grid-cols-10' : 'xl:grid-cols-9'}`}>
           <TabsTrigger value="company" className="gap-2">
             <Building2 className="h-4 w-4" />
-            <span className="hidden xl:inline">Kompaniya</span>
+            <span className="hidden xl:inline">{t('settings.tabs.company')}</span>
           </TabsTrigger>
           <TabsTrigger value="pos" className="gap-2">
             <Monitor className="h-4 w-4" />
-            <span className="hidden xl:inline">POS tizimi</span>
+            <span className="hidden xl:inline">{t('settings.tabs.pos')}</span>
           </TabsTrigger>
           <TabsTrigger value="payment" className="gap-2">
             <CreditCard className="h-4 w-4" />
-            <span className="hidden xl:inline">To'lov</span>
+            <span className="hidden xl:inline">{t('settings.tabs.payment')}</span>
           </TabsTrigger>
           <TabsTrigger value="receipt" className="gap-2">
             <Receipt className="h-4 w-4" />
-            <span className="hidden xl:inline">Chek</span>
+            <span className="hidden xl:inline">{t('settings.tabs.receipt')}</span>
           </TabsTrigger>
           <TabsTrigger value="inventory" className="gap-2">
             <Package className="h-4 w-4" />
-            <span className="hidden xl:inline">Ombor</span>
+            <span className="hidden xl:inline">{t('settings.tabs.inventory')}</span>
           </TabsTrigger>
           <TabsTrigger value="numbering" className="gap-2">
             <Hash className="h-4 w-4" />
-            <span className="hidden xl:inline">Raqamlashtirish</span>
+            <span className="hidden xl:inline">{t('settings.tabs.numbering')}</span>
           </TabsTrigger>
           <TabsTrigger value="security" className="gap-2">
             <Shield className="h-4 w-4" />
-            <span className="hidden xl:inline">Xavfsizlik</span>
+            <span className="hidden xl:inline">{t('settings.tabs.security')}</span>
           </TabsTrigger>
           <TabsTrigger value="localization" className="gap-2">
             <Globe className="h-4 w-4" />
-            <span className="hidden xl:inline">Mahalliylashtirish</span>
+            <span className="hidden xl:inline">{t('settings.tabs.localization')}</span>
           </TabsTrigger>
           <TabsTrigger value="offline" className="gap-2">
-            <Wifi className="h-4 w-4" />
-            <span className="hidden xl:inline">Offline & Sync</span>
+            <HardDrive className="h-4 w-4" />
+            <span className="hidden xl:inline">{t('settings.tabs.local')}</span>
           </TabsTrigger>
+          {profile?.role === 'admin' && (
+            <TabsTrigger value="network" className="gap-2">
+              <Server className="h-4 w-4" />
+              <span className="hidden xl:inline">{t('settings.tabs.hostClient')}</span>
+            </TabsTrigger>
+          )}
           {profile?.role === 'admin' && (
             <TabsTrigger value="reset" className="gap-2 text-destructive">
               <AlertTriangle className="h-4 w-4" />
-              <span className="hidden xl:inline">System Reset</span>
+              <span className="hidden xl:inline">{t('settings.tabs.systemReset')}</span>
             </TabsTrigger>
           )}
         </TabsList>
@@ -460,16 +622,14 @@ export default function Settings() {
         <TabsContent value="company">
           <Card>
             <CardHeader>
-              <CardTitle>Kompaniya profili</CardTitle>
-              <CardDescription>
-                Cheklar, hisob-fakturalar va hisobotlarda ko'rinadigan kompaniya ma'lumotlari
-              </CardDescription>
+              <CardTitle>{t('settings.company.title')}</CardTitle>
+              <CardDescription>{t('settings.company.description')}</CardDescription>
             </CardHeader>
             <CardContent className="space-y-6">
               <div className="grid gap-6 xl:grid-cols-2">
                 <div className="space-y-2">
                   <Label htmlFor="company_name">
-                    Kompaniya nomi <span className="text-destructive">*</span>
+                    {t('settings.company.name')} <span className="text-destructive">*</span>
                   </Label>
                   <Input
                     id="company_name"
@@ -478,12 +638,12 @@ export default function Settings() {
                       setCompanySettings({ ...companySettings, name: e.target.value });
                       setHasUnsavedChanges(true);
                     }}
-                    placeholder="Kompaniya nomini kiriting"
+                    placeholder={t('settings.company.namePh')}
                   />
                 </div>
 
                 <div className="space-y-2">
-                  <Label htmlFor="legal_name">Yuridik nomi</Label>
+                  <Label htmlFor="legal_name">{t('settings.company.legalName')}</Label>
                   <Input
                     id="legal_name"
                     value={companySettings.legal_name}
@@ -491,12 +651,12 @@ export default function Settings() {
                       setCompanySettings({ ...companySettings, legal_name: e.target.value });
                       setHasUnsavedChanges(true);
                     }}
-                    placeholder="Kompaniyaning yuridik nomi"
+                    placeholder={t('settings.company.legalPh')}
                   />
                 </div>
 
                 <div className="space-y-2">
-                  <Label htmlFor="phone">Telefon raqami</Label>
+                  <Label htmlFor="phone">{t('settings.company.phone')}</Label>
                   <Input
                     id="phone"
                     value={companySettings.phone}
@@ -504,12 +664,12 @@ export default function Settings() {
                       setCompanySettings({ ...companySettings, phone: e.target.value });
                       setHasUnsavedChanges(true);
                     }}
-                    placeholder="+998 XX XXX XX XX"
+                    placeholder={t('settings.company.phonePh')}
                   />
                 </div>
 
                 <div className="space-y-2">
-                  <Label htmlFor="email">Elektron pochta</Label>
+                  <Label htmlFor="email">{t('settings.company.email')}</Label>
                   <Input
                     id="email"
                     type="email"
@@ -518,12 +678,12 @@ export default function Settings() {
                       setCompanySettings({ ...companySettings, email: e.target.value });
                       setHasUnsavedChanges(true);
                     }}
-                    placeholder="company@example.com"
+                    placeholder={t('settings.company.emailPh')}
                   />
                 </div>
 
                 <div className="space-y-2">
-                  <Label htmlFor="website">Veb-sayt</Label>
+                  <Label htmlFor="website">{t('settings.company.website')}</Label>
                   <Input
                     id="website"
                     value={companySettings.website}
@@ -531,12 +691,12 @@ export default function Settings() {
                       setCompanySettings({ ...companySettings, website: e.target.value });
                       setHasUnsavedChanges(true);
                     }}
-                    placeholder="https://example.com"
+                    placeholder={t('settings.company.websitePh')}
                   />
                 </div>
 
                 <div className="space-y-2">
-                  <Label htmlFor="tax_id">STIR / INN / QQS</Label>
+                  <Label htmlFor="tax_id">{t('settings.company.taxId')}</Label>
                   <Input
                     id="tax_id"
                     value={companySettings.tax_id}
@@ -544,16 +704,16 @@ export default function Settings() {
                       setCompanySettings({ ...companySettings, tax_id: e.target.value });
                       setHasUnsavedChanges(true);
                     }}
-                    placeholder="Soliq identifikatsiya raqami"
+                    placeholder={t('settings.company.taxPh')}
                   />
                 </div>
               </div>
 
               <div className="space-y-4 border-t pt-6">
-                <h3 className="text-lg font-semibold">Manzil</h3>
+                <h3 className="text-lg font-semibold">{t('settings.company.addressSection')}</h3>
                 <div className="grid gap-6 xl:grid-cols-3">
                   <div className="space-y-2">
-                    <Label htmlFor="country">Mamlakat</Label>
+                    <Label htmlFor="country">{t('settings.company.country')}</Label>
                     <Input
                       id="country"
                       value={companySettings.address_country}
@@ -561,12 +721,12 @@ export default function Settings() {
                         setCompanySettings({ ...companySettings, address_country: e.target.value });
                         setHasUnsavedChanges(true);
                       }}
-                      placeholder="Mamlakat"
+                      placeholder={t('settings.company.countryPh')}
                     />
                   </div>
 
                   <div className="space-y-2">
-                    <Label htmlFor="city">Shahar</Label>
+                    <Label htmlFor="city">{t('settings.company.city')}</Label>
                     <Input
                       id="city"
                       value={companySettings.address_city}
@@ -574,12 +734,12 @@ export default function Settings() {
                         setCompanySettings({ ...companySettings, address_city: e.target.value });
                         setHasUnsavedChanges(true);
                       }}
-                      placeholder="Shahar"
+                      placeholder={t('settings.company.cityPh')}
                     />
                   </div>
 
                   <div className="space-y-2">
-                    <Label htmlFor="street">Ko'cha manzili</Label>
+                    <Label htmlFor="street">{t('settings.company.street')}</Label>
                     <Input
                       id="street"
                       value={companySettings.address_street}
@@ -587,19 +747,19 @@ export default function Settings() {
                         setCompanySettings({ ...companySettings, address_street: e.target.value });
                         setHasUnsavedChanges(true);
                       }}
-                      placeholder="Ko'cha manzili"
+                      placeholder={t('settings.company.streetPh')}
                     />
                   </div>
                 </div>
               </div>
 
               <div className="flex justify-end gap-3 border-t pt-6">
-                <Button variant="outline" onClick={() => loadAllSettings()}>
-                  Bekor qilish
+                <Button variant="outline" onClick={() => loadAllSettings({ silent: true })}>
+                  {t('settings.common.cancel')}
                 </Button>
                 <Button onClick={() => handleSave('company', companySettings as unknown as Record<string, unknown>)} disabled={saving}>
                   <Save className="mr-2 h-4 w-4" />
-                  {saving ? 'Saqlanmoqda...' : 'O\'zgarishlarni saqlash'}
+                  {saving ? t('settings.common.saving') : t('settings.common.saveChanges')}
                 </Button>
               </div>
             </CardContent>
@@ -610,13 +770,13 @@ export default function Settings() {
         <TabsContent value="pos">
           <Card>
             <CardHeader>
-              <CardTitle>POS terminal sozlamalari</CardTitle>
-              <CardDescription>POS terminalining ishlash tartibi va funksiyalarini sozlash</CardDescription>
+              <CardTitle>{t('settings.pos.title')}</CardTitle>
+              <CardDescription>{t('settings.pos.description')}</CardDescription>
             </CardHeader>
             <CardContent className="space-y-6">
               <div className="grid gap-6 xl:grid-cols-2">
                 <div className="space-y-2">
-                  <Label htmlFor="pos_mode">POS rejimi</Label>
+                  <Label htmlFor="pos_mode">{t('settings.pos.mode')}</Label>
                   <Select
                     value={posSettings.mode}
                     onValueChange={(value: 'retail' | 'restaurant') => {
@@ -628,15 +788,15 @@ export default function Settings() {
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
-                      <SelectItem value="retail">Retail</SelectItem>
-                      <SelectItem value="restaurant">Restaurant</SelectItem>
+                      <SelectItem value="retail">{t('settings.pos.modeRetail')}</SelectItem>
+                      <SelectItem value="restaurant">{t('settings.pos.modeRestaurant')}</SelectItem>
                     </SelectContent>
                   </Select>
-                  <p className="text-xs text-muted-foreground">Kelajakda foydalanish uchun</p>
+                  <p className="text-xs text-muted-foreground">{t('settings.pos.modeFuture')}</p>
                 </div>
 
                 <div className="space-y-2">
-                  <Label htmlFor="auto_logout">Avto chiqish (daqiqada)</Label>
+                  <Label htmlFor="auto_logout">{t('settings.pos.autoLogout')}</Label>
                   <Input
                     id="auto_logout"
                     type="number"
@@ -654,7 +814,7 @@ export default function Settings() {
                 </div>
 
                 <div className="space-y-2">
-                  <Label htmlFor="quick_access">Tezkor kirish mahsulotlar limiti</Label>
+                  <Label htmlFor="quick_access">{t('settings.pos.quickAccess')}</Label>
                   <Input
                     id="quick_access"
                     type="number"
@@ -673,14 +833,12 @@ export default function Settings() {
               </div>
 
               <div className="space-y-4 border-t pt-6">
-                <h3 className="text-lg font-semibold">Qo'shimcha imkoniyatlar</h3>
+                <h3 className="text-lg font-semibold">{t('settings.pos.featuresTitle')}</h3>
                 <div className="space-y-4">
                   <div className="flex items-center justify-between">
                     <div className="space-y-1">
-                      <Label>Buyurtmani ushlab turishni yoqish</Label>
-                      <p className="text-sm text-muted-foreground">
-                        Kassirlarga buyurtmalarni keyinroq davom ettirish uchun ushlab turishga ruxsat berish
-                      </p>
+                      <Label>{t('settings.pos.holdOrder')}</Label>
+                      <p className="text-sm text-muted-foreground">{t('settings.pos.holdOrderDesc')}</p>
                     </div>
                     <Switch
                       checked={posSettings.enable_hold_order}
@@ -693,10 +851,8 @@ export default function Settings() {
 
                   <div className="flex items-center justify-between">
                     <div className="space-y-1">
-                      <Label>Aralash to'lovni yoqish</Label>
-                      <p className="text-sm text-muted-foreground">
-                        Bitta buyurtma uchun bir nechta to'lov usulidan foydalanishga ruxsat berish
-                      </p>
+                      <Label>{t('settings.pos.mixedPayment')}</Label>
+                      <p className="text-sm text-muted-foreground">{t('settings.pos.mixedPaymentDesc')}</p>
                     </div>
                     <Switch
                       checked={posSettings.enable_mixed_payment}
@@ -709,10 +865,8 @@ export default function Settings() {
 
                   <div className="flex items-center justify-between">
                     <div className="space-y-1">
-                      <Label>Qarzga sotishda mijozni tanlash majburiy</Label>
-                      <p className="text-sm text-muted-foreground">
-                        Qarzga sotilganda albatta mijozni tanlashni talab qilish
-                      </p>
+                      <Label>{t('settings.pos.requireCustomerCredit')}</Label>
+                      <p className="text-sm text-muted-foreground">{t('settings.pos.requireCustomerCreditDesc')}</p>
                     </div>
                     <Switch
                       checked={posSettings.require_customer_for_credit}
@@ -725,10 +879,8 @@ export default function Settings() {
 
                   <div className="flex items-center justify-between">
                     <div className="space-y-1">
-                      <Label>Qoldiq kamaysa ogohlantirish</Label>
-                      <p className="text-sm text-muted-foreground">
-                        Mahsulot qoldig'i kam bo'lganda ogohlantirish ko'rsatish
-                      </p>
+                      <Label>{t('settings.pos.lowStock')}</Label>
+                      <p className="text-sm text-muted-foreground">{t('settings.pos.lowStockDesc')}</p>
                     </div>
                     <Switch
                       checked={posSettings.show_low_stock_warning}
@@ -742,12 +894,218 @@ export default function Settings() {
               </div>
 
               <div className="flex justify-end gap-3 border-t pt-6">
-                <Button variant="outline" onClick={() => loadAllSettings()}>
-                  Bekor qilish
+                <Button variant="outline" onClick={() => loadAllSettings({ silent: true })}>
+                  {t('settings.common.cancel')}
                 </Button>
                 <Button onClick={() => handleSave('pos', posSettings as unknown as Record<string, unknown>)} disabled={saving}>
                   <Save className="mr-2 h-4 w-4" />
-                  {saving ? 'Saqlanmoqda...' : 'O\'zgarishlarni saqlash'}
+                  {saving ? t('settings.common.saving') : t('settings.common.saveChanges')}
+                </Button>
+              </div>
+            </CardContent>
+          </Card>
+
+          <Card className="mt-6">
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2">
+                <Gift className="h-5 w-5" />
+                {t('settings.loyalty.cardTitle')}
+              </CardTitle>
+              <CardDescription>{t('settings.loyalty.cardDesc')}</CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-6">
+              <div className="flex items-center justify-between">
+                <div className="space-y-1">
+                  <Label>{t('settings.loyalty.masterEnable')}</Label>
+                  <p className="text-sm text-muted-foreground">{t('settings.loyalty.masterEnableDesc')}</p>
+                </div>
+                <Switch
+                  checked={masterLoyaltyEnabled}
+                  onCheckedChange={(checked) => {
+                    setMasterLoyaltyEnabled(checked);
+                    setHasUnsavedChanges(true);
+                  }}
+                />
+              </div>
+              <div className="space-y-2 max-w-md">
+                <Label htmlFor="loyalty_points_per_uzs">{t('settings.loyalty.pointsPerUzs')}</Label>
+                <Input
+                  id="loyalty_points_per_uzs"
+                  type="number"
+                  min={1}
+                  step={1}
+                  value={masterLoyaltyPointsPerUzs}
+                  onChange={(e) => {
+                    const n = parseInt(e.target.value, 10);
+                    setMasterLoyaltyPointsPerUzs(Number.isFinite(n) && n > 0 ? n : 1000);
+                    setHasUnsavedChanges(true);
+                  }}
+                />
+                <p className="text-xs text-muted-foreground">{t('settings.loyalty.pointsHint')}</p>
+              </div>
+
+              <div className="border-t pt-6 space-y-4">
+                <h3 className="text-sm font-semibold">{t('settings.loyalty.generalTitle')}</h3>
+                <div className="flex items-center justify-between">
+                  <div className="space-y-1">
+                    <Label>{t('settings.loyalty.generalEnable')}</Label>
+                    <p className="text-sm text-muted-foreground">{t('settings.loyalty.generalEnableDesc')}</p>
+                  </div>
+                  <Switch
+                    checked={generalLoyaltyEnabled}
+                    onCheckedChange={(checked) => {
+                      setGeneralLoyaltyEnabled(checked);
+                      setHasUnsavedChanges(true);
+                    }}
+                  />
+                </div>
+                <div className="space-y-2 max-w-md">
+                  <Label>{t('settings.loyalty.earnScope')}</Label>
+                  <Select
+                    value={loyaltyEarnScope}
+                    onValueChange={(v: 'master_only' | 'all_registered' | 'exclude_walk_in') => {
+                      setLoyaltyEarnScope(v);
+                      setHasUnsavedChanges(true);
+                    }}
+                  >
+                    <SelectTrigger>
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="master_only">{t('settings.loyalty.scopeMasterOnly')}</SelectItem>
+                      <SelectItem value="all_registered">{t('settings.loyalty.scopeAll')}</SelectItem>
+                      <SelectItem value="exclude_walk_in">{t('settings.loyalty.scopeExcludeWalkIn')}</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="space-y-2 max-w-md">
+                  <Label htmlFor="loyalty_earn_ppu">{t('settings.loyalty.earnPpu')}</Label>
+                  <Input
+                    id="loyalty_earn_ppu"
+                    type="number"
+                    min={1}
+                    step={1}
+                    value={loyaltyEarnPointsPerUzs}
+                    onChange={(e) => {
+                      const n = parseInt(e.target.value, 10);
+                      setLoyaltyEarnPointsPerUzs(Number.isFinite(n) && n > 0 ? n : 1000);
+                      setHasUnsavedChanges(true);
+                    }}
+                  />
+                </div>
+                <div className="space-y-2 max-w-md">
+                  <Label htmlFor="loyalty_min_order">{t('settings.loyalty.minOrder')}</Label>
+                  <Input
+                    id="loyalty_min_order"
+                    type="number"
+                    min={0}
+                    step={1}
+                    value={loyaltyMinOrderUzs}
+                    onChange={(e) => {
+                      const n = parseInt(e.target.value, 10);
+                      setLoyaltyMinOrderUzs(Number.isFinite(n) && n >= 0 ? n : 0);
+                      setHasUnsavedChanges(true);
+                    }}
+                  />
+                </div>
+              </div>
+
+              <div className="border-t pt-6 space-y-4">
+                <h3 className="text-sm font-semibold">{t('settings.loyalty.redeemTitle')}</h3>
+                <div className="flex items-center justify-between">
+                  <div className="space-y-1">
+                    <Label>{t('settings.loyalty.redeemEnable')}</Label>
+                    <p className="text-sm text-muted-foreground">{t('settings.loyalty.redeemEnableDesc')}</p>
+                  </div>
+                  <Switch
+                    checked={loyaltyRedeemEnabled}
+                    onCheckedChange={(checked) => {
+                      setLoyaltyRedeemEnabled(checked);
+                      setHasUnsavedChanges(true);
+                    }}
+                  />
+                </div>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4 max-w-2xl">
+                  <div className="space-y-2">
+                    <Label htmlFor="loyalty_redeem_ppu">{t('settings.loyalty.redeemPpu')}</Label>
+                    <Input
+                      id="loyalty_redeem_ppu"
+                      type="number"
+                      min={1}
+                      step={1}
+                      value={loyaltyRedeemPointsPerUzs}
+                      onChange={(e) => {
+                        const n = parseInt(e.target.value, 10);
+                        setLoyaltyRedeemPointsPerUzs(Number.isFinite(n) && n > 0 ? n : 100);
+                        setHasUnsavedChanges(true);
+                      }}
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <Label htmlFor="loyalty_redeem_min">{t('settings.loyalty.redeemMin')}</Label>
+                    <Input
+                      id="loyalty_redeem_min"
+                      type="number"
+                      min={1}
+                      step={1}
+                      value={loyaltyRedeemMinPoints}
+                      onChange={(e) => {
+                        const n = parseInt(e.target.value, 10);
+                        setLoyaltyRedeemMinPoints(Number.isFinite(n) && n > 0 ? n : 1);
+                        setHasUnsavedChanges(true);
+                      }}
+                    />
+                  </div>
+                  <div className="space-y-2 md:col-span-2">
+                    <Label htmlFor="loyalty_redeem_max_pct">{t('settings.loyalty.redeemMax')}</Label>
+                    <Input
+                      id="loyalty_redeem_max_pct"
+                      type="number"
+                      min={1}
+                      max={100}
+                      step={1}
+                      value={loyaltyRedeemMaxPercent}
+                      onChange={(e) => {
+                        const n = parseInt(e.target.value, 10);
+                        setLoyaltyRedeemMaxPercent(Number.isFinite(n) && n > 0 ? Math.min(100, n) : 50);
+                        setHasUnsavedChanges(true);
+                      }}
+                    />
+                  </div>
+                </div>
+              </div>
+
+              <div className="border-t pt-6 space-y-2">
+                <h3 className="text-sm font-semibold text-muted-foreground">{t('settings.loyalty.advancedTitle')}</h3>
+                <p className="text-xs text-muted-foreground">{t('settings.loyalty.advancedDesc')}</p>
+              </div>
+
+              <div className="flex justify-end gap-3 border-t pt-6">
+                <Button
+                  variant="outline"
+                  onClick={() => loadAllSettings({ silent: true })}
+                >
+                  {t('settings.common.cancel')}
+                </Button>
+                <Button
+                  onClick={() =>
+                    handleSave('sales', {
+                      'loyalty.master.enabled': masterLoyaltyEnabled,
+                      'loyalty.master.points_per_uzs': masterLoyaltyPointsPerUzs,
+                      'loyalty.general.enabled': generalLoyaltyEnabled,
+                      'loyalty.earn.scope': loyaltyEarnScope,
+                      'loyalty.earn.points_per_uzs': loyaltyEarnPointsPerUzs,
+                      'loyalty.earn.min_order_uzs': loyaltyMinOrderUzs,
+                      'loyalty.redeem.enabled': loyaltyRedeemEnabled,
+                      'loyalty.redeem.points_per_uzs': loyaltyRedeemPointsPerUzs,
+                      'loyalty.redeem.min_points': loyaltyRedeemMinPoints,
+                      'loyalty.redeem.max_percent_of_order': loyaltyRedeemMaxPercent,
+                    })
+                  }
+                  disabled={saving}
+                >
+                  <Save className="mr-2 h-4 w-4" />
+                  {saving ? t('settings.common.saving') : t('settings.common.saveAllLoyalty')}
                 </Button>
               </div>
             </CardContent>
@@ -759,22 +1117,16 @@ export default function Settings() {
           <div className="space-y-6">
             <Card>
               <CardHeader>
-                <CardTitle>To'lov usullari</CardTitle>
-                <CardDescription>Mavjud to'lov usullarini sozlash</CardDescription>
+                <CardTitle>{t('settings.payment.title')}</CardTitle>
+                <CardDescription>{t('settings.payment.description')}</CardDescription>
               </CardHeader>
               <CardContent className="space-y-4">
                 <div className="space-y-4">
-                  {['cash', 'card', 'terminal', 'qr'].map((method) => {
-                    const methodLabels: Record<string, string> = {
-                      cash: 'Naqd',
-                      card: 'Karta',
-                      terminal: 'Terminal',
-                      qr: 'QR to\'lov',
-                    };
+                  {(['cash', 'card', 'terminal', 'qr'] as const).map((method) => {
                     return (
                       <div key={method} className="flex items-center justify-between">
                         <div className="space-y-1">
-                          <Label>{methodLabels[method] || method}</Label>
+                          <Label>{t(`settings.payment.method_${method}`)}</Label>
                           <Input
                             value={paymentSettings.method_labels?.[method] || method}
                             onChange={(e) => {
@@ -787,7 +1139,7 @@ export default function Settings() {
                               });
                               setHasUnsavedChanges(true);
                             }}
-                            placeholder="Ko'rsatish nomi"
+                            placeholder={t('settings.payment.displayNamePh')}
                             className="max-w-xs"
                           />
                         </div>
@@ -807,12 +1159,12 @@ export default function Settings() {
                 </div>
 
                 <div className="flex justify-end gap-3 border-t pt-6">
-                  <Button variant="outline" onClick={() => loadAllSettings()}>
-                    Bekor qilish
+                  <Button variant="outline" onClick={() => loadAllSettings({ silent: true })}>
+                    {t('settings.common.cancel')}
                   </Button>
                   <Button onClick={() => handleSave('payment', paymentSettings as unknown as Record<string, unknown>)} disabled={saving}>
                     <Save className="mr-2 h-4 w-4" />
-                    {saving ? 'Saqlanmoqda...' : 'O\'zgarishlarni saqlash'}
+                    {saving ? t('settings.common.saving') : t('settings.common.saveChanges')}
                   </Button>
                 </div>
               </CardContent>
@@ -820,14 +1172,14 @@ export default function Settings() {
 
             <Card>
               <CardHeader>
-                <CardTitle>Soliq sozlamalari</CardTitle>
-                <CardDescription>Soliq hisobini va ko'rsatishni sozlash</CardDescription>
+                <CardTitle>{t('settings.tax.title')}</CardTitle>
+                <CardDescription>{t('settings.tax.description')}</CardDescription>
               </CardHeader>
               <CardContent className="space-y-6">
                 <div className="flex items-center justify-between">
                   <div className="space-y-1">
-                    <Label>Soliq tizimini yoqish</Label>
-                    <p className="text-sm text-muted-foreground">Savdolarga soliq qo'llash</p>
+                    <Label>{t('settings.tax.enable')}</Label>
+                    <p className="text-sm text-muted-foreground">{t('settings.tax.enableDesc')}</p>
                   </div>
                   <Switch
                     checked={taxSettings.enabled}
@@ -841,7 +1193,7 @@ export default function Settings() {
                 {taxSettings.enabled && (
                   <>
                     <div className="space-y-2">
-                      <Label htmlFor="tax_rate">Default Tax Rate (%)</Label>
+                      <Label htmlFor="tax_rate">{t('settings.tax.rate')}</Label>
                       <Input
                         id="tax_rate"
                         type="number"
@@ -861,10 +1213,8 @@ export default function Settings() {
 
                     <div className="flex items-center justify-between">
                       <div className="space-y-1">
-                        <Label>Tax Inclusive</Label>
-                        <p className="text-sm text-muted-foreground">
-                          Tax is included in product prices
-                        </p>
+                        <Label>{t('settings.tax.inclusive')}</Label>
+                        <p className="text-sm text-muted-foreground">{t('settings.tax.inclusiveDesc')}</p>
                       </div>
                       <Switch
                         checked={taxSettings.inclusive}
@@ -877,10 +1227,8 @@ export default function Settings() {
 
                     <div className="flex items-center justify-between">
                       <div className="space-y-1">
-                        <Label>Per-Product Tax Override</Label>
-                        <p className="text-sm text-muted-foreground">
-                          Allow different tax rates per product
-                        </p>
+                        <Label>{t('settings.tax.perProduct')}</Label>
+                        <p className="text-sm text-muted-foreground">{t('settings.tax.perProductDesc')}</p>
                       </div>
                       <Switch
                         checked={taxSettings.per_product_override}
@@ -894,12 +1242,12 @@ export default function Settings() {
                 )}
 
                 <div className="flex justify-end gap-3 border-t pt-6">
-                  <Button variant="outline" onClick={() => loadAllSettings()}>
-                    Bekor qilish
+                  <Button variant="outline" onClick={() => loadAllSettings({ silent: true })}>
+                    {t('settings.common.cancel')}
                   </Button>
                   <Button onClick={() => handleSave('tax', taxSettings as unknown as Record<string, unknown>)} disabled={saving}>
                     <Save className="mr-2 h-4 w-4" />
-                    {saving ? 'Saqlanmoqda...' : 'O\'zgarishlarni saqlash'}
+                    {saving ? t('settings.common.saving') : t('settings.common.saveChanges')}
                   </Button>
                 </div>
               </CardContent>
@@ -911,15 +1259,15 @@ export default function Settings() {
         <TabsContent value="receipt">
           <Card>
             <CardHeader>
-              <CardTitle>Chek va Chop etish</CardTitle>
-              <CardDescription>Chek shabloni va chop etish parametrlarini sozlash</CardDescription>
+              <CardTitle>{t('settings.receipt.title')}</CardTitle>
+              <CardDescription>{t('settings.receipt.description')}</CardDescription>
             </CardHeader>
             <CardContent className="space-y-6">
               <div className="space-y-2">
-                <Label htmlFor="paper_size">Qog'oz o'lchami</Label>
+                <Label htmlFor="paper_size">{t('settings.receipt.paperSize')}</Label>
                 <Select
                   value={receiptSettings.paper_size}
-                  onValueChange={(value: '58mm' | '80mm') => {
+                  onValueChange={(value: '58mm' | '78mm' | '80mm') => {
                     setReceiptSettings({ ...receiptSettings, paper_size: value });
                     setHasUnsavedChanges(true);
                   }}
@@ -929,13 +1277,14 @@ export default function Settings() {
                   </SelectTrigger>
                   <SelectContent>
                     <SelectItem value="58mm">58mm</SelectItem>
+                    <SelectItem value="78mm">78mm</SelectItem>
                     <SelectItem value="80mm">80mm</SelectItem>
                   </SelectContent>
                 </Select>
               </div>
 
               <div className="space-y-2">
-                <Label htmlFor="header_text">Chek sarlavhasi matni</Label>
+                <Label htmlFor="header_text">{t('settings.receipt.headerLabel')}</Label>
                 <Textarea
                   id="header_text"
                   value={receiptSettings.header_text}
@@ -943,13 +1292,28 @@ export default function Settings() {
                     setReceiptSettings({ ...receiptSettings, header_text: e.target.value });
                     setHasUnsavedChanges(true);
                   }}
-                  placeholder="Bizdan xarid qilganingiz uchun rahmat!"
+                  placeholder={t('settings.receipt.headerPh')}
                   rows={3}
                 />
               </div>
 
               <div className="space-y-2">
-                <Label htmlFor="footer_text">Chek pastki matni</Label>
+                <Label htmlFor="middle_text">{t('settings.receipt.middleLabel')}</Label>
+                <Textarea
+                  id="middle_text"
+                  value={receiptSettings.middle_text ?? ''}
+                  onChange={(e) => {
+                    setReceiptSettings({ ...receiptSettings, middle_text: e.target.value });
+                    setHasUnsavedChanges(true);
+                  }}
+                  placeholder={t('settings.receipt.middlePh')}
+                  rows={3}
+                />
+                <p className="text-xs text-muted-foreground">{t('settings.receipt.middleHint')}</p>
+              </div>
+
+              <div className="space-y-2">
+                <Label htmlFor="footer_text">{t('settings.receipt.footerLabel')}</Label>
                 <Textarea
                   id="footer_text"
                   value={receiptSettings.footer_text}
@@ -957,16 +1321,16 @@ export default function Settings() {
                     setReceiptSettings({ ...receiptSettings, footer_text: e.target.value });
                     setHasUnsavedChanges(true);
                   }}
-                  placeholder="Qaytarish faqat 7 kun ichida, chek bilan qabul qilinadi"
+                  placeholder={t('settings.receipt.footerPh')}
                   rows={3}
                 />
               </div>
 
               <div className="space-y-4 border-t pt-6">
-                <h3 className="text-lg font-semibold">Ko'rsatish parametrlari</h3>
+                <h3 className="text-lg font-semibold">{t('settings.receipt.displayTitle')}</h3>
                 <div className="space-y-4">
                   <div className="flex items-center justify-between">
-                    <Label>Chekni avtomatik chop etish</Label>
+                    <Label>{t('settings.receipt.autoPrint')}</Label>
                     <Switch
                       checked={receiptSettings.auto_print}
                       onCheckedChange={(checked) => {
@@ -977,7 +1341,7 @@ export default function Settings() {
                   </div>
 
                   <div className="flex items-center justify-between">
-                    <Label>Kompaniya logosini ko'rsatish</Label>
+                    <Label>{t('settings.receipt.showLogo')}</Label>
                     <Switch
                       checked={receiptSettings.show_logo}
                       onCheckedChange={(checked) => {
@@ -988,7 +1352,7 @@ export default function Settings() {
                   </div>
 
                   <div className="flex items-center justify-between">
-                    <Label>Kassir ismini ko'rsatish</Label>
+                    <Label>{t('settings.receipt.showCashier')}</Label>
                     <Switch
                       checked={receiptSettings.show_cashier}
                       onCheckedChange={(checked) => {
@@ -999,7 +1363,7 @@ export default function Settings() {
                   </div>
 
                   <div className="flex items-center justify-between">
-                    <Label>Mijoz ismini ko'rsatish</Label>
+                    <Label>{t('settings.receipt.showCustomer')}</Label>
                     <Switch
                       checked={receiptSettings.show_customer}
                       onCheckedChange={(checked) => {
@@ -1010,7 +1374,7 @@ export default function Settings() {
                   </div>
 
                   <div className="flex items-center justify-between">
-                    <Label>Mahsulot SKU ko'rsatish</Label>
+                    <Label>{t('settings.receipt.showSku')}</Label>
                     <Switch
                       checked={receiptSettings.show_sku}
                       onCheckedChange={(checked) => {
@@ -1023,12 +1387,12 @@ export default function Settings() {
               </div>
 
               <div className="flex justify-end gap-3 border-t pt-6">
-                <Button variant="outline" onClick={() => loadAllSettings()}>
-                  Bekor qilish
+                <Button variant="outline" onClick={() => loadAllSettings({ silent: true })}>
+                  {t('settings.common.cancel')}
                 </Button>
                 <Button onClick={() => handleSave('receipt', receiptSettings as unknown as Record<string, unknown>)} disabled={saving}>
                   <Save className="mr-2 h-4 w-4" />
-                  {saving ? 'Saqlanmoqda...' : 'O\'zgarishlarni saqlash'}
+                  {saving ? t('settings.common.saving') : t('settings.common.saveChanges')}
                 </Button>
               </div>
             </CardContent>
@@ -1039,14 +1403,99 @@ export default function Settings() {
         <TabsContent value="inventory">
           <Card>
             <CardHeader>
-              <CardTitle>Ombor sozlamalari</CardTitle>
-              <CardDescription>Ombor hisobini yuritish va zaxiralarni boshqarishni sozlash</CardDescription>
+              <CardTitle>{t('settings.inventory.title')}</CardTitle>
+              <CardDescription>{t('settings.inventory.description')}</CardDescription>
             </CardHeader>
             <CardContent className="space-y-6">
+              {profile?.role === 'admin' && (
+                <div className="space-y-4 rounded-lg border p-4">
+                  <div className="flex items-center justify-between">
+                    <div className="space-y-1">
+                      <Label>{t('settings.inventory.batchLabel')}</Label>
+                      <p className="text-xs text-muted-foreground">{t('settings.inventory.batchDesc')}</p>
+                    </div>
+                    <Switch
+                      checked={batchCfg.enabled}
+                      disabled={batchCfgLoading}
+                      onCheckedChange={async (checked) => {
+                        if (!isElectron()) return;
+                        try {
+                          const api = requireElectron();
+                          if (checked) {
+                            const ok = confirm(t('settings.inventory.batchEnableConfirm'));
+                            if (!ok) return;
+
+                            const d = new Date();
+                            d.setDate(d.getDate() + 1);
+                            d.setHours(0, 0, 0, 0);
+                            const y = d.getFullYear();
+                            const m = String(d.getMonth() + 1).padStart(2, '0');
+                            const day = String(d.getDate()).padStart(2, '0');
+                            const cutoverAt = `${y}-${m}-${day} 00:00:00`;
+
+                            await handleIpcResponse(
+                              api.inventory.runBatchCutoverSnapshot({
+                                cutoverAt,
+                                warehouseId: 'main-warehouse-001',
+                                costMode: 'last_received_po_cost',
+                                updatedBy: profile?.id || null,
+                              })
+                            );
+
+                            toast({
+                              title: t('settings.inventory.batchToastTitle'),
+                              description: t('settings.inventory.batchToastOn', { cutover: cutoverAt }),
+                            });
+                          } else {
+                            const ok = confirm(t('settings.inventory.batchDisableConfirm'));
+                            if (!ok) return;
+                            await handleIpcResponse(api.settings.set('inventory.batch_mode_enabled', false, 'boolean', profile?.id || null));
+                            toast({
+                              title: t('settings.inventory.batchToastTitle'),
+                              description: t('settings.inventory.batchToastOff'),
+                            });
+                          }
+                          await loadBatchConfig();
+                        } catch (e) {
+                          toast({
+                            title: t('settings.offline.toastErrTitle'),
+                            description: e instanceof Error ? e.message : t('settings.inventory.batchErr'),
+                            variant: 'destructive',
+                          });
+                        }
+                      }}
+                    />
+                  </div>
+
+                  <div className="grid gap-3 md:grid-cols-3">
+                    <div className="space-y-1">
+                      <p className="text-xs text-muted-foreground">{t('settings.inventory.statusLabel')}</p>
+                      <p className="text-sm font-medium">
+                        {batchCfg.enabled ? t('settings.inventory.statusOn') : t('settings.inventory.statusOff')}
+                      </p>
+                    </div>
+                    <div className="space-y-1">
+                      <p className="text-xs text-muted-foreground">{t('settings.inventory.cutoverLabel')}</p>
+                      <p className="text-sm font-medium">{batchCfg.cutoverAt || '-'}</p>
+                    </div>
+                    <div className="space-y-1">
+                      <p className="text-xs text-muted-foreground">{t('settings.inventory.openingCostLabel')}</p>
+                      <p className="text-sm font-medium">{batchCfg.costMode || 'last_received_po_cost'}</p>
+                    </div>
+                  </div>
+
+                  <Alert>
+                    <AlertTriangle className="h-4 w-4" />
+                    <AlertTitle>{t('settings.inventory.batchAlertTitle')}</AlertTitle>
+                    <AlertDescription className="text-xs">{t('settings.inventory.batchAlertText')}</AlertDescription>
+                  </Alert>
+                </div>
+              )}
+
               <div className="flex items-center justify-between">
                 <div className="space-y-1">
-                  <Label>Ombor hisobini yoqish</Label>
-                  <p className="text-sm text-muted-foreground">Mahsulot zaxiralarini kuzatish</p>
+                  <Label>{t('settings.inventory.tracking')}</Label>
+                  <p className="text-sm text-muted-foreground">{t('settings.inventory.trackingDesc')}</p>
                 </div>
                 <Switch
                   checked={inventorySettings.tracking_enabled}
@@ -1059,8 +1508,8 @@ export default function Settings() {
 
               {inventorySettings.tracking_enabled && (
                 <>
-                  <div className="space-y-2">
-                    <Label htmlFor="min_stock">Default Minimal Stock Level</Label>
+                    <div className="space-y-2">
+                    <Label htmlFor="min_stock">{t('settings.inventory.minStock')}</Label>
                     <Input
                       id="min_stock"
                       type="number"
@@ -1077,7 +1526,7 @@ export default function Settings() {
                   </div>
 
                   <div className="space-y-2">
-                    <Label htmlFor="negative_stock">Allow Negative Stock</Label>
+                    <Label htmlFor="negative_stock">{t('settings.inventory.negativeStock')}</Label>
                     <Select
                       value={inventorySettings.allow_negative_stock}
                       onValueChange={(
@@ -1091,23 +1540,22 @@ export default function Settings() {
                         <SelectValue />
                       </SelectTrigger>
                       <SelectContent>
-                        <SelectItem value="block">Block Sale</SelectItem>
-                        <SelectItem value="allow_with_warning">Allow with Warning</SelectItem>
-                        <SelectItem value="allow_without_warning">Allow without Warning</SelectItem>
+                        <SelectItem value="block">{t('settings.inventory.negBlock')}</SelectItem>
+                        <SelectItem value="allow_with_warning">{t('settings.inventory.negWarn')}</SelectItem>
+                        <SelectItem value="allow_without_warning">{t('settings.inventory.negAllow')}</SelectItem>
                       </SelectContent>
                     </Select>
                     <p className="text-xs text-muted-foreground">
-                      {inventorySettings.allow_negative_stock === 'block' &&
-                        'Prevent sales when stock is zero'}
+                      {inventorySettings.allow_negative_stock === 'block' && t('settings.inventory.negHintBlock')}
                       {inventorySettings.allow_negative_stock === 'allow_with_warning' &&
-                        'Show warning but allow sale'}
+                        t('settings.inventory.negHintWarn')}
                       {inventorySettings.allow_negative_stock === 'allow_without_warning' &&
-                        'Allow sale without any warning'}
+                        t('settings.inventory.negHintAllow')}
                     </p>
                   </div>
 
                   <div className="space-y-2">
-                    <Label htmlFor="cost_calc">Cost Calculation Mode</Label>
+                    <Label htmlFor="cost_calc">{t('settings.inventory.costCalc')}</Label>
                     <Select
                       value={inventorySettings.cost_calculation}
                       onValueChange={(value: 'latest_purchase' | 'average_cost') => {
@@ -1119,18 +1567,21 @@ export default function Settings() {
                         <SelectValue />
                       </SelectTrigger>
                       <SelectContent>
-                        <SelectItem value="latest_purchase">Latest Purchase Price</SelectItem>
-                        <SelectItem value="average_cost">Average Cost</SelectItem>
+                  <SelectItem value="latest_purchase">{t('settings.inventory.costLatest')}</SelectItem>
+                  <SelectItem value="average_cost" disabled={batchCfg.enabled}>
+                    {t('settings.inventory.costAverage')}
+                  </SelectItem>
                       </SelectContent>
                     </Select>
+              {batchCfg.enabled && (
+                <p className="text-xs text-muted-foreground">{t('settings.inventory.batchCostNote')}</p>
+              )}
                   </div>
 
                   <div className="flex items-center justify-between">
                     <div className="space-y-1">
-                      <Label>Require Approval for Adjustments</Label>
-                      <p className="text-sm text-muted-foreground">
-                        Stock adjustments need manager approval
-                      </p>
+                      <Label>{t('settings.inventory.approval')}</Label>
+                      <p className="text-sm text-muted-foreground">{t('settings.inventory.approvalDesc')}</p>
                     </div>
                     <Switch
                       checked={inventorySettings.adjustment_approval_required}
@@ -1147,12 +1598,21 @@ export default function Settings() {
               )}
 
               <div className="flex justify-end gap-3 border-t pt-6">
-                <Button variant="outline" onClick={() => loadAllSettings()}>
-                  Bekor qilish
+                <Button variant="outline" onClick={() => loadAllSettings({ silent: true })}>
+                  {t('settings.common.cancel')}
                 </Button>
-                <Button onClick={() => handleSave('inventory', inventorySettings as unknown as Record<string, unknown>)} disabled={saving}>
+                <Button
+                  onClick={() => {
+                    const normalized =
+                      batchCfg.enabled && inventorySettings.cost_calculation === 'average_cost'
+                        ? { ...inventorySettings, cost_calculation: 'latest_purchase' }
+                        : inventorySettings;
+                    handleSave('inventory', normalized as unknown as Record<string, unknown>);
+                  }}
+                  disabled={saving}
+                >
                   <Save className="mr-2 h-4 w-4" />
-                  {saving ? 'Saqlanmoqda...' : 'O\'zgarishlarni saqlash'}
+                  {saving ? t('settings.common.saving') : t('settings.common.saveChanges')}
                 </Button>
               </div>
             </CardContent>
@@ -1163,13 +1623,13 @@ export default function Settings() {
         <TabsContent value="numbering">
           <Card>
             <CardHeader>
-              <CardTitle>Raqamlashtirish va identifikatorlar</CardTitle>
-              <CardDescription>Hujjatlar uchun avtomatik yaratiladigan raqamlarni sozlash</CardDescription>
+              <CardTitle>{t('settings.numbering.title')}</CardTitle>
+              <CardDescription>{t('settings.numbering.description')}</CardDescription>
             </CardHeader>
             <CardContent className="space-y-6">
               <div className="grid gap-6 xl:grid-cols-2">
                 <div className="space-y-2">
-                  <Label htmlFor="order_prefix">Sotuv raqami prefiksi</Label>
+                  <Label htmlFor="order_prefix">{t('settings.numbering.orderPrefix')}</Label>
                   <Input
                     id="order_prefix"
                     value={numberingSettings.order_prefix}
@@ -1182,7 +1642,7 @@ export default function Settings() {
                 </div>
 
                 <div className="space-y-2">
-                  <Label htmlFor="order_format">Sotuv raqami formati</Label>
+                  <Label htmlFor="order_format">{t('settings.numbering.orderFormat')}</Label>
                   <Input
                     id="order_format"
                     value={numberingSettings.order_format}
@@ -1196,7 +1656,7 @@ export default function Settings() {
                 </div>
 
                 <div className="space-y-2">
-                  <Label htmlFor="return_prefix">Qaytarish raqami prefiksi</Label>
+                  <Label htmlFor="return_prefix">{t('settings.numbering.returnPrefix')}</Label>
                   <Input
                     id="return_prefix"
                     value={numberingSettings.return_prefix}
@@ -1209,7 +1669,7 @@ export default function Settings() {
                 </div>
 
                 <div className="space-y-2">
-                  <Label htmlFor="return_format">Qaytarish raqami formati</Label>
+                  <Label htmlFor="return_format">{t('settings.numbering.returnFormat')}</Label>
                   <Input
                     id="return_format"
                     value={numberingSettings.return_format}
@@ -1223,7 +1683,7 @@ export default function Settings() {
                 </div>
 
                 <div className="space-y-2">
-                  <Label htmlFor="purchase_prefix">Xarid buyurtmasi prefiksi</Label>
+                  <Label htmlFor="purchase_prefix">{t('settings.numbering.purchasePrefix')}</Label>
                   <Input
                     id="purchase_prefix"
                     value={numberingSettings.purchase_prefix}
@@ -1239,7 +1699,7 @@ export default function Settings() {
                 </div>
 
                 <div className="space-y-2">
-                  <Label htmlFor="purchase_format">Xarid buyurtmasi formati</Label>
+                  <Label htmlFor="purchase_format">{t('settings.numbering.purchaseFormat')}</Label>
                   <Input
                     id="purchase_format"
                     value={numberingSettings.purchase_format}
@@ -1256,7 +1716,7 @@ export default function Settings() {
                 </div>
 
                 <div className="space-y-2">
-                  <Label htmlFor="movement_prefix">Harakat (ombor ko'chirish) raqami prefiksi</Label>
+                  <Label htmlFor="movement_prefix">{t('settings.numbering.movementPrefix')}</Label>
                   <Input
                     id="movement_prefix"
                     value={numberingSettings.movement_prefix}
@@ -1272,7 +1732,7 @@ export default function Settings() {
                 </div>
 
                 <div className="space-y-2">
-                  <Label htmlFor="movement_format">Harakat raqami formati</Label>
+                  <Label htmlFor="movement_format">{t('settings.numbering.movementFormat')}</Label>
                   <Input
                     id="movement_format"
                     value={numberingSettings.movement_format}
@@ -1290,12 +1750,12 @@ export default function Settings() {
               </div>
 
               <div className="flex justify-end gap-3 border-t pt-6">
-                <Button variant="outline" onClick={() => loadAllSettings()}>
-                  Bekor qilish
+                <Button variant="outline" onClick={() => loadAllSettings({ silent: true })}>
+                  {t('settings.common.cancel')}
                 </Button>
                 <Button onClick={() => handleSave('numbering', numberingSettings as unknown as Record<string, unknown>)} disabled={saving}>
                   <Save className="mr-2 h-4 w-4" />
-                  {saving ? 'Saqlanmoqda...' : 'O\'zgarishlarni saqlash'}
+                  {saving ? t('settings.common.saving') : t('settings.common.saveChanges')}
                 </Button>
               </div>
             </CardContent>
@@ -1306,15 +1766,15 @@ export default function Settings() {
         <TabsContent value="security">
           <Card>
             <CardHeader>
-              <CardTitle>Foydalanuvchi va xavfsizlik</CardTitle>
-              <CardDescription>Xavfsizlik siyosatlari va foydalanuvchi boshqaruvini sozlash</CardDescription>
+              <CardTitle>{t('settings.security.title')}</CardTitle>
+              <CardDescription>{t('settings.security.description')}</CardDescription>
             </CardHeader>
             <CardContent className="space-y-6">
               <div className="space-y-4">
-                <h3 className="text-lg font-semibold">Parol siyosati</h3>
+                <h3 className="text-lg font-semibold">{t('settings.security.policyTitle')}</h3>
                 <div className="grid gap-6 xl:grid-cols-2">
                   <div className="space-y-2">
-                    <Label htmlFor="min_password">Parolning minimal uzunligi</Label>
+                    <Label htmlFor="min_password">{t('settings.security.minPassword')}</Label>
                     <Input
                       id="min_password"
                       type="number"
@@ -1333,8 +1793,8 @@ export default function Settings() {
 
                   <div className="flex items-center justify-between">
                     <div className="space-y-1">
-                      <Label>Kuchli parol talab qilinsin</Label>
-                      <p className="text-sm text-muted-foreground">Harf va raqamlar majburiy</p>
+                      <Label>{t('settings.security.strongPassword')}</Label>
+                      <p className="text-sm text-muted-foreground">{t('settings.security.strongPasswordDesc')}</p>
                     </div>
                     <Switch
                       checked={securitySettings.require_strong_password}
@@ -1348,10 +1808,10 @@ export default function Settings() {
               </div>
 
               <div className="space-y-4 border-t pt-6">
-                <h3 className="text-lg font-semibold">Sessiyalarni boshqarish</h3>
+                <h3 className="text-lg font-semibold">{t('settings.security.sessionsTitle')}</h3>
                 <div className="grid gap-6 xl:grid-cols-2">
                   <div className="space-y-2">
-                    <Label htmlFor="max_attempts">Maksimal muvaffaqiyatsiz kirish urinishlari</Label>
+                    <Label htmlFor="max_attempts">{t('settings.security.maxAttempts')}</Label>
                     <Input
                       id="max_attempts"
                       type="number"
@@ -1369,7 +1829,7 @@ export default function Settings() {
                   </div>
 
                   <div className="space-y-2">
-                    <Label htmlFor="session_timeout">Sessiya muddati (daqiqalarda)</Label>
+                    <Label htmlFor="session_timeout">{t('settings.security.sessionTimeout')}</Label>
                     <Input
                       id="session_timeout"
                       type="number"
@@ -1389,10 +1849,8 @@ export default function Settings() {
 
                 <div className="flex items-center justify-between">
                   <div className="space-y-1">
-                    <Label>Bir nechta sessiyalarga ruxsat berish</Label>
-                    <p className="text-sm text-muted-foreground">
-                      Foydalanuvchilar bir nechta qurilmadan tizimga kira oladi
-                    </p>
+                    <Label>{t('settings.security.multiSession')}</Label>
+                    <p className="text-sm text-muted-foreground">{t('settings.security.multiSessionDesc')}</p>
                   </div>
                   <Switch
                     checked={securitySettings.allow_multiple_sessions}
@@ -1405,13 +1863,11 @@ export default function Settings() {
               </div>
 
               <div className="space-y-4 border-t pt-6">
-                <h3 className="text-lg font-semibold">Audit va jurnal yuritish</h3>
+                <h3 className="text-lg font-semibold">{t('settings.security.auditTitle')}</h3>
                 <div className="flex items-center justify-between">
                   <div className="space-y-1">
-                    <Label>Faoliyat jurnalini yoqish</Label>
-                    <p className="text-sm text-muted-foreground">
-                      Asosiy harakatlarni qayd etish (sotuvlar, qaytarishlar, ombor harakatlari)
-                    </p>
+                    <Label>{t('settings.security.activityLog')}</Label>
+                    <p className="text-sm text-muted-foreground">{t('settings.security.activityLogDesc')}</p>
                   </div>
                   <Switch
                     checked={securitySettings.enable_activity_logging}
@@ -1424,12 +1880,12 @@ export default function Settings() {
               </div>
 
               <div className="flex justify-end gap-3 border-t pt-6">
-                <Button variant="outline" onClick={() => loadAllSettings()}>
-                  Bekor qilish
+                <Button variant="outline" onClick={() => loadAllSettings({ silent: true })}>
+                  {t('settings.common.cancel')}
                 </Button>
                 <Button onClick={() => handleSave('security', securitySettings as unknown as Record<string, unknown>)} disabled={saving}>
                   <Save className="mr-2 h-4 w-4" />
-                  {saving ? 'Saqlanmoqda...' : 'O\'zgarishlarni saqlash'}
+                  {saving ? t('settings.common.saving') : t('settings.common.saveChanges')}
                 </Button>
               </div>
             </CardContent>
@@ -1440,13 +1896,13 @@ export default function Settings() {
         <TabsContent value="localization">
           <Card>
             <CardHeader>
-              <CardTitle>Mahalliylashtirish</CardTitle>
-              <CardDescription>Til va valyuta sozlamalarini boshqarish</CardDescription>
+              <CardTitle>{t('settings.localization.title')}</CardTitle>
+              <CardDescription>{t('settings.localization.description')}</CardDescription>
             </CardHeader>
             <CardContent className="space-y-6">
               <div className="grid gap-6 xl:grid-cols-2">
                 <div className="space-y-2">
-                  <Label htmlFor="language">Asosiy til</Label>
+                  <Label htmlFor="language">{t('settings.localization.language')}</Label>
                   <Select
                     value={localizationSettings.default_language}
                     onValueChange={(value: 'en' | 'uz' | 'ru') => {
@@ -1458,15 +1914,15 @@ export default function Settings() {
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
-                      <SelectItem value="en">English</SelectItem>
-                      <SelectItem value="uz">Uzbek</SelectItem>
-                      <SelectItem value="ru">Russian</SelectItem>
+                      <SelectItem value="en">{t('settings.localization.lang_en')}</SelectItem>
+                      <SelectItem value="uz">{t('settings.localization.lang_uz')}</SelectItem>
+                      <SelectItem value="ru">{t('settings.localization.lang_ru')}</SelectItem>
                     </SelectContent>
                   </Select>
                 </div>
 
                 <div className="space-y-2">
-                  <Label htmlFor="currency">Asosiy valyuta</Label>
+                  <Label htmlFor="currency">{t('settings.localization.currency')}</Label>
                   <Input
                     id="currency"
                     value={localizationSettings.default_currency}
@@ -1482,7 +1938,7 @@ export default function Settings() {
                 </div>
 
                 <div className="space-y-2">
-                  <Label htmlFor="currency_symbol">Valyuta belgisi</Label>
+                  <Label htmlFor="currency_symbol">{t('settings.localization.currencySymbol')}</Label>
                   <Input
                     id="currency_symbol"
                     value={localizationSettings.currency_symbol}
@@ -1498,7 +1954,7 @@ export default function Settings() {
                 </div>
 
                 <div className="space-y-2">
-                  <Label htmlFor="currency_position">Valyuta belgisi joylashuvi</Label>
+                  <Label htmlFor="currency_position">{t('settings.localization.currencyPosition')}</Label>
                   <Select
                     value={localizationSettings.currency_position}
                     onValueChange={(value: 'before' | 'after') => {
@@ -1513,14 +1969,14 @@ export default function Settings() {
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
-                      <SelectItem value="before">Summadan oldin ($ 100)</SelectItem>
-                      <SelectItem value="after">Summadan keyin (100 UZS)</SelectItem>
+                      <SelectItem value="before">{t('settings.localization.posBefore')}</SelectItem>
+                      <SelectItem value="after">{t('settings.localization.posAfter')}</SelectItem>
                     </SelectContent>
                   </Select>
                 </div>
 
                 <div className="space-y-2">
-                  <Label htmlFor="thousand_sep">Minglik ajratgich</Label>
+                  <Label htmlFor="thousand_sep">{t('settings.localization.thousandSep')}</Label>
                   <Input
                     id="thousand_sep"
                     value={localizationSettings.thousand_separator}
@@ -1537,7 +1993,7 @@ export default function Settings() {
                 </div>
 
                 <div className="space-y-2">
-                  <Label htmlFor="decimal_sep">O'nlik ajratgich</Label>
+                  <Label htmlFor="decimal_sep">{t('settings.localization.decimalSep')}</Label>
                   <Input
                     id="decimal_sep"
                     value={localizationSettings.decimal_separator}
@@ -1555,15 +2011,15 @@ export default function Settings() {
               </div>
 
               <div className="flex justify-end gap-3 border-t pt-6">
-                <Button variant="outline" onClick={() => loadAllSettings()}>
-                  Bekor qilish
+                <Button variant="outline" onClick={() => loadAllSettings({ silent: true })}>
+                  {t('settings.common.cancel')}
                 </Button>
                 <Button
                   onClick={() => handleSave('localization', localizationSettings as unknown as Record<string, unknown>)}
                   disabled={saving}
                 >
                   <Save className="mr-2 h-4 w-4" />
-                  {saving ? 'Saqlanmoqda...' : 'O\'zgarishlarni saqlash'}
+                  {saving ? t('settings.common.saving') : t('settings.common.saveChanges')}
                 </Button>
               </div>
             </CardContent>
@@ -1575,6 +2031,158 @@ export default function Settings() {
           <OfflineSettingsTab />
         </TabsContent>
 
+        {/* POS Network (HOST/CLIENT) - Admin only */}
+        {profile?.role === 'admin' && (
+          <TabsContent value="network">
+            <Card>
+              <CardHeader>
+                <CardTitle className="flex items-center gap-2">
+                  <Server className="h-5 w-5" />
+                  {t('settings.network.title')}
+                </CardTitle>
+                <CardDescription>{t('settings.network.description')}</CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-6">
+                {posNetLoading ? (
+                  <div className="text-sm text-muted-foreground">{t('settings.network.loading')}</div>
+                ) : !posNetConfig ? (
+                  <Alert>
+                    <AlertTriangle className="h-4 w-4" />
+                    <AlertTitle>{t('settings.network.configMissing')}</AlertTitle>
+                    <AlertDescription className="text-xs">{t('settings.network.configMissingDesc')}</AlertDescription>
+                  </Alert>
+                ) : (
+                  <>
+                    <div className="grid gap-6 xl:grid-cols-2">
+                      <div className="space-y-2">
+                        <Label>{t('settings.network.mode')}</Label>
+                        <Select
+                          value={posNetConfig.mode || 'host'}
+                          onValueChange={(value) => {
+                            setPosNetConfig({ ...posNetConfig, mode: value });
+                            setHasUnsavedChanges(true);
+                          }}
+                        >
+                          <SelectTrigger>
+                            <SelectValue placeholder={t('settings.network.mode')} />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="host">{t('settings.network.modeHost')}</SelectItem>
+                            <SelectItem value="client">{t('settings.network.modeClient')}</SelectItem>
+                          </SelectContent>
+                        </Select>
+                        <p className="text-xs text-muted-foreground">{t('settings.network.modeHint')}</p>
+                      </div>
+
+                      <div className="space-y-2">
+                        <Label>{t('settings.network.configFile')}</Label>
+                        <Input value={posNetConfig.configPath || ''} readOnly />
+                        <p className="text-xs text-muted-foreground">{t('settings.network.configFileHint')}</p>
+                      </div>
+                    </div>
+
+                    <div className="grid gap-6 xl:grid-cols-2">
+                      <div className="space-y-2">
+                        <Label>{t('settings.network.hostPort')}</Label>
+                        <Input
+                          value={String(posNetConfig.host?.port ?? 3333)}
+                          onChange={(e) => {
+                            const n = Number(e.target.value || 0);
+                            setPosNetConfig({ ...posNetConfig, host: { ...posNetConfig.host, port: n } });
+                            setHasUnsavedChanges(true);
+                          }}
+                          placeholder="3333"
+                        />
+                        <p className="text-xs text-muted-foreground">{t('settings.network.hostPortHint')}</p>
+                      </div>
+
+                      <div className="space-y-2">
+                        <Label>{t('settings.network.hostSecret')}</Label>
+                        <Input
+                          value={String(posNetConfig.host?.secret || '')}
+                          onChange={(e) => {
+                            setPosNetConfig({ ...posNetConfig, host: { ...posNetConfig.host, secret: e.target.value } });
+                            setHasUnsavedChanges(true);
+                          }}
+                          placeholder={t('settings.network.hostSecretPh')}
+                        />
+                        <p className="text-xs text-muted-foreground">{t('settings.network.hostSecretHint')}</p>
+                      </div>
+                    </div>
+
+                    <div className="grid gap-6 xl:grid-cols-2">
+                      <div className="space-y-2">
+                        <Label>{t('settings.network.clientUrl')}</Label>
+                        <Input
+                          value={String(posNetConfig.client?.hostUrl || '')}
+                          onChange={(e) => {
+                            setPosNetConfig({ ...posNetConfig, client: { ...posNetConfig.client, hostUrl: e.target.value } });
+                            setHasUnsavedChanges(true);
+                          }}
+                          placeholder="http://192.168.1.10:3333"
+                        />
+                        <p className="text-xs text-muted-foreground">{t('settings.network.clientUrlHint')}</p>
+                      </div>
+
+                      <div className="space-y-2">
+                        <Label>{t('settings.network.clientSecret')}</Label>
+                        <Input
+                          value={String(posNetConfig.client?.secret || '')}
+                          onChange={(e) => {
+                            setPosNetConfig({ ...posNetConfig, client: { ...posNetConfig.client, secret: e.target.value } });
+                            setHasUnsavedChanges(true);
+                          }}
+                          placeholder={t('settings.network.clientSecretPh')}
+                        />
+                        <p className="text-xs text-muted-foreground">{t('settings.network.clientSecretHint')}</p>
+                      </div>
+                    </div>
+
+                    {posNetTestResult && (
+                      <Alert variant={posNetTestResult.ok ? 'default' : 'destructive'}>
+                        <AlertTriangle className="h-4 w-4" />
+                        <AlertTitle>
+                          {posNetTestResult.ok ? t('settings.network.connOk') : t('settings.network.connFail')}
+                        </AlertTitle>
+                        <AlertDescription className="text-xs">{posNetTestResult.message}</AlertDescription>
+                      </Alert>
+                    )}
+
+                    <div className="flex justify-end gap-3 border-t pt-6">
+                      <Button variant="outline" onClick={loadPosNetConfig} disabled={posNetLoading || posNetSaving}>
+                        {t('settings.network.reload')}
+                      </Button>
+                      <Button variant="outline" onClick={testHostConnection} disabled={posNetTesting || posNetSaving}>
+                        {posNetTesting ? (
+                          <>
+                            <RefreshCw className="mr-2 h-4 w-4 animate-spin" />
+                            {t('settings.network.testing')}
+                          </>
+                        ) : (
+                          t('settings.network.testConn')
+                        )}
+                      </Button>
+                      <Button
+                        onClick={() =>
+                          savePosNetConfig({
+                            mode: posNetConfig.mode,
+                            host: posNetConfig.host,
+                            client: posNetConfig.client,
+                          })
+                        }
+                        disabled={posNetSaving}
+                      >
+                        <Save className="mr-2 h-4 w-4" />
+                        {posNetSaving ? t('settings.network.saving') : t('settings.network.saveRestart')}
+                      </Button>
+                    </div>
+                  </>
+                )}
+              </CardContent>
+            </Card>
+          </TabsContent>
+        )}
+
         {/* System Reset (Danger Zone) - Admin only */}
         {profile?.role === 'admin' && (
           <TabsContent value="reset">
@@ -1582,35 +2190,26 @@ export default function Settings() {
               <CardHeader>
                 <CardTitle className="flex items-center gap-2 text-destructive">
                   <AlertTriangle className="h-5 w-5" />
-                  SYSTEM RESET (DANGER ZONE)
+                  {t('settings.reset.cardTitle')}
                 </CardTitle>
-                <CardDescription>
-                  Admin-only utilities to reset the system. Use with extreme caution.
-                  All actions are irreversible.
-                </CardDescription>
+                <CardDescription>{t('settings.reset.cardDesc')}</CardDescription>
               </CardHeader>
               <CardContent className="space-y-6">
                 <Alert variant="destructive">
                   <AlertTriangle className="h-4 w-4" />
-                  <AlertTitle>Danger Zone</AlertTitle>
-                  <AlertDescription>
-                    These operations will permanently delete data. Make sure you have backups
-                    and understand the consequences before proceeding.
-                  </AlertDescription>
+                  <AlertTitle>{t('settings.reset.dangerTitle')}</AlertTitle>
+                  <AlertDescription>{t('settings.reset.dangerDesc')}</AlertDescription>
                 </Alert>
 
                 {/* Clear Local App Data */}
                 <div className="space-y-4 border rounded-lg p-4">
                   <div>
-                    <Label className="text-base font-semibold">Clear Local App Data</Label>
-                    <p className="text-sm text-muted-foreground mt-1 mb-3">
-                      Clears all data stored in your browser (localStorage, sessionStorage, IndexedDB, caches, React Query cache).
-                      This does NOT affect the Supabase database. The app will reload after clearing.
-                    </p>
+                    <Label className="text-base font-semibold">{t('settings.reset.browserTitle')}</Label>
+                    <p className="text-sm text-muted-foreground mt-1 mb-3">{t('settings.reset.browserDesc')}</p>
                     <Button
                       variant="outline"
                       onClick={async () => {
-                        if (!confirm('Clear all local app data? The app will reload.')) {
+                        if (!confirm(t('settings.reset.browserConfirm'))) {
                           return;
                         }
 
@@ -1620,8 +2219,9 @@ export default function Settings() {
                         } catch (error) {
                           setClearingLocal(false);
                           toast({
-                            title: 'Error',
-                            description: error instanceof Error ? error.message : 'Failed to clear local data',
+                            title: t('settings.reset.toastClearErrTitle'),
+                            description:
+                              error instanceof Error ? error.message : t('settings.reset.toastClearErrDesc'),
                             variant: 'destructive',
                           });
                         }
@@ -1631,33 +2231,33 @@ export default function Settings() {
                       {clearingLocal ? (
                         <>
                           <RefreshCw className="mr-2 h-4 w-4 animate-spin" />
-                          Clearing...
+                          {t('settings.reset.clearing')}
                         </>
                       ) : (
                         <>
                           <Trash2 className="mr-2 h-4 w-4" />
-                          Clear Local Data
+                          {t('settings.reset.browserBtn')}
                         </>
                       )}
                     </Button>
                   </div>
                 </div>
 
-                {/* Reset Supabase Database */}
+                {/* Reset local SQLite database */}
                 <div className="space-y-4 border-destructive border-2 rounded-lg p-4 bg-destructive/5">
                   <div>
-                    <Label className="text-base font-semibold text-destructive">Reset Supabase Database</Label>
-                    <p className="text-sm text-muted-foreground mt-1 mb-3">
-                      Permanently deletes ALL data from the Supabase database (orders, products, customers, etc.).
-                      This action cannot be undone. Requires typing "DELETE" to confirm.
-                    </p>
+                    <Label className="text-base font-semibold text-destructive">
+                      {t('settings.reset.sqliteTitle')}
+                    </Label>
+                    <p className="text-sm text-muted-foreground mt-1 mb-3">{t('settings.reset.sqliteDesc')}</p>
                     <Button
                       variant="destructive"
                       onClick={() => setShowResetConfirm(true)}
-                      disabled={resettingDB}
+                      disabled={resettingDB || !isElectron()}
+                      title={!isElectron() ? t('settings.reset.sqliteBtnTitle') : undefined}
                     >
-                      <Trash2 className="mr-2 h-4 w-4" />
-                      Reset Database
+                      <Database className="mr-2 h-4 w-4" />
+                      {t('settings.reset.sqliteBtn')}
                     </Button>
                   </div>
                 </div>
@@ -1667,31 +2267,43 @@ export default function Settings() {
         )}
       </Tabs>
 
-      <Dialog open={showUnsavedDialog} onOpenChange={setShowUnsavedDialog}>
+      <Dialog
+        open={showUnsavedDialog}
+        onOpenChange={(open) => {
+          setShowUnsavedDialog(open);
+          if (!open) pendingTabRef.current = null;
+        }}
+      >
         <DialogContent>
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2">
               <AlertTriangle className="h-5 w-5 text-destructive" />
-              Unsaved Changes
+              {t('settings.dialogs.unsavedTitle')}
             </DialogTitle>
-            <DialogDescription>
-              You have unsaved changes. If you leave this tab, your changes will be lost. Do you want
-              to continue?
-            </DialogDescription>
+            <DialogDescription>{t('settings.dialogs.unsavedDesc')}</DialogDescription>
           </DialogHeader>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setShowUnsavedDialog(false)}>
-              Stay
+          <DialogFooter className="gap-2 sm:gap-0">
+            <Button
+              variant="outline"
+              onClick={() => {
+                pendingTabRef.current = null;
+                setShowUnsavedDialog(false);
+              }}
+            >
+              {t('settings.dialogs.stay')}
             </Button>
             <Button
               variant="destructive"
-              onClick={() => {
-                setHasUnsavedChanges(false);
+              onClick={async () => {
+                const nextTab = pendingTabRef.current;
+                pendingTabRef.current = null;
                 setShowUnsavedDialog(false);
-                loadAllSettings();
+                setHasUnsavedChanges(false);
+                await loadAllSettings({ silent: true });
+                if (nextTab) setActiveTab(nextTab);
               }}
             >
-              Discard Changes
+              {t('settings.dialogs.discardGo')}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -1703,31 +2315,27 @@ export default function Settings() {
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2 text-destructive">
               <AlertTriangle className="h-5 w-5" />
-              Confirm Database Reset
+              {t('settings.dialogs.resetTitle')}
             </DialogTitle>
             <DialogDescription className="space-y-2">
-              <p className="font-semibold">This will permanently delete ALL data from the database:</p>
+              <p className="font-semibold">{t('settings.dialogs.resetIntro')}</p>
               <ul className="list-disc list-inside text-sm space-y-1 ml-2">
-                <li>All orders and sales</li>
-                <li>All products and inventory</li>
-                <li>All customers and suppliers</li>
-                <li>All expenses and payments</li>
-                <li>All purchase orders</li>
-                <li>All sales returns</li>
+                <li>{t('settings.dialogs.resetLi1')}</li>
+                <li>{t('settings.dialogs.resetLi2')}</li>
+                <li>{t('settings.dialogs.resetLi3')}</li>
+                <li>{t('settings.dialogs.resetLi4')}</li>
+                <li>{t('settings.dialogs.resetLi5')}</li>
+                <li>{t('settings.dialogs.resetLi6')}</li>
               </ul>
-              <p className="font-semibold text-destructive mt-4">
-                This action CANNOT be undone.
-              </p>
-              <p className="mt-2">
-                Type <strong className="text-destructive">DELETE</strong> to confirm:
-              </p>
+              <p className="font-semibold text-destructive mt-4">{t('settings.dialogs.resetIrreversible')}</p>
+              <p className="mt-2">{t('settings.dialogs.resetTypeDelete')}</p>
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-4">
             <Input
               value={resetConfirmText}
               onChange={(e) => setResetConfirmText(e.target.value)}
-              placeholder="Type DELETE to confirm"
+              placeholder={t('settings.dialogs.resetPh')}
               className="font-mono"
             />
           </div>
@@ -1736,15 +2344,15 @@ export default function Settings() {
               setShowResetConfirm(false);
               setResetConfirmText('');
             }}>
-              Cancel
+              {t('settings.dialogs.resetCancel')}
             </Button>
             <Button
               variant="destructive"
               onClick={async () => {
                 if (resetConfirmText !== 'DELETE') {
                   toast({
-                    title: 'Invalid confirmation',
-                    description: 'You must type "DELETE" to confirm',
+                    title: t('settings.dialogs.resetConfirmInvalidTitle'),
+                    description: t('settings.dialogs.resetConfirmInvalidDesc'),
                     variant: 'destructive',
                   });
                   return;
@@ -1752,10 +2360,11 @@ export default function Settings() {
 
                 setResettingDB(true);
                 try {
+                  clearLocalMockDataForDbReset();
                   await resetDatabase({ confirmText: resetConfirmText });
                   toast({
-                    title: 'Success',
-                    description: 'Database has been reset successfully. The app will reload.',
+                    title: t('settings.dialogs.resetToastOkTitle'),
+                    description: t('settings.dialogs.resetToastOkDesc'),
                   });
                   setShowResetConfirm(false);
                   setResetConfirmText('');
@@ -1765,8 +2374,8 @@ export default function Settings() {
                   }, 2000);
                 } catch (error) {
                   toast({
-                    title: 'Error',
-                    description: error instanceof Error ? error.message : 'Failed to reset database',
+                    title: t('settings.offline.toastErrTitle'),
+                    description: error instanceof Error ? error.message : t('settings.dialogs.resetErr'),
                     variant: 'destructive',
                   });
                 } finally {
@@ -1778,12 +2387,12 @@ export default function Settings() {
               {resettingDB ? (
                 <>
                   <RefreshCw className="mr-2 h-4 w-4 animate-spin" />
-                  Resetting...
+                  {t('settings.reset.clearing')}
                 </>
               ) : (
                 <>
                   <Trash2 className="mr-2 h-4 w-4" />
-                  Reset Database
+                  {t('settings.reset.sqliteBtn')}
                 </>
               )}
             </Button>

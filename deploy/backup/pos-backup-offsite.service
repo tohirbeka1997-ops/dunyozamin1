@@ -1,0 +1,25 @@
+[Unit]
+Description=POS — off-site backup sync (rclone -> remote)
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=deploy
+Group=deploy
+WorkingDirectory=/opt/pos
+
+# Load /opt/pos/.env so POS_DATA_DIR / POS_HOST_SECRET / POS_BACKUP_REMOTE are
+# visible to the script. systemd ignores comments/blank lines automatically.
+EnvironmentFile=/opt/pos/.env
+
+# The script is idempotent and exits 0 on success, 2 on transient failure.
+ExecStart=/bin/bash /opt/pos/deploy/scripts/backup-offsite.sh
+
+# Log to journald with a recognizable tag so `journalctl -t pos-offsite` works.
+SyslogIdentifier=pos-offsite
+StandardOutput=journal
+StandardError=journal
+
+# Kill the job if it hangs (rclone has its own timeouts but network can stall).
+TimeoutStartSec=30m

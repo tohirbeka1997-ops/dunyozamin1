@@ -1,0 +1,40 @@
+# =============================================================================
+# docker-compose.override.yaml — LOKAL rivojlanish uchun namuna
+# =============================================================================
+# Nusxalab oling:
+#   cp docker-compose.override.yaml.example docker-compose.override.yaml
+#
+# Git'ga kommit QILMANG (bu fayl .gitignore'ga qo'shilsin — lokal sozlama).
+# =============================================================================
+
+services:
+  pos-server:
+    # Lokalda 3333 portni barcha interface'larga ochamiz (Nginx yo'q bo'lgani uchun).
+    ports:
+      - "3333:3333"
+
+    # Lokal test DB uchun bind mount (docker volume o'rniga).
+    # Fayllar to'g'ridan-to'g'ri ./.pos-data-docker/ ga yoziladi — oson tekshirish.
+    volumes:
+      - ./.pos-data-docker:/var/lib/pos
+
+    # Dev uchun kamroq backup
+    environment:
+      POS_BACKUP_INTERVAL_MIN: "60"
+      POS_BACKUP_MAX: "5"
+
+    # Dev uchun qulay: source o'zgarganda image'ni qayta build qilish
+    # (`docker compose up --build` bilan)
+    build:
+      target: runtime
+
+  # -------------------------------------------------------------------------
+  # Ixtiyoriy: HTTP hitting test uchun curl/wget konteyneri
+  # Usage: docker compose run --rm tester curl http://pos-server:3333/health
+  # -------------------------------------------------------------------------
+  # tester:
+  #   image: curlimages/curl:latest
+  #   command: sleep infinity
+  #   depends_on:
+  #     pos-server:
+  #       condition: service_healthy

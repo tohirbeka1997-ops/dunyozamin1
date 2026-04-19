@@ -18,44 +18,56 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table';
-import { getInventory, getCategories } from '@/db/api';
-import type { ProductWithCategory, Category } from '@/types/database';
+import { getInventoryValuationReport, getCategories } from '@/db/api';
+import type { Category } from '@/types/database';
 import { FileDown, ArrowLeft, ArrowUpDown } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 import { useNavigate } from 'react-router-dom';
-import { formatUnit } from '@/utils/formatters';
 import { formatMoneyUZS } from '@/lib/format';
+import { useReportAutoRefresh } from '@/hooks/useReportAutoRefresh';
 
 type SortField = 'name' | 'stock' | 'value';
 type SortOrder = 'asc' | 'desc';
+type ValuationRow = {
+  product_id: string;
+  product_name: string;
+  product_sku: string | null;
+  category_id: string | null;
+  category_name: string | null;
+  min_stock_level: number;
+  current_stock: number;
+  unit_cost: number | null;
+  stock_value: number;
+};
 
 export default function ValuationReport() {
   const navigate = useNavigate();
   const { toast } = useToast();
-  const [products, setProducts] = useState<ProductWithCategory[]>([]);
+  const [products, setProducts] = useState<ValuationRow[]>([]);
   const [categories, setCategories] = useState<Category[]>([]);
   const [loading, setLoading] = useState(true);
+  const [warnings, setWarnings] = useState<any>(null);
   const [categoryFilter, setCategoryFilter] = useState<string>('all');
   const [statusFilter, setStatusFilter] = useState<string>('all');
   const [searchTerm, setSearchTerm] = useState('');
-  const [dateFrom, setDateFrom] = useState(new Date().toISOString().split('T')[0]);
-  const [dateTo, setDateTo] = useState(new Date().toISOString().split('T')[0]);
   const [sortField, setSortField] = useState<SortField>('name');
   const [sortOrder, setSortOrder] = useState<SortOrder>('asc');
+
+  useReportAutoRefresh(loadData);
 
   useEffect(() => {
     loadData();
   }, [categoryFilter, statusFilter]);
 
-  const loadData = async () => {
+  async function loadData() {
     try {
       setLoading(true);
-      const [productsData, categoriesData] = await Promise.all([
-        getInventory(),
+      const [valuationData, categoriesData] = await Promise.all([
+        getInventoryValuationReport({ warehouse_id: 'main-warehouse-001', status: 'active' }),
         getCategories(),
       ]);
       
-      let filtered = productsData;
+      let filtered: ValuationRow[] = Array.isArray(valuationData?.rows) ? (valuationData.rows as ValuationRow[]) : [];
 
       if (categoryFilter !== 'all') {
         filtered = filtered.filter((p) => p.category_id === categoryFilter);
@@ -63,8 +75,8 @@ export default function ValuationReport() {
 
       if (statusFilter !== 'all') {
         filtered = filtered.filter((p) => {
-          const stock = Number(p.current_stock);
-          const minStock = Number(p.min_stock_level);
+          const stock = Number(p.current_stock || 0);
+          const minStock = Number(p.min_stock_level || 0);
           
           if (statusFilter === 'out_of_stock') return stock === 0;
           if (statusFilter === 'low') return stock > 0 && stock <= minStock;
@@ -75,6 +87,7 @@ export default function ValuationReport() {
 
       setProducts(filtered);
       setCategories(categoriesData);
+      setWarnings(valuationData?.warnings || null);
     } catch (error) {
       toast({
         title: 'Xatolik',
@@ -84,18 +97,18 @@ export default function ValuationReport() {
     } finally {
       setLoading(false);
     }
-  };
+  }
 
-  const getStockStatus = (product: ProductWithCategory) => {
-    const stock = Number(product.current_stock);
-    const minStock = Number(product.min_stock_level);
+  const getStockStatus = (product: ValuationRow) => {
+    const stock = Number(product.current_stock || 0);
+    const minStock = Number(product.min_stock_level || 0);
 
     if (stock === 0) {
-      return { label: 'Tugagan', className: 'bg-destructive text-destructive-foreground' };
+      return { label: 'Tugagan', className: 'bg-destructive text-white' };
     } else if (stock <= minStock) {
-      return { label: 'Kam zaxira', className: 'bg-warning text-warning-foreground' };
+      return { label: 'Kam zaxira', className: 'bg-warning text-white' };
     } else {
-      return { label: 'Omborda bor', className: 'bg-success text-success-foreground' };
+      return { label: 'Omborda bor', className: 'bg-success text-white' };
     }
   };
 
@@ -104,9 +117,8 @@ export default function ValuationReport() {
       if (!searchTerm) return true;
       const search = searchTerm.toLowerCase();
       return (
-        product.name.toLowerCase().includes(search) ||
-        product.sku.toLowerCase().includes(search) ||
-        (product.barcode && product.barcode.toLowerCase().includes(search))
+        product.product_name.toLowerCase().includes(search) ||
+        (product.product_sku || '').toLowerCase().includes(search)
       );
     });
 
@@ -116,19 +128,15 @@ export default function ValuationReport() {
       let bValue: number | string;
 
       if (sortField === 'name') {
-        aValue = a.name.toLowerCase();
-        bValue = b.name.toLowerCase();
+        aValue = a.product_name.toLowerCase();
+        bValue = b.product_name.toLowerCase();
       } else if (sortField === 'stock') {
         aValue = Number(a.current_stock || 0);
         bValue = Number(b.current_stock || 0);
       } else {
         // value
-        const aCost = Number(a.purchase_price || 0);
-        const aQty = Number(a.current_stock || 0);
-        const bCost = Number(b.purchase_price || 0);
-        const bQty = Number(b.current_stock || 0);
-        aValue = aCost * aQty;
-        bValue = bCost * bQty;
+        aValue = Number(a.stock_value || 0);
+        bValue = Number(b.stock_value || 0);
       }
 
       if (typeof aValue === 'string' && typeof bValue === 'string') {
@@ -154,10 +162,8 @@ export default function ValuationReport() {
     }
   };
 
-  const calculateInventoryValue = (product: ProductWithCategory) => {
-    const cost = Number(product.purchase_price || 0);
-    const qty = Number(product.current_stock || 0);
-    return cost * qty;
+  const calculateInventoryValue = (product: ValuationRow) => {
+    return Number(product.stock_value || 0);
   };
 
   const totalInventoryValue = filteredProducts.reduce((sum, p) => {
@@ -226,26 +232,15 @@ export default function ValuationReport() {
           </Button>
         </div>
       </div>
+      {warnings?.valuation_mismatch ? (
+        <div className="text-xs text-destructive">
+          FIFO va weighted avg baholashlarida farq aniqlandi. Hisobotni tekshiring.
+        </div>
+      ) : null}
 
       <Card>
         <CardContent className="pt-6">
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-4">
-            <div>
-              <label className="text-sm text-muted-foreground">Boshlanish sanasi</label>
-              <Input
-                type="date"
-                value={dateFrom}
-                onChange={(e) => setDateFrom(e.target.value)}
-              />
-            </div>
-            <div>
-              <label className="text-sm text-muted-foreground">Tugash sanasi</label>
-              <Input
-                type="date"
-                value={dateTo}
-                onChange={(e) => setDateTo(e.target.value)}
-              />
-            </div>
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
             <div>
               <label className="text-sm text-muted-foreground">Kategoriya</label>
               <Select value={categoryFilter} onValueChange={setCategoryFilter}>
@@ -336,11 +331,10 @@ export default function ValuationReport() {
                   </TableHead>
                   <TableHead>SKU</TableHead>
                   <TableHead>Kategoriya</TableHead>
-                  <TableHead>Birlik</TableHead>
                   <TableHead className="text-right">
                     <SortButton field="stock">Joriy zaxira</SortButton>
                   </TableHead>
-                  <TableHead className="text-right">Sotib olish narxi</TableHead>
+                  <TableHead className="text-right">Birlik tannarx</TableHead>
                   <TableHead className="text-right">
                     <SortButton field="value">Ombor qiymati</SortButton>
                   </TableHead>
@@ -349,22 +343,20 @@ export default function ValuationReport() {
               </TableHeader>
               <TableBody>
                 {filteredProducts.map((product) => {
-                  const cost = Number(product.purchase_price || 0);
                   const qty = Number(product.current_stock || 0);
                   const totalValue = calculateInventoryValue(product);
                   const status = getStockStatus(product);
                   
                   return (
-                    <TableRow key={product.id}>
-                      <TableCell className="font-medium">{product.name}</TableCell>
-                      <TableCell>{product.sku}</TableCell>
-                      <TableCell>{product.category?.name || '-'}</TableCell>
-                      <TableCell>{formatUnit(product.unit)}</TableCell>
+                    <TableRow key={product.product_id}>
+                      <TableCell className="font-medium">{product.product_name}</TableCell>
+                      <TableCell>{product.product_sku || '-'}</TableCell>
+                      <TableCell>{product.category_name || '-'}</TableCell>
                       <TableCell className="text-right">
                         {qty.toFixed(0)}
                       </TableCell>
                       <TableCell className="text-right">
-                        {formatMoneyUZS(cost)}
+                        {formatMoneyUZS(Number(product.unit_cost || 0))}
                       </TableCell>
                       <TableCell className="text-right font-medium">
                         {formatMoneyUZS(totalValue)}

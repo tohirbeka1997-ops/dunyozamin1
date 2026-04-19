@@ -1,0 +1,221 @@
+name: CI
+
+# Runs on every pull request and every push to main / develop.
+# Purpose: lightweight gate — install deps, run smoke tests, verify the
+# Docker image builds. Heavy Playwright / coverage runs belong to a
+# separate workflow (and are skipped here for speed).
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main, develop]
+  workflow_dispatch:
+
+# Cancel older runs on the same branch to save minutes.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  # --------------------------------------------------------------------
+  # 1) Install + smoke tests (Node-only, no browser, no native builds)
+  # --------------------------------------------------------------------
+  smoke:
+    name: Smoke tests
+    runs-on: ubuntu-latest
+    env:
+      # Skip the postinstall `electron-builder install-app-deps` — we don't
+      # need Electron binaries for server + unit tests, and the rebuild
+      # silently fails on Linux CI for better-sqlite3 anyway.
+      ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
+      npm_config_ignore_scripts: 'true'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies (skip postinstall)
+        run: npm ci --ignore-scripts
+
+      - name: Rebuild better-sqlite3 for Node (not Electron)
+        # `better-sqlite3` is the one native module used by the smoke tests
+        # (sessions / hostServer). npm_config_ignore_scripts disabled its
+        # install script, so we rebuild it explicitly for the CI Node ABI.
+        run: npm rebuild better-sqlite3 --build-from-source
+
+      - name: Print agent — HTTP layer smoke tests
+        run: npm run test:agent
+
+      - name: Barcode scanner — burst detector unit tests
+        run: npm run test:barcode
+
+      - name: Sessions store — unit tests
+        run: npm run test:sessions
+
+      - name: Host server — auth & role E2E
+        run: npm run test:hostserver
+
+      - name: Frontend auth flow — E2E
+        run: npm run test:authflow
+
+      - name: Prometheus /metrics endpoint — smoke
+        run: npm run test:metrics
+
+      - name: Rate limiter — unit tests
+        run: npm run test:ratelimit
+
+      - name: Audit log — unit tests
+        run: npm run test:auditlog
+
+      - name: Security (rate-limit + audit) — E2E
+        run: npm run test:security
+
+      - name: Multi-tenant registry — unit tests
+        run: npm run test:tenantRegistry
+
+      - name: Multi-tenant dispatcher — routing tests
+        run: npm run test:mtdispatch
+
+      - name: Alertmanager config contract — unit tests
+        # Fast, hermetic sanity checks: YAML shape, routed receivers,
+        # template usage, secret placeholders. This guards commits;
+        # the full semantic check (amtool) runs in the monitoring-config
+        # job below which has the tool installed.
+        run: npm run test:alertmanager
+
+      - name: Restore-drill wiring — unit tests
+        # Asserts that the three magic-string surfaces (wrapper script,
+        # compose mount, alerts.yml) stay in sync. Prevents a silent
+        # decoupling of the dashboard from reality.
+        run: npm run test:restoredrill
+
+      - name: fail2ban / audit.log filters — unit tests
+        run: npm run test:fail2ban
+
+      - name: Grafana tenant dashboard JSON — smoke
+        run: npm run test:grafana-tenants
+
+  # --------------------------------------------------------------------
+  # 1b) Monitoring config lint (amtool + promtool)
+  # --------------------------------------------------------------------
+  # These live in containers so a local dev doesn't need the binaries on
+  # PATH; CI just pulls the same images that run in prod and asks them to
+  # check the config. A failure here blocks the PR — a broken alerting
+  # tree is a silent outage, not a nice-to-have.
+  monitoring-config:
+    name: Monitoring config lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: promtool — lint alerts.yml + prometheus.yml
+        # `prometheus.yml` references `alertmanager:9093` which won't
+        # resolve in CI, but promtool only does static validation so the
+        # DNS is irrelevant. The alerts file is fully self-contained.
+        run: |
+          set -euo pipefail
+          docker run --rm \
+            -v "$GITHUB_WORKSPACE/deploy/monitoring:/cfg:ro" \
+            prom/prometheus:v2.55.0 \
+            promtool check rules /cfg/alerts.yml
+          docker run --rm \
+            -v "$GITHUB_WORKSPACE/deploy/monitoring:/cfg:ro" \
+            prom/prometheus:v2.55.0 \
+            promtool check config /cfg/prometheus.yml || {
+              echo "::warning::promtool reported issues (may be non-fatal if caused by Alertmanager DNS)";
+              # Re-run with the strict exit code so a REAL syntax error still fails.
+              docker run --rm \
+                -v "$GITHUB_WORKSPACE/deploy/monitoring:/cfg:ro" \
+                prom/prometheus:v2.55.0 \
+                sh -c 'promtool check config /cfg/prometheus.yml 2>&1 | grep -vE "(alertmanager|DNS|no such host|lookup alertmanager)" | grep -E "(error|FAIL|invalid)" && exit 1 || exit 0'
+            }
+
+      - name: amtool — lint alertmanager.yml (with dummy secrets)
+        # amtool rejects `${VAR}` placeholders as "value required", so we
+        # envsubst with dummy values before validation. The real config
+        # is re-validated at container start-up by verify-alertmanager.sh.
+        run: |
+          set -euo pipefail
+          export TELEGRAM_ALERT_BOT_TOKEN="1234:dummy" \
+                 TELEGRAM_ALERT_CHAT_ID="-1001" \
+                 SMTP_HOST="smtp.example.com" SMTP_PORT="587" \
+                 SMTP_FROM="x@example.com" SMTP_USERNAME="x@example.com" \
+                 SMTP_PASSWORD="dummy" SMTP_HELLO="pos.example.com" \
+                 ALERT_EMAIL_TO="ops@example.com" \
+                 ALERTMANAGER_EXTERNAL_URL="http://localhost:9093"
+          mkdir -p /tmp/am
+          envsubst < deploy/monitoring/alertmanager.yml > /tmp/am/alertmanager.yml
+          cp -r deploy/monitoring/alertmanager-templates /tmp/am/templates
+          docker run --rm \
+            -v /tmp/am:/cfg:ro \
+            --entrypoint amtool \
+            prom/alertmanager:v0.27.0 \
+            check-config /cfg/alertmanager.yml
+
+  # --------------------------------------------------------------------
+  # 2) Frontend type check (only fail on NEW errors in files we own)
+  # --------------------------------------------------------------------
+  typecheck:
+    name: Frontend TypeScript
+    runs-on: ubuntu-latest
+    env:
+      ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
+      npm_config_ignore_scripts: 'true'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+      - name: Install
+        run: npm ci --ignore-scripts
+
+      - name: tsc --noEmit (non-blocking baseline)
+        # The repo has pre-existing TS errors; we keep this non-blocking
+        # and surface the new-files diff below. Once the baseline is clean
+        # we can flip this to fail-fast.
+        run: npx tsc --noEmit -p tsconfig.app.json
+        continue-on-error: true
+
+      - name: tsc --noEmit (strict scope — new/owned files)
+        # Hard failure if any of OUR files regresses.
+        run: |
+          set -e
+          npx tsc --noEmit -p tsconfig.app.json 2>&1 | tee /tmp/tsc.log || true
+          # Grep for our files only; if anything matches, fail the job.
+          if grep -E "src/(hooks/useBarcodeScanner|hooks/useScale|lib/devices/scaleAgent|lib/receipts/printAgent|lib/receipts/escposPrint|components/pos/PosDeviceBar|contexts/AuthContext|store/useAuth|pages/Login|lib/remotePosApi)" /tmp/tsc.log; then
+            echo "❌ TypeScript errors found in files owned by this workflow."
+            exit 1
+          fi
+          echo "✓ No TS errors in owned scope."
+
+  # --------------------------------------------------------------------
+  # 3) Docker image build smoke (no push, just verify it compiles)
+  # --------------------------------------------------------------------
+  docker-build:
+    name: Docker build smoke
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build image (no push)
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./Dockerfile
+          push: false
+          tags: pos-server:ci-${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

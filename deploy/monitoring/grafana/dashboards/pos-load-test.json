@@ -1,0 +1,127 @@
+{
+  "annotations": { "list": [] },
+  "description": "Load-test live view — correlate k6/autocannon runs with pos-server + host metrics. Open this dashboard while running `npm run load:k6:mixed` to see SLA breaches in real time.",
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "id": null,
+  "links": [],
+  "liveNow": true,
+  "panels": [
+    {
+      "type": "timeseries",
+      "title": "RPC throughput (req/s, per channel)",
+      "description": "Sum of pos_rpc_calls_total over 30s. Compare across channels — usually `pos:products:list` dominates.",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+      "targets": [
+        {
+          "expr": "sum by (channel) (rate(pos_rpc_calls_total[30s]))",
+          "legendFormat": "{{channel}}"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "reqps", "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 10 } } }
+    },
+    {
+      "type": "timeseries",
+      "title": "RPC latency p50 / p95 / p99",
+      "description": "Histogram quantiles from pos_rpc_call_duration_seconds. If p95 climbs faster than p50 during a run, the tail is dominated by writes / DB contention.",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+      "targets": [
+        { "expr": "histogram_quantile(0.50, sum by (le) (rate(pos_rpc_call_duration_seconds_bucket[30s])))", "legendFormat": "p50" },
+        { "expr": "histogram_quantile(0.95, sum by (le) (rate(pos_rpc_call_duration_seconds_bucket[30s])))", "legendFormat": "p95" },
+        { "expr": "histogram_quantile(0.99, sum by (le) (rate(pos_rpc_call_duration_seconds_bucket[30s])))", "legendFormat": "p99" }
+      ],
+      "fieldConfig": { "defaults": { "unit": "s" } },
+      "options": { "legend": { "displayMode": "table", "placement": "right" } }
+    },
+    {
+      "type": "timeseries",
+      "title": "Error & denied rate (%)",
+      "description": "Any bar >1% while the load is steady = red flag. `denied` spikes mean your VUs tried a channel their role can't call.",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
+      "targets": [
+        {
+          "expr": "sum by (outcome) (rate(pos_rpc_calls_total{outcome=~\"error|denied\"}[30s])) / ignoring(outcome) group_left sum(rate(pos_rpc_calls_total[30s]))",
+          "legendFormat": "{{outcome}}"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "percentunit", "max": 0.1 } }
+    },
+    {
+      "type": "timeseries",
+      "title": "HTTP 5xx vs 4xx",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
+      "targets": [
+        { "expr": "sum(rate(pos_http_requests_total{code=~\"5..\"}[30s]))", "legendFormat": "5xx" },
+        { "expr": "sum(rate(pos_http_requests_total{code=~\"4..\"}[30s]))", "legendFormat": "4xx" }
+      ],
+      "fieldConfig": { "defaults": { "unit": "reqps" } }
+    },
+    {
+      "type": "timeseries",
+      "title": "Node CPU & load (host)",
+      "description": "1m load average from node-exporter. If it crosses your vCPU count during a run, the server is CPU-bound.",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 16 },
+      "targets": [
+        { "expr": "node_load1", "legendFormat": "load1" },
+        { "expr": "node_load5", "legendFormat": "load5" }
+      ],
+      "fieldConfig": { "defaults": { "unit": "short" } }
+    },
+    {
+      "type": "timeseries",
+      "title": "Memory (MemAvailable / MemTotal, host)",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 16 },
+      "targets": [
+        {
+          "expr": "1 - (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)",
+          "legendFormat": "used %"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "percentunit", "max": 1 } }
+    },
+    {
+      "type": "stat",
+      "title": "Active sessions (during run)",
+      "gridPos": { "h": 4, "w": 6, "x": 0, "y": 24 },
+      "targets": [{ "expr": "pos_active_sessions" }],
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "value" }
+    },
+    {
+      "type": "stat",
+      "title": "DB query errors (rate)",
+      "gridPos": { "h": 4, "w": 6, "x": 6, "y": 24 },
+      "targets": [{ "expr": "sum(rate(pos_db_query_errors_total[30s]))" }],
+      "fieldConfig": { "defaults": { "unit": "reqps", "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null }, { "color": "orange", "value": 0.01 }, { "color": "red", "value": 0.1 } ] } } }
+    },
+    {
+      "type": "stat",
+      "title": "Login success rate (last 5m)",
+      "gridPos": { "h": 4, "w": 6, "x": 12, "y": 24 },
+      "targets": [
+        {
+          "expr": "sum(rate(pos_auth_logins_total{outcome=\"success\"}[5m])) / sum(rate(pos_auth_logins_total[5m]))"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "percentunit", "min": 0, "max": 1 } }
+    },
+    {
+      "type": "stat",
+      "title": "DB size (MB)",
+      "gridPos": { "h": 4, "w": 6, "x": 18, "y": 24 },
+      "targets": [{ "expr": "pos_db_size_bytes / 1024 / 1024" }],
+      "fieldConfig": { "defaults": { "unit": "decmbytes" } }
+    }
+  ],
+  "refresh": "10s",
+  "schemaVersion": 38,
+  "style": "dark",
+  "tags": ["pos", "load-test"],
+  "templating": { "list": [] },
+  "time": { "from": "now-15m", "to": "now" },
+  "timepicker": {},
+  "timezone": "",
+  "title": "POS / Load test",
+  "uid": "pos-load-test",
+  "version": 1
+}

@@ -18,11 +18,12 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table';
-import { getInventory, getCategories } from '@/db/api';
+import { getInventoryAll, getCategories } from '@/db/api';
 import type { ProductWithCategory, Category } from '@/types/database';
 import { FileDown, ArrowLeft, AlertTriangle } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 import { useNavigate } from 'react-router-dom';
+import { useReportAutoRefresh } from '@/hooks/useReportAutoRefresh';
 
 export default function StockLevelsReport() {
   const navigate = useNavigate();
@@ -34,15 +35,17 @@ export default function StockLevelsReport() {
   const [statusFilter, setStatusFilter] = useState<string>('all');
   const [searchTerm, setSearchTerm] = useState('');
 
+  useReportAutoRefresh(loadData);
+
   useEffect(() => {
     loadData();
   }, [categoryFilter, statusFilter]);
 
-  const loadData = async () => {
+  async function loadData() {
     try {
       setLoading(true);
       const [productsData, categoriesData] = await Promise.all([
-        getInventory(),
+        getInventoryAll(),
         getCategories(),
       ]);
       
@@ -75,18 +78,18 @@ export default function StockLevelsReport() {
     } finally {
       setLoading(false);
     }
-  };
+  }
 
   const getStockStatus = (product: ProductWithCategory) => {
     const stock = Number(product.current_stock);
     const minStock = Number(product.min_stock_level);
 
     if (stock === 0) {
-      return { label: 'Tugagan', className: 'bg-destructive text-destructive-foreground' };
+      return { label: 'Tugagan', className: 'bg-destructive text-white' };
     } else if (stock <= minStock) {
-      return { label: 'Kam zaxira', className: 'bg-warning text-warning-foreground' };
+      return { label: 'Kam zaxira', className: 'bg-warning text-white' };
     } else {
-      return { label: 'Omborda bor', className: 'bg-success text-success-foreground' };
+      return { label: 'Omborda bor', className: 'bg-success text-white' };
     }
   };
 
@@ -110,8 +113,8 @@ export default function StockLevelsReport() {
 
   const handleExport = (format: 'excel' | 'pdf') => {
     toast({
-      title: 'Export',
-      description: `Exporting to ${format.toUpperCase()}...`,
+      title: 'Eksport',
+      description: `${format.toUpperCase()} formatiga eksport qilinmoqda...`,
     });
   };
 

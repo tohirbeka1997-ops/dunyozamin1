@@ -25,7 +25,8 @@
     "noUncheckedSideEffectImports": true,
     "baseUrl": ".",
     "paths": {
-      "@/*": ["./src/*"]
+      "@/*": ["./src/*"],
+      "@offline/*": ["./src/offline/*"]
     },
     "typeRoots": ["./node_modules/**/*"]
   },

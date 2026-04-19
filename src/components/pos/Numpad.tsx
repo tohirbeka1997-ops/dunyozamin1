@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useMemo, type ReactNode } from 'react';
 import { Button } from '@/components/ui/button';
 import {
   Dialog,
@@ -9,16 +9,26 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog';
 import { Delete } from 'lucide-react';
+import { formatNumberDots } from '@/lib/money';
 
 interface NumpadProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   title: string;
   description?: string;
+  /** Rendered below the header (e.g. mode toggles). */
+  headerExtra?: ReactNode;
   initialValue?: number;
   onApply: (value: number) => void;
   max?: number;
   min?: number;
+  allowDecimal?: boolean;
+  /** If set, shown instead of raw `Max: {max}` under the input. */
+  maxHint?: string;
+  /** Input keyboard hint; default follows allowDecimal. */
+  inputMode?: 'decimal' | 'numeric';
+  /** Default: 'default'. Use 'payment' to show as a floating keypad without overlay (tablet-friendly). */
+  mode?: 'default' | 'payment';
 }
 
 export default function Numpad({
@@ -26,50 +36,88 @@ export default function Numpad({
   onOpenChange,
   title,
   description,
+  headerExtra,
   initialValue = 0,
   onApply,
   max,
   min = 0,
+  allowDecimal = true,
+  maxHint,
+  inputMode: inputModeProp,
+  mode = 'default',
 }: NumpadProps) {
-  const [value, setValue] = useState(initialValue.toString());
+  // For payment mode we keep a raw digits-only value, and display a formatted "1.000.000" string.
+  const [valueRaw, setValueRaw] = useState('');
+  const [isPristine, setIsPristine] = useState(true);
   const inputRef = useRef<HTMLInputElement>(null);
 
-  // Reset value when dialog opens or initialValue changes
+  const isPayment = mode === 'payment';
+  const inputModeResolved = inputModeProp ?? (isPayment || !allowDecimal ? 'numeric' : 'decimal');
+
+  // Reset value when dialog opens, initial value changes, or input constraints change (e.g. kg ↔ so'm toggle without remounting).
   useEffect(() => {
-    if (open) {
-      const newValue = initialValue.toString();
-      setValue(newValue);
-      // Sync input ref immediately
-      if (inputRef.current) {
-        inputRef.current.value = newValue;
-      }
+    if (!open) return;
+    if (isPayment) {
+      const newRaw = String(initialValue ?? 0);
+      setValueRaw(newRaw);
+    } else {
+      const initial = initialValue && initialValue > 0 ? String(initialValue) : '';
+      setValueRaw(initial);
     }
-  }, [open, initialValue]);
+    setIsPristine(true);
+  }, [open, initialValue, isPayment, max, min, allowDecimal]);
+
+  useEffect(() => {
+    if (!open) return;
+    const t = window.setTimeout(() => {
+      inputRef.current?.focus();
+      const len = inputRef.current?.value?.length ?? 0;
+      if (inputRef.current && typeof inputRef.current.setSelectionRange === 'function') {
+        inputRef.current.setSelectionRange(len, len);
+      }
+    }, 0);
+    return () => window.clearTimeout(t);
+  }, [open]);
 
   // Keypad Logic: Ensure state updates instantly and synchronously
-  const updateValueImmediately = (newValue: string) => {
-    setValue(newValue);
-    // Also update input ref immediately to avoid stale reads
-    if (inputRef.current) {
-      inputRef.current.value = newValue;
-    }
+  const updateValueImmediately = (newRaw: string) => {
+    setValueRaw(newRaw);
   };
 
+  const displayValue = (() => {
+    if (!isPayment) return valueRaw;
+    const digits = (valueRaw || '').replace(/[^\d]/g, '');
+    const n = digits ? Number(digits) : 0;
+    return formatNumberDots(n);
+  })();
+
   const handleNumberClick = (num: string) => {
+    if (isPayment) {
+      const newValue = (() => {
+        const current = valueRaw || '';
+        const cleaned = current.replace(/[^\d]/g, '');
+        if (cleaned === '0' || cleaned === '') return num;
+        return cleaned + num;
+      })();
+      updateValueImmediately(newValue);
+      return;
+    }
+
+    const current = valueRaw || '';
     const newValue = (() => {
-      const current = inputRef.current?.value || value;
-      if (current === '0' || current === '') {
-        return num;
-      }
+      if (isPristine) return num;
+      if (current === '0' && !current.includes('.')) return num;
       return current + num;
     })();
+    setIsPristine(false);
     updateValueImmediately(newValue);
   };
 
   const handleDecimalClick = () => {
+    if (isPayment || !allowDecimal) return; // UZS payment keypad: integers only
     const newValue = (() => {
-      const current = inputRef.current?.value || value;
-      if (current === '' || current === '0') {
+      const current = valueRaw || '';
+      if (isPristine || current === '' || current === '0') {
         return '0.';
       }
       if (!current.includes('.')) {
@@ -77,100 +125,59 @@ export default function Numpad({
       }
       return current;
     })();
+    setIsPristine(false);
     updateValueImmediately(newValue);
   };
 
   const handleClear = () => {
-    updateValueImmediately('0');
+    updateValueImmediately(isPayment ? '0' : '');
+    setIsPristine(false);
   };
 
   const handleBackspace = () => {
     const newValue = (() => {
-      const current = inputRef.current?.value || value;
-      if (current.length <= 1 || current === '0') {
-        return '0';
+      const current = isPayment ? (valueRaw || '').replace(/[^\d]/g, '') : (valueRaw || '');
+      if (current.length <= 1 || current === '0' || current === '') {
+        return isPayment ? '0' : '';
       }
       return current.slice(0, -1);
     })();
+    setIsPristine(false);
     updateValueImmediately(newValue);
   };
 
   const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (isPayment) return; // keep input read-only in payment mode (keypad only)
     const inputValue = e.target.value;
     // Allow empty string, numbers, and single decimal point
-    if (inputValue === '' || /^\d*\.?\d*$/.test(inputValue)) {
-      const newValue = inputValue === '' ? '0' : inputValue;
-      setValue(newValue);
-      // Keep ref in sync
-      if (inputRef.current) {
-        inputRef.current.value = newValue;
-      }
+    const pattern = allowDecimal ? /^\d*\.?\d*$/ : /^\d*$/;
+    if (inputValue === '' || pattern.test(inputValue)) {
+      setValueRaw(inputValue);
+      setIsPristine(false);
     }
   };
 
+  const validationError = useMemo(() => {
+    if (isPayment) return '';
+    if (valueRaw === '') return '';
+    const parsed = allowDecimal ? Number(valueRaw) : Number.parseInt(valueRaw, 10);
+    if (!Number.isFinite(parsed)) return 'Qiymat noto‘g‘ri';
+    if (parsed <= 0) return 'Qiymat 0 dan katta bo‘lishi kerak';
+    if (min > 0 && parsed < min) return `Minimum: ${min}`;
+    if (max !== undefined && parsed > max) return `Maximum: ${max}`;
+    return '';
+  }, [valueRaw, allowDecimal, min, max, isPayment]);
+
+  const isApplyDisabled = isPayment ? false : valueRaw === '' || validationError !== '';
+
   const handleApply = () => {
-    // CRITICAL FIX: Read value directly from input DOM to avoid stale state
-    // This ensures we get the most current value even if state hasn't updated yet
-    const currentInputValue = inputRef.current?.value || value;
-    
-    // Force type conversion: explicitly convert to number using Number() or parseInt()
-    let numValue: number;
-    
-    // Handle empty string, null, or undefined
-    if (!currentInputValue || currentInputValue.trim() === '' || currentInputValue === '0') {
-      // For quantity (min >= 1), default to min. For discount (min = 0), default to 0
-      numValue = min;
-    } else {
-      // Use parseInt for integers (quantity) or parseFloat for decimals (discount)
-      // Force conversion: try parseInt first, then parseFloat if needed
-      const intValue = parseInt(currentInputValue, 10);
-      const floatValue = parseFloat(currentInputValue);
-      
-      // Use integer if it matches the float (no decimals), otherwise use float
-      numValue = intValue === floatValue ? intValue : floatValue;
-      
-      // Final conversion using Number() to ensure proper type
-      numValue = Number(numValue);
-    }
-    
-    // Validate: Only proceed if value is a valid number
-    if (isNaN(numValue) || !isFinite(numValue)) {
-      setValue(min.toString());
-      if (inputRef.current) {
-        inputRef.current.value = min.toString();
-      }
-      return;
-    }
-    
-    // Refactor validation: Ensure validation logic checks the converted number, not raw string
-    // Ensure value meets minimum requirement (for quantity, min is 1)
-    let validValue = numValue;
-    if (validValue < min) {
-      validValue = min;
-    }
-    
-    // Ensure value doesn't exceed maximum if specified
-    if (max !== undefined && validValue > max) {
-      validValue = max;
-    }
-    
-    // Final check: ensure validValue is a proper number
-    if (isNaN(validValue) || !isFinite(validValue)) {
-      setValue(min.toString());
-      if (inputRef.current) {
-        inputRef.current.value = min.toString();
-      }
-      return;
-    }
-    
-    // Update state to match the validated value (for consistency)
-    setValue(validValue.toString());
-    if (inputRef.current) {
-      inputRef.current.value = validValue.toString();
-    }
-    
-    // Apply the validated value immediately
-    onApply(validValue);
+    if (isApplyDisabled) return;
+    const currentInputValue = isPayment ? valueRaw : (inputRef.current?.value || valueRaw);
+    if (!currentInputValue || currentInputValue.trim() === '') return;
+    const normalized = isPayment ? currentInputValue.replace(/[^\d.]/g, '') : currentInputValue;
+    const parsed = allowDecimal ? Number(normalized) : Number.parseInt(normalized, 10);
+    if (!Number.isFinite(parsed)) return;
+    onApply(parsed);
     onOpenChange(false);
   };
 
@@ -199,30 +206,48 @@ export default function Numpad({
   };
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
+    <Dialog open={open} onOpenChange={onOpenChange} modal={mode !== 'payment'}>
       <DialogContent 
-        className="max-w-sm" 
+        hideOverlay={mode === 'payment'}
+        className={
+          mode === 'payment'
+            ? // Float in bottom-right so it doesn't cover the payment actions behind it.
+              "w-[360px] max-w-[calc(100%-1.5rem)] fixed top-20 right-3 left-auto bottom-auto translate-x-0 translate-y-0 p-4 z-[120] max-h-[calc(100vh-6rem)] overflow-auto"
+            : "max-w-sm"
+        }
         onKeyDown={handleDialogKeyDown}
+        onOpenAutoFocus={(e) => {
+          e.preventDefault();
+          inputRef.current?.focus();
+        }}
       >
         <DialogHeader>
           <DialogTitle>{title}</DialogTitle>
           {description && <DialogDescription>{description}</DialogDescription>}
         </DialogHeader>
+        {headerExtra ? <div className="mt-2">{headerExtra}</div> : null}
         <div className="space-y-4">
           <div className="bg-muted rounded-lg p-4 text-right">
             <input
               ref={inputRef}
               type="text"
-              value={value}
+              value={displayValue}
               onChange={handleInputChange}
               onKeyDown={handleInputKeyDown}
               className="w-full text-3xl font-bold bg-transparent border-none outline-none text-right focus:ring-0"
               autoFocus
-              inputMode="decimal"
+              inputMode={inputModeResolved}
+              readOnly={isPayment}
+              placeholder={isPayment ? undefined : '0'}
             />
-            {max !== undefined && (
-              <div className="text-xs text-muted-foreground mt-1">Max: {max}</div>
+            {!isPayment && validationError !== '' && (
+              <div className="text-xs text-destructive mt-1">{validationError}</div>
             )}
+            {maxHint ? (
+              <div className="text-xs text-muted-foreground mt-1">{maxHint}</div>
+            ) : max !== undefined ? (
+              <div className="text-xs text-muted-foreground mt-1">Max: {max}</div>
+            ) : null}
             {min > 0 && (
               <div className="text-xs text-muted-foreground mt-1">Min: {min}</div>
             )}
@@ -244,6 +269,7 @@ export default function Numpad({
               size="lg"
               className="h-14 text-xl font-semibold"
               onClick={handleDecimalClick}
+              disabled={isPayment || !allowDecimal}
             >
               .
             </Button>
@@ -269,7 +295,7 @@ export default function Numpad({
           <Button variant="outline" onClick={handleClear}>
             Clear
           </Button>
-          <Button onClick={handleApply} className="flex-1">
+          <Button onClick={handleApply} className="flex-1" disabled={isApplyDisabled}>
             Apply
           </Button>
         </DialogFooter>

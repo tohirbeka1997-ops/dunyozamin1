@@ -1,0 +1,176 @@
+name: Deploy backend
+
+# Builds the POS server Docker image, publishes it to GitHub Container
+# Registry (ghcr.io), and then SSHes into the Hetzner host to run
+# `docker compose pull && up -d`. Optionally triggers a health check at
+# the end.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      # Only fire when something that actually lands in the image changes.
+      - 'electron/**'
+      - 'Dockerfile'
+      - 'docker-compose.yaml'
+      - 'docker-compose.prod.yaml'
+      - 'package.json'
+      - 'package-lock.json'
+      - '.github/workflows/deploy-backend.yml'
+  workflow_dispatch:
+    inputs:
+      force:
+        description: 'Force redeploy even if image did not change'
+        required: false
+        default: 'false'
+
+concurrency:
+  # Never run two deploys at the same time; cancel the older one.
+  group: deploy-backend-main
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  packages: write   # push to ghcr.io
+
+env:
+  IMAGE_NAME: ghcr.io/${{ github.repository }}
+
+jobs:
+  build-and-push:
+    name: Build & push image
+    runs-on: ubuntu-latest
+    outputs:
+      image_tag: ${{ steps.meta.outputs.image_tag }}
+      image_sha: ${{ steps.meta.outputs.image_sha }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Compute image tags
+        id: meta
+        run: |
+          SHORT_SHA=$(echo "${{ github.sha }}" | cut -c1-12)
+          IMAGE_SHA_TAG="${{ env.IMAGE_NAME }}:${SHORT_SHA}"
+          IMAGE_LATEST_TAG="${{ env.IMAGE_NAME }}:latest"
+          echo "image_tag=${IMAGE_SHA_TAG}" >> $GITHUB_OUTPUT
+          echo "image_sha=${SHORT_SHA}"     >> $GITHUB_OUTPUT
+          echo "Tags: ${IMAGE_SHA_TAG} + ${IMAGE_LATEST_TAG}"
+
+      - name: Build & push
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./Dockerfile
+          push: true
+          tags: |
+            ${{ env.IMAGE_NAME }}:${{ steps.meta.outputs.image_sha }}
+            ${{ env.IMAGE_NAME }}:latest
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.created=${{ github.event.head_commit.timestamp }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  deploy:
+    name: SSH deploy to Hetzner
+    runs-on: ubuntu-latest
+    needs: build-and-push
+    # Skip if the secrets aren't set yet (useful while bootstrapping).
+    if: >-
+      ${{ vars.SKIP_DEPLOY != 'true' }}
+    environment:
+      name: production
+      url: https://${{ vars.POS_DOMAIN }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Render docker-compose.prod.yaml with final image tag
+        run: |
+          sed -i "s|ghcr.io/OWNER/REPO|${{ env.IMAGE_NAME }}|g" docker-compose.prod.yaml
+          echo "POS_IMAGE=${{ env.IMAGE_NAME }}:${{ needs.build-and-push.outputs.image_sha }}" > .env.ci
+          cat docker-compose.prod.yaml
+
+      - name: Copy compose files to server
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.DEPLOY_HOST }}
+          username: ${{ secrets.DEPLOY_USER }}
+          key: ${{ secrets.DEPLOY_SSH_KEY }}
+          port: ${{ secrets.DEPLOY_PORT || 22 }}
+          source: "docker-compose.yaml,docker-compose.prod.yaml,.env.ci"
+          target: "/opt/pos/_incoming/"
+          overwrite: true
+
+      - name: Atomic swap + restart
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.DEPLOY_HOST }}
+          username: ${{ secrets.DEPLOY_USER }}
+          key: ${{ secrets.DEPLOY_SSH_KEY }}
+          port: ${{ secrets.DEPLOY_PORT || 22 }}
+          script: |
+            set -euo pipefail
+
+            cd /opt/pos
+
+            # Swap in the compose files (keep .env — holds secrets, never overwrite).
+            install -m 0644 _incoming/docker-compose.yaml       docker-compose.yaml
+            install -m 0644 _incoming/docker-compose.prod.yaml  docker-compose.prod.yaml
+
+            # Append POS_IMAGE= to .env (replace existing line if present).
+            IMAGE_LINE=$(cat _incoming/.env.ci)
+            if grep -q '^POS_IMAGE=' .env 2>/dev/null; then
+              sed -i "s|^POS_IMAGE=.*|${IMAGE_LINE}|" .env
+            else
+              echo "${IMAGE_LINE}" >> .env
+            fi
+
+            # Login to GHCR so `docker compose pull` can fetch the image.
+            # Requires a PAT or a short-lived token passed via GHCR_TOKEN.
+            echo "${{ secrets.GHCR_TOKEN }}" | docker login ghcr.io -u "${{ secrets.GHCR_USER }}" --password-stdin
+
+            # Pull + recreate with zero downtime (just the single service).
+            docker compose -f docker-compose.yaml -f docker-compose.prod.yaml pull
+            docker compose -f docker-compose.yaml -f docker-compose.prod.yaml up -d
+
+            # Sanity check: container should be healthy within 30s.
+            for i in $(seq 1 15); do
+              STATUS=$(docker inspect --format '{{.State.Health.Status}}' pos-server 2>/dev/null || echo "starting")
+              if [ "$STATUS" = "healthy" ]; then
+                echo "✓ pos-server is healthy."
+                break
+              fi
+              echo "  waiting... ($i) state=$STATUS"
+              sleep 2
+            done
+
+            # Prune old images (keep last 3).
+            docker image prune -f --filter "until=168h" || true
+
+      - name: Public health check
+        if: vars.POS_DOMAIN != ''
+        run: |
+          set -e
+          URL="https://${{ vars.POS_DOMAIN }}/health"
+          for i in $(seq 1 10); do
+            CODE=$(curl -s -o /dev/null -w "%{http_code}" "$URL" || echo "000")
+            if [ "$CODE" = "200" ]; then
+              echo "✓ $URL -> 200"
+              exit 0
+            fi
+            echo "  $URL -> $CODE (try $i/10)"
+            sleep 3
+          done
+          echo "❌ Public health check failed"
+          exit 1

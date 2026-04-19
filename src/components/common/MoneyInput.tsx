@@ -16,7 +16,7 @@
 import { useState, useEffect, useRef, type ChangeEvent, type FocusEvent } from 'react';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import { formatNumberDots, parseUZS } from '@/lib/money';
+import { formatNumberDots, formatNumberDotsWithDecimals, parseMoneyFlexible, parseUZS } from '@/lib/money';
 import { cn } from '@/lib/utils';
 
 export interface MoneyInputProps {
@@ -24,16 +24,24 @@ export interface MoneyInputProps {
   onValueChange: (value: number | null) => void;
   placeholder?: string;
   disabled?: boolean;
+  readOnly?: boolean;
   allowZero?: boolean;
   max?: number;
   label?: string;
   required?: boolean;
   className?: string;
+  containerClassName?: string;
   id?: string;
   min?: number;
   error?: string;
   onBlur?: (e: FocusEvent<HTMLInputElement>) => void;
   autoFocus?: boolean;
+  /** If true, reflect external `value` updates even while the input is focused (useful for on-screen numpads). */
+  syncWhileFocused?: boolean;
+  /** Allow fractional values (supports ',' or '.' as decimal separator). Default: false (UZS integer-style). */
+  allowDecimals?: boolean;
+  /** Maximum decimal places when allowDecimals is true. Default: 2 */
+  decimalScale?: number;
 }
 
 export default function MoneyInput({
@@ -41,33 +49,58 @@ export default function MoneyInput({
   onValueChange,
   placeholder = '0',
   disabled = false,
+  readOnly = false,
   allowZero = false,
   max,
   label,
   required = false,
   className,
+  containerClassName,
   id,
   min = 0,
   error,
   onBlur,
   autoFocus,
+  syncWhileFocused = false,
+  allowDecimals = false,
+  decimalScale = 2,
 }: MoneyInputProps) {
   const [displayValue, setDisplayValue] = useState<string>('');
   const [isFocused, setIsFocused] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
   const cursorPositionRef = useRef<number>(0);
 
+  const normalizeDecimalInput = (input: string) => {
+    let next = input;
+
+    // Make both separators behave the same while typing.
+    if (next === '.' || next === ',') {
+      return `0${next}`;
+    }
+
+    // When the field currently shows 0, typing a new integer should replace it.
+    if (/^0\d+$/.test(next)) {
+      return String(parseInt(next, 10));
+    }
+
+    return next;
+  };
+
   // Update display value when prop value changes (external updates)
   useEffect(() => {
-    if (!isFocused) {
+    if (!isFocused || syncWhileFocused) {
       if (value === null || value === undefined) {
         setDisplayValue('');
       } else {
         // Format the number for display (no suffix in input)
-        setDisplayValue(formatNumberDots(value));
+        setDisplayValue(
+          allowDecimals
+            ? formatNumberDotsWithDecimals(value, decimalScale)
+            : formatNumberDots(value)
+        );
       }
     }
-  }, [value, isFocused]);
+  }, [value, isFocused, syncWhileFocused, allowDecimals, decimalScale]);
 
   // Calculate cursor position after formatting
   const getCursorPositionAfterFormat = (
@@ -97,14 +130,15 @@ export default function MoneyInput({
   };
 
   const handleChange = (e: ChangeEvent<HTMLInputElement>) => {
-    const input = e.target.value;
+    const rawInput = e.target.value;
+    const input = allowDecimals ? normalizeDecimalInput(rawInput) : rawInput;
     const cursorPos = e.target.selectionStart || 0;
 
     // Store cursor position
     cursorPositionRef.current = cursorPos;
 
-    // Parse input (handles dots, spaces, and other formatting)
-    const numericValue = parseUZS(input);
+    // Parse input
+    const numericValue = allowDecimals ? parseMoneyFlexible(input, decimalScale) : parseUZS(input);
 
     // Handle empty input
     if (input.trim() === '' || numericValue === 0 && !allowZero) {
@@ -125,10 +159,11 @@ export default function MoneyInput({
       return;
     }
 
-    // Format with dots
-    const formatted = formatNumberDots(numericValue);
+    // Format with dots (or keep raw while focused for decimals to avoid cursor jump)
+    const formatted = allowDecimals
+      ? input // keep as typed while editing
+      : formatNumberDots(numericValue);
 
-    // Update display
     setDisplayValue(formatted);
 
     // Update parent with numeric value (null if zero and not allowed)
@@ -138,24 +173,39 @@ export default function MoneyInput({
       onValueChange(numericValue);
     }
 
-    // Restore cursor position after a brief delay
-    setTimeout(() => {
-      if (inputRef.current) {
-        const newCursorPos = getCursorPositionAfterFormat(
-          input,
-          formatted,
-          cursorPos
-        );
-        inputRef.current.setSelectionRange(newCursorPos, newCursorPos);
-      }
-    }, 0);
+    // Restore cursor position after formatting (only needed when we auto-format)
+    if (!allowDecimals) {
+      setTimeout(() => {
+        if (inputRef.current) {
+          const newCursorPos = getCursorPositionAfterFormat(
+            input,
+            formatted,
+            cursorPos
+          );
+          inputRef.current.setSelectionRange(newCursorPos, newCursorPos);
+        }
+      }, 0);
+    }
   };
 
   const handleFocus = () => {
     setIsFocused(true);
     // On focus, keep formatted display (user can still edit)
     if (value !== null && value !== undefined) {
-      setDisplayValue(formatNumberDots(value));
+      setDisplayValue(
+        allowDecimals
+          ? formatNumberDotsWithDecimals(value, decimalScale)
+          : formatNumberDots(value)
+      );
+    }
+
+    // If the field only contains zero, select it so typing replaces it.
+    if (Number(value ?? 0) === 0) {
+      setTimeout(() => {
+        if (inputRef.current) {
+          inputRef.current.setSelectionRange(0, inputRef.current.value.length);
+        }
+      }, 0);
     }
   };
 
@@ -164,7 +214,11 @@ export default function MoneyInput({
     
     // On blur, keep formatted (no change needed, already formatted)
     if (value !== null && value !== undefined) {
-      setDisplayValue(formatNumberDots(value));
+      setDisplayValue(
+        allowDecimals
+          ? formatNumberDotsWithDecimals(value, decimalScale)
+          : formatNumberDots(value)
+      );
     }
 
     // Call parent onBlur if provided
@@ -177,8 +231,8 @@ export default function MoneyInput({
     e.preventDefault();
     const pastedText = e.clipboardData.getData('text');
     
-    // Parse pasted text (handles dots, spaces, etc.)
-    const numericValue = parseUZS(pastedText);
+    // Parse pasted text
+    const numericValue = allowDecimals ? parseMoneyFlexible(pastedText, decimalScale) : parseUZS(pastedText);
     
     if (numericValue === 0 && !allowZero) {
       setDisplayValue('');
@@ -195,7 +249,9 @@ export default function MoneyInput({
     }
 
     // Format and update
-    const formatted = formatNumberDots(numericValue);
+    const formatted = allowDecimals
+      ? formatNumberDotsWithDecimals(numericValue, decimalScale)
+      : formatNumberDots(numericValue);
     setDisplayValue(formatted);
     
     if (numericValue === 0 && !allowZero) {
@@ -237,12 +293,22 @@ export default function MoneyInput({
       return;
     }
 
+    // Allow decimal separators when enabled
+    if (allowDecimals && (e.key === '.' || e.key === ',' || e.code === 'NumpadDecimal')) {
+      return;
+    }
+
+    // Allow minus sign only if negative is allowed via min < 0
+    if (e.key === '-' && min < 0) {
+      return;
+    }
+
     // Block everything else
     e.preventDefault();
   };
 
   return (
-    <div className="space-y-2">
+    <div className={containerClassName ?? 'space-y-2'}>
       {label && (
         <Label htmlFor={id}>
           {label}
@@ -253,7 +319,7 @@ export default function MoneyInput({
         ref={inputRef}
         id={id}
         type="text"
-        inputMode="numeric"
+        inputMode={allowDecimals ? 'decimal' : 'numeric'}
         value={displayValue}
         onChange={handleChange}
         onFocus={handleFocus}
@@ -262,6 +328,7 @@ export default function MoneyInput({
         onKeyDown={handleKeyDown}
         placeholder={placeholder}
         disabled={disabled}
+        readOnly={readOnly}
         autoFocus={autoFocus}
         className={cn(error && 'border-destructive', className)}
       />

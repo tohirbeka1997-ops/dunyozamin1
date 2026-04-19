@@ -15,28 +15,31 @@ import type { EmployeeSessionWithProfile } from '@/types/database';
 import { FileDown, ArrowLeft } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 import { useNavigate } from 'react-router-dom';
-import { format } from 'date-fns';
+import { formatDateTime, formatDateYMD, todayYMD } from '@/lib/datetime';
+import { useReportAutoRefresh } from '@/hooks/useReportAutoRefresh';
 
 export default function LoginActivityReport() {
   const navigate = useNavigate();
   const { toast } = useToast();
   const [sessions, setSessions] = useState<EmployeeSessionWithProfile[]>([]);
   const [loading, setLoading] = useState(true);
-  const [dateFrom, setDateFrom] = useState(new Date().toISOString().split('T')[0]);
-  const [dateTo, setDateTo] = useState(new Date().toISOString().split('T')[0]);
+  const [dateFrom, setDateFrom] = useState(todayYMD());
+  const [dateTo, setDateTo] = useState(todayYMD());
+
+  useReportAutoRefresh(loadData);
 
   useEffect(() => {
     loadData();
   }, [dateFrom, dateTo]);
 
-  const loadData = async () => {
+  async function loadData() {
     try {
       setLoading(true);
       const sessionsData = await getEmployeeSessions();
       
       const filtered = sessionsData.filter((session) => {
         if (!session.login_time) return false;
-        const loginDate = new Date(session.login_time).toISOString().split('T')[0];
+        const loginDate = formatDateYMD(session.login_time);
         return loginDate >= dateFrom && loginDate <= dateTo;
       });
 
@@ -56,7 +59,7 @@ export default function LoginActivityReport() {
     } finally {
       setLoading(false);
     }
-  };
+  }
 
   const calculateDuration = (loginTime: string, logoutTime: string | null) => {
     if (!logoutTime) return '-';
@@ -155,12 +158,12 @@ export default function LoginActivityReport() {
                     </TableCell>
                     <TableCell>
                       {session.login_time 
-                        ? format(new Date(session.login_time), 'MMM dd, yyyy HH:mm')
+                        ? formatDateTime(session.login_time)
                         : '-'}
                     </TableCell>
                     <TableCell>
                       {session.logout_time 
-                        ? format(new Date(session.logout_time), 'MMM dd, yyyy HH:mm')
+                        ? formatDateTime(session.logout_time)
                         : 'Aktiv'}
                     </TableCell>
                     <TableCell>

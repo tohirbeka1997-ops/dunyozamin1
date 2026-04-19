@@ -60,10 +60,13 @@ export default function ReceivePaymentDialog({
       return;
     }
 
-    if (amount > (customer.balance || 0)) {
+    // Validation: For debt (negative balance), payment should not exceed debt amount
+    // Balance is negative for debt, so we check if payment > abs(balance)
+    const currentBalance = customer.balance || 0;
+    if (currentBalance < 0 && amount > Math.abs(currentBalance)) {
       toast({
-        title: 'Amount Exceeds Balance',
-        description: `Payment amount cannot exceed customer balance of ${formatMoneyUZS(customer.balance || 0)}.`,
+        title: 'Amount Exceeds Debt',
+        description: `Payment amount cannot exceed customer debt of ${formatMoneyUZS(Math.abs(currentBalance))}.`,
         variant: 'destructive',
       });
       return;
@@ -82,8 +85,9 @@ export default function ReceivePaymentDialog({
         throw new Error(result.error || 'Failed to receive payment');
       }
 
-      // Invalidate dashboard queries
+      // Invalidate dashboard queries and customers queries
       invalidateDashboardQueries(queryClient);
+      queryClient.invalidateQueries({ queryKey: ['customers'] });
 
       toast({
         title: '✅ Payment Received',
@@ -126,8 +130,10 @@ export default function ReceivePaymentDialog({
             </div>
             <div className="flex justify-between">
               <span className="text-sm text-muted-foreground">Current Balance:</span>
-              <span className="font-bold text-destructive">
+              <span className={`font-bold ${(customer.balance || 0) < 0 ? 'text-destructive' : (customer.balance || 0) > 0 ? 'text-success' : ''}`}>
                 {formatMoneyUZS(customer.balance || 0)}
+                {(customer.balance || 0) < 0 && <span className="ml-1 text-xs">(QarZ)</span>}
+                {(customer.balance || 0) > 0 && <span className="ml-1 text-xs">(Balans)</span>}
               </span>
             </div>
           </div>
@@ -140,7 +146,7 @@ export default function ReceivePaymentDialog({
             placeholder="0"
             required
             min={1}
-            max={customer.balance || undefined}
+            max={(customer.balance || 0) < 0 ? Math.abs(customer.balance || 0) : undefined}
           />
 
           <div className="space-y-2">
@@ -172,8 +178,10 @@ export default function ReceivePaymentDialog({
             <div className="p-3 bg-primary/10 border border-primary/20 rounded-lg">
               <div className="flex justify-between items-center">
                 <span className="text-sm font-medium">New Balance:</span>
-                <span className="text-lg font-bold text-primary">
-                  {formatMoneyUZS((customer.balance || 0) - amount)}
+                <span className={`text-lg font-bold ${((customer.balance || 0) + amount) < 0 ? 'text-destructive' : ((customer.balance || 0) + amount) > 0 ? 'text-success' : 'text-primary'}`}>
+                  {formatMoneyUZS((customer.balance || 0) + amount)}
+                  {((customer.balance || 0) + amount) < 0 && <span className="ml-1 text-xs">(QarZ)</span>}
+                  {((customer.balance || 0) + amount) > 0 && <span className="ml-1 text-xs">(Balans)</span>}
                 </span>
               </div>
             </div>

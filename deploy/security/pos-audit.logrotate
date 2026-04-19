@@ -1,0 +1,44 @@
+# /etc/logrotate.d/pos-audit
+# =============================================================================
+# Append-only audit log rotation for the POS server.
+#
+# Install:
+#   sudo install -m 0644 /opt/pos/deploy/security/pos-audit.logrotate \
+#     /etc/logrotate.d/pos-audit
+#   sudo logrotate -d /etc/logrotate.d/pos-audit   # dry-run
+#
+# Policy:
+#   * weekly, 12 generations  => roughly 3 months retained on the server
+#   * copytruncate: pos-server keeps the file handle open; copytruncate keeps
+#     writes flowing during rotation instead of needing a HUP signal.
+#   * delaycompress: last rotated file is kept uncompressed for quick grep.
+#   * create mode 640 pos pos: the daemon runs as `pos` user in the container;
+#     adjust to match your deployment.
+# =============================================================================
+/var/lib/pos/logs/audit.log {
+    weekly
+    rotate 12
+    missingok
+    notifempty
+    compress
+    delaycompress
+    copytruncate
+    create 0640 pos pos
+    dateext
+    dateformat -%Y%m%d
+    sharedscripts
+    postrotate
+        # Touch the file even if copytruncate raced with a slow writer.
+        /usr/bin/test -e /var/lib/pos/logs/audit.log || \
+          install -m 0640 -o pos -g pos /dev/null /var/lib/pos/logs/audit.log
+    endscript
+}
+
+/var/lib/pos/logs/audit.log.*.gz {
+    # Already-rotated & compressed files — nothing to do, but listed so
+    # `logrotate --force` doesn't complain about stray files.
+    monthly
+    rotate 0
+    missingok
+    nocreate
+}

@@ -1,9 +1,12 @@
 /**
  * Export utility functions for reports
- * Libraries are lazy-loaded to reduce initial bundle size
  */
 
+import * as XLSX from 'xlsx';
+import jsPDF from 'jspdf';
+import autoTable from 'jspdf-autotable';
 import { formatMoneyUZS } from './format';
+import { formatDateTime } from '@/lib/datetime';
 
 /**
  * Format number to UZS string (1.000.000 so'm)
@@ -15,7 +18,7 @@ export const formatUzs = (n: number): string => {
 /**
  * Export daily sales report to Excel
  */
-export const exportDailySalesToExcel = async (
+export const exportDailySalesToExcel = (
   orders: Array<{
     order_number: string;
     created_at: string;
@@ -39,10 +42,7 @@ export const exportDailySalesToExcel = async (
     avgOrderValue: number;
   },
   cashiers: Array<{ id: string; username?: string }>
-): Promise<void> => {
-  // Lazy load XLSX library
-  const XLSX = await import('xlsx');
-  
+): void => {
   // Create workbook
   const wb = XLSX.utils.book_new();
 
@@ -75,7 +75,7 @@ export const exportDailySalesToExcel = async (
 
   const tableRows = orders.map((order) => [
     order.order_number,
-    new Date(order.created_at).toLocaleString('uz-UZ'),
+    formatDateTime(order.created_at),
     order.cashier?.username || order.cashier?.full_name || '-',
     order.payment_type,
     formatUzs(order.total_amount),
@@ -111,7 +111,7 @@ export const exportDailySalesToExcel = async (
 /**
  * Export daily sales report to PDF
  */
-export const exportDailySalesToPDF = async (
+export const exportDailySalesToPDF = (
   orders: Array<{
     order_number: string;
     created_at: string;
@@ -135,13 +135,7 @@ export const exportDailySalesToPDF = async (
     avgOrderValue: number;
   },
   cashiers: Array<{ id: string; username?: string }>
-): Promise<void> => {
-  // Lazy load PDF libraries
-  const [{ default: jsPDF }, autoTable] = await Promise.all([
-    import('jspdf'),
-    import('jspdf-autotable'),
-  ]);
-  
+): void => {
   const doc = new jsPDF('landscape', 'mm', 'a4');
 
   // Title
@@ -188,7 +182,7 @@ export const exportDailySalesToPDF = async (
   // Table data
   const tableData = orders.map((order) => [
     order.order_number,
-    new Date(order.created_at).toLocaleString('uz-UZ', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' }),
+    formatDateTime(order.created_at),
     order.cashier?.username || order.cashier?.full_name || '-',
     order.payment_type,
     formatUzs(order.total_amount),

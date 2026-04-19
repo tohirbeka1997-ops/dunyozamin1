@@ -1,4 +1,5 @@
-import { Badge } from '@/components/ui/badge';
+import { useEffect, useState } from 'react';
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import {
   Table,
   TableBody,
@@ -8,9 +9,8 @@ import {
   TableRow,
 } from '@/components/ui/table';
 import { useInventoryStore } from '@/store/inventoryStore';
-import type { InventoryMovement } from '@/types/inventory';
-import { format } from 'date-fns';
-import { TrendingUp, TrendingDown } from 'lucide-react';
+import { formatUnit } from '@/utils/formatters';
+import { formatDateTime } from '@/lib/datetime';
 
 interface StockMovementsHistoryProps {
   productId: string;
@@ -18,94 +18,94 @@ interface StockMovementsHistoryProps {
 
 export default function StockMovementsHistory({ productId }: StockMovementsHistoryProps) {
   const { getMovementsByProductId } = useInventoryStore();
-  const movements = getMovementsByProductId(productId);
+  const [movements, setMovements] = useState(getMovementsByProductId(productId));
 
-  const getMovementTypeLabel = (type: InventoryMovement['type']) => {
-    const labels: Record<InventoryMovement['type'], string> = {
-      initial: 'Initial Stock',
-      sale: 'Sale',
-      sale_return: 'Sale Return',
-      manual_in: 'Manual Increase',
-      manual_out: 'Manual Decrease',
-    };
-    return labels[type] || type;
-  };
-
-  const getMovementTypeBadge = (type: InventoryMovement['type']) => {
-    const badges: Record<InventoryMovement['type'], { variant: 'default' | 'secondary' | 'destructive' | 'outline'; className: string }> = {
-      initial: { variant: 'default', className: 'bg-blue-500/10 text-blue-700 dark:text-blue-400' },
-      sale: { variant: 'destructive', className: 'bg-red-500/10 text-red-700 dark:text-red-400' },
-      sale_return: { variant: 'default', className: 'bg-green-500/10 text-green-700 dark:text-green-400' },
-      manual_in: { variant: 'default', className: 'bg-green-500/10 text-green-700 dark:text-green-400' },
-      manual_out: { variant: 'destructive', className: 'bg-red-500/10 text-red-700 dark:text-red-400' },
-    };
-    return badges[type] || { variant: 'outline', className: '' };
-  };
+  useEffect(() => {
+    // Refresh movements when store updates
+    setMovements(getMovementsByProductId(productId));
+  }, [productId, getMovementsByProductId]);
 
   if (movements.length === 0) {
     return (
-      <div className="py-8 text-center text-muted-foreground">
-        No stock movements recorded for this product
-      </div>
+      <Card>
+        <CardHeader>
+          <CardTitle>Stock Movements History</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <div className="text-center py-8 text-muted-foreground">
+            No stock movements found for this product
+          </div>
+        </CardContent>
+      </Card>
     );
   }
 
   return (
-    <div className="overflow-x-auto">
-      <Table>
-        <TableHeader>
-          <TableRow>
-            <TableHead>Date/Time</TableHead>
-            <TableHead>Type</TableHead>
-            <TableHead className="text-right">Quantity</TableHead>
-            <TableHead>Reason</TableHead>
-          </TableRow>
-        </TableHeader>
-        <TableBody>
-          {movements.map((movement) => {
-            const isPositive = movement.quantity > 0;
-            const badge = getMovementTypeBadge(movement.type);
-
-            return (
+    <Card>
+      <CardHeader>
+        <CardTitle>Stock Movements History</CardTitle>
+      </CardHeader>
+      <CardContent>
+        <Table>
+          <TableHeader>
+            <TableRow>
+              <TableHead>Date</TableHead>
+              <TableHead>Type</TableHead>
+              <TableHead className="text-right">Before</TableHead>
+              <TableHead className="text-right">Change</TableHead>
+              <TableHead className="text-right">After</TableHead>
+              <TableHead>Reason</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {movements.map((movement) => (
               <TableRow key={movement.id}>
                 <TableCell>
-                  {format(new Date(movement.created_at), 'MMM dd, yyyy HH:mm')}
+                  {movement.created_at
+                    ? formatDateTime(movement.created_at)
+                    : '-'}
                 </TableCell>
                 <TableCell>
-                  <Badge className={badge.className}>
-                    {getMovementTypeLabel(movement.type)}
-                  </Badge>
+                  <span className="capitalize">{movement.movement_type || '-'}</span>
                 </TableCell>
                 <TableCell className="text-right">
-                  <div className="flex items-center justify-end gap-2">
-                    {isPositive ? (
-                      <TrendingUp className="h-4 w-4 text-green-600 dark:text-green-400" />
-                    ) : (
-                      <TrendingDown className="h-4 w-4 text-red-600 dark:text-red-400" />
-                    )}
-                    <span
-                      className={
-                        isPositive
-                          ? 'font-semibold text-green-600 dark:text-green-400'
-                          : 'font-semibold text-red-600 dark:text-red-400'
-                      }
-                    >
-                      {isPositive ? '+' : ''}
-                      {movement.quantity}
-                    </span>
-                  </div>
+                  {movement.before_quantity != null ? movement.before_quantity : '-'}
                 </TableCell>
-                <TableCell className="text-muted-foreground">
-                  {movement.reason || '-'}
+                <TableCell className={`text-right ${(movement.quantity || 0) >= 0 ? 'text-green-600' : 'text-red-600'}`}>
+                  {(movement.quantity || 0) >= 0 ? '+' : ''}{movement.quantity || 0}
                 </TableCell>
+                <TableCell className="text-right">
+                  {movement.after_quantity != null ? movement.after_quantity : '-'}
+                </TableCell>
+                <TableCell>{movement.reason || movement.notes || '-'}</TableCell>
               </TableRow>
-            );
-          })}
-        </TableBody>
-      </Table>
-    </div>
+            ))}
+          </TableBody>
+        </Table>
+      </CardContent>
+    </Card>
   );
 }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 

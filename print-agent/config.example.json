@@ -1,0 +1,24 @@
+{
+  "agent": {
+    "bind": "127.0.0.1",
+    "port": 9100,
+    "secret": "REPLACE_WITH_RANDOM_48_CHAR_HEX",
+    "allowOrigins": [
+      "http://localhost:5173",
+      "https://pos.example.com"
+    ],
+    "logFile": null
+  },
+  "printer": {
+    "type": "epson",
+    "interface": "printer:XP-80C",
+    "timeoutMs": 15000,
+    "charsPerLine": 48,
+    "textSize": { "width": 0, "height": 0 },
+    "usbVendorId": null,
+    "usbProductId": null,
+    "feedLines": 3,
+    "cut": true,
+    "retryCount": 2
+  }
+}

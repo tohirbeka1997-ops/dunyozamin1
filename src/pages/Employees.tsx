@@ -38,10 +38,10 @@ import {
 import { Plus, Search, MoreVertical, Edit, Trash2, Key } from 'lucide-react';
 import { getAllEmployees, deleteEmployee } from '@/db/api';
 import type { Profile } from '@/types/database';
-import { format } from 'date-fns';
 import { useToast } from '@/hooks/use-toast';
 import PageBreadcrumb from '@/components/common/PageBreadcrumb';
 import EmployeeFormModal from '@/components/employees/EmployeeFormModal';
+import { formatDate } from '@/lib/datetime';
 
 type Position = 'admin' | 'manager' | 'cashier' | 'warehouse';
 
@@ -287,7 +287,7 @@ export default function Employees() {
                       <TableCell>{getStatusIndicator(employee.is_active)}</TableCell>
                       <TableCell>
                         {employee.created_at
-                          ? format(new Date(employee.created_at), 'MMM dd, yyyy')
+                          ? formatDate(employee.created_at)
                           : '-'}
                       </TableCell>
                       <TableCell className="text-right">

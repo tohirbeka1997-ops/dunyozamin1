@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
@@ -17,6 +17,11 @@ import { FileDown, ArrowLeft } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 import { useNavigate } from 'react-router-dom';
 import { formatMoneyUZS } from '@/lib/format';
+import { formatDateYMD, todayYMD } from '@/lib/datetime';
+import { useReportAutoRefresh } from '@/hooks/useReportAutoRefresh';
+import { useTableSort } from '@/hooks/useTableSort';
+import { compareScalar } from '@/lib/tableSort';
+import { SortableTableHead } from '@/components/reports/SortableTableHead';
 
 interface CustomerSalesData {
   customer_id: string;
@@ -24,23 +29,40 @@ interface CustomerSalesData {
   total_purchases: number;
   order_count: number;
   average_order_value: number;
-  outstanding_balance: number;
+  // Signed balance from customers table:
+  // < 0 => debt (Qarz), > 0 => credit (Haq)
+  balance: number;
 }
+
+const toNumber = (v: any) => (Number.isFinite(Number(v)) ? Number(v) : 0);
+
+type CustomerSalesSortKey =
+  | 'customer_name'
+  | 'total_purchases'
+  | 'order_count'
+  | 'average_order_value'
+  | 'balance';
 
 export default function CustomerSalesReport() {
   const navigate = useNavigate();
   const { toast } = useToast();
   const [customerSales, setCustomerSales] = useState<CustomerSalesData[]>([]);
   const [loading, setLoading] = useState(true);
-  const [dateFrom, setDateFrom] = useState(new Date().toISOString().split('T')[0]);
-  const [dateTo, setDateTo] = useState(new Date().toISOString().split('T')[0]);
+  const [dateFrom, setDateFrom] = useState(todayYMD());
+  const [dateTo, setDateTo] = useState(todayYMD());
   const [searchTerm, setSearchTerm] = useState('');
+  const { sortKey, sortOrder, toggleSort } = useTableSort<CustomerSalesSortKey>(
+    'total_purchases',
+    'desc'
+  );
+
+  useReportAutoRefresh(loadData);
 
   useEffect(() => {
     loadData();
   }, [dateFrom, dateTo]);
 
-  const loadData = async () => {
+  async function loadData() {
     try {
       setLoading(true);
       const [ordersData, customersData] = await Promise.all([
@@ -49,7 +71,7 @@ export default function CustomerSalesReport() {
       ]);
       
       const filtered = ordersData.filter((order) => {
-        const orderDate = new Date(order.created_at).toISOString().split('T')[0];
+        const orderDate = formatDateYMD(order.created_at);
         return orderDate >= dateFrom && orderDate <= dateTo && order.status === 'completed';
       });
 
@@ -57,7 +79,17 @@ export default function CustomerSalesReport() {
 
       filtered.forEach((order) => {
         const customerId = order.customer_id || 'walk-in';
-        const customerName = order.customer?.name || 'Tasodifiy mijoz';
+        const customerFromList = order.customer_id
+          ? customersData.find((c) => c.id === order.customer_id)
+          : undefined;
+
+        // Prefer real name from backend fields; avoid "Tasodifiy mijoz" placeholder.
+        const customerName =
+          order.customer?.name ||
+          (order as any).customer_name ||
+          customerFromList?.name ||
+          (customerId === 'walk-in' || customerId === 'default-customer-001' ? 'Yangi mijoz' : 'Noma\'lum mijoz');
+
         const existing = customerMap.get(customerId);
         
         const amount = Number(order.total_amount);
@@ -67,21 +99,18 @@ export default function CustomerSalesReport() {
           existing.order_count += 1;
           existing.average_order_value = existing.total_purchases / existing.order_count;
         } else {
-          const customer = customersData.find((c) => c.id === customerId);
           customerMap.set(customerId, {
             customer_id: customerId,
             customer_name: customerName,
             total_purchases: amount,
             order_count: 1,
             average_order_value: amount,
-            outstanding_balance: customer ? Number(customer.balance || 0) : 0,
+            balance: toNumber(customerFromList?.balance),
           });
         }
       });
 
-      let salesData = Array.from(customerMap.values());
-      salesData.sort((a, b) => b.total_purchases - a.total_purchases);
-
+      const salesData = Array.from(customerMap.values());
       setCustomerSales(salesData);
     } catch (error) {
       toast({
@@ -92,22 +121,47 @@ export default function CustomerSalesReport() {
     } finally {
       setLoading(false);
     }
-  };
+  }
 
-  const filteredCustomers = customerSales.filter((customer) => {
-    if (!searchTerm) return true;
-    const search = searchTerm.toLowerCase();
-    return customer.customer_name.toLowerCase().includes(search);
-  });
+  const filteredCustomers = useMemo(() => {
+    return customerSales.filter((customer) => {
+      if (!searchTerm) return true;
+      const search = searchTerm.toLowerCase();
+      return customer.customer_name.toLowerCase().includes(search);
+    });
+  }, [customerSales, searchTerm]);
+
+  const sortedCustomers = useMemo(() => {
+    const list = [...filteredCustomers];
+    const key = sortKey;
+    const ord = sortOrder;
+    list.sort((a, b) => {
+      switch (key) {
+        case 'customer_name':
+          return compareScalar(a.customer_name.toLowerCase(), b.customer_name.toLowerCase(), ord);
+        case 'total_purchases':
+          return compareScalar(a.total_purchases, b.total_purchases, ord);
+        case 'order_count':
+          return compareScalar(a.order_count, b.order_count, ord);
+        case 'average_order_value':
+          return compareScalar(a.average_order_value, b.average_order_value, ord);
+        case 'balance':
+          return compareScalar(a.balance, b.balance, ord);
+        default:
+          return 0;
+      }
+    });
+    return list;
+  }, [filteredCustomers, sortKey, sortOrder]);
 
   const totalRevenue = customerSales.reduce((sum, c) => sum + c.total_purchases, 0);
   const totalOrders = customerSales.reduce((sum, c) => sum + c.order_count, 0);
-  const totalOutstanding = customerSales.reduce((sum, c) => sum + c.outstanding_balance, 0);
+  const totalOutstanding = customerSales.reduce((sum, c) => sum + (c.balance < 0 ? Math.abs(c.balance) : 0), 0);
 
   const handleExport = (format: 'excel' | 'pdf') => {
     toast({
-      title: 'Export',
-      description: `Exporting to ${format.toUpperCase()}...`,
+      title: 'Eksport',
+      description: `${format.toUpperCase()} formatiga eksport qilinmoqda...`,
     });
   };
 
@@ -209,7 +263,7 @@ export default function CustomerSalesReport() {
 
       <Card>
         <CardContent className="p-0">
-          {filteredCustomers.length === 0 ? (
+          {sortedCustomers.length === 0 ? (
             <div className="text-center py-12">
               <p className="text-muted-foreground">Mijozlar bo'yicha sotuv ma'lumotlari topilmadi</p>
             </div>
@@ -217,23 +271,73 @@ export default function CustomerSalesReport() {
             <Table>
               <TableHeader>
                 <TableRow>
-                  <TableHead>Mijoz</TableHead>
-                  <TableHead className="text-right">Umumiy xarid summasi</TableHead>
-                  <TableHead className="text-right">Buyurtmalar soni</TableHead>
-                  <TableHead className="text-right">O'rtacha buyurtma qiymati</TableHead>
-                  <TableHead className="text-right">Qoldiq qarz</TableHead>
+                  <SortableTableHead<CustomerSalesSortKey>
+                    columnKey="customer_name"
+                    sortKey={sortKey}
+                    sortOrder={sortOrder}
+                    onSort={toggleSort}
+                    kind="string"
+                  >
+                    Mijoz
+                  </SortableTableHead>
+                  <SortableTableHead<CustomerSalesSortKey>
+                    columnKey="total_purchases"
+                    sortKey={sortKey}
+                    sortOrder={sortOrder}
+                    onSort={toggleSort}
+                    kind="number"
+                    align="right"
+                  >
+                    Umumiy xarid summasi
+                  </SortableTableHead>
+                  <SortableTableHead<CustomerSalesSortKey>
+                    columnKey="order_count"
+                    sortKey={sortKey}
+                    sortOrder={sortOrder}
+                    onSort={toggleSort}
+                    kind="number"
+                    align="right"
+                  >
+                    Buyurtmalar soni
+                  </SortableTableHead>
+                  <SortableTableHead<CustomerSalesSortKey>
+                    columnKey="average_order_value"
+                    sortKey={sortKey}
+                    sortOrder={sortOrder}
+                    onSort={toggleSort}
+                    kind="number"
+                    align="right"
+                  >
+                    O&apos;rtacha buyurtma qiymati
+                  </SortableTableHead>
+                  <SortableTableHead<CustomerSalesSortKey>
+                    columnKey="balance"
+                    sortKey={sortKey}
+                    sortOrder={sortOrder}
+                    onSort={toggleSort}
+                    kind="number"
+                    align="right"
+                  >
+                    Qoldiq qarz
+                  </SortableTableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {filteredCustomers.map((customer) => (
+                {sortedCustomers.map((customer) => (
                   <TableRow key={customer.customer_id}>
                     <TableCell className="font-medium">{customer.customer_name}</TableCell>
                     <TableCell className="text-right">{formatMoneyUZS(customer.total_purchases)}</TableCell>
                     <TableCell className="text-right">{customer.order_count}</TableCell>
                     <TableCell className="text-right">{formatMoneyUZS(customer.average_order_value)}</TableCell>
                     <TableCell className="text-right">
-                      {customer.outstanding_balance > 0 ? (
-                        <Badge className="bg-warning">{formatMoneyUZS(customer.outstanding_balance)}</Badge>
+                      {customer.balance < 0 ? (
+                        <Badge className="bg-destructive text-white">
+                          {formatMoneyUZS(Math.abs(customer.balance))}
+                        </Badge>
+                      ) : customer.balance > 0 ? (
+                        <Badge className="bg-success text-white">
+                          {formatMoneyUZS(customer.balance)}
+                        </Badge>
                       ) : (
                         <span className="text-muted-foreground">{formatMoneyUZS(0)}</span>
                       )}

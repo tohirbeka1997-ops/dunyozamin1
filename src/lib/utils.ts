@@ -26,13 +26,17 @@ export function createQueryString(
   return newSearchParams.toString();
 }
 
+// NOTE:
+// Prefer using timezone-safe helpers from `src/lib/datetime.ts` for app UI.
+// This helper is kept for generic formatting needs in UI utilities.
 export function formatDate(
   date: Date | string | number,
   opts: Intl.DateTimeFormatOptions = {}
 ) {
-  return new Intl.DateTimeFormat("zh-CN", {
-    month: opts.month ?? "long",
-    day: opts.day ?? "numeric",
+  return new Intl.DateTimeFormat("uz-UZ", {
+    timeZone: (opts as any).timeZone ?? "Asia/Tashkent",
+    month: opts.month ?? "2-digit",
+    day: opts.day ?? "2-digit",
     year: opts.year ?? "numeric",
     ...opts,
   }).format(new Date(date));

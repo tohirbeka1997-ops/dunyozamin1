@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -7,20 +7,41 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { useToast } from '@/hooks/use-toast';
 import { useAuth } from '@/contexts/AuthContext';
+import { handleIpcResponse } from '@/utils/electron';
 import { Store } from 'lucide-react';
+
+type TenantBranding = {
+  logoUrl?: string;
+  primaryColor?: string;
+  accentColor?: string;
+};
 
 export default function Login() {
   const navigate = useNavigate();
   const location = useLocation();
   const { toast } = useToast();
-  const { signIn, signUp, loading } = useAuth();
+  const { signIn, signUp, loading, multiTenantMode } = useAuth();
 
   // Get redirect path from location state or default to /
   const from = (location.state as { from?: { pathname?: string } })?.from?.pathname || '/';
 
-  const [signInData, setSignInData] = useState({
-    email: '',
-    password: '',
+  // Auto-prefill tenant slug from subdomain (e.g. acme.pos.example.com → "acme").
+  // Falls back to whatever is already stored from a previous session. Users
+  // on apex / single-tenant installs see no field at all (see below).
+  const [signInData, setSignInData] = useState(() => {
+    let tenant = '';
+    try {
+      const api = (window as any).posApi;
+      tenant = api?._session?.getTenantSlug?.() || '';
+      if (!tenant && api?._session?.extractTenantSlugFromHost) {
+        tenant = api._session.extractTenantSlugFromHost() || '';
+      }
+    } catch { /* ignore */ }
+    return {
+      tenant,
+      email: '',
+      password: '',
+    };
   });
 
   const [signUpData, setSignUpData] = useState({
@@ -32,6 +53,61 @@ export default function Login() {
   });
 
   const [isSubmitting, setIsSubmitting] = useState(false);
+
+  /** Loaded from pos:tenants:publicProfile when tenant slug is valid (MT only). */
+  const [tenantVisual, setTenantVisual] = useState<{
+    displayName: string;
+    branding: TenantBranding;
+  } | null>(null);
+
+  // Keep the tenant input in sync when the MT probe finishes after the
+  // component first mounted (happens when the probe is slow on a cold
+  // page load).
+  useEffect(() => {
+    if (multiTenantMode && !signInData.tenant) {
+      try {
+        const api = (window as any).posApi;
+        const fromHost = api?._session?.extractTenantSlugFromHost?.() || '';
+        const fromStore = api?._session?.getTenantSlug?.() || '';
+        const next = fromStore || fromHost;
+        if (next) setSignInData((s) => ({ ...s, tenant: next }));
+      } catch { /* ignore */ }
+    }
+  }, [multiTenantMode]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    let cancelled = false;
+    const slug = signInData.tenant.trim().toLowerCase();
+    if (multiTenantMode !== true || !/^[a-z0-9][a-z0-9_-]{1,39}$/.test(slug)) {
+      setTenantVisual(null);
+      return;
+    }
+    const timer = window.setTimeout(async () => {
+      try {
+        const api = (window as any).posApi;
+        if (!api?.tenants?.publicProfile) {
+          if (!cancelled) setTenantVisual(null);
+          return;
+        }
+        const data = await handleIpcResponse<{
+          slug: string;
+          display_name: string;
+          branding: TenantBranding;
+        }>(api.tenants.publicProfile(slug));
+        if (cancelled || data.slug !== slug) return;
+        setTenantVisual({
+          displayName: data.display_name || slug,
+          branding: data.branding && typeof data.branding === 'object' ? data.branding : {},
+        });
+      } catch {
+        if (!cancelled) setTenantVisual(null);
+      }
+    }, 350);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [signInData.tenant, multiTenantMode]);
 
   const handleSignIn = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -45,12 +121,37 @@ export default function Login() {
       return;
     }
 
-    // Validate email format
-    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-    if (!emailRegex.test(signInData.email)) {
+    // In multi-tenant mode the tenant slug is REQUIRED. Server-side regex:
+    //   ^[a-z0-9][a-z0-9_-]{1,39}$
+    // We pre-validate here to give a useful error before the network call.
+    const trimmedTenant = signInData.tenant.trim().toLowerCase();
+    if (multiTenantMode === true) {
+      if (!trimmedTenant) {
+        toast({
+          title: 'Xatolik',
+          description: 'Do\'kon (tenant) kodini kiriting',
+          variant: 'destructive',
+        });
+        return;
+      }
+      if (!/^[a-z0-9][a-z0-9_-]{1,39}$/.test(trimmedTenant)) {
+        toast({
+          title: 'Xatolik',
+          description: 'Do\'kon kodi: faqat a-z, 0-9, "-", "_" (2..40 belgi)',
+          variant: 'destructive',
+        });
+        return;
+      }
+    }
+
+    // Accept email OR plain username (some installs seed `admin` without a domain).
+    const trimmedId = signInData.email.trim();
+    const looksLikeEmail = /@/.test(trimmedId);
+    const looksLikeUsername = /^[A-Za-z0-9._-]{2,64}$/.test(trimmedId);
+    if (!looksLikeEmail && !looksLikeUsername) {
       toast({
         title: 'Xatolik',
-        description: 'Noto\'g\'ri email formati',
+        description: 'Email yoki foydalanuvchi nomini to\'g\'ri kiriting',
         variant: 'destructive',
       });
       return;
@@ -58,7 +159,9 @@ export default function Login() {
 
     setIsSubmitting(true);
     try {
-      await signIn(signInData.email, signInData.password);
+      console.log('🔐 Login attempt:', { identifier: trimmedId, tenant: trimmedTenant || undefined });
+      await signIn(trimmedId, signInData.password, trimmedTenant || null);
+      console.log('✅ Login successful');
       toast({
         title: 'Muvaffaqiyatli',
         description: 'Tizimga muvaffaqiyatli kirdingiz',
@@ -68,10 +171,11 @@ export default function Login() {
         navigate(from, { replace: true });
       }, 100);
     } catch (error) {
-      console.error('Sign in error:', error);
+      console.error('❌ Sign in error:', error);
+      const errorMessage = error instanceof Error ? error.message : 'Kirishda xatolik yuz berdi';
       toast({
         title: 'Xatolik',
-        description: error instanceof Error ? error.message : 'Kirishda xatolik yuz berdi',
+        description: errorMessage,
         variant: 'destructive',
       });
     } finally {
@@ -149,17 +253,54 @@ export default function Login() {
   };
 
 
+  const b = tenantVisual?.branding;
+  const headerBg =
+    b?.primaryColor && b?.accentColor
+      ? `linear-gradient(135deg, ${b.primaryColor}, ${b.accentColor})`
+      : b?.primaryColor || undefined;
+  const headerOnColor = !!headerBg;
+
   return (
     <div className="min-h-screen flex items-center justify-center bg-muted/30 p-4">
-      <Card className="w-full max-w-md">
-        <CardHeader className="space-y-1 text-center">
+      <Card className="w-full max-w-md overflow-hidden">
+        <CardHeader
+          className="space-y-1 text-center border-b bg-card"
+          style={
+            headerBg
+              ? { background: headerBg, borderColor: 'transparent', color: '#fff' }
+              : undefined
+          }
+        >
           <div className="flex justify-center mb-4">
-            <div className="h-16 w-16 rounded-full bg-primary flex items-center justify-center">
-              <Store className="h-8 w-8 text-primary-foreground" />
-            </div>
+            {b?.logoUrl ? (
+              <img
+                src={b.logoUrl}
+                alt={tenantVisual?.displayName || ''}
+                className="h-16 max-w-[200px] object-contain rounded-md bg-white/95 px-2 py-1 shadow-sm"
+              />
+            ) : (
+              <div
+                className="h-16 w-16 rounded-full flex items-center justify-center bg-primary"
+                style={
+                  headerOnColor
+                    ? { backgroundColor: 'rgba(255,255,255,0.22)' }
+                    : undefined
+                }
+              >
+                <Store className={`h-8 w-8 ${headerOnColor ? 'text-white' : 'text-primary-foreground'}`} />
+              </div>
+            )}
           </div>
-          <CardTitle className="text-2xl font-bold">POS Tizimi</CardTitle>
-          <CardDescription>Savdo nuqtasi boshqaruvi</CardDescription>
+          <CardTitle className={`text-2xl font-bold ${headerOnColor ? 'text-white' : ''}`}>
+            {multiTenantMode === true && tenantVisual?.displayName
+              ? tenantVisual.displayName
+              : 'POS Tizimi'}
+          </CardTitle>
+          <CardDescription className={headerOnColor ? 'text-white/90' : undefined}>
+            {multiTenantMode === true && tenantVisual?.displayName
+              ? `Do'kon: ${signInData.tenant.trim().toLowerCase()}`
+              : 'Savdo nuqtasi boshqaruvi'}
+          </CardDescription>
         </CardHeader>
         <CardContent>
           <Tabs defaultValue="signin" className="w-full">
@@ -170,6 +311,34 @@ export default function Login() {
 
             <TabsContent value="signin">
               <form onSubmit={handleSignIn} className="space-y-4">
+                {multiTenantMode === true && (
+                  <div className="space-y-2">
+                    <Label htmlFor="signin-tenant">Do'kon (tenant)</Label>
+                    <Input
+                      id="signin-tenant"
+                      type="text"
+                      placeholder="masalan: default, myshop"
+                      value={signInData.tenant}
+                      onChange={(e) =>
+                        setSignInData({ ...signInData, tenant: e.target.value.toLowerCase() })
+                      }
+                      disabled={isSubmitting || loading}
+                      autoComplete="organization"
+                      pattern="[a-z0-9][a-z0-9_\\-]{1,39}"
+                      title="faqat a-z, 0-9, - va _ (2..40 belgi)"
+                    />
+                    <p className="text-xs text-muted-foreground">
+                      Super-admin sifatida kirasizmi?{' '}
+                      <button
+                        type="button"
+                        onClick={() => navigate('/admin/login')}
+                        className="text-primary hover:underline"
+                      >
+                        /admin/login
+                      </button>
+                    </p>
+                  </div>
+                )}
                 <div className="space-y-2">
                   <Label htmlFor="signin-email">Email</Label>
                   <Input

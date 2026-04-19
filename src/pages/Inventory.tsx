@@ -1,9 +1,9 @@
-import { useState, useEffect } from "react";
-import { useNavigate } from "react-router-dom";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Badge } from "@/components/ui/badge";
+import { useState, useEffect } from 'react';
+import { useLocation, useNavigate } from 'react-router-dom';
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import { Badge } from '@/components/ui/badge';
 import {
   Table,
   TableBody,
@@ -11,69 +11,101 @@ import {
   TableHead,
   TableHeader,
   TableRow,
-} from "@/components/ui/table";
+} from '@/components/ui/table';
 import {
   Select,
   SelectContent,
   SelectItem,
   SelectTrigger,
   SelectValue,
-} from "@/components/ui/select";
-import { useInventoryStore } from "@/store/inventoryStore";
-import { getProducts, getCategories } from "@/db/api";
-import { useAuth } from "@/contexts/AuthContext";
-import type { Product, Category } from "@/types/database";
-import { useToast } from "@/hooks/use-toast";
-import PageBreadcrumb from "@/components/common/PageBreadcrumb";
-import { Search, Package, AlertTriangle } from "lucide-react";
-import StockAdjustmentDialog from "@/components/inventory/StockAdjustmentDialog";
-import { formatUnit } from "@/utils/formatters";
-import { formatNumberUZ } from "@/lib/format";
+} from '@/components/ui/select';
+import { getProducts, getCategories } from '@/db/api';
+import type { ProductWithCategory, Category } from '@/types/database';
+import { useToast } from '@/hooks/use-toast';
+import PageBreadcrumb from '@/components/common/PageBreadcrumb';
+import { Search, Package, AlertTriangle } from 'lucide-react';
+import { highlightMatch } from '@/utils/searchHighlight';
+import StockAdjustmentDialog from '@/components/inventory/StockAdjustmentDialog';
+import { formatUnit } from '@/utils/formatters';
+import { formatNumberUZ } from '@/lib/format';
+import { useSessionSearchParams } from '@/hooks/useSessionSearchParams';
+import { createBackNavigationState } from '@/lib/pageState';
 
 export default function Inventory() {
   const navigate = useNavigate();
+  const location = useLocation();
   const { toast } = useToast();
-  const { user, loading: authLoading } = useAuth();
-  const { getCurrentStockByProductId } = useInventoryStore();
-
-  const [products, setProducts] = useState<Product[]>([]);
+  const { searchParams, updateParams } = useSessionSearchParams({
+    storageKey: 'inventory.filters.query',
+    trackedKeys: ['search', 'category', 'stock', 'sortBy'],
+  });
+  
+  const [products, setProducts] = useState<ProductWithCategory[]>([]);
   const [categories, setCategories] = useState<Category[]>([]);
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<Error | null>(null);
-  const [searchTerm, setSearchTerm] = useState("");
-  const [categoryFilter, setCategoryFilter] = useState<string>("all");
-  const [stockFilter, setStockFilter] = useState<string>("all");
+  const searchTerm = searchParams.get('search') || '';
+  const [searchDebounced, setSearchDebounced] = useState('');
+  const categoryFilter = searchParams.get('category') || 'all';
+  const stockFilter = searchParams.get('stock') || 'all';
+  const sortBy = searchParams.get('sortBy') || 'name-asc';
+  const [page, setPage] = useState(0);
+  const [hasMore, setHasMore] = useState(false);
   const [adjustmentDialogOpen, setAdjustmentDialogOpen] = useState(false);
-  const [selectedProduct, setSelectedProduct] = useState<Product | null>(null);
+  const [selectedProduct, setSelectedProduct] = useState<ProductWithCategory | null>(null);
 
-  const loadData = async () => {
-    // Don't load if auth is still loading or user is not authenticated
-    if (authLoading || !user) {
-      setLoading(false);
-      return;
-    }
+  // Helper: Get stock from product data (single source of truth - from IPC)
+  // CRITICAL FIX: Use stock_available (real-time from inventory_movements) instead of current_stock
+  const getCurrentStock = (product: ProductWithCategory): number => {
+    return product.stock_available ?? product.available_stock ?? product.current_stock ?? product.stock_quantity ?? 0;
+  };
 
+  useEffect(() => {
+    const id = setTimeout(() => setSearchDebounced(searchTerm.trim()), 200);
+    return () => clearTimeout(id);
+  }, [searchTerm]);
+
+  const PAGE_SIZE = 200;
+
+  const loadData = async (opts?: { append?: boolean; pageOverride?: number }) => {
     try {
       setLoading(true);
-      setError(null);
-      const [productsData, categoriesData] = await Promise.all([getProducts(), getCategories()]);
-      setProducts(productsData);
+      const effectivePage = opts?.pageOverride ?? 0;
+      const offset = effectivePage * PAGE_SIZE;
+
+      const backendStockStatus =
+        stockFilter === 'low' ? 'low' : stockFilter === 'out_of_stock' ? 'out' : undefined;
+
+      const [sortField, sortDir] = String(sortBy || 'name-asc').split('-');
+      const backendSortField =
+        sortField === 'name' || sortField === 'sku' || sortField === 'created_at' || sortField === 'sale_price'
+          ? sortField
+          : 'name';
+      const backendSortOrder = sortDir === 'desc' ? 'desc' : 'asc';
+
+      const [productsData, categoriesData] = await Promise.all([
+        getProducts(false, {
+          searchTerm: searchDebounced,
+          categoryId: categoryFilter,
+          status: 'active',
+          stockStatus: backendStockStatus as any,
+          sortBy: backendSortField as any,
+          sortOrder: backendSortOrder as any,
+          limit: PAGE_SIZE,
+          offset,
+        }),
+        getCategories(),
+      ]);
+
+      setProducts((prev) => (opts?.append ? [...prev, ...(productsData as any)] : (productsData as any)));
       setCategories(categoriesData);
-    } catch (err) {
-      const error = err instanceof Error ? err : new Error("Failed to load inventory data");
-      console.error("Error loading data:", error);
-      const { logSupabaseError } = await import("@/lib/supabaseErrorLogger");
-      logSupabaseError(error, {
-        table: "products/categories",
-        operation: "select",
-        queryKey: "loadInventory",
-        userId: user?.id,
-      });
-      setError(error);
+      setPage(effectivePage);
+      setHasMore(Array.isArray(productsData) && productsData.length >= PAGE_SIZE);
+    } catch (error) {
+      console.error('Error loading data:', error);
       toast({
-        title: "Xatolik",
-        description: error.message || "Ombor ma'lumotlarini yuklab bo'lmadi",
-        variant: "destructive",
+        title: 'Xatolik',
+        description: "Ombor ma'lumotlarini yuklab bo'lmadi",
+        variant: 'destructive',
       });
     } finally {
       setLoading(false);
@@ -81,231 +113,260 @@ export default function Inventory() {
   };
 
   useEffect(() => {
-    if (!authLoading) {
-      loadData();
-      // Load inventory from storage on mount
-      useInventoryStore.getState().loadFromStorage();
+    loadData({ append: false, pageOverride: 0 });
 
-      // Listen for product updates (e.g., when PO is received, stock is adjusted)
-      // This ensures inventory page refreshes when stock changes
-      const handleProductUpdate = () => {
-        console.log("Product update detected, refreshing inventory...");
-        loadData();
-        // Also reload inventory store
-        useInventoryStore.getState().loadFromStorage();
-      };
+    const handleProductUpdate = () => {
+      console.log('Product update detected, refreshing inventory...');
+      loadData({ append: false, pageOverride: 0 });
+    };
 
-      // Import productUpdateEmitter dynamically to avoid circular dependencies
-      let unsubscribe: (() => void) | null = null;
-      import("@/db/api").then(({ productUpdateEmitter }) => {
-        unsubscribe = productUpdateEmitter.subscribe(handleProductUpdate);
-      });
+    let unsubscribe: (() => void) | null = null;
+    import('@/db/api').then(({ productUpdateEmitter }) => {
+      unsubscribe = productUpdateEmitter.subscribe(handleProductUpdate);
+    });
 
-      // Cleanup listener on unmount
-      return () => {
-        if (unsubscribe) {
-          unsubscribe();
-        }
-      };
-    }
+    return () => {
+      if (unsubscribe) unsubscribe();
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [authLoading]); // Only depend on authLoading, loadData is stable
+  }, []);
 
-  const filteredProducts = products.filter((product) => {
-    const matchesSearch =
-      !searchTerm ||
-      product.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      product.sku.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      (product.barcode && product.barcode.toLowerCase().includes(searchTerm.toLowerCase()));
+  useEffect(() => {
+    setPage(0);
+    loadData({ append: false, pageOverride: 0 });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchDebounced, categoryFilter, stockFilter, sortBy]);
 
-    const matchesCategory = categoryFilter === "all" || product.category_id === categoryFilter;
+  // Products are loaded paginated + mostly filtered server-side via getProducts().
+  // Keep client-side filtering only for "in_stock" which backend doesn't explicitly support.
+  const baseFilteredProducts =
+    stockFilter === 'in_stock'
+      ? products.filter((p) => {
+          const s = getCurrentStock(p);
+          return s >= p.min_stock_level && s > 0;
+        })
+      : products;
 
-    const matchesStock =
-      stockFilter === "all" ||
-      (stockFilter === "low" && product.current_stock <= product.min_stock_level) ||
-      (stockFilter === "out" && product.current_stock <= 0);
+  // Optional client-side sorting for stock-based ordering (backend doesn't support it).
+  const filteredProducts = (() => {
+    const [sortField, sortDir] = String(sortBy || 'name-asc').split('-');
+    if (sortField !== 'stock') return baseFilteredProducts;
+    const dir = sortDir === 'asc' ? 1 : -1;
+    return [...baseFilteredProducts].sort((a, b) => (getCurrentStock(a) - getCurrentStock(b)) * dir);
+  })();
 
-    return matchesSearch && matchesCategory && matchesStock;
-  });
+  const lowStockCount = products.filter(
+    (p) => getCurrentStock(p) < p.min_stock_level
+  ).length;
 
-  const handleAdjustStock = (product: Product) => {
+  const handleAdjustStock = (product: ProductWithCategory) => {
     setSelectedProduct(product);
     setAdjustmentDialogOpen(true);
   };
 
-  const handleStockAdjusted = () => {
+  const handleAdjustmentSuccess = () => {
     loadData();
-    useInventoryStore.getState().loadFromStorage();
+    setAdjustmentDialogOpen(false);
+    setSelectedProduct(null);
+  };
+
+  const handleRowClick = (product: ProductWithCategory) => {
+    if (!product.id) {
+      console.error('[Inventory] Product ID is missing:', product);
+      toast({
+        title: 'Xatolik',
+        description: 'Mahsulot ID topilmadi',
+        variant: 'destructive',
+      });
+      return;
+    }
+    navigate(`/inventory/${product.id}`, {
+      state: createBackNavigationState(location),
+    });
+  };
+
+  const handleAdjustStockClick = (e: React.MouseEvent, product: ProductWithCategory) => {
+    e.stopPropagation(); // Prevent row click navigation
+    handleAdjustStock(product);
   };
 
   return (
-    <div className="space-y-6">
-      <PageBreadcrumb items={[{ label: "Ombor", href: "/inventory" }]} />
+    <div className="space-y-3">
+      <PageBreadcrumb
+        items={[
+          { label: 'Bosh sahifa', href: '/' },
+          { label: 'Ombor', href: '/inventory' },
+        ]}
+      />
 
       <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-3xl font-bold">Ombor</h1>
-          <p className="text-muted-foreground">Mahsulotlar ombori va zaxirasi</p>
+        <div className="space-y-0.5">
+          <h1 className="text-2xl font-bold tracking-tight sm:text-3xl">Ombor bo'limi</h1>
+          <p className="text-sm text-muted-foreground">Mahsulot qoldiqlari va harakatlarini boshqarish</p>
         </div>
       </div>
 
-      <Card>
-        <CardHeader>
-          <CardTitle>Filtrlar</CardTitle>
+      {/* Summary Card */}
+      {lowStockCount > 0 && (
+        <Card className="border-yellow-200 bg-yellow-50 py-3 dark:border-yellow-800 dark:bg-yellow-950">
+          <CardContent className="px-4 py-0 sm:px-6">
+            <div className="flex items-center gap-3">
+              <AlertTriangle className="h-5 w-5 text-yellow-600 dark:text-yellow-400" />
+              <div>
+                <p className="font-semibold text-yellow-900 dark:text-yellow-100">
+                  {lowStockCount} ta mahsulot minimal qoldiqdan past
+                </p>
+                <p className="text-sm text-yellow-700 dark:text-yellow-300">
+                  Ushbu mahsulotlarni tekshiring va qo'shimcha qoldiq qo'shing
+                </p>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* Filters */}
+      <Card className="gap-3 py-3">
+        <CardHeader className="px-4 pb-0 pt-0 sm:px-6">
+          <CardTitle className="text-lg">Mahsulot qoldiqlari ro'yxati</CardTitle>
         </CardHeader>
-        <CardContent>
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-            <div className="relative">
-              <Search className="absolute left-3 top-3 h-4 w-4 text-muted-foreground" />
+        <CardContent className="px-4 pb-3 pt-2 sm:px-6">
+          <div className="mb-4 flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
+            <div className="relative flex-1 xl:max-w-sm">
+              <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
               <Input
-                placeholder="Qidirish..."
+                placeholder="Mahsulot nomi yoki SKU bo'yicha qidirish..."
                 value={searchTerm}
-                onChange={(e) => setSearchTerm(e.target.value)}
+                onChange={(e) => updateParams({ search: e.target.value })}
                 className="pl-9"
               />
             </div>
-            <Select value={categoryFilter} onValueChange={setCategoryFilter}>
-              <SelectTrigger>
-                <SelectValue placeholder="Barcha kategoriyalar" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="all">Barcha kategoriyalar</SelectItem>
-                {categories.map((category) => (
-                  <SelectItem key={category.id} value={category.id}>
-                    {category.name}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-            <Select value={stockFilter} onValueChange={setStockFilter}>
-              <SelectTrigger>
-                <SelectValue placeholder="Barcha zaxiralar" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="all">Barcha zaxiralar</SelectItem>
-                <SelectItem value="low">Past zaxira</SelectItem>
-                <SelectItem value="out">Tugagan</SelectItem>
-              </SelectContent>
-            </Select>
+            <div className="flex gap-2 flex-wrap">
+              <Select value={categoryFilter} onValueChange={(value) => updateParams({ category: value })}>
+                <SelectTrigger className="w-[180px]">
+                  <SelectValue placeholder="Kategoriya bo'yicha" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">Barcha kategoriyalar</SelectItem>
+                  {categories.map((category) => (
+                    <SelectItem key={category.id} value={category.id}>
+                      {category.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <Select value={stockFilter} onValueChange={(value) => updateParams({ stock: value })}>
+                <SelectTrigger className="w-[180px]">
+                  <SelectValue placeholder="Qoldiq bo'yicha" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">Barcha zaxira holatlari</SelectItem>
+                  <SelectItem value="low">Qoldiq kam</SelectItem>
+                  <SelectItem value="in_stock">Omborda bor</SelectItem>
+                  <SelectItem value="out_of_stock">Omborda yo'q</SelectItem>
+                </SelectContent>
+              </Select>
+              <Select value={sortBy} onValueChange={(value) => updateParams({ sortBy: value })}>
+                <SelectTrigger className="w-[180px]">
+                  <SelectValue placeholder="Saralash" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="name-asc">Nomi (A-Z)</SelectItem>
+                  <SelectItem value="name-desc">Nomi (Z-A)</SelectItem>
+                  <SelectItem value="sku-asc">SKU (A-Z)</SelectItem>
+                  <SelectItem value="sku-desc">SKU (Z-A)</SelectItem>
+                  <SelectItem value="stock-desc">Qoldiq (Ko'p → Kam)</SelectItem>
+                  <SelectItem value="stock-asc">Qoldiq (Kam → Ko'p)</SelectItem>
+                  <SelectItem value="created_at-desc">Eng yangisi</SelectItem>
+                  <SelectItem value="created_at-asc">Eng eskisi</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
           </div>
-        </CardContent>
-      </Card>
 
-      <Card>
-        <CardHeader>
-          <CardTitle>Mahsulotlar ({filteredProducts.length})</CardTitle>
-        </CardHeader>
-        <CardContent>
           {loading ? (
-            <div className="flex justify-center py-8">
-              <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary" />
-            </div>
-          ) : error ? (
-            <div className="text-center py-12">
-              <AlertTriangle className="h-12 w-12 mx-auto text-destructive mb-4" />
-              <p className="text-lg font-semibold mb-2">Xatolik</p>
-              <p className="text-muted-foreground mb-4">
-                {error.message || "Ombor ma'lumotlarini yuklab bo'lmadi"}
-              </p>
-              <Button onClick={() => loadData()} variant="outline">
-                Qayta urinish
-              </Button>
-            </div>
+            <div className="py-8 text-center text-muted-foreground">Omborni yuklanmoqda...</div>
           ) : filteredProducts.length === 0 ? (
-            <div className="text-center py-12">
-              <Package className="h-12 w-12 mx-auto text-muted-foreground mb-4" />
-              <p className="text-muted-foreground">Mahsulotlar topilmadi</p>
+            <div className="py-8 text-center text-muted-foreground">
+              Filtrga mos mahsulotlar topilmadi
             </div>
           ) : (
             <div className="overflow-x-auto">
               <Table>
                 <TableHeader>
                   <TableRow>
-                    <TableHead>Mahsulot</TableHead>
-                    <TableHead>SKU / Barcode</TableHead>
-                    <TableHead>Kategoriya</TableHead>
+                    <TableHead>Mahsulot nomi</TableHead>
+                    <TableHead>SKU</TableHead>
                     <TableHead>O'lchov birligi</TableHead>
-                    <TableHead className="text-right">Sotish narxi</TableHead>
-                    <TableHead className="text-right">Zaxira</TableHead>
-                    <TableHead className="text-right">Harakatlar</TableHead>
+                    <TableHead>Joriy qoldiq</TableHead>
+                    <TableHead>Minimal qoldiq</TableHead>
+                    <TableHead>Holati</TableHead>
+                    <TableHead className="text-right">Amallar</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
                   {filteredProducts.map((product) => {
-                    const currentStock =
-                      getCurrentStockByProductId(product.id) ?? product.current_stock;
-                    const isLowStock = currentStock <= product.min_stock_level;
-                    const isOutOfStock = currentStock <= 0;
+                    // Use current_stock from product data (single source of truth from IPC)
+                    const currentStock = getCurrentStock(product);
+                    const isLowStock = currentStock < product.min_stock_level;
+                    const isOutOfStock = currentStock === 0;
 
                     return (
-                      <TableRow key={product.id}>
-                        <TableCell>
-                          <div className="flex items-center gap-3">
-                            <div className="h-10 w-10 rounded bg-muted flex items-center justify-center">
-                              {product.image_url ? (
-                                <img
-                                  src={product.image_url}
-                                  alt={product.name}
-                                  className="h-full w-full object-cover rounded"
-                                />
-                              ) : (
-                                <Package className="h-5 w-5 text-muted-foreground" />
-                              )}
-                            </div>
-                            <div>
-                              <p className="font-medium">{product.name}</p>
-                              {product.description && (
-                                <p className="text-xs text-muted-foreground line-clamp-1">
-                                  {product.description}
-                                </p>
-                              )}
-                            </div>
-                          </div>
-                        </TableCell>
-                        <TableCell>
-                          <div className="text-sm">
-                            <p className="font-mono">{product.sku}</p>
-                            {product.barcode && (
-                              <p className="text-xs text-muted-foreground font-mono">
-                                {product.barcode}
-                              </p>
+                      <TableRow
+                        key={product.id}
+                        className={`cursor-pointer transition-colors hover:bg-muted/50 ${
+                          isLowStock ? 'bg-red-50 dark:bg-red-950/20' : ''
+                        }`}
+                        onClick={() => handleRowClick(product)}
+                      >
+                        <TableCell className="font-medium">
+                          <div className="flex items-center gap-2">
+                            {searchDebounced ? highlightMatch(product.name, searchDebounced) : product.name}
+                            {isLowStock && (
+                              <Badge variant="destructive" className="text-xs">
+                                Qoldiq kam
+                              </Badge>
                             )}
                           </div>
                         </TableCell>
                         <TableCell>
-                          {categories.find((c) => c.id === product.category_id)?.name || "-"}
+                          {searchDebounced ? highlightMatch(product.sku, searchDebounced) : product.sku}
                         </TableCell>
                         <TableCell>{formatUnit(product.unit)}</TableCell>
-                        <TableCell className="text-right font-medium">
-                          {new Intl.NumberFormat("uz-UZ", {
-                            style: "currency",
-                            currency: "UZS",
-                            minimumFractionDigits: 0,
-                          }).format(product.sale_price)}
+                        <TableCell>
+                          <span
+                            className={
+                              isOutOfStock
+                                ? 'font-bold text-red-600 dark:text-red-400'
+                                : isLowStock
+                                ? 'font-semibold text-orange-600 dark:text-orange-400'
+                                : 'font-medium text-green-600 dark:text-green-400'
+                            }
+                          >
+                            {formatNumberUZ(currentStock)}
+                          </span>
                         </TableCell>
-                        <TableCell className="text-right">
-                          <div className="flex items-center justify-end gap-2">
-                            {isLowStock && !isOutOfStock && (
-                              <AlertTriangle className="h-4 w-4 text-warning" />
-                            )}
-                            {isOutOfStock && <AlertTriangle className="h-4 w-4 text-destructive" />}
-                            <span
-                              className={`font-medium ${isOutOfStock ? "text-destructive" : isLowStock ? "text-warning" : ""}`}
-                            >
-                              {formatNumberUZ(currentStock)}
-                            </span>
-                            <span className="text-xs text-muted-foreground">
-                              {formatUnit(product.unit)}
-                            </span>
-                          </div>
+                        <TableCell>{formatNumberUZ(product.min_stock_level)}</TableCell>
+                        <TableCell>
+                          {isOutOfStock ? (
+                            <Badge variant="destructive">Omborda yo'q</Badge>
+                          ) : isLowStock ? (
+                            <Badge variant="outline" className="border-orange-300 text-orange-700 dark:border-orange-700 dark:text-orange-400">
+                              Qoldiq kam
+                            </Badge>
+                          ) : (
+                            <Badge className="bg-green-500/10 text-green-700 dark:text-green-400">
+                              Omborda bor
+                            </Badge>
+                          )}
                         </TableCell>
                         <TableCell className="text-right">
                           <Button
                             variant="outline"
                             size="sm"
-                            onClick={() => handleAdjustStock(product)}
+                            onClick={(e) => handleAdjustStockClick(e, product)}
                           >
-                            Zaxirani tahrirlash
+                            Qoldiqni to'g'rilash
                           </Button>
                         </TableCell>
                       </TableRow>
@@ -313,17 +374,31 @@ export default function Inventory() {
                   })}
                 </TableBody>
               </Table>
+              {hasMore && (
+                <div className="flex justify-center py-4">
+                  <Button
+                    variant="outline"
+                    onClick={() => loadData({ append: true, pageOverride: page + 1 })}
+                    disabled={loading}
+                  >
+                    Ko'proq yuklash
+                  </Button>
+                </div>
+              )}
             </div>
           )}
         </CardContent>
       </Card>
 
-      <StockAdjustmentDialog
-        open={adjustmentDialogOpen}
-        onOpenChange={setAdjustmentDialogOpen}
-        product={selectedProduct}
-        onStockAdjusted={handleStockAdjusted}
-      />
+      {/* Stock Adjustment Dialog */}
+      {selectedProduct && (
+        <StockAdjustmentDialog
+          open={adjustmentDialogOpen}
+          onOpenChange={setAdjustmentDialogOpen}
+          product={selectedProduct}
+          onSuccess={handleAdjustmentSuccess}
+        />
+      )}
     </div>
   );
 }

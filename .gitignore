@@ -8,9 +8,17 @@ pnpm-debug.log*
 lerna-debug.log*
 
 node_modules
+.env
+.env.local
+.env.*.local
+scripts/_run_ngrok_both.bat
 dist
 dist-ssr
 output
+
+# Electron packager output (GitHub 100MB limit; build CI/locally)
+release/
+vite.config.ts.timestamp-*.mjs
 *.local
 package-lock.json
 
@@ -27,3 +35,28 @@ package-lock.json
 .sync
 history/*.json
 .vite_cache
+
+# Database files (SECURITY: Never commit DB files)
+# All database files should be in userData directory, not in repo
+**/*.db
+**/*.db-wal
+**/*.db-shm
+**/*.db-journal
+*.db
+*.db-wal
+*.db-shm
+*.db-journal
+
+# Docker / Server mode data
+.pos-data
+.pos-data-dev
+.pos-data-docker
+docker-compose.override.yaml
+
+# Load-test artifacts (k6/autocannon) — bulky JSON output, never committed
+load-test/results/
+load-test/*.local.env
+
+# rclone credentials — kept per-host only, never in repo
+deploy/backup/rclone.conf
+deploy/monitoring/pos-metrics-token

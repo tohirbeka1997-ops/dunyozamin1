@@ -24,20 +24,27 @@ import type { Customer, SalesReturnWithDetails } from '@/types/database';
 import { Plus, Search, Eye, Printer, RotateCcw, Edit } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 import { formatMoneyUZS } from '@/lib/format';
+import { formatOrderDateTime } from '@/lib/datetime';
 import { printHtml } from '@/lib/print';
+import { useSessionSearchParams } from '@/hooks/useSessionSearchParams';
+import { createBackNavigationState } from '@/lib/pageState';
 
 export default function SalesReturns() {
   const { toast } = useToast();
   const navigate = useNavigate();
   const location = useLocation();
+  const { searchParams, updateParams, clearTrackedParams } = useSessionSearchParams({
+    storageKey: 'sales-returns.filters.query',
+    trackedKeys: ['search', 'startDate', 'endDate', 'customer', 'status'],
+  });
   const [returns, setReturns] = useState<SalesReturnWithDetails[]>([]);
   const [customers, setCustomers] = useState<Customer[]>([]);
   const [loading, setLoading] = useState(true);
-  const [searchTerm, setSearchTerm] = useState('');
-  const [startDate, setStartDate] = useState('');
-  const [endDate, setEndDate] = useState('');
-  const [selectedCustomer, setSelectedCustomer] = useState('all');
-  const [selectedStatus, setSelectedStatus] = useState('all');
+  const searchTerm = searchParams.get('search') || '';
+  const startDate = searchParams.get('startDate') || '';
+  const endDate = searchParams.get('endDate') || '';
+  const selectedCustomer = searchParams.get('customer') || 'all';
+  const selectedStatus = searchParams.get('status') || 'all';
   const [printingReturnId, setPrintingReturnId] = useState<string | null>(null);
 
   useEffect(() => {
@@ -50,6 +57,12 @@ export default function SalesReturns() {
       loadData();
     }
   }, [location.pathname]);
+
+  useEffect(() => {
+    if (startDate || endDate || selectedCustomer !== 'all' || selectedStatus !== 'all') {
+      void handleSearch();
+    }
+  }, [startDate, endDate, selectedCustomer, selectedStatus]);
 
   const loadData = async () => {
     try {
@@ -101,9 +114,9 @@ export default function SalesReturns() {
   const getStatusBadge = (status: string) => {
     switch (status) {
       case 'Completed':
-        return <Badge className="bg-success text-success-foreground">Yakunlangan</Badge>;
+        return <Badge className="bg-success text-white">Yakunlangan</Badge>;
       case 'Pending':
-        return <Badge className="bg-primary text-primary-foreground">Kutilmoqda</Badge>;
+        return <Badge className="bg-primary text-white">Kutilmoqda</Badge>;
       case 'Cancelled':
         return <Badge variant="destructive">Bekor qilingan</Badge>;
       default:
@@ -112,9 +125,25 @@ export default function SalesReturns() {
   };
 
   const handlePrint = async (returnId: string) => {
+    console.log('[RETURNS] handlePrint called with returnId:', returnId, typeof returnId);
+    
+    if (!returnId) {
+      toast({
+        title: 'Xatolik',
+        description: 'Qaytarish ID topilmadi',
+        variant: 'destructive',
+      });
+      return;
+    }
+    
     try {
       setPrintingReturnId(returnId);
       const returnData = await getSalesReturnById(returnId);
+      console.log('[RETURNS] handlePrint: loaded return data:', {
+        id: returnData?.id,
+        return_number: returnData?.return_number,
+        items_count: returnData?.items?.length || 0,
+      });
       
       // Generate HTML content for the receipt
       const htmlContent = generateReturnReceiptHTML(returnData, 'thermal');
@@ -135,16 +164,11 @@ export default function SalesReturns() {
     // Create a temporary wrapper to render React component
     // For simplicity, we'll generate HTML string directly
     const storeName = 'POS tizimi';
-    const dateTime = new Date(returnData.created_at).toLocaleString('uz-UZ', {
-      day: '2-digit',
-      month: '2-digit',
-      year: 'numeric',
-      hour: '2-digit',
-      minute: '2-digit',
-    });
+    const dateTime = formatOrderDateTime(returnData.created_at);
     const cashierName = returnData.cashier?.username || returnData.cashier?.full_name || '-';
     const customerName = returnData.customer?.name || 'Yangi mijoz';
-    const orderNumber = returnData.order?.order_number || '-';
+    const orderNumber = returnData.order?.order_number || 'Ordersiz';
+    const sourceLabel = returnData.return_mode === 'manual' ? 'Ordersiz qaytarish' : 'Buyurtma bo‘yicha qaytarish';
     const isPending = returnData.status === 'Pending';
     
     const statusLabels: Record<string, string> = {
@@ -163,6 +187,7 @@ export default function SalesReturns() {
           </div>
           <div class="grid grid-cols-2 gap-4 mb-6 text-sm">
             <div><p class="font-semibold">Qaytarish raqami:</p><p class="font-mono">${returnData.return_number}</p></div>
+            <div><p class="font-semibold">Manba:</p><p>${sourceLabel}</p></div>
             <div><p class="font-semibold">Buyurtma raqami:</p><p class="font-mono">${orderNumber}</p></div>
             <div><p class="font-semibold">Sana va vaqt:</p><p>${dateTime}</p></div>
             <div><p class="font-semibold">Holati:</p><p>${statusLabels[returnData.status] || returnData.status}</p></div>
@@ -218,6 +243,7 @@ export default function SalesReturns() {
         <div class="text-center mb-3 text-xs">
           <p class="font-mono">${returnData.return_number}</p>
           <p class="font-mono">Buyurtma: ${orderNumber}</p>
+          <p>${sourceLabel}</p>
           <p>${dateTime}</p>
         </div>
         <div class="mb-3 text-xs space-y-1">
@@ -282,7 +308,7 @@ export default function SalesReturns() {
           <h1 className="text-3xl font-bold">Sotuv qaytarishlari</h1>
           <p className="text-muted-foreground">Qaytarish va pulni qaytarishni boshqarish</p>
         </div>
-        <Button onClick={() => navigate('/returns/create')}>
+        <Button onClick={() => navigate('/returns/create', { state: createBackNavigationState(location) })}>
           <Plus className="h-4 w-4 mr-2" />
           Yangi qaytarish
         </Button>
@@ -334,7 +360,7 @@ export default function SalesReturns() {
               <Input
                 placeholder="Qaytarishlarni qidirish..."
                 value={searchTerm}
-                onChange={(e) => setSearchTerm(e.target.value)}
+                onChange={(e) => updateParams({ search: e.target.value })}
                 className="pl-9"
               />
             </div>
@@ -342,18 +368,18 @@ export default function SalesReturns() {
             <Input
               type="date"
               value={startDate}
-              onChange={(e) => setStartDate(e.target.value)}
+              onChange={(e) => updateParams({ startDate: e.target.value })}
               placeholder="Boshlanish sanasi"
             />
 
             <Input
               type="date"
               value={endDate}
-              onChange={(e) => setEndDate(e.target.value)}
+              onChange={(e) => updateParams({ endDate: e.target.value })}
               placeholder="Tugash sanasi"
             />
 
-            <Select value={selectedCustomer} onValueChange={setSelectedCustomer}>
+            <Select value={selectedCustomer} onValueChange={(value) => updateParams({ customer: value })}>
               <SelectTrigger>
                 <SelectValue placeholder="Barcha mijozlar" />
               </SelectTrigger>
@@ -367,7 +393,7 @@ export default function SalesReturns() {
               </SelectContent>
             </Select>
 
-            <Select value={selectedStatus} onValueChange={setSelectedStatus}>
+            <Select value={selectedStatus} onValueChange={(value) => updateParams({ status: value })}>
               <SelectTrigger>
                 <SelectValue placeholder="Barcha holatlar" />
               </SelectTrigger>
@@ -384,11 +410,7 @@ export default function SalesReturns() {
             <Button
               variant="outline"
               onClick={() => {
-                setSearchTerm('');
-                setStartDate('');
-                setEndDate('');
-                setSelectedCustomer('all');
-                setSelectedStatus('all');
+                clearTrackedParams();
                 loadData();
               }}
             >
@@ -412,7 +434,10 @@ export default function SalesReturns() {
             <div className="text-center py-12">
               <RotateCcw className="h-12 w-12 mx-auto text-muted-foreground mb-4" />
               <p className="text-muted-foreground">Qaytarishlar topilmadi</p>
-              <Button className="mt-4" onClick={() => navigate('/returns/create')}>
+              <Button
+                className="mt-4"
+                onClick={() => navigate('/returns/create', { state: createBackNavigationState(location) })}
+              >
                 <Plus className="h-4 w-4 mr-2" />
                 Birinchi qaytarishni yaratish
               </Button>
@@ -435,10 +460,10 @@ export default function SalesReturns() {
                 {filteredReturns.map((ret) => (
                   <TableRow key={ret.id}>
                     <TableCell className="font-medium">{ret.return_number}</TableCell>
-                    <TableCell>{ret.order?.order_number || '-'}</TableCell>
+                    <TableCell>{ret.order?.order_number || (ret.return_mode === 'manual' ? 'Ordersiz' : '-')}</TableCell>
                     <TableCell>{ret.customer?.name || 'Yangi mijoz'}</TableCell>
                     <TableCell>
-                      {new Date(ret.created_at).toLocaleString('uz-UZ')}
+                      {formatOrderDateTime(ret.created_at)}
                     </TableCell>
                     <TableCell className="text-right font-medium">
                       {formatMoneyUZS(ret.total_amount)}
@@ -450,7 +475,24 @@ export default function SalesReturns() {
                         <Button
                           variant="ghost"
                           size="icon"
-                          onClick={() => navigate(`/returns/${ret.id}`)}
+                          onClick={() => {
+                            console.log('[RETURNS] View button clicked:', {
+                              id: ret.id,
+                              return_number: ret.return_number,
+                              type: typeof ret.id,
+                            });
+                            if (!ret.id) {
+                              toast({
+                                title: 'Xatolik',
+                                description: 'Qaytarish ID topilmadi. Ro\'yxat ma\'lumotlarida xatolik.',
+                                variant: 'destructive',
+                              });
+                              return;
+                            }
+                            navigate(`/returns/${ret.id}`, {
+                              state: createBackNavigationState(location),
+                            });
+                          }}
                           title="Tafsilotlarni ko'rish"
                         >
                           <Eye className="h-4 w-4" />
@@ -459,7 +501,24 @@ export default function SalesReturns() {
                           <Button
                             variant="ghost"
                             size="icon"
-                            onClick={() => navigate(`/returns/${ret.id}/edit`)}
+                            onClick={() => {
+                              console.log('[RETURNS] Edit button clicked:', {
+                                id: ret.id,
+                                return_number: ret.return_number,
+                                status: ret.status,
+                              });
+                              if (!ret.id) {
+                                toast({
+                                  title: 'Xatolik',
+                                  description: 'Qaytarish ID topilmadi. Ro\'yxat ma\'lumotlarida xatolik.',
+                                  variant: 'destructive',
+                                });
+                                return;
+                              }
+                              navigate(`/returns/${ret.id}/edit`, {
+                                state: createBackNavigationState(location),
+                              });
+                            }}
                             title="Qaytarishni tahrirlash"
                           >
                             <Edit className="h-4 w-4" />
@@ -468,7 +527,21 @@ export default function SalesReturns() {
                         <Button
                           variant="ghost"
                           size="icon"
-                          onClick={() => handlePrint(ret.id)}
+                          onClick={() => {
+                            console.log('[RETURNS] Print button clicked:', {
+                              id: ret.id,
+                              return_number: ret.return_number,
+                            });
+                            if (!ret.id) {
+                              toast({
+                                title: 'Xatolik',
+                                description: 'Qaytarish ID topilmadi. Ro\'yxat ma\'lumotlarida xatolik.',
+                                variant: 'destructive',
+                              });
+                              return;
+                            }
+                            handlePrint(ret.id);
+                          }}
                           disabled={printingReturnId === ret.id}
                           title="Chop etish"
                         >

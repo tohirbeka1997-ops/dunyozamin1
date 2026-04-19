@@ -1,8 +1,6 @@
 import { useState, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useQuery } from '@tanstack/react-query';
-import { useAuth } from '@/contexts/AuthContext';
-import { logSupabaseError } from '@/lib/supabaseErrorLogger';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Button } from '@/components/ui/button';
@@ -24,18 +22,17 @@ import {
   AlertTriangle,
   Users,
   TrendingUp,
+  TrendingDown,
   Package,
-  RotateCcw,
-  FileText,
   CalendarIcon,
   BarChart3,
 } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import { formatUnit } from '@/utils/formatters';
 import { useToast } from '@/hooks/use-toast';
-import { format } from 'date-fns';
 import { formatMoneyUZS } from '@/lib/format';
 import { LineChart, Line, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
+import { formatMonthDay, formatMonthDayYear } from '@/lib/datetime';
 
 interface MetricCardProps {
   title: string;
@@ -103,81 +100,59 @@ export default function Dashboard() {
     return `${dateRange.from.toISOString()}_${dateRange.to.toISOString()}`;
   }, [dateRange]);
 
-  const { user, loading: authLoading } = useAuth();
-  const authReady = !authLoading;
-
-  // React Query hooks for dashboard data - only run when auth is ready
-  const { data: analytics, isLoading: analyticsLoading, isError: analyticsError, error: analyticsErrorObj } = useQuery({
+  // React Query hooks for dashboard data
+  // refetchOnMount: true - Always fetch fresh data when component mounts
+  // refetchOnWindowFocus: true - Refresh when user returns to tab/window
+  // refetchInterval: 30000 - Auto-refresh every 30 seconds
+  const { data: analytics, isLoading: analyticsLoading, isError: analyticsError } = useQuery({
     queryKey: ['dashboardAnalytics', dateRangeKey],
-    queryFn: async () => {
-      try {
-        return await getDashboardAnalytics(dateRange.from, dateRange.to);
-      } catch (error) {
-        logSupabaseError(error, { table: 'dashboard', operation: 'getAnalytics', queryKey: 'dashboardAnalytics', userId: user?.id });
-        throw error;
-      }
-    },
-    enabled: authReady && !!user,
-    refetchInterval: 30000,
+    queryFn: () => getDashboardAnalytics(dateRange.from, dateRange.to),
+    refetchOnMount: true,
+    refetchOnWindowFocus: true,
+    refetchInterval: 30000, // Auto-refresh every 30 seconds
     retry: 1,
+    onError: (err: any) => {
+      console.error('[Dashboard] dashboardAnalytics error:', err);
+      toast({
+        title: t('dashboard.error_loading_metric'),
+        description: err?.message || 'Unknown error',
+        variant: 'destructive',
+      });
+    },
   });
 
-  const { data: lowStockProducts = [], isLoading: lowStockLoading, isError: lowStockError, error: lowStockErrorObj } = useQuery({
+  const { data: lowStockProducts = [], isLoading: lowStockLoading, isError: lowStockError } = useQuery({
     queryKey: ['lowStockProducts'],
-    queryFn: async () => {
-      try {
-        return await getLowStockProducts();
-      } catch (error) {
-        logSupabaseError(error, { table: 'products', operation: 'getLowStock', queryKey: 'lowStockProducts', userId: user?.id });
-        throw error;
-      }
-    },
-    enabled: authReady && !!user,
+    queryFn: getLowStockProducts,
+    refetchOnMount: true,
+    refetchOnWindowFocus: true,
     refetchInterval: 30000,
     retry: 1,
   });
 
-  const { data: dailySales = [], isLoading: chartsLoading, isError: chartsError, error: chartsErrorObj } = useQuery({
+  const { data: dailySales = [], isLoading: chartsLoading, isError: chartsError } = useQuery({
     queryKey: ['dailySales', dateRangeKey],
-    queryFn: async () => {
-      try {
-        return await getDailySalesData(dateRange.from, dateRange.to);
-      } catch (error) {
-        logSupabaseError(error, { table: 'orders', operation: 'getDailySales', queryKey: 'dailySales', userId: user?.id });
-        throw error;
-      }
-    },
-    enabled: authReady && !!user,
+    queryFn: () => getDailySalesData(dateRange.from, dateRange.to),
+    refetchOnMount: true,
+    refetchOnWindowFocus: true,
     refetchInterval: 30000,
     retry: 1,
   });
 
-  const { data: topProducts = [], isLoading: topProductsLoading, error: topProductsError } = useQuery({
+  const { data: topProducts = [], isLoading: topProductsLoading } = useQuery({
     queryKey: ['topProducts', dateRangeKey],
-    queryFn: async () => {
-      try {
-        return await getTopProducts(dateRange.from, dateRange.to, 5);
-      } catch (error) {
-        logSupabaseError(error, { table: 'products', operation: 'getTopProducts', queryKey: 'topProducts', userId: user?.id });
-        throw error;
-      }
-    },
-    enabled: authReady && !!user,
+    queryFn: () => getTopProducts(dateRange.from, dateRange.to, 5),
+    refetchOnMount: true,
+    refetchOnWindowFocus: true,
     refetchInterval: 30000,
     retry: 1,
   });
 
-  const { data: totalCustomerDebt = 0, error: debtError } = useQuery({
+  const { data: totalCustomerDebt = 0 } = useQuery({
     queryKey: ['totalCustomerDebt'],
-    queryFn: async () => {
-      try {
-        return await getTotalCustomerDebt();
-      } catch (error) {
-        logSupabaseError(error, { table: 'customers', operation: 'getTotalDebt', queryKey: 'totalCustomerDebt', userId: user?.id });
-        throw error;
-      }
-    },
-    enabled: authReady && !!user,
+    queryFn: getTotalCustomerDebt,
+    refetchOnMount: true,
+    refetchOnWindowFocus: true,
     refetchInterval: 30000,
     retry: 1,
   });
@@ -258,7 +233,7 @@ export default function Dashboard() {
     if (datePreset === 'yesterday') return t('dashboard.filters.yesterday');
     if (datePreset === 'last7days') return t('dashboard.filters.last_7_days');
     if (datePreset === 'thisMonth') return t('dashboard.filters.this_month');
-    return `${format(dateRange.from, 'MMM dd')} - ${format(dateRange.to, 'MMM dd, yyyy')}`;
+    return `${formatMonthDay(dateRange.from)} - ${formatMonthDayYear(dateRange.to)}`;
   };
 
   return (
@@ -290,7 +265,7 @@ export default function Dashboard() {
                 <Button variant="outline" className="w-full sm:w-auto">
                   <CalendarIcon className="mr-2 h-4 w-4" />
                   {customDateFrom && customDateTo
-                    ? `${format(customDateFrom, 'MMM dd')} - ${format(customDateTo, 'MMM dd')}`
+                    ? `${formatMonthDay(customDateFrom)} - ${formatMonthDay(customDateTo)}`
                     : t('dashboard.filters.pick_dates')}
                 </Button>
               </PopoverTrigger>
@@ -341,14 +316,35 @@ export default function Dashboard() {
         />
 
         <MetricCard
-          title={t('dashboard.cards.orders.title')}
-          value={analytics?.total_orders || 0}
-          subtitle={t('dashboard.cards.orders.subtitle')}
-          icon={<ShoppingCart className="h-4 w-4 text-muted-foreground" />}
+          title={t('dashboard.cards.total_cogs.title')}
+          value={formatCurrency(analytics?.total_cogs || 0)}
+          subtitle={t('dashboard.cards.total_cogs.subtitle')}
+          icon={<Package className="h-4 w-4 text-muted-foreground" />}
           loading={analyticsLoading}
           error={analyticsError}
         />
 
+        <MetricCard
+          title={t('dashboard.cards.total_profit.title')}
+          value={formatCurrency(analytics?.total_profit || 0)}
+          subtitle={t('dashboard.cards.total_profit.subtitle')}
+          icon={<TrendingUp className="h-4 w-4 text-success" />}
+          loading={analyticsLoading}
+          error={analyticsError}
+        />
+
+        <MetricCard
+          title={t('dashboard.cards.profit_margin.title')}
+          value={`${Number(analytics?.profit_margin || 0).toFixed(1)}%`}
+          subtitle={t('dashboard.cards.profit_margin.subtitle')}
+          icon={<TrendingUp className="h-4 w-4 text-muted-foreground" />}
+          loading={analyticsLoading}
+          error={analyticsError}
+        />
+      </div>
+
+      {/* Row 2: Other KPI Cards */}
+      <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
         <MetricCard
           title={t('dashboard.cards.low_stock.title')}
           value={analytics?.low_stock_count || 0}
@@ -366,50 +362,17 @@ export default function Dashboard() {
           loading={analyticsLoading}
           error={analyticsError}
         />
-      </div>
 
-      {/* Row 2: Additional KPI Cards */}
-      <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
         <MetricCard
-          title={t('dashboard.cards.average_order_value.title')}
-          value={formatCurrency(analytics?.average_order_value || 0)}
-          subtitle={t('dashboard.cards.average_order_value.subtitle')}
-          icon={<TrendingUp className="h-4 w-4 text-muted-foreground" />}
+          title={t('dashboard.cards.total_expenses.title')}
+          value={formatCurrency(analytics?.total_expenses || 0)}
+          subtitle={t('dashboard.cards.total_expenses.subtitle')}
+          icon={<TrendingDown className="h-4 w-4 text-destructive" />}
           loading={analyticsLoading}
           error={analyticsError}
         />
 
-        <MetricCard
-          title={t('dashboard.cards.items_sold.title')}
-          value={analytics?.items_sold || 0}
-          subtitle={t('dashboard.cards.items_sold.subtitle')}
-          icon={<Package className="h-4 w-4 text-muted-foreground" />}
-          loading={analyticsLoading}
-          error={analyticsError}
-        />
-
-        <MetricCard
-          title={t('dashboard.cards.returns.title')}
-          value={analytics?.returns_count || 0}
-          subtitle={formatCurrency(analytics?.returns_amount || 0)}
-          icon={<RotateCcw className="h-4 w-4 text-muted-foreground" />}
-          loading={analyticsLoading}
-          error={analyticsError}
-        />
-
-        <MetricCard
-          title={t('dashboard.cards.pending_purchase_orders.title')}
-          value={analytics?.pending_purchase_orders || 0}
-          subtitle={t('dashboard.cards.pending_purchase_orders.subtitle')}
-          icon={<FileText className="h-4 w-4 text-muted-foreground" />}
-          loading={analyticsLoading}
-          error={analyticsError}
-        />
-      </div>
-
-      {/* Row 3: Customer Debt */}
-      {totalCustomerDebt > 0 && (
-        <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+        {totalCustomerDebt > 0 && (
           <MetricCard
             title={t('dashboard.cards.total_customer_debt.title')}
             value={formatCurrency(totalCustomerDebt)}
@@ -418,8 +381,8 @@ export default function Dashboard() {
             loading={analyticsLoading}
             error={analyticsError}
           />
-        </div>
-      )}
+        )}
+      </div>
 
       {/* Charts Section */}
       <div className="grid gap-4 xl:grid-cols-2">
@@ -444,13 +407,22 @@ export default function Dashboard() {
               <div className="h-80 flex items-center justify-center">
                 <p className="text-sm text-muted-foreground">{t('dashboard.charts.no_sales_data')}</p>
               </div>
+            ) : dailySales.length < 2 ? (
+              <div className="h-80 flex flex-col items-center justify-center text-center gap-2">
+                <p className="text-sm text-muted-foreground">
+                  Chiziq ko‘rinishi uchun kamida 2 kun tanlang (masalan: “So‘nggi 7 kun”).
+                </p>
+                <p className="text-xs text-muted-foreground">
+                  Hozirgi davr faqat 1 kun bo‘lgani uchun grafikda faqat nuqta ko‘rinadi.
+                </p>
+              </div>
             ) : (
               <ResponsiveContainer width="100%" height={320}>
                 <LineChart data={dailySales}>
                   <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
                   <XAxis
                     dataKey="date"
-                    tickFormatter={(value) => format(new Date(value), 'MMM dd')}
+                    tickFormatter={(value) => formatMonthDay(value)}
                     className="text-xs"
                   />
                   <YAxis
@@ -459,7 +431,7 @@ export default function Dashboard() {
                   />
                   <Tooltip
                     formatter={(value: number) => [formatCurrency(value), t('dashboard.charts.sales')]}
-                    labelFormatter={(label) => format(new Date(label), 'MMM dd, yyyy')}
+                    labelFormatter={(label) => formatMonthDayYear(label)}
                   />
                   <Line
                     type="monotone"
@@ -591,7 +563,7 @@ export default function Dashboard() {
           <CardHeader>
             <CardTitle className="flex items-center gap-2">
               <AlertTriangle className="h-5 w-5 text-warning" />
-              Low Stock Alert
+              {t('dashboard.low_stock_alert.title')}
             </CardTitle>
           </CardHeader>
           <CardContent>
@@ -605,7 +577,7 @@ export default function Dashboard() {
           <CardHeader>
             <CardTitle className="flex items-center gap-2">
               <AlertTriangle className="h-5 w-5 text-warning" />
-              Low Stock Alert
+              {t('dashboard.low_stock_alert.title')}
             </CardTitle>
           </CardHeader>
           <CardContent>

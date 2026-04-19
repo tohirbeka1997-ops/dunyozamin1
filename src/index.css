@@ -7,12 +7,13 @@
 @media print {
   @page {
     margin: 0;
-    size: auto;
+    size: 80mm auto;
   }
 
   body {
     margin: 0;
     padding: 0;
+    width: 80mm;
     -webkit-print-color-adjust: exact;
     print-color-adjust: exact;
   }
@@ -43,18 +44,19 @@
     position: absolute;
     left: 0;
     top: 0;
-    width: 200px !important;
-    max-width: 200px !important;
+    width: 80mm !important;
+    max-width: 80mm !important;
   }
   
   @page {
-    size: auto;
+    size: 80mm auto;
     margin: 0;
   }
 
   body {
     margin: 0;
     padding: 0;
+    width: 80mm;
     -webkit-print-color-adjust: exact;
     print-color-adjust: exact;
   }
@@ -93,9 +95,11 @@ All colors MUST be HSL.
     --accent-foreground: 0 0% 100%;
     --destructive: 0 84% 60%;
     --destructive-foreground: 0 0% 100%;
-    --success: 142 71% 45%;
+    /* Darker for better contrast with white foreground (badges/buttons) */
+    --success: 142 72% 32%;
     --success-foreground: 0 0% 100%;
-    --warning: 38 92% 50%;
+    /* Yellow at 50% lightness is too bright for white text; darken to improve contrast */
+    --warning: 38 92% 38%;
     --warning-foreground: 0 0% 100%;
     --border: 214 32% 91%;
     --input: 214 32% 91%;
@@ -132,9 +136,10 @@ All colors MUST be HSL.
     --accent-foreground: 0 0% 100%;
     --destructive: 0 63% 31%;
     --destructive-foreground: 210 40% 98%;
-    --success: 142 71% 45%;
+    /* Keep success/warning darker in dark mode too (ensures consistent contrast) */
+    --success: 142 72% 32%;
     --success-foreground: 0 0% 100%;
-    --warning: 38 92% 50%;
+    --warning: 38 92% 38%;
     --warning-foreground: 0 0% 100%;
     --border: 217 33% 17%;
     --input: 217 33% 17%;
@@ -158,6 +163,16 @@ All colors MUST be HSL.
 @layer base {
   * {
     @apply border-border;
+  }
+
+  html,
+  body,
+  #root {
+    height: 100%;
+    min-height: 100%;
+    width: 100%;
+    max-width: 100%;
+    margin: 0;
   }
 
   body {

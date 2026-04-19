@@ -1,0 +1,147 @@
+# =============================================================================
+# Optional monitoring stack — Prometheus + Grafana + node-exporter
+# =============================================================================
+# Enabled via a profile so it never starts unless explicitly requested:
+#
+#   docker compose --profile monitoring up -d
+#
+# Combined with the production compose files:
+#
+#   docker compose \
+#     -f docker-compose.yaml \
+#     -f docker-compose.prod.yaml \
+#     -f docker-compose.monitoring.yaml \
+#     --profile monitoring \
+#     up -d
+#
+# All services share the default `pos_default` network and can reach
+# `pos-server:3333` (hostname = service name) for scraping.
+# =============================================================================
+
+name: pos
+
+services:
+  prometheus:
+    image: prom/prometheus:v2.55.0
+    container_name: pos-prometheus
+    profiles: [monitoring]
+    restart: unless-stopped
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--storage.tsdb.retention.time=30d'
+      - '--web.enable-lifecycle'   # allow hot-reload via POST /-/reload
+    volumes:
+      - ./deploy/monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./deploy/monitoring/alerts.yml:/etc/prometheus/alerts.yml:ro
+      - prometheus-data:/prometheus
+    # Bind to loopback — expose through Grafana + optional nginx /prom location.
+    ports:
+      - "127.0.0.1:9090:9090"
+    depends_on:
+      - node-exporter
+      - alertmanager
+
+  # =======================================================================
+  # Alertmanager (Bosqich 17) — routes Prometheus alerts to Telegram + email
+  # =======================================================================
+  # The config file contains `${...}` placeholders for secrets; we render it
+  # at startup using `envsubst` so the running container never has the raw
+  # template on disk. Secrets come from the project `.env` via compose.
+  alertmanager:
+    image: prom/alertmanager:v0.27.0
+    container_name: pos-alertmanager
+    profiles: [monitoring]
+    restart: unless-stopped
+    # Render the template through envsubst, then launch alertmanager.
+    # `apk add gettext` isn't needed — the alpine base in the official image
+    # already ships envsubst via busybox-extras. If a future image drops it,
+    # swap to `sh -c "sed -e \"s/\\\${VAR}/$VAR/g\" …` or mount a pre-rendered
+    # config from a host-side CD job.
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -e
+        envsubst < /etc/alertmanager/alertmanager.yml.tmpl > /tmp/alertmanager.yml
+        exec /bin/alertmanager \
+          --config.file=/tmp/alertmanager.yml \
+          --storage.path=/alertmanager \
+          --web.external-url=${ALERTMANAGER_EXTERNAL_URL:-http://localhost:9093} \
+          --cluster.listen-address=
+    environment:
+      # Forwarded so envsubst can interpolate them into alertmanager.yml.
+      TELEGRAM_ALERT_BOT_TOKEN: ${TELEGRAM_ALERT_BOT_TOKEN:?TELEGRAM_ALERT_BOT_TOKEN is required for the monitoring profile}
+      TELEGRAM_ALERT_CHAT_ID:   ${TELEGRAM_ALERT_CHAT_ID:?TELEGRAM_ALERT_CHAT_ID is required for the monitoring profile}
+      SMTP_HOST:                ${SMTP_HOST:-smtp.gmail.com}
+      SMTP_PORT:                ${SMTP_PORT:-587}
+      SMTP_FROM:                ${SMTP_FROM:-pos-alerts@example.com}
+      SMTP_USERNAME:            ${SMTP_USERNAME:-}
+      SMTP_PASSWORD:            ${SMTP_PASSWORD:-}
+      SMTP_HELLO:               ${SMTP_HELLO:-pos.example.com}
+      ALERT_EMAIL_TO:           ${ALERT_EMAIL_TO:-oncall@example.com}
+      ALERTMANAGER_EXTERNAL_URL: ${ALERTMANAGER_EXTERNAL_URL:-http://localhost:9093}
+    volumes:
+      # Mounted as `.tmpl` on purpose — the entrypoint envsubsts it into
+      # /tmp/alertmanager.yml at startup. Keep the source file read-only.
+      - ./deploy/monitoring/alertmanager.yml:/etc/alertmanager/alertmanager.yml.tmpl:ro
+      - ./deploy/monitoring/alertmanager-templates:/etc/alertmanager/templates:ro
+      - alertmanager-data:/alertmanager
+    ports:
+      # Loopback only — behind nginx /alertmanager/ location in prod.
+      - "127.0.0.1:9093:9093"
+
+  node-exporter:
+    image: prom/node-exporter:v1.8.2
+    container_name: pos-node-exporter
+    profiles: [monitoring]
+    restart: unless-stopped
+    command:
+      - '--path.rootfs=/host'
+      - '--collector.filesystem.mount-points-exclude=^/(sys|proc|dev|host|etc)($$|/)'
+      # Textfile collector (Bosqich 18) — picks up *.prom files written by
+      # out-of-process runners (restore drill, ad-hoc backup audits, etc.)
+      # and exposes them as first-class node-exporter metrics. The path MUST
+      # match the host bind below.
+      - '--collector.textfile.directory=/var/lib/pos/node-exporter-textfile'
+    volumes:
+      - /:/host:ro,rslave
+      # Read-only mount so node-exporter can never clobber the drill's output.
+      # Host path is idempotently created by server-bootstrap.sh (Bosqich 11).
+      - /var/lib/pos/node-exporter-textfile:/var/lib/pos/node-exporter-textfile:ro
+    pid: host
+    network_mode: host    # exposes 9100 on the host only; Prometheus scrapes via host.docker.internal or 172.17.0.1
+    # Note: network_mode=host means this container ignores the default network.
+    # Prometheus config uses the bridge gateway IP to reach it.
+
+  grafana:
+    image: grafana/grafana-oss:11.3.0
+    container_name: pos-grafana
+    profiles: [monitoring]
+    restart: unless-stopped
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GF_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GF_ADMIN_PASSWORD:?GF_ADMIN_PASSWORD is required}
+      # Subpath friendly — set GF_SERVER_ROOT_URL=https://pos.example.com/grafana
+      # if you front it through nginx.
+      GF_SERVER_ROOT_URL: ${GF_ROOT_URL:-http://localhost:3000}
+      GF_USERS_ALLOW_SIGN_UP: 'false'
+      GF_ANALYTICS_REPORTING_ENABLED: 'false'
+      GF_ANALYTICS_CHECK_FOR_UPDATES: 'false'
+      # Auto-provisioning for datasource & dashboards (read-only mount)
+      GF_PATHS_PROVISIONING: /etc/grafana/provisioning
+    volumes:
+      - ./deploy/monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./deploy/monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana-data:/var/lib/grafana
+    ports:
+      - "127.0.0.1:3000:3000"
+    depends_on:
+      - prometheus
+
+volumes:
+  prometheus-data:
+    name: pos-prometheus-data
+  grafana-data:
+    name: pos-grafana-data
+  alertmanager-data:
+    name: pos-alertmanager-data

@@ -1,0 +1,21 @@
+{
+  "name": "pos-print-agent",
+  "version": "1.0.0",
+  "description": "Local print bridge for web-based POS. Receives ESC/POS receipts via HTTP and forwards them to a thermal printer on this PC.",
+  "private": true,
+  "main": "agent.js",
+  "bin": {
+    "pos-print-agent": "agent.js"
+  },
+  "scripts": {
+    "start": "node agent.js",
+    "test:health": "node -e \"fetch('http://127.0.0.1:9100/health').then(r=>r.json()).then(console.log)\""
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "dependencies": {
+    "node-thermal-printer": "^4.6.0"
+  },
+  "license": "UNLICENSED"
+}

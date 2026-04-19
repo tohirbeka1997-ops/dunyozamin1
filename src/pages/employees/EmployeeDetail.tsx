@@ -37,7 +37,7 @@ import type {
   EmployeeSessionWithProfile,
   EmployeeActivityLogWithProfile,
 } from '@/types/database';
-import { format } from 'date-fns';
+import { formatDate, formatDateTime } from '@/lib/datetime';
 import { useToast } from '@/hooks/use-toast';
 import PageBreadcrumb from '@/components/common/PageBreadcrumb';
 import { formatMoneyUZS } from '@/lib/format';
@@ -97,7 +97,7 @@ export default function EmployeeDetail() {
 
   const getStatusBadge = (isActive: boolean) => {
     return isActive ? (
-      <Badge className="bg-success">Faol</Badge>
+      <Badge className="bg-success text-success-foreground">Faol</Badge>
     ) : (
       <Badge variant="outline" className="text-muted-foreground">
         O'chirilgan
@@ -181,7 +181,7 @@ export default function EmployeeDetail() {
           <CardContent>
             <div className="text-sm">
               {employee.last_login
-                ? format(new Date(employee.last_login), 'MMM dd, yyyy HH:mm')
+                ? formatDateTime(employee.last_login)
                 : 'Hech qachon'}
             </div>
           </CardContent>
@@ -193,7 +193,7 @@ export default function EmployeeDetail() {
             <Calendar className="h-4 w-4 text-muted-foreground" />
           </CardHeader>
           <CardContent>
-            <div className="text-sm">{format(new Date(employee.created_at), 'MMM dd, yyyy')}</div>
+            <div className="text-sm">{formatDate(employee.created_at)}</div>
           </CardContent>
         </Card>
       </div>
@@ -371,11 +371,11 @@ export default function EmployeeDetail() {
                       {sessions.map((session) => (
                         <TableRow key={session.id}>
                           <TableCell>
-                            {format(new Date(session.login_time), 'MMM dd, yyyy HH:mm')}
+                            {formatDateTime(session.login_time)}
                           </TableCell>
                           <TableCell>
                             {session.logout_time
-                              ? format(new Date(session.logout_time), 'MMM dd, yyyy HH:mm')
+                              ? formatDateTime(session.logout_time)
                               : 'Faol'}
                           </TableCell>
                           <TableCell>{formatDuration(session.duration)}</TableCell>
@@ -413,7 +413,7 @@ export default function EmployeeDetail() {
                       {activityLogs.map((log) => (
                         <TableRow key={log.id}>
                           <TableCell>
-                            {format(new Date(log.created_at), 'MMM dd, yyyy HH:mm:ss')}
+                            {formatDateTime(log.created_at, { withSeconds: true })}
                           </TableCell>
                           <TableCell>
                             <Badge variant="outline">{log.action_type}</Badge>

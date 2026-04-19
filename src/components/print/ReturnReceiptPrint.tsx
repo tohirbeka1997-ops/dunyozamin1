@@ -1,7 +1,8 @@
 import React from 'react';
 import type { SalesReturnWithDetails } from '@/types/database';
 import { formatMoneyUZS } from '@/lib/format';
-import { format } from 'date-fns';
+import { formatReceiptDateTime } from '@/lib/datetime';
+import { formatQuantity } from '@/utils/quantity';
 
 interface ReturnReceiptPrintProps {
   returnData: SalesReturnWithDetails;
@@ -10,11 +11,12 @@ interface ReturnReceiptPrintProps {
 
 export default function ReturnReceiptPrint({ returnData, variant = 'thermal' }: ReturnReceiptPrintProps) {
   const storeName = 'POS tizimi'; // TODO: Get from settings
-  const dateTime = format(new Date(returnData.created_at), 'dd.MM.yyyy HH:mm');
+  const dateTime = formatReceiptDateTime(returnData.created_at);
   const cashierName = returnData.cashier?.username || returnData.cashier?.full_name || '-';
   const customerName = returnData.customer?.name || 'Yangi mijoz';
-  const orderNumber = returnData.order?.order_number || '-';
+  const orderNumber = returnData.order?.order_number || 'Ordersiz';
   const isPending = returnData.status === 'Pending';
+  const isManual = returnData.return_mode === 'manual';
 
   const statusLabels: Record<string, string> = {
     Completed: 'Yakunlangan',
@@ -40,6 +42,10 @@ export default function ReturnReceiptPrint({ returnData, variant = 'thermal' }: 
           <div>
             <p className="font-semibold">Qaytarish raqami:</p>
             <p className="font-mono">{returnData.return_number}</p>
+          </div>
+          <div>
+            <p className="font-semibold">Manba:</p>
+            <p>{isManual ? 'Ordersiz qaytarish' : 'Buyurtma bo‘yicha qaytarish'}</p>
           </div>
           <div>
             <p className="font-semibold">Buyurtma raqami:</p>
@@ -83,8 +89,20 @@ export default function ReturnReceiptPrint({ returnData, variant = 'thermal' }: 
             <tbody>
               {returnData.items?.map((item, index) => (
                 <tr key={item.id || index} className="border-b border-gray-200">
-                  <td className="py-2 px-2">{item.product?.name || item.product_name || '-'}</td>
-                  <td className="text-center py-2 px-2">{item.quantity}</td>
+                  <td className="py-2 px-2">
+                    <div>{item.product?.name || item.product_name || '-'}</div>
+                    {isManual && (
+                      <div className="text-xs text-muted-foreground">
+                        Narx turi: {item.price_source === 'usta' ? 'Usta' : 'Oddiy'}
+                      </div>
+                    )}
+                  </td>
+                  <td className="text-center py-2 px-2">
+                    {formatQuantity(
+                      (item as any).qty_sale ?? item.quantity,
+                      (item as any).sale_unit || item.product?.unit || item.unit
+                    )}
+                  </td>
                   <td className="text-right py-2 px-2">{formatMoneyUZS(item.unit_price)}</td>
                   <td className="text-right py-2 px-2 font-medium">{formatMoneyUZS(item.line_total)}</td>
                 </tr>
@@ -115,7 +133,7 @@ export default function ReturnReceiptPrint({ returnData, variant = 'thermal' }: 
     );
   }
 
-  // Thermal receipt (80mm)
+  // Thermal receipt
   return (
     <div className="return-receipt-thermal">
       {isPending && (
@@ -132,6 +150,7 @@ export default function ReturnReceiptPrint({ returnData, variant = 'thermal' }: 
       <div className="text-center mb-3 text-xs">
         <p className="font-mono">{returnData.return_number}</p>
         <p className="font-mono">Buyurtma: {orderNumber}</p>
+        <p>{isManual ? 'Ordersiz qaytarish' : 'Buyurtma bo‘yicha qaytarish'}</p>
         <p>{dateTime}</p>
       </div>
 
@@ -161,9 +180,18 @@ export default function ReturnReceiptPrint({ returnData, variant = 'thermal' }: 
         {returnData.items?.map((item, index) => (
           <div key={item.id || index} className="mb-2 text-xs">
             <div className="font-medium">{item.product?.name || item.product_name || '-'}</div>
+            {isManual && (
+              <div className="text-[11px] text-gray-600">
+                Narx turi: {item.price_source === 'usta' ? 'Usta' : 'Oddiy'}
+              </div>
+            )}
             <div className="flex justify-between mt-1">
               <span className="text-gray-600">
-                {item.quantity} x {formatMoneyUZS(item.unit_price)}
+                {formatQuantity(
+                  (item as any).qty_sale ?? item.quantity,
+                  (item as any).sale_unit || item.product?.unit || item.unit
+                )}{' '}
+                x {formatMoneyUZS(item.unit_price)}
               </span>
               <span className="font-semibold">{formatMoneyUZS(item.line_total)}</span>
             </div>

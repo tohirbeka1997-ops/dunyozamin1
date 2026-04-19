@@ -1,0 +1,50 @@
+﻿{
+  "importedCount": 101,
+  "exportedCount": 127,
+  "missingCount": 7,
+  "missing": [
+    {
+      "name": "confirmPasswordReset",
+      "files": [
+        "src\\pages\\ResetPassword.tsx"
+      ]
+    },
+    {
+      "name": "getCashierPerformanceReport",
+      "files": [
+        "src\\pages\\reports\\employee\\CashierPerformanceReport.tsx"
+      ]
+    },
+    {
+      "name": "getInventoryAll",
+      "files": [
+        "src\\pages\\reports\\inventory\\StockLevelsReport.tsx",
+        "src\\pages\\reports\\inventory\\ValuationReport.tsx"
+      ]
+    },
+    {
+      "name": "getInventoryValuationSummary",
+      "files": [
+        "src\\pages\\reports\\financial\\OverallSummaryReport.tsx"
+      ]
+    },
+    {
+      "name": "getProductSalesReport",
+      "files": [
+        "src\\pages\\reports\\sales\\ProductSalesReport.tsx"
+      ]
+    },
+    {
+      "name": "getSupplierPurchaseSummary",
+      "files": [
+        "src\\pages\\SupplierDetail.tsx"
+      ]
+    },
+    {
+      "name": "requestPasswordReset",
+      "files": [
+        "src\\pages\\ForgotPassword.tsx"
+      ]
+    }
+  ]
+}

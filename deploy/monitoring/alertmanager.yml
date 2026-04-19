@@ -1,0 +1,173 @@
+# =============================================================================
+# Alertmanager configuration for the POS stack (Bosqich 17)
+# =============================================================================
+#
+# Receivers:
+#   - telegram       — primary channel for 24/7 on-call (bot to an ops group)
+#   - email          — secondary trail for audit + executive summaries
+#   - blackhole      — swallows info-level noise unless explicitly routed
+#
+# Routing tree:
+#   severity=page     → telegram + email, group_wait=0s, repeat_interval=2h
+#   severity=warning  → telegram (quiet),  group_wait=30s, repeat_interval=6h
+#   severity=info     → blackhole (visible only in Alertmanager UI)
+#
+# Inhibitions:
+#   PosServerDown inhibits every other POS alert (no point spamming channels
+#   with follow-on failures caused by the server being down).
+#
+# All external secrets live in environment variables — DO NOT commit the
+# actual bot token / SMTP password. Render at container start via
+# `envsubst` (see docker-compose.monitoring.yaml) or a sealed secret manager.
+# =============================================================================
+
+global:
+  # How long before Alertmanager declares an instance "resolved" if scraping
+  # dies mid-alert. 5m matches Prometheus evaluation_interval * 20 which is
+  # plenty of slack without sitting on stale pages.
+  resolve_timeout: 5m
+
+  # ---- SMTP --------------------------------------------------------------
+  # Used by the "email" receiver. These fields are global so every email
+  # receiver inherits them automatically; individual receivers can override
+  # `from` / `to` as needed.
+  smtp_smarthost: "${SMTP_HOST:-smtp.gmail.com}:${SMTP_PORT:-587}"
+  smtp_from: "${SMTP_FROM:-pos-alerts@example.com}"
+  smtp_auth_username: "${SMTP_USERNAME}"
+  smtp_auth_password: "${SMTP_PASSWORD}"
+  smtp_require_tls: true
+  # smtp_hello is useful when your SMTP server enforces a HELO domain match.
+  smtp_hello: "${SMTP_HELLO:-pos.example.com}"
+
+templates:
+  - /etc/alertmanager/templates/*.tmpl
+
+# ---------------------------------------------------------------------------
+# Routing tree
+# ---------------------------------------------------------------------------
+# Matching is ordered top-to-bottom; first match wins unless `continue: true`
+# is set. We rely on labels `severity` and `team` (attached in alerts.yml)
+# to steer.
+route:
+  # Default receiver — fallback for unlabelled alerts. Using `blackhole`
+  # ensures a misconfigured rule can't flood ops by accident; instead it
+  # shows up in Alertmanager UI where it's caught during a config review.
+  receiver: blackhole
+
+  # `group_by` collapses multiple firing instances of the same alert name
+  # into a single notification. `alertname` alone is too aggressive (every
+  # host lumps together); adding `severity` keeps page-level alerts
+  # distinct from warnings in the same family.
+  group_by: [alertname, severity]
+
+  # First firing batch waits this long so related alerts (e.g. a deploy
+  # causing many rules at once) group into one message.
+  group_wait: 30s
+
+  # When new alerts join an already-firing group, they wait this long
+  # before the follow-up notification is sent.
+  group_interval: 5m
+
+  # If the group is STILL firing, resend after this interval — gives on-call
+  # a reminder without becoming nagging.
+  repeat_interval: 6h
+
+  routes:
+    # --- Deploy-related: mute watchdog for 15m after a deploy -------------
+    # Set `deploy_in_progress=1` label via an API call from the CD workflow
+    # to suppress watchdog pages during rolling deploys.
+    - matchers:
+        - deploy_in_progress = "1"
+      receiver: blackhole
+
+    # --- Critical "page" severity -----------------------------------------
+    # group_wait=0s so the first page fires immediately (no 30s delay).
+    # Short repeat_interval keeps it on the radar until resolved.
+    - matchers:
+        - severity = "page"
+      receiver: telegram-and-email
+      group_wait: 0s
+      group_interval: 2m
+      repeat_interval: 2h
+      continue: false
+
+    # --- Warnings ---------------------------------------------------------
+    - matchers:
+        - severity = "warning"
+      receiver: telegram
+      group_wait: 30s
+      group_interval: 10m
+      repeat_interval: 6h
+      continue: false
+
+    # --- Info --------------------------------------------------------------
+    # Intentionally silent — surfaces only in Alertmanager UI and dashboards.
+    - matchers:
+        - severity = "info"
+      receiver: blackhole
+
+# ---------------------------------------------------------------------------
+# Inhibition rules — suppress noise when a parent alert is already firing
+# ---------------------------------------------------------------------------
+inhibit_rules:
+  # If the POS server is down, skip every dependent alert — they're symptoms.
+  - source_matchers:
+      - alertname = "PosServerDown"
+    target_matchers:
+      - service = "pos"
+    # Require the SAME instance so multi-host deployments don't mute each other.
+    equal: [instance]
+
+  # Host disk full ⇒ expect backups to be stale and DB gauges to wander.
+  - source_matchers:
+      - alertname = "HostDiskSpaceLow"
+    target_matchers:
+      - alertname =~ "PosBackup.*|PosDbSizeGrowingFast"
+    equal: [instance]
+
+# ---------------------------------------------------------------------------
+# Receivers
+# ---------------------------------------------------------------------------
+receivers:
+  # Explicit drop target — keep this in the config so routes stay intentional
+  # rather than accidentally matching the default receiver.
+  - name: blackhole
+
+  # Primary on-call channel. Telegram bot MUST be added as admin to the
+  # target group (so it can post). Get the chat id via
+  #   curl "https://api.telegram.org/bot$TOKEN/getUpdates"
+  # and paste the negative integer here via env.
+  - name: telegram
+    telegram_configs:
+      - bot_token: "${TELEGRAM_ALERT_BOT_TOKEN}"
+        chat_id: ${TELEGRAM_ALERT_CHAT_ID}
+        parse_mode: "HTML"
+        send_resolved: true
+        message: '{{ template "pos.telegram.message" . }}'
+
+  # Email receiver for severity=page. A quieter audit trail that doesn't
+  # rely on Telegram being up (or the bot being banned by a rate limit).
+  - name: email
+    email_configs:
+      - to: "${ALERT_EMAIL_TO:-oncall@example.com}"
+        send_resolved: true
+        headers:
+          Subject: "{{ template \"pos.email.subject\" . }}"
+        html: '{{ template "pos.email.html" . }}'
+
+  # Composite receiver — paged alerts fan out to BOTH channels so neither
+  # is a single point of failure. Alertmanager dedupes per-receiver, so
+  # every listed config gets the notification.
+  - name: telegram-and-email
+    telegram_configs:
+      - bot_token: "${TELEGRAM_ALERT_BOT_TOKEN}"
+        chat_id: ${TELEGRAM_ALERT_CHAT_ID}
+        parse_mode: "HTML"
+        send_resolved: true
+        message: '{{ template "pos.telegram.message" . }}'
+    email_configs:
+      - to: "${ALERT_EMAIL_TO:-oncall@example.com}"
+        send_resolved: true
+        headers:
+          Subject: "{{ template \"pos.email.subject\" . }}"
+        html: '{{ template "pos.email.html" . }}'

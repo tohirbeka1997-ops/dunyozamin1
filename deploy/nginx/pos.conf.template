@@ -1,0 +1,236 @@
+# =============================================================================
+# POS Server — Nginx vhost shablon (Ubuntu 22.04 / nginx >= 1.22)
+# =============================================================================
+# Bu shablon `setup-nginx.sh` tomonidan ishlatiladi. Placeholder'lar:
+#   __DOMAIN__         — asosiy domen (masalan: pos.example.com)
+#   __API_DOMAIN__     — API sub-domen; bo'sh bo'lsa __DOMAIN__ ishlatiladi
+#   __WEB_ROOT__       — frontend dist yo'li (masalan: /var/www/pos)
+#   __UPSTREAM_HOST__  — server.cjs binding (127.0.0.1)
+#   __UPSTREAM_PORT__  — server.cjs port (3333)
+#   __CLIENT_MAX_BODY__— yuklash limitini (masalan: 25m — rasm yuklash uchun)
+#
+# Ishlab chiqarish strategiyasi:
+#   - `/`, `/assets/*`         → SPA (static dist/)
+#   - `/rpc`, `/health`        → Node server (HTTP RPC)
+#   - `/uploads/*` (kelajak)   → Node server (multipart upload)
+#
+# Sertifikatlar `certbot --nginx` tomonidan avtomatik ulanadi — bu fayl HTTP
+# (port 80) ga ham yozilgan, certbot http-01 challenge uchun /.well-known ni
+# o'qiy oladi.
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# Upstream (HTTP RPC server)
+# -----------------------------------------------------------------------------
+upstream pos_backend {
+    server __UPSTREAM_HOST__:__UPSTREAM_PORT__;
+    keepalive 32;
+}
+
+# -----------------------------------------------------------------------------
+# Rate limiting + connection capping — brute-force/DoS birinchi qatlami
+#
+# Ikki darajali himoya:
+#   1. Nginx (shu yerda)       — arzon, IP asosida, hujumchi Node'gacha ham yetib bormaydi
+#   2. Node hostServer.cjs     — login uchun aniqroq (ip|username), audit log
+#
+# Zona tanlovi:
+#   - pos_rpc       : 20 r/s burst 40  — normal POS fleet (10-30 kassa) uchun xavfsiz
+#   - pos_rpc_slow  : 2  r/s burst  5  — login kabi pastroq tezlik kutiladigan yo'llar
+#   - pos_conn      : 20 ta faol ulanish bir IP'dan (slowloris / socket exhaustion)
+# -----------------------------------------------------------------------------
+limit_req_zone      $binary_remote_addr zone=pos_rpc:10m       rate=20r/s;
+limit_req_zone      $binary_remote_addr zone=pos_rpc_slow:10m  rate=2r/s;
+limit_conn_zone     $binary_remote_addr zone=pos_conn:10m;
+# Node'ga 429 yetkazish o'rniga nginx darajasida qaytaramiz; clientlar `Retry-After`'ni o'qiydi.
+limit_req_status    429;
+limit_conn_status   429;
+
+# -----------------------------------------------------------------------------
+# Logging — aniq sabablarni topish uchun real_ip'ni chiqaradi
+# -----------------------------------------------------------------------------
+log_format pos_main '$remote_addr - $remote_user [$time_local] '
+                    '"$request" $status $body_bytes_sent '
+                    '"$http_referer" "$http_user_agent" '
+                    'rt=$request_time ut=$upstream_response_time';
+
+# =============================================================================
+# HTTP (port 80) — HTTPS'ga redirect + Let's Encrypt challenge
+# =============================================================================
+server {
+    listen 80;
+    listen [::]:80;
+    server_name __DOMAIN__ __API_DOMAIN__;
+
+    # Let's Encrypt HTTP-01 challenge yo'l
+    location /.well-known/acme-challenge/ {
+        root /var/www/certbot;
+        default_type "text/plain";
+    }
+
+    # Qolgan hammasi HTTPS'ga
+    location / {
+        return 301 https://$host$request_uri;
+    }
+}
+
+# =============================================================================
+# HTTPS (port 443) — SPA + RPC
+# =============================================================================
+server {
+    listen 443 ssl;
+    listen [::]:443 ssl;
+    http2 on;
+    server_name __DOMAIN__ __API_DOMAIN__;
+
+    # --- SSL (certbot o'zi to'ldiradi) -----------------------------------------
+    # ssl_certificate      /etc/letsencrypt/live/__DOMAIN__/fullchain.pem;
+    # ssl_certificate_key  /etc/letsencrypt/live/__DOMAIN__/privkey.pem;
+    # include /etc/letsencrypt/options-ssl-nginx.conf;
+    # ssl_dhparam /etc/letsencrypt/ssl-dhparams.pem;
+
+    # --- Xavfsizlik sarlavhalari ----------------------------------------------
+    # HSTS: 1 yil + includeSubDomains + preload ro'yxati (hstspreload.org'da
+    # ariza berish mumkin). "preload" degani yaqinda undoing'ni og'ir qiladi —
+    # birinchi ishga tushirganda "preload"siz boshlang, ishonchingiz komil
+    # bo'lgach qo'shing.
+    add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
+    add_header X-Content-Type-Options "nosniff" always;
+    add_header X-Frame-Options "DENY" always;
+    add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+    add_header Cross-Origin-Opener-Policy "same-origin" always;
+    add_header Cross-Origin-Resource-Policy "same-site" always;
+    add_header Permissions-Policy
+        "camera=(), microphone=(), geolocation=(self), usb=(self), payment=(), fullscreen=(self)" always;
+
+    # CSP — Vite SPA uchun realistic profile. "unsafe-inline" faqat style uchun
+    # qoladi (Vite ba'zi inline styles chiqaradi). Script uchun DO NOT add
+    # "unsafe-inline" / "unsafe-eval" — XSS himoyasini buzadi.
+    #
+    # `connect-src` da alohida `wss://` berilmagan — WebSocket ishlatmaymiz.
+    # `object-src 'none'` — Flash/PDF eski pluginlarni to'sadi.
+    add_header Content-Security-Policy
+        "default-src 'self'; \
+         script-src 'self'; \
+         style-src 'self' 'unsafe-inline'; \
+         img-src 'self' data: blob: https:; \
+         font-src 'self' data:; \
+         connect-src 'self' https://__DOMAIN__ https://__API_DOMAIN__; \
+         frame-ancestors 'none'; \
+         base-uri 'self'; \
+         object-src 'none'; \
+         form-action 'self';" always;
+
+    # --- Log va upload limit --------------------------------------------------
+    access_log /var/log/nginx/pos.access.log pos_main;
+    error_log  /var/log/nginx/pos.error.log warn;
+
+    client_max_body_size __CLIENT_MAX_BODY__;
+    client_body_timeout  30s;
+    send_timeout         30s;
+
+    # --- Gzip (brotli ham yoqsa yaxshi) ---------------------------------------
+    gzip on;
+    gzip_vary on;
+    gzip_comp_level 6;
+    gzip_min_length 1024;
+    gzip_types
+        application/javascript application/json application/xml
+        text/css text/plain text/xml image/svg+xml font/ttf font/otf;
+
+    # --- Frontend (SPA) -------------------------------------------------------
+    # `dist/index.html` fallback — react-router client-side routing uchun.
+    root __WEB_ROOT__;
+    index index.html;
+
+    # Hashed assetlar: uzoq cache (Vite har build'da fingerprint beradi)
+    location ~* ^/assets/.*\.(js|css|woff2?|ttf|otf|eot|svg|png|jpg|jpeg|gif|webp|avif)$ {
+        expires 1y;
+        access_log off;
+        add_header Cache-Control "public, immutable, max-age=31536000";
+        try_files $uri =404;
+    }
+
+    # SPA fallback: har qanday yo'l index.html ga yo'naltiriladi
+    location / {
+        try_files $uri $uri/ /index.html;
+        add_header Cache-Control "no-cache, must-revalidate";
+    }
+
+    # --- Metrics (GET /metrics) — PUBLIC'da yopiq ----------------------------
+    # Prometheus doim pos-server host'ida (loopback) yoki ichki tarmoqda
+    # scrape qiladi. Tashqi trafik uchun 403 — hatto Bearer token bo'lsa ham,
+    # nginx ko'rinishga ham qo'ymaydi.
+    location = /metrics {
+        # Faqat internal IP'lar uchun (agar kerak bo'lsa ruxsat bering):
+        # allow 10.0.0.0/8;
+        # allow 172.16.0.0/12;
+        # allow 192.168.0.0/16;
+        deny all;
+    }
+
+    # --- RPC (POST /rpc) ------------------------------------------------------
+    location = /rpc {
+        limit_req  zone=pos_rpc      burst=40 nodelay;
+        limit_conn pos_conn          20;
+
+        # Preflight CORS javobni Node tomondan ham qaytaradi (hostServer.cjs),
+        # lekin Nginx darajasida ham OPTIONS tez javob qaytaradi:
+        if ($request_method = OPTIONS) {
+            add_header Access-Control-Allow-Origin   $http_origin always;
+            add_header Access-Control-Allow-Methods  "POST, OPTIONS" always;
+            add_header Access-Control-Allow-Headers  "Authorization, Content-Type, X-Requested-With" always;
+            add_header Access-Control-Max-Age        86400 always;
+            add_header Content-Length 0;
+            add_header Content-Type "text/plain";
+            return 204;
+        }
+
+        proxy_pass         http://pos_backend;
+        proxy_http_version 1.1;
+        proxy_set_header   Host              $host;
+        proxy_set_header   X-Real-IP         $remote_addr;
+        proxy_set_header   X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header   X-Forwarded-Proto $scheme;
+        proxy_set_header   Connection        "";
+
+        proxy_connect_timeout 5s;
+        proxy_read_timeout    120s;
+        proxy_send_timeout    30s;
+
+        # RPC keshlanmasligi muhim
+        proxy_buffering off;
+    }
+
+    # --- Healthcheck (GET /health) — ochiq, rate-limit yo'q --------------------
+    location = /health {
+        proxy_pass         http://pos_backend;
+        proxy_http_version 1.1;
+        proxy_set_header   Host              $host;
+        proxy_set_header   X-Real-IP         $remote_addr;
+        proxy_set_header   X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header   X-Forwarded-Proto $scheme;
+        access_log off;
+    }
+
+    # --- Upload/Download (kelajakda, Bosqich 6) -------------------------------
+    location /uploads/ {
+        proxy_pass         http://pos_backend;
+        proxy_http_version 1.1;
+        proxy_set_header   Host              $host;
+        proxy_set_header   X-Real-IP         $remote_addr;
+        proxy_set_header   X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header   X-Forwarded-Proto $scheme;
+
+        # Katta fayllar uchun
+        proxy_request_buffering off;
+        proxy_read_timeout 300s;
+    }
+
+    # Istisno: Let's Encrypt challenge hattoki HTTPS'da ham
+    location /.well-known/acme-challenge/ {
+        root /var/www/certbot;
+        default_type "text/plain";
+        access_log off;
+    }
+}

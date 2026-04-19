@@ -30,6 +30,7 @@ import { cn } from '@/lib/utils';
 import ReceiptPrintView from '@/components/print/ReceiptPrintView';
 import BarcodeLabel from '@/components/print/BarcodeLabel';
 import { formatMoneyUZS } from '@/lib/format';
+import { makeEan13, parseScaleEan13, suggestEan13FromSku } from '@/lib/barcode';
 
 export default function ReceiptBarcodePage() {
   const { toast } = useToast();
@@ -53,6 +54,15 @@ export default function ReceiptBarcodePage() {
   const [barcodeValue, setBarcodeValue] = useState('');
   const [copies, setCopies] = useState(1);
   const barcodeRef = useRef<HTMLDivElement>(null);
+
+  // Barcode Tools (EAN-13 / Scale parse)
+  const [ean12Base, setEan12Base] = useState('');
+  const [ean13Result, setEan13Result] = useState<string | null>(null);
+  const [eanSku, setEanSku] = useState('');
+  const [eanFromSkuResult, setEanFromSkuResult] = useState<string | null>(null);
+  const [scaleBarcodeRaw, setScaleBarcodeRaw] = useState('');
+  const [scaleParsed, setScaleParsed] = useState<ReturnType<typeof parseScaleEan13> | null>(null);
+
 
   // Print handlers
   const handleReceiptPrint = useReactToPrint({
@@ -113,6 +123,16 @@ export default function ReceiptBarcodePage() {
       setBarcodeValue(selectedProduct.barcode || selectedProduct.sku || '');
     }
   }, [selectedProduct]);
+
+  // Live parse for scale barcodes
+  useEffect(() => {
+    const raw = String(scaleBarcodeRaw || '').trim();
+    if (!raw) {
+      setScaleParsed(null);
+      return;
+    }
+    setScaleParsed(parseScaleEan13(raw));
+  }, [scaleBarcodeRaw]);
 
   // Filter orders for search
   const filteredOrders = orders.filter((order) => {
@@ -343,6 +363,9 @@ export default function ReceiptBarcodePage() {
               </Select>
             </div>
 
+            {/* Layout mode */}
+            {/* Barcode design removed by request */}
+
             {/* Barcode Value */}
             <div className="space-y-2">
               <Label htmlFor="barcode-value">Shtrix-kod qiymati</Label>
@@ -399,12 +422,16 @@ export default function ReceiptBarcodePage() {
               <div className="mb-4 text-sm font-medium">Yorliq ko'rinishi:</div>
               <div ref={barcodeRef} className="print:bg-white">
                 <BarcodeLabel
-                  product={selectedProduct ? {
-                    name: selectedProduct.name,
-                    sku: selectedProduct.sku,
-                    barcode: selectedProduct.barcode || undefined,
-                    sale_price: Number(selectedProduct.sale_price),
-                  } : undefined}
+                  product={
+                    selectedProduct
+                      ? {
+                          name: selectedProduct.name,
+                          sku: selectedProduct.sku,
+                          barcode: selectedProduct.barcode || undefined,
+                          sale_price: Number(selectedProduct.sale_price),
+                        }
+                      : undefined
+                  }
                   type={barcodeType}
                   value={barcodeValue}
                   copies={copies}
@@ -415,6 +442,133 @@ export default function ReceiptBarcodePage() {
           </CardContent>
         </Card>
       </div>
+
+      {/* Barcode Tools (shows src/lib/barcode.ts capabilities) */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            <QrCode className="h-5 w-5" />
+            Barcode Tools (EAN-13 / Taroz)
+          </CardTitle>
+          <CardDescription>
+            EAN-13 hisoblash va taroz (scale) shtrix-kodini parse qilish.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="grid grid-cols-1 xl:grid-cols-2 gap-6">
+          <div className="space-y-4">
+            <div className="space-y-2">
+              <Label htmlFor="ean12">EAN-13 (12 raqam + checksum)</Label>
+              <div className="flex gap-2">
+                <Input
+                  id="ean12"
+                  value={ean12Base}
+                  onChange={(e) => setEan12Base(e.target.value)}
+                  placeholder="12 raqam (masalan: 200000900265)"
+                  className="font-mono"
+                />
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={() => {
+                    try {
+                      const code = makeEan13(ean12Base);
+                      setEan13Result(code);
+                      setBarcodeType('EAN13');
+                      setBarcodeValue(code);
+                      toast({ title: 'Tayyor', description: `EAN-13: ${code}` });
+                    } catch (e: any) {
+                      setEan13Result(null);
+                      toast({
+                        title: 'Xatolik',
+                        description: e?.message || 'EAN-13 hisoblab bo‘lmadi',
+                        variant: 'destructive',
+                      });
+                    }
+                  }}
+                >
+                  Hisoblash
+                </Button>
+              </div>
+              {ean13Result ? (
+                <div className="text-sm">
+                  Natija: <span className="font-mono">{ean13Result}</span>
+                </div>
+              ) : null}
+            </div>
+
+            <div className="space-y-2">
+              <Label htmlFor="ean-sku">EAN-13 (SKU’dan taklif)</Label>
+              <div className="flex gap-2">
+                <Input
+                  id="ean-sku"
+                  value={eanSku}
+                  onChange={(e) => setEanSku(e.target.value)}
+                  placeholder="SKU (masalan: SKU-20260111-001)"
+                  className="font-mono"
+                />
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={() => {
+                    const suggested = suggestEan13FromSku(eanSku);
+                    setEanFromSkuResult(suggested);
+                    if (suggested) {
+                      setBarcodeType('EAN13');
+                      setBarcodeValue(suggested);
+                      toast({ title: 'Tayyor', description: `EAN-13: ${suggested}` });
+                    } else {
+                      toast({
+                        title: 'Topilmadi',
+                        description: 'SKU ichida raqam yo‘q (EAN-13 taklif qilinmadi)',
+                      });
+                    }
+                  }}
+                >
+                  Taklif
+                </Button>
+              </div>
+              {eanFromSkuResult ? (
+                <div className="text-sm">
+                  Natija: <span className="font-mono">{eanFromSkuResult}</span>
+                </div>
+              ) : null}
+            </div>
+          </div>
+
+          <div className="space-y-4">
+            <div className="space-y-2">
+              <Label htmlFor="scale-barcode">Taroz shtrix-kodi (EAN-13) parse</Label>
+              <Input
+                id="scale-barcode"
+                value={scaleBarcodeRaw}
+                onChange={(e) => setScaleBarcodeRaw(e.target.value)}
+                placeholder="Masalan: 2000009002652"
+                className="font-mono"
+              />
+              {scaleParsed ? (
+                <div className="text-sm space-y-1">
+                  <div>
+                    Barcode: <span className="font-mono">{scaleParsed.barcode}</span>
+                  </div>
+                  <div>
+                    Prefix: <span className="font-mono">{scaleParsed.prefix}</span>
+                  </div>
+                  <div>
+                    PLU: <span className="font-mono">{scaleParsed.plu}</span>
+                  </div>
+                  <div>
+                    Weight: <span className="font-mono">{scaleParsed.weightKg.toFixed(3)}</span> kg
+                  </div>
+                </div>
+              ) : (
+                <div className="text-sm text-muted-foreground">
+                  Mos taroz formati topilmadi (yoki checksum noto‘g‘ri).
+                </div>
+              )}
+            </div>
+          </div>
+        </CardContent>
+      </Card>
     </div>
   );
 }

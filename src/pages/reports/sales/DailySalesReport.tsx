@@ -18,65 +18,85 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table';
-import { getOrders, getProfiles } from '@/db/api';
-import type { OrderWithDetails, Profile } from '@/types/database';
+import { getDailySalesReportSQL, getPriceTiers, getProfiles, getSetting, updateSetting, getWarehouses } from '@/db/api';
+import type { OrderWithDetails, Profile, SalesReturnWithDetails } from '@/types/database';
+type PriceTier = { id: number; name: string; code?: string };
+type Warehouse = { id: string; name: string; is_default?: number | boolean; is_active?: number | boolean };
 import { FileDown, ArrowLeft } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 import { useNavigate } from 'react-router-dom';
-import { format } from 'date-fns';
 import { formatMoneyUZS } from '@/lib/format';
 import { exportDailySalesToExcel, exportDailySalesToPDF } from '@/lib/export';
+import { formatOrderDateTime, todayYMD } from '@/lib/datetime';
+import { useReportAutoRefresh } from '@/hooks/useReportAutoRefresh';
+import { useSessionSearchParams } from '@/hooks/useSessionSearchParams';
 
 export default function DailySalesReport() {
   const navigate = useNavigate();
   const { toast } = useToast();
+  const { searchParams, updateParams } = useSessionSearchParams({
+    storageKey: 'report.daily-sales.filters.query',
+    trackedKeys: ['dateFrom', 'dateTo', 'cashier', 'payment', 'status', 'tier'],
+  });
   const [orders, setOrders] = useState<OrderWithDetails[]>([]);
   const [cashiers, setCashiers] = useState<Profile[]>([]);
   const [loading, setLoading] = useState(true);
-  const [dateFrom, setDateFrom] = useState(new Date().toISOString().split('T')[0]);
-  const [dateTo, setDateTo] = useState(new Date().toISOString().split('T')[0]);
-  const [cashierFilter, setCashierFilter] = useState<string>('all');
-  const [paymentFilter, setPaymentFilter] = useState<string>('all');
-  const [statusFilter, setStatusFilter] = useState<string>('all');
+  const dateFrom = searchParams.get('dateFrom') || todayYMD();
+  const dateTo = searchParams.get('dateTo') || todayYMD();
+  const cashierFilter = searchParams.get('cashier') || 'all';
+  const paymentFilter = searchParams.get('payment') || 'all';
+  const statusFilter = searchParams.get('status') || 'all';
+  const tierFilter = searchParams.get('tier') || 'all';
   const [isExporting, setIsExporting] = useState(false);
+  const [totalReturns, setTotalReturns] = useState(0);
+  const [returnsProfitImpact, setReturnsProfitImpact] = useState(0);
+  const [salesReturns, setSalesReturns] = useState<SalesReturnWithDetails[]>([]);
+  const [priceTiers, setPriceTiers] = useState<PriceTier[]>([]);
+  const [warnings, setWarnings] = useState<any>(null);
+  const [warehouses, setWarehouses] = useState<Warehouse[]>([]);
+  const [warehouseSelection, setWarehouseSelection] = useState<string>('AUTO');
+
+  useReportAutoRefresh(loadData);
 
   useEffect(() => {
     loadData();
-  }, [dateFrom, dateTo, cashierFilter, paymentFilter, statusFilter]);
+  }, [dateFrom, dateTo, cashierFilter, paymentFilter, statusFilter, tierFilter, warehouseSelection]);
 
-  const loadData = async () => {
+  useEffect(() => {
+    loadWarehouses();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  async function loadData() {
     try {
       setLoading(true);
-      const [ordersData, profilesData] = await Promise.all([
-        getOrders(),
+      const warehouseId =
+        warehouseSelection === 'ALL'
+          ? 'ALL'
+          : warehouseSelection === 'AUTO'
+            ? undefined
+            : warehouseSelection;
+      const [report, profilesData, tiers] = await Promise.all([
+        getDailySalesReportSQL({
+          date_from: dateFrom,
+          date_to: dateTo,
+          cashier_id: cashierFilter !== 'all' ? cashierFilter : null,
+          payment_method: paymentFilter !== 'all' ? paymentFilter : null,
+          status: statusFilter !== 'all' ? statusFilter : null,
+          price_tier_id: tierFilter !== 'all' ? Number(tierFilter) : null,
+          ...(warehouseId ? { warehouse_id: warehouseId } : {}),
+        }),
         getProfiles(),
+        getPriceTiers(),
       ]);
-      
-      let filtered = ordersData.filter((order) => {
-        const orderDate = new Date(order.created_at).toISOString().split('T')[0];
-        return orderDate >= dateFrom && orderDate <= dateTo;
-      });
 
-      if (cashierFilter !== 'all') {
-        filtered = filtered.filter((order) => order.cashier_id === cashierFilter);
-      }
-
-      if (paymentFilter !== 'all') {
-        filtered = filtered.filter((order) => {
-          const payments = order.payments || [];
-          if (paymentFilter === 'mixed') {
-            return payments.length > 1;
-          }
-          return payments.some((p) => p.payment_method === paymentFilter);
-        });
-      }
-
-      if (statusFilter !== 'all') {
-        filtered = filtered.filter((order) => order.status === statusFilter);
-      }
-
-      setOrders(filtered);
+      setOrders((report?.orders || []) as any);
+      setSalesReturns((report?.returns || []) as any);
+      setTotalReturns(Number(report?.summary?.total_returns || 0) || 0);
+      setReturnsProfitImpact(Number(report?.summary?.returns_profit_impact || 0) || 0);
       setCashiers(profilesData);
+      setPriceTiers(tiers || []);
+      setWarnings(report?.warnings || null);
     } catch (error) {
       toast({
         title: 'Xatolik',
@@ -86,30 +106,82 @@ export default function DailySalesReport() {
     } finally {
       setLoading(false);
     }
+  }
+
+  async function loadWarehouses() {
+    try {
+      const [rows, saved] = await Promise.all([
+        getWarehouses({ is_active: true }),
+        getSetting('reports', 'daily_sales.warehouse_id'),
+      ]);
+      const list = Array.isArray(rows) ? rows : [];
+      setWarehouses(list);
+
+      const savedValue = saved == null ? 'AUTO' : String(saved);
+      if (savedValue === 'AUTO') {
+        setWarehouseSelection('AUTO');
+        return;
+      }
+      if (savedValue === 'ALL') {
+        setWarehouseSelection('ALL');
+        return;
+      }
+      if (savedValue && list.some((w) => String(w.id) === savedValue)) {
+        setWarehouseSelection(savedValue);
+        return;
+      }
+      setWarehouseSelection('AUTO');
+    } catch {
+      setWarehouses([]);
+      setWarehouseSelection('AUTO');
+    }
+  }
+
+  const handleWarehouseChange = async (value: string) => {
+    setWarehouseSelection(value);
+    try {
+      await updateSetting('reports', 'daily_sales.warehouse_id', value, 'system');
+    } catch {
+      // ignore setting persistence failure
+    }
   };
 
   const calculateProfit = (order: OrderWithDetails) => {
+    const explicit = (order as any).profit;
+    if (explicit != null) return Number(explicit) || 0;
     const items = order.items || [];
     const totalCost = items.reduce((sum, item) => {
-      const product = item.product;
-      const cost = product?.purchase_price || 0;
-      return sum + (cost * Number(item.quantity));
+      const qty = Number((item as any).quantity || 0);
+      const unitCost = Number((item as any).cost_price ?? 0) || 0;
+      return sum + unitCost * qty;
     }, 0);
     return Number(order.total_amount) - totalCost;
   };
 
   const getPaymentType = (order: OrderWithDetails) => {
+    const explicit = (order as any).payment_method;
+    if (explicit) {
+      const val = String(explicit);
+      if (val.toLowerCase() === 'mixed') return 'Mixed';
+      return val.charAt(0).toUpperCase() + val.slice(1);
+    }
     const payments = order.payments || [];
     if (payments.length === 0) return 'N/A';
     if (payments.length > 1) return 'Mixed';
     return payments[0].payment_method.charAt(0).toUpperCase() + payments[0].payment_method.slice(1);
   };
 
+  const getCashierNameById = (id?: string | null) => {
+    if (!id) return '-';
+    const c = cashiers.find((p) => String(p.id) === String(id));
+    return c?.full_name || c?.username || '-';
+  };
+
   const getStatusBadge = (status: string) => {
     const statusConfig: Record<string, { label: string; className: string }> = {
-      completed: { label: 'Tugallangan', className: 'bg-success text-success-foreground' },
-      returned: { label: 'Qaytarilgan', className: 'bg-destructive text-destructive-foreground' },
-      hold: { label: 'Kutilmoqda', className: 'bg-warning text-warning-foreground' },
+      completed: { label: 'Tugallangan', className: 'bg-success text-white' },
+      returned: { label: 'Qaytarilgan', className: 'bg-destructive text-white' },
+      hold: { label: 'Kutilmoqda', className: 'bg-warning text-white' },
     };
     
     const config = statusConfig[status] || { label: status, className: '' };
@@ -118,15 +190,14 @@ export default function DailySalesReport() {
 
   const totalSales = orders
     .filter((o) => o.status === 'completed')
-    .reduce((sum, o) => sum + Number(o.total_amount), 0);
+    .reduce((sum, o) => sum + Number((o as any).revenue ?? o.total_amount ?? 0), 0);
   
   const totalProfit = orders
     .filter((o) => o.status === 'completed')
     .reduce((sum, o) => sum + calculateProfit(o), 0);
-  
-  const totalReturns = orders
-    .filter((o) => o.status === 'returned')
-    .reduce((sum, o) => sum + Number(o.total_amount), 0);
+
+  // Net profit after subtracting profit impact from completed returns in the selected date range
+  const netProfit = totalProfit - returnsProfitImpact;
   
   const completedOrders = orders.filter((o) => o.status === 'completed');
   const avgOrderValue = completedOrders.length > 0 
@@ -150,7 +221,7 @@ export default function DailySalesReport() {
       const exportData = orders.map((order) => ({
         order_number: order.order_number,
         created_at: order.created_at,
-        cashier: order.cashier,
+        cashier: (order as any).cashier_name || getCashierNameById(order.cashier_id || (order as any).user_id),
         payment_type: getPaymentType(order),
         total_amount: order.total_amount,
         profit: calculateProfit(order),
@@ -167,7 +238,7 @@ export default function DailySalesReport() {
 
       const summary = {
         totalSales,
-        totalProfit,
+        totalProfit: netProfit,
         totalReturns,
         avgOrderValue,
       };
@@ -183,7 +254,7 @@ export default function DailySalesReport() {
         description: `${format.toUpperCase()} formatida eksport qilindi`,
       });
     } catch (error) {
-      console.error('Export error:', error);
+      console.error('Eksport xatosi:', error);
       toast({
         title: 'Xatolik',
         description: 'Eksportda xatolik yuz berdi',
@@ -192,6 +263,14 @@ export default function DailySalesReport() {
     } finally {
       setIsExporting(false);
     }
+  };
+
+  const getRefundMethodLabel = (m: any) => {
+    const v = String(m || '').toLowerCase();
+    if (v === 'cash') return 'Naqd';
+    if (v === 'card') return 'Karta';
+    if (v === 'credit' || v === 'customer_account') return 'Mijoz hisobiga';
+    return m || '-';
   };
 
   if (loading) {
@@ -204,6 +283,18 @@ export default function DailySalesReport() {
 
   return (
     <div className="space-y-6">
+      {warnings?.warehouse_not_set && warehouseSelection === 'AUTO' ? (
+        <div className="rounded-md border border-destructive/40 bg-destructive/10 px-4 py-2 text-sm text-destructive">
+          Default ombor belgilanmagan. Hisobot barcha omborlar bo‘yicha ko‘rsatilmoqda.
+          <Button
+            variant="link"
+            className="ml-2 h-auto p-0 text-destructive underline"
+            onClick={() => navigate('/settings')}
+          >
+            Sozlamaga o‘tish
+          </Button>
+        </div>
+      ) : null}
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-4">
           <Button variant="ghost" size="icon" onClick={() => navigate('/reports')}>
@@ -270,7 +361,7 @@ export default function DailySalesReport() {
             </CardTitle>
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold text-success">{formatMoneyUZS(totalProfit)}</div>
+            <div className="text-2xl font-bold text-success">{formatMoneyUZS(netProfit)}</div>
           </CardContent>
         </Card>
         <Card>
@@ -297,13 +388,13 @@ export default function DailySalesReport() {
 
       <Card>
         <CardContent className="pt-6">
-          <div className="grid grid-cols-1 md:grid-cols-5 gap-4">
+          <div className="grid grid-cols-1 md:grid-cols-6 gap-4">
             <div>
               <label className="text-sm text-muted-foreground">Boshlanish sanasi</label>
               <Input
                 type="date"
                 value={dateFrom}
-                onChange={(e) => setDateFrom(e.target.value)}
+                onChange={(e) => updateParams({ dateFrom: e.target.value })}
               />
             </div>
             <div>
@@ -311,12 +402,30 @@ export default function DailySalesReport() {
               <Input
                 type="date"
                 value={dateTo}
-                onChange={(e) => setDateTo(e.target.value)}
+                onChange={(e) => updateParams({ dateTo: e.target.value })}
               />
             </div>
             <div>
+              <label className="text-sm text-muted-foreground">Ombor</label>
+              <Select value={warehouseSelection} onValueChange={handleWarehouseChange}>
+                <SelectTrigger>
+              <SelectValue placeholder="Auto (Default ombor)" />
+                </SelectTrigger>
+                <SelectContent>
+                <SelectItem value="AUTO">Auto (Default ombor)</SelectItem>
+                  <SelectItem value="ALL">Barcha omborlar</SelectItem>
+                  {warehouses.map((wh) => (
+                    <SelectItem key={wh.id} value={wh.id}>
+                      {wh.name}
+                      {wh.is_default ? ' (Default)' : ''}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div>
               <label className="text-sm text-muted-foreground">Kassir</label>
-              <Select value={cashierFilter} onValueChange={setCashierFilter}>
+              <Select value={cashierFilter} onValueChange={(value) => updateParams({ cashier: value })}>
                 <SelectTrigger>
                   <SelectValue placeholder="Barcha kassirlar" />
                 </SelectTrigger>
@@ -332,7 +441,7 @@ export default function DailySalesReport() {
             </div>
             <div>
               <label className="text-sm text-muted-foreground">To'lov turi</label>
-              <Select value={paymentFilter} onValueChange={setPaymentFilter}>
+              <Select value={paymentFilter} onValueChange={(value) => updateParams({ payment: value })}>
                 <SelectTrigger>
                   <SelectValue placeholder="Barcha turlar" />
                 </SelectTrigger>
@@ -347,8 +456,24 @@ export default function DailySalesReport() {
               </Select>
             </div>
             <div>
+              <label className="text-sm text-muted-foreground">Narx turi</label>
+              <Select value={tierFilter} onValueChange={(value) => updateParams({ tier: value })}>
+                <SelectTrigger>
+                  <SelectValue placeholder="Barcha tierlar" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">Barcha tierlar</SelectItem>
+                  {priceTiers.map((tier) => (
+                    <SelectItem key={tier.id} value={String(tier.id)}>
+                      {tier.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div>
               <label className="text-sm text-muted-foreground">Holati</label>
-              <Select value={statusFilter} onValueChange={setStatusFilter}>
+              <Select value={statusFilter} onValueChange={(value) => updateParams({ status: value })}>
                 <SelectTrigger>
                   <SelectValue placeholder="Barcha holatlar" />
                 </SelectTrigger>
@@ -390,10 +515,11 @@ export default function DailySalesReport() {
                     <TableRow key={order.id}>
                       <TableCell className="font-medium">{order.order_number}</TableCell>
                       <TableCell>
-                        {format(new Date(order.created_at), 'MMM dd, yyyy HH:mm')}
+                        {formatOrderDateTime(order.created_at)}
                       </TableCell>
                       <TableCell>
-                        {order.cashier?.username || order.cashier?.full_name || '-'}
+                        {(order as any).cashier_name ||
+                          getCashierNameById(order.cashier_id || (order as any).user_id)}
                       </TableCell>
                       <TableCell>{getPaymentType(order)}</TableCell>
                       <TableCell className="text-right">
@@ -406,6 +532,51 @@ export default function DailySalesReport() {
                     </TableRow>
                   );
                 })}
+              </TableBody>
+            </Table>
+          )}
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>Qaytarishlar</CardTitle>
+        </CardHeader>
+        <CardContent className="p-0">
+          {salesReturns.length === 0 ? (
+            <div className="text-center py-12">
+              <p className="text-muted-foreground">Tanlangan davr uchun qaytarishlar topilmadi</p>
+            </div>
+          ) : (
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Qaytarish raqami</TableHead>
+                  <TableHead>Hisob-faktura raqami</TableHead>
+                  <TableHead>Sana / Vaqt</TableHead>
+                  <TableHead>Kassir</TableHead>
+                  <TableHead>Usul</TableHead>
+                  <TableHead className="text-right">Summa</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {salesReturns.map((ret: any) => (
+                  <TableRow key={ret.id}>
+                    <TableCell className="font-medium font-mono">{ret.return_number || '-'}</TableCell>
+                    <TableCell className="font-mono text-sm">
+                      {ret.order_number ||
+                        ret.original_order_number ||
+                        orders.find((o) => o.id === ret.order_id)?.order_number ||
+                        '-'}
+                    </TableCell>
+                    <TableCell>{formatOrderDateTime(ret.created_at)}</TableCell>
+                    <TableCell>{getCashierNameById(ret.cashier_id || ret.user_id)}</TableCell>
+                    <TableCell>{getRefundMethodLabel(ret.refund_method)}</TableCell>
+                    <TableCell className="text-right font-medium text-destructive">
+                      {formatMoneyUZS(Number(ret.total_amount || 0))}
+                    </TableCell>
+                  </TableRow>
+                ))}
               </TableBody>
             </Table>
           )}

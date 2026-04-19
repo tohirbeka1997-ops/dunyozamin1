@@ -5,6 +5,7 @@ import { Badge } from '@/components/ui/badge';
 import { useCartStore } from '@/store/cart.store';
 import { formatMoneyUZS } from '@/lib/format';
 import { formatUnit } from '@/utils/formatters';
+import { formatQuantity, getQuantityStep } from '@/utils/quantity';
 import { Trash2, Plus, Minus, Tag, Package } from 'lucide-react';
 import {
   Popover,
@@ -51,8 +52,18 @@ const CartItemRow = memo(({ item }: { item: ReturnType<typeof useCartStore>['ite
         <div className="flex items-center gap-2 text-xs text-muted-foreground mb-2">
           <span>{formatMoneyUZS(item.unit_price)}</span>
           <span>×</span>
-          <span>{item.quantity}</span>
+          <span>{formatQuantity(item.quantity, item.product.unit)}</span>
           <span>{formatUnit(item.product.unit)}</span>
+          {item.price_tier && (
+            <Badge variant="secondary" className="h-5 text-[10px] px-1.5">
+              {String(item.price_tier)}
+            </Badge>
+          )}
+          {item.price_source === 'manual' && (
+            <Badge variant="destructive" className="h-5 text-[10px] px-1.5">
+              Manual
+            </Badge>
+          )}
         </div>
         <div className="flex items-center justify-between">
           <Popover open={discountPopoverOpen} onOpenChange={setDiscountPopoverOpen}>
@@ -111,18 +122,18 @@ const CartItemRow = memo(({ item }: { item: ReturnType<typeof useCartStore>['ite
           variant="outline"
           size="sm"
           className="h-7 w-7 p-0"
-          onClick={() => handleQuantityChange(1)}
+          onClick={() => handleQuantityChange(getQuantityStep(item.product.unit))}
         >
           <Plus className="h-3 w-3" />
         </Button>
         <span className="text-sm font-medium min-w-[2ch] text-center">
-          {item.quantity}
+          {formatQuantity(item.quantity, item.product.unit)}
         </span>
         <Button
           variant="outline"
           size="sm"
           className="h-7 w-7 p-0"
-          onClick={() => handleQuantityChange(-1)}
+          onClick={() => handleQuantityChange(-getQuantityStep(item.product.unit))}
         >
           <Minus className="h-3 w-3" />
         </Button>

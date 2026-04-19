@@ -2,8 +2,9 @@ import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useNavigate, useParams } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { formatDate } from '@/lib/datetime';
 import {
   Table,
   TableBody,
@@ -25,6 +26,7 @@ export default function CategoryDetail() {
   const navigate = useNavigate();
   const { toast } = useToast();
   const [category, setCategory] = useState<Category | null>(null);
+  const [parentCategory, setParentCategory] = useState<Category | null>(null);
   const [products, setProducts] = useState<Product[]>([]);
   const [loading, setLoading] = useState(true);
 
@@ -44,6 +46,17 @@ export default function CategoryDetail() {
       ]);
       setCategory(categoryData);
       setProducts(productsData);
+
+      if (categoryData.parent_id) {
+        try {
+          const parent = await getCategoryById(categoryData.parent_id);
+          setParentCategory(parent);
+        } catch {
+          setParentCategory(null);
+        }
+      } else {
+        setParentCategory(null);
+      }
     } catch (error) {
       toast({
         title: t('common.error'),
@@ -78,7 +91,13 @@ export default function CategoryDetail() {
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-4">
-          <Button variant="ghost" size="icon" onClick={() => navigate('/categories')}>
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon"
+            onClick={() => navigate('/categories')}
+            aria-label={t('common.back')}
+          >
             <ArrowLeft className="h-5 w-5" />
           </Button>
           <div className="flex items-center gap-3">
@@ -94,7 +113,12 @@ export default function CategoryDetail() {
             </div>
           </div>
         </div>
-        <Button onClick={() => navigate('/categories')}>
+        <Button
+          type="button"
+          onClick={() =>
+            navigate('/categories', { state: { editCategoryId: category.id } })
+          }
+        >
           <Pencil className="h-4 w-4 mr-2" />
           {t('categoryDetail.edit_category')}
         </Button>
@@ -166,7 +190,7 @@ export default function CategoryDetail() {
             </div>
             <div>
               <p className="text-sm text-muted-foreground mb-1">{t('categoryDetail.created_date')}</p>
-              <p className="font-medium">{new Date(category.created_at).toLocaleDateString()}</p>
+              <p className="font-medium">{formatDate(category.created_at)}</p>
             </div>
             <div>
               <p className="text-sm text-muted-foreground mb-1">{t('categoryDetail.description')}</p>
@@ -175,10 +199,22 @@ export default function CategoryDetail() {
             <div>
               <p className="text-sm text-muted-foreground mb-1">{t('categoryDetail.parent_category')}</p>
               {category.parent_id ? (
-                <Badge variant="outline">
-                  <FolderTree className="h-3 w-3 mr-1" />
-                  {t('categoryDetail.parent_category_badge')}
-                </Badge>
+                parentCategory ? (
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    className="h-auto py-1.5 font-normal"
+                    onClick={() => navigate(`/categories/${parentCategory.id}`)}
+                  >
+                    <FolderTree className="h-3 w-3 mr-1 shrink-0" />
+                    {parentCategory.name}
+                  </Button>
+                ) : (
+                  <span className="text-sm text-muted-foreground">
+                    {t('categoryDetail.parent_not_found')}
+                  </span>
+                )
               ) : (
                 <p className="font-medium">{t('categoryDetail.root_category')}</p>
               )}
@@ -236,9 +272,11 @@ export default function CategoryDetail() {
                         <TableCell>{getStockStatusBadge(product)}</TableCell>
                         <TableCell className="text-right">
                           <Button
+                            type="button"
                             variant="ghost"
                             size="sm"
                             onClick={() => navigate(`/products/${product.id}`)}
+                            aria-label={`${t('common.view')}: ${product.name}`}
                           >
                             {t('common.view')}
                           </Button>

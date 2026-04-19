@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback, useMemo } from 'react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
@@ -18,13 +18,18 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table';
-import { getOrders, getCategories } from '@/db/api';
-import type { OrderWithDetails, Category } from '@/types/database';
+import { getCategories, getProductSalesReport } from '@/db/api';
+import type { Category } from '@/types/database';
 import { FileDown, ArrowLeft, TrendingUp, TrendingDown } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 import { useNavigate } from 'react-router-dom';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
 import { formatMoneyUZS } from '@/lib/format';
+import { formatDateYMD, todayYMD } from '@/lib/datetime';
+import { useReportAutoRefresh } from '@/hooks/useReportAutoRefresh';
+import { useTableSort } from '@/hooks/useTableSort';
+import { compareScalar } from '@/lib/tableSort';
+import { SortableTableHead } from '@/components/reports/SortableTableHead';
 
 interface ProductSalesData {
   product_id: string;
@@ -33,10 +38,23 @@ interface ProductSalesData {
   category: string;
   quantity_sold: number;
   revenue: number;
+  retail_revenue: number;
+  master_revenue: number;
   cost: number;
   profit: number;
   profit_margin: number;
 }
+
+type ProductSalesSortKey =
+  | 'product_name'
+  | 'sku'
+  | 'category'
+  | 'quantity_sold'
+  | 'revenue'
+  | 'retail_revenue'
+  | 'master_revenue'
+  | 'profit'
+  | 'profit_margin';
 
 export default function ProductSalesReport() {
   const navigate = useNavigate();
@@ -44,100 +62,115 @@ export default function ProductSalesReport() {
   const [productSales, setProductSales] = useState<ProductSalesData[]>([]);
   const [categories, setCategories] = useState<Category[]>([]);
   const [loading, setLoading] = useState(true);
-  const [dateFrom, setDateFrom] = useState(new Date().toISOString().split('T')[0]);
-  const [dateTo, setDateTo] = useState(new Date().toISOString().split('T')[0]);
+  const [dateFrom, setDateFrom] = useState(todayYMD());
+  const [dateTo, setDateTo] = useState(todayYMD());
   const [categoryFilter, setCategoryFilter] = useState<string>('all');
+  const [tierFilter, setTierFilter] = useState<string>('all');
   const [searchTerm, setSearchTerm] = useState('');
+  const { sortKey, sortOrder, toggleSort } = useTableSort<ProductSalesSortKey>(
+    'quantity_sold',
+    'desc'
+  );
 
-  useEffect(() => {
-    loadData();
-  }, [dateFrom, dateTo, categoryFilter]);
-
-  const loadData = async () => {
+  const loadData = useCallback(async () => {
     try {
       setLoading(true);
-      const [ordersData, categoriesData] = await Promise.all([
-        getOrders(),
+      const [rows, categoriesData] = await Promise.all([
+        getProductSalesReport({
+          date_from: dateFrom,
+          date_to: dateTo,
+          category_id: categoryFilter === 'all' ? null : categoryFilter,
+          price_tier: tierFilter === 'all' ? null : tierFilter,
+        }),
         getCategories(),
       ]);
-      
-      const filtered = ordersData.filter((order) => {
-        const orderDate = new Date(order.created_at).toISOString().split('T')[0];
-        return orderDate >= dateFrom && orderDate <= dateTo && order.status === 'completed';
-      });
 
-      const productMap = new Map<string, ProductSalesData>();
-
-      filtered.forEach((order) => {
-        order.items?.forEach((item) => {
-          const product = item.product;
-          if (!product) return;
-
-          const key = product.id;
-          const existing = productMap.get(key);
-          
-          const quantity = Number(item.quantity);
-          const revenue = Number(item.subtotal);
-          const cost = Number(product.purchase_price || 0) * quantity;
-          const profit = revenue - cost;
-
-          if (existing) {
-            existing.quantity_sold += quantity;
-            existing.revenue += revenue;
-            existing.cost += cost;
-            existing.profit += profit;
-            existing.profit_margin = (existing.profit / existing.revenue) * 100;
-          } else {
-            productMap.set(key, {
-              product_id: product.id,
-              product_name: product.name,
-              sku: product.sku,
-              category: product.category?.name || 'Uncategorized',
-              quantity_sold: quantity,
-              revenue,
-              cost,
-              profit,
-              profit_margin: (profit / revenue) * 100,
-            });
-          }
-        });
-      });
-
-      let salesData = Array.from(productMap.values());
-
-      if (categoryFilter !== 'all') {
-        const category = categoriesData.find((c) => c.id === categoryFilter);
-        if (category) {
-          salesData = salesData.filter((s) => s.category === category.name);
-        }
-      }
-
-      salesData.sort((a, b) => b.quantity_sold - a.quantity_sold);
+      const salesData: ProductSalesData[] = (rows || []).map((r: any) => ({
+        product_id: r.product_id,
+        product_name: r.product_name,
+        sku: r.sku,
+        category: r.category_name || 'Uncategorized',
+        quantity_sold: Number(r.quantity_sold || 0),
+        revenue: Number(r.revenue || 0),
+        retail_revenue: Number(r.retail_revenue || 0),
+        master_revenue: Number(r.master_revenue || 0),
+        cost: Number(r.cost || 0),
+        profit: Number(r.profit || 0),
+        profit_margin: Number(r.profit_margin || 0),
+      }));
 
       setProductSales(salesData);
       setCategories(categoriesData);
     } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error);
       toast({
         title: 'Xatolik',
-        description: 'Mahsulotlar bo\'yicha sotuv ma\'lumotlarini yuklab bo\'lmadi',
+        description: `Mahsulotlar bo'yicha sotuv ma'lumotlarini yuklab bo'lmadi. ${msg ? `(${msg})` : ''}`,
         variant: 'destructive',
       });
     } finally {
       setLoading(false);
     }
-  };
+  }, [dateFrom, dateTo, categoryFilter, tierFilter, toast]);
 
-  const filteredProducts = productSales.filter((product) => {
-    if (!searchTerm) return true;
-    const search = searchTerm.toLowerCase();
-    return (
-      product.product_name.toLowerCase().includes(search) ||
-      product.sku.toLowerCase().includes(search)
-    );
-  });
+  useReportAutoRefresh(loadData);
 
-  const topProducts = filteredProducts.slice(0, 10);
-  const slowMoving = filteredProducts.slice(-10).reverse();
+  // Initial load + reload when filters change
+  useEffect(() => {
+    loadData();
+  }, [loadData]);
+
+  // (auto-refresh handled by useReportAutoRefresh)
+
+  const filteredProducts = useMemo(() => {
+    return productSales.filter((product) => {
+      if (!searchTerm) return true;
+      const search = searchTerm.toLowerCase();
+      return (
+        product.product_name.toLowerCase().includes(search) ||
+        product.sku.toLowerCase().includes(search)
+      );
+    });
+  }, [productSales, searchTerm]);
+
+  /** Grafiklar doim sotilgan miqdor bo‘yicha (jadval tartibidan mustaqil) */
+  const byQuantityDesc = useMemo(() => {
+    return [...filteredProducts].sort((a, b) => b.quantity_sold - a.quantity_sold);
+  }, [filteredProducts]);
+
+  const topProducts = byQuantityDesc.slice(0, 10);
+  const slowMoving = [...byQuantityDesc].slice(-10).reverse();
+
+  const sortedForTable = useMemo(() => {
+    const list = [...filteredProducts];
+    const key = sortKey;
+    const ord = sortOrder;
+    list.sort((a, b) => {
+      switch (key) {
+        case 'product_name':
+          return compareScalar(a.product_name.toLowerCase(), b.product_name.toLowerCase(), ord);
+        case 'sku':
+          return compareScalar(a.sku.toLowerCase(), b.sku.toLowerCase(), ord);
+        case 'category':
+          return compareScalar(a.category.toLowerCase(), b.category.toLowerCase(), ord);
+        case 'quantity_sold':
+          return compareScalar(a.quantity_sold, b.quantity_sold, ord);
+        case 'revenue':
+          return compareScalar(a.revenue, b.revenue, ord);
+        case 'retail_revenue':
+          return compareScalar(a.retail_revenue, b.retail_revenue, ord);
+        case 'master_revenue':
+          return compareScalar(a.master_revenue, b.master_revenue, ord);
+        case 'profit':
+          return compareScalar(a.profit, b.profit, ord);
+        case 'profit_margin':
+          return compareScalar(a.profit_margin, b.profit_margin, ord);
+        default:
+          return 0;
+      }
+    });
+    return list;
+  }, [filteredProducts, sortKey, sortOrder]);
 
   const chartData = topProducts.map((p) => ({
     name: p.product_name.length > 15 ? p.product_name.substring(0, 15) + '...' : p.product_name,
@@ -147,8 +180,8 @@ export default function ProductSalesReport() {
 
   const handleExport = (format: 'excel' | 'pdf') => {
     toast({
-      title: 'Export',
-      description: `Exporting to ${format.toUpperCase()}...`,
+      title: 'Eksport',
+      description: `${format.toUpperCase()} formatiga eksport qilinmoqda...`,
     });
   };
 
@@ -220,6 +253,21 @@ export default function ProductSalesReport() {
               </Select>
             </div>
             <div>
+              <label className="text-sm text-muted-foreground">Narx turi</label>
+              <Select value={tierFilter} onValueChange={setTierFilter}>
+                <SelectTrigger>
+                  <SelectValue placeholder="Barcha tierlar" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">Barcha tierlar</SelectItem>
+                  <SelectItem value="retail">Retail</SelectItem>
+                  <SelectItem value="master">Master/Usta</SelectItem>
+                  <SelectItem value="wholesale">Wholesale</SelectItem>
+                  <SelectItem value="marketplace">Marketplace</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <div>
               <label className="text-sm text-muted-foreground">Qidirish</label>
               <Input
                 placeholder="Nomi yoki SKU bo'yicha qidirish..."
@@ -277,7 +325,7 @@ export default function ProductSalesReport() {
 
       <Card>
         <CardContent className="p-0">
-          {filteredProducts.length === 0 ? (
+          {sortedForTable.length === 0 ? (
             <div className="text-center py-12">
               <p className="text-muted-foreground">Mahsulotlar bo'yicha sotuv maʼlumotlari topilmadi</p>
             </div>
@@ -285,29 +333,117 @@ export default function ProductSalesReport() {
             <Table>
               <TableHeader>
                 <TableRow>
-                  <TableHead>Mahsulot nomi</TableHead>
-                  <TableHead>SKU</TableHead>
-                  <TableHead>Kategoriya</TableHead>
-                  <TableHead className="text-right">Sotilgan miqdor</TableHead>
-                  <TableHead className="text-right">Daromad</TableHead>
-                  <TableHead className="text-right">Foyda</TableHead>
-                  <TableHead className="text-right">Foyda foizi</TableHead>
+                  <SortableTableHead<ProductSalesSortKey>
+                    columnKey="product_name"
+                    sortKey={sortKey}
+                    sortOrder={sortOrder}
+                    onSort={toggleSort}
+                    kind="string"
+                  >
+                    Mahsulot nomi
+                  </SortableTableHead>
+                  <SortableTableHead<ProductSalesSortKey>
+                    columnKey="sku"
+                    sortKey={sortKey}
+                    sortOrder={sortOrder}
+                    onSort={toggleSort}
+                    kind="string"
+                  >
+                    SKU
+                  </SortableTableHead>
+                  <SortableTableHead<ProductSalesSortKey>
+                    columnKey="category"
+                    sortKey={sortKey}
+                    sortOrder={sortOrder}
+                    onSort={toggleSort}
+                    kind="string"
+                  >
+                    Kategoriya
+                  </SortableTableHead>
+                  <SortableTableHead<ProductSalesSortKey>
+                    columnKey="quantity_sold"
+                    sortKey={sortKey}
+                    sortOrder={sortOrder}
+                    onSort={toggleSort}
+                    kind="number"
+                    align="right"
+                  >
+                    Sotilgan miqdor
+                  </SortableTableHead>
+                  <SortableTableHead<ProductSalesSortKey>
+                    columnKey="revenue"
+                    sortKey={sortKey}
+                    sortOrder={sortOrder}
+                    onSort={toggleSort}
+                    kind="number"
+                    align="right"
+                  >
+                    Daromad
+                  </SortableTableHead>
+                  <SortableTableHead<ProductSalesSortKey>
+                    columnKey="retail_revenue"
+                    sortKey={sortKey}
+                    sortOrder={sortOrder}
+                    onSort={toggleSort}
+                    kind="number"
+                    align="right"
+                  >
+                    Oddiy
+                  </SortableTableHead>
+                  <SortableTableHead<ProductSalesSortKey>
+                    columnKey="master_revenue"
+                    sortKey={sortKey}
+                    sortOrder={sortOrder}
+                    onSort={toggleSort}
+                    kind="number"
+                    align="right"
+                  >
+                    Usta
+                  </SortableTableHead>
+                  <SortableTableHead<ProductSalesSortKey>
+                    columnKey="profit"
+                    sortKey={sortKey}
+                    sortOrder={sortOrder}
+                    onSort={toggleSort}
+                    kind="number"
+                    align="right"
+                  >
+                    Foyda
+                  </SortableTableHead>
+                  <SortableTableHead<ProductSalesSortKey>
+                    columnKey="profit_margin"
+                    sortKey={sortKey}
+                    sortOrder={sortOrder}
+                    onSort={toggleSort}
+                    kind="number"
+                    align="right"
+                  >
+                    Foyda foizi
+                  </SortableTableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {filteredProducts.map((product) => (
+                {sortedForTable.map((product) => (
                   <TableRow key={product.product_id}>
                     <TableCell className="font-medium">{product.product_name}</TableCell>
                     <TableCell>{product.sku}</TableCell>
                     <TableCell>{product.category}</TableCell>
                     <TableCell className="text-right">{product.quantity_sold}</TableCell>
                     <TableCell className="text-right">{formatMoneyUZS(product.revenue)}</TableCell>
+                    <TableCell className="text-right">{formatMoneyUZS(product.retail_revenue)}</TableCell>
+                    <TableCell className="text-right">{formatMoneyUZS(product.master_revenue)}</TableCell>
                     <TableCell className={`text-right ${product.profit >= 0 ? 'text-success' : 'text-destructive'}`}>
                       {formatMoneyUZS(product.profit)}
                     </TableCell>
                     <TableCell className="text-right">
                       <Badge 
-                        className={product.profit_margin >= 20 ? 'bg-success' : product.profit_margin >= 10 ? 'bg-warning' : 'bg-destructive'}
+                        className={
+                          product.profit_margin >= 20
+                            ? 'bg-success text-white'
+                            : product.profit_margin >= 10
+                              ? 'bg-warning text-white'
+                              : 'bg-destructive text-white'
+                        }
                       >
                         {product.profit_margin.toFixed(1)}%
                       </Badge>

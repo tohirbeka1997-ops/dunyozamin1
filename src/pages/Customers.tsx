@@ -20,6 +20,13 @@ import {
   TableRow,
 } from '@/components/ui/table';
 import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu';
+import {
   AlertDialog,
   AlertDialogAction,
   AlertDialogCancel,
@@ -33,10 +40,15 @@ import {
 import { getCustomers, deleteCustomer } from '@/db/api';
 import { useAuth } from '@/contexts/AuthContext';
 import type { Customer } from '@/types/database';
-import { Search, Plus, Eye, Edit, Trash2, Download, ArrowUpDown, DollarSign } from 'lucide-react';
+import { Search, Plus, Eye, Edit, Trash2, Download, ArrowUpDown, DollarSign, MoreVertical, AlertTriangle } from 'lucide-react';
+import { highlightMatch } from '@/utils/searchHighlight';
 import { useToast } from '@/hooks/use-toast';
-import ReceivePaymentDialog from '@/components/customers/ReceivePaymentDialog';
-import { formatMoneyUZS } from '@/lib/format';
+import ReceivePaymentModal from '@/components/customers/ReceivePaymentModal';
+import { formatMoneyUZS, formatCustomerBalance } from '@/lib/format';
+import { useDebounce } from '@/hooks/use-debounce';
+import { formatDate } from '@/lib/datetime';
+import { useSessionSearchParams } from '@/hooks/useSessionSearchParams';
+import { createBackNavigationState } from '@/lib/pageState';
 
 export default function Customers() {
   const navigate = useNavigate();
@@ -46,14 +58,19 @@ export default function Customers() {
   const [customers, setCustomers] = useState<Customer[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<Error | null>(null);
-  const [searchTerm, setSearchTerm] = useState('');
-  const [typeFilter, setTypeFilter] = useState('all');
-  const [statusFilter, setStatusFilter] = useState('all');
-  const [debtFilter, setDebtFilter] = useState('all');
-  const [sortBy, setSortBy] = useState('created_at');
-  const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('desc');
+  const { updateParams, searchParams } = useSessionSearchParams({
+    storageKey: 'customers.filters.query',
+    trackedKeys: ['search', 'type', 'status', 'sortBy', 'sortOrder'],
+  });
+  const searchTerm = searchParams.get('search') || '';
+  const debouncedSearchTerm = useDebounce(searchTerm, 200);
+  const typeFilter = searchParams.get('type') || 'all';
+  const statusFilter = searchParams.get('status') || 'all';
+  const sortBy = (searchParams.get('sortBy') || 'created_at') as 'created_at' | 'balance' | 'last_order_date' | 'total_sales' | 'name';
+  const sortOrder = (searchParams.get('sortOrder') || 'desc') as 'asc' | 'desc';
   const [paymentDialogOpen, setPaymentDialogOpen] = useState(false);
   const [selectedCustomerForPayment, setSelectedCustomerForPayment] = useState<Customer | null>(null);
+  const [exporting, setExporting] = useState(false);
 
   const loadCustomers = useCallback(async () => {
     // Don't load if auth is still loading or user is not authenticated
@@ -65,21 +82,35 @@ export default function Customers() {
     try {
       setLoading(true);
       setError(null);
-      const hasDebt = debtFilter === 'with_debt' ? true : debtFilter === 'no_debt' ? false : undefined;
+      
       const data = await getCustomers({
-        searchTerm: searchTerm || undefined,
+        searchTerm: debouncedSearchTerm || undefined,
         type: typeFilter,
         status: statusFilter,
-        hasDebt,
+        hasDebt: undefined, // No balance filter - show all
         sortBy,
         sortOrder,
       });
-      setCustomers(data);
+      
+      // Client-side sorting for balance (biggest debt first)
+      let filteredData = data;
+      if (sortBy === 'balance') {
+        filteredData = [...filteredData].sort((a, b) => {
+          const balanceA = Number(a.balance || 0);
+          const balanceB = Number(b.balance || 0);
+          if (sortOrder === 'desc') {
+            // Biggest debt first (most negative)
+            return balanceA - balanceB;
+          } else {
+            return balanceB - balanceA;
+          }
+        });
+      }
+      
+      setCustomers(filteredData);
     } catch (err) {
-      const error = err instanceof Error ? err : new Error('Failed to load customers');
+      const error = err instanceof Error ? err : new Error('Mijozlarni yuklab bo‘lmadi');
       console.error('Error loading customers:', error);
-      const { logSupabaseError } = await import('@/lib/supabaseErrorLogger');
-      logSupabaseError(error, { table: 'customers', operation: 'select', queryKey: 'loadCustomers', userId: user?.id });
       setError(error);
       toast({
         title: 'Xatolik',
@@ -89,7 +120,7 @@ export default function Customers() {
     } finally {
       setLoading(false);
     }
-  }, [searchTerm, typeFilter, statusFilter, debtFilter, sortBy, sortOrder, toast, authLoading, user]);
+  }, [debouncedSearchTerm, typeFilter, statusFilter, sortBy, sortOrder, toast, authLoading, user]);
 
   // Load customers on mount and when filters change
   useEffect(() => {
@@ -129,28 +160,17 @@ export default function Customers() {
     loadCustomers(); // Refresh customer list to show updated balance
   };
 
-  const handleSort = (field: string) => {
+  const handleSort = (field: 'created_at' | 'balance' | 'last_order_date' | 'total_sales' | 'name') => {
     if (sortBy === field) {
-      setSortOrder(sortOrder === 'asc' ? 'desc' : 'asc');
+      updateParams({ sortOrder: sortOrder === 'asc' ? 'desc' : 'asc' });
     } else {
-      setSortBy(field);
-      setSortOrder('asc');
-    }
-  };
-
-  const getBalanceBadge = (balance: number) => {
-    if (balance > 0) {
-      return <Badge variant="destructive">{formatMoneyUZS(balance)} Qarz</Badge>;
-    } else if (balance < 0) {
-      return <Badge className="bg-success text-success-foreground">{formatMoneyUZS(Math.abs(balance))} Avans</Badge>;
-    } else {
-      return <Badge variant="outline">{formatMoneyUZS(0)}</Badge>;
+      updateParams({ sortBy: field, sortOrder: 'desc' });
     }
   };
 
   const getStatusBadge = (status: string) => {
     return status === 'active' ? (
-      <Badge className="bg-success text-success-foreground">Faol</Badge>
+      <Badge className="bg-success text-white">Faol</Badge>
     ) : (
       <Badge variant="outline">Faol emas</Badge>
     );
@@ -164,11 +184,58 @@ export default function Customers() {
     );
   };
 
-  const handleExport = () => {
-    toast({
-      title: 'Eksport qilish',
-      description: 'Eksport funksiyasi tez orada qo\'shiladi',
-    });
+  const handleExport = async () => {
+    try {
+      setExporting(true);
+      
+      // Prepare filters from current state
+      const filters = {
+        searchTerm: debouncedSearchTerm || undefined,
+        type: typeFilter !== 'all' ? typeFilter : undefined,
+        status: statusFilter !== 'all' ? statusFilter : undefined,
+        sortBy,
+        sortOrder,
+      };
+
+      // Check if window.posApi exists (Electron)
+      if (typeof window !== 'undefined' && (window as any).posApi?.customers?.exportCsv) {
+        const result = await (window as any).posApi.customers.exportCsv(filters);
+        
+        if (result.cancelled) {
+          // User cancelled, no toast needed
+          return;
+        }
+
+        if (result.count !== undefined && result.count > 0) {
+          toast({
+            title: 'Muvaffaqiyatli',
+            description: `Eksport qilindi: ${result.count} ta mijoz${result.path ? `\n${result.path}` : ''}`,
+          });
+        } else {
+          toast({
+            title: 'Ogohlantirish',
+            description: 'Eksport qilish uchun mijozlar topilmadi',
+            variant: 'destructive',
+          });
+        }
+      } else {
+        // Fallback for web mode (not implemented)
+        toast({
+          title: 'Xatolik',
+          description: 'Eksport funksiyasi faqat desktop versiyada mavjud',
+          variant: 'destructive',
+        });
+      }
+    } catch (error) {
+      console.error('Export error:', error);
+      toast({
+        title: 'Xatolik',
+        description: error instanceof Error ? error.message : 'Eksportda xatolik yuz berdi',
+        variant: 'destructive',
+      });
+    } finally {
+      setExporting(false);
+    }
   };
 
   return (
@@ -179,11 +246,24 @@ export default function Customers() {
           <p className="text-muted-foreground">Mijozlar bazasini boshqarish</p>
         </div>
         <div className="flex items-center gap-2">
-          <Button variant="outline" onClick={handleExport}>
-            <Download className="h-4 w-4 mr-2" />
-            Eksport qilish
+          <Button 
+            variant="outline" 
+            onClick={handleExport}
+            disabled={exporting || loading}
+          >
+            {exporting ? (
+              <>
+                <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-current mr-2" />
+                Eksportlanmoqda...
+              </>
+            ) : (
+              <>
+                <Download className="h-4 w-4 mr-2" />
+                Eksport qilish
+              </>
+            )}
           </Button>
-          <Button onClick={() => navigate('/customers/new')}>
+          <Button onClick={() => navigate('/customers/new', { state: createBackNavigationState(location) })}>
             <Plus className="h-4 w-4 mr-2" />
             Yangi mijoz qo'shish
           </Button>
@@ -193,18 +273,19 @@ export default function Customers() {
       <Card>
         <CardContent className="pt-6">
           <div className="space-y-4">
+            {/* Search and Filters */}
             <div className="grid grid-cols-1 md:grid-cols-5 gap-4">
               <div className="relative md:col-span-2">
                 <Search className="absolute left-3 top-3 h-4 w-4 text-muted-foreground" />
                 <Input
                   placeholder="Ism, telefon yoki email bo'yicha qidirish..."
                   value={searchTerm}
-                  onChange={(e) => setSearchTerm(e.target.value)}
+                  onChange={(e) => updateParams({ search: e.target.value })}
                   className="pl-9"
                 />
               </div>
 
-              <Select value={typeFilter} onValueChange={setTypeFilter}>
+              <Select value={typeFilter} onValueChange={(value) => updateParams({ type: value })}>
                 <SelectTrigger>
                   <SelectValue placeholder="Mijoz turi" />
                 </SelectTrigger>
@@ -215,7 +296,7 @@ export default function Customers() {
                 </SelectContent>
               </Select>
 
-              <Select value={statusFilter} onValueChange={setStatusFilter}>
+              <Select value={statusFilter} onValueChange={(value) => updateParams({ status: value })}>
                 <SelectTrigger>
                   <SelectValue placeholder="Holati" />
                 </SelectTrigger>
@@ -226,14 +307,16 @@ export default function Customers() {
                 </SelectContent>
               </Select>
 
-              <Select value={debtFilter} onValueChange={setDebtFilter}>
+              <Select value={sortBy} onValueChange={(value) => updateParams({ sortBy: value })}>
                 <SelectTrigger>
-                  <SelectValue placeholder="Balans" />
+                  <SelectValue placeholder="Tartiblash" />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="all">Barcha balanslar</SelectItem>
-                  <SelectItem value="with_debt">Qarzdor</SelectItem>
-                  <SelectItem value="no_debt">Qarz yo'q</SelectItem>
+                  <SelectItem value="created_at">Yangi</SelectItem>
+                  <SelectItem value="balance">Eng katta qarz</SelectItem>
+                  <SelectItem value="last_order_date">Oxirgi buyurtma</SelectItem>
+                  <SelectItem value="total_sales">Jami savdo</SelectItem>
+                  <SelectItem value="name">Ism</SelectItem>
                 </SelectContent>
               </Select>
             </div>
@@ -256,7 +339,10 @@ export default function Customers() {
             ) : customers.length === 0 ? (
               <div className="text-center py-12">
                 <p className="text-muted-foreground">Mijozlar topilmadi</p>
-                <Button className="mt-4" onClick={() => navigate('/customers/new')}>
+                <Button
+                  className="mt-4"
+                  onClick={() => navigate('/customers/new', { state: createBackNavigationState(location) })}
+                >
                   <Plus className="h-4 w-4 mr-2" />
                   Birinchi mijozni qo'shish
                 </Button>
@@ -296,87 +382,164 @@ export default function Customers() {
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {customers.map((customer) => (
-                    <TableRow key={customer.id}>
-                      <TableCell>
-                        <div>
-                          <p className="font-medium">{customer.name}</p>
-                          {customer.company_name && (
-                            <p className="text-sm text-muted-foreground">{customer.company_name}</p>
-                          )}
-                        </div>
-                      </TableCell>
-                      <TableCell>{customer.phone || '-'}</TableCell>
-                      <TableCell>{getTypeBadge(customer.type)}</TableCell>
-                      <TableCell className="text-right font-medium">
-                        {formatMoneyUZS(customer.total_sales)}
-                      </TableCell>
-                      <TableCell className="text-right">
-                        {getBalanceBadge(Number(customer.balance))}
-                      </TableCell>
-                      <TableCell>
-                        {customer.last_order_date
-                          ? new Date(customer.last_order_date).toLocaleDateString()
-                          : '-'}
-                      </TableCell>
-                      <TableCell>{getStatusBadge(customer.status)}</TableCell>
-                      <TableCell className="text-right">
-                        <div className="flex items-center justify-end gap-2">
-                          {/* Receive Payment button - only show if customer has debt */}
-                          {customer.balance > 0 && (
-                            <Button
-                              variant="outline"
-                              size="sm"
-                              onClick={() => handleReceivePayment(customer)}
-                              className="text-green-600 hover:text-green-700 hover:bg-green-50"
-                            >
-                              <DollarSign className="h-4 w-4 mr-1" />
-                              To'lov qabul qilish
-                            </Button>
-                          )}
-                          <Button
-                            variant="ghost"
-                            size="icon"
-                            onClick={() => navigate(`/customers/${customer.id}`)}
-                            title="Ko'rish"
-                          >
-                            <Eye className="h-4 w-4" />
-                          </Button>
-                          <Button
-                            variant="ghost"
-                            size="icon"
-                            onClick={() => navigate(`/customers/${customer.id}/edit`)}
-                            title="Tahrirlash"
-                          >
-                            <Edit className="h-4 w-4" />
-                          </Button>
-                          <AlertDialog>
-                            <AlertDialogTrigger asChild>
-                              <Button variant="ghost" size="icon" title="O'chirish">
-                                <Trash2 className="h-4 w-4" />
+                  {customers.map((customer) => {
+                    const balanceInfo = formatCustomerBalance(customer.balance);
+                    const hasDebt = (customer.balance || 0) < 0;
+                    
+                    // Handle row click to navigate to customer details
+                    // Route: /customers/:id (as defined in src/routes.tsx)
+                    const handleRowClick = () => {
+                      navigate(`/customers/${customer.id}`, {
+                        state: createBackNavigationState(location),
+                      });
+                    };
+                    
+                    // Prevent row click when clicking on action menu
+                    const handleActionClick = (e: React.MouseEvent) => {
+                      e.stopPropagation();
+                    };
+                    
+                    return (
+                      <TableRow 
+                        key={customer.id}
+                        onClick={handleRowClick}
+                        className="cursor-pointer hover:bg-muted/50 transition-colors"
+                      >
+                        <TableCell>
+                          <div>
+                            <p className="font-medium">
+                              {debouncedSearchTerm ? highlightMatch(customer.name, debouncedSearchTerm) : customer.name}
+                            </p>
+                            {customer.company_name && (
+                              <p className="text-sm text-muted-foreground">{customer.company_name}</p>
+                            )}
+                          </div>
+                        </TableCell>
+                        <TableCell>
+                          {customer.phone
+                            ? (debouncedSearchTerm ? highlightMatch(customer.phone, debouncedSearchTerm) : customer.phone)
+                            : '-'}
+                        </TableCell>
+                        <TableCell>{getTypeBadge(customer.type)}</TableCell>
+                        <TableCell className="text-right font-medium">
+                          {formatMoneyUZS(customer.total_sales)}
+                        </TableCell>
+                        <TableCell className="text-right">
+                          {/* SINGLE SOURCE OF TRUTH - No duplicate badges */}
+                          <Badge variant={balanceInfo.variant} className={balanceInfo.type === 'balance' ? 'bg-green-600 text-white hover:bg-green-700' : ''}>
+                            {balanceInfo.label}
+                          </Badge>
+                        </TableCell>
+                        <TableCell>
+                          {customer.last_order_date
+                            ? formatDate(customer.last_order_date)
+                            : '-'}
+                        </TableCell>
+                        <TableCell>{getStatusBadge(customer.status)}</TableCell>
+                        <TableCell className="text-right">
+                          <div className="flex items-center justify-end gap-2" onClick={handleActionClick}>
+                            {/* Primary action: Receive Payment button for customers with debt */}
+                            {hasDebt && (
+                              <Button
+                                variant="default"
+                                size="sm"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  handleReceivePayment(customer);
+                                }}
+                                className="bg-green-600 hover:bg-green-700 text-white"
+                              >
+                                <DollarSign className="h-4 w-4 mr-1" />
+                                Qarz to'lovini qabul qilish
                               </Button>
-                            </AlertDialogTrigger>
-                            <AlertDialogContent>
-                              <AlertDialogHeader>
-                                <AlertDialogTitle>Mijozni o'chirish?</AlertDialogTitle>
-                                <AlertDialogDescription>
-                                  "{customer.name}" ni o'chirishni xohlaysizmi? Agar bu mijozning buyurtmalari bo'lsa, ular faol emas deb belgilanadi.
-                                </AlertDialogDescription>
-                              </AlertDialogHeader>
-                              <AlertDialogFooter>
-                                <AlertDialogCancel>Bekor qilish</AlertDialogCancel>
-                                <AlertDialogAction
-                                  onClick={() => handleDelete(customer.id, customer.name)}
+                            )}
+                            
+                            {/* Secondary actions in dropdown menu */}
+                            <DropdownMenu>
+                              <DropdownMenuTrigger asChild>
+                                <Button 
+                                  variant="ghost" 
+                                  size="icon"
+                                  onClick={handleActionClick}
                                 >
-                                  O'chirish
-                                </AlertDialogAction>
-                              </AlertDialogFooter>
-                            </AlertDialogContent>
-                          </AlertDialog>
-                        </div>
-                      </TableCell>
-                    </TableRow>
-                  ))}
+                                  <MoreVertical className="h-4 w-4" />
+                                </Button>
+                              </DropdownMenuTrigger>
+                              <DropdownMenuContent align="end" onClick={handleActionClick}>
+                                {/* Debt payment option in menu (backup) */}
+                                {hasDebt && (
+                                  <>
+                                    <DropdownMenuItem 
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        handleReceivePayment(customer);
+                                      }}
+                                    >
+                                      <DollarSign className="h-4 w-4 mr-2" />
+                                      Qarz to'lovini qabul qilish
+                                    </DropdownMenuItem>
+                                    <DropdownMenuSeparator />
+                                  </>
+                                )}
+                                <DropdownMenuItem 
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    navigate(`/customers/${customer.id}`, {
+                                      state: createBackNavigationState(location),
+                                    });
+                                  }}
+                                >
+                                  <Eye className="h-4 w-4 mr-2" />
+                                  Ko'rish
+                                </DropdownMenuItem>
+                                <DropdownMenuItem 
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    navigate(`/customers/${customer.id}/edit`, {
+                                      state: createBackNavigationState(location),
+                                    });
+                                  }}
+                                >
+                                  <Edit className="h-4 w-4 mr-2" />
+                                  Tahrirlash
+                                </DropdownMenuItem>
+                                <DropdownMenuSeparator />
+                                <AlertDialog>
+                                  <AlertDialogTrigger asChild>
+                                    <DropdownMenuItem 
+                                      onSelect={(e) => {
+                                        e.preventDefault();
+                                        e.stopPropagation();
+                                      }}
+                                    >
+                                      <Trash2 className="h-4 w-4 mr-2" />
+                                      O'chirish
+                                    </DropdownMenuItem>
+                                  </AlertDialogTrigger>
+                                  <AlertDialogContent>
+                                    <AlertDialogHeader>
+                                      <AlertDialogTitle>Mijozni o'chirish?</AlertDialogTitle>
+                                      <AlertDialogDescription>
+                                        "{customer.name}" ni o'chirishni xohlaysizmi? Agar bu mijozning buyurtmalari bo'lsa, ular faol emas deb belgilanadi.
+                                      </AlertDialogDescription>
+                                    </AlertDialogHeader>
+                                    <AlertDialogFooter>
+                                      <AlertDialogCancel>Bekor qilish</AlertDialogCancel>
+                                      <AlertDialogAction
+                                        onClick={() => handleDelete(customer.id, customer.name)}
+                                      >
+                                        O'chirish
+                                      </AlertDialogAction>
+                                    </AlertDialogFooter>
+                                  </AlertDialogContent>
+                                </AlertDialog>
+                              </DropdownMenuContent>
+                            </DropdownMenu>
+                          </div>
+                        </TableCell>
+                      </TableRow>
+                    );
+                  })}
                 </TableBody>
               </Table>
             )}
@@ -384,15 +547,14 @@ export default function Customers() {
         </CardContent>
       </Card>
 
-      {/* Receive Payment Dialog */}
-      {selectedCustomerForPayment && (
-        <ReceivePaymentDialog
-          open={paymentDialogOpen}
-          onOpenChange={setPaymentDialogOpen}
-          customer={selectedCustomerForPayment}
-          onSuccess={handlePaymentSuccess}
-        />
-      )}
+      {/* Receive Payment Modal */}
+      <ReceivePaymentModal
+        open={paymentDialogOpen}
+        onOpenChange={setPaymentDialogOpen}
+        customer={selectedCustomerForPayment}
+        source="customers"
+        onSuccess={handlePaymentSuccess}
+      />
     </div>
   );
 }

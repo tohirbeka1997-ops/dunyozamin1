@@ -1,0 +1,14 @@
+# Bitta ngrok jarayonida RPC + Vite preview.
+# Ishga tushirish: npm run ngrok:both
+# Oldindan: Electron HOST (3333) va npm run preview (4173) ochiq bo'lsin.
+#
+# Statik domen dashboard dagi bilan bir xil bo'lishi kerak.
+version: "2"
+tunnels:
+  pos-rpc:
+    proto: http
+    addr: 3333
+  pos-web:
+    proto: http
+    addr: 4173
+    hostname: epiblastic-cosmic-yuriko.ngrok-free.dev

@@ -23,23 +23,26 @@ import type { InventoryMovementWithDetails } from '@/types/database';
 import { FileDown, ArrowLeft, TrendingUp, TrendingDown } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 import { useNavigate } from 'react-router-dom';
-import { format } from 'date-fns';
+import { formatOrderDateTime, todayYMD } from '@/lib/datetime';
+import { useReportAutoRefresh } from '@/hooks/useReportAutoRefresh';
 
 export default function InventoryMovementReport() {
   const navigate = useNavigate();
   const { toast } = useToast();
   const [movements, setMovements] = useState<InventoryMovementWithDetails[]>([]);
   const [loading, setLoading] = useState(true);
-  const [dateFrom, setDateFrom] = useState(new Date().toISOString().split('T')[0]);
-  const [dateTo, setDateTo] = useState(new Date().toISOString().split('T')[0]);
+  const [dateFrom, setDateFrom] = useState(todayYMD());
+  const [dateTo, setDateTo] = useState(todayYMD());
   const [typeFilter, setTypeFilter] = useState<string>('all');
   const [searchTerm, setSearchTerm] = useState('');
+
+  useReportAutoRefresh(loadData);
 
   useEffect(() => {
     loadData();
   }, [dateFrom, dateTo, typeFilter]);
 
-  const loadData = async () => {
+  async function loadData() {
     try {
       setLoading(true);
       const movementsData = await getAllInventoryMovements({
@@ -58,7 +61,7 @@ export default function InventoryMovementReport() {
     } finally {
       setLoading(false);
     }
-  };
+  }
 
   const filteredMovements = movements.filter((movement) => {
     if (!searchTerm) return true;
@@ -72,18 +75,18 @@ export default function InventoryMovementReport() {
 
   const getMovementTypeBadge = (type: string) => {
     const types: Record<string, { label: string; className: string }> = {
-      sale: { label: 'Sotuv', className: 'bg-primary' },
-      purchase: { label: 'Xarid', className: 'bg-success' },
-      adjustment: { label: 'Tuzatish', className: 'bg-warning' },
-      return: { label: 'Qaytarish', className: 'bg-secondary' },
+      sale: { label: 'Sotuv', className: 'bg-primary text-white' },
+      purchase: { label: 'Xarid', className: 'bg-success text-white' },
+      adjustment: { label: 'Tuzatish', className: 'bg-warning text-white' },
+      return: { label: 'Qaytarish', className: 'bg-secondary text-secondary-foreground' },
     };
     return types[type] || { label: type, className: 'bg-muted' };
   };
 
   const handleExport = (format: 'excel' | 'pdf') => {
     toast({
-      title: 'Export',
-      description: `Exporting to ${format.toUpperCase()}...`,
+      title: 'Eksport',
+      description: `${format.toUpperCase()} ga eksport qilinmoqda...`,
     });
   };
 
@@ -193,7 +196,7 @@ export default function InventoryMovementReport() {
                   return (
                     <TableRow key={movement.id}>
                       <TableCell>
-                        {format(new Date(movement.created_at), 'MMM dd, yyyy HH:mm')}
+                        {formatOrderDateTime(movement.created_at)}
                       </TableCell>
                       {/* FIX: Escaped apostrophe in string to prevent JSX parsing error */}
                       <TableCell className="font-medium">

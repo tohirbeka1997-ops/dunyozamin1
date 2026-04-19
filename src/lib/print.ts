@@ -5,7 +5,7 @@
 /**
  * Generic function to print HTML content
  */
-export function printHtml(title: string, htmlContent: string, pageSize: '80mm' | 'A4' = '80mm'): void {
+export function printHtml(title: string, htmlContent: string, pageSize: '58mm' | '78mm' | '80mm' | 'A4' = '78mm'): void {
   const printWindow = window.open('', '_blank', 'width=800,height=600');
   
   if (!printWindow) {
@@ -13,11 +13,16 @@ export function printHtml(title: string, htmlContent: string, pageSize: '80mm' |
   }
 
   const isA4 = pageSize === 'A4';
-  const pageSizeCss = isA4 ? 'A4' : '80mm auto';
-  const margin = isA4 ? '20mm' : '6mm';
-  const fontFamily = isA4 ? 'Arial, sans-serif' : "'Courier New', monospace";
-  const fontSize = isA4 ? '14px' : '11px';
-  const lineHeight = isA4 ? '1.6' : '1.3';
+  const is58 = pageSize === '58mm';
+  const is78 = pageSize === '78mm';
+  const pageWidthMm = is58 ? 58 : is78 ? 78 : 80;
+  const pageSizeCss = isA4 ? 'A4' : `${pageWidthMm}mm 200mm`;
+  const marginMm = isA4 ? 20 : 0;
+  const margin = `${marginMm}mm`;
+  // Thermal printers often print too light with monospace; use a heavier sans-serif baseline.
+  const fontFamily = isA4 ? 'Arial, sans-serif' : 'Arial, sans-serif';
+  const fontSize = isA4 ? '14px' : '13px';
+  const lineHeight = isA4 ? '1.6' : '1.35';
 
   printWindow.document.write(`
     <!DOCTYPE html>
@@ -31,31 +36,42 @@ export function printHtml(title: string, htmlContent: string, pageSize: '80mm' |
             padding: 0;
             box-sizing: border-box;
           }
+          /* Dynamic page size override for thermal receipts */
+          #__receipt-page-style { display: none; }
           @media print {
             @page {
               size: ${pageSizeCss};
               margin: ${margin};
             }
-            body {
+            html, body {
+              width: ${isA4 ? '210mm' : `${pageWidthMm}mm`};
               margin: 0;
-              padding: ${margin};
+              padding: 0;
               font-family: ${fontFamily};
               font-size: ${fontSize};
               line-height: ${lineHeight};
               color: #000;
+              -webkit-print-color-adjust: exact;
+              print-color-adjust: exact;
+              height: auto;
             }
             .no-print {
               display: none;
+            }
+            .receipt-thermal,
+            .return-receipt-thermal {
+              break-inside: avoid;
+              page-break-inside: avoid;
             }
           }
           @media screen {
             body {
               font-family: ${fontFamily};
               font-size: ${fontSize};
-              padding: 20px;
-              max-width: ${isA4 ? '210mm' : '80mm'};
+              padding: ${isA4 ? '20px' : '0'};
+              max-width: ${isA4 ? '210mm' : is58 ? '58mm' : is78 ? '78mm' : '80mm'};
               margin: 0 auto;
-              background: #f5f5f5;
+              background: ${isA4 ? '#f5f5f5' : '#fff'};
             }
           }
           .return-receipt-thermal,
@@ -220,12 +236,10 @@ export function printHtml(title: string, htmlContent: string, pageSize: '80mm' |
           .receipt-a4 {
             width: 100%;
           }
-          .receipt-thermal h2 {
-            font-size: 14px;
-            margin-bottom: 4px;
-          }
+          .receipt-thermal { font-weight: 700; }
+          .receipt-thermal h2 { font-size: 16px; margin-bottom: 4px; }
           .receipt-thermal .text-xs {
-            font-size: 10px;
+            font-size: 12px;
           }
           .receipt-thermal .text-center {
             text-align: center;
@@ -253,9 +267,9 @@ export function printHtml(title: string, htmlContent: string, pageSize: '80mm' |
           .receipt-thermal .border-gray-400 {
             border-color: #999;
           }
-          .receipt-thermal .text-gray-600 {
-            color: #666;
-          }
+          /* Avoid light gray on thermal printers */
+          .receipt-thermal .text-gray-600 { color: #000; }
+          .receipt-thermal .text-muted-foreground { color: #000; }
           .receipt-thermal .mb-2 {
             margin-bottom: 8px;
           }
@@ -264,6 +278,12 @@ export function printHtml(title: string, htmlContent: string, pageSize: '80mm' |
           }
           .receipt-thermal .mt-1 {
             margin-top: 4px;
+          }
+          .receipt-thermal .mt-4 {
+            margin-top: 16px;
+          }
+          .receipt-thermal .pt-1 {
+            padding-top: 4px;
           }
           .receipt-thermal .py-2 {
             padding-top: 8px;
@@ -274,6 +294,12 @@ export function printHtml(title: string, htmlContent: string, pageSize: '80mm' |
           }
           .receipt-thermal .space-y-1 > * + * {
             margin-top: 4px;
+          }
+          .receipt-thermal .whitespace-pre-wrap {
+            white-space: pre-wrap;
+          }
+          .receipt-thermal .font-mono {
+            font-family: monospace;
           }
           .receipt-a4 table {
             width: 100%;
@@ -351,6 +377,7 @@ export function printHtml(title: string, htmlContent: string, pageSize: '80mm' |
             font-family: monospace;
           }
         </style>
+        <style id="__receipt-page-style"></style>
       </head>
       <body>
         ${htmlContent}
@@ -361,6 +388,27 @@ export function printHtml(title: string, htmlContent: string, pageSize: '80mm' |
   printWindow.document.close();
 
   printWindow.onload = () => {
+    if (!isA4) {
+      const doc = printWindow.document;
+      const body = doc.body;
+      const html = doc.documentElement;
+      const scrollHeightPx = Math.max(body.scrollHeight, html.scrollHeight);
+      const bodyWidthPx = Math.max(body.clientWidth, html.clientWidth);
+      // Derive mm-per-px from actual rendered width to avoid driver scaling.
+      const mmPerPx = bodyWidthPx > 0 ? pageWidthMm / bodyWidthPx : 25.4 / 96;
+      const extraMm = 4; // small buffer to avoid clipping
+      const heightMm = Math.max(120, Math.ceil(scrollHeightPx * mmPerPx + extraMm + marginMm * 2));
+      const styleTag = doc.getElementById('__receipt-page-style');
+      if (styleTag) {
+        styleTag.textContent = `
+          @media print {
+            @page { size: ${pageWidthMm}mm ${heightMm}mm; margin: ${margin}; }
+            html, body { width: ${pageWidthMm}mm; height: ${heightMm}mm; }
+          }
+        `;
+      }
+    }
+
     setTimeout(() => {
       printWindow.print();
     }, 250);
@@ -368,10 +416,131 @@ export function printHtml(title: string, htmlContent: string, pageSize: '80mm' |
 }
 
 /**
- * Opens a print window with the given HTML content (thermal 80mm)
+ * Opens a print window for a custom label size (in millimeters).
+ * Use this for label printers; margins/padding are set to 0 so content doesn't get pushed off-page.
  */
-export function openPrintWindow(htmlContent: string): void {
-  printHtml('Chek', htmlContent, '80mm');
+export function openPrintWindowLabel(
+  htmlContent: string,
+  opts: {
+    widthMm: number;
+    heightMm: number;
+    safeMarginMm?: number;
+    scale?: number;
+    offsetXmm?: number;
+    offsetYmm?: number;
+    rotateDeg?: number;
+    swapPageSize?: boolean;
+  }
+): void {
+  const w = Number(opts.widthMm);
+  const h = Number(opts.heightMm);
+  const widthMm = Number.isFinite(w) && w > 0 ? w : 30;
+  const heightMm = Number.isFinite(h) && h > 0 ? h : 20;
+  const safeMarginMm = Number(opts.safeMarginMm);
+  const safeScale = Number(opts.scale);
+  // Defaults: don't shrink or add margins (other software prints perfectly for the same label size).
+  // Use calibration controls (margin/scale/offset) only if the printer/driver requires it.
+  const marginMm = Number.isFinite(safeMarginMm) && safeMarginMm >= 0 ? safeMarginMm : 0;
+  // Allow slight upscaling too (some drivers shrink output).
+  const scale = Number.isFinite(safeScale) && safeScale > 0 && safeScale <= 2 ? safeScale : 1;
+  const offsetXmm = Number.isFinite(opts.offsetXmm) ? Number(opts.offsetXmm) : 0;
+  const offsetYmm = Number.isFinite(opts.offsetYmm) ? Number(opts.offsetYmm) : 0;
+  const rotateDegRaw = Number(opts.rotateDeg ?? 0);
+  const rotateDeg = Number.isFinite(rotateDegRaw) ? rotateDegRaw : 0;
+  const swapPageSize = Boolean(opts.swapPageSize);
+
+  const pageW = swapPageSize ? heightMm : widthMm;
+  const pageH = swapPageSize ? widthMm : heightMm;
+
+  const printWindow = window.open('', '_blank', 'width=800,height=600');
+  if (!printWindow) {
+    throw new Error('Pop-up blocked. Please allow pop-ups for this site.');
+  }
+
+  printWindow.document.write(`
+    <!DOCTYPE html>
+    <html>
+      <head>
+        <title>Label</title>
+        <meta charset="utf-8">
+        <style>
+          * { margin: 0; padding: 0; box-sizing: border-box; }
+          @media print {
+            @page {
+              size: ${pageW}mm ${pageH}mm;
+              margin: 0;
+            }
+            html, body {
+              width: ${pageW}mm;
+              height: ${pageH}mm;
+              margin: 0;
+              padding: 0;
+              background: #fff;
+              color: #000;
+              font-family: Arial, sans-serif;
+              display: flex;
+              align-items: center;
+              justify-content: center;
+              -webkit-print-color-adjust: exact;
+              print-color-adjust: exact;
+              overflow: hidden;
+            }
+            .__label-safe {
+              width: calc(100% - ${marginMm}mm);
+              height: calc(100% - ${marginMm}mm);
+              display: flex;
+              align-items: center;
+              justify-content: center;
+              overflow: hidden;
+            }
+            .__label-safe .__label-transform {
+              width: 100%;
+              height: 100%;
+              display: flex;
+              align-items: center;
+              justify-content: center;
+              overflow: hidden;
+            }
+            /* Apply transform to any label content (BarcodeLabel, BarcodeDesignerLabel, etc.) */
+            .__label-safe .__label-transform .__label-target {
+              transform: translate(${offsetXmm}mm, ${offsetYmm}mm) rotate(${rotateDeg}deg) scale(${scale});
+              transform-origin: center;
+            }
+          }
+          @media screen {
+            body {
+              font-family: Arial, sans-serif;
+              padding: 12px;
+              background: #f5f5f5;
+            }
+          }
+        </style>
+      </head>
+      <body>
+        <div class="__label-safe">
+          <div class="__label-transform">
+            <div class="__label-target">
+              ${htmlContent}
+            </div>
+          </div>
+        </div>
+      </body>
+    </html>
+  `);
+  printWindow.document.close();
+
+  printWindow.onload = () => {
+    setTimeout(() => {
+      printWindow.print();
+    }, 250);
+  };
+}
+
+/**
+ * Opens a print window with the given HTML content (thermal)
+ */
+export function openPrintWindow(htmlContent: string, paperSize: '58mm' | '78mm' | '80mm' = '78mm'): void {
+  printHtml('Chek', htmlContent, paperSize);
 }
 
 /**

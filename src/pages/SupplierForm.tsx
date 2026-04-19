@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { useNavigate, useParams } from 'react-router-dom';
+import { useLocation, useNavigate, useParams } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
@@ -13,15 +13,18 @@ import {
   SelectValue,
 } from '@/components/ui/select';
 import { useToast } from '@/hooks/use-toast';
-import { getSupplierById, createSupplier, updateSupplier, getSuppliers } from '@/db/api';
+import { getSupplierById, createSupplier, updateSupplier } from '@/db/api';
 import type { Supplier } from '@/types/database';
 import { ArrowLeft, Save } from 'lucide-react';
+import { navigateBackTo, resolveBackTarget } from '@/lib/pageState';
 
 export default function SupplierForm() {
   const { id } = useParams();
   const navigate = useNavigate();
+  const location = useLocation();
   const { toast } = useToast();
   const isEditMode = !!id;
+  const backTo = resolveBackTarget(location, '/suppliers');
 
   const [loading, setLoading] = useState(false);
   const [name, setName] = useState('');
@@ -31,6 +34,7 @@ export default function SupplierForm() {
   const [address, setAddress] = useState('');
   const [note, setNote] = useState('');
   const [status, setStatus] = useState<'active' | 'inactive'>('active');
+  const [settlementCurrency, setSettlementCurrency] = useState<'UZS' | 'USD'>('USD');
 
   const [errors, setErrors] = useState<Record<string, string>>({});
 
@@ -51,13 +55,14 @@ export default function SupplierForm() {
       setAddress(data.address || '');
       setNote(data.note || '');
       setStatus(data.status);
+      setSettlementCurrency((data.settlement_currency || 'USD') as 'UZS' | 'USD');
     } catch (error) {
       toast({
         title: 'Xatolik',
-        description: 'Yetkazib beruvchini yuklab bo\'lmadi',
+        description: 'Yetkazib beruvchini yuklab bo‘lmadi',
         variant: 'destructive',
       });
-      navigate('/suppliers');
+      navigate(backTo);
     } finally {
       setLoading(false);
     }
@@ -71,7 +76,7 @@ export default function SupplierForm() {
     }
 
     if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
-      newErrors.email = 'Email formati noto\'g\'ri';
+      newErrors.email = 'Email formati noto‘g‘ri';
     }
 
     setErrors(newErrors);
@@ -83,8 +88,8 @@ export default function SupplierForm() {
 
     if (!validateForm()) {
       toast({
-        title: 'Validatsiya xatosi',
-        description: 'Iltimos, formadagi xatolarni tuzating',
+        title: 'Tekshiruv xatosi',
+        description: 'Iltimos, formadagi xatolarni to‘g‘rilang',
         variant: 'destructive',
       });
       return;
@@ -93,7 +98,6 @@ export default function SupplierForm() {
     try {
       setLoading(true);
 
-      // NOTE: balance is NOT stored - it's calculated dynamically from transactions
       const supplierData: Omit<Supplier, 'id' | 'created_at' | 'updated_at'> = {
         name: name.trim(),
         contact_person: contactPerson.trim() || null,
@@ -102,76 +106,28 @@ export default function SupplierForm() {
         address: address.trim() || null,
         note: note.trim() || null,
         status,
+        settlement_currency: settlementCurrency,
       };
 
-      // Log the payload before sending
-      console.log('createSupplier payload:', supplierData);
-
       if (isEditMode && id) {
-        const updated = await updateSupplier(id, supplierData);
-        console.log('createSupplier result (update):', updated);
-        
-        if (!updated || !updated.id) {
-          throw new Error('Supplier update failed - no ID returned');
-        }
-        
+        await updateSupplier(id, supplierData);
         toast({
           title: 'Muvaffaqiyatli',
-          description: 'Yetkazib beruvchi muvaffaqiyatli yangilandi',
+          description: 'Yetkazib beruvchi yangilandi',
         });
-        
-        // Navigate back to suppliers list
-        navigate('/suppliers', { state: { refresh: Date.now() } });
       } else {
-        const created = await createSupplier(supplierData);
-        console.log('createSupplier result (create):', created);
-        
-        // STRICT validation: Only show success if supplier has ID
-        if (!created) {
-          throw new Error('Supplier creation failed - no data returned');
-        }
-        
-        if (!created.id) {
-          throw new Error('Supplier creation failed - no ID returned');
-        }
-        
-        // Verify supplier exists in storage
-        const verifySuppliers = await getSuppliers(true);
-        const verified = verifySuppliers.find(s => s.id === created.id);
-        
-        if (!verified) {
-          console.error('createSupplier error: Supplier not found after creation', {
-            createdId: created.id,
-            allSuppliers: verifySuppliers.map(s => ({ id: s.id, name: s.name }))
-          });
-          throw new Error('Supplier creation failed - supplier not found in storage');
-        }
-        
-        console.log('Supplier verified in storage:', verified);
-        
-        // Show success toast ONLY after verification
+        await createSupplier(supplierData);
         toast({
           title: 'Muvaffaqiyatli',
-          description: 'Yetkazib beruvchi muvaffaqiyatli yaratildi',
-        });
-        
-        // Navigate with refresh state to trigger list reload
-        navigate('/suppliers', { 
-          state: { 
-            refresh: Date.now(),
-            createdSupplierId: created.id 
-          } 
+          description: 'Yetkazib beruvchi yaratildi',
         });
       }
-    } catch (error: unknown) {
-      console.error('Error saving supplier:', error);
-      const errorMessage = error instanceof Error 
-        ? error.message 
-        : 'Yetkazib beruvchini saqlashda xatolik yuz berdi';
-      
+
+      navigate(backTo);
+    } catch (error: any) {
       toast({
         title: 'Xatolik',
-        description: errorMessage,
+        description: error.message || 'Yetkazib beruvchini saqlab bo‘lmadi',
         variant: 'destructive',
       });
     } finally {
@@ -190,7 +146,7 @@ export default function SupplierForm() {
   return (
     <div className="space-y-6">
       <div className="flex items-center gap-4">
-        <Button variant="ghost" size="icon" onClick={() => navigate('/suppliers')}>
+        <Button variant="ghost" size="icon" onClick={() => navigateBackTo(navigate, location, '/suppliers')}>
           <ArrowLeft className="h-4 w-4" />
         </Button>
         <div>
@@ -198,7 +154,9 @@ export default function SupplierForm() {
             {isEditMode ? 'Yetkazib beruvchini tahrirlash' : 'Yangi yetkazib beruvchi'}
           </h1>
           <p className="text-muted-foreground">
-            {isEditMode ? 'Yetkazib beruvchi ma\'lumotlarini yangilash' : 'Tizimingizga yangi yetkazib beruvchi qo\'shing'}
+            {isEditMode
+              ? 'Yetkazib beruvchi maʼlumotlarini yangilang'
+              : 'Tizimga yangi yetkazib beruvchini qoʻshing'}
           </p>
         </div>
       </div>
@@ -229,12 +187,12 @@ export default function SupplierForm() {
                   </div>
 
                   <div className="space-y-2">
-                    <Label htmlFor="contact-person">Mas'ul shaxs</Label>
+                    <Label htmlFor="contact-person">Masʼul shaxs</Label>
                     <Input
                       id="contact-person"
                       value={contactPerson}
                       onChange={(e) => setContactPerson(e.target.value)}
-                      placeholder="Mas'ul shaxs nomini kiriting"
+                      placeholder="Masʼul shaxs ism-sharifini kiriting"
                     />
                   </div>
 
@@ -276,12 +234,12 @@ export default function SupplierForm() {
                 </div>
 
                 <div className="space-y-2">
-                  <Label htmlFor="note">Izohlar</Label>
+                  <Label htmlFor="note">Izoh</Label>
                   <Textarea
                     id="note"
                     value={note}
                     onChange={(e) => setNote(e.target.value)}
-                    placeholder="Qo'shimcha izoh kiriting..."
+                    placeholder="Qo‘shimcha izoh kiriting..."
                     rows={3}
                   />
                 </div>
@@ -296,6 +254,25 @@ export default function SupplierForm() {
               </CardHeader>
               <CardContent className="space-y-4">
                 <div className="space-y-2">
+                  <Label htmlFor="settlement_currency">Hisob valyutasi</Label>
+                  <Select
+                    value={settlementCurrency}
+                    onValueChange={(value) => setSettlementCurrency(value as 'UZS' | 'USD')}
+                  >
+                    <SelectTrigger id="settlement_currency">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="UZS">UZS (so‘m)</SelectItem>
+                      <SelectItem value="USD">USD</SelectItem>
+                    </SelectContent>
+                  </Select>
+                  <p className="text-sm text-muted-foreground">
+                    Supplier bilan qarz/to‘lovlar shu valyutada yuradi (MVP)
+                  </p>
+                </div>
+
+                <div className="space-y-2">
                   <Label htmlFor="status">Yetkazib beruvchi holati</Label>
                   <Select value={status} onValueChange={(value) => setStatus(value as 'active' | 'inactive')}>
                     <SelectTrigger id="status">
@@ -303,11 +280,11 @@ export default function SupplierForm() {
                     </SelectTrigger>
                     <SelectContent>
                       <SelectItem value="active">Faol</SelectItem>
-                      <SelectItem value="inactive">Faol emas</SelectItem>
+                      <SelectItem value="inactive">Nofaol</SelectItem>
                     </SelectContent>
                   </Select>
                   <p className="text-sm text-muted-foreground">
-                    Faqat faol yetkazib beruvchilar xarid buyurtmalarida ko'rinadi
+                    Faqat faol yetkazib beruvchilar xarid buyurtmasi formalarida ko‘rinadi
                   </p>
                 </div>
 

@@ -33,52 +33,54 @@ describe('calculateVAT', () => {
 
 describe('formatCurrency', () => {
   it('should format currency with default UZS', () => {
-    expect(formatCurrency(1000)).toBe('1,000.00 UZS');
-    expect(formatCurrency(1234567.89)).toBe('1,234,567.89 UZS');
+    expect(formatCurrency(1000)).toBe("1.000 so'm");
+    expect(formatCurrency(1234567.89)).toBe("1.234.568 so'm");
   });
 
   it('should format currency with custom currency', () => {
-    expect(formatCurrency(1000, 'USD')).toBe('1,000.00 USD');
+    // Deprecated signature: currency arg is ignored; always UZS in this POS
+    expect(formatCurrency(1000, 'USD')).toBe("1.000 so'm");
   });
 
   it('should handle zero', () => {
-    expect(formatCurrency(0)).toBe('0.00 UZS');
+    expect(formatCurrency(0)).toBe("0 so'm");
   });
 
   it('should handle negative amounts', () => {
-    expect(formatCurrency(-1000)).toBe('-1,000.00 UZS');
+    expect(formatCurrency(-1000)).toBe("-1.000 so'm");
   });
 
   it('should handle decimal amounts', () => {
-    expect(formatCurrency(123.456)).toBe('123.46 UZS');
+    expect(formatCurrency(123.456)).toBe("123 so'm");
   });
 });
 
 describe('formatNumber', () => {
-  it('should format number with 2 decimal places', () => {
-    expect(formatNumber(1000)).toBe('1,000.00');
-    expect(formatNumber(1234567.89)).toBe('1,234,567.89');
+  it('should format number with dot thousand separators (no decimals)', () => {
+    expect(formatNumber(1000)).toBe('1.000');
+    expect(formatNumber(1234567.89)).toBe('1.234.568');
   });
 
   it('should handle zero', () => {
-    expect(formatNumber(0)).toBe('0.00');
+    expect(formatNumber(0)).toBe('0');
   });
 
   it('should handle negative numbers', () => {
-    expect(formatNumber(-1000)).toBe('-1,000.00');
+    expect(formatNumber(-1000)).toBe('-1.000');
   });
 
-  it('should round to 2 decimal places', () => {
-    expect(formatNumber(123.456)).toBe('123.46');
-    expect(formatNumber(123.454)).toBe('123.45');
+  it('should round to whole numbers', () => {
+    expect(formatNumber(123.456)).toBe('123');
+    expect(formatNumber(123.454)).toBe('123');
   });
 });
 
 describe('parseCurrency', () => {
   it('should parse currency string to number', () => {
     expect(parseCurrency('1000')).toBe(1000);
-    expect(parseCurrency('1,000.50')).toBe(1000.5);
-    expect(parseCurrency('$1,234.56')).toBe(1234.56);
+    expect(parseCurrency('1,000')).toBe(1000);
+    expect(parseCurrency('1.000')).toBe(1000);
+    expect(parseCurrency("1.234.567 so'm")).toBe(1234567);
   });
 
   it('should handle empty string', () => {
@@ -95,7 +97,8 @@ describe('parseCurrency', () => {
   });
 
   it('should handle decimal input', () => {
-    expect(parseCurrency('123.45')).toBe(123.45);
+    // UZS rules: decimals are not used; separators are treated as thousands
+    expect(parseCurrency('123.45')).toBe(12345);
   });
 });
 
@@ -147,6 +150,34 @@ describe('validatePaymentAmounts', () => {
     expect(result.valid).toBe(true);
   });
 });
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
