@@ -68,8 +68,23 @@ function createSessionStore({ db }) {
     `INSERT INTO sessions (id, user_id, token, ip_address, user_agent, expires_at, created_at)
      VALUES (?, ?, ?, ?, ?, ?, ?)`,
   );
+  // users jadvalida `role` yo'q — RBAC `user_roles` + `roles` orqali (001_core.sql).
   const stmtFind = db.prepare(
-    `SELECT s.id, s.user_id, s.expires_at, u.username, u.role, u.is_active
+    `SELECT s.id, s.user_id, s.expires_at, u.username,
+            (
+              SELECT r.code
+                FROM user_roles ur
+                JOIN roles r ON r.id = ur.role_id
+               WHERE ur.user_id = u.id
+                 AND COALESCE(r.is_active, 1) = 1
+               ORDER BY CASE r.code
+                 WHEN 'admin' THEN 0
+                 WHEN 'manager' THEN 1
+                 ELSE 2
+               END, r.code
+               LIMIT 1
+            ) AS role,
+            u.is_active
        FROM sessions s
        JOIN users u ON u.id = s.user_id
       WHERE s.token = ?`,

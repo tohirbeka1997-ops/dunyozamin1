@@ -24,8 +24,8 @@ function makeMockDb() {
       sessions.set(id, { id, user_id, token, ip_address, user_agent, expires_at, created_at });
       return { changes: 1 };
     },
-    // SELECT s.id, s.user_id, s.expires_at, u.username, u.role, u.is_active FROM sessions s JOIN users u
-    [/SELECT s\.id, s\.user_id, s\.expires_at, u\.username, u\.role, u\.is_active/i.source]: (args) => {
+    // sessions JOIN users ... WHERE s.token (role — user_roles subquery; mockda u.role)
+    [/JOIN users u ON u\.id = s\.user_id\s+WHERE s\.token = \?/i.source]: (args) => {
       const [token] = args;
       for (const s of sessions.values()) {
         if (s.token === token) {
