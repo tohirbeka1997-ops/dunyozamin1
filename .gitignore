@@ -20,7 +20,7 @@ output
 release/
 vite.config.ts.timestamp-*.mjs
 *.local
-package-lock.json
+# package-lock.json — Docker `npm ci` uchun repoda bo‘lishi kerak
 
 # Editor directories and files
 .vscode/*
