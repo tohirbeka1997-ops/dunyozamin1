@@ -82,10 +82,12 @@ services:
       - no-new-privileges:true
     cap_drop:
       - ALL
-    # Volume boshida root tegishli — entrypoint `chown` qiladi; cap_drop ALL dan keyin CHOWN kerak
+    # Volume: CHOWN. Root → pos ga tushish: SETUID/SETGID (aks holda runuser/setpriv rad etiladi).
     cap_add:
       - CHOWN
       - DAC_OVERRIDE
+      - SETUID
+      - SETGID
     ulimits:
       nofile:
         soft: 8192
