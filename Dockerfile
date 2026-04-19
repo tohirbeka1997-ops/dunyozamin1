@@ -75,11 +75,14 @@ COPY --from=deps-builder --chown=pos:pos /build/package.json  ./package.json
 COPY --chown=pos:pos electron ./electron
 COPY --chown=pos:pos .env.server.example ./.env.server.example
 
+COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
+RUN chmod +x /usr/local/bin/docker-entrypoint.sh
+
 # data volume mount point
 RUN mkdir -p /var/lib/pos && chown -R pos:pos /var/lib/pos
 VOLUME ["/var/lib/pos"]
 
-USER pos
+# Root: entrypoint volume huquqlarini tuzatadi, keyin `pos` ga tushadi (docker-entrypoint.sh).
 
 # default env (compose/deploy bilan ustiga yozish mumkin)
 ENV NODE_ENV=production \
@@ -90,10 +93,9 @@ ENV NODE_ENV=production \
 
 EXPOSE 3333
 
-# healthcheck — /health endpoint'iga so'rov
+# healthcheck — /health endpoint'iga so'rov (root: USER pos emas, entrypoint dan keyin ham root healthcheck ishlashi uchun)
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
   CMD node -e "fetch('http://127.0.0.1:'+(process.env.POS_HOST_PORT||3333)+'/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"
 
-# tini orqali signallarni to'g'ri jo'natish (SIGTERM → graceful shutdown)
-ENTRYPOINT ["/usr/bin/tini", "--"]
+ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
 CMD ["node", "electron/server.cjs"]
