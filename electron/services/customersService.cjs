@@ -1,8 +1,9 @@
 const { ERROR_CODES, createError } = require('../lib/errors.cjs');
 const { randomUUID } = require('crypto');
-const { dialog } = require('electron');
 const fs = require('fs');
 const path = require('path');
+const os = require('os');
+const { isServerMode } = require('../lib/runtime.cjs');
 
 /**
  * Customers Service
@@ -987,36 +988,43 @@ class CustomersService {
 
       const csvContent = csvRows.join('\n');
 
-      // Show save dialog
       const dateStr = new Date().toISOString().split('T')[0]; // YYYY-MM-DD
       const defaultFilename = `customers_${dateStr}.csv`;
 
-      const dialogOptions = {
-        title: 'Export Customers to CSV',
-        defaultPath: defaultFilename,
-        filters: [
-          { name: 'CSV Files', extensions: ['csv'] },
-          { name: 'All Files', extensions: ['*'] }
-        ]
-      };
-
-      // Show save dialog (browserWindow can be null, dialog will still work)
-      const result = browserWindow 
-        ? await dialog.showSaveDialog(browserWindow, dialogOptions)
-        : await dialog.showSaveDialog(dialogOptions);
-
-      if (result.canceled || !result.filePath) {
-        return { cancelled: true };
+      let filePath;
+      if (isServerMode()) {
+        const base = process.env.POS_DATA_DIR
+          ? path.resolve(String(process.env.POS_DATA_DIR).trim())
+          : path.join(os.homedir(), '.pos-data');
+        const exportDir = path.join(base, 'exports');
+        if (!fs.existsSync(exportDir)) fs.mkdirSync(exportDir, { recursive: true });
+        filePath = path.join(exportDir, defaultFilename);
+      } else {
+        const { dialog } = require('electron');
+        const dialogOptions = {
+          title: 'Export Customers to CSV',
+          defaultPath: defaultFilename,
+          filters: [
+            { name: 'CSV Files', extensions: ['csv'] },
+            { name: 'All Files', extensions: ['*'] }
+          ]
+        };
+        const result = browserWindow
+          ? await dialog.showSaveDialog(browserWindow, dialogOptions)
+          : await dialog.showSaveDialog(dialogOptions);
+        if (result.canceled || !result.filePath) {
+          return { cancelled: true };
+        }
+        filePath = result.filePath;
       }
 
-      // Write file
-      fs.writeFileSync(result.filePath, csvContent, 'utf8');
+      fs.writeFileSync(filePath, csvContent, 'utf8');
 
-      console.log(`✅ Exported ${customers.length} customers to ${result.filePath}`);
+      console.log(`✅ Exported ${customers.length} customers to ${filePath}`);
 
       return {
         cancelled: false,
-        path: result.filePath,
+        path: filePath,
         count: customers.length
       };
     } catch (error) {
