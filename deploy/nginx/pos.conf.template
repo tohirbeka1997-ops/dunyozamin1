@@ -176,10 +176,13 @@ server {
 
         # Preflight CORS javobni Node tomondan ham qaytaradi (hostServer.cjs),
         # lekin Nginx darajasida ham OPTIONS tez javob qaytaradi:
+        # Brauzer preflight `Access-Control-Request-Headers` dagi barcha sarlavhalarni
+        # qabul qilishi kerak — aksi halos "Failed to fetch". remotePosApi.ts
+        # `ngrok-skip-browser-warning` yuboradi; Node (hostServer.cjs) `X-Client-Version`.
         if ($request_method = OPTIONS) {
             add_header Access-Control-Allow-Origin   $http_origin always;
-            add_header Access-Control-Allow-Methods  "POST, OPTIONS" always;
-            add_header Access-Control-Allow-Headers  "Authorization, Content-Type, X-Requested-With" always;
+            add_header Access-Control-Allow-Methods  "GET, POST, OPTIONS" always;
+            add_header Access-Control-Allow-Headers  "Authorization, Content-Type, X-Client-Version, X-Requested-With, ngrok-skip-browser-warning" always;
             add_header Access-Control-Max-Age        86400 always;
             add_header Content-Length 0;
             add_header Content-Type "text/plain";

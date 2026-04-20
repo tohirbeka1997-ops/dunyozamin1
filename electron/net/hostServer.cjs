@@ -72,7 +72,8 @@ function corsHeadersForRequest(req, corsOrigins) {
   return {
     'Access-Control-Allow-Origin': allowOrigin,
     'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
-    'Access-Control-Allow-Headers': 'Authorization, Content-Type, X-Client-Version',
+    'Access-Control-Allow-Headers':
+      'Authorization, Content-Type, X-Client-Version, X-Requested-With, ngrok-skip-browser-warning',
     'Access-Control-Max-Age': '86400',
   };
 }
