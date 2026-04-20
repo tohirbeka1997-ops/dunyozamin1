@@ -3,7 +3,8 @@
 @tailwind utilities;
 
 :root {
-  --dz-bg: var(--tg-theme-bg-color, #f4f6f8);
+  /* Marketplace fon — Uzum/marketplace uslubi */
+  --dz-bg: var(--tg-theme-bg-color, #f2f4f7);
 }
 
 body {

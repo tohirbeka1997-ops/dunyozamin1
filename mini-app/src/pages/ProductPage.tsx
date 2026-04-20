@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import { apiUrl } from '../lib/api';
 import { addToCart } from '../lib/cart';
@@ -23,6 +23,18 @@ export function ProductPage({ onCartChange }: { onCartChange: () => void }) {
   const [err, setErr] = useState<string | null>(null);
   const [qty, setQty] = useState(1);
   const [toast, setToast] = useState<string | null>(null);
+  const [imgIdx, setImgIdx] = useState(0);
+
+  const imageUrls = useMemo(() => {
+    if (!p) return [];
+    const fromTable = (p.images || []).map((x) => x.url).filter(Boolean);
+    if (fromTable.length) return fromTable;
+    return p.image_url ? [p.image_url] : [];
+  }, [p]);
+
+  useEffect(() => {
+    setImgIdx(0);
+  }, [id]);
 
   useEffect(() => {
     if (!id) return;
@@ -73,7 +85,7 @@ export function ProductPage({ onCartChange }: { onCartChange: () => void }) {
     );
   }
 
-  const img = p.images?.[0]?.url || p.image_url;
+  const mainImg = imageUrls[imgIdx] ?? imageUrls[0] ?? null;
 
   return (
     <div className="space-y-4">
@@ -86,13 +98,29 @@ export function ProductPage({ onCartChange }: { onCartChange: () => void }) {
       </Link>
 
       <div className="overflow-hidden rounded-2xl border border-black/[0.06] bg-white shadow-sm">
-        <div className="aspect-square w-full bg-black/[0.04]">
-          {img ? (
-            <img src={img} alt="" className="h-full w-full object-cover" />
+        <div className="aspect-square w-full bg-[#f3f4f6]">
+          {mainImg ? (
+            <img src={mainImg} alt="" className="h-full w-full object-cover" />
           ) : (
             <div className="flex h-full items-center justify-center text-5xl text-black/15">📷</div>
           )}
         </div>
+        {imageUrls.length > 1 ? (
+          <div className="flex gap-2 overflow-x-auto border-t border-black/[0.06] p-2">
+            {imageUrls.map((url, i) => (
+              <button
+                key={url + String(i)}
+                type="button"
+                onClick={() => setImgIdx(i)}
+                className={`h-14 w-14 shrink-0 overflow-hidden rounded-lg border-2 bg-[#f3f4f6] transition ${
+                  i === imgIdx ? 'border-[var(--tg-theme-button-color,#2481cc)]' : 'border-transparent opacity-80'
+                }`}
+              >
+                <img src={url} alt="" className="h-full w-full object-cover" />
+              </button>
+            ))}
+          </div>
+        ) : null}
         <div className="space-y-3 p-4">
           <h1 className="text-xl font-bold leading-snug">{p.name}</h1>
           <p className="text-2xl font-bold tabular-nums text-[var(--tg-theme-button-color,#2481cc)]">

@@ -2,11 +2,13 @@ import { useEffect, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import { apiUrl } from '../lib/api';
 import { Skeleton } from '../components/Skeleton';
+import { ProductCard } from '../components/ProductCard';
 import { useDebounce } from '../hooks/useDebounce';
 
 type Product = {
   id: string;
   name: string;
+  description?: string | null;
   price_uzs: number;
   image_url: string | null;
   is_available: boolean;
@@ -144,35 +146,17 @@ export function CatalogPage() {
             : 'Bu filtr bo‘yicha mahsulot topilmadi.'}
         </p>
       ) : (
-        <div className="grid grid-cols-2 gap-3">
+        <div className="grid grid-cols-2 gap-2.5 sm:gap-3">
           {products.map((p) => (
-            <Link
+            <ProductCard
               key={p.id}
-              to={`/product/${encodeURIComponent(p.id)}`}
-              className="group overflow-hidden rounded-2xl border border-black/[0.06] bg-white shadow-sm transition hover:border-[var(--tg-theme-button-color,#2481cc)]/25 hover:shadow-md"
-            >
-              <div className="aspect-square w-full bg-black/[0.04]">
-                {p.image_url ? (
-                  <img
-                    src={p.image_url}
-                    alt=""
-                    className="h-full w-full object-cover transition group-hover:scale-[1.02]"
-                    loading="lazy"
-                  />
-                ) : (
-                  <div className="flex h-full items-center justify-center text-3xl text-black/15">📷</div>
-                )}
-              </div>
-              <div className="p-3">
-                <div className="line-clamp-2 text-sm font-semibold leading-snug">{p.name}</div>
-                <div className="mt-1.5 text-sm font-medium tabular-nums text-black/85">
-                  {p.price_uzs.toLocaleString('uz-UZ')} so&apos;m
-                </div>
-                {!p.is_available ? (
-                  <span className="mt-1 inline-block text-xs font-medium text-red-600">Mavjud emas</span>
-                ) : null}
-              </div>
-            </Link>
+              id={p.id}
+              name={p.name}
+              price_uzs={p.price_uzs}
+              image_url={p.image_url}
+              is_available={p.is_available}
+              description={p.description}
+            />
           ))}
         </div>
       )}
