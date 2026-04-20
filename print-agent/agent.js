@@ -310,12 +310,16 @@ function corsHeadersFor(req, allowOrigins) {
     if (origin && list.includes(origin)) allowOrigin = origin;
     else return null;
   }
-  return {
+  const h = {
     'Access-Control-Allow-Origin': allowOrigin,
     'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
-    'Access-Control-Allow-Headers': 'Authorization, Content-Type',
+    'Access-Control-Allow-Headers':
+      'Authorization, Content-Type, X-Requested-With, ngrok-skip-browser-warning',
     'Access-Control-Max-Age': '86400',
   };
+  // Chrome/Edge: https://app... → http://127.0.0.1 preflight uchun (Private Network Access)
+  h['Access-Control-Allow-Private-Network'] = 'true';
+  return h;
 }
 
 function json(res, status, payload, extraHeaders = {}) {
