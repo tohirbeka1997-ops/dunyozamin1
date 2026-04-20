@@ -1,3 +1,9 @@
+DIQQAT: Agar Telegramda Web App ochilganda «POS Tizimi» login ko‘rinsa — Nginx hali
+ASOSIY loyiha distiga (kassa) qarayapti. root FAQAT /opt/pos/mini-app/dist bo‘lishi kerak.
+Mini-app build: cd /opt/pos/mini-app && npm run build
+
+---
+
 /etc/nginx/sites-enabled/pos.conf — qo‘lda tuzatish (nano)
 
 1) Fayl boshiga (upstream pos_backend dan keyin) qo‘shing:
