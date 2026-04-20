@@ -1,0 +1,23 @@
+# /opt/pos — Telegram bot (bir xil .env va POS_DATA_DIR)
+# sudo cp deploy/telegram-bot.opt-pos.service.example /etc/systemd/system/telegram-bot.service
+# sudo systemctl daemon-reload && sudo systemctl enable --now telegram-bot
+
+[Unit]
+Description=Telegram bot (Mini App)
+After=network-online.target
+
+[Service]
+Type=simple
+User=root
+Group=root
+WorkingDirectory=/opt/pos
+EnvironmentFile=-/opt/pos/.env
+ExecStart=/usr/bin/node /opt/pos/telegram/bot.cjs
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=telegram-bot
+
+[Install]
+WantedBy=multi-user.target

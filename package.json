@@ -31,6 +31,7 @@
     "i18n:translate": "python scripts/translate_locales.py",
     "telegram:bot": "node telegram/bot.cjs",
     "telegram:verify": "node scripts/verify-telegram-setup.cjs",
+    "migrate:pos": "node scripts/migrate-pos-db.cjs",
     "ngrok:rpc": "ngrok http 3333 --log=stdout",
     "ngrok:preview": "ngrok http 4173 --log=stdout",
     "ngrok:both": "node scripts/run-ngrok-both.cjs",

@@ -1,0 +1,23 @@
+# /opt/pos — Hetzner namuna (root yoki pos user ga moslang)
+# sudo cp deploy/public-api.opt-pos.service.example /etc/systemd/system/public-api.service
+# sudo systemctl daemon-reload && sudo systemctl enable --now public-api
+
+[Unit]
+Description=DunyoZamin Public API (Mini App /v1)
+After=network-online.target
+
+[Service]
+Type=simple
+User=root
+Group=root
+WorkingDirectory=/opt/pos
+EnvironmentFile=-/opt/pos/.env
+ExecStart=/usr/bin/node /opt/pos/public-api/server.cjs
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=public-api
+
+[Install]
+WantedBy=multi-user.target
