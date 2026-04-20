@@ -1,3 +1,9 @@
+Nginx xato: duplicate upstream "pos_backend" in ... pos.conf.bak...
+  — sites-enabled ichida .bak fayl qolgan. nginx hammasini yuklaydi.
+  Tuzatish: mkdir -p /root/nginx-pos-backups && mv /etc/nginx/sites-enabled/*.bak* /root/nginx-pos-backups/ 2>/dev/null; nginx -t
+
+---
+
 DIQQAT: Agar Telegramda Web App ochilganda «POS Tizimi» login ko‘rinsa — Nginx hali
 ASOSIY loyiha distiga (kassa) qarayapti. root FAQAT /opt/pos/mini-app/dist bo‘lishi kerak.
 Mini-app build: cd /opt/pos/mini-app && npm run build

@@ -12,8 +12,11 @@ if [[ ! -f "$CONF" ]]; then
   exit 1
 fi
 
-cp -a "$CONF" "${CONF}.bak.$(date +%s)"
-echo "Zaxira: ${CONF}.bak.*"
+# MUHIM: zaxira sites-enabled ichida bo'lmasin — nginx *.bak fayllarni ham o'qiydi (duplicate upstream)
+BACKUP_DIR="${BACKUP_DIR:-/root/nginx-pos-backups}"
+mkdir -p "$BACKUP_DIR"
+cp -a "$CONF" "$BACKUP_DIR/pos.conf.bak.$(date +%s)"
+echo "Zaxira: $BACKUP_DIR/pos.conf.bak.*"
 
 python3 "$ROOT/deploy/scripts/patch-nginx-miniapp.py" "$CONF"
 
