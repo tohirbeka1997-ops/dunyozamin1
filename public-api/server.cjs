@@ -123,7 +123,9 @@ function main() {
           console.log('[public-api] expired web_orders cancelled:', r.changes);
         }
       } catch (e) {
-        if (String(e.message || '').includes('no such column')) return;
+        const msg = String(e.message || '');
+        if (msg.includes('no such column')) return;
+        if (msg.includes('no such table')) return;
         console.error('[public-api] expire scheduler', e);
       }
     }, 60_000);
