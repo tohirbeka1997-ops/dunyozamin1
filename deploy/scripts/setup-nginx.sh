@@ -130,19 +130,20 @@ if [[ "$SKIP_CERTBOT" == "1" ]]; then
   warn "SKIP_CERTBOT=1 — Let's Encrypt o'tkazib yuborildi. HTTPS yo'q."
 else
   log "Let's Encrypt sertifikat olish…"
-  DOMAINS_ARG="-d $DOMAIN"
+  # Har bir -d alohida argument bo'lishi kerak (aks holda certbot bitta nom sifatida
+  # "app... -d api..." ni oladi va Let's Encrypt "invalid character" beradi).
+  CERTBOT_DOMAINS=(-d "$DOMAIN")
   if [[ "$API_DOMAIN" != "$DOMAIN" ]]; then
-    DOMAINS_ARG="$DOMAINS_ARG -d $API_DOMAIN"
+    CERTBOT_DOMAINS+=(-d "$API_DOMAIN")
   fi
 
-  # shellcheck disable=SC2086
   certbot --nginx \
     --non-interactive \
     --agree-tos \
     --email "$EMAIL" \
     --redirect \
     --no-eff-email \
-    $DOMAINS_ARG
+    "${CERTBOT_DOMAINS[@]}"
   ok "HTTPS yoqildi — sertifikat avtomatik yangilanadi"
 
   # Timer holati
