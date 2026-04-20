@@ -1,0 +1,52 @@
+/etc/nginx/sites-enabled/pos.conf — qo‘lda tuzatish (nano)
+
+1) Fayl boshiga (upstream pos_backend dan keyin) qo‘shing:
+
+upstream public_api {
+    server 127.0.0.1:3334;
+    keepalive 16;
+}
+
+2) HTTPS server { } ichida toping va almashtiring:
+
+   root /var/www/pos;
+   →
+   root /opt/pos/mini-app/dist;
+
+3) X-Frame-Options "DENY" qatorini IZOHLANG yoki O‘CHIRING (Telegram Mini App uchun).
+
+4) Content-Security-Policy ichida:
+   - frame-ancestors 'none'  →  frame-ancestors https://web.telegram.org https://telegram.org 'self';
+   - connect-src ... qatoriga kerak bo‘lsa: https://web.telegram.org
+
+5) location / { dan OLDIN (SPA dan oldin) qo‘shing:
+
+    location /v1/ {
+        proxy_pass http://public_api;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_read_timeout 120s;
+        client_max_body_size 2m;
+    }
+
+    location = /health {
+        proxy_pass http://public_api/health;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        access_log off;
+    }
+
+   Eslatma: avvalgi "location = /health" bloki pos_backend (3333) ga bo‘lsa — uni yuqoridagi bilan almashtiring.
+   POS server health: server ichidan curl http://127.0.0.1:3333/health
+
+6) Tekshirish:
+
+   nginx -t && systemctl reload nginx
+   curl -sS https://app.dunyozamin.com/health
+   curl -sS -o /dev/null -w "%{http_code}" https://app.dunyozamin.com/
