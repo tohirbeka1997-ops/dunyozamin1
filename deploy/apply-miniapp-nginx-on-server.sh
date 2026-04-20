@@ -15,6 +15,14 @@ fi
 # MUHIM: zaxira sites-enabled ichida bo'lmasin — nginx *.bak fayllarni ham o'qiydi (duplicate upstream)
 BACKUP_DIR="${BACKUP_DIR:-/root/nginx-pos-backups}"
 mkdir -p "$BACKUP_DIR"
+# Avvalgi marta yaratilgan pos.conf.bak.* hali sites-enabled da bo'lishi mumkin
+shopt -s nullglob
+for f in /etc/nginx/sites-enabled/pos.conf.bak.*; do
+  echo "sites-enabled dan zaxiraga ko'chirilmoqda: $f"
+  mv "$f" "$BACKUP_DIR/"
+done
+shopt -u nullglob
+
 cp -a "$CONF" "$BACKUP_DIR/pos.conf.bak.$(date +%s)"
 echo "Zaxira: $BACKUP_DIR/pos.conf.bak.*"
 
