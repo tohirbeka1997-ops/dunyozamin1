@@ -12,7 +12,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
-import { Sheet, SheetContent, SheetTrigger } from '@/components/ui/sheet';
+import { Sheet, SheetContent, SheetTitle } from '@/components/ui/sheet';
 import {
   Store,
   LayoutDashboard,
@@ -39,6 +39,7 @@ import {
   Tag,
   Search,
   ChevronDown,
+  Globe,
 } from 'lucide-react';
 import { useTheme } from '@/hooks/use-theme';
 import routes, { type RouteConfig } from '@/routes';
@@ -49,6 +50,7 @@ const iconMap: Record<string, React.ReactNode> = {
   Products: <Package className="h-5 w-5" />,
   Categories: <FolderTree className="h-5 w-5" />,
   Orders: <Receipt className="h-5 w-5" />,
+  'Online Orders': <Globe className="h-5 w-5" />,
   'Sales Returns': <RotateCcw className="h-5 w-5" />,
   Customers: <Users className="h-5 w-5" />,
   Inventory: <Warehouse className="h-5 w-5" />,
@@ -70,6 +72,7 @@ const routeNameMap: Record<string, string> = {
   'Products': 'navigation.products',
   'Categories': 'navigation.categories',
   'Orders': 'navigation.orders',
+  'Online Orders': 'navigation.web_online_orders',
   'Sales Returns': 'navigation.sales_returns',
   'Customers': 'navigation.customers',
   'Inventory': 'navigation.inventory',
@@ -263,7 +266,97 @@ export default function MainLayout({ children }: { children: React.ReactNode }) 
 
       {/* Main Content — min-w-0: flex qatorida kontent kengayib o‘ngda bo‘sh joy qolmasin */}
       <div className="flex min-h-0 min-w-0 flex-1 basis-0 flex-col overflow-hidden">
-        {/* Header removed per request (top Online menu / status bar) */}
+        {/* Mobil / planshet: sidebar yo‘q — chap menyu Sheet orqali */}
+        <header className="flex shrink-0 items-center gap-2 border-b bg-card px-3 py-2 pt-[max(0.5rem,env(safe-area-inset-top))] xl:hidden">
+          <Sheet open={mobileMenuOpen} onOpenChange={setMobileMenuOpen}>
+            <Button
+              type="button"
+              variant="outline"
+              size="icon"
+              className="shrink-0"
+              onClick={() => setMobileMenuOpen(true)}
+              aria-label={t('navigation.open_menu')}
+            >
+              <Menu className="h-5 w-5" />
+            </Button>
+            <SheetContent
+              side="left"
+              className="flex h-full min-h-0 w-[min(100vw-1rem,20rem)] flex-col gap-0 overflow-hidden p-0 sm:max-w-[20rem]"
+            >
+              <SheetTitle className="sr-only">{t('navigation.menu')}</SheetTitle>
+              <div className="border-b p-4">
+                <div className="flex items-center gap-2">
+                  <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-primary">
+                    <Store className="h-6 w-6 text-primary-foreground" />
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <p className="truncate font-bold">{t('common.pos_system')}</p>
+                    <p className="truncate text-xs text-muted-foreground">{t('common.point_of_sale')}</p>
+                  </div>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="shrink-0"
+                    onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}
+                    title={theme === 'dark' ? 'Light mode' : 'Night mode'}
+                  >
+                    {theme === 'dark' ? <Sun className="h-5 w-5" /> : <Moon className="h-5 w-5" />}
+                  </Button>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setMobileMenuOpen(false);
+                    setGlobalSearchOpen(true);
+                  }}
+                  className="mt-3 flex w-full items-center gap-2 rounded-lg border border-border bg-muted/50 px-3 py-2 text-left text-sm text-muted-foreground transition-colors hover:bg-muted"
+                >
+                  <Search className="h-4 w-4 shrink-0" />
+                  <span className="truncate">{t('navigation.sidebar_search_placeholder')}</span>
+                </button>
+              </div>
+              <nav className="min-h-0 flex-1 space-y-1 overflow-y-auto p-4">
+                <NavLinks />
+              </nav>
+              <div className="border-t p-4">
+                <div className="mb-3 flex items-center gap-3">
+                  <div className="flex h-10 w-10 items-center justify-center rounded-full bg-primary/10">
+                    <User className="h-5 w-5 text-primary" />
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <p className="truncate text-sm font-medium">{user?.full_name || user?.email}</p>
+                    <p className="truncate text-xs capitalize text-muted-foreground">{user?.role}</p>
+                  </div>
+                </div>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="w-full"
+                  onClick={() => {
+                    setMobileMenuOpen(false);
+                    void handleSignOut();
+                  }}
+                >
+                  <LogOut className="mr-2 h-4 w-4" />
+                  {t('common.sign_out')}
+                </Button>
+              </div>
+            </SheetContent>
+          </Sheet>
+          <Link to="/" className="min-w-0 flex-1 truncate text-center font-semibold">
+            {t('common.pos_system')}
+          </Link>
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon"
+            className="shrink-0"
+            onClick={() => setGlobalSearchOpen(true)}
+            aria-label={t('navigation.sidebar_global_search')}
+          >
+            <Search className="h-5 w-5" />
+          </Button>
+        </header>
 
         {/* Page Content - flex so children (e.g. POS) can fill full height */}
         {/* POS: overflow-hidden so content fits viewport; other pages: overflow-y-auto for scroll */}

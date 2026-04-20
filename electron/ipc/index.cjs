@@ -190,6 +190,9 @@ function registerAllHandlers() {
   registerUsersHandlers(services);
   console.log('Registering orders handlers...');
   registerOrdersHandlers(services);
+  const { registerWebOrdersHandlers } = require('./webOrders.ipc.cjs');
+  console.log('Registering web orders handlers...');
+  registerWebOrdersHandlers(services);
 
   console.log('Registering files handlers...');
   registerFilesHandlers();

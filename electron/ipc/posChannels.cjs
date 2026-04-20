@@ -190,6 +190,11 @@ module.exports = {
     'pos:orders:list',
     'pos:orders:get',
 
+    // Onlayn buyurtmalar (marketplace / Telegram)
+    'pos:webOrders:list',
+    'pos:webOrders:get',
+    'pos:webOrders:updateStatus',
+
     // Users
     'pos:users:list',
     'pos:users:get',

@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
+import { useState, useEffect, useLayoutEffect, useCallback, useRef, useMemo } from 'react';
 import { flushSync } from 'react-dom';
 import { Button } from '@/components/ui/button';
 import { Checkbox } from '@/components/ui/checkbox';
@@ -144,9 +144,9 @@ import { buildReceiptInputFromPos } from '@/lib/receipts/receiptModel';
 import { formatOrderDateTime } from '@/lib/datetime';
 import { buildReceiptLines, DEFAULT_CHARS_PER_LINE, DEFAULT_CHARS_PER_LINE_58 } from '@/lib/receipts/receiptTextBuilder';
 import { printEscposReceipt } from '@/lib/receipts/escposPrint';
-import { isElectron } from '@/utils/electron';
+import { isElectron, getElectronAPI, handleIpcResponse } from '@/utils/electron';
 import { getProductImageDisplayUrl } from '@/lib/productImageUrl';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useLocation } from 'react-router-dom';
 import { useDebounce } from '@/hooks/use-debounce';
 import Fuse from 'fuse.js';
 import { highlightMatch } from '@/utils/searchHighlight';
@@ -156,6 +156,7 @@ export default function POSTerminal() {
   const { t } = useTranslation();
   const { toast } = useToast();
   const navigate = useNavigate();
+  const location = useLocation();
   const { profile } = useAuth();
   const { currentShift, addSale, addRefund } = useShiftStore();
   const { addMovement } = useInventoryStore();
@@ -170,6 +171,8 @@ export default function POSTerminal() {
     getRecentSearches('pos')
   );
   const [cart, setCart] = useState<CartItem[]>([]);
+  const cartRef = useRef(cart);
+  cartRef.current = cart;
   const [cartWithPromos, setCartWithPromos] = useState<CartItem[]>([]);
   const [selectedCustomer, setSelectedCustomer] = useState<Customer | null>(null);
   const [customers, setCustomers] = useState<Customer[]>([]);
@@ -220,6 +223,9 @@ export default function POSTerminal() {
   const [waitingOrdersDialogOpen, setWaitingOrdersDialogOpen] = useState(false);
   const [restoreConfirmOpen, setRestoreConfirmOpen] = useState(false);
   const [orderToRestore, setOrderToRestore] = useState<HeldOrder | null>(null);
+  const [importWebOrderDialogOpen, setImportWebOrderDialogOpen] = useState(false);
+  const [pendingWebOrderImportId, setPendingWebOrderImportId] = useState<number | null>(null);
+  const webOrderImportProcessedRef = useRef<string | null>(null);
 
   // New state for premium features
   const [categories, setCategories] = useState<Category[]>([]);
@@ -1724,6 +1730,214 @@ export default function POSTerminal() {
       const ms = Math.round(performance.now() - perfStart);
       console.debug(`[POS PERF] add_to_cart ${product.id} → ${ms}ms`);
     }
+  };
+
+  const importWebOrderIntoCart = useCallback(
+    async (webOrderId: number) => {
+      if (exchangeReturnMode) {
+        toast({
+          variant: 'destructive',
+          title: t('common.error'),
+          description: t('web_orders.import_exchange_mode'),
+        });
+        return;
+      }
+      const api = getElectronAPI();
+      if (!api?.webOrders?.get) {
+        toast({
+          variant: 'destructive',
+          title: t('common.error'),
+          description: t('web_orders.import_failed'),
+        });
+        return;
+      }
+      try {
+        const order = await handleIpcResponse<Record<string, unknown> & { items?: Array<Record<string, unknown>> } | null>(
+          api.webOrders.get(webOrderId),
+        );
+        if (!order) {
+          toast({
+            variant: 'destructive',
+            title: t('common.error'),
+            description: t('web_orders.import_failed'),
+          });
+          return;
+        }
+        const st = String(order.status || '');
+        if (st === 'cancelled' || st === 'delivered') {
+          toast({
+            variant: 'destructive',
+            title: t('common.error'),
+            description: t('web_orders.import_blocked_status'),
+          });
+          return;
+        }
+        const lines = Array.isArray(order.items) ? order.items : [];
+        if (lines.length === 0) {
+          toast({
+            variant: 'destructive',
+            title: t('common.error'),
+            description: t('web_orders.import_empty_lines'),
+          });
+          return;
+        }
+
+        const built: CartItem[] = [];
+        const skipped: string[] = [];
+        let stockClamped = 0;
+
+        for (const line of lines) {
+          const pid = String(line.product_id ?? '');
+          if (!pid) continue;
+          const rawProduct = await getProductById(pid);
+          if (!rawProduct) {
+            skipped.push(pid);
+            continue;
+          }
+          const product = await resolveProductForCart(rawProduct as Product);
+          const qtyRaw = Number(line.quantity || 0) || 0;
+          const { saleUnit: resolvedUnit, ratio_to_base, sale_price } = getSaleUnitConfig(product);
+          let validQty = clampQuantityForUnit(qtyRaw, resolvedUnit);
+          const maxAllowed = getMaxSaleQty(product, ratio_to_base, resolvedUnit);
+          if (maxAllowed > 0 && validQty > maxAllowed) {
+            validQty = maxAllowed;
+            stockClamped += 1;
+          }
+          if (validQty <= 0) {
+            skipped.push(pid);
+            continue;
+          }
+
+          const locked = Number(line.price_at_order ?? 0) || 0;
+          const qtyBase = toBaseQty(validQty, ratio_to_base);
+          let unitPrice = locked;
+          let priceTier: CartItem['price_tier'] = 'retail';
+          let priceSource: CartItem['price_source'] = 'manual';
+          let overridden = locked > 0;
+
+          if (!overridden) {
+            const priced = getLinePricing(product, qtyBase, selectedCustomer, sale_price, ratio_to_base, resolvedUnit);
+            unitPrice = priced.unitPrice;
+            priceTier = priced.priceTier as CartItem['price_tier'];
+            priceSource = 'tier';
+          }
+
+          const subtotal = unitPrice * validQty;
+          built.push({
+            product,
+            quantity: validQty,
+            sale_unit: resolvedUnit,
+            qty_sale: validQty,
+            qty_base: qtyBase,
+            ratio_to_base,
+            unit_price: unitPrice,
+            price_tier: priceTier,
+            price_source: priceSource,
+            is_price_overridden: overridden,
+            discount_amount: 0,
+            subtotal,
+            total: subtotal,
+          });
+        }
+
+        if (built.length === 0) {
+          toast({
+            variant: 'destructive',
+            title: t('common.error'),
+            description: t('web_orders.import_no_products'),
+          });
+          return;
+        }
+
+        setCart(built);
+        setDiscount({ type: 'amount', value: '' });
+        setPromoCodeInput('');
+        setLoyaltyRedeemPoints(0);
+        setSelectedCartIndex(0);
+
+        toast({
+          title: t('web_orders.import_success'),
+          description: t('web_orders.import_lines_loaded', { n: built.length }),
+          className: 'bg-green-50 border-green-200',
+        });
+        if (skipped.length > 0) {
+          toast({
+            variant: 'destructive',
+            title: t('web_orders.import_partial'),
+            description: t('web_orders.import_skipped_ids', { ids: skipped.slice(0, 8).join(', ') }),
+          });
+        }
+        if (stockClamped > 0) {
+          toast({
+            title: t('web_orders.import_stock_clamped_title'),
+            description: t('web_orders.import_stock_clamped_desc', { n: stockClamped }),
+          });
+        }
+
+        if (api.webOrders?.updateStatus && (st === 'new' || st === 'paid')) {
+          try {
+            await handleIpcResponse(api.webOrders.updateStatus(webOrderId, 'processing'));
+          } catch {
+            /* Holatni yangilab bo‘lmasa ham savat importi muvaffaqiyatli */
+          }
+        }
+      } catch (e: unknown) {
+        const msg = e instanceof Error ? e.message : String(e);
+        toast({
+          variant: 'destructive',
+          title: t('web_orders.import_failed'),
+          description: msg,
+        });
+      }
+    },
+    [
+      exchangeReturnMode,
+      toast,
+      t,
+      getSaleUnitConfig,
+      resolveProductForCart,
+      selectedCustomer,
+      getLinePricing,
+      clampQuantityForUnit,
+      getMaxSaleQty,
+      toBaseQty,
+      getProductById,
+    ],
+  );
+
+  useLayoutEffect(() => {
+    const raw = (location.state as { importWebOrderId?: number } | null)?.importWebOrderId;
+    if (raw == null || raw === undefined) return;
+    const id = Number(raw);
+    if (!Number.isFinite(id) || id <= 0) return;
+    const token = `${location.key}:${id}`;
+    if (webOrderImportProcessedRef.current === token) return;
+    webOrderImportProcessedRef.current = token;
+    navigate('/pos', { replace: true, state: {} });
+    if (cartRef.current.length > 0) {
+      setPendingWebOrderImportId(id);
+      setImportWebOrderDialogOpen(true);
+    } else {
+      void importWebOrderIntoCart(id);
+    }
+  }, [location.state, location.key, navigate, importWebOrderIntoCart]);
+
+  const handleConfirmWebOrderImport = () => {
+    const id = pendingWebOrderImportId;
+    if (id == null) return;
+    setCart([]);
+    setDiscount({ type: 'amount', value: '' });
+    resetCustomerSelection();
+    setPromoCodeInput('');
+    setLoyaltyRedeemPoints(0);
+    setImportWebOrderDialogOpen(false);
+    setPendingWebOrderImportId(null);
+    void importWebOrderIntoCart(id);
+  };
+
+  const handleCancelWebOrderImport = () => {
+    setPendingWebOrderImportId(null);
+    setImportWebOrderDialogOpen(false);
   };
 
   const updateQuantity = (
@@ -5129,6 +5343,24 @@ export default function POSTerminal() {
             <AlertDialogAction onClick={() => orderToRestore && restoreOrder(orderToRestore)}>
               {t('pos.replace')}
             </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      <AlertDialog
+        open={importWebOrderDialogOpen}
+        onOpenChange={(open) => {
+          if (!open) handleCancelWebOrderImport();
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>{t('web_orders.import_replace_cart_title')}</AlertDialogTitle>
+            <AlertDialogDescription>{t('web_orders.import_replace_cart_desc')}</AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel onClick={handleCancelWebOrderImport}>{t('pos.cancel')}</AlertDialogCancel>
+            <AlertDialogAction onClick={handleConfirmWebOrderImport}>{t('pos.replace')}</AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>

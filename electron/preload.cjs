@@ -386,6 +386,12 @@ contextBridge.exposeInMainWorld('posApi', {
     cancel: (id) => invoke('pos:orders:cancel', id),
   },
 
+  webOrders: {
+    list: (filters) => invoke('pos:webOrders:list', filters),
+    get: (id) => invoke('pos:webOrders:get', id),
+    updateStatus: (id, status) => invoke('pos:webOrders:updateStatus', id, status),
+  },
+
   // Files (export/backups/import)
   files: {
     selectSavePath: (defaultName) => invoke('pos:files:selectSavePath', defaultName),

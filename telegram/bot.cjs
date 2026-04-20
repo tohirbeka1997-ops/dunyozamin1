@@ -1,6 +1,7 @@
 /**
  * Telegram bot: /start → Mini App tugmasi.
  * Run: npm run telegram:bot
+ * Serverda doimiy ishlatish: telegram/SERVER-UZ.md va telegram/telegram-bot.service.example
  */
 const path = require('path');
 const fs = require('fs');
@@ -37,10 +38,15 @@ for (const k of [
 }
 
 const { Telegraf, Markup } = require('telegraf');
+const { listRecentWebOrders } = require('./lib/publicApiDb.cjs');
 
 const token = String(process.env.TELEGRAM_BOT_TOKEN || '').trim();
 const webAppUrl = String(
   process.env.TELEGRAM_WEB_APP_URL || process.env.VITE_APP_PUBLIC_URL || '',
+).trim();
+const contactText = String(
+  process.env.TELEGRAM_CONTACT_TEXT ||
+    "Savollar uchun do'kon administratoriga yozing.",
 ).trim();
 
 if (!token || !webAppUrl) {
@@ -60,12 +66,54 @@ if (!String(webAppUrl).startsWith('https://')) {
 
 const bot = new Telegraf(token);
 
-bot.start((ctx) =>
-  ctx.reply(
-    'POS',
-    Markup.keyboard([[Markup.button.webApp('POS', webAppUrl)]]).resize(),
-  ),
-);
+function formatOrdersMessage(result) {
+  if (!result.ok) {
+    if (result.reason === 'migrations_pending') {
+      return "Onlayn buyurtmalar jadvali hali yoqilmagan (serverda migratsiya kerak).";
+    }
+    return `Ma'lumotlar bazasiga ulanib bo'lmadi. Keyinroq urinib ko'ring.\n(${result.reason || 'xato'})`;
+  }
+  if (!result.rows.length) {
+    return "Hozircha onlayn buyurtmalar yo'q.";
+  }
+  const lines = result.rows.map((r, i) => {
+    const sum = Number(r.total_amount) || 0;
+    const d = r.created_at ? String(r.created_at).replace('T', ' ').slice(0, 16) : '';
+    return `${i + 1}. ${r.order_number} — ${r.status} — ${sum.toLocaleString('uz-UZ')} so'm\n   ${d}`;
+  });
+  return "So'nggi buyurtmalar:\n\n" + lines.join('\n\n');
+}
+
+bot.start(async (ctx) => {
+  const name = ctx.from?.first_name || '';
+  await ctx.reply(
+    `Assalomu alaykum${name ? ', ' + name : ''}!\n\nDunyoZamin onlayn do'koniga xush kelibsiz.`,
+    Markup.inlineKeyboard([
+      [Markup.button.webApp("🛍 Do'kon", webAppUrl)],
+      [Markup.button.callback('📦 Buyurtmalarim', 'orders_recent')],
+      [Markup.button.callback('📞 Bog\'lanish', 'contact_info')],
+    ]),
+  );
+});
+
+bot.action('orders_recent', async (ctx) => {
+  await ctx.answerCbQuery();
+  const tgId = ctx.from?.id;
+  if (tgId == null) return;
+  const msg = formatOrdersMessage(listRecentWebOrders(tgId, 5));
+  await ctx.reply(msg);
+});
+
+bot.action('contact_info', async (ctx) => {
+  await ctx.answerCbQuery();
+  await ctx.reply(contactText);
+});
+
+bot.command('orders', async (ctx) => {
+  const tgId = ctx.from?.id;
+  if (tgId == null) return;
+  await ctx.reply(formatOrdersMessage(listRecentWebOrders(tgId, 10)));
+});
 
 bot.catch((err, ctx) => {
   console.error('[telegram:bot] error', err, ctx?.update);

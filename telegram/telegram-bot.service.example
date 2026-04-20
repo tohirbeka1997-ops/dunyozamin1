@@ -1,0 +1,35 @@
+# Namuna: Linux systemd — Telegram bot (Telegraf).
+# Loyiha ildizi va foydalanuvchini o'z serveringizga moslang.
+#
+# O'rnatish:
+#   sudo cp telegram/telegram-bot.service.example /etc/systemd/system/telegram-bot.service
+#   sudo nano /etc/systemd/system/telegram-bot.service   # User, WorkingDirectory, EnvironmentFile
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now telegram-bot
+#   sudo journalctl -u telegram-bot -f
+
+[Unit]
+Description=Telegram bot (Mini App + buyurtmalar)
+After=network-online.target
+Wants=network-online.target
+# Agar public-api alohida xizmat bo'lsa: After=public-api.service
+
+[Service]
+Type=simple
+User=pos
+Group=pos
+WorkingDirectory=/home/pos/app
+# pos.db bilan bir xil joy — public-api/bot bilan bir ma'lumotlar bazasi
+EnvironmentFile=-/home/pos/app/.env
+ExecStart=/usr/bin/node /home/pos/app/telegram/bot.cjs
+Restart=always
+RestartSec=5
+# Bir vaqtning o'zida faqat bitta bot jarayoni (409 Conflict oldini olish)
+# LimitNOFILE=65535
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=telegram-bot
+
+[Install]
+WantedBy=multi-user.target

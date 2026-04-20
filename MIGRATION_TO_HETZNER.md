@@ -14,7 +14,8 @@ rejimiga o'tkazishni tushuntiradi. Electron rejimi saqlanadi; bu qadam faqat
    posApi)  RPC_URL)                │   └─► /rpc, /health → 127.0.0.1│
                                     │                     :3333      │
                                     │ Node.js:                       │
-                                    │   electron/server.cjs          │
+                                    │   electron/server.cjs (RPC)    │
+                                    │   telegram/bot.cjs (Telegraf)  │
                                     │   → services/ → SQLite         │
                                     │                                │
                                     │ /var/lib/pos/                  │
@@ -376,6 +377,30 @@ Test:
 curl http://127.0.0.1:3333/health
 ```
 
+### 3.1. Telegram bot (do'kon / Mini App)
+
+Do'kon uchun **Telegraf** botini **shu VPS** da doimiy ishlatish — `pos-server` bilan **bir xil** loyiha katalogi va **bir xil** `.env` (`POS_DATA_DIR` → `pos.db`); "Buyurtmalarim" shu bazadan o'qiladi.
+
+**Oldindan `.env`:** `TELEGRAM_BOT_TOKEN` (@BotFather), HTTPS manzil — `TELEGRAM_WEB_APP_URL` yoki `VITE_APP_PUBLIC_URL` (odatda keyinroq **§4** dagi `https://app.<domen>`; SSL bo'lmagan `http://` Telegram qabul qilmaydi).
+
+Namuna xizmat fayli: `telegram/telegram-bot.service.example`. Batafsil: `telegram/SERVER-UZ.md`.
+
+```bash
+sudo cp /home/pos/app/telegram/telegram-bot.service.example /etc/systemd/system/telegram-bot.service
+sudo nano /etc/systemd/system/telegram-bot.service
+# User, WorkingDirectory, EnvironmentFile=.../.env , ExecStart yo'llarini tekshiring
+
+sudo systemctl daemon-reload
+sudo systemctl enable --now telegram-bot
+sudo systemctl status telegram-bot
+sudo journalctl -u telegram-bot -f
+```
+
+**Eslatmalar:**
+
+- Bitta token uchun **faqat bitta** jarayon — boshqa PC yoki ikkinchi serverda shu botni parallel ishga tushirmang (**409 Conflict**).
+- Ixtiyoriy tartib: `[Unit]` ichida `After=pos-server.service` — RPC avval, keyin bot (majburiy emas; bot faqat Telegram API bilan long-polling qiladi).
+
 ---
 
 ## 4. Nginx + SSL
@@ -436,6 +461,17 @@ sudo nginx -t && sudo systemctl reload nginx
 # SSL
 sudo certbot --nginx -d app.your-domain.uz -d api.your-domain.uz
 ```
+
+### 4.1. Telegram Mini App + Public API (bir domen)
+
+Telegram **Web App** uchun HTTPS va (tavsiya) **bir xil hostda** SPA + `/v1` API — brauzer `VITE_PUBLIC_API_URL` ni bo'sh qoldirib, so'rovlarni `/v1/...` ga yuboradi; Nginx ularni `127.0.0.1:3334` (public-api) ga proxylaydi.
+
+1. **`public-api` systemd:** `deploy/public-api.service.example` → `public-api.service`, `sudo systemctl enable --now public-api`, `curl http://127.0.0.1:3334/health`.
+2. **Mini App build:** `mini-app/DEPLOY-UZ.md` — `cd mini-app && npm run build`, `dist/` ni Nginx `root` ga.
+3. **Nginx:** `deploy/nginx-mini-app-same-origin.example.conf` (`server_name`, `root` ni moslang).
+4. **`.env`:** `TELEGRAM_WEB_APP_URL=https://app.<domen>` — bot (`TELEGRAM_BOT_TOKEN`) va server bir xil token; `POS_DATA_DIR` — `pos.db`.
+
+To'liq qadamlar: **`mini-app/DEPLOY-UZ.md`**.
 
 ---
 
@@ -1135,6 +1171,7 @@ Yoki GitHub Actions UI'da `deploy-backend` workflow'ni "Re-run" qilish va
 - [ ] Yangi sale yaratish ishlaydi
 - [ ] SQLite backup'lari `/var/lib/pos/backups/`da paydo bo'ladi
 - [ ] systemd qayta yoqilganda server avtomatik ishga tushadi
+- [ ] (ixtiyoriy) `telegram-bot` xizmati: `systemctl status telegram-bot` → `active`, `journalctl -u telegram-bot` da `[telegram:bot] running`; Telegramda `/start` javob beradi (bitta token — bitta VPS)
 - [ ] `journalctl -u pos-server` xatosiz
 - [ ] Kassada `curl http://127.0.0.1:9100/health` javob beradi
 - [ ] `POST /print/test` lokal agentda fizik chek chiqaradi

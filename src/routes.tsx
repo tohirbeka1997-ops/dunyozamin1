@@ -8,6 +8,7 @@ import ProductDetailRedirect from './pages/ProductDetailRedirect';
 import Categories from './pages/Categories';
 import CategoryDetail from './pages/CategoryDetail';
 import Orders from './pages/Orders';
+import WebOrders from './pages/WebOrders';
 import OrderDetail from './pages/OrderDetail';
 import Customers from './pages/Customers';
 import CustomerForm from './pages/CustomerForm';
@@ -240,6 +241,14 @@ const routes: RouteConfig[] = [
     element: <Orders />,
     visible: true,
     requireAuth: true,
+  },
+  {
+    name: 'Online Orders',
+    path: '/web-orders',
+    element: <WebOrders />,
+    visible: true,
+    requireAuth: true,
+    allowedRoles: ['admin', 'manager'],
   },
   {
     name: 'Order Detail',

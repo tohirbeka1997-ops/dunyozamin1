@@ -963,6 +963,14 @@ function createRpcDispatcher({ services, db, sessions }) {
         return { success: true, id: orderId, status: 'cancelled' };
       }
 
+      // Onlayn buyurtmalar (Telegram / marketplace) — admin/manager
+      case 'pos:webOrders:list':
+        return services.webOrders.list(a[0] || {});
+      case 'pos:webOrders:get':
+        return services.webOrders.get(a[0]);
+      case 'pos:webOrders:updateStatus':
+        return services.webOrders.updateStatus(a[0], a[1]);
+
       // ======================================================================
       // Suppliers — extra
       // ======================================================================

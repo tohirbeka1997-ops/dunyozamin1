@@ -29,6 +29,7 @@ import {
   FileText,
   Barcode,
   Clock,
+  Globe,
 } from 'lucide-react';
 import { searchProducts, getCustomers } from '@/db/api';
 import type { ProductWithCategory, Customer } from '@/types/database';
@@ -42,6 +43,7 @@ const NAV_ITEMS = [
   { name: 'POS Terminal', path: '/pos', icon: <ShoppingCart className="h-4 w-4" />, keywords: 'savdo kassa' },
   { name: 'Mahsulotlar', path: '/products', icon: <Package className="h-4 w-4" />, keywords: 'products tovarlar' },
   { name: 'Buyurtmalar', path: '/orders', icon: <Receipt className="h-4 w-4" />, keywords: 'orders' },
+  { name: 'Onlayn buyurtmalar', path: '/web-orders', icon: <Globe className="h-4 w-4" />, keywords: 'web online telegram marketplace' },
   { name: 'Qaytarishlar', path: '/returns', icon: <RotateCcw className="h-4 w-4" />, keywords: 'returns returns' },
   { name: 'Mijozlar', path: '/customers', icon: <Users className="h-4 w-4" />, keywords: 'customers clients' },
   { name: 'Ombor', path: '/inventory', icon: <Warehouse className="h-4 w-4" />, keywords: 'inventory sklad' },

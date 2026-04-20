@@ -594,6 +594,11 @@ export function createRemotePosApi(baseUrl: string, secret: string) {
       getByCustomer: inv('pos:orders:getByCustomer'),
       cancel: inv('pos:orders:cancel'),
     },
+    webOrders: {
+      list: inv('pos:webOrders:list'),
+      get: inv('pos:webOrders:get'),
+      updateStatus: inv('pos:webOrders:updateStatus'),
+    },
     files: {
       selectSavePath: inv('pos:files:selectSavePath'),
       writeFile: inv('pos:files:writeFile'),

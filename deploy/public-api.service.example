@@ -1,0 +1,25 @@
+# systemd — Public API (Mini App, Telegram auth, buyurtmalar). Port: PUBLIC_API_PORT (default 3334)
+#
+# sudo cp deploy/public-api.service.example /etc/systemd/system/public-api.service
+# sudo nano /etc/systemd/system/public-api.service
+# sudo systemctl daemon-reload && sudo systemctl enable --now public-api
+
+[Unit]
+Description=DunyoZamin Public API (Mini App /v1)
+After=network-online.target
+
+[Service]
+Type=simple
+User=pos
+Group=pos
+WorkingDirectory=/home/pos/app
+EnvironmentFile=-/home/pos/app/.env
+ExecStart=/usr/bin/node /home/pos/app/public-api/server.cjs
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=public-api
+
+[Install]
+WantedBy=multi-user.target

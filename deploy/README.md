@@ -7,6 +7,8 @@ o'z ichiga oladi. Asosiy arxitektura `MIGRATION_TO_HETZNER.md`da.
 
 ```
 deploy/
+├── nginx-mini-app-same-origin.example.conf  # Mini App SPA + /v1 → public-api (bir domen)
+├── public-api.service.example   # systemd: public-api (port 3334)
 ├── nginx/
 │   └── pos.conf.template        # Parametrli vhost shabloni (Nginx)
 ├── scripts/
