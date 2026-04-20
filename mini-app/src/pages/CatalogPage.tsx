@@ -62,7 +62,7 @@ export function CatalogPage() {
     <div className="space-y-5">
       <div>
         <h1 className="text-xl font-bold tracking-tight">Katalog</h1>
-        <p className="mt-0.5 text-sm text-black/50">Kategoriya va saralash</p>
+        <p className="mt-0.5 text-sm text-[var(--dz-soft)]">Kategoriya va saralash</p>
       </div>
 
       {err ? (
@@ -80,7 +80,7 @@ export function CatalogPage() {
           placeholder="Nomi, SKU yoki shtrix-kod bo‘yicha qidiring"
           enterKeyHint="search"
           autoComplete="off"
-          className="w-full rounded-xl border border-black/10 bg-white py-3 pl-10 pr-3 text-sm shadow-sm placeholder:text-black/40"
+          className="w-full rounded-2xl border bg-[var(--dz-surface)] py-3 pl-10 pr-3 text-sm text-[var(--dz-text)] shadow-[var(--dz-card-shadow-soft)] placeholder:text-[var(--dz-soft)]"
         />
       </div>
 
@@ -90,7 +90,7 @@ export function CatalogPage() {
           className={`rounded-full px-4 py-2 text-sm font-medium shadow-sm transition ${
             !category
               ? 'bg-[var(--tg-theme-button-color,#2481cc)] text-[var(--tg-theme-button-text-color,#fff)]'
-              : 'border border-black/10 bg-white text-black/70 hover:border-black/20'
+              : 'border bg-[var(--dz-surface)] text-[var(--dz-muted)] hover:border-[var(--dz-border-strong)]'
           }`}
         >
           Hammasi
@@ -104,7 +104,7 @@ export function CatalogPage() {
                 className={`rounded-full px-4 py-2 text-sm font-medium shadow-sm transition ${
                   category === c.id
                     ? 'bg-[var(--tg-theme-button-color,#2481cc)] text-[var(--tg-theme-button-text-color,#fff)]'
-                    : 'border border-black/10 bg-white text-black/70 hover:border-black/20'
+                    : 'border bg-[var(--dz-surface)] text-[var(--dz-muted)] hover:border-[var(--dz-border-strong)]'
                 }`}
               >
                 {c.name}
@@ -113,13 +113,13 @@ export function CatalogPage() {
       </div>
 
       <label className="block">
-        <span className="mb-1.5 block text-xs font-medium uppercase tracking-wide text-black/45">
+        <span className="mb-1.5 block text-xs font-medium uppercase tracking-wide text-[var(--dz-soft)]">
           Saralash
         </span>
         <select
           value={sort}
           onChange={(e) => setSort(e.target.value as typeof sort)}
-          className="w-full rounded-xl border border-black/10 bg-white px-3 py-3 text-sm font-medium shadow-sm"
+          className="w-full rounded-2xl border bg-[var(--dz-surface)] px-3 py-3 text-sm font-medium text-[var(--dz-text)] shadow-[var(--dz-card-shadow-soft)]"
         >
           <option value="name">Nomi bo&apos;yicha</option>
           <option value="price_asc">Narx: arzondan</option>
@@ -130,7 +130,7 @@ export function CatalogPage() {
       {loading ? (
         <div className="grid grid-cols-2 gap-3">
           {[1, 2, 3, 4, 5, 6].map((i) => (
-            <div key={i} className="overflow-hidden rounded-2xl border border-black/[0.06] bg-white shadow-sm">
+            <div key={i} className="overflow-hidden rounded-2xl border bg-[var(--dz-surface)] shadow-[var(--dz-card-shadow-soft)]">
               <Skeleton className="aspect-square w-full rounded-none" />
               <div className="space-y-2 p-3">
                 <Skeleton className="h-4 w-full" />
@@ -140,7 +140,7 @@ export function CatalogPage() {
           ))}
         </div>
       ) : products.length === 0 ? (
-        <p className="rounded-2xl border border-dashed border-black/15 bg-white/80 px-4 py-10 text-center text-sm text-black/50">
+        <p className="rounded-2xl border border-dashed bg-[var(--dz-surface)]/90 px-4 py-10 text-center text-sm text-[var(--dz-soft)]">
           {debouncedQ
             ? 'Qidiruv bo‘yicha mahsulot topilmadi. Boshqa so‘z yoki filtrni sinab ko‘ring.'
             : 'Bu filtr bo‘yicha mahsulot topilmadi.'}

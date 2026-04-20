@@ -27,7 +27,7 @@ export function Toast({ message, onDismiss, durationMs = 2600 }: Props) {
       className="pointer-events-none fixed bottom-[calc(5.25rem+env(safe-area-inset-bottom))] left-1/2 z-[100] max-w-[min(100%-2rem,24rem)] -translate-x-1/2"
       role="status"
     >
-      <div className="pointer-events-auto rounded-2xl border border-black/10 bg-[var(--tg-theme-bg-color,#fff)] px-4 py-3 text-center text-sm font-medium text-black/90 shadow-lg ring-1 ring-black/5">
+      <div className="pointer-events-auto rounded-2xl border bg-[var(--dz-surface)] px-4 py-3 text-center text-sm font-medium text-[var(--dz-text)] shadow-[var(--dz-card-shadow)]">
         {message}
       </div>
     </div>

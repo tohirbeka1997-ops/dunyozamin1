@@ -3,8 +3,18 @@
 @tailwind utilities;
 
 :root {
-  /* Marketplace fon — Uzum/marketplace uslubi */
   --dz-bg: var(--tg-theme-bg-color, #f2f4f7);
+  --dz-surface: var(--tg-theme-secondary-bg-color, #ffffff);
+  --dz-text: var(--tg-theme-text-color, #111827);
+  --dz-muted: color-mix(in srgb, var(--dz-text) 62%, transparent);
+  --dz-soft: color-mix(in srgb, var(--dz-text) 42%, transparent);
+  --dz-border: color-mix(in srgb, var(--dz-text) 12%, transparent);
+  --dz-border-strong: color-mix(in srgb, var(--dz-text) 20%, transparent);
+  --dz-accent: var(--tg-theme-button-color, #2481cc);
+  --dz-accent-text: var(--tg-theme-button-text-color, #fff);
+  --dz-link: var(--tg-theme-link-color, #2481cc);
+  --dz-card-shadow: 0 10px 24px rgba(15, 23, 42, 0.06);
+  --dz-card-shadow-soft: 0 4px 14px rgba(15, 23, 42, 0.05);
 }
 
 body {
@@ -22,6 +32,13 @@ body {
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
   background: var(--dz-bg);
-  color: var(--tg-theme-text-color, #111);
+  color: var(--dz-text);
 }
 
+* {
+  border-color: var(--dz-border);
+}
+
+#root {
+  min-height: 100dvh;
+}

@@ -97,23 +97,23 @@ export function ProductPage({ onCartChange }: { onCartChange: () => void }) {
         ← Katalog
       </Link>
 
-      <div className="overflow-hidden rounded-2xl border border-black/[0.06] bg-white shadow-sm">
-        <div className="aspect-square w-full bg-[#f3f4f6]">
+      <div className="overflow-hidden rounded-2xl border bg-[var(--dz-surface)] shadow-[var(--dz-card-shadow-soft)]">
+        <div className="aspect-square w-full bg-[color-mix(in_srgb,var(--dz-surface)_88%,#94a3b8_12%)]">
           {mainImg ? (
             <img src={mainImg} alt="" className="h-full w-full object-cover" />
           ) : (
-            <div className="flex h-full items-center justify-center text-5xl text-black/15">📷</div>
+            <div className="flex h-full items-center justify-center text-5xl text-[var(--dz-soft)]">📷</div>
           )}
         </div>
         {imageUrls.length > 1 ? (
-          <div className="flex gap-2 overflow-x-auto border-t border-black/[0.06] p-2">
+          <div className="flex gap-2 overflow-x-auto border-t p-2">
             {imageUrls.map((url, i) => (
               <button
                 key={url + String(i)}
                 type="button"
                 onClick={() => setImgIdx(i)}
-                className={`h-14 w-14 shrink-0 overflow-hidden rounded-lg border-2 bg-[#f3f4f6] transition ${
-                  i === imgIdx ? 'border-[var(--tg-theme-button-color,#2481cc)]' : 'border-transparent opacity-80'
+                className={`h-14 w-14 shrink-0 overflow-hidden rounded-lg border-2 bg-[color-mix(in_srgb,var(--dz-surface)_88%,#94a3b8_12%)] transition ${
+                  i === imgIdx ? 'border-[var(--dz-accent)]' : 'border-transparent opacity-80'
                 }`}
               >
                 <img src={url} alt="" className="h-full w-full object-cover" />
@@ -123,14 +123,14 @@ export function ProductPage({ onCartChange }: { onCartChange: () => void }) {
         ) : null}
         <div className="space-y-3 p-4">
           <h1 className="text-xl font-bold leading-snug">{p.name}</h1>
-          <p className="text-2xl font-bold tabular-nums text-[var(--tg-theme-button-color,#2481cc)]">
+          <p className="text-2xl font-bold tabular-nums text-[var(--dz-accent)]">
             {p.price_uzs.toLocaleString('uz-UZ')} so&apos;m
           </p>
           {p.track_stock ? (
-            <p className="text-sm text-black/55">Omborda: {p.stock_quantity ?? 0} dona</p>
+            <p className="text-sm text-[var(--dz-muted)]">Omborda: {p.stock_quantity ?? 0} dona</p>
           ) : null}
           {p.description ? (
-            <p className="whitespace-pre-wrap text-sm leading-relaxed text-black/75">{p.description}</p>
+            <p className="whitespace-pre-wrap text-sm leading-relaxed text-[var(--dz-muted)]">{p.description}</p>
           ) : null}
         </div>
       </div>
@@ -142,18 +142,18 @@ export function ProductPage({ onCartChange }: { onCartChange: () => void }) {
       ) : (
         <div className="flex flex-col gap-3 sm:flex-row sm:items-end">
           <label className="block flex-1 text-sm">
-            <span className="mb-1.5 block text-black/55">Miqdor</span>
+            <span className="mb-1.5 block text-[var(--dz-muted)]">Miqdor</span>
             <input
               type="number"
               min={1}
               value={qty}
               onChange={(e) => setQty(Math.max(1, Number(e.target.value) || 1))}
-              className="w-full rounded-xl border border-black/10 bg-white px-3 py-3 text-center text-lg font-semibold shadow-sm"
+              className="w-full rounded-xl border bg-[var(--dz-surface)] px-3 py-3 text-center text-lg font-semibold text-[var(--dz-text)] shadow-[var(--dz-card-shadow-soft)]"
             />
           </label>
           <button
             type="button"
-            className="w-full rounded-xl bg-[var(--tg-theme-button-color,#2481cc)] px-6 py-3.5 text-base font-semibold text-[var(--tg-theme-button-text-color,#fff)] shadow-md transition active:scale-[0.98] sm:w-auto sm:min-w-[160px]"
+            className="w-full rounded-xl bg-[var(--dz-accent)] px-6 py-3.5 text-base font-semibold text-[var(--dz-accent-text)] shadow-md transition active:scale-[0.98] sm:w-auto sm:min-w-[160px]"
             onClick={() => {
               addToCart({
                 product_id: p.id,

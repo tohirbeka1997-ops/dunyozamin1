@@ -53,16 +53,16 @@ export default function App() {
 
   return (
     <div className="mx-auto flex min-h-dvh max-w-lg flex-col bg-[var(--dz-bg)]">
-      <header className="sticky top-0 z-10 border-b border-black/[0.07] bg-[var(--tg-theme-bg-color,#fff)]/95 px-4 pb-3 pt-[max(0.75rem,env(safe-area-inset-top))] backdrop-blur-md">
+      <header className="sticky top-0 z-10 border-b bg-[var(--dz-bg)]/95 px-4 pb-3 pt-[max(0.75rem,env(safe-area-inset-top))] backdrop-blur-md">
         <div className="flex items-start justify-between gap-3">
           <div>
-            <Link to="/" className="block text-lg font-bold tracking-tight text-[var(--tg-theme-text-color,#111)]">
+            <Link to="/" className="block text-lg font-bold tracking-tight text-[var(--dz-text)]">
               DunyoZamin
             </Link>
-            <p className="mt-0.5 text-xs text-black/50">Onlayn do&apos;kon</p>
+            <p className="mt-0.5 text-xs text-[var(--dz-soft)]">Onlayn do&apos;kon</p>
           </div>
           {userName ? (
-            <div className="rounded-full bg-black/[0.05] px-3 py-1 text-right text-xs font-medium text-black/70">
+            <div className="rounded-full border bg-[var(--dz-surface)] px-3 py-1 text-right text-xs font-medium text-[var(--dz-muted)] shadow-[var(--dz-card-shadow-soft)]">
               {userName}
             </div>
           ) : null}

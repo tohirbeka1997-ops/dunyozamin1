@@ -67,7 +67,7 @@ export function OrdersPage() {
     <div className="space-y-5">
       <div>
         <h1 className="text-xl font-bold tracking-tight">Buyurtmalar</h1>
-        <p className="mt-0.5 text-sm text-black/50">So&apos;nggi buyurtmalar</p>
+        <p className="mt-0.5 text-sm text-[var(--dz-soft)]">So&apos;nggi buyurtmalar</p>
       </div>
 
       {done ? (
@@ -83,7 +83,7 @@ export function OrdersPage() {
       ) : null}
 
       {!rows.length ? (
-        <p className="rounded-2xl border border-dashed border-black/15 bg-white/80 px-4 py-10 text-center text-sm text-black/50">
+        <p className="rounded-2xl border border-dashed bg-[var(--dz-surface)]/90 px-4 py-10 text-center text-sm text-[var(--dz-soft)]">
           Hozircha buyurtmalar yo&apos;q.
         </p>
       ) : (
@@ -93,10 +93,10 @@ export function OrdersPage() {
             return (
               <li
                 key={o.id}
-                className="rounded-2xl border border-black/[0.06] bg-white p-4 shadow-sm"
+                className="rounded-2xl border bg-[var(--dz-surface)] p-4 shadow-[var(--dz-card-shadow-soft)]"
               >
                 <div className="flex flex-wrap items-start justify-between gap-2">
-                  <span className="font-mono text-sm font-bold text-black/90">{o.order_number}</span>
+                  <span className="font-mono text-sm font-bold text-[var(--dz-text)]">{o.order_number}</span>
                   <span className={`rounded-full px-2.5 py-0.5 text-xs font-semibold ${st.className}`}>
                     {st.label}
                   </span>
@@ -104,7 +104,7 @@ export function OrdersPage() {
                 <div className="mt-2 text-lg font-bold tabular-nums">
                   {Number(o.total_amount).toLocaleString('uz-UZ')} so&apos;m
                 </div>
-                <div className="mt-1 text-xs text-black/45">
+                <div className="mt-1 text-xs text-[var(--dz-soft)]">
                   {o.created_at ? String(o.created_at).replace('T', ' ').slice(0, 16) : ''}
                 </div>
               </li>

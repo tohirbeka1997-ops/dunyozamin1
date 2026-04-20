@@ -66,6 +66,20 @@ if (!String(webAppUrl).startsWith('https://')) {
 
 const bot = new Telegraf(token);
 
+const MENU = {
+  shop: "🛍 Do'kon",
+  orders: '📦 Buyurtmalarim',
+  contact: "📞 Bog'lanish",
+  help: 'ℹ️ Yordam',
+};
+
+function mainMenuKeyboard() {
+  return Markup.keyboard([
+    [MENU.shop, MENU.orders],
+    [MENU.contact, MENU.help],
+  ]).resize();
+}
+
 function formatOrdersMessage(result) {
   if (!result.ok) {
     if (result.reason === 'migrations_pending') {
@@ -88,6 +102,10 @@ bot.start(async (ctx) => {
   const name = ctx.from?.first_name || '';
   await ctx.reply(
     `Assalomu alaykum${name ? ', ' + name : ''}!\n\nDunyoZamin onlayn do'koniga xush kelibsiz.`,
+    mainMenuKeyboard(),
+  );
+  await ctx.reply(
+    "Quyidagi tugmalardan foydalaning:",
     Markup.inlineKeyboard([
       [Markup.button.webApp("🛍 Do'kon", webAppUrl)],
       [Markup.button.callback('📦 Buyurtmalarim', 'orders_recent')],
@@ -107,6 +125,33 @@ bot.action('orders_recent', async (ctx) => {
 bot.action('contact_info', async (ctx) => {
   await ctx.answerCbQuery();
   await ctx.reply(contactText);
+});
+
+bot.hears(MENU.shop, async (ctx) => {
+  await ctx.reply(
+    "Mini App'ni ochish uchun tugmani bosing:",
+    Markup.inlineKeyboard([[Markup.button.webApp(MENU.shop, webAppUrl)]]),
+  );
+});
+
+bot.hears(MENU.orders, async (ctx) => {
+  const tgId = ctx.from?.id;
+  if (tgId == null) return;
+  await ctx.reply(formatOrdersMessage(listRecentWebOrders(tgId, 10)));
+});
+
+bot.hears(MENU.contact, async (ctx) => {
+  await ctx.reply(contactText);
+});
+
+bot.hears(MENU.help, async (ctx) => {
+  await ctx.reply(
+    "Yordam:\n" +
+      `- ${MENU.shop}: onlayn do'konni ochadi\n` +
+      `- ${MENU.orders}: so'nggi buyurtmalaringiz\n` +
+      `- ${MENU.contact}: aloqa ma'lumotlari\n\n` +
+      "Qo'shimcha: /start yoki /orders",
+  );
 });
 
 bot.command('orders', async (ctx) => {

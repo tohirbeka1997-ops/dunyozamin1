@@ -21,6 +21,42 @@ function parsePaymentMethod(raw) {
   return null;
 }
 
+function normalizePhone(raw) {
+  const v = raw != null ? String(raw).trim() : '';
+  if (!v) return null;
+  const compact = v.replace(/[\s()-]/g, '');
+  if (!/^\+?\d{9,15}$/.test(compact)) {
+    const err = new Error('invalid_phone');
+    err.code = 'INVALID_PHONE';
+    err.status = 400;
+    throw err;
+  }
+  return compact;
+}
+
+function normalizeLocation(raw) {
+  if (!raw || typeof raw !== 'object') return null;
+  const lat = Number(raw.latitude);
+  const lng = Number(raw.longitude);
+  if (!Number.isFinite(lat) || !Number.isFinite(lng)) return null;
+  if (lat < -90 || lat > 90 || lng < -180 || lng > 180) return null;
+  return {
+    latitude: Number(lat.toFixed(6)),
+    longitude: Number(lng.toFixed(6)),
+  };
+}
+
+function composeNote(note, phone, location) {
+  const parts = [];
+  if (note) parts.push(String(note).trim());
+  if (phone) parts.push(`Telefon: ${phone}`);
+  if (location) {
+    parts.push(`Lokatsiya: ${location.latitude}, ${location.longitude}`);
+    parts.push(`Xarita: https://maps.google.com/?q=${location.latitude},${location.longitude}`);
+  }
+  return parts.join('\n').trim() || null;
+}
+
 function parseCreateBody(body) {
   if (!body || !Array.isArray(body.items) || body.items.length === 0) {
     const err = new Error('items_required');
@@ -55,7 +91,16 @@ function parseCreateBody(body) {
     throw err;
   }
   const note = body.note != null ? String(body.note).trim() : '';
-  return { items, payment_method: pm, delivery_address: addr, note: note || null };
+  const phone = normalizePhone(body.phone);
+  const location = normalizeLocation(body.location);
+  return {
+    items,
+    payment_method: pm,
+    delivery_address: addr,
+    note: composeNote(note, phone, location),
+    phone,
+    location,
+  };
 }
 
 /**

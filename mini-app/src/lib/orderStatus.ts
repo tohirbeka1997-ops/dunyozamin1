@@ -9,5 +9,5 @@ export function orderStatusUi(status: string): { label: string; className: strin
     delivered: { label: 'Yetkazildi', className: 'bg-slate-100 text-slate-800' },
     cancelled: { label: 'Bekor', className: 'bg-red-100 text-red-900' },
   };
-  return map[s] || { label: status || '—', className: 'bg-black/5 text-black/70' };
+  return map[s] || { label: status || '—', className: 'bg-slate-100 text-slate-800' };
 }
