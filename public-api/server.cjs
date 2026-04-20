@@ -20,6 +20,7 @@ const { mountAuthRoutes } = require('./routes/auth.cjs');
 const { mountOrdersRoutes } = require('./routes/orders.cjs');
 const { mountMeRoutes } = require('./routes/me.cjs');
 const { mountPaymentRoutes } = require('./routes/payment.cjs');
+const { createBearerAuth } = require('./middleware/bearerAuth.cjs');
 
 const PORT = Number.parseInt(process.env.PUBLIC_API_PORT || '3334', 10) || 3334;
 const TRUST_PROXY = ['1', 'true', 'yes'].includes(String(process.env.PUBLIC_API_TRUST_PROXY || '').toLowerCase());
@@ -81,6 +82,7 @@ function main() {
 
   const dbGetter = () => getDb();
   const jsonBody = express.json({ limit: '512kb' });
+  const bearerAuth = createBearerAuth();
 
   const v1 = express.Router();
   v1.use('/auth', mountAuthRoutes(dbGetter));
