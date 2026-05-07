@@ -38,6 +38,19 @@ const E_ORDER_NOT_FOUND = -31001;
 const E_INVALID_AMOUNT = -31003;
 const E_UNABLE_TO_PERFORM = -31008;
 
+const PROVIDER = 'payme';
+
+function isPayableByPayme(row) {
+  if (!row) return false;
+  if (row.status === 'cancelled') return false;
+  if (row.payment_method && String(row.payment_method) !== PROVIDER) return false;
+  if (row.payment_status === 'paid') {
+    return row.payment_provider == null || String(row.payment_provider) === PROVIDER;
+  }
+  if (row.payment_status === 'failed' || row.payment_status === 'refunded') return false;
+  return true;
+}
+
 /**
  * @returns {{ body: object, notifyOrderId?: number }}
  */
@@ -60,7 +73,11 @@ function handlePaycomRpc(db, req, body, { merchantId, apiKey }) {
     if (!Number.isFinite(orderId)) {
       return { body: jsonRpcError(id, E_ORDER_NOT_FOUND, 'Order not found') };
     }
-    const row = db.prepare('SELECT id, total_amount, status, payment_status FROM web_orders WHERE id = ?').get(orderId);
+    const row = db
+      .prepare(
+        'SELECT id, total_amount, status, payment_status, payment_method, payment_provider FROM web_orders WHERE id = ?'
+      )
+      .get(orderId);
     if (!row) return { body: jsonRpcError(id, E_ORDER_NOT_FOUND, 'Order not found') };
     const expected = sumsToTiyin(row.total_amount);
     if (!Number.isFinite(amountTiyin) || amountTiyin !== expected) {
@@ -68,6 +85,9 @@ function handlePaycomRpc(db, req, body, { merchantId, apiKey }) {
     }
     if (row.status === 'cancelled') {
       return { body: jsonRpcError(id, E_UNABLE_TO_PERFORM, 'Cancelled') };
+    }
+    if (!isPayableByPayme(row)) {
+      return { body: jsonRpcError(id, E_UNABLE_TO_PERFORM, 'Order is not payable via Payme') };
     }
     return { body: jsonRpcResult(id, { allow: true }) };
   }
@@ -77,11 +97,18 @@ function handlePaycomRpc(db, req, body, { merchantId, apiKey }) {
     if (!Number.isFinite(orderId)) {
       return { body: jsonRpcError(id, E_ORDER_NOT_FOUND, 'Order not found') };
     }
-    const row = db.prepare('SELECT id, total_amount, status FROM web_orders WHERE id = ?').get(orderId);
+    const row = db
+      .prepare(
+        'SELECT id, total_amount, status, payment_status, payment_method, payment_provider FROM web_orders WHERE id = ?'
+      )
+      .get(orderId);
     if (!row) return { body: jsonRpcError(id, E_ORDER_NOT_FOUND, 'Order not found') };
     const expected = sumsToTiyin(row.total_amount);
     if (!Number.isFinite(amountTiyin) || amountTiyin !== expected) {
       return { body: jsonRpcError(id, E_INVALID_AMOUNT, 'Invalid amount') };
+    }
+    if (!isPayableByPayme(row)) {
+      return { body: jsonRpcError(id, E_UNABLE_TO_PERFORM, 'Order is not payable via Payme') };
     }
     const createTime = Date.now();
     return {
@@ -102,7 +129,7 @@ function handlePaycomRpc(db, req, body, { merchantId, apiKey }) {
     const row = db
       .prepare(
         `
-      SELECT wo.id, wo.total_amount, wo.status, wo.payment_status, wo.payment_method
+      SELECT wo.id, wo.total_amount, wo.status, wo.payment_status, wo.payment_method, wo.payment_provider
       FROM web_orders wo
       WHERE wo.id = ?
     `
@@ -116,6 +143,9 @@ function handlePaycomRpc(db, req, body, { merchantId, apiKey }) {
     }
 
     if (row.status === 'paid' && row.payment_status === 'paid') {
+      if (row.payment_provider && String(row.payment_provider) !== PROVIDER) {
+        return { body: jsonRpcError(id, E_UNABLE_TO_PERFORM, 'Order already paid via another provider') };
+      }
       return {
         body: jsonRpcResult(id, {
           transaction: transId,
@@ -127,6 +157,10 @@ function handlePaycomRpc(db, req, body, { merchantId, apiKey }) {
 
     if (row.status === 'cancelled') {
       return { body: jsonRpcError(id, E_UNABLE_TO_PERFORM, 'Cancelled') };
+    }
+
+    if (!isPayableByPayme(row)) {
+      return { body: jsonRpcError(id, E_UNABLE_TO_PERFORM, 'Order is not payable via Payme') };
     }
 
     const now = new Date().toISOString();

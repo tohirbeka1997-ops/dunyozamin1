@@ -19,6 +19,7 @@ import { getCategoryById, getProductsByCategoryId } from '@/db/api';
 import type { Category, Product } from '@/types/database';
 import { ArrowLeft, Pencil, Package, FolderTree } from 'lucide-react';
 import { formatMoneyUZS, formatNumberUZ } from '@/lib/format';
+import { getProductImageDisplayUrl } from '@/lib/productImageUrl';
 
 export default function CategoryDetail() {
   const { t } = useTranslation();
@@ -101,14 +102,24 @@ export default function CategoryDetail() {
             <ArrowLeft className="h-5 w-5" />
           </Button>
           <div className="flex items-center gap-3">
-            <div
-              className="h-16 w-16 rounded-lg flex items-center justify-center text-3xl"
-              style={{ backgroundColor: category.color || '#2563EB' }}
-            >
-              {category.icon || '📁'}
-            </div>
+            {category.image_url ? (
+              <div className="h-16 w-16 overflow-hidden rounded-lg border bg-muted">
+                <img
+                  src={getProductImageDisplayUrl(category.image_url) || category.image_url}
+                  alt=""
+                  className="h-full w-full object-cover"
+                />
+              </div>
+            ) : (
+              <div
+                className="h-16 w-16 rounded-lg flex items-center justify-center text-3xl"
+                style={{ backgroundColor: category.color || '#2563EB' }}
+              >
+                {category.icon || '📁'}
+              </div>
+            )}
             <div>
-              <h1 className="text-3xl font-bold">{category.name}</h1>
+              <h1 className="page-heading">{category.name}</h1>
               <p className="text-muted-foreground">{category.description || t('categoryDetail.no_description')}</p>
             </div>
           </div>

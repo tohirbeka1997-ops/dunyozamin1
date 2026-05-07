@@ -123,7 +123,11 @@ export default function FraudSignalsReport() {
       result = result.filter((row) => row.risk_level === riskFilter);
     }
 
-    return result.sort((a, b) => b.overall_risk_score - a.overall_risk_score);
+    // Copy before sort — when neither filter is active, `result` is still
+    // the same reference as `signalRows`, and `Array.prototype.sort` mutates
+    // in place. Mutating React state breaks reconciliation and produces
+    // non-deterministic re-renders.
+    return [...result].sort((a, b) => b.overall_risk_score - a.overall_risk_score);
   }, [signalRows, searchTerm, riskFilter]);
 
   const filteredIncidents = useMemo(() => {
@@ -186,11 +190,11 @@ export default function FraudSignalsReport() {
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-4">
-          <Button variant="ghost" size="icon" onClick={() => navigate('/reports')}>
+          <Button variant="ghost" size="icon" onClick={() => navigate('/reports/employee')}>
             <ArrowLeft className="h-4 w-4" />
           </Button>
           <div>
-            <h1 className="text-3xl font-bold flex items-center gap-2">
+            <h1 className="page-heading flex items-center gap-2">
               <Shield className="h-8 w-8 text-red-500" />
               Fraud Signals (Nazorat)
             </h1>

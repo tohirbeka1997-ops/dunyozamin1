@@ -26,6 +26,7 @@ const web =
   process.env.TELEGRAM_WEB_APP_URL ||
   process.env.VITE_APP_PUBLIC_URL ||
   '';
+const internalSecret = String(process.env.TELEGRAM_BOT_INTERNAL_SECRET || '').trim();
 
 let exit = 0;
 if (!token) {
@@ -34,6 +35,10 @@ if (!token) {
 }
 if (!web.startsWith('https://')) {
   console.error('[verify] TELEGRAM_WEB_APP_URL yoki VITE_APP_PUBLIC_URL — HTTPS kerak (masalan https://app.example.com)');
+  exit = 1;
+}
+if (!internalSecret) {
+  console.error('[verify] TELEGRAM_BOT_INTERNAL_SECRET yo‘q (.env) — bot internal API ishlashi uchun kerak');
   exit = 1;
 }
 if (exit) process.exit(exit);

@@ -1,4 +1,4 @@
-import { useEffect, useState, useMemo, useCallback, useRef } from 'react';
+import { useEffect, useState, useMemo, useCallback, useRef, useLayoutEffect } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -20,9 +20,9 @@ import {
   TableRow,
 } from '@/components/ui/table';
 import { useToast } from '@/hooks/use-toast';
-import { getOrdersPage, getProfiles, getCustomers, getSalesReturnByOrderId } from '@/db/api';
+import { getOrdersPage, getProfiles, getCustomers, getSalesReturnByOrderId, getWarehouses } from '@/db/api';
 import type { OrderWithDetails, Profile, Customer } from '@/types/database';
-import { Search, Eye, Printer, RotateCcw, DollarSign, ShoppingCart, TrendingUp } from 'lucide-react';
+import { Search, Eye, Printer, RotateCcw, DollarSign, ShoppingCart, TrendingUp, Pencil } from 'lucide-react';
 import { highlightMatch } from '@/utils/searchHighlight';
 import {
   AlertDialog,
@@ -37,15 +37,22 @@ import {
 import { Textarea } from '@/components/ui/textarea';
 import { Label } from '@/components/ui/label';
 import { formatMoneyUZS } from '@/lib/format';
-import { formatOrderDateTime } from '@/lib/datetime';
+import { formatDateYMD, formatOrderDateTime } from '@/lib/datetime';
 import PrintDialog from '@/components/print/PrintDialog';
 import VirtualizedOrdersTable from '@/components/orders/VirtualizedOrdersTable';
 import { useSessionSearchParams } from '@/hooks/useSessionSearchParams';
 import { createBackNavigationState } from '@/lib/pageState';
 import { useOrdersListStore } from '@/store/ordersListStore';
 import { useDebounce } from '@/hooks/use-debounce';
+import { useTranslation } from 'react-i18next';
+
+function canEditOrderInPos(o: { status?: string } | null | undefined) {
+  const s = String(o?.status || '').toLowerCase();
+  return s !== 'voided' && s !== 'refunded' && s !== 'returned';
+}
 
 export default function Orders() {
+  const { t } = useTranslation();
   const { toast } = useToast();
   const navigate = useNavigate();
   const location = useLocation();
@@ -54,17 +61,21 @@ export default function Orders() {
     trackedKeys: [
       'search',
       'date',
+      'df',
+      'dt',
       'cashier',
       'customer',
       'paymentStatus',
       'status',
       'paymentMethod',
+      'warehouse',
       'sortBy',
     ],
   });
   const [orders, setOrders] = useState<OrderWithDetails[]>([]);
   const [cashiers, setCashiers] = useState<Profile[]>([]);
   const [customers, setCustomers] = useState<Customer[]>([]);
+  const [warehouses, setWarehouses] = useState<Array<{ id: string; name?: string }>>([]);
   const [loading, setLoading] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
   const [hasMore, setHasMore] = useState(false);
@@ -74,17 +85,23 @@ export default function Orders() {
   const searchTerm = searchParams.get('search') || '';
   const debouncedSearchTerm = useDebounce(searchTerm, 200);
   const dateFilter = searchParams.get('date') || 'all';
+  const dfParam = searchParams.get('df') || '';
+  const dtParam = searchParams.get('dt') || '';
   const cashierFilter = searchParams.get('cashier') || 'all';
   const customerFilter = searchParams.get('customer');
   const paymentStatusFilter = searchParams.get('paymentStatus') || 'all';
   const statusFilter = searchParams.get('status') || 'all';
   const paymentMethodFilter = searchParams.get('paymentMethod') || 'all';
+  const warehouseFilter = searchParams.get('warehouse') || 'all';
   const sortBy = searchParams.get('sortBy') || 'created_at-desc';
   const [printDialogOpen, setPrintDialogOpen] = useState(false);
   const [selectedOrderIdForPrint, setSelectedOrderIdForPrint] = useState<string | null>(null);
   const [returnLoadingOrderId, setReturnLoadingOrderId] = useState<string | null>(null);
   const loadMoreRef = useRef<HTMLDivElement | null>(null);
   const observerRef = useRef<IntersectionObserver | null>(null);
+  const listAnchorRef = useRef<HTMLDivElement | null>(null);
+  const prevFilterKeyRef = useRef<string | null>(null);
+  const scrollRestoredRef = useRef(false);
   const listQueryKey = searchParams.toString();
   const storedQueryKey = useOrdersListStore((state) => state.queryKey);
   const storedPage = useOrdersListStore((state) => state.page);
@@ -112,17 +129,23 @@ export default function Orders() {
 
 
   const buildBackendFilters = useCallback(() => {
-    // Date range
     let date_from: string | undefined;
     let date_to: string | undefined;
-    if (dateFilter !== 'all') {
-      const today = new Date();
-      today.setHours(0, 0, 0, 0);
-      const from = new Date(today);
-      if (dateFilter === 'week') from.setDate(from.getDate() - 7);
-      if (dateFilter === 'month') from.setMonth(from.getMonth() - 1);
-      date_from = from.toISOString();
-      date_to = new Date().toISOString();
+    if (dateFilter === 'range' && dfParam && dtParam) {
+      date_from = dfParam;
+      date_to = dtParam;
+    } else if (dateFilter !== 'all' && dateFilter !== 'range') {
+      const toDate = new Date();
+      const fromDate = new Date(toDate);
+      if (dateFilter === 'today') {
+        // keep same day
+      } else if (dateFilter === 'week') {
+        fromDate.setDate(fromDate.getDate() - 7);
+      } else if (dateFilter === 'month') {
+        fromDate.setMonth(fromDate.getMonth() - 1);
+      }
+      date_from = formatDateYMD(fromDate);
+      date_to = formatDateYMD(toDate);
     }
 
     const [field, dir] = String(sortBy || 'created_at-desc').split('-');
@@ -141,6 +164,7 @@ export default function Orders() {
       payment_status: paymentStatusFilter !== 'all' ? paymentStatusFilter : null,
       status: statusFilter !== 'all' ? statusFilter : null,
       payment_method: paymentMethodFilter !== 'all' ? paymentMethodFilter : null,
+      warehouse_id: warehouseFilter !== 'all' ? warehouseFilter : null,
       sort_by,
       sort_order,
     } as const;
@@ -151,9 +175,12 @@ export default function Orders() {
     dateFilter,
     paymentMethodFilter,
     paymentStatusFilter,
+    warehouseFilter,
     debouncedSearchTerm,
     sortBy,
     statusFilter,
+    dfParam,
+    dtParam,
   ]);
 
   const loadPage = useCallback(
@@ -203,12 +230,58 @@ export default function Orders() {
 
   useEffect(() => {
     loadCustomers();
+    void loadWarehouses();
   }, []);
 
+  const filterKey = useMemo(
+    () =>
+      [
+        debouncedSearchTerm,
+        dateFilter,
+        dfParam,
+        dtParam,
+        cashierFilter,
+        customerFilter || '',
+        paymentStatusFilter,
+        statusFilter,
+        paymentMethodFilter,
+        warehouseFilter,
+        sortBy,
+      ].join('|'),
+    [
+      debouncedSearchTerm,
+      dateFilter,
+      dfParam,
+      dtParam,
+      cashierFilter,
+      customerFilter,
+      paymentStatusFilter,
+      statusFilter,
+      paymentMethodFilter,
+      warehouseFilter,
+      sortBy,
+    ]
+  );
+
   useEffect(() => {
-    // Refetch first page when filters change (server-side filtering)
-    loadPage(restoredPage, { append: false, restore: restoredPage > 0 });
-  }, [buildBackendFilters, restoredPage]);
+    const prev = prevFilterKeyRef.current;
+    const isFirst = prev === null;
+    prevFilterKeyRef.current = filterKey;
+
+    if (isFirst) {
+      if (restoredPage > 0 && storedQueryKey === listQueryKey) {
+        void loadPage(restoredPage, { append: false, restore: true });
+      } else {
+        void loadPage(0, { append: false });
+      }
+      return;
+    }
+
+    if (prev !== filterKey) {
+      scrollRestoredRef.current = false;
+      void loadPage(0, { append: false });
+    }
+  }, [filterKey, listQueryKey, loadPage, restoredPage, storedQueryKey]);
 
   useEffect(() => {
     const el = loadMoreRef.current;
@@ -237,9 +310,35 @@ export default function Orders() {
     setStoredPage(page);
   }, [page, setStoredPage]);
 
+  /** Ro‘yxat scrolli `main` ichida — saqlash va qayta tiklash */
+  useEffect(() => {
+    const root = listAnchorRef.current?.closest('main');
+    if (!root) return;
+    const onScroll = () => setStoredScrollTop(root.scrollTop);
+    root.addEventListener('scroll', onScroll, { passive: true });
+    return () => root.removeEventListener('scroll', onScroll);
+  }, [setStoredScrollTop]);
+
+  useLayoutEffect(() => {
+    if (loading || loadingMore) return;
+    const main = listAnchorRef.current?.closest('main');
+    if (!main || restoredScrollTop <= 0 || scrollRestoredRef.current) return;
+    main.scrollTop = restoredScrollTop;
+    scrollRestoredRef.current = true;
+  }, [loading, loadingMore, restoredScrollTop, orders.length]);
+
   // Navigate to Create Return screen with order preselected
   const handleCreateReturn = (order: OrderWithDetails) => {
     navigate(`/returns/create?orderId=${order.id}`);
+  };
+
+  const goToPosEditOrder = (orderId: string) => {
+    try {
+      sessionStorage.setItem('pos_import_order_id', orderId);
+    } catch {
+      /* ignore */
+    }
+    navigate('/pos', { state: { importOrderId: orderId } });
   };
 
   // Load customers for filter dropdown
@@ -261,6 +360,16 @@ export default function Orders() {
     }
   };
 
+  const loadWarehouses = async () => {
+    try {
+      const data = await getWarehouses({ is_active: true });
+      setWarehouses(Array.isArray(data) ? data : []);
+    } catch (error) {
+      console.error('Failed to load warehouses:', error);
+      setWarehouses([]);
+    }
+  };
+
   const getStatusBadge = (status: string) => {
     const variants: Record<string, { label: string; className: string }> = {
       completed: { label: 'Yakunlangan', className: 'bg-success text-white' },
@@ -268,7 +377,7 @@ export default function Orders() {
       voided: { label: 'Bekor qilingan', className: 'bg-muted text-muted-foreground' },
       refunded: { label: 'Qaytarilgan', className: 'bg-warning text-white' },
     };
-    const variant = variants[status] || variants.completed;
+    const variant = variants[String(status || '').toLowerCase()] || variants.completed;
     return <Badge className={variant.className}>{variant.label}</Badge>;
   };
 
@@ -276,13 +385,13 @@ export default function Orders() {
     const variants: Record<string, { label: string; variant: 'default' | 'secondary' | 'destructive' }> = {
       paid: { label: 'To\'langan', variant: 'default' },
       partial: { label: 'Qisman to\'langan', variant: 'secondary' },
-      unpaid: { label: 'To\'lanmagan', variant: 'destructive' },
       // Backward/IPC compatibility (should be normalized in API, but keep safe)
       on_credit: { label: 'Nasiya', variant: 'destructive' },
       partially_paid: { label: 'Qisman to\'langan', variant: 'secondary' },
-      pending: { label: 'To\'lanmagan', variant: 'destructive' },
+      pending: { label: 'Kutilmoqda', variant: 'destructive' },
+      unpaid: { label: 'To\'lanmagan', variant: 'destructive' },
     };
-    const variant = variants[status] || variants.paid;
+    const variant = variants[String(status || '').toLowerCase()] || variants.paid;
     return <Badge variant={variant.variant}>{variant.label}</Badge>;
   };
 
@@ -329,7 +438,8 @@ export default function Orders() {
 
   // Memoize stats calculation
   const stats = useMemo(() => {
-    const totalSales = filteredOrders.reduce((sum, order) => sum + Number(order.total_amount), 0);
+    const completedOrders = filteredOrders.filter((order: any) => String(order?.status || '').toLowerCase() === 'completed');
+    const totalSales = completedOrders.reduce((sum, order) => sum + Number(order.total_amount), 0);
     const totalOrders = filteredOrders.length;
     const averageOrder = totalOrders > 0 ? totalSales / totalOrders : 0;
     return { totalSales, totalOrders, averageOrder };
@@ -337,80 +447,137 @@ export default function Orders() {
 
   const useVirtualized = filteredOrders.length > 500;
 
+  const statTriggerClass =
+    'h-7 w-7 shrink-0 rounded-md bg-muted text-muted-foreground flex items-center justify-center';
+
+  const showFullPageSpinner = loading && orders.length === 0;
+
   return (
-    <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-3xl font-bold">Buyurtmalar</h1>
-          <p className="text-muted-foreground">Barcha savdo buyurtmalarini ko'rish va boshqarish</p>
+    <div
+      ref={listAnchorRef}
+      className="space-y-2 px-3 pb-3 pt-0 sm:space-y-3 sm:px-4 sm:pb-4 sm:pt-0"
+    >
+      <div className="flex flex-col gap-0 sm:flex-row sm:items-baseline sm:justify-between sm:gap-3">
+        <div className="min-w-0">
+          <h1 className="text-base font-semibold leading-tight tracking-tight sm:text-lg">
+            Buyurtmalar
+          </h1>
+          <p className="mt-0.5 text-[10px] leading-snug text-muted-foreground sm:text-xs sm:mt-0.5">
+            Barcha savdo buyurtmalarini ko&apos;rish va boshqarish
+          </p>
         </div>
       </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-        <Card>
-          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="text-sm font-medium">Jami savdo</CardTitle>
-            <DollarSign className="h-4 w-4 text-muted-foreground" />
-          </CardHeader>
-          <CardContent>
-            <div className="text-2xl font-bold">{formatMoneyUZS(stats.totalSales)}</div>
-            <p className="text-xs text-muted-foreground">Tanlangan davr bo'yicha umumiy tushum</p>
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="text-sm font-medium">Jami buyurtmalar</CardTitle>
-            <ShoppingCart className="h-4 w-4 text-muted-foreground" />
-          </CardHeader>
-          <CardContent>
-            <div className="text-2xl font-bold">{stats.totalOrders}</div>
-            <p className="text-xs text-muted-foreground">Qayta ishlangan buyurtmalar soni</p>
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="text-sm font-medium">O'rtacha buyurtma qiymati</CardTitle>
-            <TrendingUp className="h-4 w-4 text-muted-foreground" />
-          </CardHeader>
-          <CardContent>
-            <div className="text-2xl font-bold">{formatMoneyUZS(stats.averageOrder)}</div>
-            <p className="text-xs text-muted-foreground">Bir buyurtma uchun o'rtacha summa</p>
-          </CardContent>
-        </Card>
-      </div>
-
-      <Card>
-        <CardHeader>
-          <CardTitle>Filtrlar</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-8 gap-4">
-            <div className="relative">
-              <Search className="absolute left-3 top-3 h-4 w-4 text-muted-foreground" />
-              <Input
-                placeholder="Buyurtmalarni qidirish..."
-                value={searchTerm}
-                onChange={(e) => updateParams({ search: e.target.value })}
-                className="pl-9"
-              />
+      {/* Kompakt qisqa statistik — bitta qator, vertikal joy tejalmaydi */}
+      <Card className="gap-0 py-0 shadow-sm">
+        <CardContent className="p-0">
+          <div className="grid grid-cols-1 divide-y divide-border sm:grid-cols-3 sm:divide-x sm:divide-y-0">
+            <div
+              className="flex items-center gap-2 px-3 py-2 sm:px-4"
+              title="Tanlangan davr bo'yicha umumiy tushum"
+            >
+              <div className={statTriggerClass}>
+                <DollarSign className="h-3.5 w-3.5" />
+              </div>
+              <div className="min-w-0 flex-1">
+                <p className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+                  Jami savdo (yakunlangan)
+                </p>
+                <p className="truncate text-sm font-semibold tabular-nums leading-tight sm:text-base">
+                  {formatMoneyUZS(stats.totalSales)}
+                </p>
+              </div>
             </div>
+            <div
+              className="flex items-center gap-2 px-3 py-2 sm:px-4"
+              title="Yuklangan buyurtmalar soni"
+            >
+              <div className={statTriggerClass}>
+                <ShoppingCart className="h-3.5 w-3.5" />
+              </div>
+              <div className="min-w-0 flex-1">
+                <p className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+                  Buyurtmalar
+                </p>
+                <p className="text-sm font-semibold tabular-nums leading-tight sm:text-base">
+                  {stats.totalOrders}
+                </p>
+              </div>
+            </div>
+            <div
+              className="flex items-center gap-2 px-3 py-2 sm:px-4"
+              title="Bir buyurtma uchun o'rtacha summa"
+            >
+              <div className={statTriggerClass}>
+                <TrendingUp className="h-3.5 w-3.5" />
+              </div>
+              <div className="min-w-0 flex-1">
+                <p className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+                  O&apos;rtacha chek
+                </p>
+                <p className="truncate text-sm font-semibold tabular-nums leading-tight sm:text-base">
+                  {formatMoneyUZS(stats.averageOrder)}
+                </p>
+              </div>
+            </div>
+          </div>
+        </CardContent>
+      </Card>
 
-            <Select value={dateFilter} onValueChange={(value) => updateParams({ date: value })}>
-              <SelectTrigger>
-                <SelectValue placeholder="Sana oralig'i" />
+      {/* Card default py-6 — filtr uchun o‘chiriladi */}
+      <Card className="gap-0 py-0 shadow-sm">
+        <CardContent className="px-3 py-2 sm:px-3">
+          <div className="rounded-md border bg-muted/30 px-2 py-1.5 space-y-1">
+            <span className="inline-block text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+              Filtrlar
+            </span>
+
+            {/* Bitta qator: qidiruv + barcha selectlar (tor ekranda gorizontal scroll) */}
+            <div className="flex min-w-0 flex-nowrap items-center gap-1 overflow-x-auto pb-0.5 [-ms-overflow-style:none] [scrollbar-width:thin] [&::-webkit-scrollbar]:h-1">
+              <div className="relative h-8 w-[min(14rem,calc(100vw-8rem))] shrink-0">
+                <Search className="absolute left-2 top-1/2 h-3 w-3 -translate-y-1/2 text-muted-foreground" />
+                <Input
+                  placeholder="Qidiruv (raqam, mijoz...)"
+                  value={searchTerm}
+                  onChange={(e) => updateParams({ search: e.target.value })}
+                  className="h-8 w-full bg-background py-1 pl-7 text-xs sm:text-sm"
+                />
+              </div>
+
+            <div className="min-w-[6.5rem] shrink-0 flex-1 basis-0">
+            <Select
+              value={dateFilter}
+              onValueChange={(value) => {
+                const todayIso = formatDateYMD(new Date());
+                if (value === 'range') {
+                  updateParams({
+                    date: 'range',
+                    df: dfParam || todayIso,
+                    dt: dtParam || todayIso,
+                  });
+                } else if (value === 'all') {
+                  updateParams({ date: 'all', df: null, dt: null });
+                } else {
+                  updateParams({ date: value, df: null, dt: null });
+                }
+              }}
+            >
+              <SelectTrigger className="h-8 w-full min-w-0 bg-background px-2 text-xs [&_span]:truncate">
+                <SelectValue placeholder="Vaqt oralig'i" />
               </SelectTrigger>
               <SelectContent>
                 <SelectItem value="all">Barcha vaqtlar</SelectItem>
                 <SelectItem value="today">Bugun</SelectItem>
                 <SelectItem value="week">Ushbu hafta</SelectItem>
                 <SelectItem value="month">Ushbu oy</SelectItem>
+                <SelectItem value="range">Belgilanilgan kunlar</SelectItem>
               </SelectContent>
             </Select>
+            </div>
 
+            <div className="min-w-[6.5rem] shrink-0 flex-1 basis-0">
             <Select value={cashierFilter} onValueChange={(value) => updateParams({ cashier: value })}>
-              <SelectTrigger>
+              <SelectTrigger className="h-8 w-full min-w-0 bg-background px-2 text-xs [&_span]:truncate">
                 <SelectValue placeholder="Barcha kassirlar" />
               </SelectTrigger>
               <SelectContent>
@@ -422,14 +589,16 @@ export default function Orders() {
                 ))}
               </SelectContent>
             </Select>
+            </div>
 
             {/* Customer filter */}
+            <div className="min-w-[6.5rem] shrink-0 flex-1 basis-0">
             <Select
               value={customerFilter || 'all'}
               onValueChange={(value) => updateParams({ customer: value === 'all' ? null : value })}
               disabled={customersLoading}
             >
-              <SelectTrigger>
+              <SelectTrigger className="h-8 w-full min-w-0 bg-background px-2 text-xs [&_span]:truncate">
                 <SelectValue placeholder={customersLoading ? 'Yuklanmoqda...' : 'Barcha mijozlar'} />
               </SelectTrigger>
               <SelectContent>
@@ -445,21 +614,42 @@ export default function Orders() {
                 )}
               </SelectContent>
             </Select>
+            </div>
 
+            <div className="min-w-[6.5rem] shrink-0 flex-1 basis-0">
+            <Select value={warehouseFilter} onValueChange={(value) => updateParams({ warehouse: value })}>
+              <SelectTrigger className="h-8 w-full min-w-0 bg-background px-2 text-xs [&_span]:truncate">
+                <SelectValue placeholder="Ombor" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">Barcha omborlar</SelectItem>
+                {warehouses.map((wh) => (
+                  <SelectItem key={wh.id} value={wh.id}>
+                    {wh.name || wh.id}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            </div>
+
+            <div className="min-w-[6.5rem] shrink-0 flex-1 basis-0">
             <Select value={paymentStatusFilter} onValueChange={(value) => updateParams({ paymentStatus: value })}>
-              <SelectTrigger>
+              <SelectTrigger className="h-8 w-full min-w-0 bg-background px-2 text-xs [&_span]:truncate">
                 <SelectValue placeholder="To'lov holati" />
               </SelectTrigger>
               <SelectContent>
                 <SelectItem value="all">Barcha to'lov holatlari</SelectItem>
                 <SelectItem value="paid">To'langan</SelectItem>
                 <SelectItem value="partial">Qisman to'langan</SelectItem>
-                <SelectItem value="unpaid">To'lanmagan</SelectItem>
+                <SelectItem value="on_credit">Nasiya</SelectItem>
+                <SelectItem value="pending">Kutilmoqda</SelectItem>
               </SelectContent>
             </Select>
+            </div>
 
+            <div className="min-w-[6.5rem] shrink-0 flex-1 basis-0">
             <Select value={statusFilter} onValueChange={(value) => updateParams({ status: value })}>
-              <SelectTrigger>
+              <SelectTrigger className="h-8 w-full min-w-0 bg-background px-2 text-xs [&_span]:truncate">
                 <SelectValue placeholder="Buyurtma holati" />
               </SelectTrigger>
               <SelectContent>
@@ -470,9 +660,11 @@ export default function Orders() {
                 <SelectItem value="refunded">Qaytarilgan</SelectItem>
               </SelectContent>
             </Select>
+            </div>
 
+            <div className="min-w-[6.5rem] shrink-0 flex-1 basis-0">
             <Select value={paymentMethodFilter} onValueChange={(value) => updateParams({ paymentMethod: value })}>
-              <SelectTrigger>
+              <SelectTrigger className="h-8 w-full min-w-0 bg-background px-2 text-xs [&_span]:truncate">
                 <SelectValue placeholder="To'lov usuli" />
               </SelectTrigger>
               <SelectContent>
@@ -483,9 +675,11 @@ export default function Orders() {
                 <SelectItem value="credit">Nasiya</SelectItem>
               </SelectContent>
             </Select>
+            </div>
 
+            <div className="min-w-[6.5rem] shrink-0 flex-1 basis-0">
             <Select value={sortBy} onValueChange={(value) => updateParams({ sortBy: value })}>
-              <SelectTrigger>
+              <SelectTrigger className="h-8 w-full min-w-0 bg-background px-2 text-xs [&_span]:truncate">
                 <SelectValue placeholder="Saralash" />
               </SelectTrigger>
               <SelectContent>
@@ -497,16 +691,55 @@ export default function Orders() {
                 <SelectItem value="order_number-desc">Buyurtma raqami (Z-A)</SelectItem>
               </SelectContent>
             </Select>
+            </div>
+            </div>
+
+            {dateFilter === 'range' && (
+              <div className="flex min-h-8 flex-wrap items-center gap-x-2 gap-y-1 border-t border-dashed border-muted-foreground/30 pt-1">
+                <span className="shrink-0 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+                  Muddat
+                </span>
+                <div className="flex min-w-0 flex-1 flex-wrap items-center gap-1.5 sm:flex-nowrap">
+                  <Label htmlFor="orders-df" className="sr-only">
+                    Dan sanasi
+                  </Label>
+                  <Input
+                    id="orders-df"
+                    type="date"
+                    className="h-8 min-w-[9.5rem] flex-1 bg-background px-2 font-mono text-xs"
+                    value={dfParam}
+                    onChange={(e) => updateParams({ df: e.target.value || null })}
+                  />
+                  <span className="shrink-0 text-muted-foreground" aria-hidden>
+                    —
+                  </span>
+                  <Label htmlFor="orders-dt" className="sr-only">
+                    Gacha sanasi
+                  </Label>
+                  <Input
+                    id="orders-dt"
+                    type="date"
+                    className="h-8 min-w-[9.5rem] flex-1 bg-background px-2 font-mono text-xs"
+                    value={dtParam}
+                    min={dfParam || undefined}
+                    onChange={(e) => updateParams({ dt: e.target.value || null })}
+                  />
+                </div>
+              </div>
+            )}
           </div>
         </CardContent>
       </Card>
 
-      <Card>
-        <CardHeader>
-          <CardTitle>Buyurtmalar (Yuklangan: {filteredOrders.length})</CardTitle>
+      <Card className="gap-0 py-0 shadow-sm">
+        <CardHeader className="flex flex-row flex-wrap items-center justify-between gap-2 space-y-0 border-b px-4 py-2">
+          <CardTitle className="text-base font-semibold">Buyurtmalar</CardTitle>
+          <span className="text-xs font-normal text-muted-foreground tabular-nums sm:text-sm">
+            Yuklangan: {filteredOrders.length}
+          </span>
         </CardHeader>
-        <CardContent>
-          {loading ? (
+        <CardContent className="px-2 pb-3 pt-0 sm:px-4">
+          {showFullPageSpinner ? (
             <div className="flex justify-center py-8">
               <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary" />
             </div>
@@ -520,6 +753,7 @@ export default function Orders() {
               {useVirtualized ? (
                 <VirtualizedOrdersTable
                   orders={filteredOrders as any[]}
+                  getEffectiveDiscountAmount={getEffectiveDiscountAmount}
                   getPaymentStatusBadge={getPaymentStatusBadge}
                   getStatusBadge={getStatusBadge}
                   getPaymentMethodIcons={getPaymentMethodIcons}
@@ -528,6 +762,8 @@ export default function Orders() {
                       state: createBackNavigationState(location),
                     })
                   }
+                  onEditPos={goToPosEditOrder}
+                  canEditInPos={canEditOrderInPos}
                   onPrint={(id) => {
                     setSelectedOrderIdForPrint(id);
                     setPrintDialogOpen(true);
@@ -544,21 +780,22 @@ export default function Orders() {
                 <>
                   <Table>
                     <TableHeader>
-                      <TableRow>
-                        <TableHead>Buyurtma raqami</TableHead>
-                        <TableHead>Sana va vaqt</TableHead>
-                        <TableHead>Kassir</TableHead>
-                        <TableHead>Mijoz</TableHead>
-                        <TableHead className="text-right">Jami summa</TableHead>
-                        <TableHead>To'lov holati</TableHead>
-                        <TableHead>To'lov usuli</TableHead>
-                        <TableHead>Holati</TableHead>
-                        <TableHead className="text-right">Amallar</TableHead>
+                      <TableRow className="hover:bg-transparent">
+                        <TableHead className="h-9 text-xs font-medium">Buyurtma raqami</TableHead>
+                        <TableHead className="h-9 text-xs font-medium">Sana va vaqt</TableHead>
+                        <TableHead className="h-9 text-xs font-medium">Kassir</TableHead>
+                        <TableHead className="h-9 text-xs font-medium">Mijoz</TableHead>
+                        <TableHead className="h-9 text-right text-xs font-medium">Jami summa</TableHead>
+                        <TableHead className="h-9 w-[120px] text-right text-xs font-medium">Chegirma</TableHead>
+                        <TableHead className="h-9 text-xs font-medium">To'lov holati</TableHead>
+                        <TableHead className="h-9 text-xs font-medium">To'lov usuli</TableHead>
+                        <TableHead className="h-9 text-xs font-medium">Holati</TableHead>
+                        <TableHead className="h-9 text-right text-xs font-medium">Amallar</TableHead>
                       </TableRow>
                     </TableHeader>
-                    <TableBody>
+                    <TableBody className="text-sm [&_td]:py-2">
                       {filteredOrders.map((order: any) => (
-                        <TableRow key={order.id}>
+                        <TableRow key={order.id} className="hover:bg-muted/40">
                           <TableCell className="font-mono font-medium">
                             {searchTerm ? highlightMatch(String(order.order_number ?? ''), searchTerm) : order.order_number}
                           </TableCell>
@@ -573,13 +810,24 @@ export default function Orders() {
                               ? highlightMatch(order.customer_name, searchTerm)
                               : (order.customer_name || 'Yangi mijoz')}
                           </TableCell>
-                          <TableCell className="text-right font-medium">
-                            <div>{formatMoneyUZS(order.total_amount)}</div>
-                            {getEffectiveDiscountAmount(order) > 0 && (
-                              <div className="text-xs text-destructive">
-                                Chegirma: -{formatMoneyUZS(getEffectiveDiscountAmount(order))}
-                              </div>
-                            )}
+                          <TableCell className="text-right align-top">
+                            <span className="font-medium tabular-nums">{formatMoneyUZS(order.total_amount)}</span>
+                          </TableCell>
+                          <TableCell className="text-right align-top">
+                            {(() => {
+                              const d = getEffectiveDiscountAmount(order);
+                              return d > 0 ? (
+                                <Badge
+                                  variant="outline"
+                                  className="tabular-nums font-normal border-emerald-600/35 bg-emerald-50 text-emerald-950 dark:bg-emerald-950/35 dark:text-emerald-50 dark:border-emerald-700/50"
+                                  title="Aksiya yoki qator chegirmasi"
+                                >
+                                  −{formatMoneyUZS(d)}
+                                </Badge>
+                              ) : (
+                                <span className="text-muted-foreground text-sm">—</span>
+                              );
+                            })()}
                           </TableCell>
                           <TableCell>
                             {getPaymentStatusBadge(order.payment_status)}
@@ -592,6 +840,16 @@ export default function Orders() {
                           </TableCell>
                           <TableCell className="text-right">
                             <div className="flex items-center justify-end gap-1">
+                              {canEditOrderInPos(order) && (
+                                <Button
+                                  variant="ghost"
+                                  size="icon"
+                                  onClick={() => goToPosEditOrder(order.id)}
+                                  title={t('orders.edit_in_pos_hint')}
+                                >
+                                  <Pencil className="h-4 w-4" />
+                                </Button>
+                              )}
                               <Button
                                 variant="ghost"
                                 size="icon"

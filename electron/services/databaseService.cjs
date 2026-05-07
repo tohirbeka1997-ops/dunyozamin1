@@ -12,6 +12,42 @@ class DatabaseService {
   }
 
   /**
+   * Marketplace / Telegram-side tables that reference POS rows (e.g.
+   * `web_order_items.product_id → products(id) ON DELETE RESTRICT`). They
+   * MUST be cleared before `products` / `customers` or the wipe aborts
+   * mid-transaction with a foreign-key error and leaves the DB in a
+   * half-emptied state.
+   *
+   * Order matters: child rows first, then parents.
+   */
+  _deleteMarketplaceData() {
+    const tables = [
+      'payment_logs',
+      'web_order_items',
+      'web_orders',
+      'marketplace_loyalty_ledger',
+      'marketplace_loyalty',
+      'marketplace_customer_bindings',
+      'marketplace_refresh_tokens',
+      'marketplace_bot_audit',
+      'marketplace_couriers',
+      'marketplace_customers',
+    ];
+    for (const table of tables) {
+      try {
+        this.db.prepare(`DELETE FROM ${table}`).run();
+      } catch (error) {
+        const msg = String(error?.message || '');
+        if (msg.includes('no such table')) {
+          // Older databases may not have every marketplace migration.
+          continue;
+        }
+        throw error;
+      }
+    }
+  }
+
+  /**
    * Wipe all transactional and master data while preserving users
    * This is a DESTRUCTIVE operation - use with caution!
    */
@@ -83,6 +119,10 @@ class DatabaseService {
         // Shift totals
         this.db.prepare('DELETE FROM shift_totals').run();
         console.log('  ✓ Deleted shift totals');
+
+        // Marketplace / Telegram (must come before products to satisfy FKs)
+        this._deleteMarketplaceData();
+        console.log('  ✓ Deleted marketplace / Telegram data');
 
         // ============================================================================
         // STEP 2: DELETE MASTER DATA
@@ -250,6 +290,10 @@ class DatabaseService {
         // Shift totals
         this.db.prepare('DELETE FROM shift_totals').run();
         console.log('  ✓ Deleted shift totals');
+
+        // Marketplace / Telegram (must come before products to satisfy FKs)
+        this._deleteMarketplaceData();
+        console.log('  ✓ Deleted marketplace / Telegram data');
 
         // ============================================================================
         // STEP 2: DELETE MASTER DATA

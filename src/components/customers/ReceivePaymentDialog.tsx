@@ -26,6 +26,8 @@ import { formatMoneyUZS } from '@/lib/format';
 import MoneyInput from '@/components/common/MoneyInput';
 import { useQueryClient } from '@tanstack/react-query';
 import { invalidateDashboardQueries } from '@/utils/dashboard';
+import { useShiftStore } from '@/store/shiftStore';
+import { useAuth } from '@/contexts/AuthContext';
 
 type CustomerPaymentMethod = 'cash' | 'card' | 'qr';
 
@@ -43,6 +45,8 @@ export default function ReceivePaymentDialog({
   onSuccess,
 }: ReceivePaymentDialogProps) {
   const { toast } = useToast();
+  const { user } = useAuth();
+  const { currentShift } = useShiftStore();
   const [amount, setAmount] = useState<number | undefined>(undefined);
   const [paymentMethod, setPaymentMethod] = useState<CustomerPaymentMethod>('cash');
   const [note, setNote] = useState('');
@@ -79,6 +83,9 @@ export default function ReceivePaymentDialog({
         amount: amount,
         payment_method: paymentMethod,
         notes: note.trim() || null,
+        operation: 'payment_in',
+        received_by: user?.id ?? null,
+        shift_id: currentShift?.id ?? null,
       });
 
       if (!result.success) {

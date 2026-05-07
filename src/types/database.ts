@@ -36,7 +36,13 @@ export interface Category {
   color: string | null;
   icon: string | null;
   parent_id: string | null;
+  sort_order?: number;
+  is_active?: boolean;
+  image_url?: string | null;
+  show_in_marketplace?: boolean;
+  products_count?: number;
   created_at: string;
+  updated_at?: string | null;
 }
 
 export interface Supplier {
@@ -116,9 +122,19 @@ export interface CustomerBonusLedgerEntry {
   created_by: string | null;
 }
 
+export interface CustomerLoyaltyCard {
+  loyalty_card_code: string;
+  qr_payload: string;
+  marketplace_customer_id: number;
+  created_at: string;
+}
+
 export interface SupplierWithPOs extends SupplierWithBalance {
   purchase_orders?: PurchaseOrder[];
 }
+
+/** Rang, o‘lcham va hokazo — bitta SKU uchun ko‘rsatish (DB: JSON) */
+export type ProductVariantOption = { name: string; value: string };
 
 export interface Product {
   id: string;
@@ -139,6 +155,10 @@ export interface Product {
   min_stock_level: number;
   image_url: string | null;
   is_active: boolean;
+  /** Telegram / public-api katalogida ko‘rsatish (migration 067) */
+  show_in_marketplace?: boolean;
+  /** Rang, o‘lcham… (migration 068) */
+  variant_options?: ProductVariantOption[];
   /** Manufacturer / brand name (migration 061) */
   brand?: string | null;
   /** Short vendor article code shared across product variants (migration 061) */
@@ -265,6 +285,10 @@ export interface CustomerPayment {
   customer_id: string;
   amount: number;
   payment_method: 'cash' | 'card' | 'qr';
+  operation?: 'payment_in' | 'payment_out';
+  old_balance?: number;
+  applied_amount?: number;
+  new_balance?: number;
   reference_number: string | null;
   notes: string | null;
   received_by: string | null;

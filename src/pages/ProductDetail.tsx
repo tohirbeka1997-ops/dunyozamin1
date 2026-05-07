@@ -182,7 +182,7 @@ export function ProductDetailContent({ productId, onClose }: ProductDetailProps)
             <ArrowLeft className="h-5 w-5" />
           </Button>
           <div>
-            <h1 className="text-3xl font-bold">{t('products.detail.title')}</h1>
+            <h1 className="page-heading">{t('products.detail.title')}</h1>
             <p className="text-muted-foreground">{t('products.detail.subtitle')}</p>
           </div>
         </div>

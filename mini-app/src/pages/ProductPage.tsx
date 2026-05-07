@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import { apiUrl } from '../lib/api';
 import { addToCart } from '../lib/cart';
+import { isFavorite, toggleFavorite } from '../lib/favorites';
 import { Skeleton } from '../components/Skeleton';
 import { Toast } from '../components/Toast';
 
@@ -15,6 +16,7 @@ type Product = {
   track_stock: boolean;
   image_url: string | null;
   images: { url: string }[];
+  options?: { name: string; value: string }[];
 };
 
 export function ProductPage({ onCartChange }: { onCartChange: () => void }) {
@@ -24,6 +26,7 @@ export function ProductPage({ onCartChange }: { onCartChange: () => void }) {
   const [qty, setQty] = useState(1);
   const [toast, setToast] = useState<string | null>(null);
   const [imgIdx, setImgIdx] = useState(0);
+  const [fav, setFav] = useState(false);
 
   const imageUrls = useMemo(() => {
     if (!p) return [];
@@ -34,6 +37,8 @@ export function ProductPage({ onCartChange }: { onCartChange: () => void }) {
 
   useEffect(() => {
     setImgIdx(0);
+    if (!id) return;
+    setFav(isFavorite(id));
   }, [id]);
 
   useEffect(() => {
@@ -90,12 +95,31 @@ export function ProductPage({ onCartChange }: { onCartChange: () => void }) {
   return (
     <div className="space-y-4">
       <Toast message={toast} onDismiss={() => setToast(null)} />
-      <Link
-        to="/catalog"
-        className="inline-flex items-center gap-1 text-sm font-medium text-[var(--tg-theme-link-color,#2481cc)]"
-      >
-        ← Katalog
-      </Link>
+      <div className="flex items-center justify-between gap-3">
+        <Link
+          to="/catalog"
+          className="inline-flex items-center gap-1 text-sm font-medium text-[var(--tg-theme-link-color,#2481cc)]"
+        >
+          ← Katalog
+        </Link>
+        {id ? (
+          <button
+            type="button"
+            onClick={() => {
+              const next = toggleFavorite(id);
+              setFav(next);
+              setToast(next ? 'Sevimlilarga qo‘shildi' : 'Sevimlilardan olib tashlandi');
+            }}
+            className={`inline-flex shrink-0 items-center gap-2 rounded-xl border px-3 py-2 text-sm font-medium transition ${
+              fav
+                ? 'border-pink-300 bg-pink-50 text-pink-700'
+                : 'bg-[var(--dz-surface)] text-[var(--dz-muted)]'
+            }`}
+          >
+            <span aria-hidden>{fav ? '❤' : '♡'}</span> Sevimliga
+          </button>
+        ) : null}
+      </div>
 
       <div className="overflow-hidden rounded-2xl border bg-[var(--dz-surface)] shadow-[var(--dz-card-shadow-soft)]">
         <div className="aspect-square w-full bg-[color-mix(in_srgb,var(--dz-surface)_88%,#94a3b8_12%)]">
@@ -128,6 +152,16 @@ export function ProductPage({ onCartChange }: { onCartChange: () => void }) {
           </p>
           {p.track_stock ? (
             <p className="text-sm text-[var(--dz-muted)]">Omborda: {p.stock_quantity ?? 0} dona</p>
+          ) : null}
+          {p.options && p.options.length > 0 ? (
+            <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1.5 text-sm">
+              {p.options.map((o, i) => (
+                <div key={`${p.id}-opt-${i}`} className="contents">
+                  <dt className="font-medium text-[var(--dz-muted)]">{o.name}</dt>
+                  <dd className="text-[var(--dz-text)]">{o.value}</dd>
+                </div>
+              ))}
+            </dl>
           ) : null}
           {p.description ? (
             <p className="whitespace-pre-wrap text-sm leading-relaxed text-[var(--dz-muted)]">{p.description}</p>

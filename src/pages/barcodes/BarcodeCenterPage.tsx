@@ -2,7 +2,7 @@ import { useNavigate } from 'react-router-dom';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
-import { Scale, Tag, FileText, Printer } from 'lucide-react';
+import { Scale, Tag, FileText, Printer, Barcode, Sticker } from 'lucide-react';
 import { useAuth } from '@/contexts/AuthContext';
 
 function ServiceCard({
@@ -52,7 +52,7 @@ export default function BarcodeCenterPage() {
   return (
     <div className="container mx-auto p-6 space-y-6">
       <div>
-        <h1 className="text-3xl font-bold">Barcode Center</h1>
+        <h1 className="page-heading">Barcode Center</h1>
         <p className="text-muted-foreground mt-2">
           Shtrix-kod xizmatlari: Product / Scale / Internal / Marketing.
         </p>
@@ -76,11 +76,25 @@ export default function BarcodeCenterPage() {
           />
         )}
         <ServiceCard
+          title="Product Barcode Service"
+          description="Mahsulot barkodini yaratish, validatsiya qilish va yorliq chop etish."
+          status="active"
+          icon={<Barcode className="h-5 w-5 text-primary" />}
+          onOpen={() => navigate('/barcodes/product')}
+        />
+        <ServiceCard
           title="Scale Barcode Service"
           description="Kiloli mahsulotlar (tarozi) uchun barcode logika va label."
           status="active"
           icon={<Scale className="h-5 w-5 text-primary" />}
           onOpen={() => navigate('/barcodes/scale')}
+        />
+        <ServiceCard
+          title="Shelf Label Service"
+          description="Tokcha yorliqlari uchun ixcham formatlar va tez chop etish."
+          status="active"
+          icon={<Sticker className="h-5 w-5 text-primary" />}
+          onOpen={() => navigate('/barcodes/shelf-label')}
         />
         <ServiceCard
           title="Printer Settings"

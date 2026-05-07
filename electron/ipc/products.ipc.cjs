@@ -1,5 +1,6 @@
 const { ipcMain } = require('electron');
 const { wrapHandler } = require('../lib/errors.cjs');
+const { getCurrentUserId } = require('../lib/currentUser.cjs');
 
 // Defensive check: ensure wrapHandler is imported correctly
 if (typeof wrapHandler !== 'function') {
@@ -77,13 +78,14 @@ function registerProductsHandlers(services) {
 
   console.log('Registering pos:products:create handler...');
   ipcMain.removeHandler('pos:products:create');
-  ipcMain.handle('pos:products:create', wrapHandler(async (event, data) => {
+  ipcMain.handle('pos:products:create', wrapHandler(async (event, data, actorUserId) => {
     console.log('📦 [IPC] pos:products:create called with data:', JSON.stringify(data, null, 2));
     try {
-      const result = await products.create(data);
-      // Audit (best-effort)
+      const actor = actorUserId != null && String(actorUserId).trim() ? String(actorUserId).trim() : getCurrentUserId();
+      const result = await products.create(data, { actorUserId: actor });
+      // Audit (best-effort) — avvalo renderer yuborgan foydalanuvchi
       try {
-        audit?.logProductCreate?.(result, null);
+        audit?.logProductCreate?.(result, actor);
       } catch {}
       console.log('✅ [IPC] pos:products:create succeeded, returning product:', result.id, result.name);
       console.log('✅ [IPC] Product successfully saved to pos.db:', result.name);
@@ -101,7 +103,7 @@ function registerProductsHandlers(services) {
 
   console.log('Registering pos:products:update handler...');
   ipcMain.removeHandler('pos:products:update');
-  ipcMain.handle('pos:products:update', wrapHandler(async (event, id, data) => {
+  ipcMain.handle('pos:products:update', wrapHandler(async (event, id, data, actorUserId) => {
     console.log('✏️ [IPC] pos:products:update called with id:', id, 'data:', JSON.stringify(data, null, 2));
     try {
       const before = (() => {
@@ -111,10 +113,11 @@ function registerProductsHandlers(services) {
           return null;
         }
       })();
-      const result = await products.update(id, data);
+      const actor = actorUserId != null && String(actorUserId).trim() ? String(actorUserId).trim() : getCurrentUserId();
+      const result = await products.update(id, data, { actorUserId: actor });
       // Audit (best-effort)
       try {
-        if (before) audit?.logProductUpdate?.(before, result, null);
+        if (before) audit?.logProductUpdate?.(before, result, actor);
       } catch {}
       console.log('✅ [IPC] pos:products:update succeeded:', result?.id);
       // Emit cache invalidation event
@@ -135,7 +138,7 @@ function registerProductsHandlers(services) {
 
   console.log('Registering pos:products:delete handler...');
   ipcMain.removeHandler('pos:products:delete');
-  ipcMain.handle('pos:products:delete', wrapHandler(async (event, id) => {
+  ipcMain.handle('pos:products:delete', wrapHandler(async (event, id, actorUserId) => {
     console.log('🗑️ [IPC] pos:products:delete called with id:', id);
     try {
       const before = (() => {
@@ -146,9 +149,10 @@ function registerProductsHandlers(services) {
         }
       })();
       const result = await products.delete(id);
+      const actor = actorUserId != null && String(actorUserId).trim() ? String(actorUserId).trim() : getCurrentUserId();
       // Audit (best-effort)
       try {
-        if (before) audit?.logProductDelete?.(before, null);
+        if (before) audit?.logProductDelete?.(before, actor);
       } catch {}
       console.log('✅ [IPC] pos:products:delete succeeded:', result);
       // Emit cache invalidation event

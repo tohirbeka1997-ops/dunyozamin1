@@ -71,6 +71,13 @@ export default function PaymentMethodReport() {
                     ? t('reports.payment_methods_page.methods.credit')
                     : t('reports.payment_methods_page.methods.other');
 
+      const normalizeMethod = (method: any) => String(method || 'other').toLowerCase();
+      const isNonCashSettlementMethod = (method: string) =>
+        ['credit', 'on_credit', 'debt', 'credit_note', 'customer_account'].includes(method);
+      const isRefundPayoutMethod = (method: string) => method === 'refund_cash';
+      const shouldIncludeInDistribution = (method: string, amount: number) =>
+        amount > 0 && !isNonCashSettlementMethod(method) && !isRefundPayoutMethod(method);
+
       const methodMap = new Map<string, { count: number; total: number }>();
 
       // IMPORTANT: In Electron mode, `getOrders()` may not include payment amounts.
@@ -95,9 +102,10 @@ export default function PaymentMethodReport() {
         const payments = order.payments || [];
 
         if (payments.length === 0) {
-          const method = (order as any).payment_type || 'cash';
-          const existing = methodMap.get(method);
+          const method = normalizeMethod((order as any).payment_type || 'cash');
           const amount = Number(order.total_amount);
+          if (!shouldIncludeInDistribution(method, amount)) return;
+          const existing = methodMap.get(method);
 
           if (existing) {
             existing.count += 1;
@@ -115,11 +123,12 @@ export default function PaymentMethodReport() {
           payments.length === 1 && rawSum <= 0 && Number(order.total_amount) > 0;
 
         payments.forEach((payment) => {
-          const method = payment.payment_method;
-          const existing = methodMap.get(method);
+          const method = normalizeMethod(payment.payment_method);
           const amount = shouldFallbackSinglePaymentAmount
             ? Number(order.total_amount)
             : Number(payment.amount ?? 0);
+          if (!shouldIncludeInDistribution(method, amount)) return;
+          const existing = methodMap.get(method);
 
           if (existing) {
             existing.count += 1;
@@ -191,11 +200,11 @@ export default function PaymentMethodReport() {
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-4">
-          <Button variant="ghost" size="icon" onClick={() => navigate('/reports')}>
+          <Button variant="ghost" size="icon" onClick={() => navigate('/reports/financial')}>
             <ArrowLeft className="h-4 w-4" />
           </Button>
           <div>
-            <h1 className="text-3xl font-bold">{t('reports.payment_methods_page.title')}</h1>
+            <h1 className="page-heading">{t('reports.payment_methods_page.title')}</h1>
             <p className="text-muted-foreground">{t('reports.payment_methods_page.subtitle')}</p>
           </div>
         </div>

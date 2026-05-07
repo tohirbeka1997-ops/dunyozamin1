@@ -1,4 +1,4 @@
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useQuery } from '@tanstack/react-query';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -32,7 +32,7 @@ import { formatUnit } from '@/utils/formatters';
 import { useToast } from '@/hooks/use-toast';
 import { formatMoneyUZS } from '@/lib/format';
 import { LineChart, Line, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
-import { formatMonthDay, formatMonthDayYear } from '@/lib/datetime';
+import { formatMonthDay, formatMonthDayYear, todayYMD } from '@/lib/datetime';
 
 interface MetricCardProps {
   title: string;
@@ -80,15 +80,30 @@ interface DateRange {
   to: Date;
 }
 
+const DASHBOARD_REFRESH_MS = 60_000;
+const DASHBOARD_SLOW_REFRESH_MS = 120_000;
+
+function ymdToUtcDate(ymd: string): Date {
+  const [yy, mm, dd] = String(ymd || '').split('-').map((v) => Number(v));
+  const year = Number.isFinite(yy) ? yy : 1970;
+  const month = Number.isFinite(mm) ? mm : 1;
+  const day = Number.isFinite(dd) ? dd : 1;
+  return new Date(Date.UTC(year, month - 1, day, 0, 0, 0, 0));
+}
+
+function localCalendarDateToUtcDate(d: Date): Date {
+  return new Date(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate(), 0, 0, 0, 0));
+}
+
 export default function Dashboard() {
   const { t } = useTranslation();
   const { toast } = useToast();
+  const lastAnalyticsErrorToastAtRef = useRef(0);
   
   // Date range state
   const [datePreset, setDatePreset] = useState<DateRangePreset>('today');
   const [dateRange, setDateRange] = useState<DateRange>(() => {
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
+    const today = ymdToUtcDate(todayYMD());
     return { from: today, to: today };
   });
   const [customDateFrom, setCustomDateFrom] = useState<Date | undefined>();
@@ -101,18 +116,20 @@ export default function Dashboard() {
   }, [dateRange]);
 
   // React Query hooks for dashboard data
-  // refetchOnMount: true - Always fetch fresh data when component mounts
-  // refetchOnWindowFocus: true - Refresh when user returns to tab/window
-  // refetchInterval: 30000 - Auto-refresh every 30 seconds
+  // Keep dashboard fresh without creating unnecessary background load on shared SQLite/server deployments.
   const { data: analytics, isLoading: analyticsLoading, isError: analyticsError } = useQuery({
     queryKey: ['dashboardAnalytics', dateRangeKey],
     queryFn: () => getDashboardAnalytics(dateRange.from, dateRange.to),
     refetchOnMount: true,
     refetchOnWindowFocus: true,
-    refetchInterval: 30000, // Auto-refresh every 30 seconds
+    refetchInterval: DASHBOARD_REFRESH_MS,
     retry: 1,
     onError: (err: any) => {
       console.error('[Dashboard] dashboardAnalytics error:', err);
+      const now = Date.now();
+      const THROTTLE_MS = 2 * 60 * 1000;
+      if (now - lastAnalyticsErrorToastAtRef.current < THROTTLE_MS) return;
+      lastAnalyticsErrorToastAtRef.current = now;
       toast({
         title: t('dashboard.error_loading_metric'),
         description: err?.message || 'Unknown error',
@@ -125,8 +142,8 @@ export default function Dashboard() {
     queryKey: ['lowStockProducts'],
     queryFn: getLowStockProducts,
     refetchOnMount: true,
-    refetchOnWindowFocus: true,
-    refetchInterval: 30000,
+    refetchOnWindowFocus: false,
+    refetchInterval: DASHBOARD_SLOW_REFRESH_MS,
     retry: 1,
   });
 
@@ -134,8 +151,8 @@ export default function Dashboard() {
     queryKey: ['dailySales', dateRangeKey],
     queryFn: () => getDailySalesData(dateRange.from, dateRange.to),
     refetchOnMount: true,
-    refetchOnWindowFocus: true,
-    refetchInterval: 30000,
+    refetchOnWindowFocus: false,
+    refetchInterval: DASHBOARD_REFRESH_MS,
     retry: 1,
   });
 
@@ -143,8 +160,8 @@ export default function Dashboard() {
     queryKey: ['topProducts', dateRangeKey],
     queryFn: () => getTopProducts(dateRange.from, dateRange.to, 5),
     refetchOnMount: true,
-    refetchOnWindowFocus: true,
-    refetchInterval: 30000,
+    refetchOnWindowFocus: false,
+    refetchInterval: DASHBOARD_REFRESH_MS,
     retry: 1,
   });
 
@@ -152,8 +169,8 @@ export default function Dashboard() {
     queryKey: ['totalCustomerDebt'],
     queryFn: getTotalCustomerDebt,
     refetchOnMount: true,
-    refetchOnWindowFocus: true,
-    refetchInterval: 30000,
+    refetchOnWindowFocus: false,
+    refetchInterval: DASHBOARD_SLOW_REFRESH_MS,
     retry: 1,
   });
 
@@ -162,8 +179,7 @@ export default function Dashboard() {
 
   // Calculate date range based on preset
   const calculateDateRange = (preset: DateRangePreset): DateRange => {
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
+    const today = ymdToUtcDate(todayYMD());
     
     switch (preset) {
       case 'today':
@@ -171,18 +187,18 @@ export default function Dashboard() {
       
       case 'yesterday': {
         const yesterday = new Date(today);
-        yesterday.setDate(yesterday.getDate() - 1);
+        yesterday.setUTCDate(yesterday.getUTCDate() - 1);
         return { from: yesterday, to: yesterday };
       }
       
       case 'last7days': {
         const weekAgo = new Date(today);
-        weekAgo.setDate(weekAgo.getDate() - 6);
+        weekAgo.setUTCDate(weekAgo.getUTCDate() - 6);
         return { from: weekAgo, to: today };
       }
       
       case 'thisMonth': {
-        const firstDay = new Date(today.getFullYear(), today.getMonth(), 1);
+        const firstDay = new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), 1, 0, 0, 0, 0));
         return { from: firstDay, to: today };
       }
       
@@ -212,7 +228,10 @@ export default function Dashboard() {
   // Handle custom date selection
   const applyCustomDateRange = () => {
     if (customDateFrom && customDateTo) {
-      setDateRange({ from: customDateFrom, to: customDateTo });
+      setDateRange({
+        from: localCalendarDateToUtcDate(customDateFrom),
+        to: localCalendarDateToUtcDate(customDateTo),
+      });
       setShowCustomDatePicker(false);
     } else {
       toast({
@@ -237,71 +256,70 @@ export default function Dashboard() {
   };
 
   return (
-    <div className="space-y-6">
-      {/* Header with Date Range Selector */}
-      <div className="flex flex-col gap-4 xl:flex-row xl:items-center xl:justify-between">
-        <div>
-          <h1 className="text-3xl font-bold">{t('dashboard.title')}</h1>
-          <p className="text-muted-foreground">{t('dashboard.subtitle')}</p>
-        </div>
-        
-        <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
-          <Select value={datePreset} onValueChange={(value) => handlePresetChange(value as DateRangePreset)}>
-            <SelectTrigger className="w-full sm:w-48">
-              <SelectValue placeholder={t('dashboard.filters.select_period')} />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="today">{t('dashboard.filters.today')}</SelectItem>
-              <SelectItem value="yesterday">{t('dashboard.filters.yesterday')}</SelectItem>
-              <SelectItem value="last7days">{t('dashboard.filters.last_7_days')}</SelectItem>
-              <SelectItem value="thisMonth">{t('dashboard.filters.this_month')}</SelectItem>
-              <SelectItem value="custom">{t('dashboard.filters.custom_range')}</SelectItem>
-            </SelectContent>
-          </Select>
+    <div className="space-y-4">
+      {/* Compact header: title + period on one row; subtitle + active period on one line */}
+      <div className="space-y-1.5">
+        <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-2">
+          <h1 className="page-heading">{t('dashboard.title')}</h1>
+          <div className="flex flex-wrap items-center gap-2">
+            <Select value={datePreset} onValueChange={(value) => handlePresetChange(value as DateRangePreset)}>
+              <SelectTrigger className="h-8 w-[min(100%,11rem)] min-w-[10rem] text-xs sm:w-44">
+                <SelectValue placeholder={t('dashboard.filters.select_period')} />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="today">{t('dashboard.filters.today')}</SelectItem>
+                <SelectItem value="yesterday">{t('dashboard.filters.yesterday')}</SelectItem>
+                <SelectItem value="last7days">{t('dashboard.filters.last_7_days')}</SelectItem>
+                <SelectItem value="thisMonth">{t('dashboard.filters.this_month')}</SelectItem>
+                <SelectItem value="custom">{t('dashboard.filters.custom_range')}</SelectItem>
+              </SelectContent>
+            </Select>
 
-          {datePreset === 'custom' && (
-            <Popover open={showCustomDatePicker} onOpenChange={setShowCustomDatePicker}>
-              <PopoverTrigger asChild>
-                <Button variant="outline" className="w-full sm:w-auto">
-                  <CalendarIcon className="mr-2 h-4 w-4" />
-                  {customDateFrom && customDateTo
-                    ? `${formatMonthDay(customDateFrom)} - ${formatMonthDay(customDateTo)}`
-                    : t('dashboard.filters.pick_dates')}
-                </Button>
-              </PopoverTrigger>
-              <PopoverContent className="w-auto p-4" align="end">
-                <div className="space-y-4">
-                  <div>
-                    <p className="text-sm font-medium mb-2">{t('dashboard.filters.from_date')}</p>
-                    <Calendar
-                      mode="single"
-                      selected={customDateFrom}
-                      onSelect={setCustomDateFrom}
-                      disabled={(date) => date > new Date()}
-                    />
-                  </div>
-                  <div>
-                    <p className="text-sm font-medium mb-2">{t('dashboard.filters.to_date')}</p>
-                    <Calendar
-                      mode="single"
-                      selected={customDateTo}
-                      onSelect={setCustomDateTo}
-                      disabled={(date) => date > new Date() || (customDateFrom ? date < customDateFrom : false)}
-                    />
-                  </div>
-                  <Button onClick={applyCustomDateRange} className="w-full">
-                    {t('dashboard.filters.apply_date_range')}
+            {datePreset === 'custom' && (
+              <Popover open={showCustomDatePicker} onOpenChange={setShowCustomDatePicker}>
+                <PopoverTrigger asChild>
+                  <Button variant="outline" size="sm" className="h-8 w-full text-xs sm:w-auto">
+                    <CalendarIcon className="mr-2 h-3.5 w-3.5" />
+                    {customDateFrom && customDateTo
+                      ? `${formatMonthDay(customDateFrom)} - ${formatMonthDay(customDateTo)}`
+                      : t('dashboard.filters.pick_dates')}
                   </Button>
-                </div>
-              </PopoverContent>
-            </Popover>
-          )}
+                </PopoverTrigger>
+                <PopoverContent className="w-auto p-4" align="end">
+                  <div className="space-y-4">
+                    <div>
+                      <p className="text-sm font-medium mb-2">{t('dashboard.filters.from_date')}</p>
+                      <Calendar
+                        mode="single"
+                        selected={customDateFrom}
+                        onSelect={setCustomDateFrom}
+                        disabled={(date) => date > new Date()}
+                      />
+                    </div>
+                    <div>
+                      <p className="text-sm font-medium mb-2">{t('dashboard.filters.to_date')}</p>
+                      <Calendar
+                        mode="single"
+                        selected={customDateTo}
+                        onSelect={setCustomDateTo}
+                        disabled={(date) => date > new Date() || (customDateFrom ? date < customDateFrom : false)}
+                      />
+                    </div>
+                    <Button onClick={applyCustomDateRange} className="w-full">
+                      {t('dashboard.filters.apply_date_range')}
+                    </Button>
+                  </div>
+                </PopoverContent>
+              </Popover>
+            )}
+          </div>
         </div>
-      </div>
-
-      {/* Period Label */}
-      <div className="text-sm text-muted-foreground">
-        {t('dashboard.showing_data_for')}: <span className="font-medium text-foreground">{formatDateRange()}</span>
+        <p className="text-xs leading-snug text-muted-foreground sm:text-sm">
+          {t('dashboard.subtitle')}{' '}
+          <span className="text-muted-foreground/80">—</span>{' '}
+          {t('dashboard.showing_data_for')}:{' '}
+          <span className="font-medium text-foreground">{formatDateRange()}</span>
+        </p>
       </div>
 
       {/* Row 1: Main KPI Cards */}
@@ -326,7 +344,7 @@ export default function Dashboard() {
 
         <MetricCard
           title={t('dashboard.cards.total_profit.title')}
-          value={formatCurrency(analytics?.total_profit || 0)}
+          value={formatCurrency((analytics?.net_profit ?? analytics?.total_profit) || 0)}
           subtitle={t('dashboard.cards.total_profit.subtitle')}
           icon={<TrendingUp className="h-4 w-4 text-success" />}
           loading={analyticsLoading}

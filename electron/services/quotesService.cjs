@@ -219,7 +219,7 @@ class QuotesService {
    * Convert quote to sale (POS order)
    * Returns { order_id, order_number } on success
    */
-  convertToSale(quoteId, orderData) {
+  convertToSale(quoteId, orderData = {}) {
     const quote = this.get(quoteId);
     if (!quote) throw new Error('Quote not found');
     if (quote.status === 'converted') {
@@ -228,6 +228,8 @@ class QuotesService {
     if (!this.salesService || typeof this.salesService.completePOSOrder !== 'function') {
       throw new Error('Sales service not available for conversion');
     }
+
+    const { payments: suppliedPayments, ...orderFields } = orderData;
 
     const items = quote.items.map((it) => ({
       product_id: it.product_id,
@@ -238,14 +240,40 @@ class QuotesService {
       price_tier: it.price_type_used === 'usta' ? 'master' : 'retail',
     }));
 
-    const payments = orderData.payments || [
-      { method: 'cash', amount: quote.total }
-    ];
+    const totalAmt = Number(quote.total) || 0;
+    let payments;
+    if (Array.isArray(suppliedPayments) && suppliedPayments.length > 0) {
+      payments = suppliedPayments.map((p, i) => ({
+        payment_method: p.payment_method || p.method || 'cash',
+        amount: Number(p.amount) || 0,
+        payment_number: p.payment_number || `PAY-${Date.now()}-${i}`,
+        reference_number: p.reference_number ?? null,
+        notes: p.notes ?? null,
+      }));
+    } else {
+      payments = [
+        {
+          payment_method: 'cash',
+          amount: totalAmt,
+          payment_number: `PAY-${Date.now()}`,
+          reference_number: null,
+          notes: null,
+        },
+      ];
+    }
 
     const result = this.salesService.completePOSOrder(
       {
-        customer_id: quote.customer_id || null,
-        ...orderData,
+        ...orderFields,
+        customer_id: quote.customer_id ?? orderFields.customer_id ?? null,
+        subtotal: Number(quote.subtotal) || 0,
+        discount_amount: Number(quote.discount_amount) || 0,
+        discount_percent: Number(quote.discount_percent) || 0,
+        tax_amount: Number(quote.tax_amount) || 0,
+        total_amount: totalAmt,
+        paid_amount: totalAmt,
+        credit_amount: 0,
+        change_amount: 0,
       },
       items,
       payments

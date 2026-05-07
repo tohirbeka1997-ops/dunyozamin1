@@ -57,6 +57,8 @@ export default function ReceiptPrintView({
     Number((order as any)?.customer_total_debt || 0) ||
       Math.max(0, -Number((order.customer as any)?.balance || 0))
   );
+  const loyaltyCardCode = String((order as any)?.loyalty_card_code || '').trim();
+  const loyaltyQrDataUrl = String((order as any)?.loyalty_qr_data_url || '').trim();
 
   // Match OrderDetail behavior: if order-level discount is 0, fall back to sum of item discounts
   const getEffectiveDiscountAmount = (): number => {
@@ -91,7 +93,7 @@ export default function ReceiptPrintView({
     return (
       <div className="receipt-a4 font-semibold">
         <div className="text-center mb-6">
-          {storeName && <h1 className="text-2xl font-bold mb-2">{storeName}</h1>}
+          {storeName && <h1 className="page-heading mb-1">{storeName}</h1>}
           {storePhone && <p className="text-sm text-muted-foreground">{storePhone}</p>}
           {storeAddress && <p className="text-sm text-muted-foreground">{storeAddress}</p>}
           {storeTaxId && <p className="text-sm text-muted-foreground">STIR: {storeTaxId}</p>}
@@ -269,6 +271,14 @@ export default function ReceiptPrintView({
           </div>
         )}
 
+        {loyaltyCardCode && loyaltyQrDataUrl && (
+          <div className="mb-6 text-center">
+            <p className="text-sm font-semibold mb-2">Nakopitel karta</p>
+            <img src={loyaltyQrDataUrl} alt="Loyalty QR" className="mx-auto h-28 w-28" />
+            <p className="text-xs mt-2 font-mono">{loyaltyCardCode}</p>
+          </div>
+        )}
+
         <div className="text-center mt-8 pt-4 border-t border-gray-300">
           {footerText && <p className="text-sm mb-2 whitespace-pre-wrap">{footerText}</p>}
           <p className="text-sm text-muted-foreground">Xaridingiz uchun rahmat!</p>
@@ -434,6 +444,14 @@ export default function ReceiptPrintView({
             <span>Umumiy qarz:</span>
             <span>{formatMoneyUZS(customerTotalDebt)}</span>
           </div>
+        </div>
+      )}
+
+      {loyaltyCardCode && loyaltyQrDataUrl && (
+        <div className="mb-3 text-xs text-center border-t border-dashed border-gray-400 pt-2">
+          <p className="font-semibold mb-1">Nakopitel karta</p>
+          <img src={loyaltyQrDataUrl} alt="Loyalty QR" className="mx-auto h-20 w-20" />
+          <p className="mt-1 font-mono">{loyaltyCardCode}</p>
         </div>
       )}
 

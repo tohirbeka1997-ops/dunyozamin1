@@ -69,7 +69,7 @@ export default function TechAuditReportsHub() {
           <ArrowLeft className="h-4 w-4" />
         </Button>
         <div>
-          <h1 className="text-3xl font-bold">Texnik & audit</h1>
+          <h1 className="page-heading">Texnik & audit</h1>
           <p className="text-muted-foreground">Tizim, audit va texnik nazorat hisobotlari</p>
         </div>
       </div>

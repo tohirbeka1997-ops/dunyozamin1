@@ -33,7 +33,10 @@ function makeMockDb() {
       sessions.set(id, { id, user_id, token, ip_address, user_agent, expires_at, created_at });
       return { changes: 1 };
     }
-    if (/SELECT s\.id, s\.user_id, s\.expires_at, u\.username, u\.role, u\.is_active/i.test(sql)) {
+    if (
+      /SELECT s\.id,\s*s\.user_id,\s*s\.expires_at,\s*u\.username,/i.test(sql) &&
+      /FROM sessions s\s+JOIN users u/i.test(sql)
+    ) {
       const [token] = args;
       for (const s of sessions.values()) {
         if (s.token === token) {

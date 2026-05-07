@@ -23,7 +23,7 @@ import { ArrowLeft, Crown, TrendingUp, Repeat } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 import { handleIpcResponse, isElectron, requireElectron } from '@/utils/electron';
 import { formatMoneyUZS } from '@/lib/format';
-import { formatDate } from '@/lib/datetime';
+import { formatDate, formatDateYMD, todayYMD } from '@/lib/datetime';
 import { useReportAutoRefresh } from '@/hooks/useReportAutoRefresh';
 import { useTableSort } from '@/hooks/useTableSort';
 import { SortableTableHead } from '@/components/reports/SortableTableHead';
@@ -141,51 +141,53 @@ export default function VIPCustomersReport() {
   }
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-4">
       <div className="flex items-center justify-between">
-        <div className="flex items-center gap-4">
-          <Button variant="ghost" size="icon" onClick={() => navigate('/reports')}>
+        <div className="flex items-center gap-3">
+          <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => navigate('/reports/customer')}>
             <ArrowLeft className="h-4 w-4" />
           </Button>
           <div>
-            <h1 className="text-3xl font-bold flex items-center gap-2">
-              <Crown className="h-8 w-8 text-yellow-500" />
+            <h1 className="page-heading flex items-center gap-2">
+              <Crown className="h-6 w-6 text-yellow-500" />
               VIP mijozlar
             </h1>
-            <p className="text-muted-foreground">
+            <p className="text-xs text-muted-foreground">
               Eng ko'p xarid qilganlar va qayta-qayta keluvchilar
             </p>
           </div>
         </div>
-        <Button variant="outline" onClick={loadData}>
+        <Button variant="outline" size="sm" className="h-8" onClick={loadData}>
           Yangilash
         </Button>
       </div>
 
       <Card>
-        <CardContent className="pt-6">
-          <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+        <CardContent className="py-3">
+          <div className="grid grid-cols-1 gap-3 md:grid-cols-4">
             <div>
-              <label className="text-sm text-muted-foreground">Qidirish</label>
+              <label className="text-xs text-muted-foreground">Qidirish</label>
               <Input
+                className="h-8"
                 placeholder="Ism yoki telefon..."
                 value={searchTerm}
                 onChange={(e) => setSearchTerm(e.target.value)}
               />
             </div>
             <div>
-              <label className="text-sm text-muted-foreground">Min buyurtmalar</label>
+              <label className="text-xs text-muted-foreground">Min buyurtmalar</label>
               <Input
+                className="h-8"
                 type="number"
                 min="1"
                 value={minOrders}
                 onChange={(e) => setMinOrders(Number(e.target.value))}
               />
             </div>
-            <div>
-              <label className="text-sm text-muted-foreground">Limit</label>
+            <div className="md:col-span-2">
+              <label className="text-xs text-muted-foreground">Limit</label>
               <Select value={String(limit)} onValueChange={(v) => setLimit(Number(v))}>
-                <SelectTrigger>
+                <SelectTrigger className="h-8">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
@@ -197,45 +199,45 @@ export default function VIPCustomersReport() {
               </Select>
             </div>
           </div>
-          <p className="text-xs text-muted-foreground pt-2">
+          <p className="pt-1.5 text-[11px] text-muted-foreground">
             Ustun sarlavhasiga bosing — eng ko‘p / eng kam tartibda server bo‘yicha saralanadi.
           </p>
         </CardContent>
       </Card>
 
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+      <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
         <Card>
-          <CardContent className="pt-6">
+          <CardContent className="py-3">
             <div className="flex items-center gap-2">
-              <TrendingUp className="h-5 w-5 text-primary" />
-              <p className="text-sm text-muted-foreground">Jami sotuv</p>
+              <TrendingUp className="h-4 w-4 text-primary" />
+              <p className="text-xs text-muted-foreground">Jami sotuv</p>
             </div>
-            <div className="text-2xl font-bold mt-2">{formatMoneyUZS(summary.totalSpent)}</div>
-            <div className="text-xs text-muted-foreground mt-1">
+            <div className="mt-1 text-xl font-bold">{formatMoneyUZS(summary.totalSpent)}</div>
+            <div className="mt-0.5 text-xs text-muted-foreground">
               VIP mijozlar tomonidan
             </div>
           </CardContent>
         </Card>
         <Card>
-          <CardContent className="pt-6">
+          <CardContent className="py-3">
             <div className="flex items-center gap-2">
-              <Repeat className="h-5 w-5 text-blue-500" />
-              <p className="text-sm text-muted-foreground">Jami buyurtmalar</p>
+              <Repeat className="h-4 w-4 text-blue-500" />
+              <p className="text-xs text-muted-foreground">Jami buyurtmalar</p>
             </div>
-            <div className="text-2xl font-bold mt-2">{summary.totalOrders}</div>
-            <div className="text-xs text-muted-foreground mt-1">
+            <div className="mt-1 text-xl font-bold">{summary.totalOrders}</div>
+            <div className="mt-0.5 text-xs text-muted-foreground">
               {filtered.length} ta mijoz
             </div>
           </CardContent>
         </Card>
         <Card>
-          <CardContent className="pt-6">
+          <CardContent className="py-3">
             <div className="flex items-center gap-2">
-              <Crown className="h-5 w-5 text-yellow-500" />
-              <p className="text-sm text-muted-foreground">O'rtacha check</p>
+              <Crown className="h-4 w-4 text-yellow-500" />
+              <p className="text-xs text-muted-foreground">O'rtacha check</p>
             </div>
-            <div className="text-2xl font-bold mt-2">{formatMoneyUZS(summary.avgValue)}</div>
-            <div className="text-xs text-muted-foreground mt-1">
+            <div className="mt-1 text-xl font-bold">{formatMoneyUZS(summary.avgValue)}</div>
+            <div className="mt-0.5 text-xs text-muted-foreground">
               VIP mijoz uchun
             </div>
           </CardContent>
@@ -252,10 +254,22 @@ export default function VIPCustomersReport() {
               </p>
             </div>
           ) : (
-            <Table>
+            <Table className="min-w-[920px] table-fixed">
+              <colgroup>
+                <col className="w-10" />
+                <col className="w-[18%]" />
+                <col className="w-[12%]" />
+                <col className="w-[11%]" />
+                <col className="w-[8%]" />
+                <col className="w-[7%]" />
+                <col className="w-[7%]" />
+                <col className="w-[11%]" />
+                <col className="w-[9%]" />
+                <col className="w-[7%]" />
+              </colgroup>
               <TableHeader>
                 <TableRow>
-                  <TableHead>#</TableHead>
+                  <TableHead className="w-10">#</TableHead>
                   <SortableTableHead<VipSortKey>
                     columnKey="customer_name"
                     sortKey={sortKey}
@@ -337,33 +351,54 @@ export default function VIPCustomersReport() {
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {filtered.map((row, idx) => (
-                  <TableRow key={row.customer_id}>
-                    <TableCell className="font-medium">{idx + 1}</TableCell>
-                    <TableCell className="font-medium">{row.customer_name}</TableCell>
-                    <TableCell>{row.customer_phone || '-'}</TableCell>
-                    <TableCell className="text-right font-semibold">
-                      {formatMoneyUZS(row.total_spent)}
-                    </TableCell>
-                    <TableCell className="text-center">{getTierBadge(row.total_spent)}</TableCell>
-                    <TableCell className="text-right">{row.order_count}</TableCell>
-                    <TableCell className="text-right font-mono">
-                      {Math.round(Number(row.bonus_points) || 0)}
-                    </TableCell>
-                    <TableCell className="text-right">
-                      {formatMoneyUZS(row.avg_order_value)}
-                    </TableCell>
-                    <TableCell className="text-center">
-                      {getLoyaltyBadge(row.loyalty_score)}
-                    </TableCell>
-                    <TableCell>
-                      {formatDate(row.last_purchase_date)}
-                      <span className="text-xs text-muted-foreground block">
-                        ({row.days_since_last} kun oldin)
-                      </span>
-                    </TableCell>
-                  </TableRow>
-                ))}
+                {filtered.map((row, idx) => {
+                  const lastYmd = formatDateYMD(row.last_purchase_date);
+                  const today = todayYMD();
+                  const rawDayDiff =
+                    lastYmd && today
+                      ? Math.round(
+                          (new Date(`${today}T12:00:00`).getTime() - new Date(`${lastYmd}T12:00:00`).getTime()) /
+                            86400000
+                        )
+                      : null;
+                  const daysSub =
+                    rawDayDiff == null
+                      ? `${Math.max(0, Number(row.days_since_last) || 0)} kun oldin`
+                      : rawDayDiff < 0
+                        ? `${Math.abs(rawDayDiff)} kun keyin`
+                        : `${rawDayDiff} kun oldin`;
+                  return (
+                    <TableRow key={row.customer_id}>
+                      <TableCell className="font-medium tabular-nums">{idx + 1}</TableCell>
+                      <TableCell className="max-w-0 truncate font-medium" title={row.customer_name}>
+                        {row.customer_name}
+                      </TableCell>
+                      <TableCell className="max-w-0 truncate font-mono text-xs" title={row.customer_phone || ''}>
+                        {row.customer_phone || '-'}
+                      </TableCell>
+                      <TableCell className="text-right font-semibold tabular-nums">
+                        {formatMoneyUZS(row.total_spent)}
+                      </TableCell>
+                      <TableCell className="text-center">
+                        {getTierBadge(row.total_spent)}
+                      </TableCell>
+                      <TableCell className="text-right tabular-nums">{row.order_count}</TableCell>
+                      <TableCell className="text-right font-mono tabular-nums">
+                        {Math.round(Number(row.bonus_points) || 0)}
+                      </TableCell>
+                      <TableCell className="text-right tabular-nums">
+                        {formatMoneyUZS(row.avg_order_value)}
+                      </TableCell>
+                      <TableCell className="text-center">
+                        {getLoyaltyBadge(row.loyalty_score)}
+                      </TableCell>
+                      <TableCell className="whitespace-normal align-top text-left text-sm leading-snug">
+                        {formatDate(row.last_purchase_date)}
+                        <span className="mt-0.5 block text-xs text-muted-foreground">({daysSub})</span>
+                      </TableCell>
+                    </TableRow>
+                  );
+                })}
               </TableBody>
             </Table>
           )}

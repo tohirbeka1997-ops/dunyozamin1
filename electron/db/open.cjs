@@ -11,6 +11,10 @@ const {
 const app = getAppLike();
 
 let db = null;
+const SQL_VERBOSE =
+  String(process.env.POS_VERBOSE_LOGS || '').trim() === '1' ||
+  String(process.env.POS_SQL_LOGS || '').trim() === '1';
+const SQL_SLOW_LOG_MS = Number(process.env.POS_SQL_SLOW_MS || 30);
 let cachedDbPath = null;
 
 /**
@@ -149,11 +153,13 @@ function open(ignoredPath = null) {
             const res = original(...args);
             const end = process.hrtime.bigint();
           const ms = Number(end - start) / 1e6;
-          const compactSql = String(sql || '').replace(/\s+/g, ' ').trim().slice(0, 140);
-          let extra = '';
-          if (Array.isArray(res)) extra = ` | rows=${res.length}`;
-          else if (res && typeof res === 'object' && 'changes' in res) extra = ` | changes=${res.changes}`;
-          console.log(`[SQL] ${method} ${Math.round(ms)}ms | ${compactSql}${extra}`);
+          if (SQL_VERBOSE || ms >= SQL_SLOW_LOG_MS) {
+            const compactSql = String(sql || '').replace(/\s+/g, ' ').trim().slice(0, 140);
+            let extra = '';
+            if (Array.isArray(res)) extra = ` | rows=${res.length}`;
+            else if (res && typeof res === 'object' && 'changes' in res) extra = ` | changes=${res.changes}`;
+            console.log(`[SQL] ${method} ${Math.round(ms)}ms | ${compactSql}${extra}`);
+          }
           return res;
           };
         };

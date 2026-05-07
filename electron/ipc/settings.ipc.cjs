@@ -1,6 +1,8 @@
 const { ipcMain } = require('electron');
 const { app } = require('electron');
 const { wrapHandler } = require('../lib/errors.cjs');
+const { requireAdmin } = require('../lib/ipcAuth.cjs');
+const { getDb } = require('../db/open.cjs');
 const fs = require('fs');
 const path = require('path');
 const { getDbPath, assertDbPathSafe, getUserDataPath, listDatabaseCandidates } = require('../db/dbPath.cjs');
@@ -44,11 +46,12 @@ function registerSettingsHandlers(services) {
     return settings.delete(key);
   }));
 
-  // Reset local SQLite database (HOST only)
+  // Reset local SQLite database (HOST only) — admin-only
   ipcMain.removeHandler('pos:settings:resetDatabase');
   ipcMain.handle(
     'pos:settings:resetDatabase',
     wrapHandler(async (_event, payload) => {
+      requireAdmin(getDb());
       const confirmText = String(payload?.confirmText || '').trim();
       if (confirmText !== 'DELETE') {
         throw new Error('You must type "DELETE" to confirm');

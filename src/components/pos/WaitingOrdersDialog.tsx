@@ -8,6 +8,13 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog';
 import {
+  Sheet,
+  SheetContent,
+  SheetDescription,
+  SheetHeader,
+  SheetTitle,
+} from '@/components/ui/sheet';
+import {
   AlertDialog,
   AlertDialogAction,
   AlertDialogCancel,
@@ -102,19 +109,22 @@ export default function WaitingOrdersDialog({
 
   return (
     <>
-      <Dialog open={open} onOpenChange={onOpenChange}>
-        <DialogContent className="max-w-3xl max-h-[80vh]">
-          <DialogHeader>
-            <DialogTitle>{t('pos.waitingOrders.title')}</DialogTitle>
-            <DialogDescription>
+      <Sheet open={open} onOpenChange={onOpenChange}>
+        <SheetContent
+          side="right"
+          className="flex h-dvh w-[min(100vw,34rem)] max-w-[min(100vw,34rem)] flex-col gap-0 overflow-hidden p-0 sm:max-w-[34rem]"
+        >
+          <SheetHeader className="shrink-0 border-b px-5 pb-4 pr-12 pt-5">
+            <SheetTitle>{t('pos.waitingOrders.title')}</SheetTitle>
+            <SheetDescription>
               {heldOrders.length === 0
                 ? t('pos.waitingOrders.empty')
                 : t('pos.waitingOrders.counter', { count: heldOrders.length })}
-            </DialogDescription>
-          </DialogHeader>
-          <ScrollArea className="h-[500px] pr-4">
+            </SheetDescription>
+          </SheetHeader>
+          <ScrollArea className="min-h-0 flex-1 px-5 py-4">
             {heldOrders.length === 0 ? (
-              <div className="flex flex-col items-center justify-center py-12 text-center">
+              <div className="flex min-h-[60vh] flex-col items-center justify-center py-12 text-center">
                 <Clock className="h-12 w-12 text-muted-foreground mb-4" />
                 <p className="text-muted-foreground">{t('pos.waitingOrders.empty')}</p>
                 <p className="text-sm text-muted-foreground mt-2">
@@ -214,8 +224,8 @@ export default function WaitingOrdersDialog({
               </div>
             )}
           </ScrollArea>
-        </DialogContent>
-      </Dialog>
+        </SheetContent>
+      </Sheet>
 
       <AlertDialog open={!!cancelOrderId} onOpenChange={(open) => !open && setCancelOrderId(null)}>
         <AlertDialogContent>

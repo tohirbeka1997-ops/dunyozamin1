@@ -171,11 +171,11 @@ export default function InventoryAdvancedReport() {
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-4">
-          <Button variant="ghost" size="icon" onClick={() => navigate('/reports')}>
+          <Button variant="ghost" size="icon" onClick={() => navigate('/reports/inventory')}>
             <ArrowLeft className="h-4 w-4" />
           </Button>
           <div>
-            <h1 className="text-3xl font-bold">Ombor va zaxira (kengaytirilgan)</h1>
+            <h1 className="page-heading">Ombor va zaxira (kengaytirilgan)</h1>
             <p className="text-muted-foreground">
               O‘lik zaxira, aylanma tezligi va qayta buyurtma tavsiyalari
             </p>

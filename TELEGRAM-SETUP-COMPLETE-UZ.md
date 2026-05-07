@@ -1,6 +1,6 @@
 # Telegram + Mini App — to‘liq ketma-ketlik
 
-Loyihadagi `.env` da `TELEGRAM_BOT_TOKEN`, `TELEGRAM_WEB_APP_URL` va `VITE_APP_PUBLIC_URL` (HTTPS, bir xil ildiz) bo‘lishi kerak.
+Loyihadagi `.env` da `TELEGRAM_BOT_TOKEN`, `TELEGRAM_WEB_APP_URL`, `VITE_APP_PUBLIC_URL` (HTTPS, bir xil ildiz) va `TELEGRAM_BOT_INTERNAL_SECRET` bo‘lishi kerak.
 
 ## 1. Mahalliy tekshiruv
 

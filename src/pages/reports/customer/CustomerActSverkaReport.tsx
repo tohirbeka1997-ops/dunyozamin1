@@ -21,7 +21,7 @@ import {
 import { ArrowLeft, FileDown, RefreshCcw, Users } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 import { handleIpcResponse, isElectron, requireElectron } from '@/utils/electron';
-import { todayYMD } from '@/lib/datetime';
+import { formatDateYMD, formatOrderDateTime, todayYMD } from '@/lib/datetime';
 import { formatMoneyUZS, formatCustomerBalance } from '@/lib/format';
 import { useReportAutoRefresh } from '@/hooks/useReportAutoRefresh';
 import { getCustomers, getOrdersByCustomer } from '@/db/api';
@@ -82,7 +82,7 @@ function toCsv(rows: ActRow[]) {
     headers.join(','),
     ...rows.map((r) =>
       [
-        r.created_at,
+        formatOrderDateTime(r.created_at) || r.created_at,
         r.type,
         r.ref_no || '',
         r.method || '',
@@ -111,9 +111,14 @@ export default function CustomerActSverkaReport() {
   const [loading, setLoading] = useState(false);
   const [customers, setCustomers] = useState<Customer[]>([]);
   const customerId = searchParams.get('customerId') || '';
+  const defaultDateFrom = useMemo(() => {
+    const d = new Date();
+    d.setMonth(d.getMonth() - 1);
+    return formatDateYMD(d);
+  }, []);
   const dateFrom =
     searchParams.get('dateFrom') ||
-    new Date(new Date().setMonth(new Date().getMonth() - 1)).toISOString().split('T')[0];
+    defaultDateFrom;
   const dateTo = searchParams.get('dateTo') || todayYMD();
 
   const [data, setData] = useState<ActResponse | null>(null);
@@ -168,7 +173,7 @@ export default function CustomerActSverkaReport() {
       ]);
 
       const filteredOrders = (Array.isArray(orders) ? orders : []).filter((order) => {
-        const orderDate = String(order.created_at || '').slice(0, 10);
+        const orderDate = formatDateYMD(order.created_at);
         return orderDate >= dateFrom && orderDate <= dateTo;
       });
 
@@ -246,26 +251,26 @@ export default function CustomerActSverkaReport() {
   };
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-4">
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-4">
-          <Button variant="ghost" size="icon" onClick={() => navigate('/reports')}>
+          <Button variant="ghost" size="icon" onClick={() => navigate('/reports/customer')}>
             <ArrowLeft className="h-4 w-4" />
           </Button>
           <div>
-            <h1 className="text-3xl font-bold flex items-center gap-2">
-              <Users className="h-8 w-8 text-primary" />
+            <h1 className="page-heading flex items-center gap-2">
+              <Users className="h-6 w-6 text-primary" />
               Mijoz akt sverka
             </h1>
-            <p className="text-muted-foreground">Bitta mijoz bo‘yicha barcha tranzaksiyalar (nima/qancha/qachon/qanday)</p>
+            <p className="text-xs text-muted-foreground">Bitta mijoz bo‘yicha barcha tranzaksiyalar (nima/qancha/qachon/qanday)</p>
           </div>
         </div>
         <div className="flex gap-2">
-          <Button variant="outline" onClick={loadData} disabled={!customerId || loading}>
+          <Button variant="outline" size="sm" className="h-8" onClick={loadData} disabled={!customerId || loading}>
             <RefreshCcw className="h-4 w-4 mr-2" />
             Yangilash
           </Button>
-          <Button variant="outline" onClick={handleExportCsv} disabled={!data || rows.length === 0}>
+          <Button variant="outline" size="sm" className="h-8" onClick={handleExportCsv} disabled={!data || rows.length === 0}>
             <FileDown className="h-4 w-4 mr-2" />
             CSV
           </Button>
@@ -273,12 +278,12 @@ export default function CustomerActSverkaReport() {
       </div>
 
       <Card>
-        <CardContent className="pt-6">
-          <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+        <CardContent className="py-3">
+          <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
             <div className="md:col-span-2">
-              <label className="text-sm text-muted-foreground">Mijoz</label>
+              <label className="text-xs text-muted-foreground">Mijoz</label>
               <Select value={customerId} onValueChange={(value) => updateParams({ customerId: value })}>
-                <SelectTrigger>
+                <SelectTrigger className="h-8">
                   <SelectValue placeholder="Mijoz tanlang..." />
                 </SelectTrigger>
                 <SelectContent>
@@ -291,12 +296,12 @@ export default function CustomerActSverkaReport() {
               </Select>
             </div>
             <div>
-              <label className="text-sm text-muted-foreground">Boshlanish sana</label>
-              <Input type="date" value={dateFrom} onChange={(e) => updateParams({ dateFrom: e.target.value })} />
+              <label className="text-xs text-muted-foreground">Boshlanish sana</label>
+              <Input className="h-8" type="date" value={dateFrom} onChange={(e) => updateParams({ dateFrom: e.target.value })} />
             </div>
             <div>
-              <label className="text-sm text-muted-foreground">Tugash sana</label>
-              <Input type="date" value={dateTo} onChange={(e) => updateParams({ dateTo: e.target.value })} />
+              <label className="text-xs text-muted-foreground">Tugash sana</label>
+              <Input className="h-8" type="date" value={dateTo} onChange={(e) => updateParams({ dateTo: e.target.value })} />
             </div>
           </div>
         </CardContent>
@@ -310,29 +315,29 @@ export default function CustomerActSverkaReport() {
         <div className="text-center text-muted-foreground py-10">Mijoz tanlang</div>
       ) : (
         <>
-          <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+          <div className="grid grid-cols-2 xl:grid-cols-4 gap-3">
             <Card>
-              <CardContent className="pt-6">
-                <p className="text-sm text-muted-foreground">Boshlang‘ich balans</p>
-                <p className="text-xl font-bold">{formatCustomerBalance(summary.opening).label}</p>
+              <CardContent className="py-3">
+                <p className="text-xs text-muted-foreground">Boshlang‘ich balans</p>
+                <p className="text-lg font-bold">{formatCustomerBalance(summary.opening).label}</p>
               </CardContent>
             </Card>
             <Card>
-              <CardContent className="pt-6">
-                <p className="text-sm text-muted-foreground">Kirim (+)</p>
-                <p className="text-xl font-bold text-green-600">{formatMoneyUZS(summary.inAmount)}</p>
+              <CardContent className="py-3">
+                <p className="text-xs text-muted-foreground">Kirim (+)</p>
+                <p className="text-lg font-bold text-green-600">{formatMoneyUZS(summary.inAmount)}</p>
               </CardContent>
             </Card>
             <Card>
-              <CardContent className="pt-6">
-                <p className="text-sm text-muted-foreground">Chiqim (-)</p>
-                <p className="text-xl font-bold text-destructive">{formatMoneyUZS(summary.outAmount)}</p>
+              <CardContent className="py-3">
+                <p className="text-xs text-muted-foreground">Chiqim (-)</p>
+                <p className="text-lg font-bold text-destructive">{formatMoneyUZS(summary.outAmount)}</p>
               </CardContent>
             </Card>
             <Card>
-              <CardContent className="pt-6">
-                <p className="text-sm text-muted-foreground">Yakuniy balans</p>
-                <p className="text-xl font-bold">{formatCustomerBalance(summary.closing).label}</p>
+              <CardContent className="py-3">
+                <p className="text-xs text-muted-foreground">Yakuniy balans</p>
+                <p className="text-lg font-bold">{formatCustomerBalance(summary.closing).label}</p>
               </CardContent>
             </Card>
           </div>
@@ -373,7 +378,9 @@ export default function CustomerActSverkaReport() {
                   ) : (
                     purchasedProducts.map((item) => (
                       <TableRow key={item.id}>
-                        <TableCell className="font-mono text-sm">{item.created_at}</TableCell>
+                        <TableCell className="font-mono text-sm">
+                          {formatOrderDateTime(item.created_at) || item.created_at}
+                        </TableCell>
                         <TableCell className="font-mono text-sm">{item.order_number}</TableCell>
                         <TableCell className="font-medium">{item.product_name}</TableCell>
                         <TableCell className="text-right">
@@ -413,7 +420,9 @@ export default function CustomerActSverkaReport() {
                   ) : (
                     rows.map((r) => (
                       <TableRow key={r.id}>
-                        <TableCell className="font-mono text-sm">{r.created_at}</TableCell>
+                        <TableCell className="font-mono text-sm">
+                          {formatOrderDateTime(r.created_at) || r.created_at}
+                        </TableCell>
                         <TableCell className="font-medium">{r.type}</TableCell>
                         <TableCell className="font-mono text-sm">{r.ref_no || '-'}</TableCell>
                         <TableCell className="text-sm text-muted-foreground">{r.note || ''}</TableCell>

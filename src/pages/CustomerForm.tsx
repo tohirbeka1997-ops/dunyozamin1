@@ -12,7 +12,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
-import { getCustomerById, createCustomer, updateCustomer } from '@/db/api';
+import { getCustomerById, getCustomers, createCustomer, updateCustomer } from '@/db/api';
 import type { Customer } from '@/types/database';
 import { useAuth } from '@/contexts/AuthContext';
 import { ArrowLeft, Save } from 'lucide-react';
@@ -56,17 +56,25 @@ export default function CustomerForm() {
 
     try {
       setLoading(true);
-      const customer = await getCustomerById(id);
+      // Prefer list lookup first: in some environments `customers.get(id)` may fail
+      // while list API returns valid records.
+      const allCustomers = await getCustomers();
+      let customer = allCustomers.find((c) => String((c as any).id) === String(id));
+      if (!customer) {
+        customer = await getCustomerById(id);
+      }
+      if (!customer) throw new Error('Customer not found');
+
       setFormData({
         name: customer.name,
         phone: customer.phone || '',
         email: customer.email || '',
         address: customer.address || '',
-        type: customer.type,
+        type: customer.type === 'company' ? 'company' : 'individual',
         pricing_tier: (customer as any).pricing_tier === 'master' ? 'master' : 'retail',
         company_name: customer.company_name || '',
         tax_number: customer.tax_number || '',
-        status: customer.status,
+        status: customer.status === 'inactive' ? 'inactive' : 'active',
         notes: customer.notes || '',
         bonus_points: Number((customer as Customer).bonus_points) || 0,
       });
@@ -185,7 +193,7 @@ export default function CustomerForm() {
           <ArrowLeft className="h-4 w-4" />
         </Button>
         <div>
-          <h1 className="text-3xl font-bold">{id ? 'Mijozni tahrirlash' : 'Yangi mijoz qo\'shish'}</h1>
+          <h1 className="page-heading">{id ? 'Mijozni tahrirlash' : 'Yangi mijoz qo\'shish'}</h1>
           <p className="text-muted-foreground">
             {id ? 'Mijoz ma\'lumotlarini yangilash' : 'Bazaga yangi mijoz qo\'shish'}
           </p>

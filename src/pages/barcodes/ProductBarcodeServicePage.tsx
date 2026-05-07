@@ -25,8 +25,9 @@ import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover
 import { Check, ChevronsUpDown, ArrowLeft, Printer, Copy, Wand2, Minus, Plus, AlertTriangle } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import type { ProductWithCategory } from '@/types/database';
-import { generateBarcode, searchProducts, updateProduct } from '@/db/api';
+import { generateBarcode, generateBarcodeForUnit, searchProducts, updateProduct } from '@/db/api';
 import { useToast } from '@/hooks/use-toast';
+import { useConfirmDialog } from '@/contexts/ConfirmDialogContext';
 import { checkDuplicateBarcode, validateProductBarcode } from '@/lib/barcodes/productBarcode';
 import { Checkbox } from '@/components/ui/checkbox';
 import { formatMoneyUZS } from '@/lib/format';
@@ -46,6 +47,8 @@ const PRESETS: Record<LabelPreset, { w: number; h: number; label: string }> = {
   '50x30': { w: 50, h: 30, label: '50×30' },
   '70x35': { w: 70, h: 35, label: '70×35' },
 };
+const PRODUCT_SAFE_AREA_ENABLED_KEY = 'barcode.product.safeArea.enabled';
+const PRODUCT_SAFE_AREA_INSET_KEY = 'barcode.product.safeArea.insetMm';
 
 function randomDigits(n: number): string {
   const digits = Array.from({ length: n }, () => String(Math.floor(Math.random() * 10))).join('');
@@ -54,6 +57,7 @@ function randomDigits(n: number): string {
 
 export default function ProductBarcodeServicePage() {
   const { toast } = useToast();
+  const confirmDialog = useConfirmDialog();
   const navigate = useNavigate();
 
   const [productSearchOpen, setProductSearchOpen] = useState(false);
@@ -78,7 +82,17 @@ export default function ProductBarcodeServicePage() {
   const [showSku, setShowSku] = useState(true);
   const [layoutScale, setLayoutScale] = useState<'small' | 'standard' | 'large'>('standard');
   const [previewZoom, setPreviewZoom] = useState(1);
-  const [showSafeArea, setShowSafeArea] = useState(true);
+  const [showSafeArea, setShowSafeArea] = useState<boolean>(() => {
+    if (typeof window === 'undefined') return true;
+    const raw = window.localStorage.getItem(PRODUCT_SAFE_AREA_ENABLED_KEY);
+    return raw == null ? true : raw === '1';
+  });
+  const [safeAreaInsetMm, setSafeAreaInsetMm] = useState<number>(() => {
+    if (typeof window === 'undefined') return 1.5;
+    const raw = Number(window.localStorage.getItem(PRODUCT_SAFE_AREA_INSET_KEY));
+    if (!Number.isFinite(raw)) return 1.5;
+    return Math.max(0, Math.min(10, raw));
+  });
   const [duplicateWarning, setDuplicateWarning] = useState<null | { names: string[] }>(null);
   // Editable (label-only) product fields — prefilled from selected product, but user can tweak without retyping.
   const [labelHeader, setLabelHeader] = useState('');
@@ -94,7 +108,7 @@ export default function ProductBarcodeServicePage() {
 
   const previewRef = useRef<HTMLDivElement>(null);
 
-  const doPrint = () => {
+  const doPrint = async () => {
     try {
       if (!selectedProduct) {
         toast({ title: 'Mahsulot tanlanmagan', description: 'Avval mahsulotni tanlang.', variant: 'destructive' });
@@ -109,41 +123,37 @@ export default function ProductBarcodeServicePage() {
         return;
       }
 
-      const proceed = async () => {
-        let normalized = barcodeValue;
-        if (showBarcode) {
-          const result = await runValidation({ showToast: true, confirmDuplicate: true });
-          if (!result.ok) return;
-          normalized = result.normalized || barcodeValue;
-        }
+      let normalized = barcodeValue;
+      if (showBarcode) {
+        const result = await runValidation({ showToast: true, confirmDuplicate: true });
+        if (!result.ok) return;
+        normalized = result.normalized || barcodeValue;
+      }
 
-        if (attachBarcodeToProduct && showBarcode && normalized && selectedProduct) {
-          await updateProduct(selectedProduct.id, { barcode: normalized });
-          setSelectedProduct((prev) => (prev ? { ...prev, barcode: normalized } : prev));
-        }
+      if (attachBarcodeToProduct && showBarcode && normalized && selectedProduct) {
+        await updateProduct(selectedProduct.id, { barcode: normalized });
+        setSelectedProduct((prev) => (prev ? { ...prev, barcode: normalized } : prev));
+      }
 
-        const html = renderToStaticMarkup(
-          <ProductLabelLayoutPrint
-            widthMm={effectiveWmm}
-            heightMm={effectiveHmm}
-            copies={copies}
-            barcodeType={barcodeType === 'EAN13' ? 'EAN13' : barcodeType === 'QR' ? 'QR' : 'CODE128'}
-            barcodeValue={showBarcode ? normalized : ''}
-            showBarcodeDigits={showBarcodeDigits}
-            texts={resolvedTexts}
-            showPrice
-            layout={activeLayout}
-          />
-        );
+      const html = renderToStaticMarkup(
+        <ProductLabelLayoutPrint
+          widthMm={effectiveWmm}
+          heightMm={effectiveHmm}
+          copies={copies}
+          barcodeType={barcodeType === 'EAN13' ? 'EAN13' : barcodeType === 'QR' ? 'QR' : 'CODE128'}
+          barcodeValue={showBarcode ? normalized : ''}
+          showBarcodeDigits={showBarcodeDigits}
+          texts={resolvedTexts}
+          showPrice
+          layout={activeLayout}
+        />
+      );
 
-        openPrintWindowLabel(html, {
-          widthMm: effectiveWmm,
-          heightMm: effectiveHmm,
-        });
-        toast({ title: 'Chop etildi', description: `${copies} ta yorliq chop etildi.` });
-      };
-
-      void proceed();
+      openPrintWindowLabel(html, {
+        widthMm: effectiveWmm,
+        heightMm: effectiveHmm,
+      });
+      toast({ title: 'Chop etildi', description: `${copies} ta yorliq chop etildi.` });
 
     } catch (e: any) {
       toast({
@@ -189,7 +199,7 @@ export default function ProductBarcodeServicePage() {
       const header = (selectedProduct.name || '').split(/\s+/)[0] || '';
       const name = selectedProduct.name || '';
       const sku = selectedProduct.sku ? String(selectedProduct.sku) : '';
-      const priceText = formatMoneyUZS(Number(selectedProduct.sale_price)).replace(' so‘m', ' uzs');
+      const priceText = formatMoneyUZS(Number(selectedProduct.sale_price));
       setLabelHeader(header);
       setLabelName(name);
       setLabelSku(sku);
@@ -243,6 +253,16 @@ export default function ProductBarcodeServicePage() {
     setLayoutElements(defaultProductLabelLayout(effectiveWmm, effectiveHmm));
   }, [effectiveWmm, effectiveHmm]);
 
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    window.localStorage.setItem(PRODUCT_SAFE_AREA_ENABLED_KEY, showSafeArea ? '1' : '0');
+  }, [showSafeArea]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    window.localStorage.setItem(PRODUCT_SAFE_AREA_INSET_KEY, String(safeAreaInsetMm));
+  }, [safeAreaInsetMm]);
+
   const onGenerate = async () => {
     try {
       // QR: auto-fill with SKU or product name (any text is valid for QR)
@@ -259,8 +279,14 @@ export default function ProductBarcodeServicePage() {
         return;
       }
 
-      // Prefer backend generator for uniqueness; normalize for EAN-13 if needed.
-      const next = await generateBarcode();
+      // Prefer unit-aware backend generator for uniqueness and scale compatibility.
+      const unitForBarcode = String(
+        (selectedProduct as any)?.base_unit ||
+          (selectedProduct as any)?.unit ||
+          (selectedProduct as any)?.unit_code ||
+          'pcs'
+      );
+      const next = selectedProduct ? await generateBarcodeForUnit(unitForBarcode) : await generateBarcode();
       const v = validateProductBarcode({ type: barcodeType, value: next });
       if (v.ok && v.normalizedValue) {
         setBarcodeValue(v.normalizedValue);
@@ -309,12 +335,15 @@ export default function ProductBarcodeServicePage() {
       if (dupe.duplicate) {
         setDuplicateWarning({ names: dupe.duplicates.map((d) => `${d.name} (${d.sku})`).slice(0, 3) });
         if (opts?.confirmDuplicate !== false) {
-          const proceed = window.confirm(
-            `Bu barcode boshqa mahsulotda ishlatilgan. Davom etasizmi?\n${dupe.duplicates
+          const proceed = await confirmDialog({
+            title: 'Barcode takrorlangan',
+            description: `Bu barcode boshqa mahsulotda ishlatilgan. Davom etasizmi?\n${dupe.duplicates
               .slice(0, 3)
               .map((d) => `${d.name} (${d.sku})`)
-              .join(', ')}`
-          );
+              .join(', ')}`,
+            confirmText: 'Davom etish',
+            cancelText: 'Bekor qilish',
+          });
           if (!proceed) return { ok: false, normalized };
         }
       } else {
@@ -351,7 +380,7 @@ export default function ProductBarcodeServicePage() {
     <div className="container mx-auto p-6 space-y-6">
       <div className="flex items-center justify-between gap-4">
         <div>
-          <h1 className="text-3xl font-bold">Product Barcode Service</h1>
+          <h1 className="page-heading">Product Barcode Service</h1>
           <p className="text-muted-foreground mt-2">
             Mahsulotlar uchun barcode yaratish va yorliq chop etish (EAN-13 / CODE128 / QR).
           </p>
@@ -445,7 +474,7 @@ export default function ProductBarcodeServicePage() {
                     const header = (selectedProduct.name || '').split(/\s+/)[0] || '';
                     const name = selectedProduct.name || '';
                     const sku = selectedProduct.sku ? String(selectedProduct.sku) : '';
-                    const priceText = formatMoneyUZS(Number(selectedProduct.sale_price)).replace(' so‘m', ' uzs');
+                    const priceText = formatMoneyUZS(Number(selectedProduct.sale_price));
                     setLabelHeader(header);
                     setLabelName(name);
                     setLabelSku(sku);
@@ -700,7 +729,7 @@ export default function ProductBarcodeServicePage() {
                         setLabelFieldsTouched(true);
                         setLabelPriceText(e.target.value);
                       }}
-                      placeholder="Masalan: 25 000 uzs"
+                      placeholder="Masalan: 25 000 so'm"
                     />
                   </div>
                 </div>
@@ -749,7 +778,7 @@ export default function ProductBarcodeServicePage() {
                   Validatsiya
                 </Button>
                 <Button
-                  onClick={doPrint}
+                  onClick={() => void doPrint()}
                   disabled={
                     !selectedProduct ||
                     (showBarcode && !barcodeValue.trim()) ||
@@ -797,6 +826,25 @@ export default function ProductBarcodeServicePage() {
                 <Checkbox checked={showSafeArea} onCheckedChange={(v) => setShowSafeArea(Boolean(v))} id="safe-area" />
                 <Label htmlFor="safe-area" className="cursor-pointer text-xs">Safe area</Label>
               </div>
+              <div className="flex items-center gap-2 rounded border px-2 py-1">
+                <Label htmlFor="safe-area-mm" className="text-xs">Inset</Label>
+                <Input
+                  id="safe-area-mm"
+                  type="number"
+                  min={0}
+                  max={10}
+                  step={0.1}
+                  value={safeAreaInsetMm}
+                  onChange={(e) => {
+                    const n = Number(e.target.value);
+                    if (!Number.isFinite(n)) return;
+                    setSafeAreaInsetMm(Math.max(0, Math.min(10, n)));
+                  }}
+                  className="h-7 w-20 text-xs"
+                  disabled={!showSafeArea}
+                />
+                <span className="text-xs text-muted-foreground">mm</span>
+              </div>
             </div>
           </CardHeader>
           <CardContent>
@@ -820,7 +868,7 @@ export default function ProductBarcodeServicePage() {
                   {showSafeArea && (
                     <div
                       className="pointer-events-none absolute border border-dashed border-muted-foreground/40"
-                      style={{ inset: '1.5mm' }}
+                      style={{ inset: `${safeAreaInsetMm}mm` }}
                     />
                   )}
                 </div>

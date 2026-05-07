@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { useLocation, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -16,6 +16,13 @@ import {
 } from '@/components/ui/dialog';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
+import {
   Table,
   TableBody,
   TableCell,
@@ -30,6 +37,7 @@ import {
   getCustomerLedger,
   getCustomerBonusLedger,
   adjustCustomerBonusPoints,
+  getCustomerLoyaltyCard,
 } from '@/db/api';
 import type {
   Customer,
@@ -37,6 +45,7 @@ import type {
   CustomerPayment,
   CustomerLedgerEntry,
   CustomerBonusLedgerEntry,
+  CustomerLoyaltyCard,
 } from '@/types/database';
 import { ArrowLeft, Edit, Mail, Phone, MapPin, Building2, FileText, ShoppingCart, DollarSign, History, RefreshCw, Gift } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
@@ -44,8 +53,9 @@ import { useAuth } from '@/contexts/AuthContext';
 import { isElectron } from '@/utils/electron';
 import ReceivePaymentModal from '@/components/customers/ReceivePaymentModal';
 import { formatMoneyUZS, formatCustomerBalance } from '@/lib/format';
-import { formatDate, formatDateTime } from '@/lib/datetime';
+import { formatDate, formatDateTime, parseDbDate } from '@/lib/datetime';
 import { createBackNavigationState, navigateBackTo, resolveBackTarget } from '@/lib/pageState';
+import QRCodeDataUrl from '@/components/ui/qrcodedataurl';
 
 export default function CustomerDetail() {
   const { id } = useParams<{ id: string }>();
@@ -64,14 +74,29 @@ export default function CustomerDetail() {
   const [ledgerLoading, setLedgerLoading] = useState(true);
   const [bonusLedger, setBonusLedger] = useState<CustomerBonusLedgerEntry[]>([]);
   const [bonusLedgerLoading, setBonusLedgerLoading] = useState(true);
+  const [loyaltyCard, setLoyaltyCard] = useState<CustomerLoyaltyCard | null>(null);
+  const [loyaltyCardLoading, setLoyaltyCardLoading] = useState(true);
   const [receivePaymentOpen, setReceivePaymentOpen] = useState(false);
   const [bonusAdjustOpen, setBonusAdjustOpen] = useState(false);
   const [bonusAdjustDelta, setBonusAdjustDelta] = useState('');
   const [bonusAdjustNote, setBonusAdjustNote] = useState('');
   const [bonusAdjustSaving, setBonusAdjustSaving] = useState(false);
+  const [ledgerOrder, setLedgerOrder] = useState<'newest' | 'oldest'>('newest');
   const activeTab = searchParams.get('tab') || 'info';
   const canAdjustBonus = profile?.role === 'admin' || profile?.role === 'manager';
   const backTo = resolveBackTarget(location, '/customers');
+
+  const displayedLedger = useMemo(() => {
+    const list = [...ledger];
+    list.sort((a, b) => {
+      const at = parseDbDate(a.created_at).getTime();
+      const bt = parseDbDate(b.created_at).getTime();
+      const safeA = Number.isFinite(at) ? at : 0;
+      const safeB = Number.isFinite(bt) ? bt : 0;
+      return ledgerOrder === 'newest' ? safeB - safeA : safeA - safeB;
+    });
+    return list;
+  }, [ledger, ledgerOrder]);
 
   useEffect(() => {
     if (id) {
@@ -80,6 +105,7 @@ export default function CustomerDetail() {
       loadPayments();
       loadLedger();
       loadBonusLedger();
+      loadLoyaltyCard();
     }
   }, [id]);
 
@@ -92,6 +118,7 @@ export default function CustomerDetail() {
         loadPayments();
         loadLedger();
         loadBonusLedger();
+        loadLoyaltyCard();
       }
     };
     document.addEventListener('visibilitychange', handleVisibilityChange);
@@ -151,7 +178,7 @@ export default function CustomerDetail() {
     try {
       setLedgerLoading(true);
       const data = await getCustomerLedger(id, { limit: 100 });
-      setLedger(data);
+      setLedger(Array.isArray(data) ? data : []);
     } catch (error) {
       console.error('Failed to load ledger:', error);
     } finally {
@@ -177,6 +204,25 @@ export default function CustomerDetail() {
     }
   };
 
+  const loadLoyaltyCard = async () => {
+    if (!id) return;
+    if (!isElectron()) {
+      setLoyaltyCard(null);
+      setLoyaltyCardLoading(false);
+      return;
+    }
+    try {
+      setLoyaltyCardLoading(true);
+      const data = await getCustomerLoyaltyCard(id);
+      setLoyaltyCard(data);
+    } catch (error) {
+      console.error('Failed to load loyalty card:', error);
+      setLoyaltyCard(null);
+    } finally {
+      setLoyaltyCardLoading(false);
+    }
+  };
+
   const handlePaymentSuccess = () => {
     loadCustomer();
     loadPayments();
@@ -190,6 +236,7 @@ export default function CustomerDetail() {
     loadPayments();
     loadLedger();
     loadBonusLedger();
+    loadLoyaltyCard();
   };
 
   const handleBonusAdjust = async () => {
@@ -269,7 +316,7 @@ export default function CustomerDetail() {
             <ArrowLeft className="h-4 w-4" />
           </Button>
           <div>
-            <h1 className="text-3xl font-bold">{customer.name}</h1>
+            <h1 className="page-heading">{customer.name}</h1>
             <p className="text-muted-foreground">Mijoz profili</p>
           </div>
         </div>
@@ -431,6 +478,7 @@ export default function CustomerDetail() {
       >
         <TabsList>
           <TabsTrigger value="info">Ma’lumot</TabsTrigger>
+          <TabsTrigger value="loyalty">Loyalty karta</TabsTrigger>
           <TabsTrigger value="orders">Buyurtmalar ({orders.length})</TabsTrigger>
           <TabsTrigger value="payments">To‘lovlar ({payments.length})</TabsTrigger>
           <TabsTrigger value="ledger">Hisob tarixi ({ledger.length})</TabsTrigger>
@@ -536,6 +584,37 @@ export default function CustomerDetail() {
                 <Label className="text-muted-foreground">Yaratilgan sana</Label>
                 <p className="font-medium">{formatDateTime(customer.created_at)}</p>
               </div>
+            </CardContent>
+          </Card>
+        </TabsContent>
+
+        <TabsContent value="loyalty" className="space-y-4">
+          <Card>
+            <CardHeader className="flex flex-row items-center justify-between">
+              <CardTitle>Nakopitel karta</CardTitle>
+              <Button variant="outline" size="sm" onClick={loadLoyaltyCard} disabled={loyaltyCardLoading}>
+                {loyaltyCardLoading ? 'Yuklanmoqda...' : "QR ni qayta chiqarish"}
+              </Button>
+            </CardHeader>
+            <CardContent>
+              {!isElectron() ? (
+                <p className="text-sm text-muted-foreground">Karta faqat desktop ilovada ko‘rinadi.</p>
+              ) : loyaltyCardLoading ? (
+                <div className="flex justify-center py-8">
+                  <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary" />
+                </div>
+              ) : !loyaltyCard ? (
+                <p className="text-sm text-muted-foreground">Bu mijoz uchun loyalty karta topilmadi.</p>
+              ) : (
+                <div className="flex flex-col items-center gap-4 py-2">
+                  <QRCodeDataUrl text={loyaltyCard.qr_payload} width={220} />
+                  <div className="space-y-1 text-center">
+                    <p className="text-sm text-muted-foreground">Karta kodi</p>
+                    <p className="font-mono text-base">{loyaltyCard.loyalty_card_code}</p>
+                    <p className="text-xs text-muted-foreground">QR payload: {loyaltyCard.qr_payload}</p>
+                  </div>
+                </div>
+              )}
             </CardContent>
           </Card>
         </TabsContent>
@@ -654,8 +733,13 @@ export default function CustomerDetail() {
                                   : payment.payment_method}
                           </Badge>
                         </TableCell>
-                        <TableCell className="text-right font-semibold text-success">
-                          {formatMoneyUZS(payment.amount)}
+                        <TableCell
+                          className={`text-right font-semibold ${
+                            payment.operation === 'payment_out' ? 'text-destructive' : 'text-success'
+                          }`}
+                        >
+                          {payment.operation === 'payment_out' ? '-' : '+'}
+                          {formatMoneyUZS(Math.abs(Number(payment.amount || 0)))}
                         </TableCell>
                         <TableCell className="text-muted-foreground">
                           {payment.notes || '-'}
@@ -671,8 +755,24 @@ export default function CustomerDetail() {
 
         <TabsContent value="ledger" className="space-y-4">
           <Card>
-            <CardHeader>
+            <CardHeader className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between space-y-0">
               <CardTitle>Hisob tarixi</CardTitle>
+              <div className="flex w-full sm:w-auto items-center gap-2 sm:shrink-0">
+                <span className="text-xs text-muted-foreground shrink-0">Tartib</span>
+                <Select
+                  value={ledgerOrder}
+                  onValueChange={(v) => setLedgerOrder(v as 'newest' | 'oldest')}
+                  disabled={ledgerLoading || ledger.length === 0}
+                >
+                  <SelectTrigger className="h-8 w-full sm:w-[200px] text-xs" aria-label="Hisob tarixi tartibi">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="newest">Eng yangi avval</SelectItem>
+                    <SelectItem value="oldest">Eng eski avval</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
             </CardHeader>
             <CardContent>
               {ledgerLoading ? (
@@ -691,11 +791,12 @@ export default function CustomerDetail() {
                       <TableHead>Tur</TableHead>
                       <TableHead>Izoh</TableHead>
                       <TableHead className="text-right">Summa</TableHead>
+                      <TableHead>Usul</TableHead>
                       <TableHead className="text-right">Balans</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    {ledger.map((entry) => {
+                    {displayedLedger.map((entry) => {
                       const getTypeLabel = (type: string) => {
                         switch (type) {
                           case 'sale': return 'Sotuv';

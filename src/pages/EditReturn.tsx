@@ -263,7 +263,7 @@ export default function EditReturn() {
             <ArrowLeft className="h-4 w-4" />
           </Button>
           <div>
-            <h1 className="text-2xl font-bold">{t('navigation.edit_return')}</h1>
+            <h1 className="page-heading">{t('navigation.edit_return')}</h1>
             <p className="text-sm text-muted-foreground">
               {t('sales_returns.return_number')} #{returnData.return_number}
             </p>

@@ -20,10 +20,19 @@ export function useReportAutoRefresh(refresh: () => void | Promise<void>) {
 
   useEffect(() => {
     const handle = () => {
+      // Auto-refresh failures used to be swallowed silently. That hid
+      // real bugs — a broken refresh would just stop updating without
+      // any signal in DevTools. Catch unhandled promise rejections from
+      // the async path too, since `void p.catch(...)` was missing here.
       try {
-        void refreshRef.current?.();
-      } catch {
-        // ignore
+        const result = refreshRef.current?.();
+        if (result && typeof (result as Promise<unknown>).catch === 'function') {
+          (result as Promise<unknown>).catch((err) => {
+            console.warn('[useReportAutoRefresh] refresh failed:', err);
+          });
+        }
+      } catch (err) {
+        console.warn('[useReportAutoRefresh] refresh threw:', err);
       }
     };
 

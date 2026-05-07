@@ -61,7 +61,7 @@ import type {
   PurchaseOrderStatus,
   PurchaseOrderExpense,
 } from '@/types/database';
-import { Plus, Trash2, Search, ArrowLeft, Save, Package, UserPlus, Barcode, CheckCircle } from 'lucide-react';
+import { Plus, Trash2, Search, ArrowLeft, Save, Package, UserPlus, Barcode, CheckCircle, AlertTriangle, ChevronDown, ChevronRight } from 'lucide-react';
 import { todayYMD } from '@/lib/datetime';
 
 interface OrderItem {
@@ -91,6 +91,8 @@ type POExpenseRow = {
   created_at?: string;
 };
 
+type AuditFilterKey = 'all' | 'zeroCost' | 'negativeMargin' | 'discountAnomaly' | 'heavyExpenseItems';
+
 export default function PurchaseOrderForm() {
   const { id } = useParams();
   const navigate = useNavigate();
@@ -108,6 +110,8 @@ export default function PurchaseOrderForm() {
   const [supplierId, setSupplierId] = useState('');
   const [orderDate, setOrderDate] = useState(todayYMD());
   const [expectedDate, setExpectedDate] = useState('');
+  const [purchaseName, setPurchaseName] = useState('');
+  const [invoiceNumber, setInvoiceNumber] = useState('');
   const [status, setStatus] = useState<PurchaseOrderStatus>('draft');
   const [notes, setNotes] = useState('');
   const [items, setItems] = useState<OrderItem[]>([]);
@@ -117,7 +121,7 @@ export default function PurchaseOrderForm() {
   const [orderDiscountAmount, setOrderDiscountAmount] = useState(0);
   const [orderDiscountMode, setOrderDiscountMode] = useState<'percent' | 'amount'>('amount');
 
-  // Expenses (landed cost): should be added before receiving goods
+  // Expenses (landed cost): can be edited for any non-cancelled PO
   const [expenses, setExpenses] = useState<POExpenseRow[]>([]);
   const [expenseTitle, setExpenseTitle] = useState('');
   const [expenseAmount, setExpenseAmount] = useState<number | null>(null);
@@ -128,11 +132,17 @@ export default function PurchaseOrderForm() {
   // Product search
   const [searchTerm, setSearchTerm] = useState('');
   const [itemsSearchTerm, setItemsSearchTerm] = useState('');
+  const [quickAddQty, setQuickAddQty] = useState(1);
+  const [pendingSelectProductId, setPendingSelectProductId] = useState<string | null>(null);
+  const [pendingSelectQty, setPendingSelectQty] = useState(1);
   const searchInputRef = useRef<HTMLInputElement>(null);
   const barcodeInputRef = useRef<HTMLInputElement>(null);
   const [barcodeInput, setBarcodeInput] = useState('');
   // Keep search open by default in NEW purchase order flow (faster product entry)
-  const [showProductSearch, setShowProductSearch] = useState(true);
+  const [showProductSearch, setShowProductSearch] = useState(false);
+  const [showBasicInfo, setShowBasicInfo] = useState(false);
+  const [showExpensesPanel, setShowExpensesPanel] = useState(false);
+  const [auditFilter, setAuditFilter] = useState<AuditFilterKey>('all');
 
   const handleBarcodeAdd = () => {
     const raw = String(barcodeInput || '').trim();
@@ -145,7 +155,7 @@ export default function PurchaseOrderForm() {
     );
     const product = byBarcode || bySku;
     if (product) {
-      addProduct(product);
+      addProduct(product, quickAddQty);
       setBarcodeInput('');
       barcodeInputRef.current?.focus();
     } else {
@@ -329,8 +339,8 @@ export default function PurchaseOrderForm() {
         } as any),
       ]);
 
-      setSuppliers(suppliersData);
-      setProducts(productsData);
+      setSuppliers(Array.isArray(suppliersData) ? suppliersData : []);
+      setProducts(Array.isArray(productsData) ? productsData : []);
 
       if (id) {
         const poData = await getPurchaseOrderById(id);
@@ -339,6 +349,8 @@ export default function PurchaseOrderForm() {
           setSupplierId(poData.supplier_id || '');
           setOrderDate(poData.order_date);
           setExpectedDate(poData.expected_date || '');
+          setPurchaseName(String((poData as any).reference || ''));
+          setInvoiceNumber(String((poData as any).invoice_number || ''));
           setStatus((poData.status as PurchaseOrderStatus) || 'draft');
           setNotes(poData.notes || '');
           const orderDiscount = Number(poData.discount || 0);
@@ -417,14 +429,16 @@ export default function PurchaseOrderForm() {
     }
   };
 
-  const addProduct = (product: ProductWithCategory) => {
-    const existingItem = items.find((item) => item.product_id === product.id);
-    if (existingItem) {
-      toast({
-        title: 'Mahsulot allaqachon qo\'shilgan',
-        description: 'Bu mahsulot allaqachon buyurtmada mavjud',
-        variant: 'destructive',
-      });
+  const addProduct = (product: ProductWithCategory, qtyToAdd = 1) => {
+    const safeQty = Number.isFinite(qtyToAdd) && qtyToAdd > 0 ? qtyToAdd : 1;
+    const existingIndex = items.findIndex((item) => item.product_id === product.id);
+    if (existingIndex >= 0) {
+      const updated = [...items];
+      const existing = { ...updated[existingIndex] };
+      existing.ordered_qty = Number(existing.ordered_qty || 0) + safeQty;
+      updated[existingIndex] = computeItemTotals(existing);
+      setItems(updated);
+      setSearchTerm('');
       return;
     }
 
@@ -438,7 +452,7 @@ export default function PurchaseOrderForm() {
       product_id: product.id,
       product_name: product.name,
       product_sku: product.sku,
-      ordered_qty: 1,
+      ordered_qty: safeQty,
       base_unit_cost: baseUzs,
       base_unit_cost_usd: currency === 'USD' ? baseUsd : null,
       unit_cost: baseUzs,
@@ -453,6 +467,17 @@ export default function PurchaseOrderForm() {
 
     setItems([newItem, ...items]);
     setSearchTerm('');
+  };
+
+  const openInlineSelect = (productId: string) => {
+    setPendingSelectProductId(productId);
+    setPendingSelectQty(Math.max(1, Number(quickAddQty) || 1));
+  };
+
+  const confirmInlineSelect = (product: ProductWithCategory) => {
+    addProduct(product, pendingSelectQty);
+    setPendingSelectProductId(null);
+    setPendingSelectQty(1);
   };
 
   const updateItem = (
@@ -512,6 +537,7 @@ export default function PurchaseOrderForm() {
   const isReadOnly = existingPO && existingPO.status === 'cancelled';
 
   const totalExpenses = expenses.reduce((sum, e) => sum + (Number(e.amount || 0) || 0), 0);
+  const hasLandedCosts = totalExpenses > 0;
 
   const allocationsByProductId = (() => {
     // Preview allocation (same logic as backend PurchaseService.get)
@@ -555,6 +581,15 @@ export default function PurchaseOrderForm() {
       toast({
         title: 'Validatsiya xatosi',
         description: 'Iltimos, buyurtma sanasini tanlang',
+        variant: 'destructive',
+      });
+      return false;
+    }
+
+    if (expectedDate && orderDate && expectedDate < orderDate) {
+      toast({
+        title: 'Validatsiya xatosi',
+        description: 'Kutilayotgan sana buyurtma sanasidan oldin bo‘lishi mumkin emas',
         variant: 'destructive',
       });
       return false;
@@ -868,6 +903,7 @@ export default function PurchaseOrderForm() {
           supplier_name: null,
           order_date: orderDate,
           expected_date: expectedDate || null,
+          reference: purchaseName.trim() || null,
           subtotal,
           discount: orderDiscount,
           tax: 0,
@@ -876,6 +912,7 @@ export default function PurchaseOrderForm() {
           fx_rate: currency === 'USD' ? fxRate : null,
           total_usd: totalUsd,
           status: persistStatus,
+          invoice_number: invoiceNumber.trim() || null,
           notes,
         };
 
@@ -1016,11 +1053,24 @@ export default function PurchaseOrderForm() {
       if (isEditMode && id) {
         // Update existing PO
         const existingItems = existingPO?.items || [];
+        // IMPORTANT:
+        // Even when user clicks "Saqlash va qabul qilingan deb belgilash",
+        // do NOT force PO status to 'received' before actual receipt creation.
+        // Receipt flow below is the source of truth for received/partially_received transitions.
+        const nextStatus: PurchaseOrderStatus =
+          existingPO?.status === 'partially_received'
+            ? 'partially_received'
+            : existingPO?.status === 'received'
+              ? 'received'
+              : markAsReceived
+                ? 'approved'
+                : (status as PurchaseOrderStatus);
         const purchaseOrderData: Partial<PurchaseOrder> = {
           supplier_id: supplierId,
           supplier_name: null,
           order_date: orderDate,
           expected_date: expectedDate || null,
+          reference: purchaseName.trim() || null,
           subtotal,
           discount: orderDiscount,
           tax: 0,
@@ -1028,13 +1078,8 @@ export default function PurchaseOrderForm() {
           currency,
           fx_rate: currency === 'USD' ? fxRate : null,
           total_usd: totalUsd,
-          status: (markAsReceived
-            ? 'received'
-            : existingPO?.status === 'partially_received'
-              ? 'partially_received'
-              : existingPO?.status === 'received'
-                ? 'received'
-                : status) as PurchaseOrderStatus,
+          status: nextStatus,
+          invoice_number: invoiceNumber.trim() || null,
           received_by: markAsReceived ? (user?.id || null) : undefined,
           notes,
         };
@@ -1083,7 +1128,7 @@ export default function PurchaseOrderForm() {
           supplier_name: null,
           order_date: orderDate,
           expected_date: expectedDate || null,
-          reference: null,
+          reference: purchaseName.trim() || null,
           subtotal,
           discount: orderDiscount,
           tax: 0,
@@ -1094,7 +1139,7 @@ export default function PurchaseOrderForm() {
           // For NEW PO: if markAsReceived, create as 'approved' so receipt can process it
           // If NOT markAsReceived, use the selected status (usually 'draft')
           status: (markAsReceived ? 'approved' : status) as PurchaseOrderStatus,
-          invoice_number: null,
+          invoice_number: invoiceNumber.trim() || null,
           received_by: null, // Will be set by receipt if markAsReceived
           approved_by: null,
           approved_at: null,
@@ -1133,7 +1178,7 @@ export default function PurchaseOrderForm() {
         });
       }
 
-      // Persist expenses BEFORE receiving goods (backend disallows changes after receiving starts)
+      // Persist any local draft expenses (for new PO or unsaved local entries)
       const pendingExpenses = expenses.filter((e) => !e.id && (Number(e.amount || 0) || 0) >= 0 && String(e.title || '').trim());
       if (pendingExpenses.length > 0) {
         try {
@@ -1186,9 +1231,16 @@ export default function PurchaseOrderForm() {
         const receiptItems = (createdPO.items || []).map((poItem: any) => {
           const formItem = items.find((fi) => fi.product_id === poItem.product_id);
           const qty = poItem.ordered_qty - poItem.received_qty;
-          const unitCost = Number(formItem?.unit_cost ?? poItem.unit_cost ?? 0) || 0;
+          const unitCost = Number(
+            poItem.landed_unit_cost ?? allocationsByProductId.get(poItem.product_id)?.landedUnitCost ?? formItem?.unit_cost ?? poItem.unit_cost ?? 0
+          ) || 0;
           const unitCostUsd = receiptCurrency === 'USD'
-            ? Number(formItem?.unit_cost_usd ?? poItem.unit_cost_usd ?? 0) || 0
+            ? Number(
+                (receiptFxRate && receiptFxRate > 0 ? unitCost / receiptFxRate : null) ??
+                formItem?.unit_cost_usd ??
+                poItem.unit_cost_usd ??
+                0
+              ) || 0
             : null;
           const lineTotalUsd = receiptCurrency === 'USD' && unitCostUsd != null
             ? qty * unitCostUsd
@@ -1212,6 +1264,7 @@ export default function PurchaseOrderForm() {
           exchange_rate: receiptFxRate,
           status: 'received',
           received_at: orderDate,
+          invoice_number: invoiceNumber.trim() || null,
           created_by: user?.id || null,
           items: receiptItems,
         });
@@ -1254,17 +1307,44 @@ export default function PurchaseOrderForm() {
         product.sku.toLowerCase().includes(searchTerm.toLowerCase()) ||
         (product.barcode && product.barcode.toLowerCase().includes(searchTerm.toLowerCase())))
   );
+  const productCandidates = searchTerm ? filteredProducts : products.slice(0, 50);
 
-  const filteredOrderItems = useMemo(() => {
-    const term = itemsSearchTerm.trim().toLowerCase();
-    if (!term) return items;
+  const isZeroCostItem = (item: OrderItem) => {
+    const baseUnitCost = Number(item.unit_cost || 0) || 0;
+    const landedUnitCost = getEffectiveUnitCost(item);
+    return baseUnitCost <= 0 || landedUnitCost <= 0;
+  };
 
-    return items.filter((item) => {
-      const name = String(item.product_name || '').toLowerCase();
-      const sku = String(item.product_sku || '').toLowerCase();
-      return name.includes(term) || sku.includes(term);
-    });
-  }, [items, itemsSearchTerm]);
+  const isNegativeMarginItem = (item: OrderItem) => {
+    const marginPercent = getMarginPercent(item);
+    return marginPercent != null && marginPercent < 0;
+  };
+
+  const isDiscountAnomalyItem = (item: OrderItem) => {
+    const qty = Number(item.ordered_qty || 0) || 0;
+    const baseUnitCost = Number(item.unit_cost || 0) || 0;
+    const baseLine = Number(item.line_total || 0) || qty * baseUnitCost;
+    const discountAmount = Number(item.discount_amount || 0) || 0;
+    const discountPercent = Number(item.discount_percent || 0) || 0;
+    return discountPercent > 40 || (baseLine > 0 && discountAmount > baseLine * 0.4);
+  };
+
+  const isHeavyExpenseItem = (item: OrderItem) => {
+    const qty = Number(item.ordered_qty || 0) || 0;
+    const baseUnitCost = Number(item.unit_cost || 0) || 0;
+    const baseLine = Number(item.line_total || 0) || qty * baseUnitCost;
+    const landedUnitCost = getEffectiveUnitCost(item);
+    const landedLine = qty > 0 ? landedUnitCost * qty : 0;
+    return baseLine > 0 && landedLine > baseLine * 1.35;
+  };
+
+  const matchesAuditFilter = (item: OrderItem, filter: AuditFilterKey) => {
+    if (filter === 'all') return true;
+    if (filter === 'zeroCost') return isZeroCostItem(item);
+    if (filter === 'negativeMargin') return isNegativeMarginItem(item);
+    if (filter === 'discountAnomaly') return isDiscountAnomalyItem(item);
+    return isHeavyExpenseItem(item);
+  };
 
   const getEffectiveUnitCost = (item: OrderItem) => {
     const landedUnitCost = allocationsByProductId.get(item.product_id)?.landedUnitCost;
@@ -1277,6 +1357,34 @@ export default function PurchaseOrderForm() {
     if (salePrice <= 0 || cost <= 0) return null;
     return ((salePrice - cost) / cost) * 100;
   };
+
+  const auditWarnings = useMemo(() => {
+    const zeroCost: string[] = [];
+    const negativeMargin: string[] = [];
+    const discountAnomaly: string[] = [];
+    const heavyExpenseItems: string[] = [];
+
+    for (const item of items) {
+      const name = String(item.product_name || 'Nomsiz mahsulot');
+      if (isZeroCostItem(item)) zeroCost.push(name);
+      if (isNegativeMarginItem(item)) negativeMargin.push(name);
+      if (isDiscountAnomalyItem(item)) discountAnomaly.push(name);
+      if (isHeavyExpenseItem(item)) heavyExpenseItems.push(name);
+    }
+
+    return { zeroCost, negativeMargin, discountAnomaly, heavyExpenseItems };
+  }, [items, allocationsByProductId]);
+
+  const filteredOrderItems = useMemo(() => {
+    const term = itemsSearchTerm.trim().toLowerCase();
+    return items.filter((item) => {
+      const name = String(item.product_name || '').toLowerCase();
+      const sku = String(item.product_sku || '').toLowerCase();
+      const searchMatch = !term || name.includes(term) || sku.includes(term);
+      if (!searchMatch) return false;
+      return matchesAuditFilter(item, auditFilter);
+    });
+  }, [items, itemsSearchTerm, auditFilter, allocationsByProductId]);
 
   const subtotal = calculateSubtotal();
   const orderDiscountApplied = getOrderDiscountAmount(subtotal);
@@ -1293,34 +1401,61 @@ export default function PurchaseOrderForm() {
   }
 
   return (
-    <div className="space-y-6">
-      <div className="flex items-center justify-between">
+    <div className="space-y-3 max-w-[1700px] mx-auto pb-6">
+      <div className="flex items-start justify-between gap-3">
         <div className="flex items-center gap-4">
           <Button variant="ghost" size="icon" onClick={() => navigate('/purchase-orders')}>
             <ArrowLeft className="h-4 w-4" />
           </Button>
           <div>
-            <h1 className="text-3xl font-bold">
+            <h1 className="text-2xl font-semibold leading-tight">
               {isEditMode ? 'Xarid buyurtmasini tahrirlash' : 'Yangi xarid buyurtmasi'}
             </h1>
-            <p className="text-muted-foreground">
+            <p className="text-muted-foreground text-sm">
               {isReadOnly
                 ? 'Bu xarid buyurtmasi qabul qilingan va tahrirlash mumkin emas'
                 : 'Xarid buyurtmasini yaratish yoki tahrirlash uchun quyidagi maʼlumotlarni toʻldiring'}
             </p>
+            <div className="flex flex-wrap items-center gap-2 mt-1 text-[11px]">
+              <span className="rounded-full border bg-muted/40 px-2 py-0.5">
+                Holat: {status}
+              </span>
+              <span className="rounded-full border bg-muted/40 px-2 py-0.5">
+                Mahsulotlar: {items.length}
+              </span>
+              <span className="rounded-full border bg-muted/40 px-2 py-0.5">
+                Valyuta: {currency}
+              </span>
+            </div>
           </div>
         </div>
       </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        <div className="lg:col-span-2 space-y-6">
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+        <div className="lg:col-span-2 space-y-4">
           {/* Basic Information */}
-          <Card>
-            <CardHeader>
-              <CardTitle>Asosiy maʼlumotlar</CardTitle>
+          <Card className="shadow-sm">
+            <CardHeader className="pb-2 pt-3 px-4 relative">
+              <div className="flex items-center justify-between">
+                <div>
+                  <CardTitle>Asosiy maʼlumotlar</CardTitle>
+                  <p className="text-xs text-muted-foreground">
+                    Yetkazib beruvchi, sana va buyurtma holatini aniq belgilang.
+                  </p>
+                </div>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => setShowBasicInfo((v) => !v)}
+                >
+                  {showBasicInfo ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
+                </Button>
+              </div>
             </CardHeader>
-            <CardContent className="space-y-4">
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            {showBasicInfo && (
+            <CardContent className="space-y-3 px-4 pb-4">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                 <div className="space-y-2">
                   <Label htmlFor="supplier">
                     Yetkazib beruvchi <span className="text-destructive">*</span>
@@ -1372,6 +1507,28 @@ export default function PurchaseOrderForm() {
                     type="date"
                     value={expectedDate}
                     onChange={(e) => setExpectedDate(e.target.value)}
+                    disabled={isReadOnly}
+                  />
+                </div>
+
+                <div className="space-y-2">
+                  <Label htmlFor="purchase-name">Xarid nomi</Label>
+                  <Input
+                    id="purchase-name"
+                    value={purchaseName}
+                    onChange={(e) => setPurchaseName(e.target.value)}
+                    placeholder="Masalan: Avgust oyi zaxira xaridi"
+                    disabled={isReadOnly}
+                  />
+                </div>
+
+                <div className="space-y-2">
+                  <Label htmlFor="invoice-number">Nakladnoy raqami</Label>
+                  <Input
+                    id="invoice-number"
+                    value={invoiceNumber}
+                    onChange={(e) => setInvoiceNumber(e.target.value)}
+                    placeholder="Masalan: INV-2026-00125"
                     disabled={isReadOnly}
                   />
                 </div>
@@ -1438,17 +1595,18 @@ export default function PurchaseOrderForm() {
                   value={notes}
                   onChange={(e) => setNotes(e.target.value)}
                   placeholder="Qo'shimcha izoh kiriting..."
-                  rows={3}
+                  rows={2}
                   disabled={isReadOnly}
                 />
               </div>
             </CardContent>
+            )}
           </Card>
 
           {/* Products */}
-          <Card>
-            <CardHeader>
-              <div className="flex items-center justify-between">
+          <Card className="shadow-sm">
+            <CardHeader className="pb-2 pt-3 px-4">
+              <div className="flex items-center justify-between gap-3 flex-wrap">
                 <div className="flex items-center gap-2">
                   <CardTitle>Mahsulotlar</CardTitle>
                   <span className="text-xs text-muted-foreground">
@@ -1456,11 +1614,7 @@ export default function PurchaseOrderForm() {
                   </span>
                 </div>
                 {!isReadOnly && (
-                  <div className="flex gap-2">
-                    <Button size="sm" onClick={openProductSearch}>
-                      <Plus className="h-4 w-4 mr-2" />
-                      Mahsulot qo'shish
-                    </Button>
+                  <div className="flex gap-2 flex-wrap">
                     <Button
                       variant="outline"
                       size="sm"
@@ -1481,10 +1635,10 @@ export default function PurchaseOrderForm() {
                 )}
               </div>
             </CardHeader>
-            <CardContent className="space-y-4">
+            <CardContent className="space-y-3 px-4 pb-4">
               {!isReadOnly && showProductSearch && (
                 <div className="space-y-2">
-                  <div className="flex gap-2">
+                  <div className="grid grid-cols-1 xl:grid-cols-2 gap-2">
                     <div className="relative flex-1">
                       <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-muted-foreground" />
                       <Input
@@ -1492,7 +1646,24 @@ export default function PurchaseOrderForm() {
                         placeholder="Mahsulotni nom, SKU yoki shtrix kod bo'yicha qidirish..."
                         value={searchTerm}
                         onChange={(e) => setSearchTerm(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter' && productCandidates.length > 0) {
+                            e.preventDefault();
+                            addProduct(productCandidates[0], quickAddQty);
+                          }
+                        }}
                         className="pl-9"
+                      />
+                    </div>
+                    <div className="w-full xl:w-28">
+                      <Input
+                        type="number"
+                        min="1"
+                        step="1"
+                        value={quickAddQty}
+                        onChange={(e) => setQuickAddQty(Math.max(1, Number(e.target.value) || 1))}
+                        className="text-right"
+                        title="Qo'shish soni"
                       />
                     </div>
                     <div className="relative flex-1 flex gap-2 min-w-0">
@@ -1523,28 +1694,67 @@ export default function PurchaseOrderForm() {
                       </Button>
                     </div>
                   </div>
-                  {(searchTerm ? filteredProducts : products.slice(0, 50)).length > 0 && (
-                    <Card>
-                      <CardContent className="p-2 max-h-60 overflow-y-auto">
-                        {(searchTerm ? filteredProducts : products.slice(0, 50)).map((product) => (
+                  {productCandidates.length > 0 && (
+                    <Card className="border-dashed">
+                      <CardContent className="p-2 max-h-48 overflow-y-auto">
+                        {productCandidates.map((product) => (
                           <div
                             key={product.id}
-                            className="flex items-center justify-between p-2 hover:bg-muted rounded cursor-pointer"
-                            onClick={() => addProduct(product)}
+                            className="flex items-center justify-between gap-2 p-2 hover:bg-muted rounded"
                           >
-                            <div>
+                            <div className="min-w-0">
                               <p className="font-medium">{product.name}</p>
                               <p className="text-sm text-muted-foreground">
                                 SKU: {product.sku} | Stock: {product.current_stock} {formatUnit(product.unit)}
                               </p>
                             </div>
-                            <p className="text-sm font-medium">
-                              {formatMoneyUZS(product.purchase_price)}
-                            </p>
+                            <div className="flex items-center gap-2 shrink-0">
+                              <p className="text-sm font-medium min-w-[90px] text-right">{formatMoneyUZS(product.purchase_price)}</p>
+                              {pendingSelectProductId === product.id ? (
+                                <div className="flex items-center gap-1">
+                                  <Input
+                                    type="number"
+                                    min="1"
+                                    step="1"
+                                    value={pendingSelectQty}
+                                    onChange={(e) => setPendingSelectQty(Math.max(1, Number(e.target.value) || 1))}
+                                    className="h-8 w-16 text-right"
+                                  />
+                                  <Button
+                                    type="button"
+                                    size="sm"
+                                    variant="default"
+                                    onClick={() => confirmInlineSelect(product)}
+                                  >
+                                    Qo‘shish
+                                  </Button>
+                                  <Button
+                                    type="button"
+                                    size="sm"
+                                    variant="ghost"
+                                    onClick={() => setPendingSelectProductId(null)}
+                                  >
+                                    Bekor
+                                  </Button>
+                                </div>
+                              ) : (
+                                <Button
+                                  type="button"
+                                  size="sm"
+                                  variant="outline"
+                                  onClick={() => openInlineSelect(product.id)}
+                                >
+                                  Tanlash
+                                </Button>
+                              )}
+                            </div>
                           </div>
                         ))}
                       </CardContent>
                     </Card>
+                  )}
+                  {productCandidates.length === 0 && searchTerm && (
+                    <p className="text-xs text-muted-foreground px-1">Mos mahsulot topilmadi.</p>
                   )}
                 </div>
               )}
@@ -1552,24 +1762,46 @@ export default function PurchaseOrderForm() {
               {items.length === 0 ? (
                 <div className="text-center py-8 text-muted-foreground space-y-4">
                   <p>Hozircha mahsulot qo'shilmagan</p>
-                  {!isReadOnly && (
-                    <>
-                      <p className="text-sm">Mavjud mahsulotni qo'shing yoki yangi mahsulot yarating</p>
-                      <div className="flex gap-3 justify-center flex-wrap">
-                        <Button size="lg" onClick={openProductSearch}>
-                          <Plus className="h-5 w-5 mr-2" />
-                          Mahsulot qo'shish
-                        </Button>
-                        <Button size="lg" variant="outline" onClick={() => setShowCreateProductModal(true)}>
-                          <Package className="h-5 w-5 mr-2" />
-                          Yangi mahsulot yaratish
-                        </Button>
-                      </div>
-                    </>
-                  )}
+                  {!isReadOnly && <p className="text-sm">Qidiruvni ochib mahsulot tanlang.</p>}
                 </div>
               ) : (
                 <>
+                  {(auditWarnings.zeroCost.length > 0 ||
+                    auditWarnings.negativeMargin.length > 0 ||
+                    auditWarnings.discountAnomaly.length > 0 ||
+                    auditWarnings.heavyExpenseItems.length > 0) && (
+                    <div className="rounded-md border border-amber-300/60 bg-amber-50/40 px-3 py-2 text-sm space-y-1">
+                      <p className="font-medium inline-flex items-center gap-2">
+                        <AlertTriangle className="h-4 w-4 text-amber-600" />
+                        Audit ogohlantirishlari
+                      </p>
+                      <div className="flex flex-wrap gap-2 pt-1">
+                        <Button size="sm" variant={auditFilter === 'all' ? 'default' : 'outline'} onClick={() => setAuditFilter('all')}>
+                          Barchasi
+                        </Button>
+                        {auditWarnings.zeroCost.length > 0 && (
+                          <Button size="sm" variant={auditFilter === 'zeroCost' ? 'default' : 'outline'} onClick={() => setAuditFilter(auditFilter === 'zeroCost' ? 'all' : 'zeroCost')}>
+                            Tannarx 0 ({auditWarnings.zeroCost.length})
+                          </Button>
+                        )}
+                        {auditWarnings.negativeMargin.length > 0 && (
+                          <Button size="sm" variant={auditFilter === 'negativeMargin' ? 'default' : 'outline'} onClick={() => setAuditFilter(auditFilter === 'negativeMargin' ? 'all' : 'negativeMargin')}>
+                            Manfiy marja ({auditWarnings.negativeMargin.length})
+                          </Button>
+                        )}
+                        {auditWarnings.discountAnomaly.length > 0 && (
+                          <Button size="sm" variant={auditFilter === 'discountAnomaly' ? 'default' : 'outline'} onClick={() => setAuditFilter(auditFilter === 'discountAnomaly' ? 'all' : 'discountAnomaly')}>
+                            Katta chegirma ({auditWarnings.discountAnomaly.length})
+                          </Button>
+                        )}
+                        {auditWarnings.heavyExpenseItems.length > 0 && (
+                          <Button size="sm" variant={auditFilter === 'heavyExpenseItems' ? 'default' : 'outline'} onClick={() => setAuditFilter(auditFilter === 'heavyExpenseItems' ? 'all' : 'heavyExpenseItems')}>
+                            Xarajat baland ({auditWarnings.heavyExpenseItems.length})
+                          </Button>
+                        )}
+                      </div>
+                    </div>
+                  )}
                   <div className="relative">
                     <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-muted-foreground" />
                     <Input
@@ -1579,6 +1811,7 @@ export default function PurchaseOrderForm() {
                       className="pl-9"
                     />
                   </div>
+                <div className="rounded-md border overflow-auto max-h-[50vh]">
                 <Table>
                   <TableHeader>
                     <TableRow>
@@ -1605,7 +1838,10 @@ export default function PurchaseOrderForm() {
                       const index = items.findIndex((it) => it.product_id === item.product_id);
                       const marginPercent = getMarginPercent(item);
                       return (
-                      <TableRow key={index}>
+                      <TableRow
+                        key={index}
+                        className={auditFilter !== 'all' && matchesAuditFilter(item, auditFilter) ? 'bg-amber-50/40' : ''}
+                      >
                         <TableCell className="font-medium">{item.product_name}</TableCell>
                         <TableCell className="text-right">
                           {isReadOnly ? (
@@ -1779,6 +2015,7 @@ export default function PurchaseOrderForm() {
                     )})}
                   </TableBody>
                 </Table>
+                </div>
                 </>
               )}
             </CardContent>
@@ -1787,28 +2024,28 @@ export default function PurchaseOrderForm() {
         </div>
 
         {/* Summary */}
-        <div className="space-y-6">
-          <Card>
-            <CardHeader>
+        <div className="space-y-4 lg:sticky lg:top-3 self-start">
+          <Card className="shadow-sm">
+            <CardHeader className="pb-2 pt-3 px-4">
               <CardTitle>Buyurtma yig'indisi</CardTitle>
             </CardHeader>
-            <CardContent className="space-y-4">
-              <div className="space-y-2">
-                <div className="flex justify-between text-sm">
+            <CardContent className="space-y-3 px-4 pb-4">
+              <div className="space-y-1.5">
+                <div className="flex justify-between text-[13px]">
                   <span className="text-muted-foreground">Oraliq summa</span>
                   <span className="font-medium">{formatMoneyUZS(subtotal)}</span>
                 </div>
                 {currency === 'USD' && (
-                  <div className="flex justify-between text-sm">
+                  <div className="flex justify-between text-[13px]">
                     <span className="text-muted-foreground">Oraliq summa (USD)</span>
                     <span className="font-medium">{calculateSubtotalUSD().toFixed(2)} USD</span>
                   </div>
                 )}
-                <div className="flex justify-between text-sm">
+                <div className="flex justify-between text-[13px]">
                   <span className="text-muted-foreground">Xarajatlar</span>
                   <span className="font-medium">{formatMoneyUZS(totalExpenses)}</span>
                 </div>
-                <div className="flex justify-between text-sm">
+                <div className="flex justify-between text-[13px] items-center gap-2">
                   <span className="text-muted-foreground">Chegirma (%)</span>
                   {isReadOnly ? (
                     <span className="font-medium">{Number(orderDiscountPercent || 0).toFixed(2)}%</span>
@@ -1823,11 +2060,11 @@ export default function PurchaseOrderForm() {
                         setOrderDiscountMode('percent');
                         setOrderDiscountPercent(Number(e.target.value));
                       }}
-                      className="w-28 text-right"
+                      className="w-24 h-8 text-right"
                     />
                   )}
                 </div>
-                <div className="flex justify-between text-sm">
+                <div className="flex justify-between text-[13px] items-center gap-2">
                   <span className="text-muted-foreground">
                     {currency === 'USD' ? 'Chegirma (USD)' : 'Chegirma'}
                   </span>
@@ -1850,7 +2087,7 @@ export default function PurchaseOrderForm() {
                       allowZero
                       min={0}
                       containerClassName="space-y-0"
-                      className="w-28 text-right"
+                      className="w-24 h-8 text-right"
                     />
                   ) : (
                     <MoneyInput
@@ -1865,25 +2102,25 @@ export default function PurchaseOrderForm() {
                       allowZero
                       min={0}
                       containerClassName="space-y-0"
-                      className="w-28 text-right"
+                      className="w-24 h-8 text-right"
                     />
                   )}
                 </div>
-                <div className="flex justify-between text-sm">
+                <div className="flex justify-between text-[13px]">
                   <span className="text-muted-foreground">Soliq</span>
                   <span className="font-medium">{formatMoneyUZS(0)}</span>
                 </div>
-                <div className="border-t pt-2 flex justify-between">
+                <div className="border-t pt-1.5 flex justify-between">
                   <span className="font-semibold">Jami</span>
-                  <span className="font-bold text-lg">{formatMoneyUZS(totalAmount)}</span>
+                  <span className="font-bold text-base">{formatMoneyUZS(totalAmount)}</span>
                 </div>
                 {currency === 'USD' && (
-                  <div className="flex justify-between text-sm">
+                  <div className="flex justify-between text-[13px]">
                     <span className="text-muted-foreground">Jami (USD)</span>
                     <span className="font-medium">{Number(totalUsd || 0).toFixed(2)} USD</span>
                   </div>
                 )}
-                <div className="flex justify-between text-sm">
+                <div className="flex justify-between text-[13px]">
                   <span className="text-muted-foreground">Jami + xarajat</span>
                   <span className="font-semibold">
                     {formatMoneyUZS(totalAmount + totalExpenses)}
@@ -1892,7 +2129,12 @@ export default function PurchaseOrderForm() {
               </div>
 
               {!isReadOnly && (
-                <div className="space-y-2">
+                <div className="space-y-1.5">
+                  {hasLandedCosts && (
+                    <div className="rounded-md border border-emerald-300/60 bg-emerald-50/40 px-2 py-1 text-[11px] text-emerald-700">
+                      Landed tannarx qo‘llanadi: qabulda mahsulot tannarxiga xarajatlar taqsimoti qo‘shiladi.
+                    </div>
+                  )}
                   <Button
                     className="w-full"
                     onClick={() => handleSave(false)}
@@ -1905,7 +2147,7 @@ export default function PurchaseOrderForm() {
                   {!isEditMode && (
                     <Button
                       className="w-full"
-                      variant="default"
+                      variant="secondary"
                       onClick={() => handleSave(true)}
                       disabled={loading || items.length === 0}
                     >
@@ -1928,7 +2170,7 @@ export default function PurchaseOrderForm() {
                 </div>
               )}
 
-              <div className="text-xs text-muted-foreground space-y-1">
+              <div className="text-[11px] text-muted-foreground space-y-0.5">
                 <p>• Qoralama: Ombor miqdoriga ta'sir qilmaydi</p>
                 <p>• Qabul qilingan deb belgilash: Ombor qoldig'i darhol yangilanadi</p>
                 {showConfirmReceiveButton && (
@@ -1939,11 +2181,21 @@ export default function PurchaseOrderForm() {
           </Card>
 
           {/* Expenses (landed cost) */}
-          <Card>
-            <CardHeader>
+          <Card className="shadow-sm">
+            <CardHeader className="pb-2 pt-3 px-4">
               <CardTitle>Xarajatlar (tannarxga uriladi)</CardTitle>
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                className="absolute right-3 top-3"
+                onClick={() => setShowExpensesPanel((v) => !v)}
+              >
+                {showExpensesPanel ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
+              </Button>
             </CardHeader>
-            <CardContent className="space-y-4">
+            {showExpensesPanel && (
+            <CardContent className="space-y-3 px-4 pb-4">
               {!canEditExpenses && (
                 <p className="text-sm text-muted-foreground">Bekor qilingan buyurtmada xarajatlarni o‘zgartirib bo‘lmaydi.</p>
               )}
@@ -1953,7 +2205,7 @@ export default function PurchaseOrderForm() {
                 </p>
               )}
 
-              <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
+              <div className="grid grid-cols-1 md:grid-cols-4 gap-2">
                 <div className="md:col-span-2 space-y-2">
                   <Label>Xarajat nomi *</Label>
                   <Input
@@ -1996,7 +2248,7 @@ export default function PurchaseOrderForm() {
                 </div>
               </div>
 
-              <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
+              <div className="grid grid-cols-1 md:grid-cols-4 gap-2">
                 <div className="md:col-span-3 space-y-2">
                   <Label>Izoh</Label>
                   <Input
@@ -2060,6 +2312,7 @@ export default function PurchaseOrderForm() {
                 </Table>
               )}
             </CardContent>
+            )}
           </Card>
         </div>
       </div>

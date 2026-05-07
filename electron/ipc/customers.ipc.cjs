@@ -31,6 +31,18 @@ function registerCustomersHandlers(services) {
     return customers.getById(id);
   }));
 
+  console.log('Registering pos:customers:getByLoyaltyQr handler...');
+  ipcMain.removeHandler('pos:customers:getByLoyaltyQr');
+  ipcMain.handle('pos:customers:getByLoyaltyQr', wrapHandler(async (_event, payload) => {
+    return customers.getByLoyaltyQr(payload);
+  }));
+
+  console.log('Registering pos:customers:getLoyaltyCard handler...');
+  ipcMain.removeHandler('pos:customers:getLoyaltyCard');
+  ipcMain.handle('pos:customers:getLoyaltyCard', wrapHandler(async (_event, customerId) => {
+    return customers.getLoyaltyCardByCustomerId(customerId);
+  }));
+
   console.log('Registering pos:customers:create handler...');
   ipcMain.removeHandler('pos:customers:create');
   ipcMain.handle('pos:customers:create', wrapHandler(async (_event, data) => {
@@ -69,6 +81,7 @@ function registerCustomersHandlers(services) {
     const received_by = payload?.received_by ?? payload?.receivedBy ?? null;
     const order_id = payload?.order_id ?? payload?.orderId ?? null;
     const source = payload?.source ?? null;
+    const shift_id = payload?.shift_id ?? payload?.shiftId ?? null;
 
     if (!operation || (operation !== 'payment_in' && operation !== 'payment_out')) {
       throw new Error('Invalid operation type. Must be "payment_in" or "payment_out"');
@@ -82,7 +95,8 @@ function registerCustomersHandlers(services) {
       received_by || null,
       order_id || null,
       source || null,
-      operation
+      operation,
+      shift_id || null
     );
   }));
 

@@ -1,5 +1,5 @@
 import { makeEan13 } from '@/lib/barcode';
-import { searchProducts } from '@/db/api';
+import { getProductByBarcode } from '@/db/api';
 
 export type ProductBarcodeType = 'EAN13' | 'CODE128' | 'QR';
 
@@ -22,7 +22,17 @@ export function validateProductBarcode(input: { type: ProductBarcodeType; value:
         return { ok: false, error: e?.message || "EAN-13 hisoblab bo'lmadi" };
       }
     }
-    if (digits.length === 13) return { ok: true, normalizedValue: digits };
+    if (digits.length === 13) {
+      try {
+        const expected = makeEan13(digits.slice(0, 12));
+        if (expected !== digits) {
+          return { ok: false, error: "EAN-13 checksum noto'g'ri" };
+        }
+        return { ok: true, normalizedValue: digits };
+      } catch (e: any) {
+        return { ok: false, error: e?.message || "EAN-13 tekshirib bo'lmadi" };
+      }
+    }
     return { ok: false, error: "EAN-13 12 yoki 13 raqam bo'lishi kerak" };
   }
 
@@ -44,16 +54,11 @@ export async function checkDuplicateBarcode(
   if (!term) return { duplicate: false, duplicates: [] };
 
   const currentId = opts?.currentProductId == null ? null : String(opts.currentProductId);
-  const results = await searchProducts(term);
-  const matches = results
-    .filter((p: any) => {
-      const bc = p?.barcode ? String(p.barcode).trim() : '';
-      if (!bc) return false;
-      if (bc !== term) return false;
-      if (currentId && String(p.id) === currentId) return false;
-      return true;
-    })
-    .map((p: any) => ({ id: p.id, name: p.name, sku: p.sku, barcode: p.barcode }));
+  const found = await getProductByBarcode(term);
+  const matches = found
+    ? [{ id: (found as any).id, name: (found as any).name, sku: (found as any).sku, barcode: (found as any).barcode }]
+    : [];
+  const filtered = currentId ? matches.filter((p) => String(p.id) !== currentId) : matches;
 
-  return { duplicate: matches.length > 0, duplicates: matches };
+  return { duplicate: filtered.length > 0, duplicates: filtered };
 }

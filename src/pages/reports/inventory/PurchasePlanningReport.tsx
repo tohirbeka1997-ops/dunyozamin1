@@ -220,11 +220,11 @@ export default function PurchasePlanningReport() {
     <div className="space-y-6">
       <div className="flex items-center justify-between print:hidden">
         <div className="flex items-center gap-4">
-          <Button variant="ghost" size="icon" onClick={() => navigate('/reports')}>
+          <Button variant="ghost" size="icon" onClick={() => navigate('/reports/inventory')}>
             <ArrowLeft className="h-4 w-4" />
           </Button>
           <div>
-            <h1 className="text-3xl font-bold">Bozorga borish hisoboti</h1>
+            <h1 className="page-heading">Bozorga borish hisoboti</h1>
             <p className="text-muted-foreground">
               Oxirgi {analysisDays} kun sotuv + reja {planDays} kun (zaxira: 2 kun) — asosiy ombor
             </p>

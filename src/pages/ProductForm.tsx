@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useNavigate, useParams } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
@@ -19,6 +19,7 @@ import { useConfirmDialog } from '@/contexts/ConfirmDialogContext';
 import {
   getProductById,
   getProductByBarcode,
+  getProductBySku,
   getCategories,
   createProduct,
   updateProduct,
@@ -27,12 +28,30 @@ import {
   getProductImages,
   setProductImages,
 } from '@/db/api';
-import type { Category, ProductUnit } from '@/types/database';
-import { ArrowLeft, Save, ImagePlus, X, Link, Upload } from 'lucide-react';
+import type { Category, Product, ProductUnit, ProductVariantOption } from '@/types/database';
+import { ArrowLeft, Save, ImagePlus, X, Link, Upload, Plus, Trash2 } from 'lucide-react';
 import { useInventoryStore } from '@/store/inventoryStore';
 import MoneyInput from '@/components/common/MoneyInput';
 import { isElectron, requireElectron, handleIpcResponse } from '@/utils/electron';
 import { getProductImageDisplayUrl } from '@/lib/productImageUrl';
+
+const MAX_VARIANT_OPTIONS = 16;
+const MAX_BROWSER_IMAGE_BYTES = 8 * 1024 * 1024;
+
+function variantOptionsFromProduct(product: Product): ProductVariantOption[] {
+  const raw = product.variant_options;
+  if (Array.isArray(raw) && raw.length) {
+    return raw
+      .filter((x) => x && typeof x === 'object')
+      .map((x) => ({
+        name: String((x as ProductVariantOption).name ?? '').trim(),
+        value: String((x as ProductVariantOption).value ?? '').trim(),
+      }))
+      .filter((x) => x.name && x.value)
+      .slice(0, MAX_VARIANT_OPTIONS);
+  }
+  return [];
+}
 
 export default function ProductForm() {
   const { t } = useTranslation();
@@ -59,6 +78,7 @@ export default function ProductForm() {
     initial_stock: '0',
     image_url: '',
     is_active: true,
+    show_in_marketplace: true,
     brand: '',
     article: '',
   });
@@ -70,8 +90,18 @@ export default function ProductForm() {
   const [images, setImages] = useState<Array<{ url: string; id?: string; sort_order?: number; is_primary?: number }>>([]);
   const [imageUrlInput, setImageUrlInput] = useState('');
   const [dragOver, setDragOver] = useState(false);
+  const [variantOptions, setVariantOptions] = useState<ProductVariantOption[]>([]);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   const isEditMode = !!id;
+  const getElectronApiSafe = () => {
+    try {
+      return requireElectron();
+    } catch {
+      return null;
+    }
+  };
+  const isRemotePosApi = () => isElectron() && !!(getElectronApiSafe()?._session);
 
   useEffect(() => {
     loadCategories();
@@ -97,6 +127,7 @@ export default function ProductForm() {
       setLoading(true);
       const product = await getProductById(id);
       if (product) {
+        setVariantOptions(variantOptionsFromProduct(product as Product));
         const baseUnit =
           (product as any).base_unit || product.unit || (product as any).unit_code || 'pcs';
         const units: ProductUnit[] =
@@ -132,6 +163,10 @@ export default function ProductForm() {
           initial_stock: '0',
           image_url: product.image_url || '',
           is_active: product.is_active,
+          show_in_marketplace:
+            (product as any).show_in_marketplace === undefined ||
+            (product as any).show_in_marketplace === 1 ||
+            (product as any).show_in_marketplace === true,
           brand: (product as any).brand || '',
           article: (product as any).article || '',
         });
@@ -321,7 +356,74 @@ export default function ProductForm() {
     return saved?.fileUrl || null;
   };
 
+  const readBrowserImageAsDataUrl = (file: File): Promise<string> =>
+    new Promise((resolve, reject) => {
+      if (!/^image\//.test(file.type || '')) {
+        reject(new Error('Faqat rasm fayllarini yuklash mumkin'));
+        return;
+      }
+      if (file.size > MAX_BROWSER_IMAGE_BYTES) {
+        reject(new Error('Rasm hajmi 8 MB dan oshmasin'));
+        return;
+      }
+      const reader = new FileReader();
+      reader.onload = () => resolve(String(reader.result || ''));
+      reader.onerror = () => reject(new Error('Rasmni o‘qib bo‘lmadi'));
+      reader.readAsDataURL(file);
+    });
+
+  const appendImageUrls = (urls: string[]) => {
+    if (!urls.length) return;
+    setImages((prev) => {
+      const next = [
+        ...prev,
+        ...urls.map((url, i) => ({
+          url,
+          sort_order: prev.length + i,
+          is_primary: prev.length === 0 && i === 0 ? 1 : 0,
+        })),
+      ];
+      setFormData((f) => ({ ...f, image_url: next[0]?.url || f.image_url }));
+      return next;
+    });
+  };
+
+  const handleBrowserImageFiles = async (fileList: FileList | File[]) => {
+    const files = Array.from(fileList || []).filter((f) => /^image\//.test(f.type || ''));
+    if (!files.length) return;
+    try {
+      const urls = [];
+      const api = getElectronApiSafe();
+      const productIdOrTempId = id || `temp-${Date.now()}`;
+      for (let i = 0; i < files.length; i++) {
+        const file = files[i];
+        if (file.size > MAX_BROWSER_IMAGE_BYTES) {
+          throw new Error('Rasm hajmi 8 MB dan oshmasin');
+        }
+        if (typeof api?.files?.uploadProductImage === 'function') {
+          const saved = await handleIpcResponse<{ fileUrl?: string }>(
+            api.files.uploadProductImage(file, productIdOrTempId, images.length + i)
+          );
+          if (saved?.fileUrl) urls.push(saved.fileUrl);
+        } else {
+          urls.push(await readBrowserImageAsDataUrl(file));
+        }
+      }
+      appendImageUrls(urls);
+    } catch (error: any) {
+      toast({
+        title: t('common.error'),
+        description: error?.message || 'Rasm yuklab bo‘lmadi',
+        variant: 'destructive',
+      });
+    }
+  };
+
   const handlePickImage = async () => {
+    if (isRemotePosApi()) {
+      fileInputRef.current?.click();
+      return;
+    }
     if (!isElectron()) return;
     try {
       const api = requireElectron();
@@ -361,6 +463,10 @@ export default function ProductForm() {
   const handleDrop = async (e: React.DragEvent) => {
     e.preventDefault();
     setDragOver(false);
+    if (isRemotePosApi()) {
+      await handleBrowserImageFiles(e.dataTransfer.files || []);
+      return;
+    }
     if (!isElectron()) return;
     const files = Array.from(e.dataTransfer.files || []).filter((f) => /^image\//.test(f.type));
     if (!files.length) return;
@@ -393,6 +499,14 @@ export default function ProductForm() {
       }
       if (!hasImage) return;
       e.preventDefault();
+      if (isRemotePosApi()) {
+        const files = Array.from(items)
+          .filter((item) => item.kind === 'file' && item.type.startsWith('image/'))
+          .map((item) => item.getAsFile())
+          .filter((file): file is File => !!file);
+        await handleBrowserImageFiles(files);
+        return;
+      }
       const api = requireElectron();
       const productIdOrTempId = id || `temp-${Date.now()}`;
       const newUrls: string[] = [];
@@ -526,6 +640,34 @@ export default function ProductForm() {
 
     if (!validateForm(skuToUse)) return;
 
+    const cleanedVariants = variantOptions
+      .map((o) => ({
+        name: String(o.name || '').trim(),
+        value: String(o.value || '').trim(),
+      }))
+      .filter((o) => o.name && o.value);
+    if (cleanedVariants.length > MAX_VARIANT_OPTIONS) {
+      toast({
+        title: t('productForm.validation_error'),
+        description: t('productForm.variant_options_limit', { max: MAX_VARIANT_OPTIONS }),
+        variant: 'destructive',
+      });
+      return;
+    }
+    const incomplete = variantOptions.some(
+      (o) =>
+        (String(o.name || '').trim() && !String(o.value || '').trim()) ||
+        (!String(o.name || '').trim() && String(o.value || '').trim()),
+    );
+    if (incomplete) {
+      toast({
+        title: t('productForm.validation_error'),
+        description: t('productForm.variant_options_incomplete'),
+        variant: 'destructive',
+      });
+      return;
+    }
+
     // Non-blocking confirm: if sale price is lower than purchase price, ask user to confirm.
     // We intentionally avoid `window.confirm()` because it can leave inputs "blocked" in Electron.
     const purchasePrice = formData.purchase_price || 0;
@@ -565,8 +707,10 @@ export default function ProductForm() {
         min_stock_level: Number(formData.min_stock_level),
         image_url: firstImageUrl,
         is_active: formData.is_active,
+        show_in_marketplace: formData.show_in_marketplace,
         brand: formData.brand.trim() || null,
         article: formData.article.trim() || null,
+        variant_options: cleanedVariants,
       };
 
       // Pre-check barcode uniqueness to show a clear error (instead of generic backend message)
@@ -581,6 +725,15 @@ export default function ProductForm() {
           });
           return;
         }
+      }
+      const existingSku = await getProductBySku(productData.sku);
+      if (existingSku?.id && (!isEditMode || existingSku.id !== id)) {
+        toast({
+          title: t('common.error'),
+          description: `Bu SKU allaqachon boshqa mahsulotda mavjud: ${existingSku.name || '-'} (SKU: ${existingSku.sku || '-'})`,
+          variant: 'destructive',
+        });
+        return;
       }
 
       if (isEditMode && id) {
@@ -661,7 +814,7 @@ export default function ProductForm() {
           <ArrowLeft className="h-5 w-5" />
         </Button>
         <div>
-          <h1 className="text-3xl font-bold">{isEditMode ? t('productForm.edit_title') : t('productForm.add_title')}</h1>
+          <h1 className="page-heading">{isEditMode ? t('productForm.edit_title') : t('productForm.add_title')}</h1>
           <p className="text-muted-foreground">
             {isEditMode ? t('productForm.edit_subtitle') : t('productForm.add_subtitle')}
           </p>
@@ -773,6 +926,81 @@ export default function ProductForm() {
                 </p>
               </div>
 
+              <div className="space-y-3 md:col-span-2 rounded-lg border border-border bg-muted/15 p-4">
+                <div>
+                  <Label className="text-sm font-semibold">{t('productForm.variant_options_title')}</Label>
+                  <p className="mt-1 text-xs text-muted-foreground">{t('productForm.variant_options_hint')}</p>
+                </div>
+                <div className="space-y-2">
+                  {variantOptions.length === 0 ? (
+                    <p className="text-xs text-muted-foreground">{t('productForm.variant_options_empty')}</p>
+                  ) : (
+                    variantOptions.map((row, idx) => (
+                      <div key={idx} className="flex flex-wrap items-end gap-2">
+                        <div className="grid min-w-[140px] flex-1 gap-1">
+                          <span className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+                            {t('productForm.variant_option_name')}
+                          </span>
+                          <Input
+                            value={row.name}
+                            onChange={(e) => {
+                              const v = e.target.value;
+                              setVariantOptions((prev) =>
+                                prev.map((p, i) => (i === idx ? { ...p, name: v } : p)),
+                              );
+                            }}
+                            placeholder={t('productForm.variant_option_name_ph')}
+                            maxLength={40}
+                          />
+                        </div>
+                        <div className="grid min-w-[140px] flex-1 gap-1">
+                          <span className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+                            {t('productForm.variant_option_value')}
+                          </span>
+                          <Input
+                            value={row.value}
+                            onChange={(e) => {
+                              const v = e.target.value;
+                              setVariantOptions((prev) =>
+                                prev.map((p, i) => (i === idx ? { ...p, value: v } : p)),
+                              );
+                            }}
+                            placeholder={t('productForm.variant_option_value_ph')}
+                            maxLength={120}
+                          />
+                        </div>
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="icon"
+                          className="shrink-0"
+                          onClick={() =>
+                            setVariantOptions((prev) => prev.filter((_, i) => i !== idx))
+                          }
+                          aria-label={t('productForm.variant_option_remove')}
+                        >
+                          <Trash2 className="h-4 w-4" />
+                        </Button>
+                      </div>
+                    ))
+                  )}
+                </div>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  disabled={variantOptions.length >= MAX_VARIANT_OPTIONS}
+                  onClick={() =>
+                    setVariantOptions((prev) =>
+                      prev.length >= MAX_VARIANT_OPTIONS ? prev : [...prev, { name: '', value: '' }],
+                    )
+                  }
+                >
+                  <Plus className="mr-1 h-4 w-4" />
+                  {t('productForm.variant_option_add')}
+                </Button>
+              </div>
+
               <div className="space-y-2 md:col-span-2">
                 <Label>{t('productForm.image_url')} — 3–4 xil yuklash</Label>
                 <div
@@ -807,6 +1035,17 @@ export default function ProductForm() {
                     ))}
                   </div>
                   <div className="flex flex-wrap gap-2 mt-3">
+                    <input
+                      ref={fileInputRef}
+                      type="file"
+                      accept="image/*"
+                      multiple
+                      className="hidden"
+                      onChange={async (e) => {
+                        await handleBrowserImageFiles(e.target.files || []);
+                        e.target.value = '';
+                      }}
+                    />
                     {isElectron() && (
                       <>
                         <Button type="button" variant="outline" size="sm" onClick={handlePickImage}>
@@ -862,8 +1101,21 @@ export default function ProductForm() {
                   <Label htmlFor="is_active" className="text-sm">
                     {t('products.is_active')}
                   </Label>
+                  <Switch
+                    id="show_in_marketplace"
+                    checked={formData.show_in_marketplace}
+                    onCheckedChange={(checked) =>
+                      setFormData({ ...formData, show_in_marketplace: checked })
+                    }
+                  />
+                  <Label htmlFor="show_in_marketplace" className="text-sm">
+                    {t('productForm.marketplace_catalog')}
+                  </Label>
                 </div>
               </div>
+              <p className="text-xs text-muted-foreground pl-1">
+                {t('productForm.marketplace_catalog_hint')}
+              </p>
               {descriptionEnabled && (
                 <Textarea
                   id="description"
@@ -943,8 +1195,8 @@ export default function ProductForm() {
                       <SelectItem value="pcs">{t('productForm.unit_pcs')}</SelectItem>
                       <SelectItem value="kg">{t('productForm.unit_kg')}</SelectItem>
                       <SelectItem value="g">{t('productForm.unit_g')}</SelectItem>
-                      <SelectItem value="l">{t('productForm.unit_l')}</SelectItem>
-                      <SelectItem value="ml">{t('productForm.unit_ml')}</SelectItem>
+                      <SelectItem value="L">{t('productForm.unit_l')}</SelectItem>
+                      <SelectItem value="mL">{t('productForm.unit_ml')}</SelectItem>
                       <SelectItem value="m">{t('productForm.unit_m')}</SelectItem>
                       <SelectItem value="pack">{t('productForm.unit_pack')}</SelectItem>
                       <SelectItem value="box">{t('productForm.unit_box')}</SelectItem>

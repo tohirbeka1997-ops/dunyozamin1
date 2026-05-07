@@ -62,7 +62,7 @@ export default function SalesReportsHub() {
           <ArrowLeft className="h-4 w-4" />
         </Button>
         <div>
-          <h1 className="text-3xl font-bold">Sotuv</h1>
+          <h1 className="page-heading">Sotuv</h1>
           <p className="text-muted-foreground">Sotuv bo‘yicha asosiy hisobotlar</p>
         </div>
       </div>

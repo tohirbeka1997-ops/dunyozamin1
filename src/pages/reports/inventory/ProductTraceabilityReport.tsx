@@ -18,6 +18,7 @@ import { getProducts } from '@/db/api';
 import type { ProductWithCategory } from '@/types/database';
 import { handleIpcResponse, isElectron, requireElectron } from '@/utils/electron';
 import { useReportAutoRefresh } from '@/hooks/useReportAutoRefresh';
+import { formatDateYMD, todayYMD } from '@/lib/datetime';
 
 type LedgerAllocation = {
   batch_id: string;
@@ -66,9 +67,9 @@ export default function ProductTraceabilityReport() {
 
   const [dateFrom, setDateFrom] = useState(() => {
     const d = new Date(Date.now() - 30 * 86400000);
-    return d.toISOString().slice(0, 10);
+    return formatDateYMD(d);
   });
-  const [dateTo, setDateTo] = useState(() => new Date().toISOString().slice(0, 10));
+  const [dateTo, setDateTo] = useState(() => todayYMD());
 
   const [rows, setRows] = useState<LedgerRow[]>([]);
   const [summary, setSummary] = useState<LedgerSummary | null>(null);
@@ -234,11 +235,11 @@ export default function ProductTraceabilityReport() {
     <div className="space-y-6">
       <div className="flex items-center justify-between print:hidden">
         <div className="flex items-center gap-4">
-          <Button variant="ghost" size="icon" onClick={() => navigate('/reports')}>
+          <Button variant="ghost" size="icon" onClick={() => navigate('/reports/inventory')}>
             <ArrowLeft className="h-4 w-4" />
           </Button>
           <div>
-            <h1 className="text-3xl font-bold">Mahsulot tarixi (Traceability)</h1>
+            <h1 className="page-heading">Mahsulot tarixi (Traceability)</h1>
             <p className="text-muted-foreground">Qachon, qancha, qaysi narxda, kimdan-kimga</p>
           </div>
         </div>

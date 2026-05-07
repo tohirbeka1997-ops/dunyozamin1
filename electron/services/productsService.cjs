@@ -114,6 +114,157 @@ class ProductsService {
     }
   }
 
+  _appendPriceHistoryRow({ productId, priceType, oldPrice, newPrice, changedBy, reason, unit }) {
+    if (!this._hasTable('price_history')) return;
+    let oldP = Number(oldPrice);
+    let newP = Number(newPrice);
+    if (!Number.isFinite(oldP)) oldP = 0;
+    if (!Number.isFinite(newP)) newP = 0;
+    if (Math.abs(oldP - newP) < 1e-6) return;
+    const rid = randomUUID();
+    const now = new Date().toISOString();
+    this.db
+      .prepare(
+        `INSERT INTO price_history (id, product_id, price_type, old_price, new_price, changed_by, changed_at, reason, unit)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      )
+      .run(
+        rid,
+        productId,
+        priceType,
+        oldP,
+        newP,
+        changedBy || null,
+        now,
+        reason || null,
+        unit || null
+      );
+  }
+
+  _recordInitialPriceHistory(productId, row, changedBy) {
+    if (!this._hasTable('price_history') || !row) return;
+    const uid = changedBy || null;
+    const n = (v) => (Number.isFinite(Number(v)) ? Number(v) : 0) || 0;
+    if (this._hasCol('purchase_price') && n(row.purchase_price) !== 0) {
+      this._appendPriceHistoryRow({
+        productId,
+        priceType: 'purchase',
+        oldPrice: 0,
+        newPrice: n(row.purchase_price),
+        changedBy: uid,
+        reason: "Birinchi ombor narxi (yaratish)",
+        unit: null,
+      });
+    }
+    if (this._hasCol('sale_price') && n(row.sale_price) !== 0) {
+      this._appendPriceHistoryRow({
+        productId,
+        priceType: 'sale',
+        oldPrice: 0,
+        newPrice: n(row.sale_price),
+        changedBy: uid,
+        reason: "Birinchi sotuv narxi (yaratish)",
+        unit: null,
+      });
+    }
+    if (this._hasCol('master_price') && row.master_price != null && n(row.master_price) !== 0) {
+      this._appendPriceHistoryRow({
+        productId,
+        priceType: 'master',
+        oldPrice: 0,
+        newPrice: n(row.master_price),
+        changedBy: uid,
+        reason: "Birinchi yirik optom (yaratish)",
+        unit: null,
+      });
+    }
+    if (this._hasTable('product_units') && Array.isArray(row.product_units)) {
+      for (const u of row.product_units) {
+        const unit = String(u.unit || '').trim();
+        if (!unit) continue;
+        const sp = n(u.sale_price);
+        if (sp === 0) continue;
+        this._appendPriceHistoryRow({
+          productId,
+          priceType: 'unit',
+          oldPrice: 0,
+          newPrice: sp,
+          changedBy: uid,
+          reason: "Birlik bo'yicha birinchi sotuv (yaratish)",
+          unit,
+        });
+      }
+    }
+  }
+
+  _recordPriceHistoryAfterUpdate(productId, beforeRow, afterRow, changedBy) {
+    if (!this._hasTable('price_history') || !beforeRow || !afterRow) return;
+    const uid = changedBy || null;
+    const n = (v) => (Number.isFinite(Number(v)) ? Number(v) : 0) || 0;
+    if (this._hasCol('purchase_price') && n(beforeRow.purchase_price) !== n(afterRow.purchase_price)) {
+      this._appendPriceHistoryRow({
+        productId,
+        priceType: 'purchase',
+        oldPrice: n(beforeRow.purchase_price),
+        newPrice: n(afterRow.purchase_price),
+        changedBy: uid,
+        reason: null,
+        unit: null,
+      });
+    }
+    if (this._hasCol('sale_price') && n(beforeRow.sale_price) !== n(afterRow.sale_price)) {
+      this._appendPriceHistoryRow({
+        productId,
+        priceType: 'sale',
+        oldPrice: n(beforeRow.sale_price),
+        newPrice: n(afterRow.sale_price),
+        changedBy: uid,
+        reason: null,
+        unit: null,
+      });
+    }
+    if (this._hasCol('master_price') && n(beforeRow.master_price ?? 0) !== n(afterRow.master_price ?? 0)) {
+      this._appendPriceHistoryRow({
+        productId,
+        priceType: 'master',
+        oldPrice: n(beforeRow.master_price),
+        newPrice: n(afterRow.master_price),
+        changedBy: uid,
+        reason: null,
+        unit: null,
+      });
+    }
+    if (this._hasTable('product_units')) {
+      const beforeUnits = Array.isArray(beforeRow.product_units) ? beforeRow.product_units : [];
+      const afterUnits = Array.isArray(afterRow.product_units) ? afterRow.product_units : [];
+      const toMap = (arr) => {
+        const m = new Map();
+        for (const u of arr) {
+          const k = String(u.unit || '').trim();
+          if (k) m.set(k, n(u.sale_price));
+        }
+        return m;
+      };
+      const bm = toMap(beforeUnits);
+      const am = toMap(afterUnits);
+      const allKeys = new Set([...bm.keys(), ...am.keys()]);
+      for (const u of allKeys) {
+        const o = bm.has(u) ? bm.get(u) : 0;
+        const nv = am.has(u) ? am.get(u) : 0;
+        if (Math.abs(o - nv) < 1e-6) continue;
+        this._appendPriceHistoryRow({
+          productId,
+          priceType: 'unit',
+          oldPrice: o,
+          newPrice: nv,
+          changedBy: uid,
+          reason: "O'lchov bo'yicha sotuv",
+          unit: u,
+        });
+      }
+    }
+  }
+
   _getProductUnitsByIds(ids) {
     if (!ids || ids.length === 0 || !this._hasTable('product_units')) return new Map();
     const placeholders = ids.map(() => '?').join(', ');
@@ -191,6 +342,40 @@ class ProductsService {
     }
   }
 
+  _normalizeVariantOptionsArray(parsed) {
+    if (!Array.isArray(parsed)) return [];
+    const out = [];
+    for (const it of parsed) {
+      if (!it || typeof it !== 'object') continue;
+      const name = String(it.name ?? '').trim().slice(0, 40);
+      const value = String(it.value ?? '').trim().slice(0, 120);
+      if (!name || !value) continue;
+      out.push({ name, value });
+      if (out.length >= 16) break;
+    }
+    return out;
+  }
+
+  _parseVariantOptions(raw) {
+    if (raw == null || raw === '') return [];
+    if (Array.isArray(raw)) return this._normalizeVariantOptionsArray(raw);
+    if (typeof raw === 'string') {
+      try {
+        return this._normalizeVariantOptionsArray(JSON.parse(raw));
+      } catch {
+        return [];
+      }
+    }
+    return [];
+  }
+
+  _serializeVariantOptions(value) {
+    if (value === undefined) return null;
+    const norm = this._normalizeVariantOptionsArray(Array.isArray(value) ? value : []);
+    if (norm.length === 0) return null;
+    return JSON.stringify(norm);
+  }
+
   _normalizeProductRow(row) {
     if (!row) return row;
     return {
@@ -198,6 +383,11 @@ class ProductsService {
       // Normalize SQLite INTEGER to booleans when present
       is_active: row.is_active === 1 || row.is_active === true,
       track_stock: row.track_stock === 1 || row.track_stock === true,
+      show_in_marketplace:
+        row.show_in_marketplace === undefined || row.show_in_marketplace === null
+          ? true
+          : row.show_in_marketplace === 1 || row.show_in_marketplace === true,
+      variant_options: this._parseVariantOptions(row.variant_options),
     };
   }
 
@@ -255,6 +445,19 @@ class ProductsService {
     return value.trim();
   }
 
+  _toFiniteNumber(value, fallback = 0) {
+    const n = Number(value);
+    return Number.isFinite(n) ? n : fallback;
+  }
+
+  _assertNonNegative(value, fieldName) {
+    const n = Number(value);
+    if (!Number.isFinite(n) || n < 0) {
+      throw createError(ERROR_CODES.VALIDATION_ERROR, `${fieldName} must be >= 0`);
+    }
+    return n;
+  }
+
   _ensureSkuUnique(sku, excludeId = null) {
     const row = this.db
       .prepare(`SELECT id FROM products WHERE sku = ? ${excludeId ? 'AND id != ?' : ''} LIMIT 1`)
@@ -282,6 +485,14 @@ class ProductsService {
    */
   list(filters = {}) {
     const params = [];
+    const requestedLimit = Number(filters.limit);
+    // Perf guard: computing latest PO unit_cost with a correlated subquery for every row
+    // is expensive on large product lists. Keep it for focused views and small pages.
+    const includeLatestPurchaseCost =
+      filters.include_latest_purchase_cost === true ||
+      filters.include_latest_purchase_cost === 1 ||
+      String(filters.include_latest_purchase_cost || '').toLowerCase() === 'true' ||
+      (Number.isFinite(requestedLimit) && requestedLimit > 0 && requestedLimit <= 300);
 
     const wantsWarehouse = !!filters.warehouse_id;
     const wantsStockJoin = wantsWarehouse || !!filters.stock_filter;
@@ -300,7 +511,7 @@ class ProductsService {
     let query = `
       SELECT
         p.*,
-        ${this._sqlLatestReceivedPurchaseUnitCost('p')} AS __latest_recv_po_uc,
+        ${includeLatestPurchaseCost ? `${this._sqlLatestReceivedPurchaseUnitCost('p')} AS __latest_recv_po_uc,` : `NULL AS __latest_recv_po_uc,`}
         c.name AS category_name,
         u.code AS unit_code,
         u.name AS unit_name,
@@ -891,7 +1102,7 @@ class ProductsService {
   /**
    * Create product
    */
-  create(data) {
+  create(data, meta = {}) {
     if (!data || typeof data !== 'object') {
       throw createError(ERROR_CODES.VALIDATION_ERROR, 'Product data is required');
     }
@@ -899,6 +1110,16 @@ class ProductsService {
     const name = this._requireNonEmptyString(data.name, 'Product name');
     const sku = this._requireNonEmptyString(data.sku, 'SKU');
     const barcode = data.barcode ? String(data.barcode).trim() : null;
+    const purchasePrice = this._assertNonNegative(data.purchase_price ?? 0, 'purchase_price');
+    const salePrice = this._assertNonNegative(data.sale_price ?? 0, 'sale_price');
+    const minStockLevel = this._assertNonNegative(data.min_stock_level ?? 0, 'min_stock_level');
+    const currentStock = this._toFiniteNumber(data.current_stock ?? 0, 0);
+    if (currentStock < 0) {
+      throw createError(ERROR_CODES.VALIDATION_ERROR, 'current_stock must be >= 0');
+    }
+    if (data.master_min_qty !== undefined && data.master_min_qty !== null) {
+      this._assertNonNegative(data.master_min_qty, 'master_min_qty');
+    }
 
     this._ensureSkuUnique(sku);
     this._ensureBarcodeUnique(barcode);
@@ -937,22 +1158,30 @@ class ProductsService {
       add('base_unit', this._normalizeUnitCode(data.base_unit ?? data.unit ?? 'pcs'));
     }
 
-    add('purchase_price', Number(data.purchase_price ?? 0) || 0);
-    add('sale_price', Number(data.sale_price ?? 0) || 0);
+    add('purchase_price', purchasePrice);
+    add('sale_price', salePrice);
     // Dual pricing (optional columns)
     if (data.master_price !== undefined) add('master_price', data.master_price === null ? null : (Number(data.master_price) || 0));
     if (data.master_min_qty !== undefined) add('master_min_qty', data.master_min_qty === null ? null : (Number(data.master_min_qty) || 0));
     // Brand and article (optional columns added in migration 061)
     if (data.brand !== undefined) add('brand', data.brand ? String(data.brand).trim() || null : null);
     if (data.article !== undefined) add('article', data.article ? String(data.article).trim().toUpperCase() || null : null);
-    add('min_stock_level', Number(data.min_stock_level ?? 0) || 0);
+    add('min_stock_level', minStockLevel);
     add('max_stock_level', data.max_stock_level !== undefined ? Number(data.max_stock_level) : null);
     add('track_stock', data.track_stock !== undefined ? (data.track_stock ? 1 : 0) : 1);
     add('image_url', data.image_url ?? null);
     add('image', data.image ?? null);
     add('is_active', data.is_active !== undefined ? (data.is_active ? 1 : 0) : 1);
+    if (data.show_in_marketplace !== undefined) {
+      add('show_in_marketplace', data.show_in_marketplace ? 1 : 0);
+    } else if (this._hasCol('show_in_marketplace')) {
+      add('show_in_marketplace', 1);
+    }
+    if (data.variant_options !== undefined && this._hasCol('variant_options')) {
+      add('variant_options', this._serializeVariantOptions(data.variant_options));
+    }
     // Some schemas keep a cached current_stock column; do not auto-set from movements here.
-    if (this._hasCol('current_stock')) add('current_stock', Number(data.current_stock ?? 0) || 0);
+    if (this._hasCol('current_stock')) add('current_stock', currentStock);
     add('created_at', now);
     add('updated_at', now);
 
@@ -963,13 +1192,26 @@ class ProductsService {
       this.cacheService.invalidateProduct(id);
       this.cacheService.invalidatePricesForProduct(id);
     }
-    return this.getById(id);
+    const created = this.getById(id);
+    try {
+      this._recordInitialPriceHistory(id, created, meta?.actorUserId);
+    } catch (err) {
+      // Best-effort: a missing price_history row should not fail product
+      // creation. But we DO want to know when it happens (price-change
+      // reports rely on the row), so emit a warning instead of swallowing.
+      console.warn(
+        '[productsService] _recordInitialPriceHistory failed for product',
+        id,
+        err?.message || err,
+      );
+    }
+    return created;
   }
 
   /**
    * Update product
    */
-  update(id, data) {
+  update(id, data, meta = {}) {
     if (!id) {
       throw createError(ERROR_CODES.VALIDATION_ERROR, 'Product ID is required');
     }
@@ -1024,31 +1266,53 @@ class ProductsService {
       set('base_unit', this._normalizeUnitCode(data.base_unit ?? 'pcs'));
     }
 
-    if (data.purchase_price !== undefined) set('purchase_price', Number(data.purchase_price ?? 0) || 0);
-    if (data.sale_price !== undefined) set('sale_price', Number(data.sale_price ?? 0) || 0);
+    if (data.purchase_price !== undefined) {
+      set('purchase_price', this._assertNonNegative(data.purchase_price, 'purchase_price'));
+    }
+    if (data.sale_price !== undefined) {
+      set('sale_price', this._assertNonNegative(data.sale_price, 'sale_price'));
+    }
     // Dual pricing (optional columns)
     if (data.master_price !== undefined) set('master_price', data.master_price === null ? null : (Number(data.master_price) || 0));
-    if (data.master_min_qty !== undefined) set('master_min_qty', data.master_min_qty === null ? null : (Number(data.master_min_qty) || 0));
-    if (data.min_stock_level !== undefined) set('min_stock_level', Number(data.min_stock_level ?? 0) || 0);
+    if (data.master_min_qty !== undefined) {
+      if (data.master_min_qty === null) {
+        set('master_min_qty', null);
+      } else {
+        set('master_min_qty', this._assertNonNegative(data.master_min_qty, 'master_min_qty'));
+      }
+    }
+    if (data.min_stock_level !== undefined) {
+      set('min_stock_level', this._assertNonNegative(data.min_stock_level, 'min_stock_level'));
+    }
     if (data.max_stock_level !== undefined) set('max_stock_level', data.max_stock_level !== null ? Number(data.max_stock_level) : null);
     if (data.track_stock !== undefined) set('track_stock', data.track_stock ? 1 : 0);
     if (data.image_url !== undefined) set('image_url', data.image_url ?? null);
     if (data.image !== undefined) set('image', data.image ?? null);
     if (data.is_active !== undefined) set('is_active', data.is_active ? 1 : 0);
+    if (data.show_in_marketplace !== undefined) set('show_in_marketplace', data.show_in_marketplace ? 1 : 0);
+    if (data.variant_options !== undefined) {
+      set('variant_options', this._serializeVariantOptions(data.variant_options));
+    }
     // Brand and article
     if (data.brand !== undefined) set('brand', data.brand ? String(data.brand).trim() || null : null);
     if (data.article !== undefined) set('article', data.article ? String(data.article).trim().toUpperCase() || null : null);
 
     if (this._hasCol('current_stock') && data.current_stock !== undefined) {
-      set('current_stock', Number(data.current_stock ?? 0) || 0);
+      set('current_stock', this._assertNonNegative(data.current_stock, 'current_stock'));
     }
 
-    if (updates.length === 0) return existing;
+    const hasUnitUpdate = data.product_units !== undefined;
+    if (updates.length === 0 && !hasUnitUpdate) return existing;
 
-    set('updated_at', new Date().toISOString());
-    params.push(id);
-
-    this.db.prepare(`UPDATE products SET ${updates.join(', ')} WHERE id = ?`).run(params);
+    if (updates.length > 0) {
+      set('updated_at', new Date().toISOString());
+      params.push(id);
+      this.db.prepare(`UPDATE products SET ${updates.join(', ')} WHERE id = ?`).run(params);
+    } else {
+      this.db
+        .prepare(`UPDATE products SET updated_at = ? WHERE id = ?`)
+        .run(new Date().toISOString(), id);
+    }
     const baseUnit =
       this._normalizeUnitCode(
         data.base_unit ??
@@ -1061,7 +1325,19 @@ class ProductsService {
       this.cacheService.invalidateProduct(id);
       this.cacheService.invalidatePricesForProduct(id);
     }
-    return this.getById(id);
+    const after = this.getById(id);
+    try {
+      this._recordPriceHistoryAfterUpdate(id, existing, after, meta?.actorUserId);
+    } catch (err) {
+      // Best-effort: see note in `create` above. Log so a broken
+      // price_history table doesn't go unnoticed.
+      console.warn(
+        '[productsService] _recordPriceHistoryAfterUpdate failed for product',
+        id,
+        err?.message || err,
+      );
+    }
+    return after;
   }
 
   /**
@@ -1237,6 +1513,12 @@ class ProductsService {
       return arr.map((img, i) => ({ id: `legacy-${i}`, url: typeof img === 'string' ? img : img.url, sort_order: i, is_primary: i === 0 ? 1 : 0 }));
     }
     this.db.prepare('DELETE FROM product_images WHERE product_id = ?').run(productId);
+    if (arr.length === 0) {
+      this.db
+        .prepare("UPDATE products SET image_url = NULL, updated_at = datetime('now') WHERE id = ?")
+        .run(productId);
+      return [];
+    }
     const result = [];
     const primaryIdx = arr.findIndex((x) => (typeof x === 'object' && x && x.is_primary));
     const firstPrimary = primaryIdx >= 0 ? primaryIdx : 0;

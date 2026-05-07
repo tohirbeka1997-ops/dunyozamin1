@@ -36,8 +36,18 @@ type ShiftSummary = {
   openingCash: number;
   totalSales: number;
   cashSales: number;
+  /** Mijozga berilgan qarz (smena buyurtmalari bo‘yicha) */
+  creditDebtIssued?: number;
+  credit_debt_issued?: number;
+  debtRepaidTotal?: number;
+  debt_repaid_total?: number;
+  debtRepaidCash?: number;
+  debt_repaid_cash?: number;
+  customerDrawerCashNet?: number;
+  customer_drawer_cash_net?: number;
   orders: number;
   totalRefunds: number;
+  cashRefundsOut?: number;
   expectedCash: number;
 };
 
@@ -171,11 +181,11 @@ export default function ShiftClosingsReport() {
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-4">
-          <Button variant="ghost" size="icon" onClick={() => navigate('/reports')}>
+          <Button variant="ghost" size="icon" onClick={() => navigate('/reports/employee')}>
             <ArrowLeft className="h-4 w-4" />
           </Button>
           <div>
-            <h1 className="text-3xl font-bold">Smenalar (kassa) hisobotlari</h1>
+            <h1 className="page-heading">Smenalar (kassa) hisobotlari</h1>
             <p className="text-muted-foreground">Har bir kassa ochilishi/yopilishi bo\'yicha tahlil</p>
           </div>
         </div>
@@ -248,16 +258,34 @@ export default function ShiftClosingsReport() {
                   <TableHead className="text-right">Farq</TableHead>
                   <TableHead className="text-right">Jami tushum</TableHead>
                   <TableHead className="text-right">Naqd tushum</TableHead>
+                  <TableHead className="text-right">Mijoz qarzi</TableHead>
+                  <TableHead className="text-right">Qarz toʻlandi</TableHead>
                   <TableHead className="text-right">Buyurtmalar</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
                 {filteredRows.map(({ shift, cashierName, summary }) => {
                   const openingCash = Number(shift.opening_cash || 0);
-                  const expectedCash =
-                    Number(shift.expected_cash ?? summary?.expectedCash ?? (openingCash + Number(summary?.cashSales || 0)));
+                  const cashSales = Number(summary?.cashSales || 0);
+                  const drawerNet = Number(
+                    summary?.customerDrawerCashNet ?? summary?.customer_drawer_cash_net ?? 0
+                  ) || 0;
+                  const refundsOut = Number(summary?.cashRefundsOut ?? summary?.totalRefunds ?? 0);
+                  const expectedFromSummary =
+                    summary?.expectedCash != null ? Number(summary.expectedCash) : NaN;
+                  const expectedCash = Number.isFinite(Number(shift.expected_cash))
+                    ? Number(shift.expected_cash)
+                    : Number.isFinite(expectedFromSummary)
+                      ? expectedFromSummary
+                      : openingCash + cashSales + drawerNet - refundsOut;
                   const closingCash = shift.closing_cash == null ? null : Number(shift.closing_cash);
                   const diff = shift.cash_difference == null ? null : Number(shift.cash_difference);
+                  const creditDebt = Number(
+                    summary?.creditDebtIssued ?? summary?.credit_debt_issued ?? 0
+                  ) || 0;
+                  const debtRepaid = Number(
+                    summary?.debtRepaidTotal ?? summary?.debt_repaid_total ?? 0
+                  ) || 0;
 
                   return (
                     <TableRow key={shift.id}>
@@ -274,6 +302,8 @@ export default function ShiftClosingsReport() {
                       </TableCell>
                       <TableCell className="text-right">{formatMoneyUZS(Number(summary?.totalSales || 0))}</TableCell>
                       <TableCell className="text-right">{formatMoneyUZS(Number(summary?.cashSales || 0))}</TableCell>
+                      <TableCell className="text-right tabular-nums">{formatMoneyUZS(creditDebt)}</TableCell>
+                      <TableCell className="text-right tabular-nums">{formatMoneyUZS(debtRepaid)}</TableCell>
                       <TableCell className="text-right">{Number(summary?.orders || 0)}</TableCell>
                     </TableRow>
                   );

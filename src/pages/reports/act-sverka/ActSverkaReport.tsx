@@ -63,24 +63,28 @@ export default function ActSverkaReport() {
       const categoriesData = await getCategories();
       setCategories(categoriesData);
 
-      // In Electron mode, call backend to get batch reconciliation data
-      if (isElectron()) {
-        const api = requireElectron();
-        const response = await handleIpcResponse<BatchReconciliation[]>(
-          api.reports?.actSverka?.({
-            category_id: categoryFilter !== 'all' ? categoryFilter : undefined,
-          }) || Promise.resolve([])
+      // Act Sverka is a financial reconciliation report — silently
+      // returning an empty list when the IPC bridge isn't available makes
+      // accountants think there is nothing to reconcile, which is a
+      // dangerous false positive. Surface a hard error and refuse to
+      // display zeros when the data source is missing.
+      if (!isElectron()) {
+        throw new Error(
+          "Act Sverka faqat POS terminalida ishlaydi (Electron rejimi talab qilinadi)."
         );
-        setReconciliations(response || []);
-      } else {
-        // Mock data for browser mode
-        setReconciliations([]);
       }
-    } catch (error) {
+      const api = requireElectron();
+      const response = await handleIpcResponse<BatchReconciliation[]>(
+        api.reports?.actSverka?.({
+          category_id: categoryFilter !== 'all' ? categoryFilter : undefined,
+        }) || Promise.resolve([])
+      );
+      setReconciliations(response || []);
+    } catch (error: any) {
       console.error('Failed to load act sverka data:', error);
       toast({
         title: 'Xatolik',
-        description: 'Act Sverka ma\'lumotlarini yuklab bo\'lmadi',
+        description: error?.message || "Act Sverka ma'lumotlarini yuklab bo'lmadi",
         variant: 'destructive',
       });
       setReconciliations([]);
@@ -196,13 +200,14 @@ export default function ActSverkaReport() {
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-4">
-          <Button variant="ghost" size="icon" onClick={() => navigate('/reports')}>
+          <Button variant="ghost" size="icon" onClick={() => navigate('/reports/inventory')}>
             <ArrowLeft className="h-4 w-4" />
           </Button>
           <div>
-            <h1 className="text-3xl font-bold">Act Sverka (Partiya uzgartirish akti)</h1>
+            <h1 className="page-heading">Akt sverka (FIFO partiya, barcha davr)</h1>
             <p className="text-muted-foreground">
-              FIFO partiyalari bo'yicha xarid-sotuv uzgartirish hisoboti
+              Partiya (FIFO) yoqilganda: barcha vaqtlar yig‘indisi. Davr bo‘yicha batafsil: Ombor → Mahsulot bo‘yicha
+              akt sverka (davr).
             </p>
           </div>
         </div>

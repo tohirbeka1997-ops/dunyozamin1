@@ -1,7 +1,6 @@
 import { useState, useEffect, useLayoutEffect, useCallback, useRef, useMemo } from 'react';
 import { flushSync } from 'react-dom';
 import { Button } from '@/components/ui/button';
-import { Checkbox } from '@/components/ui/checkbox';
 import { Badge } from '@/components/ui/badge';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -38,6 +37,13 @@ import {
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog';
 import {
+  Sheet,
+  SheetContent,
+  SheetDescription,
+  SheetHeader,
+  SheetTitle,
+} from '@/components/ui/sheet';
+import {
   Popover,
   PopoverContent,
   PopoverTrigger,
@@ -50,6 +56,7 @@ import { useTranslation } from 'react-i18next';
 import { useShiftStore } from '@/store/shiftStore';
 import { useInventoryStore } from '@/store/inventoryStore';
 import { formatMoneyUZS } from '@/lib/format';
+import { applyPercentUZS, roundUZS } from '@/lib/money';
 import { formatUnit } from '@/utils/formatters';
 import {
   clampQuantityForUnit,
@@ -69,7 +76,10 @@ import {
   getProductByBarcode,
   getProductBySku,
   getProductById,
+  getQuoteById,
+  getCustomerById,
   getCustomers,
+  createCustomer,
   createOrder,
   createCreditOrder,
   receiveCustomerPayment,
@@ -102,6 +112,7 @@ import type {
   ReceiptSettings,
   ReceiptTemplateStore,
   OrderItem,
+  OrderWithDetails,
 } from '@/types/database';
 import { POS_EXCHANGE_PAYOUT_METHOD, type PosCheckoutPaymentKind } from '@/constants/posExchange';
 import {
@@ -128,11 +139,20 @@ import {
   Gift,
   ArrowLeftRight,
   ClipboardList,
+  Keyboard,
+  Store,
+  FolderTree,
+  Star,
 } from 'lucide-react';
 import WaitingOrdersDialog from '@/components/pos/WaitingOrdersDialog';
+
+function productShowInMarketplace(product: Product): boolean {
+  const v = product.show_in_marketplace as boolean | number | undefined | null;
+  if (v === undefined || v === null) return true;
+  return v === true || v === 1;
+}
 import Numpad from '@/components/pos/Numpad';
 import QuickCustomerCreate from '@/components/pos/QuickCustomerCreate';
-import CustomerInfoBadge from '@/components/pos/CustomerInfoBadge';
 import ReceivePaymentModal from '@/components/customers/ReceivePaymentModal';
 import Receipt from '@/components/Receipt';
 import ReceiptPrintView from '@/components/print/ReceiptPrintView';
@@ -149,8 +169,12 @@ import { getProductImageDisplayUrl } from '@/lib/productImageUrl';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { useDebounce } from '@/hooks/use-debounce';
 import Fuse from 'fuse.js';
+import QRCode from 'qrcode';
 import { highlightMatch } from '@/utils/searchHighlight';
 import { getRecentSearches, addRecentSearch, removeRecentSearch } from '@/utils/recentSearches';
+
+const POS_QUICK_PRODUCT_IDS_KEY = 'pos:quickProductIds';
+const MAX_POS_QUICK_PRODUCTS = 8;
 
 export default function POSTerminal() {
   const { t } = useTranslation();
@@ -159,6 +183,10 @@ export default function POSTerminal() {
   const location = useLocation();
   const { profile } = useAuth();
   const { currentShift, addSale, addRefund } = useShiftStore();
+  const posWarehouseId = useMemo(
+    () => ((currentShift as any)?.warehouse_id ? String((currentShift as any).warehouse_id) : undefined),
+    [currentShift]
+  );
   const { addMovement } = useInventoryStore();
   const queryClient = useQueryClient();
   const searchInputRef = useRef<HTMLInputElement>(null);
@@ -176,10 +204,12 @@ export default function POSTerminal() {
   const [cartWithPromos, setCartWithPromos] = useState<CartItem[]>([]);
   const [selectedCustomer, setSelectedCustomer] = useState<Customer | null>(null);
   const [customers, setCustomers] = useState<Customer[]>([]);
+  const [recentCustomerIds, setRecentCustomerIds] = useState<string[]>([]);
   const [customerComboboxOpen, setCustomerComboboxOpen] = useState(false);
   const [customerSearchTerm, setCustomerSearchTerm] = useState('');
   const [customerPaymentOpen, setCustomerPaymentOpen] = useState(false);
   const [cartReviewOpen, setCartReviewOpen] = useState(false);
+  const [hotkeyGuideOpen, setHotkeyGuideOpen] = useState(false);
   const [discount, setDiscount] = useState<{
     type: 'amount' | 'percent' | 'promo';
     value: string;
@@ -194,6 +224,7 @@ export default function POSTerminal() {
   const [currentTierCode, setCurrentTierCode] = useState<'retail' | 'master' | 'wholesale' | 'marketplace'>('retail');
   const [priceTiers, setPriceTiers] = useState<Array<{ id: number; code: string; name: string }>>([]);
   const [paymentDialogOpen, setPaymentDialogOpen] = useState(false);
+  const [isProcessingPayment, setIsProcessingPayment] = useState(false);
   /** Mijozning oldingi qarzini shu safar savat bilan birga yopish (default: yoqilgan) */
   const [includePriorDebtInPayment, setIncludePriorDebtInPayment] = useState(true);
   const [payments, setPayments] = useState<{ method: PaymentMethod; amount: number }[]>([]);
@@ -225,13 +256,32 @@ export default function POSTerminal() {
   const [orderToRestore, setOrderToRestore] = useState<HeldOrder | null>(null);
   const [importWebOrderDialogOpen, setImportWebOrderDialogOpen] = useState(false);
   const [pendingWebOrderImportId, setPendingWebOrderImportId] = useState<number | null>(null);
+  const [importedWebOrderId, setImportedWebOrderId] = useState<number | null>(null);
+  const [importQuoteDialogOpen, setImportQuoteDialogOpen] = useState(false);
+  const [pendingQuoteImportId, setPendingQuoteImportId] = useState<string | null>(null);
+  const [importOrderDialogOpen, setImportOrderDialogOpen] = useState(false);
+  const [pendingOrderImportId, setPendingOrderImportId] = useState<string | null>(null);
   const webOrderImportProcessedRef = useRef<string | null>(null);
+  const quoteImportProcessedRef = useRef<string | null>(null);
+  const orderImportProcessedRef = useRef<string | null>(null);
 
   // New state for premium features
   const [categories, setCategories] = useState<Category[]>([]);
   const [selectedCategory, setSelectedCategory] = useState<string | null>(null);
+  const [categorySheetOpen, setCategorySheetOpen] = useState(false);
+  const [categorySheetMode, setCategorySheetMode] = useState<'quick' | 'categories'>('categories');
+  const [quickProductSearch, setQuickProductSearch] = useState('');
   const [favoriteProducts, setFavoriteProducts] = useState<Product[]>([]);
   const [allProducts, setAllProducts] = useState<Product[]>([]);
+  const [quickProductIds, setQuickProductIds] = useState<string[]>(() => {
+    try {
+      const saved = localStorage.getItem(POS_QUICK_PRODUCT_IDS_KEY);
+      const parsed = saved ? JSON.parse(saved) : [];
+      return Array.isArray(parsed) ? parsed.filter((id) => typeof id === 'string') : [];
+    } catch {
+      return [];
+    }
+  });
   const [numpadOpen, setNumpadOpen] = useState(false);
   const [numpadConfig, setNumpadConfig] = useState<{
     type: 'quantity' | 'discount' | 'add_quantity';
@@ -250,6 +300,17 @@ export default function POSTerminal() {
   const [exchangeReturnMode, setExchangeReturnMode] = useState(false);
   const [selectedCartIndex, setSelectedCartIndex] = useState<number>(-1);
   const [showCostPrice, setShowCostPrice] = useState(false);
+  const [posUiMode, setPosUiMode] = useState<'beginner' | 'fast'>(() => {
+    try {
+      const saved = localStorage.getItem('pos:uiMode');
+      return saved === 'beginner' ? 'beginner' : 'fast';
+    } catch {
+      return 'fast';
+    }
+  });
+  const [undoCartSnapshot, setUndoCartSnapshot] = useState<CartItem[] | null>(null);
+  const [undoMessage, setUndoMessage] = useState('');
+  const undoTimerRef = useRef<number | null>(null);
   
   // Receipt printing state
   const receiptRef = useRef<HTMLDivElement>(null);
@@ -279,6 +340,9 @@ export default function POSTerminal() {
     cashierName?: string;
     priceTierCode?: string | null;
     customerTotalDebt?: number;
+    loyaltyCardCode?: string;
+    loyaltyQrDataUrl?: string;
+    loyaltyQrPayload?: string;
   } | null>(null);
   const [lastReceiptData, setLastReceiptData] = useState<typeof receiptData>(null);
   const [printOrder, setPrintOrder] = useState<any | null>(null);
@@ -324,6 +388,49 @@ export default function POSTerminal() {
   useEffect(() => {
     setIncludePriorDebtInPayment(true);
   }, [selectedCustomer?.id]);
+
+  useEffect(
+    () => () => {
+      if (undoTimerRef.current) {
+        window.clearTimeout(undoTimerRef.current);
+      }
+    },
+    []
+  );
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('pos:uiMode', posUiMode);
+    } catch {
+      // ignore storage errors
+    }
+  }, [posUiMode]);
+
+  useEffect(() => {
+    if (!paymentDialogOpen && !customerPaymentOpen && !cartReviewOpen && !waitingOrdersDialogOpen) {
+      const id = window.setTimeout(() => {
+        const input = searchInputRef.current;
+        if (!input) return;
+        input.focus();
+        const len = input.value.length;
+        if (typeof input.setSelectionRange === 'function') {
+          input.setSelectionRange(len, len);
+        }
+      }, 0);
+      return () => window.clearTimeout(id);
+    }
+  }, [paymentDialogOpen, customerPaymentOpen, cartReviewOpen, waitingOrdersDialogOpen]);
+
+  useEffect(() => {
+    try {
+      const saved = JSON.parse(localStorage.getItem('pos:recentCustomerIds') || '[]');
+      if (Array.isArray(saved)) {
+        setRecentCustomerIds(saved.filter((id): id is string => typeof id === 'string'));
+      }
+    } catch {
+      // ignore
+    }
+  }, []);
 
   const hasPromoForProduct = useCallback(
     (product: Product) => {
@@ -374,6 +481,56 @@ export default function POSTerminal() {
     return Math.max(0, -Number(balance || 0));
   }, []);
 
+  const queueCartUndo = useCallback((snapshot: CartItem[], message: string) => {
+    if (!snapshot || snapshot.length === 0) return;
+    setUndoCartSnapshot(snapshot);
+    setUndoMessage(message);
+    if (undoTimerRef.current) {
+      window.clearTimeout(undoTimerRef.current);
+    }
+    undoTimerRef.current = window.setTimeout(() => {
+      setUndoCartSnapshot(null);
+      setUndoMessage('');
+    }, 5000);
+  }, []);
+
+  const restoreUndoCart = useCallback(() => {
+    if (!undoCartSnapshot) return;
+    setCart(undoCartSnapshot);
+    setUndoCartSnapshot(null);
+    setUndoMessage('');
+    if (undoTimerRef.current) {
+      window.clearTimeout(undoTimerRef.current);
+      undoTimerRef.current = null;
+    }
+    focusSearchInput();
+  }, [undoCartSnapshot, focusSearchInput]);
+
+  const rememberRecentCustomer = useCallback((customerId: string) => {
+    if (!customerId || customerId === 'none' || customerId === 'default-customer-001') return;
+    setRecentCustomerIds((prev) => {
+      const next = [customerId, ...prev.filter((id) => id !== customerId)].slice(0, 6);
+      try {
+        localStorage.setItem('pos:recentCustomerIds', JSON.stringify(next));
+      } catch {
+        // ignore storage errors
+      }
+      return next;
+    });
+  }, []);
+
+  const applySelectedCustomer = useCallback(
+    (customer: Customer | null) => {
+      setSelectedCustomer(customer);
+      setCustomerComboboxOpen(false);
+      setCustomerSearchTerm('');
+      if (customer?.id) {
+        rememberRecentCustomer(customer.id);
+      }
+    },
+    [rememberRecentCustomer]
+  );
+
   const printReceipt = useCallback(
     async (data: NonNullable<typeof receiptData>) => {
       try {
@@ -407,6 +564,9 @@ export default function POSTerminal() {
           credit_amount: 0,
           cashier: { username: data.cashierName || '-', full_name: data.cashierName || '-' },
           customer_total_debt: Number(data.customerTotalDebt || 0),
+          loyalty_card_code: data.loyaltyCardCode || null,
+          loyalty_qr_data_url: data.loyaltyQrDataUrl || null,
+          loyalty_qr_payload: data.loyaltyQrPayload || null,
           customer: data.customer
             ? {
                 name: data.customer.name,
@@ -461,6 +621,24 @@ export default function POSTerminal() {
     [companySettings, receiptSettings, receiptTemplateStore, toast]
   );
 
+  const buildLoyaltyReceiptMeta = useCallback(async (customer: Customer | null) => {
+    if (!customer?.id) return { loyaltyCardCode: undefined, loyaltyQrDataUrl: undefined, loyaltyQrPayload: undefined };
+    try {
+      const api = getElectronAPI();
+      if (!api?.customers?.getLoyaltyCard) return { loyaltyCardCode: undefined, loyaltyQrDataUrl: undefined, loyaltyQrPayload: undefined };
+      const card = await handleIpcResponse<any | null>(api.customers.getLoyaltyCard(customer.id));
+      const loyaltyCardCode = String(card?.loyalty_card_code || '').trim();
+      const qrPayload = String(card?.qr_payload || '').trim();
+      if (!loyaltyCardCode || !qrPayload) {
+        return { loyaltyCardCode: undefined, loyaltyQrDataUrl: undefined, loyaltyQrPayload: undefined };
+      }
+      const loyaltyQrDataUrl = await QRCode.toDataURL(qrPayload, { width: 180, margin: 1 });
+      return { loyaltyCardCode, loyaltyQrDataUrl, loyaltyQrPayload: qrPayload };
+    } catch {
+      return { loyaltyCardCode: undefined, loyaltyQrDataUrl: undefined, loyaltyQrPayload: undefined };
+    }
+  }, []);
+
   // Load functions - defined before useEffect
   const loadCustomers = useCallback(async () => {
     try {
@@ -493,8 +671,35 @@ export default function POSTerminal() {
       return;
     }
     const code = debouncedPromoCode ? debouncedPromoCode : null;
-    applyPromotionsToCart(cart, selectedCustomer?.id ?? null, code)
-      .then(setCartWithPromos)
+    const promoEligibleCart = cart.filter(
+      (it: any) => !(it?.is_price_overridden || it?.price_source === 'manual')
+    );
+    applyPromotionsToCart(promoEligibleCart, selectedCustomer?.id ?? null, code)
+      .then((promoApplied) => {
+        const applied = Array.isArray(promoApplied) ? promoApplied : [];
+        /**
+         * CartItem da odatda `product_id` yo‘q — faqat `product.id` bor.
+         * Eski Map(product_id) barcha qatorlarni `undefined` kalitiga bog‘lab,
+         * bitta obyektni bir necha qatorga ulardi (React + miqdor yangilanishi “hammasi birdan”).
+         * Backend `promoEligibleCart` tartibida 1:1 qator qaytaradi — indeks bo‘yicha birlashtiramiz.
+         */
+        let j = 0;
+        const merged = cart.map((orig: any) => {
+          if (orig?.is_price_overridden || orig?.price_source === 'manual') return orig;
+          const appliedLine = applied[j++];
+          if (!appliedLine || typeof appliedLine !== 'object') return orig;
+          const pl = appliedLine as Record<string, unknown>;
+          const { product: _ignoredProduct, ...rest } = pl as { product?: unknown };
+          return { ...orig, ...rest, product: orig.product };
+        });
+        if (applied.length !== promoEligibleCart.length) {
+          console.warn('[POS] promotions apply length mismatch', {
+            applied: applied.length,
+            eligible: promoEligibleCart.length,
+          });
+        }
+        setCartWithPromos(merged);
+      })
       .catch(() => setCartWithPromos(cart));
   }, [cart, selectedCustomer?.id, debouncedPromoCode]);
 
@@ -507,15 +712,22 @@ export default function POSTerminal() {
 
       const found = customers.find((c) => c.id === lastCreatedId);
       if (found) {
-        setSelectedCustomer(found);
-        setCustomerComboboxOpen(false);
-        setCustomerSearchTerm('');
+        applySelectedCustomer(found);
         localStorage.removeItem('pos:lastCreatedCustomerId');
       }
     } catch {
       // ignore
     }
-  }, [customers]);
+  }, [customers, applySelectedCustomer]);
+
+  const recentCustomers = useMemo(
+    () =>
+      recentCustomerIds
+        .map((id) => customers.find((c) => c.id === id))
+        .filter((c): c is Customer => Boolean(c))
+        .slice(0, 4),
+    [recentCustomerIds, customers]
+  );
 
   useEffect(() => {
     const tier = (selectedCustomer as any)?.pricing_tier;
@@ -551,6 +763,7 @@ export default function POSTerminal() {
       // Load top 8 products by sales or mark specific products as favorites
       // For now, we'll just load the first 8 active products
       const results = await getProducts(false, {
+        warehouse_id: posWarehouseId,
         limit: 8,
         offset: 0,
         sortBy: 'name',
@@ -561,13 +774,14 @@ export default function POSTerminal() {
     } catch (error) {
       console.error('Error loading favorite products:', error);
     }
-  }, []);
+  }, [posWarehouseId]);
 
   const loadAllProducts = useCallback(async () => {
     try {
       // IMPORTANT: Load from real DB via IPC in Electron.
       // `searchProducts('')` is intentionally limited (fast search), but POS needs the full catalog.
       const results = await getProducts(false, {
+        warehouse_id: posWarehouseId,
         limit: 5000,
         offset: 0,
         sortBy: 'name',
@@ -589,7 +803,7 @@ export default function POSTerminal() {
     } catch (error) {
       console.error('Error loading all products:', error);
     }
-  }, []);
+  }, [posWarehouseId]);
 
   const loadHeldOrders = useCallback(async () => {
     try {
@@ -641,6 +855,11 @@ export default function POSTerminal() {
     };
   }, []);
 
+  const quickProducts = useMemo(() => {
+    const byId = new Map(allProducts.map((product) => [product.id, product]));
+    return quickProductIds.map((id) => byId.get(id)).filter(Boolean) as Product[];
+  }, [allProducts, quickProductIds]);
+
   // Keyboard shortcuts
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -655,11 +874,21 @@ export default function POSTerminal() {
         return;
       }
       
-      // F9: Open payment modal
+      // F9: Fast-cash or open payment modal
       if (e.key === 'F9') {
         e.preventDefault();
-        if (cart.length > 0 && !paymentDialogOpen) {
-          setPaymentDialogOpen(true);
+        if (cart.length > 0 && !paymentDialogOpen && !isProcessingPayment) {
+          const canFastCash =
+            currentShift &&
+            !waitingOrdersDialogOpen &&
+            !isDiscountActionDisabled &&
+            !hasReturnLine &&
+            checkoutGrandTotal > 0;
+          if (canFastCash) {
+            void handleCompletePayment('cash', { cashAmountOverride: checkoutGrandTotal });
+          } else {
+            setPaymentDialogOpen(true);
+          }
         }
         return;
       }
@@ -702,12 +931,33 @@ export default function POSTerminal() {
         return;
       }
       
-      // ALT+1 to ALT+8: Add favorite products
+      // ALT+1 / ALT+5 / ALT+- : selected cart row quick quantity controls
+      if (e.altKey && selectedCartIndex >= 0 && cart[selectedCartIndex]) {
+        const item = cart[selectedCartIndex];
+        const step = getQuantityStep(item.sale_unit || item.product.unit);
+        if (e.key === '1') {
+          e.preventDefault();
+          updateQuantity(item.product.id, (item.qty_sale ?? item.quantity) + step);
+          return;
+        }
+        if (e.key === '5') {
+          e.preventDefault();
+          updateQuantity(item.product.id, (item.qty_sale ?? item.quantity) + step * 5);
+          return;
+        }
+        if (e.key === '-' || e.key === '_') {
+          e.preventDefault();
+          updateQuantity(item.product.id, (item.qty_sale ?? item.quantity) - step);
+          return;
+        }
+      }
+
+      // ALT+1 to ALT+8: Add selected quick products (fallback when no selected cart row quick action)
       if (e.altKey && e.key >= '1' && e.key <= '8') {
         e.preventDefault();
         const index = parseInt(e.key) - 1;
-        if (favoriteProducts[index]) {
-          requestAddToCart(favoriteProducts[index]);
+        if (quickProducts[index]) {
+          requestAddToCart(quickProducts[index]);
         }
         return;
       }
@@ -758,8 +1008,18 @@ export default function POSTerminal() {
     paymentDialogOpen,
     waitingOrdersDialogOpen,
     selectedCartIndex,
-    favoriteProducts,
+    quickProducts,
+    isProcessingPayment,
+    currentShift,
   ]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(POS_QUICK_PRODUCT_IDS_KEY, JSON.stringify(quickProductIds));
+    } catch {
+      // Local shortcut preferences are optional.
+    }
+  }, [quickProductIds]);
 
   // Auto-select first cart item when cart changes
   useEffect(() => {
@@ -1058,7 +1318,7 @@ export default function POSTerminal() {
       const normalizedQuery = normalizeSearchTerm(term);
       let results = getRankedSearchResults(normalizedQuery, categoryId);
       if (results.length === 0 && term.trim().length >= 2) {
-        const fallback = await searchProductsScreen(term);
+        const fallback = await searchProductsScreen(term, { warehouse_id: posWarehouseId });
         results = categoryId ? fallback.filter((p) => p.category_id === categoryId) : fallback;
       }
       if (searchSeqRef.current === currentSeq) {
@@ -1138,6 +1398,34 @@ export default function POSTerminal() {
         setSearchTerm('');
         setSearchResults([]);
       };
+      const scanUpper = rawInput.toUpperCase();
+      const looksLikeLoyaltyPayload =
+        scanUpper.startsWith('LOYALTY:') || scanUpper.startsWith('LC-');
+      if (looksLikeLoyaltyPayload) {
+        perfNote = 'loyalty';
+        const api = getElectronAPI();
+        if (api?.customers?.getByLoyaltyQr) {
+          const found = await handleIpcResponse<Customer | null>(
+            api.customers.getByLoyaltyQr(rawInput),
+          );
+          if (found) {
+            applySelectedCustomer(found);
+            toast({
+              title: "Mijoz tanlandi",
+              description: `${found.name}${found.phone ? ` (${found.phone})` : ''}`,
+            });
+            resetSearch();
+            return;
+          }
+        }
+        toast({
+          title: "Loyalty karta topilmadi",
+          description: `Kod: ${rawInput}`,
+          variant: 'destructive',
+        });
+        resetSearch();
+        return;
+      }
 
       for (const key of lookupKeys) {
         const indexedBarcode = indexBarcode.get(key);
@@ -1548,6 +1836,20 @@ export default function POSTerminal() {
     [priceTiers]
   );
 
+  const renderPromotionBadges = (item: any) => {
+    if (!(item?.price_source === 'promo' || item?.promotion_name)) return null;
+    const names = String(item?.promotion_name || 'Aksiya')
+      .split('+')
+      .map((x) => x.trim())
+      .filter(Boolean);
+    const uniqueNames = [...new Set(names)];
+    return uniqueNames.map((name, idx) => (
+      <Badge key={`${name}-${idx}`} variant="default" className="h-5 text-[10px] px-1.5 bg-green-600">
+        {name}
+      </Badge>
+    ));
+  };
+
   const getSaleUnitConfig = (product: Product, saleUnit?: string) => {
     const { baseUnit, units } = getProductUnits(product);
     const normalizeUnit = (value: unknown) => String(value ?? '').trim().toLowerCase();
@@ -1653,8 +1955,20 @@ export default function POSTerminal() {
     const qtySaleRaw = Number(quantity || 0) || 0;
     const { saleUnit: resolvedUnit, ratio_to_base, sale_price } = getSaleUnitConfig(product, saleUnit);
     if (qtySaleRaw <= 0) return;
+    if ((product as any)?.is_active === false) {
+      toast({
+        title: "Mahsulot faol emas",
+        description: "Arxivlangan mahsulotni savatchaga qo'shib bo'lmaydi.",
+        variant: 'destructive',
+      });
+      return;
+    }
     const sign = exchangeReturnMode ? -1 : 1;
-    const existingItem = cart.find((item) => item.product.id === product.id);
+    const existingItem = cartRef.current.find(
+      (item) =>
+        item.product.id === product.id &&
+        (item.sale_unit || item.product.unit) === unit
+    );
     const unit = resolvedUnit;
     let validQuantity = clampQuantityForUnit(qtySaleRaw, unit) * sign;
     if (validQuantity > 0) {
@@ -1731,6 +2045,68 @@ export default function POSTerminal() {
       console.debug(`[POS PERF] add_to_cart ${product.id} → ${ms}ms`);
     }
   };
+
+  const sanitizeWebOrderNamePart = useCallback((value: unknown): string => {
+    const raw = String(value || '').trim();
+    if (!raw || /^(nomalum|noma'lum|unknown|неизвестно|номаълум)$/i.test(raw)) return '';
+    const map: Record<string, string> = {
+      а: 'a', б: 'b', в: 'v', г: 'g', д: 'd', е: 'e', ё: 'yo', ж: 'j', з: 'z', и: 'i', й: 'y',
+      к: 'k', л: 'l', м: 'm', н: 'n', о: 'o', п: 'p', р: 'r', с: 's', т: 't', у: 'u',
+      ф: 'f', х: 'x', ц: 'ts', ч: 'ch', ш: 'sh', щ: 'sh', ъ: '', ы: 'i', ь: '', э: 'e',
+      ю: 'yu', я: 'ya', ў: "o'", қ: 'q', ғ: "g'", ҳ: 'h',
+    };
+    return raw
+      .split('')
+      .map((ch) => {
+        const lower = ch.toLowerCase();
+        const out = map[lower];
+        if (out == null) return ch;
+        return ch === lower ? out : out.charAt(0).toUpperCase() + out.slice(1);
+      })
+      .join('')
+      .replace(/\s+/g, ' ')
+      .trim();
+  }, []);
+
+  const resolveWebOrderCustomerForPos = useCallback(async (order: Record<string, unknown>): Promise<Customer | null> => {
+    const name = [order.first_name, order.last_name].map(sanitizeWebOrderNamePart).filter(Boolean).join(' ');
+    const phone = String(order.phone || '').trim();
+    const address = String(order.delivery_address || '').trim();
+    const normalizedPhone = phone.replace(/\D/g, '');
+    if (!name && !normalizedPhone) return null;
+
+    try {
+      const currentCustomers = await getCustomers();
+      const found = currentCustomers.find((customer) => {
+        const customerPhone = String(customer.phone || '').replace(/\D/g, '');
+        if (normalizedPhone && customerPhone && customerPhone === normalizedPhone) return true;
+        return !!name && customer.name.trim().toLowerCase() === name.toLowerCase();
+      });
+      if (found) {
+        setCustomers(currentCustomers);
+        return found;
+      }
+
+      const created = await createCustomer({
+        name: name || `Onlayn mijoz ${phone}`,
+        phone: phone || null,
+        address: address || null,
+        type: 'individual',
+        pricing_tier: 'retail',
+        allow_debt: false,
+        status: 'active',
+        notes: `Onlayn buyurtmadan yaratildi: #${String(order.id || '')}`,
+      });
+      setCustomers((prev) => {
+        const exists = prev.some((customer) => customer.id === created.id);
+        return exists ? prev : [created, ...prev];
+      });
+      return created;
+    } catch (error) {
+      console.warn('Failed to resolve web order customer for POS:', error);
+      return null;
+    }
+  }, [sanitizeWebOrderNamePart]);
 
   const importWebOrderIntoCart = useCallback(
     async (webOrderId: number) => {
@@ -1849,11 +2225,19 @@ export default function POSTerminal() {
           return;
         }
 
+        const posCustomer = await resolveWebOrderCustomerForPos(order);
+        if (posCustomer) {
+          applySelectedCustomer(posCustomer);
+        } else {
+          resetCustomerSelection();
+        }
+
         setCart(built);
         setDiscount({ type: 'amount', value: '' });
         setPromoCodeInput('');
         setLoyaltyRedeemPoints(0);
         setSelectedCartIndex(0);
+        setImportedWebOrderId(webOrderId);
 
         toast({
           title: t('web_orders.import_success'),
@@ -1902,6 +2286,411 @@ export default function POSTerminal() {
       getMaxSaleQty,
       toBaseQty,
       getProductById,
+      resolveWebOrderCustomerForPos,
+      applySelectedCustomer,
+      resetCustomerSelection,
+    ],
+  );
+
+  const importQuoteIntoCart = useCallback(
+    async (quoteId: string) => {
+      if (exchangeReturnMode) {
+        toast({
+          variant: 'destructive',
+          title: t('common.error'),
+          description: t('quotes.import_blocked_exchange_mode'),
+        });
+        return;
+      }
+
+      try {
+        const quote = await getQuoteById(quoteId);
+        if (!quote) {
+          toast({
+            variant: 'destructive',
+            title: t('common.error'),
+            description: t('quotes.not_found'),
+          });
+          return;
+        }
+        if (String(quote.status) === 'converted') {
+          toast({
+            variant: 'destructive',
+            title: t('common.error'),
+            description: t('quotes.import_blocked_converted'),
+          });
+          return;
+        }
+
+        const lines = Array.isArray((quote as { items?: unknown }).items)
+          ? ((quote as { items: unknown[] }).items as Array<Record<string, unknown>>)
+          : [];
+        if (lines.length === 0) {
+          toast({
+            variant: 'destructive',
+            title: t('common.error'),
+            description: t('quotes.error_min_items'),
+          });
+          return;
+        }
+
+        const built: CartItem[] = [];
+        const skipped: string[] = [];
+        let stockClamped = 0;
+
+        for (const line of lines) {
+          const pid = String(line.product_id ?? '');
+          if (!pid) continue;
+          const rawProduct = await getProductById(pid);
+          if (!rawProduct) {
+            skipped.push(pid);
+            continue;
+          }
+          const product = await resolveProductForCart(rawProduct as Product);
+          const quoteUnit =
+            typeof line.unit === 'string'
+              ? line.unit
+              : typeof (product as any).unit === 'string'
+                ? (product as any).unit
+                : undefined;
+          const { saleUnit: resolvedUnit, ratio_to_base } = getSaleUnitConfig(product, quoteUnit);
+
+          const qtyRaw = Number(line.quantity || 0) || 0;
+          let validQty = clampQuantityForUnit(qtyRaw, resolvedUnit);
+          const maxAllowed = getMaxSaleQty(product, ratio_to_base, resolvedUnit);
+          if (maxAllowed > 0 && validQty > maxAllowed) {
+            validQty = maxAllowed;
+            stockClamped += 1;
+          }
+          if (validQty <= 0) {
+            skipped.push(pid);
+            continue;
+          }
+
+          const unitPrice = Number(line.unit_price ?? 0) || 0;
+          const gross = unitPrice * validQty;
+          const discAmt = Number(line.discount_amount ?? 0) || 0;
+          const pct = Number(line.discount_percent ?? 0) || 0;
+          const discFromPct = pct > 0 ? (gross * pct) / 100 : 0;
+          const lineDiscRaw = discAmt > 0 ? discAmt : discFromPct;
+          const lineDiscount =
+            validQty < 0 ? 0 : Math.min(Math.max(0, lineDiscRaw), gross);
+
+          const tierRaw = String(line.price_type_used ?? '');
+          const priceTier: CartItem['price_tier'] = tierRaw === 'usta' ? 'master' : 'retail';
+
+          built.push({
+            product,
+            quantity: validQty,
+            sale_unit: resolvedUnit,
+            qty_sale: validQty,
+            qty_base: toBaseQty(validQty, ratio_to_base),
+            ratio_to_base,
+            unit_price: unitPrice,
+            price_tier: priceTier,
+            price_source: 'manual',
+            is_price_overridden: true,
+            discount_amount: lineDiscount,
+            subtotal: gross,
+            total: gross - lineDiscount,
+          });
+        }
+
+        if (built.length === 0) {
+          toast({
+            variant: 'destructive',
+            title: t('common.error'),
+            description: t('quotes.import_no_products'),
+          });
+          return;
+        }
+
+        resetCustomerSelection();
+        if ((quote as { customer_id?: string }).customer_id) {
+          try {
+            const cust = await getCustomerById((quote as { customer_id: string }).customer_id);
+            if (cust) setSelectedCustomer(cust);
+          } catch {
+            /* mijozni yuklab bo‘lmasa ham savat import qilinadi */
+          }
+        }
+
+        setCurrentTierCode(
+          String((quote as { price_type?: string }).price_type ?? '') === 'usta' ? 'master' : 'retail'
+        );
+
+        const dp = Number((quote as { discount_percent?: number }).discount_percent ?? 0) || 0;
+        const da = Number((quote as { discount_amount?: number }).discount_amount ?? 0) || 0;
+        if (dp > 0) {
+          setDiscount({ type: 'percent', value: String(dp) });
+        } else if (da > 0) {
+          setDiscount({ type: 'amount', value: String(da) });
+        } else {
+          setDiscount({ type: 'amount', value: '' });
+        }
+
+        setCart(built);
+        setImportedWebOrderId(null);
+        setPromoCodeInput('');
+        setLoyaltyRedeemPoints(0);
+        setSelectedCartIndex(0);
+
+        toast({
+          title: t('quotes.import_cart_success_title'),
+          description: t('quotes.import_cart_success_desc', {
+            n: built.length,
+            num: String((quote as { quote_number?: string }).quote_number ?? ''),
+          }),
+          className: 'bg-green-50 border-green-200',
+        });
+        if (skipped.length > 0) {
+          toast({
+            variant: 'destructive',
+            title: t('quotes.import_partial_title'),
+            description: t('quotes.import_partial_desc', {
+              ids: skipped.slice(0, 8).join(', '),
+            }),
+          });
+        }
+        if (stockClamped > 0) {
+          toast({
+            title: t('web_orders.import_stock_clamped_title'),
+            description: t('web_orders.import_stock_clamped_desc', { n: stockClamped }),
+          });
+        }
+      } catch (e: unknown) {
+        const msg = e instanceof Error ? e.message : String(e);
+        toast({
+          variant: 'destructive',
+          title: t('quotes.import_cart_failed_title'),
+          description: msg,
+        });
+      }
+    },
+    [
+      exchangeReturnMode,
+      toast,
+      t,
+      getSaleUnitConfig,
+      resolveProductForCart,
+      clampQuantityForUnit,
+      getMaxSaleQty,
+      toBaseQty,
+      getProductById,
+      resetCustomerSelection,
+      setDiscount,
+      setCart,
+      setPromoCodeInput,
+      setLoyaltyRedeemPoints,
+      setSelectedCartIndex,
+      setCurrentTierCode,
+      setSelectedCustomer,
+    ],
+  );
+
+  const importOrderIntoCart = useCallback(
+    async (orderId: string) => {
+      if (exchangeReturnMode) {
+        toast({
+          variant: 'destructive',
+          title: t('common.error'),
+          description: t('orders.import_order_blocked_exchange'),
+        });
+        return;
+      }
+
+      try {
+        const order = (await getOrderById(orderId)) as OrderWithDetails | null;
+        if (!order) {
+          toast({
+            variant: 'destructive',
+            title: t('common.error'),
+            description: t('orders.import_order_not_found'),
+          });
+          return;
+        }
+
+        const st = String(order.status || '').toLowerCase();
+        if (st === 'voided' || st === 'refunded' || st === 'returned') {
+          toast({
+            variant: 'destructive',
+            title: t('common.error'),
+            description: t('orders.import_order_blocked_status'),
+          });
+          return;
+        }
+
+        const lines = Array.isArray(order.items)
+          ? (order.items as OrderItem[])
+          : [];
+        if (lines.length === 0) {
+          toast({
+            variant: 'destructive',
+            title: t('common.error'),
+            description: t('orders.import_order_no_lines'),
+          });
+          return;
+        }
+
+        const built: CartItem[] = [];
+        const skipped: string[] = [];
+        let stockClamped = 0;
+
+        for (const line of lines) {
+          const pid = String(line.product_id ?? '');
+          if (!pid) continue;
+
+          const qtySale = Number(line.qty_sale ?? line.quantity ?? 0) || 0;
+          if (qtySale <= 0) continue;
+
+          const rawProduct = await getProductById(pid);
+          if (!rawProduct) {
+            skipped.push(pid);
+            continue;
+          }
+          const product = await resolveProductForCart(rawProduct as Product);
+          const saleUnitHint =
+            typeof line.sale_unit === 'string' && line.sale_unit.length > 0
+              ? line.sale_unit
+              : typeof (product as any).unit === 'string'
+                ? (product as any).unit
+                : undefined;
+          const { saleUnit: resolvedUnit, ratio_to_base } = getSaleUnitConfig(product, saleUnitHint);
+
+          let validQty = clampQuantityForUnit(qtySale, resolvedUnit);
+          const maxAllowed = getMaxSaleQty(product, ratio_to_base, resolvedUnit);
+          if (maxAllowed > 0 && validQty > maxAllowed) {
+            validQty = maxAllowed;
+            stockClamped += 1;
+          }
+          if (validQty <= 0) {
+            skipped.push(pid);
+            continue;
+          }
+
+          const unitPrice = Number(line.unit_price ?? 0) || 0;
+          const gross = unitPrice * validQty;
+          const lineDiscount = Math.min(
+            Math.max(0, Number(line.discount_amount ?? 0) || 0),
+            gross
+          );
+
+          const pt = line.price_tier;
+          const priceTier: CartItem['price_tier'] =
+            pt === 'master'
+              ? 'master'
+              : pt === 'wholesale'
+                ? 'wholesale'
+                : pt === 'marketplace'
+                  ? 'marketplace'
+                  : 'retail';
+
+          built.push({
+            product,
+            quantity: validQty,
+            sale_unit: resolvedUnit,
+            qty_sale: validQty,
+            qty_base: toBaseQty(validQty, ratio_to_base),
+            ratio_to_base,
+            unit_price: unitPrice,
+            price_tier: priceTier,
+            price_source: 'manual',
+            is_price_overridden: true,
+            discount_amount: lineDiscount,
+            subtotal: gross,
+            total: gross - lineDiscount,
+          });
+        }
+
+        if (built.length === 0) {
+          toast({
+            variant: 'destructive',
+            title: t('common.error'),
+            description: t('orders.import_order_no_products'),
+          });
+          return;
+        }
+
+        resetCustomerSelection();
+        if (order.customer_id) {
+          try {
+            const cust = await getCustomerById(order.customer_id);
+            if (cust) setSelectedCustomer(cust);
+          } catch {
+            /* ignore */
+          }
+        }
+
+        const tierCode = String((order as OrderWithDetails & { price_tier_code?: string }).price_tier_code ?? '').toLowerCase();
+        setCurrentTierCode(tierCode === 'master' || tierCode === 'usta' ? 'master' : 'retail');
+
+        const dp = Number(order.discount_percent ?? 0) || 0;
+        const da = Number(order.discount_amount ?? 0) || 0;
+        if (dp > 0) {
+          setDiscount({ type: 'percent', value: String(dp) });
+        } else if (da > 0) {
+          setDiscount({ type: 'amount', value: String(da) });
+        } else {
+          setDiscount({ type: 'amount', value: '' });
+        }
+
+        setCart(built);
+        setImportedWebOrderId(null);
+        setPromoCodeInput('');
+        setLoyaltyRedeemPoints(0);
+        setSelectedCartIndex(0);
+
+        toast({
+          title: t('orders.import_order_success_title'),
+          description: t('orders.import_order_success_desc', {
+            n: built.length,
+            num: String(order.order_number ?? ''),
+          }),
+          className: 'bg-green-50 border-green-200',
+        });
+        if (skipped.length > 0) {
+          toast({
+            variant: 'destructive',
+            title: t('quotes.import_partial_title'),
+            description: t('quotes.import_partial_desc', {
+              ids: skipped.slice(0, 8).join(', '),
+            }),
+          });
+        }
+        if (stockClamped > 0) {
+          toast({
+            title: t('web_orders.import_stock_clamped_title'),
+            description: t('web_orders.import_stock_clamped_desc', { n: stockClamped }),
+          });
+        }
+      } catch (e: unknown) {
+        const msg = e instanceof Error ? e.message : String(e);
+        toast({
+          variant: 'destructive',
+          title: t('orders.import_order_failed_title'),
+          description: msg,
+        });
+      }
+    },
+    [
+      exchangeReturnMode,
+      toast,
+      t,
+      getSaleUnitConfig,
+      resolveProductForCart,
+      clampQuantityForUnit,
+      getMaxSaleQty,
+      toBaseQty,
+      getProductById,
+      getOrderById,
+      resetCustomerSelection,
+      setDiscount,
+      setCart,
+      setPromoCodeInput,
+      setLoyaltyRedeemPoints,
+      setSelectedCartIndex,
+      setCurrentTierCode,
+      setSelectedCustomer,
     ],
   );
 
@@ -1922,10 +2711,77 @@ export default function POSTerminal() {
     }
   }, [location.state, location.key, navigate, importWebOrderIntoCart]);
 
+  useLayoutEffect(() => {
+    const SS_QUOTE_KEY = 'pos_import_quote_id';
+    const stateId = (location.state as { importQuoteId?: string } | null)?.importQuoteId;
+    let ssId: string | null = null;
+    try {
+      ssId = sessionStorage.getItem(SS_QUOTE_KEY);
+    } catch {
+      ssId = null;
+    }
+    const raw =
+      typeof stateId === 'string' && stateId.length > 0
+        ? stateId
+        : typeof ssId === 'string' && ssId.length > 0
+          ? ssId
+          : null;
+    if (!raw) return;
+    try {
+      sessionStorage.removeItem(SS_QUOTE_KEY);
+    } catch {
+      /* ignore */
+    }
+    const token = `${location.key}:${raw}`;
+    if (quoteImportProcessedRef.current === token) return;
+    quoteImportProcessedRef.current = token;
+    navigate('/pos', { replace: true, state: {} });
+    if (cartRef.current.length > 0) {
+      setPendingQuoteImportId(raw);
+      setImportQuoteDialogOpen(true);
+    } else {
+      void importQuoteIntoCart(raw);
+    }
+  }, [location.state, location.key, navigate, importQuoteIntoCart]);
+
+  useLayoutEffect(() => {
+    const SS_ORDER_KEY = 'pos_import_order_id';
+    const stateId = (location.state as { importOrderId?: string } | null)?.importOrderId;
+    let ssId: string | null = null;
+    try {
+      ssId = sessionStorage.getItem(SS_ORDER_KEY);
+    } catch {
+      ssId = null;
+    }
+    const raw =
+      typeof stateId === 'string' && stateId.length > 0
+        ? stateId
+        : typeof ssId === 'string' && ssId.length > 0
+          ? ssId
+          : null;
+    if (!raw) return;
+    try {
+      sessionStorage.removeItem(SS_ORDER_KEY);
+    } catch {
+      /* ignore */
+    }
+    const token = `${location.key}:${raw}`;
+    if (orderImportProcessedRef.current === token) return;
+    orderImportProcessedRef.current = token;
+    navigate('/pos', { replace: true, state: {} });
+    if (cartRef.current.length > 0) {
+      setPendingOrderImportId(raw);
+      setImportOrderDialogOpen(true);
+    } else {
+      void importOrderIntoCart(raw);
+    }
+  }, [location.state, location.key, navigate, importOrderIntoCart]);
+
   const handleConfirmWebOrderImport = () => {
     const id = pendingWebOrderImportId;
     if (id == null) return;
     setCart([]);
+    setImportedWebOrderId(null);
     setDiscount({ type: 'amount', value: '' });
     resetCustomerSelection();
     setPromoCodeInput('');
@@ -1939,6 +2795,76 @@ export default function POSTerminal() {
     setPendingWebOrderImportId(null);
     setImportWebOrderDialogOpen(false);
   };
+
+  const handleConfirmQuoteImport = () => {
+    const id = pendingQuoteImportId;
+    if (!id) return;
+    setCart([]);
+    setImportedWebOrderId(null);
+    setDiscount({ type: 'amount', value: '' });
+    resetCustomerSelection();
+    setPromoCodeInput('');
+    setLoyaltyRedeemPoints(0);
+    setImportQuoteDialogOpen(false);
+    setPendingQuoteImportId(null);
+    void importQuoteIntoCart(id);
+  };
+
+  const handleCancelQuoteImport = () => {
+    setPendingQuoteImportId(null);
+    setImportQuoteDialogOpen(false);
+  };
+
+  const handleConfirmOrderImport = () => {
+    const id = pendingOrderImportId;
+    if (!id) return;
+    setCart([]);
+    setImportedWebOrderId(null);
+    setDiscount({ type: 'amount', value: '' });
+    resetCustomerSelection();
+    setPromoCodeInput('');
+    setLoyaltyRedeemPoints(0);
+    setImportOrderDialogOpen(false);
+    setPendingOrderImportId(null);
+    void importOrderIntoCart(id);
+  };
+
+  const handleCancelOrderImport = () => {
+    setPendingOrderImportId(null);
+    setImportOrderDialogOpen(false);
+  };
+
+  const markImportedWebOrderSold = useCallback(async (webOrderId: number) => {
+    const api = getElectronAPI();
+    const webOrder = api?.webOrders?.get
+      ? await handleIpcResponse<Record<string, unknown> | null>(api.webOrders.get(webOrderId))
+      : null;
+    const status = String(webOrder?.status || '').toLowerCase();
+    const method = String(webOrder?.delivery_method || '').toLowerCase() === 'pickup' ? 'pickup' : 'courier';
+    const transitions =
+      status === 'new' || status === 'paid'
+        ? method === 'pickup'
+          ? ['processing', 'ready', 'delivered']
+          : ['processing', 'ready', 'out_for_delivery', 'delivered']
+        : status === 'processing'
+          ? method === 'pickup'
+            ? ['ready', 'delivered']
+            : ['ready', 'out_for_delivery', 'delivered']
+          : status === 'ready'
+            ? method === 'pickup'
+              ? ['delivered']
+              : ['out_for_delivery', 'delivered']
+            : status === 'out_for_delivery'
+              ? ['delivered']
+              : [];
+
+    if (api?.webOrders?.updateStatus) {
+      for (const nextStatus of transitions) {
+        // eslint-disable-next-line no-await-in-loop
+        await handleIpcResponse(api.webOrders.updateStatus(webOrderId, nextStatus));
+      }
+    }
+  }, []);
 
   const updateQuantity = (
     productId: string,
@@ -1977,76 +2903,78 @@ export default function POSTerminal() {
     }
 
     setCart((prev) => {
-      const next = prev.map((item) => {
-        if (item.product.id === productId) {
-          const qtyBase = toBaseQty(validQuantity, ratioToBase);
-          if (item.is_price_overridden || item.price_source === 'manual') {
-            const unitPrice = Number(item.unit_price || 0) || 0;
-            const subtotal = unitPrice * validQuantity;
-            let lineDiscount = validQuantity < 0 ? 0 : item.discount_amount;
+      const idx = prev.findIndex((item) => item.product.id === productId);
+      if (idx < 0) return prev;
 
-            if (validQuantity > 0 && lineDiscount > subtotal) {
-              lineDiscount = subtotal;
-              toast({
-                title: 'Discount Adjusted',
-                description: `Line discount reduced to ${formatMoneyUZS(lineDiscount)} (cannot exceed line subtotal)`,
-              });
-            }
+      const item = prev[idx];
+      const qtyBase = toBaseQty(validQuantity, ratioToBase);
+      let updated: CartItem;
 
-            return {
-              ...item,
-              quantity: validQuantity,
-              qty_sale: validQuantity,
-              qty_base: qtyBase,
-              unit_price: unitPrice,
-              subtotal,
-              discount_amount: lineDiscount,
-              total: subtotal - lineDiscount,
-            };
-          }
-          const { sale_price: baseUnitPriceRaw } = getSaleUnitConfig(item.product, item.sale_unit);
-          const baseUnitPrice =
-            Number(baseUnitPriceRaw ?? (item.product as any)?.sale_price ?? item.unit_price ?? 0) || 0;
-          const { unitPrice, priceTier } = getLinePricing(
-            item.product,
-            qtyBase,
-            selectedCustomer,
-            baseUnitPrice,
-            ratioToBase,
-            item.sale_unit
-          );
-          const subtotal = unitPrice * validQuantity;
-          let lineDiscount = validQuantity < 0 ? 0 : item.discount_amount;
+      if (item.is_price_overridden || item.price_source === 'manual') {
+        const unitPrice = Number(item.unit_price || 0) || 0;
+        const subtotal = unitPrice * validQuantity;
+        let lineDiscount = validQuantity < 0 ? 0 : item.discount_amount;
 
-          if (validQuantity > 0 && lineDiscount > subtotal) {
-            lineDiscount = subtotal;
-            toast({
-              title: 'Discount Adjusted',
-              description: `Line discount reduced to ${formatMoneyUZS(lineDiscount)} (cannot exceed line subtotal)`,
-            });
-          }
-          
-          return {
-            ...item,
-            quantity: validQuantity,
-            qty_sale: validQuantity,
-            qty_base: qtyBase,
-            unit_price: unitPrice,
-            price_tier: priceTier,
-            subtotal,
-            discount_amount: lineDiscount,
-            total: subtotal - lineDiscount,
-          };
+        if (validQuantity > 0 && lineDiscount > subtotal) {
+          lineDiscount = subtotal;
+          toast({
+            title: 'Discount Adjusted',
+            description: `Line discount reduced to ${formatMoneyUZS(lineDiscount)} (cannot exceed line subtotal)`,
+          });
         }
-        return item;
-      });
 
-      if (opts?.moveToTop) {
-        const idx = next.findIndex((item) => item.product.id === productId);
-        if (idx > 0) {
-          const [moved] = next.splice(idx, 1);
-          return [moved, ...next];
+        updated = {
+          ...item,
+          quantity: validQuantity,
+          qty_sale: validQuantity,
+          qty_base: qtyBase,
+          unit_price: unitPrice,
+          subtotal,
+          discount_amount: lineDiscount,
+          total: subtotal - lineDiscount,
+        };
+      } else {
+        const { sale_price: baseUnitPriceRaw } = getSaleUnitConfig(item.product, item.sale_unit);
+        const baseUnitPrice =
+          Number(baseUnitPriceRaw ?? (item.product as any)?.sale_price ?? item.unit_price ?? 0) || 0;
+        const { unitPrice, priceTier } = getLinePricing(
+          item.product,
+          qtyBase,
+          selectedCustomer,
+          baseUnitPrice,
+          ratioToBase,
+          item.sale_unit
+        );
+        const subtotal = unitPrice * validQuantity;
+        let lineDiscount = validQuantity < 0 ? 0 : item.discount_amount;
+
+        if (validQuantity > 0 && lineDiscount > subtotal) {
+          lineDiscount = subtotal;
+          toast({
+            title: 'Discount Adjusted',
+            description: `Line discount reduced to ${formatMoneyUZS(lineDiscount)} (cannot exceed line subtotal)`,
+          });
         }
+
+        updated = {
+          ...item,
+          quantity: validQuantity,
+          qty_sale: validQuantity,
+          qty_base: qtyBase,
+          unit_price: unitPrice,
+          price_tier: priceTier,
+          subtotal,
+          discount_amount: lineDiscount,
+          total: subtotal - lineDiscount,
+        };
+      }
+
+      const next = [...prev];
+      next[idx] = updated;
+
+      if (opts?.moveToTop && idx > 0) {
+        const [moved] = next.splice(idx, 1);
+        return [moved, ...next];
       }
       return next;
     });
@@ -2421,7 +3349,13 @@ export default function POSTerminal() {
   };
 
   const removeFromCart = (productId: string) => {
-    setCart(cart.filter((item) => item.product.id !== productId));
+    setCart((prev) => {
+      const idx = prev.findIndex((item) => item.product.id === productId);
+      if (idx < 0) return prev;
+      const next = prev.filter((_, i) => i !== idx);
+      queueCartUndo(prev, "Savatdan mahsulot o'chirildi");
+      return next;
+    });
   };
 
   // Use unified money formatter
@@ -2461,6 +3395,24 @@ export default function POSTerminal() {
   }, [effectiveCart]);
 
   const { subtotal, lineDiscountsTotal, ustaSavings } = cartTotals;
+  const stockRiskCount = useMemo(
+    () =>
+      effectiveCart.filter((item) => {
+        const qtyBase = Number(item.qty_base ?? item.quantity ?? 0) || 0;
+        const stock = Number(item.product.current_stock ?? 0) || 0;
+        return qtyBase > 0 && qtyBase > stock;
+      }).length,
+    [effectiveCart]
+  );
+  const nextHeldPreview = useMemo(() => {
+    if (heldOrders.length === 0) return null;
+    const first = heldOrders[0] as any;
+    return {
+      number: String(first?.held_number || first?.heldNumber || first?.id || '—'),
+      customer: String(first?.customer_name || first?.customerName || 'Mijozsiz'),
+      itemsCount: Array.isArray(first?.items) ? first.items.length : 0,
+    };
+  }, [heldOrders]);
 
   const parsedDiscountValue = useMemo(() => {
     if (discount.value.trim() === '') return null;
@@ -2490,6 +3442,8 @@ export default function POSTerminal() {
   const isDiscountActionDisabled =
     discount.type !== 'promo' && discount.value !== '' && discountError !== '';
   const discountActionDisabledReason = isDiscountActionDisabled ? discountError : '';
+  const shiftRequiredReason = !currentShift ? 'Avval smena oching' : '';
+  const paymentDisabledReason = shiftRequiredReason || discountActionDisabledReason;
   const discountValueNumber =
     discount.type === 'promo'
       ? 0
@@ -2574,10 +3528,14 @@ export default function POSTerminal() {
       if (discount.type === 'promo') {
         globalDiscountAmount = 0;
       } else if (discount.type === 'amount') {
-        globalDiscountAmount = discountValueNumber;
+        globalDiscountAmount = roundUZS(discountValueNumber);
       } else {
         const subtotalAfterLineDiscounts = Math.max(0, subtotal - lineDiscountsTotal);
-        globalDiscountAmount = (subtotalAfterLineDiscounts * discountValueNumber) / 100;
+        // Use the shared UZS helper so the percent application rounds the
+        // same way everywhere (receipts, totals, accounting). Floating
+        // `(x * pct) / 100` could leave 0.5 UZS dust that desyncs the
+        // receipt subtotal from `total - vat - discounts`.
+        globalDiscountAmount = applyPercentUZS(subtotalAfterLineDiscounts, discountValueNumber);
       }
     }
 
@@ -2687,7 +3645,11 @@ export default function POSTerminal() {
     [getSaleUnitConfig]
   );
 
-  const handleCompletePayment = async (paymentMethod: PosCheckoutPaymentKind) => {
+  const handleCompletePayment = async (
+    paymentMethod: PosCheckoutPaymentKind,
+    options?: { cashAmountOverride?: number }
+  ) => {
+    if (isProcessingPayment) return;
     // Validation
     if (!profile || !currentShift) {
       toast({
@@ -2812,7 +3774,7 @@ export default function POSTerminal() {
       changeAmount = 0;
       creditAmountValue = 0;
     } else if (paymentMethod === 'cash') {
-      const cashAmount = cashReceived || 0;
+      const cashAmount = options?.cashAmountOverride ?? cashReceived ?? 0;
       const requiredAmount = amountDueWithDebt;
       
       if (!cashAmount || cashAmount < requiredAmount) {
@@ -2867,6 +3829,7 @@ export default function POSTerminal() {
       return;
     }
 
+    setIsProcessingPayment(true);
     try {
       const checkoutStart = perfEnabled ? performance.now() : 0;
       const order = {
@@ -2897,6 +3860,7 @@ export default function POSTerminal() {
       };
 
       const orderItems = buildOrderItemsSnapshot(effectiveCart, globalDiscountAmount + loyaltyDiscountUzs);
+      const importedWebOrderIdForSale = importedWebOrderId;
 
       const orderPaymentsData = orderPayments.map((payment) => ({
         payment_number: '',
@@ -2916,6 +3880,18 @@ export default function POSTerminal() {
         console.debug(`[POS PERF] checkout → ${ms}ms`);
       }
       const orderNumber = created?.order_number || order.order_number || 'ORD';
+
+      if (importedWebOrderIdForSale) {
+        try {
+          await markImportedWebOrderSold(importedWebOrderIdForSale);
+        } catch (e) {
+          toast({
+            title: 'Onlayn buyurtma holati',
+            description: `Sotuv yakunlandi, lekin web buyurtma statusini "sotildi" qilishda xatolik: ${e instanceof Error ? e.message : String(e)}`,
+            variant: 'destructive',
+          });
+        }
+      }
 
       // Invalidate dashboard queries
       invalidateDashboardQueries(queryClient);
@@ -2988,6 +3964,7 @@ export default function POSTerminal() {
                       ? t('pos.credit')
                       : '—';
       
+      const loyaltyReceiptMeta = await buildLoyaltyReceiptMeta(selectedCustomer);
       // Prepare receipt data (flushSync so the hidden Receipt renders immediately before printing)
       const nextReceipt = {
         orderNumber,
@@ -3009,6 +3986,9 @@ export default function POSTerminal() {
                 : (selectedCustomer.balance || 0) - creditAmountValue
             )
           : 0,
+        loyaltyCardCode: loyaltyReceiptMeta.loyaltyCardCode,
+        loyaltyQrDataUrl: loyaltyReceiptMeta.loyaltyQrDataUrl,
+        loyaltyQrPayload: loyaltyReceiptMeta.loyaltyQrPayload,
       };
       setLastReceiptData(nextReceipt);
 
@@ -3028,8 +4008,6 @@ export default function POSTerminal() {
         paymentMethod,
         cashier: profile?.full_name || profile?.username,
       };
-      console.log('Sale Record:', saleRecord);
-
       // 4. Update Local Product State (Stock Deduction) - BEFORE clearing cart
       // Store cart items for stock update (before cart is cleared)
       const cartItemsForStockUpdate = [...effectiveCart];
@@ -3070,6 +4048,7 @@ export default function POSTerminal() {
 
       // 5. Cleanup - Clear cart and reset state (AFTER stock update)
       setCart([]);
+      setImportedWebOrderId(null);
       setExchangeReturnMode(false);
       setPayments([]);
       setDiscount({ type: 'amount', value: '' });
@@ -3106,10 +4085,13 @@ export default function POSTerminal() {
         variant: 'destructive',
         duration: 10000,
       });
+    } finally {
+      setIsProcessingPayment(false);
     }
   };
 
   const handleCreditSale = async () => {
+    if (isProcessingPayment) return;
     // Validation
     if (!profile || !currentShift) {
       toast({
@@ -3234,7 +4216,9 @@ export default function POSTerminal() {
     }
 
     const priorAmt = includePriorDebtInPayment ? priorDebtUzs : 0;
-    const toPrior = priorAmt > 0 ? Math.min(initialPayment, priorAmt) : 0;
+    const toPriorRaw = priorAmt > 0 ? Math.min(initialPayment, priorAmt) : 0;
+    const toPrior = Number.isFinite(toPriorRaw) ? Math.max(0, toPriorRaw) : 0;
+    const safePriorPaymentAmount = Math.round(toPrior);
     const orderCash = Math.max(0, initialPayment - toPrior);
     const merchCredit = Math.max(0, total - orderCash);
     const projectedBalance = (selectedCustomer.balance || 0) + initialPayment - total;
@@ -3251,6 +4235,7 @@ export default function POSTerminal() {
     }
 
     // Process credit sale (full or partial)
+    setIsProcessingPayment(true);
     try {
       const orderItems = buildOrderItemsSnapshot(effectiveCart, globalDiscountAmount + loyaltyDiscountUzs);
 
@@ -3262,15 +4247,16 @@ export default function POSTerminal() {
         error?: string;
       };
 
-      if (toPrior > 0) {
+      if (safePriorPaymentAmount > 0) {
         const rp = await receiveCustomerPayment({
           customer_id: selectedCustomer.id,
-          amount: toPrior,
+          amount: safePriorPaymentAmount,
           operation: 'payment_in',
           payment_method: 'cash',
           notes: 'POS nasiya: oldingi qarzdan',
           received_by: profile.id,
           source: 'pos',
+          shift_id: currentShift?.id ?? null,
         });
         if (!rp.success) {
           throw new Error(rp.error || 'Oldingi qarzdan yechib bo‘lmadi');
@@ -3347,6 +4333,18 @@ export default function POSTerminal() {
         throw new Error(result.error || 'Failed to create credit order');
       }
 
+      if (importedWebOrderId) {
+        try {
+          await markImportedWebOrderSold(importedWebOrderId);
+        } catch (e) {
+          toast({
+            title: 'Onlayn buyurtma holati',
+            description: `Nasiya sotuv yakunlandi, lekin web buyurtma statusini "sotildi" qilishda xatolik: ${e instanceof Error ? e.message : String(e)}`,
+            variant: 'destructive',
+          });
+        }
+      }
+
       // CRITICAL: Ensure we have order_number for receipt (backend may not return it in some edge cases)
       let orderNumber = result.order_number;
       if ((!orderNumber || orderNumber === '') && result.order_id) {
@@ -3358,6 +4356,7 @@ export default function POSTerminal() {
         }
       }
 
+      const loyaltyReceiptMeta = await buildLoyaltyReceiptMeta(selectedCustomer);
       // Prepare receipt data for credit sale (flushSync so it renders before printing)
       const finalBal = result.new_balance ?? projectedBalance;
       const nextReceipt = {
@@ -3374,6 +4373,9 @@ export default function POSTerminal() {
         dateTime: formatOrderDateTime(new Date()),
         cashierName: profile?.full_name || profile?.username,
         customerTotalDebt: getCustomerDebtAmount(finalBal),
+        loyaltyCardCode: loyaltyReceiptMeta.loyaltyCardCode,
+        loyaltyQrDataUrl: loyaltyReceiptMeta.loyaltyQrDataUrl,
+        loyaltyQrPayload: loyaltyReceiptMeta.loyaltyQrPayload,
       };
       setLastReceiptData(nextReceipt);
 
@@ -3425,6 +4427,7 @@ export default function POSTerminal() {
 
       // Clear cart and reset state so the next sale starts clean.
       setCart([]);
+      setImportedWebOrderId(null);
       setPayments([]);
       setDiscount({ type: 'amount', value: '' });
       setPromoCodeInput('');
@@ -3457,6 +4460,8 @@ export default function POSTerminal() {
         variant: 'destructive',
         duration: 10000,
       });
+    } finally {
+      setIsProcessingPayment(false);
     }
   };
 
@@ -3499,6 +4504,27 @@ export default function POSTerminal() {
   const MAX_DISPLAY = 300;
   const isTruncated = displayProducts.length > MAX_DISPLAY;
   const visibleProducts = isTruncated ? displayProducts.slice(0, MAX_DISPLAY) : displayProducts;
+  const quickProductCandidates = useMemo(() => {
+    const term = quickProductSearch.trim().toLowerCase();
+    const source = term ? allProducts : favoriteProducts;
+    return source
+      .filter((product) => {
+        if (!term) return true;
+        return (
+          product.name.toLowerCase().includes(term) ||
+          String(product.sku || '').toLowerCase().includes(term) ||
+          String((product as any).barcode || '').toLowerCase().includes(term)
+        );
+      })
+      .slice(0, 30);
+  }, [allProducts, favoriteProducts, quickProductSearch]);
+
+  const toggleQuickProduct = useCallback((productId: string) => {
+    setQuickProductIds((prev) => {
+      if (prev.includes(productId)) return prev.filter((id) => id !== productId);
+      return [productId, ...prev].slice(0, MAX_POS_QUICK_PRODUCTS);
+    });
+  }, []);
 
   // Show "No open shift" state if shift is not open
   if (!currentShift) {
@@ -3597,7 +4623,7 @@ export default function POSTerminal() {
                   </button>
                 )}
               </div>
-              
+
               {/* Recent Searches - shown when input is empty */}
               {!searchTerm && recentPosSearches.length > 0 && (
                 <div className="flex items-center gap-1.5 flex-wrap mb-2">
@@ -3629,36 +4655,6 @@ export default function POSTerminal() {
                 </div>
               )}
 
-              {/* Category Tabs - Horizontal Scrollable - Fixed Height */}
-              {categories.length > 0 && (
-                <div className="overflow-x-auto">
-                  <div className="flex gap-2">
-                    <button
-                      onClick={() => handleCategoryChange(null)}
-                      className={`px-3 py-1.5 rounded-lg text-sm font-medium whitespace-nowrap transition-colors flex-shrink-0 ${
-                        selectedCategory === null
-                          ? 'bg-primary text-primary-foreground'
-                          : 'bg-muted hover:bg-muted/80'
-                      }`}
-                    >
-                      {t('pos.all_categories')}
-                    </button>
-                    {categories.map((category) => (
-                      <button
-                        key={category.id}
-                        onClick={() => handleCategoryChange(category.id)}
-                        className={`px-3 py-1.5 rounded-lg text-sm font-medium whitespace-nowrap transition-colors flex-shrink-0 ${
-                          selectedCategory === category.id
-                            ? 'bg-primary text-primary-foreground'
-                            : 'bg-muted hover:bg-muted/80'
-                        }`}
-                      >
-                        {category.name}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-              )}
             </div>
 
             {/* Product List - Scrollable - Takes Remaining Space */}
@@ -3666,21 +4662,23 @@ export default function POSTerminal() {
               {visibleProducts.length > 0 ? (
                 <div className="w-full">
                   {/* Header Row */}
-                  <div className="grid grid-cols-12 items-center gap-4 px-4 py-2 bg-gray-50 dark:bg-gray-900 border-b border-gray-200 dark:border-gray-700 sticky top-0 z-10">
+                  <div className="grid grid-cols-12 items-center gap-3 px-3 py-1.5 bg-gray-50 dark:bg-gray-900 border-b border-gray-200 dark:border-gray-700 sticky top-0 z-10">
                     <div className="col-span-6">
-                      <span className="text-xs font-bold text-gray-400 dark:text-gray-500 uppercase">Mahsulot Nomi</span>
-                    </div>
-                    <div className="col-span-3 text-right">
-                      <span className="text-xs font-bold text-gray-400 dark:text-gray-500 uppercase">Narxi</span>
-                    </div>
-                    <div className="col-span-3 text-right">
-                      <span className="text-xs font-bold text-gray-400 dark:text-gray-500 uppercase">Ombor</span>
-                    </div>
-                    {isTruncated && (
-                      <div className="col-span-12 text-[11px] text-muted-foreground pt-1">
-                        {`Ko‘rsatilmoqda: ${MAX_DISPLAY} / ${displayProducts.length}. Qidiruvni toraytiring.`}
+                      <div className="flex min-w-0 items-center gap-2">
+                        <span className="text-[10px] font-bold uppercase text-gray-400 dark:text-gray-500">Mahsulot Nomi</span>
+                        {isTruncated && (
+                          <span className="truncate text-[10px] font-medium text-muted-foreground">
+                            {MAX_DISPLAY}/{displayProducts.length}
+                          </span>
+                        )}
                       </div>
-                    )}
+                    </div>
+                    <div className="col-span-3 text-right">
+                      <span className="text-[10px] font-bold uppercase text-gray-400 dark:text-gray-500">Narxi</span>
+                    </div>
+                    <div className="col-span-3 text-right">
+                      <span className="text-[10px] font-bold uppercase text-gray-400 dark:text-gray-500">Ombor</span>
+                    </div>
                   </div>
                   
                   {/* Product Rows */}
@@ -3693,7 +4691,10 @@ export default function POSTerminal() {
                           requestAddToCart(product);
                           focusSearchInput();
                         }}
-                        className="w-full grid grid-cols-12 items-center gap-4 p-3 border-b border-gray-200 dark:border-gray-700 hover:bg-blue-50 dark:hover:bg-blue-900/20 cursor-pointer transition-colors bg-white dark:bg-gray-800"
+                        className={cn(
+                          'w-full grid grid-cols-12 items-center gap-4 p-3 border-b border-gray-200 dark:border-gray-700 hover:bg-blue-50 dark:hover:bg-blue-900/20 cursor-pointer transition-colors bg-white dark:bg-gray-800',
+                          !productShowInMarketplace(product) && 'opacity-[0.92]',
+                        )}
                       >
                         {/* Column 1: Product Name (Span 6) */}
                         <div className="col-span-6 text-left">
@@ -3719,6 +4720,22 @@ export default function POSTerminal() {
                                     Aksiya
                                   </span>
                                 )}
+                                {productShowInMarketplace(product) ? (
+                                  <Badge
+                                    variant="secondary"
+                                    className="h-5 shrink-0 gap-0.5 border border-primary/20 bg-primary/10 px-1.5 text-[10px] font-medium text-primary"
+                                  >
+                                    <Store className="h-3 w-3" aria-hidden />
+                                    {t('pos.marketplace_on')}
+                                  </Badge>
+                                ) : (
+                                  <Badge
+                                    variant="outline"
+                                    className="h-5 shrink-0 px-1.5 text-[10px] font-normal text-muted-foreground"
+                                  >
+                                    {t('pos.marketplace_off')}
+                                  </Badge>
+                                )}
                               </div>
                               <div className="flex items-center gap-2 mt-0.5">
                                 <span className="text-xs text-muted-foreground">
@@ -3729,6 +4746,14 @@ export default function POSTerminal() {
                                   Birlik: {formatUnit(product.unit) || 'Dona'}
                                 </span>
                               </div>
+                              {Array.isArray(product.variant_options) && product.variant_options.length > 0 ? (
+                                <div className="mt-1 truncate text-[10px] leading-snug text-muted-foreground">
+                                  {product.variant_options
+                                    .slice(0, 4)
+                                    .map((o) => `${o.name}: ${o.value}`)
+                                    .join(' · ')}
+                                </div>
+                              ) : null}
                             </div>
                           </div>
                         </div>
@@ -3769,13 +4794,18 @@ export default function POSTerminal() {
           </div>
 
           {/* Savat + rail: kichik ekranda bitta karta; xl da ikki bolali wrapper (contents emas) — o‘ng chetga cho‘zilish barqaror */}
-          <div className="flex min-h-[min(380px,42vh)] min-h-0 w-full min-w-0 flex-1 flex-row overflow-hidden rounded-xl border border-border bg-white xl:w-0 xl:min-h-0 xl:min-w-0 xl:shrink xl:grow xl:basis-0 xl:flex-row xl:items-stretch xl:overflow-visible xl:rounded-none xl:border-0 xl:bg-transparent">
+          <div
+            className={cn(
+              'flex min-h-[min(280px,min(48vh,52dvh))] min-h-0 w-full min-w-0 flex-1 flex-row overflow-hidden rounded-xl border border-border bg-white xl:min-h-0 xl:w-0 xl:min-w-0 xl:shrink xl:basis-0 xl:flex-row xl:items-stretch xl:overflow-visible xl:rounded-none xl:border-0 xl:bg-transparent',
+              cart.length === 0 ? 'xl:grow-[0.72]' : 'xl:grow-[0.9]'
+            )}
+          >
             <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden rounded-xl border border-border bg-white xl:h-full xl:min-w-0 xl:shrink xl:grow xl:basis-0 xl:rounded-xl xl:rounded-r-none xl:border xl:border-r-0 xl:border-border">
             {/* Top Section - Header: Customer Selection/Search (Fixed) */}
             <div className="flex-shrink-0 border-b bg-white dark:bg-gray-900 p-2 space-y-1 md:p-3 md:space-y-2">
               <div className="space-y-1 md:space-y-2">
               <Label className="text-sm font-semibold">{t('pos.customer')}</Label>
-              <div className="flex w-full min-w-0 flex-col gap-2 sm:flex-row sm:items-stretch sm:gap-2">
+              <div className="flex w-full min-w-0 flex-col gap-2">
                 <div className="min-w-0 flex-1">
                 <Popover 
                   open={customerComboboxOpen} 
@@ -3800,7 +4830,10 @@ export default function POSTerminal() {
                       <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
                     </Button>
                   </PopoverTrigger>
-                  <PopoverContent className="w-[--radix-popover-trigger-width] p-0" align="start">
+                  <PopoverContent
+                    className="w-[min(92vw,28rem)] p-0 sm:w-[min(90vw,30rem)]"
+                    align="start"
+                  >
                     <Command 
                       shouldFilter={false} 
                       className="[&_[data-slot=command-input-wrapper]]:border-b [&_[data-slot=command-input-wrapper]]:border-border/40 [&_[data-slot=command-input-wrapper]]:bg-transparent [&_[data-slot=command-input-wrapper]_svg]:text-gray-400 [&_[data-slot=command-input-wrapper]_svg]:opacity-60"
@@ -3811,15 +4844,13 @@ export default function POSTerminal() {
                         onValueChange={setCustomerSearchTerm}
                         className="border-0 focus:ring-0 focus:ring-offset-0 focus-visible:ring-0 focus-visible:ring-offset-0 outline-none bg-transparent shadow-none ring-0"
                       />
-                      <CommandList>
+                      <CommandList className="max-h-[min(55vh,22rem)]">
                         <CommandEmpty>{t('pos.no_customer_found')}</CommandEmpty>
                         <CommandGroup>
                           <CommandItem
                             value="walk-in"
                             onSelect={() => {
-                              setSelectedCustomer(null);
-                              setCustomerComboboxOpen(false);
-                              setCustomerSearchTerm('');
+                              applySelectedCustomer(null);
                             }}
                           >
                             <Check
@@ -3840,14 +4871,21 @@ export default function POSTerminal() {
                                 customer.id.toLowerCase().includes(searchLower)
                               );
                             })
+                            .sort((a, b) => {
+                              // No search: keep debt customers near top for quicker cashier handling.
+                              if (!customerSearchTerm) {
+                                const aDebt = Number(a.balance || 0) < 0 ? 1 : 0;
+                                const bDebt = Number(b.balance || 0) < 0 ? 1 : 0;
+                                if (aDebt !== bDebt) return bDebt - aDebt;
+                              }
+                              return a.name.localeCompare(b.name);
+                            })
                             .map((customer) => (
                               <CommandItem
                                 key={customer.id}
                                 value={`${customer.id}-${customer.name}-${customer.phone || ''}`}
                                 onSelect={() => {
-                                  setSelectedCustomer(customer);
-                                  setCustomerComboboxOpen(false);
-                                  setCustomerSearchTerm('');
+                                  applySelectedCustomer(customer);
                                 }}
                               >
                                 <Check
@@ -3856,16 +4894,30 @@ export default function POSTerminal() {
                                     selectedCustomer?.id === customer.id ? "opacity-100" : "opacity-0"
                                   )}
                                 />
-                                <span className="flex-1">
-                                  <span className="font-medium">{customer.name}</span>
-                                  {customer.phone && (
-                                    <span className="text-muted-foreground"> - {customer.phone}</span>
-                                  )}
-                                  {customer.id && (
-                                    <span className="text-xs text-muted-foreground ml-1">
-                                      ({customer.id.slice(0, 8)})
-                                    </span>
-                                  )}
+                                <span className="flex min-w-0 flex-1 flex-col gap-1 py-0.5">
+                                  <span className="min-w-0">
+                                    <span className="block truncate font-medium">{customer.name}</span>
+                                    {customer.phone && (
+                                      <span className="block text-xs text-muted-foreground">{customer.phone}</span>
+                                    )}
+                                    {customer.id && (
+                                      <span className="block text-[11px] text-muted-foreground">
+                                        ({customer.id.slice(0, 8)})
+                                      </span>
+                                    )}
+                                  </span>
+                                  <span className="flex min-w-0 flex-wrap items-center gap-1">
+                                    {Number(customer.balance || 0) < 0 && (
+                                      <span className="rounded bg-destructive/10 px-1.5 py-0.5 text-[10px] text-destructive">
+                                        {formatCurrency(getCustomerDebtAmount(customer.balance))}
+                                      </span>
+                                    )}
+                                    {customer.status !== 'active' && (
+                                      <span className="rounded bg-amber-100 px-1.5 py-0.5 text-[10px] text-amber-800 dark:bg-amber-900/40 dark:text-amber-200">
+                                        Nofaol
+                                      </span>
+                                    )}
+                                  </span>
                                 </span>
                               </CommandItem>
                             ))}
@@ -3875,74 +4927,79 @@ export default function POSTerminal() {
                   </PopoverContent>
                 </Popover>
                 </div>
-                <div className="flex w-full shrink-0 items-center gap-2 sm:w-auto">
-                <Select
-                  value={currentTierCode}
-                  onValueChange={(value) => {
-                    setCurrentTierCode(value as any);
-                    toast({
-                      title: 'Narx rejimi',
-                      description: `Tanlangan tier: ${value}`,
-                    });
-                  }}
-                >
-                  <SelectTrigger className="h-9 w-full min-w-[9rem] sm:w-[9.5rem]">
-                    <SelectValue placeholder="Narx turi" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {(priceTiers.length > 0
-                      ? priceTiers
-                      : [
-                          { code: 'retail', name: 'Retail' },
-                          { code: 'master', name: 'Master/Usta' },
-                          { code: 'wholesale', name: 'Wholesale' },
-                          { code: 'marketplace', name: 'Marketplace' },
-                        ]
-                    ).map((tier) => (
-                      <SelectItem key={tier.code} value={tier.code}>
-                        {tier.name}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-                <QuickCustomerCreate />
-                </div>
-              </div>
-              {selectedCustomer && (
-                <div className="pt-1">
-                  <CustomerInfoBadge customer={selectedCustomer} />
-                </div>
-              )}
-              {selectedCustomer &&
-                priorDebtUzs > 0 &&
-                !isWalkInCustomer(selectedCustomer) && (
-                  <div className="flex items-start gap-2 pt-1.5">
-                    <Checkbox
-                      id="pos-include-prior-debt"
-                      checked={includePriorDebtInPayment}
-                      onCheckedChange={(v) => setIncludePriorDebtInPayment(v === true)}
-                      className="mt-0.5"
-                    />
-                    <label
-                      htmlFor="pos-include-prior-debt"
-                      className="text-xs leading-snug cursor-pointer text-muted-foreground"
-                    >
-                      Oldingi qarzni ham ushbu to‘lovda yopish ({formatCurrency(priorDebtUzs)})
-                    </label>
+                {recentCustomers.length > 0 && (
+                  <div className="flex flex-wrap items-center gap-1.5 pt-1">
+                    <span className="text-[10px] text-muted-foreground">Oxirgilar:</span>
+                    {recentCustomers.map((customer) => {
+                      const debt = getCustomerDebtAmount(customer.balance);
+                      const isSelected = selectedCustomer?.id === customer.id;
+                      return (
+                        <button
+                          key={customer.id}
+                          type="button"
+                          onClick={() => applySelectedCustomer(customer)}
+                          className={cn(
+                            'inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] transition-colors',
+                            isSelected
+                              ? 'border-primary bg-primary/10 text-primary'
+                              : 'border-border bg-muted/40 text-foreground/80 hover:bg-muted'
+                          )}
+                        >
+                          <span className="max-w-[8rem] truncate">{customer.name}</span>
+                          {debt > 0 && (
+                            <span className="rounded bg-destructive/10 px-1 text-[9px] text-destructive">
+                              {formatCurrency(debt)}
+                            </span>
+                          )}
+                        </button>
+                      );
+                    })}
                   </div>
                 )}
-              {selectedCustomer && (selectedCustomer.balance || 0) < 0 && (
+              </div>
+              {selectedCustomer && !isWalkInCustomer(selectedCustomer) && (
                 <div className="pt-1">
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    className="w-full"
-                    onClick={() => setCustomerPaymentOpen(true)}
-                    disabled={selectedCustomer.status !== 'active'}
-                  >
-                    <DollarSign className="h-4 w-4 mr-2" />
-                    Qarz so'ndirish
-                  </Button>
+                  <div className="flex flex-wrap items-center gap-2 rounded-md border border-border/60 bg-muted/30 px-2 py-1.5 text-xs">
+                    <span className="font-medium text-foreground">Holat:</span>
+                    <span className="rounded bg-slate-600 px-2 py-0.5 text-xs font-medium text-white dark:bg-slate-500">
+                      Tier: {String((selectedCustomer as any)?.pricing_tier || currentTierCode || 'retail')}
+                    </span>
+                    {String((selectedCustomer as any)?.pricing_tier || currentTierCode || 'retail') === 'master' && (
+                      <span className="rounded bg-indigo-600 px-2 py-0.5 text-xs font-medium text-white dark:bg-indigo-500">
+                        Bonus: {Number(selectedCustomer.bonus_points ?? 0)} ball
+                      </span>
+                    )}
+                    <span
+                      className={cn(
+                        'rounded px-1.5 py-0.5 font-medium',
+                        selectedCustomer.status === 'active'
+                          ? 'bg-emerald-600 text-white dark:bg-emerald-500'
+                          : 'bg-amber-600 text-white dark:bg-amber-500'
+                      )}
+                    >
+                      {selectedCustomer.status === 'active' ? 'Faol' : 'Nofaol'}
+                    </span>
+                    <span className="text-foreground/80">Qarz:</span>
+                    <span
+                      className={cn(
+                        'text-xs font-semibold',
+                        priorDebtUzs > 0 ? 'text-destructive' : 'text-emerald-600 dark:text-emerald-400'
+                      )}
+                    >
+                      {formatCurrency(priorDebtUzs)}
+                    </span>
+                    {priorDebtUzs > 0 && (
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="ml-auto h-7 px-2 text-xs"
+                        onClick={() => setCustomerPaymentOpen(true)}
+                        disabled={selectedCustomer.status !== 'active'}
+                      >
+                        Qarz so'ndirish
+                      </Button>
+                    )}
+                  </div>
                 </div>
               )}
               </div>
@@ -3957,6 +5014,46 @@ export default function POSTerminal() {
                       {t('pos.exchange.cart_count', { count: cart.length })}
                     </span>
                   </div>
+                  {undoCartSnapshot && (
+                    <div className="flex items-center justify-between rounded border border-blue-200 bg-blue-50 px-2 py-1 text-[10px] text-blue-800 dark:border-blue-900/40 dark:bg-blue-900/20 dark:text-blue-200">
+                      <span>{undoMessage || "Oxirgi amalni bekor qilish mumkin"}</span>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        className="h-6 px-2 text-[10px] text-blue-900 hover:bg-blue-100 dark:text-blue-100 dark:hover:bg-blue-900/50"
+                        onClick={restoreUndoCart}
+                      >
+                        Bekor qilish
+                      </Button>
+                    </div>
+                  )}
+                  {!currentShift && (
+                    <div className="flex items-center justify-between gap-2 rounded border border-amber-200 bg-amber-50 px-2 py-1 text-[10px] text-amber-800 dark:border-amber-900/40 dark:bg-amber-900/20 dark:text-amber-200">
+                      <span>To'lov va hold uchun avval smena oching.</span>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        className="h-6 border-amber-300 bg-amber-100 px-2 text-[10px] text-amber-900 hover:bg-amber-200"
+                        onClick={() => {
+                          const trigger = document.getElementById('open-shift-trigger');
+                          if (trigger instanceof HTMLButtonElement) {
+                            trigger.click();
+                          } else {
+                            window.scrollTo({ top: 0, behavior: 'smooth' });
+                          }
+                        }}
+                      >
+                        Smenani ochish
+                      </Button>
+                    </div>
+                  )}
+                  {isDiscountActionDisabled && (
+                    <p className="rounded border border-destructive/30 bg-destructive/10 px-2 py-1 text-[10px] text-destructive">
+                      Chegirma holatini to'g'rilang: {discountActionDisabledReason}
+                    </p>
+                  )}
                   {exchangeReturnMode && (
                     <p className="rounded bg-amber-50 px-2 py-1 text-[10px] text-amber-800 dark:bg-amber-950/40 dark:text-amber-200">
                       {t('pos.exchange.return_mode_banner')}
@@ -3973,6 +5070,15 @@ export default function POSTerminal() {
                     <Package className="h-10 w-10 mx-auto mb-2 opacity-50" />
                     <p className="text-sm font-medium">{t('pos.cart_empty')}</p>
                     <p className="text-xs mt-1">{t('pos.add_products')}</p>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      className="mt-3"
+                      onClick={() => searchInputRef.current?.focus()}
+                    >
+                      Mahsulot tanlash
+                    </Button>
                     {exchangeReturnMode && (
                       <p className="text-xs mt-3 text-amber-800 dark:text-amber-200 font-medium">
                         {t('pos.exchange.empty_cart_return_hint')}
@@ -3985,11 +5091,13 @@ export default function POSTerminal() {
                 {cartDisplay.map(({ item, index, isSelected, costPrice, isBelowCost, unit, baseUnit, quantityStep, quantityMin, inputMode, displayQuantity }) => {
                   const isRecent = item.product.id === recentCartItemId;
                   return (
-                    <div key={item.product.id} className="relative">
+                    <div key={`${item.product.id}-${index}`} className="group relative">
                       {/* Main Row */}
                       <div
-                        className={`flex items-center justify-between p-2 md:p-3 border-b border-gray-100 bg-white dark:bg-gray-800 last:border-0 transition-colors ${
-                          isSelected ? 'bg-primary/5 border-primary' : ''
+                        className={`flex items-center justify-between border-b border-gray-100 bg-white dark:bg-gray-800 last:border-0 transition-colors ${
+                          posUiMode === 'beginner' ? 'p-3 md:p-3.5' : 'p-2 md:p-3'
+                        } ${
+                          isSelected ? 'border-primary bg-primary/10 ring-1 ring-primary/20' : ''
                         } ${isRecent ? 'bg-blue-50 dark:bg-blue-900/20' : ''} ${
                           isBelowCost && showCostPrice ? 'bg-red-50 dark:bg-red-900/10' : ''
                         }`}
@@ -3998,7 +5106,7 @@ export default function POSTerminal() {
                         {/* Left Side - Product Info */}
                         <div className="flex flex-col flex-1 min-w-0 mr-3">
                           <div className="flex items-center gap-2 flex-wrap">
-                            <p className="font-medium text-xs md:text-sm truncate">{item.product.name}</p>
+                            <p className={cn('font-medium truncate', posUiMode === 'beginner' ? 'text-sm md:text-base' : 'text-xs md:text-sm')}>{item.product.name}</p>
                             {(item.qty_sale ?? item.quantity) < 0 && (
                               <Badge variant="destructive" className="h-5 text-[10px] px-1.5 shrink-0">
                                 {t('pos.exchange.line_badge_return')}
@@ -4091,11 +5199,7 @@ export default function POSTerminal() {
                                 {t('pos.manual_price_badge')}
                               </Badge>
                             )}
-                            {(item.price_source === 'promo' || item.promotion_name) && (
-                              <Badge variant="default" className="h-5 text-[10px] px-1.5 bg-green-600">
-                                {item.promotion_name || 'Aksiya'}
-                              </Badge>
-                            )}
+                            {renderPromotionBadges(item)}
                             {item.discount_amount > 0 && !item.promotion_name && (
                               <Badge variant="outline" className="h-5 text-[10px] px-1.5">
                                 Discount
@@ -4113,7 +5217,7 @@ export default function POSTerminal() {
                                 value={unit}
                                 onValueChange={(value) => void updateSaleUnit(item.product.id, value)}
                               >
-                                <SelectTrigger className="h-6 text-[10px] md:h-7 md:text-xs">
+                                <SelectTrigger className="h-9 text-xs md:h-7 md:text-[10px]">
                                   <SelectValue />
                                 </SelectTrigger>
                                 <SelectContent>
@@ -4131,6 +5235,52 @@ export default function POSTerminal() {
                                 </SelectContent>
                               </Select>
                             </div>
+                            <div className={cn(
+                              'flex items-center gap-1 transition-opacity',
+                              posUiMode === 'fast'
+                                ? (isSelected ? 'opacity-100' : 'opacity-0 group-hover:opacity-100')
+                                : 'opacity-100'
+                            )}>
+                              <Button
+                                type="button"
+                                variant="outline"
+                                size="sm"
+                                className="h-9 min-h-9 min-w-10 touch-manipulation px-2 text-xs md:h-6 md:min-h-0 md:min-w-8 md:px-1 md:text-[10px]"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  updateQuantity(item.product.id, (item.qty_sale ?? item.quantity) - quantityStep);
+                                }}
+                              >
+                                -1
+                              </Button>
+                              <Button
+                                type="button"
+                                variant="outline"
+                                size="sm"
+                                className="h-9 min-h-9 min-w-10 touch-manipulation px-2 text-xs md:h-6 md:min-h-0 md:min-w-8 md:px-1 md:text-[10px]"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  updateQuantity(item.product.id, (item.qty_sale ?? item.quantity) + quantityStep);
+                                }}
+                              >
+                                +1
+                              </Button>
+                              <Button
+                                type="button"
+                                variant="outline"
+                                size="sm"
+                                className="h-9 min-h-9 min-w-11 touch-manipulation px-2 text-xs md:h-6 md:min-h-0 md:min-w-9 md:px-1 md:text-[10px]"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  updateQuantity(
+                                    item.product.id,
+                                    (item.qty_sale ?? item.quantity) + quantityStep * 5
+                                  );
+                                }}
+                              >
+                                +5
+                              </Button>
+                            </div>
                             {(item.product as any)?.product_units?.length > 1 && (
                               <p className="text-[10px] text-muted-foreground hidden md:block">
                                 {formatQuantity(item.qty_sale ?? item.quantity, unit)} {formatUnit(unit)} =
@@ -4147,13 +5297,13 @@ export default function POSTerminal() {
                           <div className="flex items-center">
                             <button
                               type="button"
-                              className="h-7 w-7 md:h-8 md:w-8 flex items-center justify-center rounded bg-gray-100 dark:bg-gray-700 hover:bg-gray-200 dark:hover:bg-gray-600 transition-colors"
+                              className="flex h-11 w-11 shrink-0 touch-manipulation items-center justify-center rounded bg-gray-100 dark:bg-gray-700 hover:bg-gray-200 dark:hover:bg-gray-600 md:h-8 md:w-8 transition-colors"
                               onClick={(e) => {
                                 e.stopPropagation();
                                 updateQuantity(item.product.id, item.quantity - quantityStep);
                               }}
                             >
-                              <Minus className="h-3 w-3" />
+                              <Minus className="h-4 w-4 md:h-3 md:w-3" />
                             </button>
                             <Input
                               type="number"
@@ -4171,17 +5321,17 @@ export default function POSTerminal() {
                                 e.stopPropagation();
                                 openQuantityNumpad(item.product.id, item.quantity, item.product.current_stock);
                               }}
-                              className="h-7 w-12 md:h-8 md:w-16 text-center border-y border-gray-200 dark:border-gray-600 text-xs md:text-sm focus:outline-none rounded-none bg-white dark:bg-gray-800"
+                              className="h-11 min-w-[3.25rem] touch-manipulation text-center border-y border-gray-200 dark:border-gray-600 text-sm md:h-8 md:w-16 md:min-w-0 md:text-xs focus:outline-none rounded-none bg-white dark:bg-gray-800"
                             />
                             <button
                               type="button"
-                              className="h-7 w-7 md:h-8 md:w-8 flex items-center justify-center rounded bg-gray-100 dark:bg-gray-700 hover:bg-gray-200 dark:hover:bg-gray-600 transition-colors"
+                              className="flex h-11 w-11 shrink-0 touch-manipulation items-center justify-center rounded bg-gray-100 dark:bg-gray-700 hover:bg-gray-200 dark:hover:bg-gray-600 md:h-8 md:w-8 transition-colors"
                               onClick={(e) => {
                                 e.stopPropagation();
                                 updateQuantity(item.product.id, item.quantity + quantityStep);
                               }}
                             >
-                              <Plus className="h-3 w-3" />
+                              <Plus className="h-4 w-4 md:h-3 md:w-3" />
                             </button>
                           </div>
                           
@@ -4195,13 +5345,13 @@ export default function POSTerminal() {
                           {/* Delete Button */}
                           <button
                             type="button"
-                            className="text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20 p-1.5 md:p-2 rounded transition-colors"
+                            className="flex min-h-11 min-w-11 touch-manipulation items-center justify-center rounded text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20 md:min-h-0 md:min-w-0 md:p-2 transition-colors"
                             onClick={(e) => {
                               e.stopPropagation();
                               removeFromCart(item.product.id);
                             }}
                           >
-                            <Trash2 className="h-4 w-4" />
+                            <Trash2 className="h-5 w-5 md:h-4 md:w-4" />
                           </button>
                         </div>
                       </div>
@@ -4294,8 +5444,8 @@ export default function POSTerminal() {
                 </div>
               </div>
 
-            {/* Pastki qism: jami + faqat To‘lash */}
-            <div className="shrink-0 border-t bg-white dark:bg-gray-900 p-4 shadow-sm">
+            {/* Pastki qism: jami + faqat To‘lash — mobil pastki xavfsiz zona (home indicator) */}
+            <div className="shrink-0 border-t bg-white dark:bg-gray-900 p-4 pb-[max(1rem,env(safe-area-inset-bottom))] shadow-sm">
               {/* Totals */}
               <div className="space-y-2 pt-2 border-t">
                 <div className="flex justify-between text-sm">
@@ -4483,10 +5633,10 @@ export default function POSTerminal() {
 
               <div className="pt-3">
                 <Button
-                  className="h-14 w-full bg-green-600 text-lg font-bold text-white hover:bg-green-700"
+                  className="h-14 w-full touch-manipulation bg-green-600 text-lg font-bold text-white hover:bg-green-700 disabled:cursor-not-allowed disabled:bg-muted disabled:text-muted-foreground"
                   size="lg"
-                  disabled={cart.length === 0 || isDiscountActionDisabled}
-                  title={isDiscountActionDisabled ? discountActionDisabledReason : undefined}
+                  disabled={cart.length === 0 || isDiscountActionDisabled || !currentShift || isProcessingPayment}
+                  title={paymentDisabledReason || undefined}
                   onClick={() => setPaymentDialogOpen(true)}
                 >
                   <DollarSign className="mr-2 h-6 w-6" />
@@ -4496,10 +5646,46 @@ export default function POSTerminal() {
             </div>
             </div>
           <aside
-            className="flex w-[4.75rem] shrink-0 grow-0 basis-[4.75rem] flex-col items-stretch border-l border-border bg-muted/30 py-2 xl:h-full xl:min-h-0 xl:grow-0 xl:shrink-0 xl:basis-[4.75rem] xl:w-[4.75rem] xl:self-stretch xl:border-y-0 xl:border-r-0 xl:bg-muted/40 xl:py-0"
+            className="flex w-14 shrink-0 grow-0 basis-14 flex-col items-stretch border-l border-border bg-muted/30 py-2 xl:h-full xl:min-h-0 xl:grow-0 xl:shrink-0 xl:basis-14 xl:w-14 xl:self-stretch xl:border-y-0 xl:border-r-0 xl:bg-muted/40 xl:py-0"
             aria-label="Savat tezkor tugmalari"
           >
-            <div className="flex flex-col items-center gap-2 px-1 py-2 shrink-0 xl:py-3">
+            <div className="flex flex-row flex-wrap items-end justify-start gap-2.5 px-1 py-0.5 shrink-0">
+            <Button
+              type="button"
+              variant={selectedCategory ? 'default' : 'outline'}
+              size="icon"
+              className="h-12 w-12 shrink-0"
+              title={`Kategoriyalar${selectedCategory ? `: ${categories.find((c) => c.id === selectedCategory)?.name || ''}` : ''}`}
+              aria-label="Kategoriyalar"
+              onClick={() => {
+                setCategorySheetMode('categories');
+                setCategorySheetOpen(true);
+              }}
+            >
+              <FolderTree className="h-5 w-5" />
+            </Button>
+            <Button
+              type="button"
+              variant={quickProducts.length > 0 ? 'default' : 'outline'}
+              size="icon"
+              className="relative h-12 w-12 shrink-0"
+              title="Tezkor mahsulot tanlash"
+              aria-label="Tezkor mahsulot tanlash"
+              onClick={() => {
+                setCategorySheetMode('quick');
+                setCategorySheetOpen(true);
+              }}
+            >
+              <Star className="h-5 w-5" />
+              {quickProducts.length > 0 && (
+                <Badge
+                  variant="secondary"
+                  className="absolute -right-0.5 -top-0.5 flex h-5 min-w-[1.25rem] items-center justify-center rounded-full p-0 px-1 text-[10px]"
+                >
+                  {quickProducts.length}
+                </Badge>
+              )}
+            </Button>
             <Button
               type="button"
               variant={exchangeReturnMode ? 'default' : 'outline'}
@@ -4509,6 +5695,7 @@ export default function POSTerminal() {
                 exchangeReturnMode && 'text-primary-foreground [&_svg]:text-primary-foreground'
               )}
               title={`${t('pos.exchange.return_mode_short')} (F8)`}
+              aria-label={`${t('pos.exchange.return_mode_short')} (F8)`}
               aria-pressed={exchangeReturnMode}
               onClick={() => setExchangeReturnMode((v) => !v)}
             >
@@ -4521,6 +5708,7 @@ export default function POSTerminal() {
               className="h-12 w-12 shrink-0"
               onClick={() => setShowCostPrice(!showCostPrice)}
               title={showCostPrice ? "Tannarx yashirish" : "Tannarx ko'rish"}
+              aria-label={showCostPrice ? "Tannarx yashirish" : "Tannarx ko'rish"}
             >
               {showCostPrice ? <Eye className="h-5 w-5" /> : <EyeOff className="h-5 w-5" />}
             </Button>
@@ -4531,6 +5719,7 @@ export default function POSTerminal() {
               className="h-12 w-12 shrink-0"
               disabled={cart.length === 0}
               title="Tekshirish"
+              aria-label="Savatni tekshirish"
               onClick={() => setCartReviewOpen(true)}
             >
               <ClipboardList className="h-5 w-5" />
@@ -4541,7 +5730,9 @@ export default function POSTerminal() {
               variant="outline"
               size="icon"
               className="h-12 w-12 shrink-0 border-yellow-600 bg-yellow-500 text-white hover:bg-yellow-600 hover:text-white"
-              title={t('pos.hold_order')}
+              title={!currentShift ? shiftRequiredReason : t('pos.hold_order')}
+              aria-label={t('pos.hold_order')}
+              disabled={!currentShift}
               onClick={() => {
                 if (cart.length > 0) {
                   void handleHoldOrder();
@@ -4567,6 +5758,7 @@ export default function POSTerminal() {
               size="icon"
               className="relative h-12 w-12 shrink-0"
               title="Kutilayotgan buyurtmalar"
+              aria-label="Kutilayotgan buyurtmalar"
               onClick={() => setWaitingOrdersDialogOpen(true)}
             >
               <Clock className="h-5 w-5" />
@@ -4586,6 +5778,7 @@ export default function POSTerminal() {
               className="h-12 w-12 shrink-0"
               disabled={!lastReceiptData}
               title="Chek"
+              aria-label="Chekni chop etish"
               onClick={() => {
                 if (!lastReceiptData) return;
                 void printReceipt(lastReceiptData as any);
@@ -4600,6 +5793,7 @@ export default function POSTerminal() {
               className="h-12 w-12 shrink-0"
               disabled={cart.length === 0}
               title="Tozalash"
+              aria-label="Savatni tozalash"
               onClick={() => {
                 if (cart.length === 0) {
                   toast({
@@ -4608,7 +5802,9 @@ export default function POSTerminal() {
                   });
                   return;
                 }
+                queueCartUndo(cart, 'Savat tozalandi');
                 setCart([]);
+                setImportedWebOrderId(null);
                 setExchangeReturnMode(false);
                 setDiscount({ type: 'amount', value: '' });
                 setPromoCodeInput('');
@@ -4621,31 +5817,70 @@ export default function POSTerminal() {
             >
               <Trash2 className="h-5 w-5" />
             </Button>
+            <Button
+              type="button"
+              variant="outline"
+              size="icon"
+              className="h-12 w-12 shrink-0"
+              title="Hotkey qo'llanma"
+              aria-label="Hotkey qo'llanma"
+              onClick={() => setHotkeyGuideOpen(true)}
+            >
+              <Keyboard className="h-5 w-5" />
+            </Button>
             </div>
 
-            <div
-              className="mx-1 mb-1 mt-0 hidden min-h-0 flex-1 rounded-md bg-gradient-to-b from-muted/0 via-muted/20 to-muted/35 dark:via-muted/10 dark:to-muted/25 xl:block"
-              aria-hidden
-            />
-
-            <div className="hidden shrink-0 border-t border-border/60 bg-muted/40 px-1 py-2 xl:block xl:pb-3">
-              <p className="text-[9px] font-semibold uppercase tracking-wide text-center text-muted-foreground">
-                {t('pos.rail_hints_title')}
-              </p>
-              <ul className="mt-1.5 space-y-1 text-[9px] leading-tight text-muted-foreground text-center">
-                <li>{t('pos.rail_hint_f2')}</li>
-                <li>{t('pos.rail_hint_f3')}</li>
-                <li>{t('pos.rail_hint_f8')}</li>
-                <li>{t('pos.rail_hint_f9')}</li>
-              </ul>
+            <div className="mx-1 mb-1 mt-0 hidden min-h-0 flex-1 rounded-md bg-gradient-to-b from-muted/0 via-muted/20 to-muted/35 px-1 py-2 dark:via-muted/10 dark:to-muted/25 xl:flex xl:flex-col xl:items-center xl:gap-2">
+              <Select
+                value={currentTierCode}
+                onValueChange={(value) => {
+                  setCurrentTierCode(value as any);
+                  toast({
+                    title: 'Narx rejimi',
+                    description: `Tanlangan tier: ${value}`,
+                  });
+                }}
+              >
+                <SelectTrigger className="h-12 w-12 self-center justify-center px-1 text-[9px] [&>span]:truncate [&>svg]:ml-0">
+                  <SelectValue placeholder="Narx turi" />
+                </SelectTrigger>
+                <SelectContent>
+                  {(priceTiers.length > 0
+                    ? priceTiers
+                    : [
+                        { code: 'retail', name: 'Retail' },
+                        { code: 'master', name: 'Master/Usta' },
+                        { code: 'wholesale', name: 'Wholesale' },
+                        { code: 'marketplace', name: 'Marketplace' },
+                      ]
+                  ).map((tier) => (
+                    <SelectItem key={tier.code} value={tier.code}>
+                      {tier.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <div className="flex w-full justify-center">
+                <QuickCustomerCreate
+                  className="h-12 w-12 self-center px-0"
+                  onCreated={(customer) => {
+                    setCustomers((prev) => {
+                      const exists = prev.some((c) => c.id === customer.id);
+                      return exists ? prev : [customer, ...prev];
+                    });
+                    applySelectedCustomer(customer);
+                  }}
+                />
+              </div>
             </div>
+
           </aside>
           </div>
         </div>
       </div>
 
       <Dialog open={cartReviewOpen} onOpenChange={setCartReviewOpen}>
-        <DialogContent className="flex max-h-[min(90vh,720px)] min-h-0 w-[min(96vw,56rem)] max-w-[min(96vw,56rem)] flex-col gap-0 overflow-hidden p-0 sm:max-w-[min(96vw,56rem)]">
+        <DialogContent className="flex max-h-[min(100dvh,720px)] min-h-0 w-[min(96vw,56rem)] max-w-[min(96vw,56rem)] flex-col gap-0 overflow-hidden p-0 sm:max-w-[min(96vw,56rem)]">
           <DialogHeader className="shrink-0 border-b px-6 pb-3 pr-14 pt-6">
             <DialogTitle className="flex items-center gap-2 text-lg">
               <ClipboardList className="h-5 w-5 text-primary" />
@@ -4705,11 +5940,7 @@ export default function POSTerminal() {
                                   {getTierLabel(item.price_tier)}
                                 </Badge>
                               )}
-                              {(item.price_source === 'promo' || item.promotion_name) && (
-                                <Badge variant="default" className="h-5 text-[10px] px-1.5 bg-green-600">
-                                  {item.promotion_name || 'Aksiya'}
-                                </Badge>
-                              )}
+                              {renderPromotionBadges(item)}
                             </div>
                           </div>
                         </td>
@@ -4790,7 +6021,7 @@ export default function POSTerminal() {
       </Dialog>
 
       <Dialog open={paymentDialogOpen} onOpenChange={setPaymentDialogOpen}>
-        <DialogContent className="max-w-2xl">
+        <DialogContent className="flex max-h-[min(92dvh,840px)] w-[min(calc(100vw-1rem),42rem)] max-w-[min(calc(100vw-1rem),42rem)] flex-col gap-4 overflow-y-auto overflow-x-hidden pb-[max(1.25rem,env(safe-area-inset-bottom))] sm:max-w-2xl">
           <DialogHeader>
             <DialogTitle>{t('pos.process_payment')}</DialogTitle>
             <DialogDescription>
@@ -4907,10 +6138,10 @@ export default function POSTerminal() {
               <Button
                 className="w-full"
                 onClick={() => handleCompletePayment('cash')}
-                disabled={!cashReceived || cashReceived < checkoutGrandTotal || isDiscountActionDisabled}
+                disabled={!cashReceived || cashReceived < checkoutGrandTotal || isDiscountActionDisabled || isProcessingPayment}
                 title={isDiscountActionDisabled ? discountActionDisabledReason : undefined}
               >
-                {t('pos.complete_payment')}
+                {isProcessingPayment ? 'Jarayonda...' : t('pos.complete_payment')}
               </Button>
             </TabsContent>
             <TabsContent value="card" className="space-y-4">
@@ -4921,11 +6152,11 @@ export default function POSTerminal() {
               <Button
                 className="w-full"
                 onClick={() => handleCompletePayment('card')}
-                disabled={isDiscountActionDisabled}
+                disabled={isDiscountActionDisabled || isProcessingPayment}
                 title={isDiscountActionDisabled ? discountActionDisabledReason : undefined}
               >
                 <CreditCard className="h-5 w-5 mr-2" />
-                {t('pos.process_card_payment')}
+                {isProcessingPayment ? 'Jarayonda...' : t('pos.process_card_payment')}
               </Button>
             </TabsContent>
             <TabsContent value="qr" className="space-y-4">
@@ -4936,11 +6167,11 @@ export default function POSTerminal() {
               <Button
                 className="w-full"
                 onClick={() => handleCompletePayment('qr')}
-                disabled={isDiscountActionDisabled}
+                disabled={isDiscountActionDisabled || isProcessingPayment}
                 title={isDiscountActionDisabled ? discountActionDisabledReason : undefined}
               >
                 <Smartphone className="h-5 w-5 mr-2" />
-                {t('pos.process_qr_payment')}
+                {isProcessingPayment ? 'Jarayonda...' : t('pos.process_qr_payment')}
               </Button>
             </TabsContent>
             <TabsContent value="mixed" className="space-y-4">
@@ -5010,10 +6241,10 @@ export default function POSTerminal() {
               <Button
                 className="w-full"
                 onClick={() => handleCompletePayment('mixed')}
-                disabled={remainingAmount > 0 || isDiscountActionDisabled}
+                disabled={remainingAmount > 0 || isDiscountActionDisabled || isProcessingPayment}
                 title={isDiscountActionDisabled ? discountActionDisabledReason : undefined}
               >
-                {t('pos.complete_payment')}
+                {isProcessingPayment ? 'Jarayonda...' : t('pos.complete_payment')}
               </Button>
             </TabsContent>
             <TabsContent value="credit" className="space-y-4">
@@ -5132,6 +6363,7 @@ export default function POSTerminal() {
                     className="w-full"
                     onClick={handleCreditSale}
                     disabled={
+                      isProcessingPayment ||
                       selectedCustomer.status !== 'active' ||
                       creditLimitExceeded ||
                       payInvalid ||
@@ -5140,7 +6372,7 @@ export default function POSTerminal() {
                     title={isDiscountActionDisabled ? discountActionDisabledReason : undefined}
                   >
                     <Tag className="h-5 w-5 mr-2" />
-                    {t('pos.write_credit_and_close')}
+                    {isProcessingPayment ? 'Jarayonda...' : t('pos.write_credit_and_close')}
                   </Button>
                   {selectedCustomer.status !== 'active' && (
                     <p className="text-xs text-center text-destructive">
@@ -5155,6 +6387,251 @@ export default function POSTerminal() {
           )}
         </DialogContent>
       </Dialog>
+
+      <Sheet open={hotkeyGuideOpen} onOpenChange={setHotkeyGuideOpen}>
+        <SheetContent
+          side="right"
+          className="flex h-dvh w-[min(100vw,34rem)] max-w-[min(100vw,34rem)] flex-col gap-0 overflow-hidden p-0 sm:max-w-[34rem]"
+        >
+          <SheetHeader className="shrink-0 border-b px-5 pb-4 pr-12 pt-5">
+            <SheetTitle>POS Hotkey Qo'llanma</SheetTitle>
+            <SheetDescription>
+              Kassada tez ishlash uchun klaviatura qisqartmalari.
+            </SheetDescription>
+          </SheetHeader>
+          <div className="min-h-0 flex-1 overflow-y-auto px-5 py-4 text-sm">
+            <div className="grid grid-cols-2 gap-2">
+              <Button
+                type="button"
+                variant="outline"
+                className="h-14 justify-between"
+                onClick={() => {
+                  setHotkeyGuideOpen(false);
+                  window.setTimeout(() => searchInputRef.current?.focus(), 0);
+                }}
+              >
+                <span>Qidiruv</span>
+                <kbd className="rounded bg-muted px-2 py-1 font-mono text-xs">F2</kbd>
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                className="h-14 justify-between"
+                onClick={() => {
+                  setHotkeyGuideOpen(false);
+                  if (cart.length > 0) void handleHoldOrder();
+                  else setWaitingOrdersDialogOpen(true);
+                }}
+              >
+                <span>Hold</span>
+                <kbd className="rounded bg-muted px-2 py-1 font-mono text-xs">F3</kbd>
+              </Button>
+              <Button
+                type="button"
+                variant={exchangeReturnMode ? 'default' : 'outline'}
+                className="h-14 justify-between"
+                onClick={() => {
+                  setExchangeReturnMode((v) => !v);
+                  setHotkeyGuideOpen(false);
+                }}
+              >
+                <span>Qaytim</span>
+                <kbd className="rounded bg-muted px-2 py-1 font-mono text-xs">F8</kbd>
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                className="h-14 justify-between"
+                disabled={cart.length === 0}
+                onClick={() => {
+                  setHotkeyGuideOpen(false);
+                  setPaymentDialogOpen(true);
+                }}
+              >
+                <span>To'lov</span>
+                <kbd className="rounded bg-muted px-2 py-1 font-mono text-xs">F9</kbd>
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                className="h-14 justify-between"
+                onClick={() => {
+                  setHotkeyGuideOpen(false);
+                  setCategorySheetMode('categories');
+                  setCategorySheetOpen(true);
+                }}
+              >
+                <span>Kategoriyalar</span>
+                <FolderTree className="h-4 w-4" />
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                className="h-14 justify-between"
+                onClick={() => {
+                  setHotkeyGuideOpen(false);
+                  setWaitingOrdersDialogOpen(true);
+                }}
+              >
+                <span>Navbat</span>
+                <Clock className="h-4 w-4" />
+              </Button>
+            </div>
+
+            <div className="mt-4 rounded-md border bg-muted/20 p-3">
+              <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Savat qatori</p>
+              <div className="grid grid-cols-2 gap-2">
+                {[
+                  ['Arrow Up/Down', 'Qator tanlash'],
+                  ['+', 'Miqdor +'],
+                  ['-', 'Miqdor -'],
+                  ['Alt+1', '+1 qator'],
+                  ['Alt+5', '+5 qator'],
+                  ['Alt+-', '-1 qator'],
+                  ['Alt+1..8', 'Tez mahsulot'],
+                  ['Enter', "1-mahsulot qo'shish"],
+                ].map(([keyName, label]) => (
+                  <div key={`${keyName}-${label}`} className="flex items-center justify-between gap-2 rounded-lg border bg-background px-3 py-2">
+                    <span className="text-muted-foreground">{label}</span>
+                    <kbd className="rounded bg-muted px-2 py-1 font-mono text-xs font-semibold">{keyName}</kbd>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+        </SheetContent>
+      </Sheet>
+
+      <Sheet open={categorySheetOpen} onOpenChange={setCategorySheetOpen}>
+        <SheetContent
+          side="right"
+          className="flex h-dvh w-[min(100vw,28rem)] max-w-[min(100vw,28rem)] flex-col gap-0 overflow-hidden p-0 sm:max-w-[28rem]"
+        >
+          <SheetHeader className="shrink-0 border-b px-5 pb-4 pr-12 pt-5">
+            <SheetTitle>{categorySheetMode === 'quick' ? 'Tezkor mahsulotlar' : 'Kategoriyalar'}</SheetTitle>
+            <SheetDescription>
+              {categorySheetMode === 'quick'
+                ? "Yuqorida chiqadigan tezkor mahsulotlarni belgilang."
+                : 'Mahsulot ro\'yxatini kategoriya bo\'yicha saralang.'}
+            </SheetDescription>
+          </SheetHeader>
+          <div className="min-h-0 flex-1 overflow-y-auto px-5 py-4">
+            <div className="h-full min-h-0 space-y-6">
+              {categorySheetMode === 'quick' && (
+              <section className="flex h-full min-h-0 flex-col space-y-2">
+                <div className="flex items-center gap-2 text-sm font-semibold">
+                  <Star className="h-4 w-4 text-amber-500" />
+                  Tezkor mahsulotlar
+                </div>
+                <p className="text-xs text-muted-foreground">
+                  Belgilangan mahsulotlar yuqorida button bo'lib chiqadi. Maksimum {MAX_POS_QUICK_PRODUCTS} ta.
+                </p>
+                <div className="relative">
+                  <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+                  <Input
+                    value={quickProductSearch}
+                    onChange={(event) => setQuickProductSearch(event.target.value)}
+                    placeholder="Mahsulot nomi, SKU yoki shtrix-kod..."
+                    className="h-10 pl-9"
+                  />
+                </div>
+                {quickProducts.length > 0 && (
+                  <div className="flex flex-wrap gap-2 rounded-lg border bg-muted/30 p-2">
+                    {quickProducts.map((product) => (
+                      <Button
+                        key={product.id}
+                        type="button"
+                        variant="secondary"
+                        size="sm"
+                        className="h-8 max-w-full gap-1"
+                        onClick={() => toggleQuickProduct(product.id)}
+                        title="Tezkor ro'yxatdan olib tashlash"
+                      >
+                        <span className="truncate">{product.name}</span>
+                        <X className="h-3.5 w-3.5" />
+                      </Button>
+                    ))}
+                  </div>
+                )}
+                {quickProductCandidates.length === 0 ? (
+                  <div className="rounded-lg border border-dashed p-4 text-sm text-muted-foreground">
+                    Mahsulot topilmadi.
+                  </div>
+                ) : (
+                  <div className="grid min-h-0 flex-1 grid-cols-1 gap-2 overflow-y-auto pb-4 pr-1">
+                    {quickProductCandidates.map((product, index) => (
+                      <button
+                        key={product.id}
+                        type="button"
+                        className={cn(
+                          'rounded-lg border bg-background p-3 text-left transition-colors hover:bg-muted',
+                          quickProductIds.includes(product.id) && 'border-primary bg-primary/5'
+                        )}
+                        onClick={() => toggleQuickProduct(product.id)}
+                      >
+                        <div className="flex items-start justify-between gap-3">
+                          <div className="min-w-0">
+                            <p className="truncate text-sm font-medium">{product.name}</p>
+                            <p className="mt-1 text-xs text-muted-foreground">
+                              SKU: {product.sku || '-'}{index < 8 ? ` · Alt+${index + 1}` : ''}
+                            </p>
+                          </div>
+                          <div className="shrink-0 text-right">
+                            <span className="block text-sm font-semibold text-primary">
+                              {formatMoneyUZS(Number(product.sale_price || 0))}
+                            </span>
+                            <Badge variant={quickProductIds.includes(product.id) ? 'default' : 'outline'} className="mt-1">
+                              {quickProductIds.includes(product.id) ? 'Tanlangan' : 'Belgilash'}
+                            </Badge>
+                          </div>
+                        </div>
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </section>
+              )}
+
+              {categorySheetMode === 'categories' && (
+              <section className="space-y-2">
+                <div className="flex items-center gap-2 text-sm font-semibold">
+                  <FolderTree className="h-4 w-4 text-primary" />
+                  Kategoriyalar
+                </div>
+                <div className="grid grid-cols-1 gap-2">
+                  <Button
+                    type="button"
+                    variant={selectedCategory === null ? 'default' : 'outline'}
+                    className="justify-start"
+                    onClick={() => {
+                      handleCategoryChange(null);
+                      setCategorySheetOpen(false);
+                    }}
+                  >
+                    {t('pos.all_categories')}
+                  </Button>
+                  {categories.map((category) => (
+                    <Button
+                      key={category.id}
+                      type="button"
+                      variant={selectedCategory === category.id ? 'default' : 'outline'}
+                      className="justify-start truncate"
+                      onClick={() => {
+                        handleCategoryChange(category.id);
+                        setCategorySheetOpen(false);
+                      }}
+                    >
+                      <span className="truncate">{category.name}</span>
+                    </Button>
+                  ))}
+                </div>
+              </section>
+              )}
+
+            </div>
+          </div>
+        </SheetContent>
+      </Sheet>
 
       <WaitingOrdersDialog
         open={waitingOrdersDialogOpen}
@@ -5361,6 +6838,42 @@ export default function POSTerminal() {
           <AlertDialogFooter>
             <AlertDialogCancel onClick={handleCancelWebOrderImport}>{t('pos.cancel')}</AlertDialogCancel>
             <AlertDialogAction onClick={handleConfirmWebOrderImport}>{t('pos.replace')}</AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      <AlertDialog
+        open={importQuoteDialogOpen}
+        onOpenChange={(open) => {
+          if (!open) handleCancelQuoteImport();
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>{t('quotes.import_replace_cart_title')}</AlertDialogTitle>
+            <AlertDialogDescription>{t('quotes.import_replace_cart_desc')}</AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel onClick={handleCancelQuoteImport}>{t('pos.cancel')}</AlertDialogCancel>
+            <AlertDialogAction onClick={handleConfirmQuoteImport}>{t('pos.replace')}</AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      <AlertDialog
+        open={importOrderDialogOpen}
+        onOpenChange={(open) => {
+          if (!open) handleCancelOrderImport();
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>{t('orders.import_replace_cart_title')}</AlertDialogTitle>
+            <AlertDialogDescription>{t('orders.import_replace_cart_desc')}</AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel onClick={handleCancelOrderImport}>{t('pos.cancel')}</AlertDialogCancel>
+            <AlertDialogAction onClick={handleConfirmOrderImport}>{t('pos.replace')}</AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>

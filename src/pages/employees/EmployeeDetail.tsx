@@ -146,7 +146,7 @@ export default function EmployeeDetail() {
             Orqaga
           </Button>
           <div>
-            <h1 className="text-3xl font-bold">{employee.full_name || employee.username}</h1>
+            <h1 className="page-heading">{employee.full_name || employee.username}</h1>
             <p className="text-muted-foreground">@{employee.username}</p>
           </div>
         </div>

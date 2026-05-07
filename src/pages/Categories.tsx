@@ -53,11 +53,16 @@ import {
   Package,
   Download,
   FolderPlus,
+  Copy,
+  ChevronUp,
+  ChevronDown,
 } from 'lucide-react';
 import { Checkbox } from '@/components/ui/checkbox';
 import { ScrollArea } from '@/components/ui/scroll-area';
+import { Switch } from '@/components/ui/switch';
 import { useToast } from '@/hooks/use-toast';
 import { formatDate } from '@/lib/datetime';
+import { getProductImageDisplayUrl } from '@/lib/productImageUrl';
 
 function buildCategoryTreeOptions(cats: Category[]): { id: string; label: string }[] {
   const byParent = new Map<string | null, Category[]>();
@@ -85,6 +90,49 @@ function buildCategoryTreeOptions(cats: Category[]): { id: string; label: string
   return out;
 }
 
+function compareSiblingCategories(a: Category, b: Category, sortBy: string): number {
+  switch (sortBy) {
+    case 'name-asc':
+      return a.name.localeCompare(b.name, undefined, { sensitivity: 'base' });
+    case 'name-desc':
+      return b.name.localeCompare(a.name, undefined, { sensitivity: 'base' });
+    case 'newest':
+      return new Date(b.created_at).getTime() - new Date(a.created_at).getTime();
+    case 'oldest':
+      return new Date(a.created_at).getTime() - new Date(b.created_at).getTime();
+    case 'hierarchy':
+    default: {
+      const so = (a.sort_order ?? 0) - (b.sort_order ?? 0);
+      if (so !== 0) return so;
+      return a.name.localeCompare(b.name, undefined, { sensitivity: 'base' });
+    }
+  }
+}
+
+function flattenCategoryDisplayRows(
+  cats: Category[],
+  sortBy: string
+): { category: Category; depth: number }[] {
+  const byParent = new Map<string | null, Category[]>();
+  for (const c of cats) {
+    const p = c.parent_id || null;
+    if (!byParent.has(p)) byParent.set(p, []);
+    byParent.get(p)!.push(c);
+  }
+  for (const arr of byParent.values()) {
+    arr.sort((a, b) => compareSiblingCategories(a, b, sortBy));
+  }
+  const out: { category: Category; depth: number }[] = [];
+  const walk = (parentId: string | null, depth: number) => {
+    for (const c of byParent.get(parentId) || []) {
+      out.push({ category: c, depth });
+      walk(c.id, depth + 1);
+    }
+  };
+  walk(null, 0);
+  return out;
+}
+
 export default function Categories() {
   const { t } = useTranslation();
   const { toast } = useToast();
@@ -101,7 +149,7 @@ export default function Categories() {
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editingCategory, setEditingCategory] = useState<Category | null>(null);
   const [searchTerm, setSearchTerm] = useState('');
-  const [sortBy, setSortBy] = useState('name-asc');
+  const [sortBy, setSortBy] = useState('hierarchy');
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(10);
   const [formData, setFormData] = useState({
@@ -110,6 +158,9 @@ export default function Categories() {
     color: '#2563EB',
     icon: '📁',
     parent_id: '',
+    image_url: '',
+    is_active: true,
+    show_in_marketplace: true,
   });
   const [creatingAsSubcategoryOf, setCreatingAsSubcategoryOf] = useState<Category | null>(null);
   const [assignDialogOpen, setAssignDialogOpen] = useState(false);
@@ -199,6 +250,9 @@ export default function Categories() {
       color: cat.color || '#2563EB',
       icon: cat.icon || '📁',
       parent_id: cat.parent_id || '',
+      image_url: cat.image_url?.trim() || '',
+      is_active: cat.is_active !== false,
+      show_in_marketplace: cat.show_in_marketplace !== false,
     });
     setDialogOpen(true);
     navigate(location.pathname, { replace: true, state: {} });
@@ -207,7 +261,7 @@ export default function Categories() {
   const loadCategories = async () => {
     try {
       setLoading(true);
-      const data = await getCategories();
+      const data = await getCategories({ includeInactive: true });
       setCategories(data);
 
       const counts: Record<string, number> = {};
@@ -246,6 +300,12 @@ export default function Categories() {
     }
   };
 
+  const nextSortOrderForParent = (parentId: string | null) => {
+    const sibs = categories.filter((c) => (c.parent_id || null) === (parentId || null));
+    const max = sibs.reduce((m, c) => Math.max(m, Number(c.sort_order) || 0), 0);
+    return max + 1;
+  };
+
   const handleOpenDialog = (category?: Category) => {
     setCreatingAsSubcategoryOf(null);
     if (category) {
@@ -256,6 +316,9 @@ export default function Categories() {
         color: category.color || '#2563EB',
         icon: category.icon || '📁',
         parent_id: category.parent_id || '',
+        image_url: category.image_url?.trim() || '',
+        is_active: category.is_active !== false,
+        show_in_marketplace: category.show_in_marketplace !== false,
       });
     } else {
       setEditingCategory(null);
@@ -265,6 +328,9 @@ export default function Categories() {
         color: '#2563EB',
         icon: '📁',
         parent_id: '',
+        image_url: '',
+        is_active: true,
+        show_in_marketplace: true,
       });
     }
     setDialogOpen(true);
@@ -279,6 +345,9 @@ export default function Categories() {
       color: parent.color || '#2563EB',
       icon: '📁',
       parent_id: parent.id,
+      image_url: '',
+      is_active: true,
+      show_in_marketplace: true,
     });
     setDialogOpen(true);
   };
@@ -307,13 +376,20 @@ export default function Categories() {
     }
 
     try {
-      const categoryData = {
+      const categoryData: Record<string, unknown> = {
         name: formData.name.trim(),
         description: formData.description.trim() || null,
         color: formData.color || null,
         icon: formData.icon || null,
         parent_id: formData.parent_id || null,
+        image_url: formData.image_url.trim() || null,
+        is_active: formData.is_active,
+        show_in_marketplace: formData.show_in_marketplace,
       };
+
+      if (!editingCategory) {
+        categoryData.sort_order = nextSortOrderForParent(formData.parent_id || null);
+      }
 
       if (editingCategory) {
         await updateCategory(editingCategory.id, categoryData);
@@ -322,7 +398,7 @@ export default function Categories() {
           description: t('categories.messages.updated'),
         });
       } else {
-        await createCategory(categoryData);
+        await createCategory(categoryData as Omit<Category, 'id' | 'created_at'>);
         toast({
           title: t('common.success'),
           description: t('categories.messages.created'),
@@ -417,48 +493,142 @@ export default function Categories() {
     return parent?.name;
   };
 
-  // Memoize sort function
-  const sortCategories = useCallback((cats: Category[]) => {
-    const sorted = [...cats];
-    switch (sortBy) {
-      case 'name-asc':
-        return sorted.sort((a, b) => a.name.localeCompare(b.name));
-      case 'name-desc':
-        return sorted.sort((a, b) => b.name.localeCompare(a.name));
-      case 'newest':
-        return sorted.sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
-      case 'oldest':
-        return sorted.sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
-      default:
-        return sorted;
-    }
-  }, [sortBy]);
+  const filteredBySearch = useMemo(() => {
+    const q = searchTerm.trim().toLowerCase();
+    if (!q) return categories;
+    return categories.filter((category) => {
+      if (category.name.toLowerCase().includes(q)) return true;
+      if (category.description?.toLowerCase().includes(q)) return true;
+      if (category.parent_id) {
+        const pn = categories.find((c) => c.id === category.parent_id)?.name;
+        if (pn?.toLowerCase().includes(q)) return true;
+      }
+      return false;
+    });
+  }, [categories, searchTerm]);
 
-  // Memoize filtered categories to prevent recalculation on every render
-  const filteredCategories = useMemo(() => {
-    const filtered = categories.filter((category) =>
-      searchTerm === '' ||
-      category.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      (category.description && category.description.toLowerCase().includes(searchTerm.toLowerCase()))
-    );
-    return sortCategories(filtered);
-  }, [categories, searchTerm, sortCategories]);
+  const displayRows = useMemo(() => {
+    if (searchTerm.trim()) {
+      const sorted = [...filteredBySearch].sort((a, b) => compareSiblingCategories(a, b, sortBy));
+      return sorted.map((category) => ({ category, depth: 0 }));
+    }
+    return flattenCategoryDisplayRows(filteredBySearch, sortBy);
+  }, [filteredBySearch, searchTerm, sortBy]);
 
   const showParentColumn = useMemo(
     () => categories.some((c) => Boolean(c.parent_id)),
     [categories]
   );
 
-  const totalPages = Math.max(1, Math.ceil(filteredCategories.length / pageSize));
+  const totalPages = Math.max(1, Math.ceil(displayRows.length / pageSize));
 
-  const paginatedCategories = useMemo(() => {
+  const paginatedRows = useMemo(() => {
     const start = (page - 1) * pageSize;
-    return filteredCategories.slice(start, start + pageSize);
-  }, [filteredCategories, page, pageSize]);
+    return displayRows.slice(start, start + pageSize);
+  }, [displayRows, page, pageSize]);
 
   useEffect(() => {
     if (page > totalPages) setPage(totalPages);
   }, [page, totalPages]);
+
+  const getSiblingsForReorder = useCallback(
+    (cat: Category) =>
+      categories
+        .filter((c) => (c.parent_id || null) === (cat.parent_id || null))
+        .sort((a, b) => compareSiblingCategories(a, b, 'hierarchy')),
+    [categories]
+  );
+
+  const handleReorderCategory = async (cat: Category, dir: 'up' | 'down') => {
+    const sibs = getSiblingsForReorder(cat);
+    const idx = sibs.findIndex((c) => c.id === cat.id);
+    const j = dir === 'up' ? idx - 1 : idx + 1;
+    if (j < 0 || j >= sibs.length) return;
+    const other = sibs[j];
+    const a = cat.sort_order ?? 0;
+    const b = other.sort_order ?? 0;
+    try {
+      await Promise.all([
+        updateCategory(cat.id, { sort_order: b }),
+        updateCategory(other.id, { sort_order: a }),
+      ]);
+      queryClient.invalidateQueries({ queryKey: qk.categories, exact: false });
+      await loadCategories();
+      toast({
+        title: t('common.success'),
+        description: t('categories.messages.reordered'),
+      });
+    } catch (e) {
+      toast({
+        title: t('common.error'),
+        description: e instanceof Error ? e.message : t('categories.messages.save_failed'),
+        variant: 'destructive',
+      });
+    }
+  };
+
+  const handleDuplicateCategory = async (cat: Category) => {
+    const suffix = t('categories.duplicate_suffix');
+    let name = `${cat.name} (${suffix})`;
+    let n = 2;
+    while (categories.some((c) => c.name === name)) {
+      name = `${cat.name} (${suffix} ${n})`;
+      n += 1;
+    }
+    try {
+      await createCategory({
+        name,
+        description: cat.description || null,
+        color: cat.color || null,
+        icon: cat.icon || null,
+        parent_id: cat.parent_id || null,
+        sort_order: nextSortOrderForParent(cat.parent_id || null),
+        is_active: cat.is_active !== false,
+        image_url: cat.image_url?.trim() || null,
+        show_in_marketplace: cat.show_in_marketplace !== false,
+      });
+      queryClient.invalidateQueries({ queryKey: qk.categories, exact: false });
+      await loadCategories();
+      toast({
+        title: t('common.success'),
+        description: t('categories.messages.duplicated'),
+      });
+    } catch (e) {
+      toast({
+        title: t('common.error'),
+        description: e instanceof Error ? e.message : t('categories.messages.save_failed'),
+        variant: 'destructive',
+      });
+    }
+  };
+
+  const handleToggleCategoryActive = async (cat: Category, value: boolean) => {
+    try {
+      await updateCategory(cat.id, { is_active: value });
+      queryClient.invalidateQueries({ queryKey: qk.categories, exact: false });
+      await loadCategories();
+    } catch (e) {
+      toast({
+        title: t('common.error'),
+        description: e instanceof Error ? e.message : t('categories.messages.save_failed'),
+        variant: 'destructive',
+      });
+    }
+  };
+
+  const handleToggleCategoryMarketplace = async (cat: Category, value: boolean) => {
+    try {
+      await updateCategory(cat.id, { show_in_marketplace: value });
+      queryClient.invalidateQueries({ queryKey: qk.categories, exact: false });
+      await loadCategories();
+    } catch (e) {
+      toast({
+        title: t('common.error'),
+        description: e instanceof Error ? e.message : t('categories.messages.save_failed'),
+        variant: 'destructive',
+      });
+    }
+  };
 
   const handleExportCsv = () => {
     const escapeCell = (cell: string) => {
@@ -473,7 +643,10 @@ export default function Categories() {
       t('categories.export_col_products'),
       t('categories.export_col_created'),
     ];
-    const rows = filteredCategories.map((c) => [
+    const exportCategories = searchTerm.trim()
+      ? [...filteredBySearch].sort((a, b) => compareSiblingCategories(a, b, sortBy))
+      : displayRows.map((r) => r.category);
+    const rows = exportCategories.map((c) => [
       c.name,
       c.description || '',
       c.parent_id ? getParentCategoryName(c.parent_id) || '' : t('categories.root'),
@@ -568,68 +741,79 @@ export default function Categories() {
   };
 
   return (
-    <div className="space-y-6">
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-        <div>
-          <h1 className="text-3xl font-bold">{t('categories.title')}</h1>
-          <p className="text-muted-foreground">{t('categories.subtitle')}</p>
+    <div className="space-y-4">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+        <div className="min-w-0 space-y-0.5">
+          <h1 className="page-heading">{t('categories.title')}</h1>
+          <p className="page-heading-sub">{t('categories.subtitle')}</p>
         </div>
-        <div className="flex flex-wrap gap-2">
-          <Button type="button" variant="outline" onClick={() => setAssignDialogOpen(true)}>
-            <Package className="h-4 w-4 mr-2" />
+        <div className="flex shrink-0 flex-wrap gap-2">
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            className="h-8 text-xs"
+            onClick={() => setAssignDialogOpen(true)}
+          >
+            <Package className="mr-2 h-3.5 w-3.5" />
             {t('categories.assign_products')}
           </Button>
-          <Button type="button" onClick={() => handleOpenDialog()}>
-            <Plus className="h-4 w-4 mr-2" />
+          <Button type="button" size="sm" className="h-8 text-xs" onClick={() => handleOpenDialog()}>
+            <Plus className="mr-2 h-3.5 w-3.5" />
             {t('categories.add_category')}
           </Button>
         </div>
       </div>
 
-      <Card>
-        <CardHeader>
-          <CardTitle>{t('categories.filters')}</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <div className="relative">
-              <Search className="absolute left-3 top-3 h-4 w-4 text-muted-foreground" />
-              <Input
-                placeholder={t('categories.search_placeholder')}
-                value={searchTerm}
-                onChange={(e) => setSearchTerm(e.target.value)}
-                className="pl-9"
-              />
+      <Card className="gap-0 py-0 shadow-sm">
+        <CardContent className="px-3 py-2 sm:px-3">
+          <div className="rounded-md border bg-muted/30 px-2 py-1.5">
+            <span className="mb-1 inline-block text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+              {t('categories.filters')}
+            </span>
+            <div className="flex min-w-0 flex-nowrap items-center gap-1 overflow-x-auto pb-0.5 [scrollbar-width:thin] [&::-webkit-scrollbar]:h-1">
+              <div className="relative h-8 min-w-[11rem] shrink-0 flex-[1.4]">
+                <Search className="absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
+                <Input
+                  placeholder={t('categories.search_placeholder')}
+                  value={searchTerm}
+                  onChange={(e) => setSearchTerm(e.target.value)}
+                  className="h-8 py-1 pl-8 text-xs sm:text-sm"
+                />
+              </div>
+              <div className="min-w-[8rem] shrink-0 flex-1 basis-0">
+                <Select value={sortBy} onValueChange={setSortBy}>
+                  <SelectTrigger className="h-8 w-full min-w-0 bg-background px-2 text-xs [&_span]:truncate">
+                    <SelectValue placeholder={t('categories.sort_by')} />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="hierarchy">{t('categories.sort.hierarchy')}</SelectItem>
+                    <SelectItem value="name-asc">{t('categories.sort.name_asc')}</SelectItem>
+                    <SelectItem value="name-desc">{t('categories.sort.name_desc')}</SelectItem>
+                    <SelectItem value="newest">{t('categories.sort.newest')}</SelectItem>
+                    <SelectItem value="oldest">{t('categories.sort.oldest')}</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
             </div>
-            <Select value={sortBy} onValueChange={setSortBy}>
-              <SelectTrigger>
-                <SelectValue placeholder={t('categories.sort_by')} />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="name-asc">{t('categories.sort.name_asc')}</SelectItem>
-                <SelectItem value="name-desc">{t('categories.sort.name_desc')}</SelectItem>
-                <SelectItem value="newest">{t('categories.sort.newest')}</SelectItem>
-                <SelectItem value="oldest">{t('categories.sort.oldest')}</SelectItem>
-              </SelectContent>
-            </Select>
           </div>
         </CardContent>
       </Card>
 
-      <Card>
-        <CardHeader className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between space-y-0">
-          <CardTitle className="leading-tight">
-            {t('categories.title')} ({filteredCategories.length})
+      <Card className="gap-0 py-0 shadow-sm">
+        <CardHeader className="flex flex-col gap-2 border-b px-4 py-2 sm:flex-row sm:items-center sm:justify-between sm:gap-3 space-y-0">
+          <CardTitle className="text-base font-semibold leading-tight">
+            {t('categories.title')} ({displayRows.length})
           </CardTitle>
-          {!loading && filteredCategories.length > 0 && (
+          {!loading && displayRows.length > 0 && (
             <Button
               type="button"
               variant="outline"
               size="sm"
-              className="shrink-0"
+              className="h-8 shrink-0 text-xs"
               onClick={handleExportCsv}
             >
-              <Download className="h-4 w-4 mr-2" />
+              <Download className="mr-2 h-3.5 w-3.5" />
               {t('categories.export_csv')}
             </Button>
           )}
@@ -639,7 +823,7 @@ export default function Categories() {
             <div className="flex justify-center py-8">
               <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary" />
             </div>
-          ) : filteredCategories.length === 0 ? (
+          ) : displayRows.length === 0 ? (
             <div className="text-center py-12">
               <FolderTree className="h-12 w-12 mx-auto text-muted-foreground mb-4" />
               <p className="text-muted-foreground">{t('categories.no_categories_found')}</p>
@@ -653,28 +837,47 @@ export default function Categories() {
               <Table>
                 <TableHeader>
                   <TableRow>
+                    <TableHead className="w-12">{t('categories.table.thumb')}</TableHead>
                     <TableHead>{t('categories.table.category')}</TableHead>
                     <TableHead>{t('categories.table.description')}</TableHead>
                     {showParentColumn && (
                       <TableHead>{t('categories.table.parent_category')}</TableHead>
                     )}
+                    <TableHead className="text-center w-[72px]">{t('categories.table.status')}</TableHead>
+                    <TableHead className="text-center w-[72px]">{t('categories.table.marketplace')}</TableHead>
                     <TableHead className="text-right">{t('categories.table.products')}</TableHead>
                     <TableHead>{t('categories.table.created')}</TableHead>
+                    <TableHead className="text-center w-[88px]">{t('categories.table.order')}</TableHead>
                     <TableHead className="text-right">{t('common.actions')}</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {paginatedCategories.map((category) => (
+                  {paginatedRows.map(({ category, depth }) => (
                     <TableRow key={category.id} className="align-middle">
                       <TableCell className="py-2">
-                        <div className="flex items-center gap-2.5">
+                        {category.image_url ? (
+                          <div className="h-9 w-9 shrink-0 overflow-hidden rounded border bg-muted">
+                            <img
+                              src={getProductImageDisplayUrl(category.image_url) || category.image_url}
+                              alt=""
+                              className="h-full w-full object-cover"
+                            />
+                          </div>
+                        ) : (
                           <div
-                            className="h-9 w-9 shrink-0 rounded flex items-center justify-center text-lg leading-none"
+                            className="h-9 w-9 shrink-0 rounded flex items-center justify-center text-lg leading-none border border-transparent"
                             style={{ backgroundColor: category.color || '#2563EB' }}
                           >
                             {category.icon || '📁'}
                           </div>
-                          <p className="font-medium leading-tight">{category.name}</p>
+                        )}
+                      </TableCell>
+                      <TableCell className="py-2">
+                        <div
+                          className="flex items-center gap-2.5 min-w-0"
+                          style={{ paddingLeft: depth > 0 ? `${Math.min(depth, 6) * 14}px` : undefined }}
+                        >
+                          <p className="font-medium leading-tight truncate">{category.name}</p>
                         </div>
                       </TableCell>
                       <TableCell className="py-2 text-muted-foreground max-w-[220px] truncate">
@@ -694,6 +897,22 @@ export default function Categories() {
                           )}
                         </TableCell>
                       )}
+                      <TableCell className="py-2 text-center">
+                        <Switch
+                          checked={category.is_active !== false}
+                          onCheckedChange={(v) => {
+                            void handleToggleCategoryActive(category, v);
+                          }}
+                        />
+                      </TableCell>
+                      <TableCell className="py-2 text-center">
+                        <Switch
+                          checked={category.show_in_marketplace !== false}
+                          onCheckedChange={(v) => {
+                            void handleToggleCategoryMarketplace(category, v);
+                          }}
+                        />
+                      </TableCell>
                       <TableCell className="py-2 text-right">
                         <div className="flex items-center justify-end gap-2">
                           <Package className="h-4 w-4 text-muted-foreground shrink-0" />
@@ -706,6 +925,30 @@ export default function Categories() {
                       </TableCell>
                       <TableCell className="py-2 whitespace-nowrap">
                         {formatDate(category.created_at)}
+                      </TableCell>
+                      <TableCell className="py-2 text-center">
+                        <div className="flex items-center justify-center gap-0.5">
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="icon"
+                            className="h-8 w-8"
+                            onClick={() => void handleReorderCategory(category, 'up')}
+                            aria-label={t('categories.move_up')}
+                          >
+                            <ChevronUp className="h-4 w-4" />
+                          </Button>
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="icon"
+                            className="h-8 w-8"
+                            onClick={() => void handleReorderCategory(category, 'down')}
+                            aria-label={t('categories.move_down')}
+                          >
+                            <ChevronDown className="h-4 w-4" />
+                          </Button>
+                        </div>
                       </TableCell>
                       <TableCell className="py-2 text-right">
                         <div className="flex items-center justify-end gap-0.5">
@@ -728,6 +971,16 @@ export default function Categories() {
                             aria-label={`${t('categories.add_subcategory')}: ${category.name}`}
                           >
                             <FolderPlus className="h-4 w-4" />
+                          </Button>
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="icon"
+                            className="h-8 w-8"
+                            onClick={() => void handleDuplicateCategory(category)}
+                            aria-label={t('categories.duplicate')}
+                          >
+                            <Copy className="h-4 w-4" />
                           </Button>
                           <Button
                             type="button"
@@ -782,11 +1035,11 @@ export default function Categories() {
                   <span className="text-sm text-muted-foreground">
                     {t('categories.pagination_range', {
                       from:
-                        filteredCategories.length === 0
+                        displayRows.length === 0
                           ? 0
                           : (page - 1) * pageSize + 1,
-                      to: Math.min(page * pageSize, filteredCategories.length),
-                      total: filteredCategories.length,
+                      to: Math.min(page * pageSize, displayRows.length),
+                      total: displayRows.length,
                     })}
                   </span>
                   <Button
@@ -815,7 +1068,7 @@ export default function Categories() {
       </Card>
 
       <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
-        <DialogContent className="max-w-md">
+        <DialogContent className="max-w-lg max-h-[90vh] overflow-y-auto">
           <DialogHeader>
             <DialogTitle>
               {creatingAsSubcategoryOf
@@ -851,9 +1104,44 @@ export default function Categories() {
                   id="description"
                   value={formData.description}
                   onChange={(e) => setFormData({ ...formData, description: e.target.value })}
-                  placeholder={t('categories.enter_description')}
+                  placeholder={t('categories.description_placeholder')}
                   rows={3}
                 />
+                <p className="text-xs text-muted-foreground">{t('categories.description_hint')}</p>
+              </div>
+
+              <div className="space-y-2">
+                <Label htmlFor="image_url">{t('categories.image_url_label')}</Label>
+                <Input
+                  id="image_url"
+                  value={formData.image_url}
+                  onChange={(e) => setFormData({ ...formData, image_url: e.target.value })}
+                  placeholder="https://..."
+                  className="font-mono text-sm"
+                />
+              </div>
+
+              <div className="flex flex-wrap items-center gap-6 rounded-lg border bg-muted/30 px-3 py-3">
+                <div className="flex items-center gap-2">
+                  <Switch
+                    id="cat_is_active"
+                    checked={formData.is_active}
+                    onCheckedChange={(v) => setFormData({ ...formData, is_active: v })}
+                  />
+                  <Label htmlFor="cat_is_active" className="text-sm font-medium cursor-pointer">
+                    {t('categories.active_in_pos')}
+                  </Label>
+                </div>
+                <div className="flex items-center gap-2">
+                  <Switch
+                    id="cat_show_mp"
+                    checked={formData.show_in_marketplace}
+                    onCheckedChange={(v) => setFormData({ ...formData, show_in_marketplace: v })}
+                  />
+                  <Label htmlFor="cat_show_mp" className="text-sm font-medium cursor-pointer">
+                    {t('categories.show_in_marketplace')}
+                  </Label>
+                </div>
               </div>
 
               <div className="grid grid-cols-2 gap-4">

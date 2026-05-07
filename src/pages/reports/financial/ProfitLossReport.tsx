@@ -10,7 +10,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
-import { getPriceTiers, getProfitAndLossSQL } from '@/db/api';
+import { getPriceTiers, getProfitAndLossSQL, getWarehouses } from '@/db/api';
 import { FileDown, ArrowLeft } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 import { useNavigate } from 'react-router-dom';
@@ -26,13 +26,20 @@ type PriceTier = {
   code?: string;
 };
 
+type WarehouseOption = {
+  id: string;
+  name?: string;
+};
+
 export default function ProfitLossReport() {
   const { t } = useTranslation();
   const navigate = useNavigate();
   const { toast } = useToast();
   const [reportData, setReportData] = useState<any>(null);
   const [priceTiers, setPriceTiers] = useState<PriceTier[]>([]);
+  const [warehouses, setWarehouses] = useState<WarehouseOption[]>([]);
   const [tierFilter, setTierFilter] = useState<string>('all');
+  const [warehouseId, setWarehouseId] = useState<string>('all');
   const [loading, setLoading] = useState(true);
   const [exporting, setExporting] = useState<null | 'excel' | 'pdf'>(null);
   const [period, setPeriod] = useState<'daily' | 'day' | 'weekly' | 'monthly' | 'custom'>('daily');
@@ -62,7 +69,7 @@ export default function ProfitLossReport() {
 
   useEffect(() => {
     loadData();
-  }, [period, dateFrom, dateTo, tierFilter]);
+  }, [period, dateFrom, dateTo, tierFilter, warehouseId]);
 
   const selectedRange = useMemo(() => {
     const today = todayYMD(); // Asia/Tashkent "today"
@@ -116,24 +123,26 @@ export default function ProfitLossReport() {
   async function loadData() {
     try {
       setLoading(true);
-      const [report, tiers] = await Promise.all([
+      const [report, tiers, whs] = await Promise.all([
         getProfitAndLossSQL({
           date_from: selectedRange.fromYMD,
           date_to: selectedRange.toYMD,
-          warehouse_id: 'main-warehouse-001',
+          warehouse_id: warehouseId !== 'all' ? warehouseId : undefined,
           price_tier_id: tierFilter !== 'all' ? Number(tierFilter) : null,
         }),
         getPriceTiers(),
+        getWarehouses({ is_active: true }).catch(() => []),
       ]);
 
       setReportData(report || null);
       setPriceTiers(tiers || []);
+      setWarehouses(Array.isArray(whs) ? whs : []);
 
       const missingCost = Number(report?.warnings?.missing_cost_count || 0);
       if (missingCost > 0) {
         toast({
-          title: t('common.warning') || 'Warning',
-          description: `Some order items are missing cost_price (${missingCost}). COGS may be understated.`,
+          title: t('reports.profit_loss_page.warnings.missing_cogs_title'),
+          description: t('reports.profit_loss_page.warnings.missing_cogs', { count: missingCost }),
         });
       }
     } catch (error) {
@@ -216,11 +225,11 @@ export default function ProfitLossReport() {
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-4">
-          <Button variant="ghost" size="icon" onClick={() => navigate('/reports')}>
+          <Button variant="ghost" size="icon" onClick={() => navigate('/reports/financial')}>
             <ArrowLeft className="h-4 w-4" />
           </Button>
           <div>
-            <h1 className="text-3xl font-bold">{t('reports.profit_loss_page.title')}</h1>
+            <h1 className="page-heading">{t('reports.profit_loss_page.title')}</h1>
             <p className="text-muted-foreground">{t('reports.profit_loss_page.subtitle')}</p>
           </div>
         </div>
@@ -238,7 +247,7 @@ export default function ProfitLossReport() {
 
       <Card>
         <CardContent className="pt-6">
-          <div className="grid grid-cols-1 md:grid-cols-5 gap-4">
+          <div className="grid grid-cols-1 md:grid-cols-6 gap-4">
             <div>
               <label className="text-sm text-muted-foreground">{t('reports.profit_loss_page.filters.period')}</label>
               <Select value={period} onValueChange={(v: any) => setPeriod(v)}>
@@ -270,7 +279,23 @@ export default function ProfitLossReport() {
                 </SelectContent>
               </Select>
             </div>
-            <div className="md:col-span-3 flex items-end">
+            <div>
+              <label className="text-sm text-muted-foreground">Ombor</label>
+              <Select value={warehouseId} onValueChange={setWarehouseId}>
+                <SelectTrigger>
+                  <SelectValue placeholder="Barchasi" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">Barchasi</SelectItem>
+                  {warehouses.map((wh) => (
+                    <SelectItem key={wh.id} value={String(wh.id)}>
+                      {wh.name || wh.id}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="md:col-span-4 flex items-end">
               <div className="text-sm text-muted-foreground">
                 <span className="font-medium text-foreground">{t('reports.profit_loss_page.filters.range_label')}:</span>{' '}
                 {ymdToDMY(selectedRange.fromYMD)} — {ymdToDMY(selectedRange.toYMD)}

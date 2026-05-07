@@ -89,6 +89,7 @@ export default function CashFlowReport() {
 
     const inRange = (ymd: string) => ymd >= dateFrom && ymd <= dateTo;
     const normalizeMethod = (m: any) => String(m || 'unknown').toLowerCase();
+    const isRefundPayoutMethod = (m: string) => m === 'refund_cash';
 
     const ordersData = await getOrders(100000);
     const filteredOrders = ordersData.filter((order) => {
@@ -128,7 +129,12 @@ export default function CashFlowReport() {
         const method = normalizeMethod(payment.payment_method);
         const amount = shouldFallbackSinglePaymentAmount ? Number(order.total_amount || 0) : Number(payment?.amount ?? 0);
         if (amount <= 0) return;
-        entries.push({ date: ymd, method, inflow: amount, outflow: 0 });
+        entries.push({
+          date: ymd,
+          method,
+          inflow: isRefundPayoutMethod(method) ? 0 : amount,
+          outflow: isRefundPayoutMethod(method) ? amount : 0,
+        });
       });
     });
 
@@ -171,11 +177,14 @@ export default function CashFlowReport() {
     supplierPayments.flat().forEach((p: any) => {
       const ymd = formatDateYMD(p.paid_at || p.created_at);
       if (!inRange(ymd)) return;
+      const method = normalizeMethod(p.payment_method || 'transfer');
+      if (method === 'credit_note') return; // accounting adjustment, no direct cash movement
+      const amount = Number(p.amount || 0);
       entries.push({
         date: ymd,
-        method: normalizeMethod(p.payment_method || 'transfer'),
-        inflow: 0,
-        outflow: Number(p.amount || 0),
+        method,
+        inflow: amount < 0 ? Math.abs(amount) : 0,
+        outflow: amount > 0 ? amount : 0,
       });
     });
 
@@ -238,11 +247,11 @@ export default function CashFlowReport() {
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-4">
-          <Button variant="ghost" size="icon" onClick={() => navigate('/reports')}>
+          <Button variant="ghost" size="icon" onClick={() => navigate('/reports/financial')}>
             <ArrowLeft className="h-4 w-4" />
           </Button>
           <div>
-            <h1 className="text-3xl font-bold">Pul oqimi</h1>
+            <h1 className="page-heading">Pul oqimi</h1>
             <p className="text-muted-foreground">Kirim / chiqim va net pul oqimi</p>
           </div>
         </div>

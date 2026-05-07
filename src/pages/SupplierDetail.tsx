@@ -78,6 +78,12 @@ export default function SupplierDetail() {
   const activeTab = searchParams.get('tab') || 'info';
   const dateFrom = searchParams.get('dateFrom') || '';
   const dateTo = searchParams.get('dateTo') || '';
+  const updateDateFilter = (key: 'dateFrom' | 'dateTo', value: string) => {
+    const next = new URLSearchParams(searchParams);
+    if (value) next.set(key, value);
+    else next.delete(key);
+    setSearchParams(next, { replace: true });
+  };
   const backTo = resolveBackTarget(location, '/suppliers');
 
   type ActRow = {
@@ -400,7 +406,7 @@ export default function SupplierDetail() {
             <ArrowLeft className="h-4 w-4" />
           </Button>
           <div>
-            <h1 className="text-3xl font-bold">{supplier.name}</h1>
+            <h1 className="page-heading">{supplier.name}</h1>
             <p className="text-muted-foreground">Supplier Details</p>
           </div>
         </div>
@@ -732,7 +738,7 @@ export default function SupplierDetail() {
               <div>
                 <p className="text-sm text-muted-foreground">Jami summa</p>
                 <p className="text-2xl font-bold">
-                  {formatMoneyUZS((supplier.purchase_orders || [])
+                  {formatSupplierAmount((supplier.purchase_orders || [])
                     .reduce((sum, po) => sum + po.total_amount, 0))}
                 </p>
               </div>
@@ -740,31 +746,31 @@ export default function SupplierDetail() {
                 <div className="flex justify-between text-sm">
                   <span className="text-muted-foreground">Jami qabul qilingan xarid (qarz bazasi)</span>
                   <span className="font-semibold">
-                    {formatMoneyUZS(summary.totalPurchases)} ({summary.receivedPOCount} ta)
+                    {formatSupplierAmount(summary.totalPurchases)} ({summary.receivedPOCount} ta)
                   </span>
                 </div>
                 <div className="flex justify-between text-sm">
                   <span className="text-muted-foreground">Jami pul berilgan (to'lovlar)</span>
                   <span className="font-semibold">
-                    {paymentsLoading ? '...' : formatMoneyUZS(summary.paidToSupplier)}
+                    {paymentsLoading ? '...' : formatSupplierAmount(summary.paidToSupplier)}
                   </span>
                 </div>
                 <div className="flex justify-between text-sm">
                   <span className="text-muted-foreground">Jami qaytarishlar (credit note)</span>
                   <span className="font-semibold">
-                    {returnsAll.length === 0 ? formatMoneyUZS(0) : formatMoneyUZS(summary.returnsTotal)} ({summary.returnsCount} ta)
+                    {returnsAll.length === 0 ? formatSupplierAmount(0) : formatSupplierAmount(summary.returnsTotal)} ({summary.returnsCount} ta)
                   </span>
                 </div>
                 <div className="flex justify-between text-sm">
                   <span className="text-muted-foreground">Jami credit note (payments ichida)</span>
                   <span className="font-semibold">
-                    {paymentsLoading ? '...' : formatMoneyUZS(summary.creditNotes)}
+                    {paymentsLoading ? '...' : formatSupplierAmount(summary.creditNotes)}
                   </span>
                 </div>
                 <div className="flex justify-between text-sm">
                   <span className="text-muted-foreground">Yetkazib beruvchi qaytargan pul (avans qaytarish)</span>
                   <span className="font-semibold">
-                    {paymentsLoading ? '...' : formatMoneyUZS(summary.supplierRefunds)}
+                    {paymentsLoading ? '...' : formatSupplierAmount(summary.supplierRefunds)}
                   </span>
                 </div>
               </div>
@@ -794,7 +800,7 @@ export default function SupplierDetail() {
                       id="dateFrom"
                       type="date"
                       value={dateFrom}
-                      onChange={(e) => setDateFrom(e.target.value)}
+                      onChange={(e) => updateDateFilter('dateFrom', e.target.value)}
                       className="w-40"
                     />
                   </div>
@@ -804,7 +810,7 @@ export default function SupplierDetail() {
                       id="dateTo"
                       type="date"
                       value={dateTo}
-                      onChange={(e) => setDateTo(e.target.value)}
+                      onChange={(e) => updateDateFilter('dateTo', e.target.value)}
                       className="w-40"
                     />
                   </div>
@@ -876,11 +882,11 @@ export default function SupplierDetail() {
               <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
                 <div className="space-y-2">
                   <Label>Boshlanish sana</Label>
-                  <Input type="date" value={dateFrom} onChange={(e) => setDateFrom(e.target.value)} />
+                  <Input type="date" value={dateFrom} onChange={(e) => updateDateFilter('dateFrom', e.target.value)} />
                 </div>
                 <div className="space-y-2">
                   <Label>Tugash sana</Label>
-                  <Input type="date" value={dateTo} onChange={(e) => setDateTo(e.target.value)} />
+                  <Input type="date" value={dateTo} onChange={(e) => updateDateFilter('dateTo', e.target.value)} />
                 </div>
                 <div className="space-y-2">
                   <Label>Mahsulot qidirish</Label>
@@ -921,7 +927,7 @@ export default function SupplierDetail() {
                         <TableCell className="font-medium">{row.product_name}</TableCell>
                         <TableCell className="font-mono text-sm">{row.product_sku || '-'}</TableCell>
                         <TableCell className="text-right">{Number(row.total_received_qty || 0)}</TableCell>
-                        <TableCell className="text-right">{formatMoneyUZS(Number(row.total_cost || 0))}</TableCell>
+                        <TableCell className="text-right">{formatSupplierAmount(Number(row.total_cost || 0))}</TableCell>
                         <TableCell className="text-right">{Number(row.po_count || 0)}</TableCell>
                       </TableRow>
                     ))}
@@ -941,11 +947,11 @@ export default function SupplierDetail() {
               <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
                 <div>
                   <Label className="text-sm text-muted-foreground">Boshlanish sana</Label>
-                  <Input type="date" value={dateFrom} onChange={(e) => setDateFrom(e.target.value)} />
+                  <Input type="date" value={dateFrom} onChange={(e) => updateDateFilter('dateFrom', e.target.value)} />
                 </div>
                 <div>
                   <Label className="text-sm text-muted-foreground">Tugash sana</Label>
-                  <Input type="date" value={dateTo} onChange={(e) => setDateTo(e.target.value)} />
+                  <Input type="date" value={dateTo} onChange={(e) => updateDateFilter('dateTo', e.target.value)} />
                 </div>
                 <div className="flex items-end">
                   <Button variant="outline" className="w-full" onClick={() => supplier?.id && loadReturns(supplier.id)} disabled={returnsLoading}>
@@ -982,7 +988,7 @@ export default function SupplierDetail() {
                         <TableCell>
                           <Badge variant="outline">{r.status}</Badge>
                         </TableCell>
-                        <TableCell className="text-right font-semibold">{formatMoneyUZS(Number(r.total_amount || 0) || 0)}</TableCell>
+                        <TableCell className="text-right font-semibold">{formatSupplierAmount(Number(r.total_amount || 0) || 0)}</TableCell>
                       </TableRow>
                     ))}
                   </TableBody>

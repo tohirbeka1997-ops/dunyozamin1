@@ -490,6 +490,14 @@ app.on('ready', async () => {
         secret: appConfig?.client?.secret,
       });
 
+      try {
+        const { registerLocalPrintHandlers } = require('./ipc/print.ipc.cjs');
+        registerLocalPrintHandlers();
+        console.log('[POSNET] CLIENT: local pos:print:receipt registered (thermal printer)');
+      } catch (e) {
+        console.warn('[POSNET] CLIENT: local print handlers failed:', e?.message || e);
+      }
+
       // Create window (renderer will talk to HOST via forwarded IPC)
       createWindow();
       return;

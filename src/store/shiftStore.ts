@@ -4,7 +4,7 @@
 
 import { create } from 'zustand';
 import type { Shift } from '@/types/database';
-import { createShift, generateShiftNumber, closeShift as closeShiftAPI, getActiveShift, getCurrentShift } from '@/db/api';
+import { closeShift as closeShiftAPI, getCurrentShift } from '@/db/api';
 
 interface ShiftState {
   currentShift: Shift | null;
@@ -13,11 +13,15 @@ interface ShiftState {
   
   setCurrentShift: (shift: Shift | null) => void;
   openShift: (openingCash: number, cashierId: string) => Promise<void>;
-  closeShift: (closingCash: number, totals: { sales: number; refunds: number }, cashierId: string) => Promise<void>;
+  closeShift: (
+    closingCash: number,
+    totals: { cashSales: number; refunds: number; customerDrawerCashNet?: number },
+    cashierId: string
+  ) => Promise<void>;
   addSale: (sale: any) => void;
   addRefund: (refund: any) => void;
   loadFromStorage: () => void;
-  syncFromDatabase: (cashierId: string) => Promise<void>;
+  syncFromDatabase: (cashierId: string) => Promise<Shift | null>;
 }
 
 export const useShiftStore = create<ShiftState>((set, get) => ({
@@ -104,26 +108,15 @@ export const useShiftStore = create<ShiftState>((set, get) => ({
         }
       }
 
-      // Fallback to mock API if backend not available (development mode)
+      // No mock fallback. A "shift" only created in the renderer state would
+      // never be visible to the backend, would not be persisted to the DB,
+      // and would silently corrupt cash/Z-report calculations. If we got
+      // here without a real shift from posApi/api, surface the failure
+      // instead of fabricating one.
       if (!newShift) {
-        console.warn('[ShiftStore] Backend not available, using mock API');
-        const shiftNumber = await generateShiftNumber();
-        const MAIN_WAREHOUSE_ID = 'main-warehouse-001';
-        newShift = await createShift({
-          shift_number: shiftNumber,
-          cashier_id: cashierId,
-          user_id: cashierId,
-          warehouse_id: MAIN_WAREHOUSE_ID, // SINGLE WAREHOUSE SYSTEM
-          opened_at: new Date().toISOString(),
-          opening_cash: openingCash,
-          status: 'open',
-          notes: null,
-        });
-      }
-
-      if (!newShift) {
-        console.error('[ShiftStore] ❌ newShift is null/undefined');
-        throw new Error('Smenani ochib bo\'lmadi: Backend javob qaytarmadi');
+        throw new Error(
+          "Smenani ochib bo'lmadi: backend bilan bog'lanib bo'lmadi. Tarmoqni va POS xizmatini tekshiring."
+        );
       }
 
       if (!newShift.id) {
@@ -149,7 +142,12 @@ export const useShiftStore = create<ShiftState>((set, get) => ({
     }
   },
 
-  closeShift: async (closingCash: number, totals: { sales: number; refunds: number }, cashierId: string) => {
+  /** totals: naqd savdo + mijozdan kassaga naqd (balans) − naqd qaytarishlar */
+  closeShift: async (
+    closingCash: number,
+    totals: { cashSales: number; refunds: number; customerDrawerCashNet?: number },
+    cashierId: string
+  ) => {
     const { currentShift } = get();
     if (!currentShift) {
       throw new Error('No active shift to close');
@@ -181,7 +179,8 @@ export const useShiftStore = create<ShiftState>((set, get) => ({
         throw new Error('closeShift API function is not available');
       }
 
-      const expectedCash = currentShift.opening_cash + totals.sales - totals.refunds;
+      const drawerNet = Number(totals.customerDrawerCashNet ?? 0) || 0;
+      const expectedCash = currentShift.opening_cash + totals.cashSales + drawerNet - totals.refunds;
       const cashDifference = closingCash - expectedCash;
 
       console.log('[ShiftStore] Calling closeShiftAPI with shiftId:', currentShift.id);
@@ -286,7 +285,7 @@ export const useShiftStore = create<ShiftState>((set, get) => ({
       if (!cashierId) {
         console.warn('⚠️ No cashierId provided, clearing shift state');
         set({ currentShift: null });
-        return;
+        return null;
       }
 
       // Get shift for specific user
@@ -302,6 +301,7 @@ export const useShiftStore = create<ShiftState>((set, get) => ({
         } catch (error) {
           console.warn('Failed to save active shift to localStorage:', error);
         }
+        return activeShift;
       } else {
         console.log('ℹ️ No active shift found in database');
         set({ currentShift: null });
@@ -312,10 +312,12 @@ export const useShiftStore = create<ShiftState>((set, get) => ({
         } catch (error) {
           console.warn('Failed to clear shift from localStorage:', error);
         }
+        return null;
       }
     } catch (error) {
       console.error('Error syncing shift from database:', error);
       // On error, keep current state (don't clear it)
+      return null;
     }
   },
 }));

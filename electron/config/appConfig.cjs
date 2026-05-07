@@ -6,7 +6,10 @@ const { getAppLike } = require('../lib/runtime.cjs');
 const CONFIG_FILENAME = 'pos-config.json';
 
 function resolveApp(override) {
-  return getAppLike(override || null);
+  // App config is device-local. When Electron passes its real `app` object,
+  // prefer it even if a server-mode env flag leaked in from the root .env.
+  if (override && typeof override.getPath === 'function') return override;
+  return getAppLike(null);
 }
 
 function getConfigPath(electronApp = null) {

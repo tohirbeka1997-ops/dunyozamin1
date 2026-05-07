@@ -1,31 +1,18 @@
 // src/components/ProtectedRoute.tsx
 import { ReactNode, useEffect } from 'react';
 import { Navigate, useLocation } from 'react-router-dom';
+import { useTranslation } from 'react-i18next';
 import { useAuth } from '@/contexts/AuthContext';
+import { hasSessionTokenIfRequired } from '@/lib/auth/sessionToken';
 
 type Props = {
   children: ReactNode;
 };
 
-/**
- * Checks `window.posApi._session.hasToken()` so the web/SaaS build treats a
- * missing/expired session token the same as "not logged in", even if the
- * local `auth_user` blob is still present. In Electron desktop the helper
- * returns false (no token) BUT `user` is set from the local profile — so we
- * only apply the token guard when the helper is wired (remote mode).
- */
-function hasSessionTokenIfRequired(): boolean {
-  if (typeof window === 'undefined') return true;
-  const api = (window as any).posApi;
-  if (!api?._session || typeof api._session.hasToken !== 'function') {
-    return true; // Electron / not configured — trust the React state.
-  }
-  return !!api._session.hasToken();
-}
-
 export default function ProtectedRoute({ children }: Props) {
   const { user, loading, signOut } = useAuth();
   const location = useLocation();
+  const { t } = useTranslation();
 
   // If React state thinks we're logged in but the token vanished (e.g. user
   // cleared localStorage in another tab), sign out locally too — then the
@@ -40,7 +27,7 @@ export default function ProtectedRoute({ children }: Props) {
   if (loading) {
     return (
       <div className="flex h-screen items-center justify-center">
-        <div className="text-muted-foreground">Yuklanmoqda...</div>
+        <div className="text-muted-foreground">{t('common.loading')}</div>
       </div>
     );
   }

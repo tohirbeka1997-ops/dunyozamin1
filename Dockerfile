@@ -73,10 +73,12 @@ COPY --from=deps-builder --chown=pos:pos /build/package.json  ./package.json
 
 # faqat server ishlashi uchun kerakli manba fayllar
 COPY --chown=pos:pos electron ./electron
+COPY --chown=pos:pos public-api/lib ./public-api/lib
 COPY --chown=pos:pos .env.server.example ./.env.server.example
 
 COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
-RUN chmod +x /usr/local/bin/docker-entrypoint.sh
+RUN sed -i 's/\r$//' /usr/local/bin/docker-entrypoint.sh \
+    && chmod +x /usr/local/bin/docker-entrypoint.sh
 
 # data volume mount point
 RUN mkdir -p /var/lib/pos && chown -R pos:pos /var/lib/pos

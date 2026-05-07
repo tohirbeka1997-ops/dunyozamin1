@@ -320,9 +320,76 @@ function createInvoker(baseUrl: string, secret: string) {
       remoteInvoke(baseUrl, secret, channel, ...args);
 }
 
+async function uploadProductImageOverHttp(
+  baseUrl: string,
+  bootstrapSecret: string,
+  file: File,
+  productIdOrTempId?: string,
+  index?: number,
+) {
+  const url = `${String(baseUrl).replace(/\/+$/, '')}/uploads/product-images`;
+  const bearer = bootstrapSecret;
+  try {
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${bearer}`,
+        'Content-Type': file.type || 'application/octet-stream',
+        'X-File-Name': file.name || 'product-image',
+        'X-Product-Id': String(productIdOrTempId || ''),
+        'X-Image-Index': String(index ?? 0),
+        'ngrok-skip-browser-warning': '1',
+      },
+      body: file,
+    });
+    if (res.status === 401) {
+      setSessionToken(null);
+      dispatchAuthRequired('expired_or_invalid');
+    }
+    const payload = await res.json().catch(() => null);
+    if (!payload || typeof payload !== 'object') {
+      return {
+        success: false,
+        error: { code: 'INTERNAL_ERROR', message: `Invalid upload response (HTTP ${res.status})` },
+      };
+    }
+    if (payload.ok === true) {
+      return { success: true, data: payload.data };
+    }
+    return {
+      success: false,
+      error: payload.error || { code: 'UPLOAD_ERROR', message: `Upload failed (HTTP ${res.status})` },
+    };
+  } catch (error: unknown) {
+    return {
+      success: false,
+      error: { code: 'NETWORK_ERROR', message: error instanceof Error ? error.message : String(error) },
+    };
+  }
+}
+
 /** Same nested shape as `electron/preload.cjs` (channels must match POS IPC). */
 export function createRemotePosApi(baseUrl: string, secret: string) {
   const inv = createInvoker(baseUrl, secret);
+  const invokeWithFallback =
+    (primaryChannel: string, fallbackChannel: string) =>
+    async (...args: unknown[]) => {
+      const primary = await remoteInvoke(baseUrl, secret, primaryChannel, ...args);
+      if (primary.success) {
+        return primary;
+      }
+
+      const msg = String(primary.error?.message || '').toLowerCase();
+      const code = String(primary.error?.code || '').toUpperCase();
+      const unknownChannel =
+        code === 'NOT_FOUND' && (msg.includes('unknown channel') || msg.includes(primaryChannel.toLowerCase()));
+
+      if (!unknownChannel) {
+        return primary;
+      }
+
+      return remoteInvoke(baseUrl, secret, fallbackChannel, ...args);
+    };
 
   return {
     appConfig: {
@@ -369,6 +436,8 @@ export function createRemotePosApi(baseUrl: string, secret: string) {
     customers: {
       list: inv('pos:customers:list'),
       get: inv('pos:customers:get'),
+      getByLoyaltyQr: inv('pos:customers:getByLoyaltyQr'),
+      getLoyaltyCard: inv('pos:customers:getLoyaltyCard'),
       create: inv('pos:customers:create'),
       update: inv('pos:customers:update'),
       delete: inv('pos:customers:delete'),
@@ -475,7 +544,17 @@ export function createRemotePosApi(baseUrl: string, secret: string) {
       get: inv('pos:shifts:get'),
       getActive: inv('pos:shifts:getActive'),
       getCurrent: inv('pos:shifts:getCurrent'),
-      getSummary: inv('pos:shifts:getSummary'),
+      getSummary: async (payload: { shiftId?: string; shift_id?: string } | null | undefined) => {
+        const raw = payload?.shiftId ?? payload?.shift_id;
+        const shiftId = raw != null && String(raw).trim() ? String(raw).trim() : '';
+        if (!shiftId) {
+          return {
+            success: false,
+            error: { code: 'VALIDATION_ERROR', message: 'Faol smena topilmadi — shiftId kerak' },
+          };
+        }
+        return inv('pos:shifts:getSummary')({ shiftId });
+      },
       getStatus: inv('pos:shifts:getStatus'),
       require: inv('pos:shifts:require'),
       list: inv('pos:shifts:list'),
@@ -494,6 +573,8 @@ export function createRemotePosApi(baseUrl: string, secret: string) {
       inventoryValuationSummary: inv('pos:reports:inventoryValuationSummary'),
       batchReconciliation: inv('pos:reports:batchReconciliation'),
       actSverka: inv('pos:reports:actSverka'),
+      productActSverkaByPeriod: inv('pos:reports:productActSverkaByPeriod'),
+      productDocumentHistory: inv('pos:reports:productDocumentHistory'),
       customerActSverka: inv('pos:reports:customerActSverka'),
       supplierActSverka: inv('pos:reports:supplierActSverka'),
       productTraceability: inv('pos:reports:productTraceability'),
@@ -513,6 +594,7 @@ export function createRemotePosApi(baseUrl: string, secret: string) {
       productPriceSummary: inv('pos:reports:productPriceSummary'),
       purchasePlanning: inv('pos:reports:purchasePlanning'),
       purchaseSaleSpread: inv('pos:reports:purchaseSaleSpread'),
+      purchaseVsSold: inv('pos:reports:purchaseVsSold'),
       spreadTimeSeries: inv('pos:reports:spreadTimeSeries'),
       latestPurchaseCosts: inv('pos:reports:getLatestPurchaseCosts'),
       cashierErrors: inv('pos:reports:cashierErrors'),
@@ -549,6 +631,7 @@ export function createRemotePosApi(baseUrl: string, secret: string) {
       login: inv('pos:auth:login'),
       logout: inv('pos:auth:logout'),
       me: inv('pos:auth:me'),
+      setSessionUser: inv('pos:auth:setSessionUser'),
       getUser: inv('pos:auth:getUser'),
       checkPermission: inv('pos:auth:checkPermission'),
       requestPasswordReset: inv('pos:auth:requestPasswordReset'),
@@ -576,6 +659,7 @@ export function createRemotePosApi(baseUrl: string, secret: string) {
       create: inv('pos:users:create'),
       update: inv('pos:users:update'),
       delete: inv('pos:users:delete'),
+      listLoginSessions: inv('pos:users:listLoginSessions'),
       resetPassword: inv('pos:users:resetPassword'),
     },
     quotes: {
@@ -595,9 +679,14 @@ export function createRemotePosApi(baseUrl: string, secret: string) {
       cancel: inv('pos:orders:cancel'),
     },
     webOrders: {
-      list: inv('pos:webOrders:list'),
-      get: inv('pos:webOrders:get'),
-      updateStatus: inv('pos:webOrders:updateStatus'),
+      // Backward compatibility: some older server builds expose a legacy
+      // channel name without the second colon.
+      list: invokeWithFallback('pos:webOrders:list', 'pos:webOrdersList'),
+      get: invokeWithFallback('pos:webOrders:get', 'pos:webOrdersGet'),
+      updateStatus: invokeWithFallback('pos:webOrders:updateStatus', 'pos:webOrdersUpdateStatus'),
+      update: invokeWithFallback('pos:webOrders:update', 'pos:webOrdersUpdate'),
+      cancel: invokeWithFallback('pos:webOrders:cancel', 'pos:webOrdersCancel'),
+      dispatchToCourier: invokeWithFallback('pos:webOrders:dispatchToCourier', 'pos:webOrdersDispatchToCourier'),
     },
     files: {
       selectSavePath: inv('pos:files:selectSavePath'),
@@ -608,6 +697,8 @@ export function createRemotePosApi(baseUrl: string, secret: string) {
       openTextFile: inv('pos:files:openTextFile'),
       selectImageFile: inv('pos:files:selectImageFile'),
       saveProductImage: inv('pos:files:saveProductImage'),
+      uploadProductImage: (file: File, productIdOrTempId?: string, index?: number) =>
+        uploadProductImageOverHttp(baseUrl, secret, file, productIdOrTempId, index),
       pathToFileUrl: inv('pos:files:pathToFileUrl'),
     },
     print: {
@@ -638,9 +729,22 @@ export function installRemotePosApiIfConfigured(): void {
   const w = window as Window & { posApi?: unknown };
   if (w.posApi) return;
 
-  const base = import.meta.env.VITE_POS_RPC_URL;
+  const rawBase = String(import.meta.env.VITE_POS_RPC_URL || '').trim();
   const secret = import.meta.env.VITE_POS_RPC_SECRET;
-  if (!base || !secret) return;
+  if (!rawBase || !secret) return;
+
+  // Safety net for web deploys: if a localhost RPC URL is accidentally baked
+  // into production assets, route RPC to the current origin instead.
+  let base = rawBase;
+  try {
+    const u = new URL(rawBase);
+    const isLocalHost = u.hostname === '127.0.0.1' || u.hostname === 'localhost';
+    if (isLocalHost && window.location.protocol === 'https:') {
+      base = window.location.origin;
+    }
+  } catch {
+    // Keep original base if URL parsing fails.
+  }
 
   w.posApi = createRemotePosApi(String(base), String(secret));
 }

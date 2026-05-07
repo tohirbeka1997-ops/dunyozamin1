@@ -30,59 +30,43 @@ class AuthService {
 
     const trimmedUsername = username.trim().toLowerCase();
     const trimmedPassword = password.trim();
-    
-    console.log('🔍 AuthService.login: Searching for user with username:', trimmedUsername);
 
-    // Query users table - check both username and email fields
     const stmt1 = this.db.prepare('SELECT * FROM users WHERE LOWER(username) = ? OR LOWER(email) = ?');
     const user = stmt1.get(trimmedUsername, trimmedUsername);
-    
-    console.log('🔍 Query result:', user ? 'Found' : 'Not found');
-    
-    // Check if user exists
+
     if (!user) {
-      console.error('❌ AuthService.login: User not found for username:', trimmedUsername);
       return { success: false, error: 'Invalid credentials' };
     }
 
-    // Check if user is active
     if (!user.is_active) {
-      console.error('❌ AuthService.login: User account is inactive');
       return { success: false, error: 'User account is inactive' };
     }
 
-    // Pre-check: If user has no password set, automatically set default password '12345'
-    // This is a temporary fix to ensure existing users can log in
+    // Refuse login when no password has ever been set. We deliberately do NOT
+    // auto-assign a default password ('12345' or any other) — that practice
+    // creates a well-known credential for any account whose password_hash got
+    // wiped during migrations or seeding. The admin must use the password
+    // reset flow instead.
     if (!user.password_hash) {
-      console.warn('⚠️  AuthService.login: User has no password set, setting default password');
-      const defaultPasswordHash = crypto.createHash('sha256').update('12345').digest('hex');
-      
-      try {
-        this.db.prepare(`
-          UPDATE users 
-          SET password_hash = ?, updated_at = datetime('now') 
-          WHERE id = ?
-        `).run(defaultPasswordHash, user.id);
-        
-        console.log('✅ Default password set for user:', user.username);
-        // Update user object with new password_hash
-        user.password_hash = defaultPasswordHash;
-      } catch (error) {
-        console.error('❌ Failed to set default password:', error);
-        return { success: false, error: 'Account setup error. Please contact administrator.' };
-      }
+      return {
+        success: false,
+        error: 'Account is not configured. Please reset your password.',
+      };
     }
 
-    // Verify password
-    // For now, use SHA-256 (matching seed data)
-    // TODO: Migrate to bcrypt for production
     const passwordHash = crypto.createHash('sha256').update(trimmedPassword).digest('hex');
-    
-    // Compare password hash
-    if (passwordHash !== user.password_hash) {
-      console.error('❌ AuthService.login: Password mismatch');
-      console.error('   Expected hash:', user.password_hash);
-      console.error('   Provided hash:', passwordHash);
+
+    // Constant-time compare to neutralise timing oracles. Both buffers are
+    // hex digests of identical length so this is safe.
+    let passwordOk = false;
+    try {
+      const a = Buffer.from(passwordHash, 'hex');
+      const b = Buffer.from(String(user.password_hash), 'hex');
+      passwordOk = a.length === b.length && a.length > 0 && crypto.timingSafeEqual(a, b);
+    } catch {
+      passwordOk = false;
+    }
+    if (!passwordOk) {
       return { success: false, error: 'Invalid credentials' };
     }
 
@@ -102,18 +86,13 @@ class AuthService {
       
       if (roleResult && roleResult.code) {
         role = roleResult.code;
-        console.log('✅ Role retrieved from database:', role);
-      } else {
-        console.warn('⚠️  No active role found for user:', user.username, user.id);
       }
     } catch (error) {
-      // user_roles or roles table might not exist
-      console.error('❌ Could not fetch role from user_roles:', error.message);
+      console.error('[auth] Could not fetch role from user_roles:', error.message);
     }
-    
+
     // Safety fallback: If no role found, check if this is admin@pos.com and assign admin role
     if (!role && user.username === 'admin@pos.com') {
-      console.warn('⚠️  Admin user has no role assigned, defaulting to admin');
       role = 'admin';
       
       // Try to fix the database by ensuring role is linked
@@ -129,40 +108,23 @@ class AuthService {
           INSERT OR REPLACE INTO user_roles (id, user_id, role_id, assigned_at)
           VALUES ('ur-admin-001', ?, 'role-admin-001', datetime('now'))
         `).run(user.id);
-        
-        console.log('✅ Auto-fixed admin role assignment in database');
       } catch (fixError) {
-        console.error('❌ Failed to auto-fix admin role:', fixError.message);
+        console.error('[auth] Failed to auto-fix admin role:', fixError.message);
       }
     }
-    
-    // Final fallback: Use 'cashier' only if user is definitely not admin
+
     if (!role) {
-      console.warn('⚠️  No role found, defaulting to cashier for user:', user.username);
       role = 'cashier';
     }
 
-    // Return user without password_hash
-    const { password_hash, ...userWithoutPassword } = user;
-    
-    // Ensure role is set (should not be null at this point)
-    if (!role) {
-      console.error('❌ CRITICAL: Role is still null after all checks for user:', user.username);
-      role = 'cashier'; // Last resort fallback
-    }
-    
     const userData = {
       id: user.id,
       username: user.username,
       full_name: user.full_name,
       email: user.email || user.username,
-      role: role, // Role must be set (admin, cashier, or manager)
+      role,
     };
-    
-    console.log('✅ Final user data with role:', { username: userData.username, role: userData.role });
 
-    console.log('✅ AuthService.login: Login successful for user:', userData.username);
-    
     return {
       success: true,
       user: userData,

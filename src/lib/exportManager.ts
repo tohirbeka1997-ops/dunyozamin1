@@ -8,7 +8,19 @@ import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
 import { formatMoneyUZS } from './format';
 import { downloadBlob, downloadCSV } from './exportHelpers';
-import { getOrders, getOrderById, getProfiles, getCustomers, getCategories, getProducts, getPurchaseOrders, getExpenses, getSalesReturnById, getSalesReturns } from '@/db/api';
+import {
+  getOrders,
+  getOrderById,
+  getProfiles,
+  getCustomers,
+  getCategories,
+  getProducts,
+  getPurchaseOrders,
+  getExpenses,
+  getSalesReturnById,
+  getSalesReturns,
+  getEmployeeSessions,
+} from '@/db/api';
 import type { OrderWithDetails, Profile, Customer, Category, Product, SalesReturnWithDetails } from '@/types/database';
 import { formatDate, formatDateTime, formatDateYMD, todayYMD } from '@/lib/datetime';
 
@@ -687,10 +699,10 @@ export const exportCashierPerformance = async (
     getProfiles(),
   ]);
 
-  const today = new Date().toISOString().split('T')[0];
+  const dayYmd = todayYMD();
   const filtered = ordersData.filter((order) => {
-    const orderDate = new Date(order.created_at).toISOString().split('T')[0];
-    return orderDate === today && order.status === 'completed';
+    const orderDate = formatDateYMD(order.created_at);
+    return orderDate === dayYmd && order.status === 'completed';
   });
 
   interface CashierData {
@@ -735,7 +747,7 @@ export const exportCashierPerformance = async (
     const ws = XLSX.utils.aoa_to_sheet([headers, ...rows]);
     ws['!cols'] = [{ wch: 25 }, { wch: 15 }, { wch: 18 }, { wch: 18 }];
     XLSX.utils.book_append_sheet(wb, ws, 'Hisobot');
-    XLSX.writeFile(wb, `cashier-performance_${today}.xlsx`);
+    XLSX.writeFile(wb, `cashier-performance_${dayYmd}.xlsx`);
   } else if (format === 'pdf') {
     const doc = new jsPDF('landscape', 'mm', 'a4');
     doc.setFontSize(18);
@@ -756,7 +768,7 @@ export const exportCashierPerformance = async (
       headStyles: { fillColor: [66, 139, 202], textColor: 255 },
     } as any);
 
-    doc.save(`cashier-performance_${today}.pdf`);
+    doc.save(`cashier-performance_${dayYmd}.pdf`);
   } else {
     const headers = ['Kassir', 'Buyurtmalar soni', 'Jami sotuv', 'O\'rtacha buyurtma'];
     const rows = cashierData.map((item) => [
@@ -765,32 +777,57 @@ export const exportCashierPerformance = async (
       formatUzs(item.total_sales),
       formatUzs(item.average_order),
     ]);
-    downloadCSV(headers, rows, `cashier-performance_${today}.csv`);
+    downloadCSV(headers, rows, `cashier-performance_${dayYmd}.csv`);
   }
 };
 
 /**
- * Export Login Activity
+ * Export Login Activity (DB: sessions, har bir kirishda qayd)
  */
 export const exportLoginActivity = async (
-  format: 'excel' | 'pdf' | 'csv'
+  format: 'excel' | 'pdf' | 'csv',
+  opts?: { dateFrom?: string; dateTo?: string }
 ): Promise<void> => {
-  // Placeholder - would need login activity API
-  const today = new Date().toISOString().split('T')[0];
-  
+  const dayYmd = todayYMD();
+  const dateFrom = opts?.dateFrom ?? dayYmd;
+  const dateTo = opts?.dateTo ?? dayYmd;
+
+  const rows = await getEmployeeSessions({ dateFrom, dateTo });
+  const tableRows = rows.map((s) => {
+    const name = s.employee?.full_name || s.employee?.username || 'Noma\'lum';
+    const login = s.login_time ? formatDateTime(s.login_time) : '-';
+    const logout = s.logout_time ? formatDateTime(s.logout_time) : 'Aktiv';
+    const ip = s.ip_address || '-';
+    return [name, login, logout, ip];
+  });
+  const head = ['Xodim', 'Kirish vaqti', 'Chiqish vaqti', 'IP manzil'];
+  const suffix = dateFrom === dateTo ? dateFrom : `${dateFrom}_${dateTo}`;
+
   if (format === 'excel') {
     const wb = XLSX.utils.book_new();
-    const ws = XLSX.utils.aoa_to_sheet([['Xodim', 'Kirish vaqti', 'Chiqish vaqti']]);
+    const ws = XLSX.utils.aoa_to_sheet([head, ...tableRows]);
     XLSX.utils.book_append_sheet(wb, ws, 'Hisobot');
-    XLSX.writeFile(wb, `login-activity_${today}.xlsx`);
+    XLSX.writeFile(wb, `login-activity_${suffix}.xlsx`);
   } else if (format === 'pdf') {
     const doc = new jsPDF('landscape', 'mm', 'a4');
-    doc.setFontSize(18);
-    doc.text('Tizimga kirishlar jurnali', 14, 15);
-    doc.text('Ma\'lumotlar hozircha mavjud emas', 14, 25);
-    doc.save(`login-activity_${today}.pdf`);
+    doc.setFontSize(16);
+    doc.text('Tizimga kirishlar jurnali', 14, 12);
+    doc.setFontSize(10);
+    doc.text(
+      `Sana oralig\'i: ${dateFrom} — ${dateTo}  |  Jami: ${rows.length} ta yozuv`,
+      14,
+      19
+    );
+    autoTable(doc, {
+      startY: 24,
+      head: [head],
+      body: tableRows,
+      theme: 'striped',
+      styles: { fontSize: 7 },
+    });
+    doc.save(`login-activity_${suffix}.pdf`);
   } else {
-    downloadCSV(['Xodim', 'Kirish vaqti', 'Chiqish vaqti'], [], `login-activity_${today}.csv`);
+    downloadCSV(head, tableRows, `login-activity_${suffix}.csv`);
   }
 };
 

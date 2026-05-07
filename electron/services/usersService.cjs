@@ -1,6 +1,7 @@
 const { ERROR_CODES, createError } = require('../lib/errors.cjs');
 const { randomUUID } = require('crypto');
 const crypto = require('crypto');
+const { UZBEKISTAN_TZ_SQLITE_OFFSET } = require('../lib/timezone.cjs');
 
 /**
  * Users Service
@@ -253,6 +254,100 @@ class UsersService {
     }
     this.db.prepare('DELETE FROM users WHERE id = ?').run(id);
     return { success: true };
+  }
+
+  /**
+   * Login sessions for "Tizimga kirishlar jurnali" (sessions table, insert on each pos:auth:login).
+   * Day filter: Asia/Tashkent business day, same as reportsService.
+   * No per-logout time in DB yet: logout_time / duration are null; UI shows "Aktiv" / "-".
+   */
+  _tzDateExpr(columnExpr) {
+    return `date(datetime(replace(replace(${columnExpr}, 'T', ' '), 'Z', ''), '${UZBEKISTAN_TZ_SQLITE_OFFSET}'))`;
+  }
+
+  listLoginSessions(filters = {}) {
+    const employeeId = filters.employee_id || filters.employeeId || null;
+    const dateFrom = filters.date_from || filters.dateFrom || null;
+    const dateTo = filters.date_to || filters.dateTo || null;
+
+    const where = ['1=1'];
+    const params = [];
+
+    if (employeeId) {
+      where.push('s.user_id = ?');
+      params.push(employeeId);
+    }
+    if (dateFrom && dateTo) {
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(String(dateFrom)) || !/^\d{4}-\d{2}-\d{2}$/.test(String(dateTo))) {
+        throw createError(ERROR_CODES.VALIDATION_ERROR, 'date_from and date_to must be YYYY-MM-DD');
+      }
+      where.push(`${this._tzDateExpr('s.created_at')} BETWEEN date(?) AND date(?)`);
+      params.push(dateFrom, dateTo);
+    }
+
+    // Without a date range (e.g. employee detail), cap to avoid unbounded loads.
+    const limitSql = dateFrom && dateTo ? '' : ' LIMIT 500';
+
+    const roleSubq = `(
+      SELECT r.code
+      FROM user_roles ur
+      INNER JOIN roles r ON r.id = ur.role_id
+      WHERE ur.user_id = u.id AND r.is_active = 1
+      ORDER BY ur.assigned_at DESC
+      LIMIT 1
+    )`;
+
+    const rows =
+      this.db
+        .prepare(
+          `
+          SELECT
+            s.id,
+            s.user_id,
+            s.created_at,
+            s.ip_address,
+            s.user_agent,
+            s.expires_at,
+            u.id AS u_id,
+            u.username,
+            u.full_name,
+            u.email,
+            u.phone,
+            u.is_active,
+            u.last_login,
+            u.created_at AS u_created_at,
+            u.updated_at,
+            ${roleSubq} AS role
+          FROM sessions s
+          INNER JOIN users u ON u.id = s.user_id
+          WHERE ${where.join(' AND ')}
+          ORDER BY s.created_at DESC
+          ${limitSql}
+        `
+        )
+        .all(...params) || [];
+
+    return rows.map((r) => ({
+      id: r.id,
+      employee_id: r.user_id,
+      login_time: r.created_at,
+      logout_time: null,
+      duration: null,
+      ip_address: r.ip_address,
+      created_at: r.created_at,
+      employee: {
+        id: r.u_id,
+        username: r.username,
+        full_name: r.full_name,
+        email: r.email,
+        phone: r.phone,
+        role: r.role || 'cashier',
+        is_active: r.is_active === 1,
+        last_login: r.last_login,
+        created_at: r.u_created_at,
+        updated_at: r.updated_at,
+      },
+    }));
   }
 }
 

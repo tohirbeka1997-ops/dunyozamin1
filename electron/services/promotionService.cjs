@@ -149,9 +149,7 @@ class PromotionService {
       const unitPrice = Number(item.unit_price ?? product.sale_price ?? 0);
       const lineSubtotal = quantity * unitPrice;
 
-      let bestPromo = null;
-      let bestDiscount = 0;
-      let bestFinalPrice = unitPrice;
+      const eligiblePromos = [];
 
       for (const promo of activePromos) {
         if (!this._productMatchesScope(product, promo)) continue;
@@ -165,23 +163,84 @@ class PromotionService {
           lineSubtotal
         );
 
-        if (discountAmount > bestDiscount) {
-          bestDiscount = discountAmount;
-          bestPromo = promo;
-          bestFinalPrice = finalUnitPrice;
-        }
+        if (discountAmount <= 0) continue;
+        eligiblePromos.push({
+          promo,
+          discountAmount,
+          finalUnitPrice,
+          priority: Number(promo?.priority ?? 0) || 0,
+          combinable: !!Number(promo?.combinable ?? 0),
+        });
       }
 
-      if (bestPromo) {
+      if (eligiblePromos.length > 0) {
+        // Deterministic policy:
+        // 1) Highest priority tier wins.
+        // 2) If any non-combinable exists in the top tier, pick the first one by created_at ordering.
+        // 3) Otherwise stack all top-tier combinable promotions (with line-total cap).
+        const topPriority = Math.max(...eligiblePromos.map((x) => x.priority));
+        const topTier = eligiblePromos.filter((x) => x.priority === topPriority);
+        const nonCombinableTop = topTier.filter((x) => !x.combinable);
+        if (nonCombinableTop.length > 0) {
+          const chosen = nonCombinableTop[0];
+          return {
+            ...item,
+            unit_price: chosen.finalUnitPrice,
+            discount_amount: chosen.discountAmount,
+            subtotal: lineSubtotal,
+            total: lineSubtotal - chosen.discountAmount,
+            price_source: 'promo',
+            promotion_id: chosen.promo.id,
+            promotion_name: chosen.promo.name,
+          };
+        }
+
+        const typeOrder = {
+          percent_discount: 1,
+          amount_discount: 2,
+          fixed_price: 3,
+        };
+        const orderedTopTier = [...topTier].sort((a, b) => {
+          const ao = typeOrder[String(a?.promo?.type || '')] ?? 99;
+          const bo = typeOrder[String(b?.promo?.type || '')] ?? 99;
+          if (ao !== bo) return ao - bo;
+          return 0;
+        });
+        let runningSubtotal = lineSubtotal;
+        let runningUnitPrice = unitPrice;
+        const applied = [];
+        for (const entry of orderedTopTier) {
+          const computed = this._computeDiscount(
+            entry.promo,
+            entry.promo.type,
+            runningUnitPrice,
+            quantity,
+            runningSubtotal
+          );
+          const stepDiscount = Math.max(0, Math.min(runningSubtotal, Number(computed.discountAmount || 0)));
+          if (stepDiscount <= 0) continue;
+          runningSubtotal -= stepDiscount;
+          runningUnitPrice = quantity > 0 ? runningSubtotal / quantity : runningUnitPrice;
+          applied.push({ ...entry, stepDiscount });
+          if (String(entry?.promo?.type || '') === 'fixed_price') break;
+        }
+        const stackedDiscount = Math.max(0, lineSubtotal - runningSubtotal);
+        const finalUnitPrice = quantity > 0 ? runningSubtotal / quantity : unitPrice;
+        const sortedByDiscount = [...applied].sort((a, b) => b.stepDiscount - a.stepDiscount);
+        const primary = sortedByDiscount[0] || null;
+        const promoNames = applied.map((x) => String(x.promo?.name || '')).filter(Boolean);
+        const promoIds = applied.map((x) => x.promo?.id).filter(Boolean);
+
         return {
           ...item,
-          unit_price: bestFinalPrice,
-          discount_amount: bestDiscount,
+          unit_price: finalUnitPrice,
+          discount_amount: stackedDiscount,
           subtotal: lineSubtotal,
-          total: lineSubtotal - bestDiscount,
+          total: lineSubtotal - stackedDiscount,
           price_source: 'promo',
-          promotion_id: bestPromo.id,
-          promotion_name: bestPromo.name,
+          promotion_id: primary?.promo?.id ?? null,
+          promotion_name: promoNames.join(' + ') || (primary?.promo?.name ?? null),
+          promotion_ids: promoIds,
         };
       }
 
@@ -249,10 +308,14 @@ class PromotionService {
     const { status, type, storeId, limit = 500, offset = 0 } = params;
     let query = `
       SELECT p.*, ps.scope_type, ps.scope_ids,
+             pr.discount_percent as pr_discount_percent,
+             pr.discount_amount as pr_discount_amount,
+             pr.fixed_price as pr_fixed_price,
              (SELECT COUNT(*) FROM promotion_usage WHERE promotion_id = p.id) as usage_count,
              (SELECT COALESCE(SUM(discount_amount), 0) FROM promotion_usage WHERE promotion_id = p.id) as total_discount
       FROM promotions p
       LEFT JOIN promotion_scope ps ON ps.promotion_id = p.id
+      LEFT JOIN promotion_reward pr ON pr.promotion_id = p.id
       WHERE 1=1
     `;
     const values = [];
@@ -272,10 +335,32 @@ class PromotionService {
     values.push(limit, offset);
     const rows = this.db.prepare(query).all(...values);
     return rows.map((row) => {
-      const { scope_type, scope_ids, usage_count, total_discount, ...p } = row;
+      const {
+        scope_type,
+        scope_ids,
+        usage_count,
+        total_discount,
+        pr_discount_percent,
+        pr_discount_amount,
+        pr_fixed_price,
+        ...p
+      } = row;
+      const hasReward =
+        pr_discount_percent != null ||
+        pr_discount_amount != null ||
+        pr_fixed_price != null;
       return {
         ...p,
         scope: scope_type != null ? { scope_type, scope_ids } : null,
+        reward: hasReward
+          ? {
+              discount_percent:
+                pr_discount_percent != null ? Number(pr_discount_percent) : null,
+              discount_amount:
+                pr_discount_amount != null ? Number(pr_discount_amount) : null,
+              fixed_price: pr_fixed_price != null ? Number(pr_fixed_price) : null,
+            }
+          : null,
         usage_count: Number(usage_count ?? 0),
         total_discount: Number(total_discount ?? 0),
       };

@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
-import { Card, CardContent } from '@/components/ui/card';
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
 import {
@@ -40,7 +40,19 @@ import {
 import { getCustomers, deleteCustomer } from '@/db/api';
 import { useAuth } from '@/contexts/AuthContext';
 import type { Customer } from '@/types/database';
-import { Search, Plus, Eye, Edit, Trash2, Download, ArrowUpDown, DollarSign, MoreVertical, AlertTriangle } from 'lucide-react';
+import {
+  Search,
+  Plus,
+  Eye,
+  Edit,
+  Trash2,
+  Download,
+  ArrowUpDown,
+  DollarSign,
+  MoreVertical,
+  AlertTriangle,
+  Users,
+} from 'lucide-react';
 import { highlightMatch } from '@/utils/searchHighlight';
 import { useToast } from '@/hooks/use-toast';
 import ReceivePaymentModal from '@/components/customers/ReceivePaymentModal';
@@ -60,7 +72,7 @@ export default function Customers() {
   const [error, setError] = useState<Error | null>(null);
   const { updateParams, searchParams } = useSessionSearchParams({
     storageKey: 'customers.filters.query',
-    trackedKeys: ['search', 'type', 'status', 'sortBy', 'sortOrder'],
+    trackedKeys: ['search', 'type', 'status', 'sortBy', 'sortOrder', 'page', 'pageSize'],
   });
   const searchTerm = searchParams.get('search') || '';
   const debouncedSearchTerm = useDebounce(searchTerm, 200);
@@ -68,6 +80,9 @@ export default function Customers() {
   const statusFilter = searchParams.get('status') || 'all';
   const sortBy = (searchParams.get('sortBy') || 'created_at') as 'created_at' | 'balance' | 'last_order_date' | 'total_sales' | 'name';
   const sortOrder = (searchParams.get('sortOrder') || 'desc') as 'asc' | 'desc';
+  const page = Math.max(0, Number(searchParams.get('page') || 0) || 0);
+  const pageSizeRaw = Number(searchParams.get('pageSize') || 50) || 50;
+  const pageSize = [25, 50, 100].includes(pageSizeRaw) ? pageSizeRaw : 50;
   const [paymentDialogOpen, setPaymentDialogOpen] = useState(false);
   const [selectedCustomerForPayment, setSelectedCustomerForPayment] = useState<Customer | null>(null);
   const [exporting, setExporting] = useState(false);
@@ -127,6 +142,15 @@ export default function Customers() {
     loadCustomers();
   }, [loadCustomers]);
 
+  useEffect(() => {
+    updateParams({ page: '0' });
+  }, [debouncedSearchTerm, typeFilter, statusFilter, sortBy, sortOrder, pageSize]);
+
+  useEffect(() => {
+    const maxPage = Math.max(0, Math.ceil(customers.length / pageSize) - 1);
+    if (page > maxPage) updateParams({ page: String(maxPage) });
+  }, [customers.length, pageSize, page]);
+
   // Reload customers when navigating to this page (e.g., after creating a customer)
   useEffect(() => {
     if (location.pathname === '/customers') {
@@ -168,19 +192,30 @@ export default function Customers() {
     }
   };
 
+  const totalPages = Math.max(1, Math.ceil(customers.length / pageSize));
+  const pagedCustomers = customers.slice(page * pageSize, page * pageSize + pageSize);
+
   const getStatusBadge = (status: string) => {
     return status === 'active' ? (
-      <Badge className="bg-success text-white">Faol</Badge>
+      <Badge className="bg-success px-1.5 py-0 text-[10px] font-normal text-white sm:text-xs">
+        Faol
+      </Badge>
     ) : (
-      <Badge variant="outline">Faol emas</Badge>
+      <Badge variant="outline" className="px-1.5 py-0 text-[10px] font-normal sm:text-xs">
+        Faol emas
+      </Badge>
     );
   };
 
   const getTypeBadge = (type: string) => {
     return type === 'company' ? (
-      <Badge variant="secondary">Yuridik shaxs</Badge>
+      <Badge variant="secondary" className="px-1.5 py-0 text-[10px] font-normal sm:text-xs">
+        Yuridik shaxs
+      </Badge>
     ) : (
-      <Badge variant="outline">Jismoniy shaxs</Badge>
+      <Badge variant="outline" className="px-1.5 py-0 text-[10px] font-normal sm:text-xs">
+        Jismoniy shaxs
+      </Badge>
     );
   };
 
@@ -239,229 +274,279 @@ export default function Customers() {
   };
 
   return (
-    <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-3xl font-bold">Mijozlar</h1>
-          <p className="text-muted-foreground">Mijozlar bazasini boshqarish</p>
+    <div className="w-full min-w-0 space-y-4">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+        <div className="min-w-0 space-y-0.5">
+          <h1 className="page-heading">Mijozlar</h1>
+          <p className="page-heading-sub">Mijozlar bazasini boshqarish</p>
         </div>
-        <div className="flex items-center gap-2">
-          <Button 
-            variant="outline" 
+        <div className="flex shrink-0 flex-wrap items-center gap-2">
+          <Button
+            variant="outline"
+            size="sm"
+            className="h-8 text-xs"
             onClick={handleExport}
             disabled={exporting || loading}
           >
             {exporting ? (
               <>
-                <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-current mr-2" />
+                <div className="mr-2 h-3.5 w-3.5 animate-spin rounded-full border-2 border-current border-t-transparent" />
                 Eksportlanmoqda...
               </>
             ) : (
               <>
-                <Download className="h-4 w-4 mr-2" />
+                <Download className="mr-2 h-3.5 w-3.5" />
                 Eksport qilish
               </>
             )}
           </Button>
-          <Button onClick={() => navigate('/customers/new', { state: createBackNavigationState(location) })}>
-            <Plus className="h-4 w-4 mr-2" />
+          <Button
+            size="sm"
+            className="h-8 text-xs"
+            onClick={() => navigate('/customers/new', { state: createBackNavigationState(location) })}
+          >
+            <Plus className="mr-2 h-3.5 w-3.5" />
             Yangi mijoz qo'shish
           </Button>
         </div>
       </div>
 
-      <Card>
-        <CardContent className="pt-6">
-          <div className="space-y-4">
-            {/* Search and Filters */}
-            <div className="grid grid-cols-1 md:grid-cols-5 gap-4">
-              <div className="relative md:col-span-2">
-                <Search className="absolute left-3 top-3 h-4 w-4 text-muted-foreground" />
+      <Card className="gap-0 py-0 shadow-sm">
+        <CardContent className="px-3 py-2 sm:px-3">
+          <div className="rounded-md border bg-muted/30 px-2 py-1.5">
+            <span className="mb-1 inline-block text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+              Filtrlar
+            </span>
+            <div className="flex min-w-0 flex-col gap-2 lg:flex-row lg:flex-wrap lg:items-center">
+              <div className="relative h-8 min-w-0 flex-1 lg:min-w-[14rem] lg:max-w-md">
+                <Search className="pointer-events-none absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
                 <Input
                   placeholder="Ism, telefon yoki email bo'yicha qidirish..."
                   value={searchTerm}
                   onChange={(e) => updateParams({ search: e.target.value })}
-                  className="pl-9"
+                  className="h-8 py-1 pl-8 text-xs sm:text-sm"
                 />
               </div>
-
-              <Select value={typeFilter} onValueChange={(value) => updateParams({ type: value })}>
-                <SelectTrigger>
-                  <SelectValue placeholder="Mijoz turi" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="all">Barcha turlar</SelectItem>
-                  <SelectItem value="individual">Jismoniy shaxs</SelectItem>
-                  <SelectItem value="company">Yuridik shaxs</SelectItem>
-                </SelectContent>
-              </Select>
-
-              <Select value={statusFilter} onValueChange={(value) => updateParams({ status: value })}>
-                <SelectTrigger>
-                  <SelectValue placeholder="Holati" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="all">Barcha holatlar</SelectItem>
-                  <SelectItem value="active">Faol</SelectItem>
-                  <SelectItem value="inactive">Faol emas</SelectItem>
-                </SelectContent>
-              </Select>
-
-              <Select value={sortBy} onValueChange={(value) => updateParams({ sortBy: value })}>
-                <SelectTrigger>
-                  <SelectValue placeholder="Tartiblash" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="created_at">Yangi</SelectItem>
-                  <SelectItem value="balance">Eng katta qarz</SelectItem>
-                  <SelectItem value="last_order_date">Oxirgi buyurtma</SelectItem>
-                  <SelectItem value="total_sales">Jami savdo</SelectItem>
-                  <SelectItem value="name">Ism</SelectItem>
-                </SelectContent>
-              </Select>
+              <div className="flex min-w-0 flex-1 flex-wrap items-center gap-2 lg:flex-[2]">
+                <div className="min-w-[10rem] flex-1 sm:max-w-[13rem]">
+                  <Select value={typeFilter} onValueChange={(value) => updateParams({ type: value })}>
+                    <SelectTrigger className="h-8 w-full bg-background text-xs [&_span]:truncate">
+                      <SelectValue placeholder="Mijoz turi" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="all">Barcha turlar</SelectItem>
+                      <SelectItem value="individual">Jismoniy shaxs</SelectItem>
+                      <SelectItem value="company">Yuridik shaxs</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="min-w-[10rem] flex-1 sm:max-w-[13rem]">
+                  <Select value={statusFilter} onValueChange={(value) => updateParams({ status: value })}>
+                    <SelectTrigger className="h-8 w-full bg-background text-xs [&_span]:truncate">
+                      <SelectValue placeholder="Holati" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="all">Barcha holatlar</SelectItem>
+                      <SelectItem value="active">Faol</SelectItem>
+                      <SelectItem value="inactive">Faol emas</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="min-w-[10rem] flex-1 sm:max-w-[13rem]">
+                  <Select value={sortBy} onValueChange={(value) => updateParams({ sortBy: value })}>
+                    <SelectTrigger className="h-8 w-full bg-background text-xs [&_span]:truncate">
+                      <SelectValue placeholder="Tartiblash" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="created_at">Yangi</SelectItem>
+                      <SelectItem value="balance">Eng katta qarz</SelectItem>
+                      <SelectItem value="last_order_date">Oxirgi buyurtma</SelectItem>
+                      <SelectItem value="total_sales">Jami savdo</SelectItem>
+                      <SelectItem value="name">Ism</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+              </div>
             </div>
+          </div>
+        </CardContent>
+      </Card>
 
-            {loading ? (
-              <div className="flex justify-center py-12">
-                <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary" />
-              </div>
-            ) : error ? (
-              <div className="text-center py-12">
-                <AlertTriangle className="h-12 w-12 mx-auto text-destructive mb-4" />
-                <p className="text-lg font-semibold mb-2">Xatolik</p>
-                <p className="text-muted-foreground mb-4">
-                  {error.message || 'Mijozlarni yuklab bo\'lmadi'}
-                </p>
-                <Button onClick={() => loadCustomers()} variant="outline">
-                  Qayta urinish
-                </Button>
-              </div>
-            ) : customers.length === 0 ? (
-              <div className="text-center py-12">
-                <p className="text-muted-foreground">Mijozlar topilmadi</p>
-                <Button
-                  className="mt-4"
-                  onClick={() => navigate('/customers/new', { state: createBackNavigationState(location) })}
-                >
-                  <Plus className="h-4 w-4 mr-2" />
-                  Birinchi mijozni qo'shish
-                </Button>
-              </div>
-            ) : (
+      <Card className="gap-0 py-0 shadow-sm">
+        <CardHeader className="flex flex-row flex-wrap items-center justify-between gap-2 border-b px-4 py-2 space-y-0">
+          <CardTitle className="flex items-center gap-2 text-base font-semibold">
+            <Users className="h-4 w-4 shrink-0 text-muted-foreground" />
+            <span className="min-w-0 truncate">Mijozlar ro&apos;yxati</span>
+            {!loading && !error && (
+              <span className="text-xs font-normal tabular-nums text-muted-foreground">
+                ({customers.length})
+              </span>
+            )}
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="px-0 pb-3 pt-0">
+          {loading ? (
+            <div className="flex justify-center py-10">
+              <div className="h-7 w-7 animate-spin rounded-full border-2 border-primary border-t-transparent" />
+            </div>
+          ) : error ? (
+            <div className="mx-4 my-8 rounded-lg border bg-muted/20 py-10 text-center">
+              <AlertTriangle className="mx-auto mb-3 h-10 w-10 text-destructive" />
+              <p className="mb-1 font-semibold">Xatolik</p>
+              <p className="mb-4 text-sm text-muted-foreground">
+                {error.message || "Mijozlarni yuklab bo'lmadi"}
+              </p>
+              <Button variant="outline" size="sm" className="h-8 text-xs" onClick={() => loadCustomers()}>
+                Qayta urinish
+              </Button>
+            </div>
+          ) : customers.length === 0 ? (
+            <div className="mx-4 my-8 rounded-lg border bg-muted/20 py-10 text-center">
+              <Users className="mx-auto mb-3 h-10 w-10 text-muted-foreground/60" />
+              <p className="text-sm text-muted-foreground">Mijozlar topilmadi</p>
+              <Button
+                size="sm"
+                className="mt-4 h-8 text-xs"
+                onClick={() => navigate('/customers/new', { state: createBackNavigationState(location) })}
+              >
+                <Plus className="mr-2 h-3.5 w-3.5" />
+                Birinchi mijozni qo'shish
+              </Button>
+            </div>
+          ) : (
+            <>
+            <div className="overflow-x-auto">
               <Table>
                 <TableHeader>
-                  <TableRow>
-                    <TableHead>
-                      <Button variant="ghost" size="sm" onClick={() => handleSort('name')}>
+                  <TableRow className="hover:bg-transparent">
+                    <TableHead className="whitespace-nowrap text-xs font-semibold sm:text-sm">
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="-ml-2 h-8 gap-1 px-2 text-xs font-semibold"
+                        onClick={() => handleSort('name')}
+                      >
                         Ismi
-                        <ArrowUpDown className="ml-2 h-4 w-4" />
+                        <ArrowUpDown className="h-3.5 w-3.5 shrink-0 opacity-70" />
                       </Button>
                     </TableHead>
-                    <TableHead>Telefon</TableHead>
-                    <TableHead>Mijoz turi</TableHead>
-                    <TableHead className="text-right">
-                      <Button variant="ghost" size="sm" onClick={() => handleSort('total_sales')}>
+                    <TableHead className="text-xs font-semibold sm:text-sm">Telefon</TableHead>
+                    <TableHead className="text-xs font-semibold sm:text-sm">Mijoz turi</TableHead>
+                    <TableHead className="text-right text-xs font-semibold sm:text-sm">
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="-mr-2 ml-auto h-8 gap-1 px-2 text-xs font-semibold"
+                        onClick={() => handleSort('total_sales')}
+                      >
                         Jami savdo
-                        <ArrowUpDown className="ml-2 h-4 w-4" />
+                        <ArrowUpDown className="h-3.5 w-3.5 shrink-0 opacity-70" />
                       </Button>
                     </TableHead>
-                    <TableHead className="text-right">
-                      <Button variant="ghost" size="sm" onClick={() => handleSort('balance')}>
+                    <TableHead className="text-right text-xs font-semibold sm:text-sm">
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="-mr-2 ml-auto h-8 gap-1 px-2 text-xs font-semibold"
+                        onClick={() => handleSort('balance')}
+                      >
                         Balans
-                        <ArrowUpDown className="ml-2 h-4 w-4" />
+                        <ArrowUpDown className="h-3.5 w-3.5 shrink-0 opacity-70" />
                       </Button>
                     </TableHead>
-                    <TableHead>
-                      <Button variant="ghost" size="sm" onClick={() => handleSort('last_order_date')}>
+                    <TableHead className="whitespace-nowrap text-xs font-semibold sm:text-sm">
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="-ml-2 h-8 gap-1 px-2 text-xs font-semibold"
+                        onClick={() => handleSort('last_order_date')}
+                      >
                         Oxirgi buyurtma
-                        <ArrowUpDown className="ml-2 h-4 w-4" />
+                        <ArrowUpDown className="h-3.5 w-3.5 shrink-0 opacity-70" />
                       </Button>
                     </TableHead>
-                    <TableHead>Holati</TableHead>
-                    <TableHead className="text-right">Amallar</TableHead>
+                    <TableHead className="text-xs font-semibold sm:text-sm">Holati</TableHead>
+                    <TableHead className="w-[1%] text-right text-xs font-semibold sm:text-sm">Amallar</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {customers.map((customer) => {
+                  {pagedCustomers.map((customer) => {
                     const balanceInfo = formatCustomerBalance(customer.balance);
                     const hasDebt = (customer.balance || 0) < 0;
-                    
-                    // Handle row click to navigate to customer details
-                    // Route: /customers/:id (as defined in src/routes.tsx)
+
                     const handleRowClick = () => {
                       navigate(`/customers/${customer.id}`, {
                         state: createBackNavigationState(location),
                       });
                     };
-                    
-                    // Prevent row click when clicking on action menu
+
                     const handleActionClick = (e: React.MouseEvent) => {
                       e.stopPropagation();
                     };
-                    
+
                     return (
-                      <TableRow 
+                      <TableRow
                         key={customer.id}
                         onClick={handleRowClick}
-                        className="cursor-pointer hover:bg-muted/50 transition-colors"
+                        className="cursor-pointer text-sm hover:bg-muted/50"
                       >
-                        <TableCell>
-                          <div>
-                            <p className="font-medium">
+                        <TableCell className="max-w-[14rem] py-2">
+                          <div className="min-w-0">
+                            <p className="truncate font-medium">
                               {debouncedSearchTerm ? highlightMatch(customer.name, debouncedSearchTerm) : customer.name}
                             </p>
                             {customer.company_name && (
-                              <p className="text-sm text-muted-foreground">{customer.company_name}</p>
+                              <p className="truncate text-xs text-muted-foreground">{customer.company_name}</p>
                             )}
                           </div>
                         </TableCell>
-                        <TableCell>
+                        <TableCell className="max-w-[9rem] truncate py-2 text-xs">
                           {customer.phone
-                            ? (debouncedSearchTerm ? highlightMatch(customer.phone, debouncedSearchTerm) : customer.phone)
+                            ? debouncedSearchTerm
+                              ? highlightMatch(customer.phone, debouncedSearchTerm)
+                              : customer.phone
                             : '-'}
                         </TableCell>
-                        <TableCell>{getTypeBadge(customer.type)}</TableCell>
-                        <TableCell className="text-right font-medium">
+                        <TableCell className="py-2">{getTypeBadge(customer.type)}</TableCell>
+                        <TableCell className="py-2 text-right text-xs tabular-nums font-medium">
                           {formatMoneyUZS(customer.total_sales)}
                         </TableCell>
-                        <TableCell className="text-right">
-                          {/* SINGLE SOURCE OF TRUTH - No duplicate badges */}
-                          <Badge variant={balanceInfo.variant} className={balanceInfo.type === 'balance' ? 'bg-green-600 text-white hover:bg-green-700' : ''}>
+                        <TableCell className="py-2 text-right">
+                          <Badge
+                            variant={balanceInfo.variant}
+                            className={`px-1.5 py-0 text-[10px] font-normal sm:text-xs ${
+                              balanceInfo.type === 'balance' ? 'bg-green-600 text-white hover:bg-green-700' : ''
+                            }`}
+                          >
                             {balanceInfo.label}
                           </Badge>
                         </TableCell>
-                        <TableCell>
-                          {customer.last_order_date
-                            ? formatDate(customer.last_order_date)
-                            : '-'}
+                        <TableCell className="whitespace-nowrap py-2 text-xs text-muted-foreground">
+                          {customer.last_order_date ? formatDate(customer.last_order_date) : '-'}
                         </TableCell>
-                        <TableCell>{getStatusBadge(customer.status)}</TableCell>
-                        <TableCell className="text-right">
-                          <div className="flex items-center justify-end gap-2" onClick={handleActionClick}>
-                            {/* Primary action: Receive Payment button for customers with debt */}
+                        <TableCell className="py-2">{getStatusBadge(customer.status)}</TableCell>
+                        <TableCell className="py-2 text-right">
+                          <div className="flex items-center justify-end gap-1" onClick={handleActionClick}>
                             {hasDebt && (
                               <Button
                                 variant="default"
                                 size="sm"
+                                title="Qarz to'lovini qabul qilish"
                                 onClick={(e) => {
                                   e.stopPropagation();
                                   handleReceivePayment(customer);
                                 }}
-                                className="bg-green-600 hover:bg-green-700 text-white"
+                                className="h-8 shrink-0 gap-1 bg-green-600 px-2 text-xs text-white hover:bg-green-700"
                               >
-                                <DollarSign className="h-4 w-4 mr-1" />
-                                Qarz to'lovini qabul qilish
+                                <DollarSign className="h-3.5 w-3.5 shrink-0" />
+                                <span className="hidden sm:inline">Qarz to'lovini qabul qilish</span>
+                                <span className="sm:hidden">To&apos;lov</span>
                               </Button>
                             )}
-                            
-                            {/* Secondary actions in dropdown menu */}
+
                             <DropdownMenu>
                               <DropdownMenuTrigger asChild>
-                                <Button 
-                                  variant="ghost" 
-                                  size="icon"
-                                  onClick={handleActionClick}
-                                >
+                                <Button variant="ghost" size="icon" className="h-8 w-8 shrink-0" onClick={handleActionClick}>
                                   <MoreVertical className="h-4 w-4" />
                                 </Button>
                               </DropdownMenuTrigger>
@@ -542,8 +627,47 @@ export default function Customers() {
                   })}
                 </TableBody>
               </Table>
-            )}
-          </div>
+            </div>
+            <div className="flex items-center justify-between px-4 pt-3">
+              <div className="text-xs text-muted-foreground">
+                Jami: {customers.length} ta • Sahifa {page + 1} / {totalPages}
+              </div>
+              <div className="flex items-center gap-2">
+                <Select
+                  value={String(pageSize)}
+                  onValueChange={(v) => updateParams({ pageSize: String(Number(v) || 50), page: '0' })}
+                >
+                  <SelectTrigger className="h-8 w-[100px] text-xs">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="25">25 / sahifa</SelectItem>
+                    <SelectItem value="50">50 / sahifa</SelectItem>
+                    <SelectItem value="100">100 / sahifa</SelectItem>
+                  </SelectContent>
+                </Select>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="h-8 text-xs"
+                  onClick={() => updateParams({ page: String(Math.max(0, page - 1)) })}
+                  disabled={page <= 0}
+                >
+                  Oldingi
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="h-8 text-xs"
+                  onClick={() => updateParams({ page: String(Math.min(totalPages - 1, page + 1)) })}
+                  disabled={page >= totalPages - 1}
+                >
+                  Keyingi
+                </Button>
+              </div>
+            </div>
+            </>
+          )}
         </CardContent>
       </Card>
 

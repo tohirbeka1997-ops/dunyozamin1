@@ -15,7 +15,7 @@ import type { EmployeeSessionWithProfile } from '@/types/database';
 import { FileDown, ArrowLeft } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 import { useNavigate } from 'react-router-dom';
-import { formatDateTime, formatDateYMD, todayYMD } from '@/lib/datetime';
+import { formatDateTime, todayYMD } from '@/lib/datetime';
 import { useReportAutoRefresh } from '@/hooks/useReportAutoRefresh';
 
 export default function LoginActivityReport() {
@@ -26,8 +26,6 @@ export default function LoginActivityReport() {
   const [dateFrom, setDateFrom] = useState(todayYMD());
   const [dateTo, setDateTo] = useState(todayYMD());
 
-  useReportAutoRefresh(loadData);
-
   useEffect(() => {
     loadData();
   }, [dateFrom, dateTo]);
@@ -35,21 +33,15 @@ export default function LoginActivityReport() {
   async function loadData() {
     try {
       setLoading(true);
-      const sessionsData = await getEmployeeSessions();
-      
-      const filtered = sessionsData.filter((session) => {
-        if (!session.login_time) return false;
-        const loginDate = formatDateYMD(session.login_time);
-        return loginDate >= dateFrom && loginDate <= dateTo;
-      });
+      const sessionsData = await getEmployeeSessions({ dateFrom, dateTo });
 
-      filtered.sort((a, b) => {
+      const sorted = [...sessionsData].sort((a, b) => {
         const timeA = a.login_time ? new Date(a.login_time).getTime() : 0;
         const timeB = b.login_time ? new Date(b.login_time).getTime() : 0;
         return timeB - timeA;
       });
 
-      setSessions(filtered);
+      setSessions(sorted);
     } catch (error) {
       toast({
         title: 'Xatolik',
@@ -60,6 +52,8 @@ export default function LoginActivityReport() {
       setLoading(false);
     }
   }
+
+  useReportAutoRefresh(loadData);
 
   const calculateDuration = (loginTime: string, logoutTime: string | null) => {
     if (!logoutTime) return '-';
@@ -90,11 +84,11 @@ export default function LoginActivityReport() {
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-4">
-          <Button variant="ghost" size="icon" onClick={() => navigate('/reports')}>
+          <Button variant="ghost" size="icon" onClick={() => navigate('/reports/employee')}>
             <ArrowLeft className="h-4 w-4" />
           </Button>
           <div>
-            <h1 className="text-3xl font-bold">Tizimga kirishlar jurnali</h1>
+            <h1 className="page-heading">Tizimga kirishlar jurnali</h1>
             <p className="text-muted-foreground">Xodimlarning tizimga kirish va chiqishlarini ko'rish</p>
           </div>
         </div>

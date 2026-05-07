@@ -1,5 +1,6 @@
 const { ERROR_CODES, createError } = require('../lib/errors.cjs');
 const { randomUUID } = require('crypto');
+const { formatYmdInTimeZone, UZBEKISTAN_TZ_SQLITE_OFFSET } = require('../lib/timezone.cjs');
 
 /**
  * Inventory Service
@@ -39,9 +40,14 @@ class InventoryService {
   _ymd(date) {
     if (!date) return null;
     if (typeof date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(date)) return date;
-    const d = new Date(date);
-    if (Number.isNaN(d.getTime())) return null;
-    return d.toISOString().slice(0, 10);
+    const s = String(date).trim();
+    if (s.length >= 10 && /^\d{4}-\d{2}-\d{2}/.test(s)) return s.slice(0, 10);
+    return formatYmdInTimeZone(date);
+  }
+
+  /** Hisobot kunlari: DB vaqti UTC-kabi saqlangan bo‘lsa, Tashkent kalendar kuni bo‘yicha filtr. */
+  _tzDateExpr(columnExpr) {
+    return `date(datetime(replace(replace(${columnExpr}, 'T', ' '), 'Z', ''), '${UZBEKISTAN_TZ_SQLITE_OFFSET}'))`;
   }
 
   /**
@@ -140,13 +146,19 @@ class InventoryService {
     }
 
     if (filters.date_from) {
-      query += ' AND sm.created_at >= ?';
-      params.push(filters.date_from);
+      const d = this._ymd(filters.date_from);
+      if (d) {
+        query += ` AND ${this._tzDateExpr('sm.created_at')} >= date(?)`;
+        params.push(d);
+      }
     }
 
     if (filters.date_to) {
-      query += ' AND sm.created_at <= ?';
-      params.push(filters.date_to);
+      const d = this._ymd(filters.date_to);
+      if (d) {
+        query += ` AND ${this._tzDateExpr('sm.created_at')} <= date(?)`;
+        params.push(d);
+      }
     }
 
     query += ' ORDER BY sm.created_at DESC';
@@ -817,13 +829,49 @@ class InventoryService {
    * - days: number (e.g. 30/60/90)
    * Global scope (across all warehouses).
    */
-  getDeadStock({ days } = {}) {
+  getDeadStock({ days, warehouse_id } = {}) {
     const d = Number(days || 30);
+    const warehouseId = warehouse_id || null;
     if (!Number.isFinite(d) || d <= 0) {
       throw createError(ERROR_CODES.VALIDATION_ERROR, 'days must be a positive number');
     }
     const sinceExpr = `-${Math.floor(d)} day`;
     const viewExists = this._viewExists('v_product_stock');
+    const hasWarehouseFilter = Boolean(warehouseId);
+
+    const currentStockExpr = hasWarehouseFilter
+      ? `(
+            SELECT COALESCE(SUM(sb.quantity), 0)
+            FROM stock_balances sb
+            WHERE sb.product_id = p.id
+              AND sb.warehouse_id = ?
+          )`
+      : viewExists
+        ? `COALESCE(vps.stock, 0)`
+        : `(
+            SELECT COALESCE(SUM(im.quantity), 0)
+            FROM inventory_movements im
+            WHERE im.product_id = p.id
+          )`;
+
+    const lastSaleExpr = hasWarehouseFilter
+      ? `(
+            SELECT MAX(im2.created_at)
+            FROM inventory_movements im2
+            WHERE im2.product_id = p.id
+              AND im2.movement_type = 'sale'
+              AND im2.warehouse_id = ?
+          )`
+      : `(
+            SELECT MAX(im2.created_at)
+            FROM inventory_movements im2
+            WHERE im2.product_id = p.id AND im2.movement_type = 'sale'
+          )`;
+
+    const params = [];
+    if (hasWarehouseFilter) params.push(warehouseId);
+    if (hasWarehouseFilter) params.push(warehouseId);
+    params.push(sinceExpr);
 
     const query = `
       WITH base AS (
@@ -835,18 +883,10 @@ class InventoryService {
           p.unit,
           COALESCE(p.purchase_price, 0) AS purchase_price,
           COALESCE(p.sale_price, 0) AS sale_price,
-          ${viewExists ? `COALESCE(vps.stock, 0)` : `(
-            SELECT COALESCE(SUM(im.quantity), 0)
-            FROM inventory_movements im
-            WHERE im.product_id = p.id
-          )`} AS current_stock,
-          (
-            SELECT MAX(im2.created_at)
-            FROM inventory_movements im2
-            WHERE im2.product_id = p.id AND im2.movement_type = 'sale'
-          ) AS last_sale_at
+          ${currentStockExpr} AS current_stock,
+          ${lastSaleExpr} AS last_sale_at
         FROM products p
-        ${viewExists ? `LEFT JOIN v_product_stock vps ON vps.product_id = p.id` : ``}
+        ${!hasWarehouseFilter && viewExists ? `LEFT JOIN v_product_stock vps ON vps.product_id = p.id` : ``}
         WHERE p.is_active = 1 AND COALESCE(p.track_stock, 1) = 1
       )
       SELECT
@@ -862,7 +902,7 @@ class InventoryService {
       ORDER BY frozen_value DESC, base.product_name ASC
     `;
 
-    return this.db.prepare(query).all(sinceExpr);
+    return this.db.prepare(query).all(...params);
   }
 
   /**
@@ -870,13 +910,52 @@ class InventoryService {
    * - days: number (e.g. 30/60/90)
    * Global scope (across all warehouses).
    */
-  getStockTurnover({ days } = {}) {
+  getStockTurnover({ days, warehouse_id } = {}) {
     const d = Number(days || 30);
+    const warehouseId = warehouse_id || null;
     if (!Number.isFinite(d) || d <= 0) {
       throw createError(ERROR_CODES.VALIDATION_ERROR, 'days must be a positive number');
     }
     const sinceExpr = `-${Math.floor(d)} day`;
     const viewExists = this._viewExists('v_product_stock');
+    const hasWarehouseFilter = Boolean(warehouseId);
+
+    const currentStockExpr = hasWarehouseFilter
+      ? `(
+            SELECT COALESCE(SUM(sb.quantity), 0)
+            FROM stock_balances sb
+            WHERE sb.product_id = p.id
+              AND sb.warehouse_id = ?
+          )`
+      : viewExists
+        ? `COALESCE(vps.stock, 0)`
+        : `(
+            SELECT COALESCE(SUM(im.quantity), 0)
+            FROM inventory_movements im
+            WHERE im.product_id = p.id
+          )`;
+
+    const soldQtyExpr = hasWarehouseFilter
+      ? `(
+            SELECT COALESCE(SUM(ABS(im3.quantity)), 0)
+            FROM inventory_movements im3
+            WHERE im3.product_id = p.id
+              AND im3.movement_type = 'sale'
+              AND im3.created_at >= datetime('now', ?)
+              AND im3.warehouse_id = ?
+          )`
+      : `(
+            SELECT COALESCE(SUM(ABS(im3.quantity)), 0)
+            FROM inventory_movements im3
+            WHERE im3.product_id = p.id
+              AND im3.movement_type = 'sale'
+              AND im3.created_at >= datetime('now', ?)
+          )`;
+
+    const params = [];
+    if (hasWarehouseFilter) params.push(warehouseId);
+    params.push(sinceExpr);
+    if (hasWarehouseFilter) params.push(warehouseId);
 
     const query = `
       WITH base AS (
@@ -888,20 +967,10 @@ class InventoryService {
           p.unit,
           COALESCE(p.purchase_price, 0) AS purchase_price,
           COALESCE(p.sale_price, 0) AS sale_price,
-          ${viewExists ? `COALESCE(vps.stock, 0)` : `(
-            SELECT COALESCE(SUM(im.quantity), 0)
-            FROM inventory_movements im
-            WHERE im.product_id = p.id
-          )`} AS current_stock,
-          (
-            SELECT COALESCE(SUM(ABS(im3.quantity)), 0)
-            FROM inventory_movements im3
-            WHERE im3.product_id = p.id
-              AND im3.movement_type = 'sale'
-              AND im3.created_at >= datetime('now', ?)
-          ) AS sold_qty_n
+          ${currentStockExpr} AS current_stock,
+          ${soldQtyExpr} AS sold_qty_n
         FROM products p
-        ${viewExists ? `LEFT JOIN v_product_stock vps ON vps.product_id = p.id` : ``}
+        ${!hasWarehouseFilter && viewExists ? `LEFT JOIN v_product_stock vps ON vps.product_id = p.id` : ``}
         WHERE p.is_active = 1 AND COALESCE(p.track_stock, 1) = 1
       ),
       calc AS (
@@ -930,7 +999,7 @@ class InventoryService {
         calc.product_name ASC
     `;
 
-    return this.db.prepare(query).all(sinceExpr);
+    return this.db.prepare(query).all(...params);
   }
 
   /**
@@ -1181,11 +1250,11 @@ class InventoryService {
     let dateWhere = '';
     if (dateFrom) {
       params.push(dateFrom);
-      dateWhere += ` AND date(im.created_at) >= date(?)`;
+      dateWhere += ` AND ${this._tzDateExpr('im.created_at')} >= date(?)`;
     }
     if (dateTo) {
       params.push(dateTo);
-      dateWhere += ` AND date(im.created_at) <= date(?)`;
+      dateWhere += ` AND ${this._tzDateExpr('im.created_at')} <= date(?)`;
     }
 
     const movements = this.db
@@ -1216,7 +1285,7 @@ class InventoryService {
               SELECT COALESCE(SUM(quantity), 0) AS qty
               FROM inventory_movements
               WHERE product_id = ?
-                AND date(created_at) < date(?)
+                AND ${this._tzDateExpr('created_at')} < date(?)
             `
             )
             .get(productId, dateFrom)?.qty || 0

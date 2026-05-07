@@ -4,6 +4,10 @@ const express = require('express');
 const { allocateOrderNumber } = require('../lib/orderNumber.cjs');
 const { getAvailableStock } = require('../lib/stockHelpers.cjs');
 const { buildPaymeCheckoutUrl, buildClickCheckoutUrl } = require('../lib/paymentLinks.cjs');
+const { notifyAdminsNewOrder, notifyOrderCreated, notifyOrderStatusChanged } = require('../lib/telegramNotify.cjs');
+const { hasShowInMarketplaceColumn } = require('../lib/productVisibility.cjs');
+const { normalizeDeliveryMethod } = require('../lib/webOrderStatusFlow.cjs');
+const { idempotency } = require('../lib/idempotency.cjs');
 
 function parseIntParam(v, fallback, min, max) {
   const n = Number.parseInt(String(v ?? ''), 10);
@@ -19,6 +23,14 @@ function parsePaymentMethod(raw) {
   const s = String(raw || '').trim().toLowerCase();
   if (s === 'payme' || s === 'click' || s === 'cash') return s;
   return null;
+}
+
+function hasColumn(db, tableName, columnName) {
+  try {
+    return db.prepare(`PRAGMA table_info(${tableName})`).all().some((c) => c.name === columnName);
+  } catch {
+    return false;
+  }
 }
 
 function normalizePhone(raw) {
@@ -83,8 +95,9 @@ function parseCreateBody(body) {
     err.status = 400;
     throw err;
   }
+  const deliveryMethod = normalizeDeliveryMethod(body.delivery_method);
   const addr = body.delivery_address != null ? String(body.delivery_address).trim() : '';
-  if (addr.length < 3) {
+  if (deliveryMethod === 'courier' && addr.length < 3) {
     const err = new Error('delivery_address_required');
     err.code = 'DELIVERY_ADDRESS_REQUIRED';
     err.status = 400;
@@ -96,7 +109,8 @@ function parseCreateBody(body) {
   return {
     items,
     payment_method: pm,
-    delivery_address: addr,
+    delivery_method: deliveryMethod,
+    delivery_address: addr || (deliveryMethod === 'pickup' ? "O'zi olib ketish" : ''),
     note: composeNote(note, phone, location),
     phone,
     location,
@@ -109,117 +123,113 @@ function parseCreateBody(body) {
  * @param {ReturnType<typeof parseCreateBody>} data
  */
 function createOrder(db, customerId, data) {
-  const lines = [];
-  for (const it of data.items) {
-    const p = db
-      .prepare(
-        `
-      SELECT id, sale_price, track_stock, is_active
-      FROM products
-      WHERE id = ?
-    `
-      )
-      .get(it.product_id);
-
-    if (!p || !boolCol(p.is_active)) {
-      const err = new Error('product_not_found');
-      err.code = 'PRODUCT_NOT_FOUND';
-      err.status = 400;
-      err.meta = { product_id: it.product_id };
-      throw err;
-    }
-
-    const track = boolCol(p.track_stock);
-    let stockOk = true;
-    if (track) {
-      const avail = getAvailableStock(db, it.product_id);
-      if (avail + 1e-9 < it.quantity) {
-        const err = new Error('insufficient_stock');
-        err.code = 'INSUFFICIENT_STOCK';
-        err.status = 400;
-        err.meta = { product_id: it.product_id, available: Math.floor(avail), requested: it.quantity };
-        throw err;
-      }
-    }
-
-    const priceAt = Math.round(Number(p.sale_price) || 0);
-    lines.push({
-      product_id: it.product_id,
-      quantity: it.quantity,
-      price_at_order: priceAt,
-      line_total: priceAt * it.quantity,
-    });
-  }
-
-  const totalAmount = lines.reduce((s, l) => s + l.line_total, 0);
+  const mpCol = hasShowInMarketplaceColumn(db);
+  const productSelect = mpCol
+    ? `SELECT id, sale_price, track_stock, is_active, show_in_marketplace FROM products WHERE id = ?`
+    : `SELECT id, sale_price, track_stock, is_active FROM products WHERE id = ?`;
+  const productStmt = db.prepare(productSelect);
 
   const payExpiresAt =
     data.payment_method === 'payme' || data.payment_method === 'click'
       ? new Date(Date.now() + Number(process.env.PAYMENT_EXPIRE_MINUTES || 15) * 60 * 1000).toISOString()
       : null;
 
-  return db.transaction(() => {
+  // Use IMMEDIATE so the write lock is acquired at BEGIN, eliminating
+  // the TOCTOU window between stock check and order insert. Validation
+  // runs INSIDE the transaction so two concurrent buyers competing for
+  // the last unit cannot both pass the availability check.
+  const tx = db.transaction(() => {
+    const lines = [];
+
+    for (const it of data.items) {
+      const p = productStmt.get(it.product_id);
+
+      if (!p || !boolCol(p.is_active)) {
+        const err = new Error('product_not_found');
+        err.code = 'PRODUCT_NOT_FOUND';
+        err.status = 400;
+        err.meta = { product_id: it.product_id };
+        throw err;
+      }
+
+      if (mpCol && !boolCol(p.show_in_marketplace)) {
+        const err = new Error('product_not_on_marketplace');
+        err.code = 'PRODUCT_NOT_ON_MARKETPLACE';
+        err.status = 400;
+        err.meta = { product_id: it.product_id };
+        throw err;
+      }
+
+      const track = boolCol(p.track_stock);
+      if (track) {
+        const avail = getAvailableStock(db, it.product_id);
+        if (avail + 1e-9 < it.quantity) {
+          const err = new Error('insufficient_stock');
+          err.code = 'INSUFFICIENT_STOCK';
+          err.status = 400;
+          err.meta = {
+            product_id: it.product_id,
+            available: Math.floor(avail),
+            requested: it.quantity,
+          };
+          throw err;
+        }
+      }
+
+      const priceAt = Math.round(Number(p.sale_price) || 0);
+      lines.push({
+        product_id: it.product_id,
+        quantity: it.quantity,
+        price_at_order: priceAt,
+        line_total: priceAt * it.quantity,
+      });
+    }
+
+    const totalAmount = lines.reduce((s, l) => s + l.line_total, 0);
+
     const orderNumber = allocateOrderNumber(db);
     const now = new Date().toISOString();
 
     const payStatus = 'pending';
     const status = 'new';
 
-    let hasExpiry = false;
-    try {
-      const cols = db.prepare('PRAGMA table_info(web_orders)').all();
-      hasExpiry = cols.some((c) => c.name === 'payment_expires_at');
-    } catch {
-      hasExpiry = false;
+    const columns = [
+      'order_number',
+      'customer_id',
+      'status',
+      'payment_method',
+      'payment_status',
+      'total_amount',
+      'delivery_address',
+      'note',
+      'created_at',
+      'updated_at',
+    ];
+    const values = [
+      orderNumber,
+      customerId,
+      status,
+      data.payment_method,
+      payStatus,
+      totalAmount,
+      data.delivery_address,
+      data.note,
+      now,
+      now,
+    ];
+    if (hasColumn(db, 'web_orders', 'payment_expires_at')) {
+      columns.push('payment_expires_at');
+      values.push(payExpiresAt);
+    }
+    if (hasColumn(db, 'web_orders', 'delivery_method')) {
+      columns.push('delivery_method');
+      values.push(data.delivery_method);
     }
 
-    let r;
-    if (hasExpiry) {
-      r = db
-        .prepare(
-          `
-        INSERT INTO web_orders (
-          order_number, customer_id, status, payment_method, payment_status,
-          total_amount, delivery_address, note, created_at, updated_at, payment_expires_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `
-        )
-        .run(
-          orderNumber,
-          customerId,
-          status,
-          data.payment_method,
-          payStatus,
-          totalAmount,
-          data.delivery_address,
-          data.note,
-          now,
-          now,
-          payExpiresAt,
-        );
-    } else {
-      r = db
-        .prepare(
-          `
-        INSERT INTO web_orders (
-          order_number, customer_id, status, payment_method, payment_status,
-          total_amount, delivery_address, note, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `
-        )
-        .run(
-          orderNumber,
-          customerId,
-          status,
-          data.payment_method,
-          payStatus,
-          totalAmount,
-          data.delivery_address,
-          data.note,
-          now,
-          now,
-        );
-    }
+    const placeholders = columns.map(() => '?').join(', ');
+    const r = db
+      .prepare(`INSERT INTO web_orders (${columns.join(', ')}) VALUES (${placeholders})`)
+      .run(...values);
 
     const orderId = r.lastInsertRowid;
 
@@ -254,32 +264,131 @@ function createOrder(db, customerId, data) {
       order_id: orderId,
       order_number: orderNumber,
       status,
+      delivery_method: data.delivery_method,
       payment_status: payStatus,
       total_amount: totalAmount,
       payment_url: paymentUrl,
     };
-  })();
+  });
+
+  return tx.immediate();
 }
 
 function mountOrdersRoutes(dbGetter) {
   const router = express.Router();
 
-  router.post('/', (req, res) => {
+  function notifyCreatedAsync(orderId) {
     try {
-      const customerId = req.customerId;
-      const data = parseCreateBody(req.body);
       const db = dbGetter();
-      const result = createOrder(db, customerId, data);
-      res.status(201).json(result);
-    } catch (e) {
-      if (e.status && e.code) {
-        res.status(e.status).json({ error: e.code, meta: e.meta });
-        return;
+      const deliverySelect = hasColumn(db, 'web_orders', 'delivery_method')
+        ? "wo.delivery_method AS delivery_method"
+        : "'courier' AS delivery_method";
+      const row = db
+        .prepare(
+          `
+          SELECT wo.id, wo.status, wo.order_number, wo.total_amount, wo.payment_method,
+                 ${deliverySelect},
+                 mc.telegram_id, mc.first_name, mc.last_name, mc.phone
+          FROM web_orders wo
+          INNER JOIN marketplace_customers mc ON mc.id = wo.customer_id
+          WHERE wo.id = ?
+        `,
+        )
+        .get(orderId);
+      const token = process.env.TELEGRAM_BOT_TOKEN;
+      if (!row || !token) return;
+      if (row?.telegram_id) {
+        void notifyOrderCreated({
+          botToken: token,
+          telegramId: row.telegram_id,
+          orderNumber: row.order_number,
+          totalSums: row.total_amount,
+          paymentMethod: row.payment_method,
+          deliveryMethod: row.delivery_method,
+        });
       }
-      console.error('[orders] POST /', e);
-      res.status(500).json({ error: 'internal_error' });
+      const items = db
+        .prepare(
+          `
+          SELECT wi.product_id, wi.quantity, p.name AS product_name
+          FROM web_order_items wi
+          LEFT JOIN products p ON p.id = wi.product_id
+          WHERE wi.order_id = ?
+          ORDER BY wi.id ASC
+        `,
+        )
+        .all(orderId);
+      const customerName = [row.first_name, row.last_name].filter(Boolean).join(' ').trim() || null;
+      void notifyAdminsNewOrder({
+        botToken: token,
+        orderId,
+        status: row.status,
+        orderNumber: row.order_number,
+        totalSums: row.total_amount,
+        paymentMethod: row.payment_method,
+        deliveryMethod: row.delivery_method,
+        customerName,
+        customerPhone: row.phone || null,
+        items,
+      });
+    } catch (e) {
+      console.warn('[orders] create notify failed:', e.message || String(e));
     }
-  });
+  }
+
+  function notifyStatusAsync(orderId, status) {
+    try {
+      const db = dbGetter();
+      const deliverySelect = hasColumn(db, 'web_orders', 'delivery_method')
+        ? "wo.delivery_method AS delivery_method"
+        : "'courier' AS delivery_method";
+      const row = db
+        .prepare(
+          `
+          SELECT wo.order_number, ${deliverySelect}, mc.telegram_id
+          FROM web_orders wo
+          INNER JOIN marketplace_customers mc ON mc.id = wo.customer_id
+          WHERE wo.id = ?
+        `,
+        )
+        .get(orderId);
+      const token = process.env.TELEGRAM_BOT_TOKEN;
+      if (!row?.telegram_id || !token) return;
+      void notifyOrderStatusChanged({
+        botToken: token,
+        telegramId: row.telegram_id,
+        orderNumber: row.order_number,
+        status,
+        deliveryMethod: row.delivery_method,
+      });
+    } catch (e) {
+      console.warn('[orders] status notify failed:', e.message || String(e));
+    }
+  }
+
+  router.post(
+    '/',
+    idempotency('orders', (req) => req.customerId),
+    (req, res) => {
+      try {
+        const customerId = req.customerId;
+        const data = parseCreateBody(req.body);
+        const db = dbGetter();
+        const result = createOrder(db, customerId, data);
+        if (result?.order_id != null) {
+          notifyCreatedAsync(result.order_id);
+        }
+        res.status(201).json(result);
+      } catch (e) {
+        if (e.status && e.code) {
+          res.status(e.status).json({ error: e.code, meta: e.meta });
+          return;
+        }
+        console.error('[orders] POST /', e);
+        res.status(500).json({ error: 'internal_error' });
+      }
+    },
+  );
 
   router.get('/', (req, res) => {
     try {
@@ -289,6 +398,14 @@ function mountOrdersRoutes(dbGetter) {
       const offset = (page - 1) * limit;
 
       const db = dbGetter();
+      const hasDelivery = hasColumn(db, 'web_orders', 'delivery_method');
+      const hasRating = hasColumn(db, 'web_orders', 'rating');
+      const optionalColumns = [
+        hasDelivery ? 'delivery_method' : "'courier' AS delivery_method",
+        hasRating ? 'rating' : 'NULL AS rating',
+        hasRating ? 'feedback' : 'NULL AS feedback',
+        hasRating ? 'rated_at' : 'NULL AS rated_at',
+      ].join(', ');
       const totalRow = db
         .prepare(
           `
@@ -304,7 +421,8 @@ function mountOrdersRoutes(dbGetter) {
           .prepare(
             `
           SELECT id, order_number, status, payment_method, payment_status, total_amount,
-                 delivery_address, note, created_at, updated_at, payment_expires_at, payment_provider
+                 delivery_address, note, ${optionalColumns}, created_at, updated_at,
+                 payment_expires_at, payment_provider
           FROM web_orders
           WHERE customer_id = ?
           ORDER BY created_at DESC
@@ -318,7 +436,7 @@ function mountOrdersRoutes(dbGetter) {
           .prepare(
             `
           SELECT id, order_number, status, payment_method, payment_status, total_amount,
-                 delivery_address, note, created_at, updated_at
+                 delivery_address, note, ${optionalColumns}, created_at, updated_at
           FROM web_orders
           WHERE customer_id = ?
           ORDER BY created_at DESC
@@ -334,6 +452,76 @@ function mountOrdersRoutes(dbGetter) {
       });
     } catch (e) {
       console.error('[orders] GET /', e);
+      res.status(500).json({ error: 'internal_error' });
+    }
+  });
+
+  router.post('/:id/reorder', (req, res) => {
+    try {
+      const customerId = req.customerId;
+      const id = Number.parseInt(String(req.params.id), 10);
+      if (!Number.isFinite(id)) {
+        res.status(400).json({ error: 'invalid_id' });
+        return;
+      }
+
+      const db = dbGetter();
+      const deliverySelect = hasColumn(db, 'web_orders', 'delivery_method')
+        ? 'delivery_method'
+        : "'courier' AS delivery_method";
+      const prev = db
+        .prepare(
+          `
+        SELECT id, payment_method, delivery_address, note, ${deliverySelect}
+        FROM web_orders
+        WHERE id = ? AND customer_id = ?
+      `,
+        )
+        .get(id, customerId);
+      if (!prev) {
+        res.status(404).json({ error: 'not_found' });
+        return;
+      }
+
+      const prevItems = db
+        .prepare(
+          `
+        SELECT product_id, quantity
+        FROM web_order_items
+        WHERE order_id = ?
+        ORDER BY id ASC
+      `,
+        )
+        .all(id);
+      if (!Array.isArray(prevItems) || prevItems.length === 0) {
+        res.status(400).json({ error: 'order_items_empty' });
+        return;
+      }
+
+      const data = {
+        items: prevItems.map((it) => ({
+          product_id: String(it.product_id),
+          quantity: Number.parseInt(String(it.quantity), 10) || 1,
+        })),
+        payment_method: parsePaymentMethod(prev.payment_method) || 'cash',
+        delivery_method: normalizeDeliveryMethod(prev.delivery_method),
+        delivery_address: String(prev.delivery_address || '').trim() || 'Manzil ko‘rsatilmagan',
+        note: prev.note ? String(prev.note) : null,
+        phone: null,
+        location: null,
+      };
+
+      const result = createOrder(db, customerId, data);
+      if (result?.order_id != null) {
+        notifyCreatedAsync(result.order_id);
+      }
+      res.status(201).json({ ok: true, source_order_id: id, ...result });
+    } catch (e) {
+      if (e.status && e.code) {
+        res.status(e.status).json({ error: e.code, meta: e.meta });
+        return;
+      }
+      console.error('[orders] POST /:id/reorder', e);
       res.status(500).json({ error: 'internal_error' });
     }
   });
@@ -365,16 +553,83 @@ function mountOrdersRoutes(dbGetter) {
         return;
       }
 
+      // Only orders with status='new' reach this point (see check above), so
+      // payment_status is 'pending'. Flip both fields atomically so the
+      // expired-payment sweeper and any in-flight provider callbacks see
+      // the order as terminally failed rather than still-pending.
       const now = new Date().toISOString();
       db.prepare(
         `
-        UPDATE web_orders SET status = 'cancelled', updated_at = ? WHERE id = ?
+        UPDATE web_orders
+        SET status = 'cancelled', payment_status = 'failed', updated_at = ?
+        WHERE id = ?
       `
       ).run(now, id);
+      notifyStatusAsync(id, 'cancelled');
 
       res.json({ ok: true, id, status: 'cancelled' });
     } catch (e) {
       console.error('[orders] POST /:id/cancel', e);
+      res.status(500).json({ error: 'internal_error' });
+    }
+  });
+
+  router.post('/:id/rating', (req, res) => {
+    try {
+      const customerId = req.customerId;
+      const id = Number.parseInt(String(req.params.id), 10);
+      const rating = Number.parseInt(String(req.body?.rating), 10);
+      const feedback = req.body?.feedback == null ? '' : String(req.body.feedback).trim();
+      if (!Number.isFinite(id)) {
+        res.status(400).json({ error: 'invalid_id' });
+        return;
+      }
+      if (!Number.isFinite(rating) || rating < 1 || rating > 5) {
+        res.status(400).json({ error: 'invalid_rating' });
+        return;
+      }
+      if (feedback.length > 1000) {
+        res.status(400).json({ error: 'feedback_too_long' });
+        return;
+      }
+
+      const db = dbGetter();
+      if (!hasColumn(db, 'web_orders', 'rating')) {
+        res.status(503).json({ error: 'rating_not_available' });
+        return;
+      }
+      const row = db
+        .prepare(`SELECT id, status, rating, rated_at FROM web_orders WHERE id = ? AND customer_id = ?`)
+        .get(id, customerId);
+      if (!row) {
+        res.status(404).json({ error: 'not_found' });
+        return;
+      }
+      if (String(row.status || '').toLowerCase() !== 'delivered') {
+        res.status(400).json({ error: 'order_not_delivered' });
+        return;
+      }
+      if (row.rating != null || row.rated_at != null) {
+        res.status(409).json({ error: 'already_rated' });
+        return;
+      }
+      const now = new Date().toISOString();
+      const updated = db.prepare(
+        `
+        UPDATE web_orders
+        SET rating = ?, feedback = ?, rated_at = ?, updated_at = ?
+        WHERE id = ? AND customer_id = ?
+          AND rating IS NULL
+          AND rated_at IS NULL
+      `,
+      ).run(rating, feedback || null, now, now, id, customerId);
+      if (!updated.changes) {
+        res.status(409).json({ error: 'already_rated' });
+        return;
+      }
+      res.json({ ok: true, id, rating, feedback: feedback || null, rated_at: now });
+    } catch (e) {
+      console.error('[orders] POST /:id/rating', e);
       res.status(500).json({ error: 'internal_error' });
     }
   });
@@ -389,13 +644,21 @@ function mountOrdersRoutes(dbGetter) {
       }
 
       const db = dbGetter();
+      const hasDelivery = hasColumn(db, 'web_orders', 'delivery_method');
+      const hasRating = hasColumn(db, 'web_orders', 'rating');
+      const optionalColumns = [
+        hasDelivery ? 'delivery_method' : "'courier' AS delivery_method",
+        hasRating ? 'rating' : 'NULL AS rating',
+        hasRating ? 'feedback' : 'NULL AS feedback',
+        hasRating ? 'rated_at' : 'NULL AS rated_at',
+      ].join(', ');
       let order;
       try {
         order = db
           .prepare(
             `
           SELECT id, order_number, status, payment_method, payment_status, payment_id,
-                 total_amount, delivery_address, note, created_at, updated_at,
+                 total_amount, delivery_address, note, ${optionalColumns}, created_at, updated_at,
                  payment_expires_at, payment_provider
           FROM web_orders
           WHERE id = ? AND customer_id = ?
@@ -408,7 +671,7 @@ function mountOrdersRoutes(dbGetter) {
           .prepare(
             `
           SELECT id, order_number, status, payment_method, payment_status, payment_id,
-                 total_amount, delivery_address, note, created_at, updated_at
+                 total_amount, delivery_address, note, ${optionalColumns}, created_at, updated_at
           FROM web_orders
           WHERE id = ? AND customer_id = ?
         `

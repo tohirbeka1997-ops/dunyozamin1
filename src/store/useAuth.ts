@@ -23,6 +23,19 @@ function isRemoteRpcMode(): boolean {
   }
 }
 
+/** Joriy foydalanuvchi ID sini main process (audit) bilan sinxronlaydi. */
+async function syncPosMainSessionUser(userId: string | null) {
+  try {
+    if (typeof window === 'undefined') return;
+    const api = (window as any).posApi;
+    if (api?.auth?.setSessionUser) {
+      await handleIpcResponse<any>(api.auth.setSessionUser(userId ?? null));
+    }
+  } catch (e) {
+    console.warn('[Auth] setSessionUser (main) failed:', e);
+  }
+}
+
 function hasActiveSessionToken(): boolean {
   try {
     if (typeof window === 'undefined') return false;
@@ -66,19 +79,46 @@ interface AuthState {
   probeServerMode: () => Promise<boolean | null>;
 }
 
+/**
+ * Map a backend profile to a UserRole. The previous behaviour silently
+ * downgraded any unknown role string (e.g. a typo, a feature-flagged
+ * future role like 'auditor', or a tampered token) to `cashier`. That
+ * looked friendly but it is dangerous in two directions:
+ *
+ *   1. Privilege creep: a misspelled `'admnin'` would fall through to
+ *      `cashier`, which still grants a working session — instead of
+ *      forcing the operator to fix the data.
+ *   2. Privilege bypass: if a future role tightened cashier permissions,
+ *      silently aliasing the unknown role to `cashier` could grant
+ *      cashier-level access to a user the backend did not intend.
+ *
+ * Throwing here makes the caller (sign-in flow) reject the session and
+ * surface a clear "unrecognized role" error, which is the safe default.
+ */
+class UnrecognizedRoleError extends Error {
+  readonly code = 'unrecognized_role';
+  constructor(public readonly receivedRole: unknown) {
+    super(`Unrecognized user role: ${String(receivedRole)}`);
+    this.name = 'UnrecognizedRoleError';
+  }
+}
+
 function deriveRole(profile: Profile | null): UserRole {
   if (!profile) {
-    console.warn('⚠️  deriveRole: No profile provided, defaulting to cashier');
+    // Missing profile is a different failure mode (no token, server
+    // didn't return one yet). Treat as cashier ONLY in the loading
+    // window; callers that hit `deriveRole(null)` already know what
+    // they're doing.
     return 'cashier';
   }
   const role = profile.role;
   if (role === 'admin' || role === 'cashier' || role === 'manager') {
-    console.log('✅ deriveRole: Using role from profile:', role);
     return role;
   }
-  console.warn('⚠️  deriveRole: Invalid role from profile:', role, 'defaulting to cashier');
-  return 'cashier';
+  throw new UnrecognizedRoleError(role);
 }
+
+export { UnrecognizedRoleError };
 
 export const useAuthStore = create<AuthState>((set, get) => ({
   session: null,
@@ -163,16 +203,45 @@ export const useAuthStore = create<AuthState>((set, get) => ({
         }
       } catch { /* ignore */ }
 
+      // If the stored profile carries an unknown role we refuse to
+      // restore the session — the user must re-login. Better than the
+      // old behaviour of silently downgrading to `cashier` because:
+      //   - it forces the operator to clear stale data, and
+      //   - it prevents privilege confusion (the original role might
+      //     have been an admin that got truncated/corrupted).
+      let role: UserRole;
+      try {
+        role = deriveRole(parsed);
+      } catch (err) {
+        console.error('[useAuth] Stored profile has unknown role, clearing session.', err);
+        localStorage.removeItem('auth_user');
+        set({
+          session: null,
+          user: null,
+          profile: null,
+          role: 'cashier',
+          scope: 'tenant',
+          tenantSlug: null,
+          loading: false,
+          initialized: true,
+        });
+        return;
+      }
+
       set({
         session: { user: parsed },
         user: parsed,
         profile: parsed,
-        role: deriveRole(parsed),
+        role,
         scope,
         tenantSlug,
         loading: false,
         initialized: true,
       });
+
+      if (parsed?.id) {
+        void syncPosMainSessionUser(String(parsed.id));
+      }
 
       // Best-effort server-side session validation (web only — in Electron
       // `pos:auth:me` just returns the most recent active user, so we skip it).
@@ -222,19 +291,15 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       //   { success: true, data: <handlerResult> } OR { success: false, error: {...} }
       // So we MUST unwrap here.
       const response = await handleIpcResponse<any>(loginResult);
-      
-      console.log('🔐 Login Result:', response);
 
       // Check response format
       if (!response || typeof response !== 'object') {
-        console.error('❌ Invalid response format:', response);
         throw new Error('Invalid IPC response format');
       }
 
       // Check if login was successful
       if (!response.success) {
         const errorMessage = response.error || 'Login failed';
-        console.error('❌ Login failed:', errorMessage);
         throw new Error(errorMessage);
       }
 
@@ -242,12 +307,9 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       const dbUser = response.user;
       
       if (!dbUser || !dbUser.id) {
-        console.error('❌ Backend returned invalid user data');
-        console.error('❌ Full response:', JSON.stringify(response, null, 2));
+        console.error('[useAuth] Backend returned invalid user envelope on login');
         throw new Error('Invalid user data: missing ID. Cannot proceed with login.');
       }
-
-      console.log('✅ User ID validated:', dbUser.id);
 
       // Map backend response to frontend state
       // Backend returns: { success: true, user: { id, username, full_name, email, role }, message: 'Welcome' }
@@ -259,8 +321,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       // CRITICAL: Use role from backend - should be 'admin' for admin@pos.com
       const backendRole = dbUser.role;
       if (!backendRole) {
-        console.error('⚠️  WARNING: Backend did not return a role for user:', dbUser.username);
-        console.error('   Full backend response:', JSON.stringify(dbUser, null, 2));
+        console.warn('[useAuth] Backend did not return a role for login user');
       }
       
       const mappedUser = {
@@ -269,9 +330,6 @@ export const useAuthStore = create<AuthState>((set, get) => ({
         name: dbUser.full_name,
         role: backendRole || 'cashier', // Fallback only if backend didn't provide role
       };
-
-      console.log('✅ Mapped user object:', mappedUser);
-      console.log('✅ Role from backend:', backendRole, '→ Final role:', mappedUser.role);
 
       // Map to frontend User type (uses email field)
       const user: User = {
@@ -289,18 +347,9 @@ export const useAuthStore = create<AuthState>((set, get) => ({
 
       // Final validation: Ensure all required fields are present
       if (!user.id || !profile.id) {
-        console.error('❌ User or profile missing ID before saving');
-        console.error('❌ User:', user);
-        console.error('❌ Profile:', profile);
+        console.error('[useAuth] User/profile missing ID before saving');
         throw new Error('Invalid user data: missing ID in mapped objects');
       }
-
-      console.log('✅ Saving user to state:', {
-        userId: user.id,
-        profileId: profile.id,
-        fullName: profile.full_name,
-        role: profile.role
-      });
 
       // Read tenant slug from remote-API (captured from login response).
       // Single-tenant installs return null here and the badge is hidden.
@@ -310,12 +359,23 @@ export const useAuthStore = create<AuthState>((set, get) => ({
         if (api?._session?.getTenantSlug) tenantSlug = api._session.getTenantSlug() ?? null;
       } catch { /* ignore */ }
 
-      // Save to state with REAL database ID
+      // Save to state with REAL database ID. If the backend returned a
+      // role we don't recognise, refuse the login rather than aliasing
+      // to `cashier` — see comment on `deriveRole` for rationale.
+      let role: UserRole;
+      try {
+        role = deriveRole(profile);
+      } catch (err) {
+        console.error('[useAuth] Login profile carries unknown role:', err);
+        set({ loading: false });
+        throw new Error("Akkauntning roli noma'lum. Iltimos, administratoringizga murojaat qiling.");
+      }
+
       set({
         session: { user },
         user,
         profile,
-        role: deriveRole(profile),
+        role,
         scope: 'tenant',
         tenantSlug,
         loading: false,
@@ -324,8 +384,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       // Persist to localStorage with REAL database ID
       localStorage.setItem('auth_user', JSON.stringify(profile));
 
-      console.log('✅ Login successful! User saved to state with ID:', realUserId);
-      console.log('✅ User will be used for sales with ID:', realUserId);
+      void syncPosMainSessionUser(String(realUserId));
 
       // CRITICAL: Sync shift state from database after login
       // This ensures UI reflects real database status immediately after login
@@ -333,15 +392,14 @@ export const useAuthStore = create<AuthState>((set, get) => ({
         const { useShiftStore } = await import('@/store/shiftStore');
         const shiftStore = useShiftStore.getState();
         if (shiftStore.syncFromDatabase && realUserId) {
-          console.log('🔄 Syncing shift state after login for user:', realUserId);
           await shiftStore.syncFromDatabase(realUserId);
         }
       } catch (error) {
-        console.warn('⚠️ Could not sync shift after login (non-critical):', error);
+        console.warn('[useAuth] Could not sync shift after login (non-critical):', error);
       }
     } catch (error) {
       set({ loading: false });
-      console.error('❌ Login error:', error);
+      console.error('[useAuth] Login error:', error);
       // Re-throw error so UI can show error message
       throw error;
     }
@@ -384,6 +442,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
         loading: false,
       });
       localStorage.setItem('auth_user', JSON.stringify(profile));
+      void syncPosMainSessionUser(String(mu.id));
     } catch (e) {
       set({ loading: false });
       throw e;
@@ -391,15 +450,31 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   },
 
   signUp: async (email: string, password: string, profileFields?: { fullName?: string; username?: string }) => {
+    // Self-signup via this client-side helper used to fabricate an in-memory
+    // user (id = Date.now()) and save it to localStorage without calling the
+    // backend at all. That phantom account had no DB row, no server-side
+    // role, no audit trail — and could log the user in as a cashier on the
+    // next page load. We refuse the operation outright unless the build
+    // explicitly opts in via VITE_ALLOW_CLIENT_SIGNUP for local dev.
+    const devSignupEnabled =
+      String(import.meta.env.VITE_ALLOW_CLIENT_SIGNUP || '').trim() === '1';
+
+    if (!devSignupEnabled) {
+      throw new Error(
+        "Ro'yxatdan o'tish admin/Xodimlar bo'limi orqali amalga oshiriladi. Iltimos, administratoringizga murojaat qiling."
+      );
+    }
+
     set({ loading: true });
     try {
-      // Safe mapping - prevent "split of undefined" errors
       const safeEmail = email || '';
-      const safeFullName = profileFields?.fullName || 
-        profileFields?.username || 
-        (safeEmail.includes('@') ? safeEmail.split('@')[0] : safeEmail) || 
+      const safeFullName = profileFields?.fullName ||
+        profileFields?.username ||
+        (safeEmail.includes('@') ? safeEmail.split('@')[0] : safeEmail) ||
         'User';
 
+      // Dev-only: still a local-only stub. Don't ship to production with
+      // VITE_ALLOW_CLIENT_SIGNUP=1.
       const mockUser: User = { id: Date.now().toString(), email: safeEmail };
       const mockProfile: Profile = {
         id: mockUser.id,
@@ -415,6 +490,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
         loading: false,
       });
       localStorage.setItem('auth_user', JSON.stringify(mockProfile));
+      void syncPosMainSessionUser(String(mockUser.id));
     } catch (error) {
       set({ loading: false });
       throw error;
@@ -423,6 +499,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
 
   signOut: async () => {
     set({ loading: true });
+    await syncPosMainSessionUser(null);
 
     // 1. Tell the server to destroy this user's sessions (web/SaaS build only).
     //    In Electron `pos:auth:logout` is a no-op, so this is always safe.

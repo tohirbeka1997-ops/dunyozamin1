@@ -2,7 +2,6 @@ import { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
-import { Input } from '@/components/ui/input';
 import {
   Select,
   SelectContent,
@@ -19,12 +18,27 @@ import {
   TableRow,
 } from '@/components/ui/table';
 import { Badge } from '@/components/ui/badge';
-import { ArrowLeft, UserX, AlertTriangle, TrendingDown } from 'lucide-react';
+import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
+import {
+  Command,
+  CommandEmpty,
+  CommandGroup,
+  CommandInput,
+  CommandItem,
+  CommandList,
+} from '@/components/ui/command';
+import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
+import { ArrowLeft, Check, ChevronsUpDown, UserX, AlertTriangle, TrendingDown, X } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 import { handleIpcResponse, isElectron, requireElectron } from '@/utils/electron';
 import { formatMoneyUZS } from '@/lib/format';
 import { formatDate } from '@/lib/datetime';
 import { useReportAutoRefresh } from '@/hooks/useReportAutoRefresh';
+import { getCustomers } from '@/db/api';
+import type { Customer } from '@/types/database';
+import { useDebounce } from '@/hooks/use-debounce';
+import { cn } from '@/lib/utils';
+import { Label } from '@/components/ui/label';
 
 interface LostCustomer {
   customer_id: string;
@@ -39,15 +53,23 @@ interface LostCustomer {
   risk_level: 'high' | 'medium' | 'low';
 }
 
+const WALK_IN_ID = 'default-customer-001';
+
 export default function LostCustomersReport() {
   const navigate = useNavigate();
   const { toast } = useToast();
 
   const [loading, setLoading] = useState(true);
   const [rows, setRows] = useState<LostCustomer[]>([]);
-  const [searchTerm, setSearchTerm] = useState('');
   const [inactiveDays, setInactiveDays] = useState(7);
   const [riskFilter, setRiskFilter] = useState<string>('all');
+
+  const [customerPickerOpen, setCustomerPickerOpen] = useState(false);
+  const [customerSearch, setCustomerSearch] = useState('');
+  const debouncedCustomerSearch = useDebounce(customerSearch, 200);
+  const [pickerCustomers, setPickerCustomers] = useState<Customer[]>([]);
+  const [pickerLoading, setPickerLoading] = useState(false);
+  const [selectedCustomer, setSelectedCustomer] = useState<Customer | null>(null);
 
   useReportAutoRefresh(loadData);
 
@@ -55,6 +77,29 @@ export default function LostCustomersReport() {
     loadData();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [inactiveDays]);
+
+  useEffect(() => {
+    if (!customerPickerOpen) return;
+    let cancelled = false;
+    (async () => {
+      setPickerLoading(true);
+      try {
+        const list = await getCustomers({
+          searchTerm: debouncedCustomerSearch.trim() || undefined,
+        });
+        if (cancelled) return;
+        const arr = (Array.isArray(list) ? list : []).filter((c) => c.id !== WALK_IN_ID);
+        setPickerCustomers(arr);
+      } catch (e) {
+        if (!cancelled) setPickerCustomers([]);
+      } finally {
+        if (!cancelled) setPickerLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [customerPickerOpen, debouncedCustomerSearch]);
 
   async function loadData() {
     try {
@@ -82,26 +127,24 @@ export default function LostCustomersReport() {
     }
   }
 
+  const selectedInLostList = useMemo(() => {
+    if (!selectedCustomer) return true;
+    return rows.some((r) => r.customer_id === selectedCustomer.id);
+  }, [rows, selectedCustomer]);
+
   const filtered = useMemo(() => {
     let result = rows;
 
-    // Search filter
-    if (searchTerm) {
-      const term = searchTerm.toLowerCase();
-      result = result.filter(
-        (row) =>
-          row.customer_name.toLowerCase().includes(term) ||
-          (row.customer_phone && row.customer_phone.toLowerCase().includes(term))
-      );
+    if (selectedCustomer) {
+      result = result.filter((row) => row.customer_id === selectedCustomer.id);
     }
 
-    // Risk filter
     if (riskFilter !== 'all') {
       result = result.filter((row) => row.risk_level === riskFilter);
     }
 
     return result;
-  }, [rows, searchTerm, riskFilter]);
+  }, [rows, riskFilter, selectedCustomer]);
 
   const summary = useMemo(() => {
     const lostRevenue = filtered.reduce((sum, r) => sum + Number(r.total_spent || 0), 0);
@@ -129,11 +172,11 @@ export default function LostCustomersReport() {
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-4">
-          <Button variant="ghost" size="icon" onClick={() => navigate('/reports')}>
+          <Button variant="ghost" size="icon" onClick={() => navigate('/reports/customer')}>
             <ArrowLeft className="h-4 w-4" />
           </Button>
           <div>
-            <h1 className="text-3xl font-bold flex items-center gap-2">
+            <h1 className="page-heading flex items-center gap-2">
               <UserX className="h-8 w-8 text-orange-500" />
               Yo'qolgan mijozlar
             </h1>
@@ -149,17 +192,108 @@ export default function LostCustomersReport() {
 
       <Card>
         <CardContent className="pt-6">
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-            <div>
-              <label className="text-sm text-muted-foreground">Qidirish</label>
-              <Input
-                placeholder="Ism yoki telefon..."
-                value={searchTerm}
-                onChange={(e) => setSearchTerm(e.target.value)}
-              />
+          <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4">
+            <div className="md:col-span-2 space-y-2">
+              <div className="flex items-end gap-2">
+                <div className="min-w-0 flex-1 space-y-1">
+                  <Label className="text-sm text-muted-foreground">Mijoz (qidirish va tanlash)</Label>
+                  <Popover
+                    open={customerPickerOpen}
+                    onOpenChange={(open) => {
+                      setCustomerPickerOpen(open);
+                      if (!open) setCustomerSearch('');
+                    }}
+                  >
+                    <PopoverTrigger asChild>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        role="combobox"
+                        aria-expanded={customerPickerOpen}
+                        className="h-9 w-full justify-between font-normal"
+                      >
+                        <span className="min-w-0 flex-1 truncate text-left text-muted-foreground">
+                          {selectedCustomer
+                            ? (
+                                <span className="text-foreground">
+                                  {selectedCustomer.name}
+                                  {selectedCustomer.phone ? ` — ${selectedCustomer.phone}` : ''}
+                                </span>
+                              )
+                            : 'Barcha yo‘qolganlar — mijoz qidiring yoki tanlang...'}
+                        </span>
+                        <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
+                      </Button>
+                    </PopoverTrigger>
+                    <PopoverContent
+                      className="w-[min(92vw,32rem)] p-0"
+                      align="start"
+                    >
+                      <Command shouldFilter={false}>
+                        <CommandInput
+                          placeholder="Ism, telefon yoki email bo‘yicha qidirish..."
+                          value={customerSearch}
+                          onValueChange={setCustomerSearch}
+                        />
+                        <CommandList>
+                          {pickerLoading ? (
+                            <p className="p-3 text-sm text-muted-foreground">Qidirilmoqda...</p>
+                          ) : (
+                            <>
+                              <CommandEmpty>Mijoz topilmadi</CommandEmpty>
+                              <CommandGroup>
+                                {pickerCustomers.map((c) => (
+                                  <CommandItem
+                                    key={c.id}
+                                    value={`${c.id}-${c.name}`}
+                                    onSelect={() => {
+                                      setSelectedCustomer(c);
+                                      setCustomerPickerOpen(false);
+                                      setCustomerSearch('');
+                                    }}
+                                  >
+                                    <Check
+                                      className={cn(
+                                        'mr-2 h-4 w-4',
+                                        selectedCustomer?.id === c.id ? 'opacity-100' : 'opacity-0'
+                                      )}
+                                    />
+                                    <div className="min-w-0">
+                                      <div className="truncate font-medium">{c.name}</div>
+                                      {(c.phone || c.email) && (
+                                        <div className="text-xs text-muted-foreground">
+                                          {c.phone || ''}
+                                          {c.phone && c.email ? ' · ' : ''}
+                                          {c.email || ''}
+                                        </div>
+                                      )}
+                                    </div>
+                                  </CommandItem>
+                                ))}
+                              </CommandGroup>
+                            </>
+                          )}
+                        </CommandList>
+                      </Command>
+                    </PopoverContent>
+                  </Popover>
+                </div>
+                {selectedCustomer && (
+                  <Button
+                    type="button"
+                    variant="secondary"
+                    size="icon"
+                    className="h-9 shrink-0"
+                    title="Tanlovni olib tashlash"
+                    onClick={() => setSelectedCustomer(null)}
+                  >
+                    <X className="h-4 w-4" />
+                  </Button>
+                )}
+              </div>
             </div>
-            <div>
-              <label className="text-sm text-muted-foreground">Faol emas (kunlar)</label>
+            <div className="space-y-1">
+              <Label className="text-sm text-muted-foreground">Faol emas (kunlar)</Label>
               <Select
                 value={String(inactiveDays)}
                 onValueChange={(v) => setInactiveDays(Number(v))}
@@ -178,8 +312,8 @@ export default function LostCustomersReport() {
                 </SelectContent>
               </Select>
             </div>
-            <div>
-              <label className="text-sm text-muted-foreground">Xavf darajasi</label>
+            <div className="space-y-1">
+              <Label className="text-sm text-muted-foreground">Xavf darajasi</Label>
               <Select value={riskFilter} onValueChange={setRiskFilter}>
                 <SelectTrigger>
                   <SelectValue />
@@ -195,6 +329,18 @@ export default function LostCustomersReport() {
           </div>
         </CardContent>
       </Card>
+
+      {selectedCustomer && !loading && !selectedInLostList && (
+        <Alert>
+          <UserX className="h-4 w-4" />
+          <AlertTitle>Tanlangan mijoz hozircha «yo‘qolgan» emas</AlertTitle>
+          <AlertDescription className="text-muted-foreground">
+            {selectedCustomer.name} hozirgi «oxirgi {inactiveDays} kun ichida sotimagan» sharti bo‘yicha yo‘qolgan
+            deb hisoblanmayapti: yaqinda sotuv bo‘lgan yoki umuman tugallangan buyurtma topilmaydi. Kun yoki
+            xavf filtrini o‘zgartirib ko‘ring, yoki tanlovni olib qo‘ying.
+          </AlertDescription>
+        </Alert>
+      )}
 
       <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
         <Card>
@@ -253,7 +399,11 @@ export default function LostCustomersReport() {
             <div className="text-center py-12">
               <UserX className="h-12 w-12 text-muted-foreground mx-auto mb-4" />
               <p className="text-muted-foreground">
-                {searchTerm ? 'Qidiruv natijasi topilmadi' : 'Yo\'qolgan mijozlar mavjud emas'}
+                {selectedCustomer && !selectedInLostList
+                  ? 'Jadvalda qator yo‘q — tafsilot yuqoridagi xabarda.'
+                  : selectedCustomer && selectedInLostList && riskFilter !== 'all'
+                    ? 'Xavf darajasi bo‘yicha mos qator yo‘q. «Hammasi» ni tanlang.'
+                    : 'Yo‘qolgan mijozlar mavjud emas'}
               </p>
             </div>
           ) : (

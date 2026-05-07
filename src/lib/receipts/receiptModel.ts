@@ -55,6 +55,12 @@ export type PosReceiptData = {
   customer: Customer | null;
   subtotal: number;
   discountAmount: number;
+  /**
+   * Tax (VAT) collected on the order. Optional because most POS flows
+   * still bundle VAT into prices, but if the caller passes a non-zero
+   * value the receipt builder will surface a `Soliq:` line.
+   */
+  taxAmount?: number;
   total: number;
   paidAmount: number;
   changeAmount: number;
@@ -63,6 +69,9 @@ export type PosReceiptData = {
   cashierName?: string;
   priceTierCode?: string | null;
   customerTotalDebt?: number;
+  loyaltyCardCode?: string;
+  loyaltyQrDataUrl?: string;
+  loyaltyQrPayload?: string;
 };
 
 const getStoreName = (company?: CompanySettings | null): string => {
@@ -276,7 +285,10 @@ export function buildReceiptInputFromPos(
     subtotal: Number(data.subtotal || 0),
     discountAmount: Number(data.discountAmount || 0),
     totalDiscount: Number(data.discountAmount || 0),
-    taxAmount: 0,
+    // Forward whatever tax the caller computed. The previous hardcoded 0
+    // silently dropped VAT from POS-built receipts even when the cashier
+    // configured a non-zero tax rate, breaking fiscal reconciliation.
+    taxAmount: Number(data.taxAmount || 0),
     totalAmount: Number(data.total || 0),
     paidAmount: Number(data.paidAmount || 0),
     changeAmount: Number(data.changeAmount || 0),

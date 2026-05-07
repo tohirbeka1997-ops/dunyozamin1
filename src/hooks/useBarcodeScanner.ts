@@ -98,13 +98,15 @@ export function useBarcodeScanner(opts: UseBarcodeScannerOptions) {
         idleTimer = null;
       }
       const code = buffer;
+      const startedAt = firstAt;
+      const endedAt = lastAt;
       buffer = '';
       firstAt = 0;
       lastAt = 0;
       if (code.length < cfgRef.current.minLength) return;
       // Ensure it's clearly a burst and not slow typing.
       // durationMs is total time from first to last char.
-      const durationMs = lastAt - firstAt;
+      const durationMs = endedAt - startedAt;
       // Average per-char interval heuristic:
       const avg = code.length > 1 ? durationMs / (code.length - 1) : 0;
       if (reason === 'idle' && avg > cfgRef.current.maxIntervalMs) return; // looked like slow typing

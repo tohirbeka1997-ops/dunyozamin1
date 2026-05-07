@@ -70,6 +70,11 @@ function registerReturnsHandlers(services) {
     }
     return returns.updateReturn(returnId, data);
   }));
+
+  ipcMain.removeHandler('pos:returns:delete');
+  ipcMain.handle('pos:returns:delete', wrapHandler(async (_event, id) => {
+    return returns.deleteReturn(id);
+  }));
 }
 
 module.exports = { registerReturnsHandlers };

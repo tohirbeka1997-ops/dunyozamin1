@@ -329,6 +329,7 @@ export default function ReceiptTemplateView({
         }
 
         if (key === 'payments' && sections.payments?.enabled && (payments.length > 0 || customerTotalDebt > 0)) {
+          const loyaltyCardCode = String((order as any)?.loyalty_card_code || '').trim();
           return (
             <pre key="payments" className="mb-2 text-xs border-t border-dashed border-gray-400 pt-2 whitespace-pre">
               {[
@@ -339,6 +340,7 @@ export default function ReceiptTemplateView({
                 customerTotalDebt > 0
                   ? makeLine('Umumiy qarz:', formatMoneyPlain(customerTotalDebt))
                   : null,
+                loyaltyCardCode ? makeLine('Loyalty:', loyaltyCardCode) : null,
               ]
                 .filter(Boolean)
                 .join('\n')}
@@ -367,7 +369,11 @@ export default function ReceiptTemplateView({
 
         if (key === 'barcode' && sections.barcode?.enabled) {
           const align = sections.barcode.align === 'left' ? 'flex-start' : 'center';
-          const value = sections.barcode.type === 'qr' ? order.order_number : order.order_number;
+          const loyaltyPayload = String((order as any)?.loyalty_qr_payload || '').trim();
+          const value =
+            sections.barcode.type === 'qr'
+              ? (loyaltyPayload || order.order_number)
+              : order.order_number;
           return (
             <div key="barcode" className="mt-2" style={{ display: 'flex', justifyContent: align }}>
               <ReceiptBarcode type={sections.barcode.type} value={value} size={sections.barcode.size} />

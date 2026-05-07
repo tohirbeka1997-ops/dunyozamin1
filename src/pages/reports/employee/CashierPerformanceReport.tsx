@@ -15,6 +15,8 @@ import { FileDown, ArrowLeft } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 import { useNavigate } from 'react-router-dom';
 import { formatMoneyUZS } from '@/lib/format';
+import { formatDateYMD, todayYMD } from '@/lib/datetime';
+import { useReportAutoRefresh } from '@/hooks/useReportAutoRefresh';
 import { useTableSort } from '@/hooks/useTableSort';
 import { compareScalar } from '@/lib/tableSort';
 import { SortableTableHead } from '@/components/reports/SortableTableHead';
@@ -41,13 +43,22 @@ export default function CashierPerformanceReport() {
   const { toast } = useToast();
   const [performance, setPerformance] = useState<CashierPerformance[]>([]);
   const [loading, setLoading] = useState(true);
-  const [dateFrom, setDateFrom] = useState(new Date().toISOString().split('T')[0]);
-  const [dateTo, setDateTo] = useState(new Date().toISOString().split('T')[0]);
+  const [dateFrom, setDateFrom] = useState(() => {
+    const d = new Date();
+    d.setDate(d.getDate() - 7);
+    return formatDateYMD(d);
+  });
+  const [dateTo, setDateTo] = useState(() => todayYMD());
   const { sortKey, sortOrder, toggleSort } = useTableSort<CashierSortKey>('total_revenue', 'desc');
 
-  useEffect(() => {
-    loadData();
-  }, [dateFrom, dateTo]);
+  const calculateProfit = (order: any) => {
+    const items = order.items || [];
+    const totalCost = items.reduce((sum: number, item: any) => {
+      const cost = Number(item?.cost_price ?? 0) || 0;
+      return sum + cost * Number(item.quantity);
+    }, 0);
+    return Number(order.total_amount) - totalCost;
+  };
 
   const loadData = async () => {
     try {
@@ -60,7 +71,7 @@ export default function CashierPerformanceReport() {
       const cashierMap = new Map<string, CashierPerformance>();
 
       const filteredOrders = ordersData.filter((order) => {
-        const orderDate = new Date(order.created_at).toISOString().split('T')[0];
+        const orderDate = formatDateYMD(order.created_at);
         return orderDate >= dateFrom && orderDate <= dateTo && order.status === 'completed';
       });
 
@@ -88,7 +99,7 @@ export default function CashierPerformanceReport() {
             total_revenue: revenue,
             total_profit: profit,
             order_count: 1,
-            voided_orders: (order.status === 'cancelled' || order.status === 'hold') ? 1 : 0,
+            voided_orders: order.status === 'cancelled' || order.status === 'hold' ? 1 : 0,
           });
         }
       });
@@ -98,7 +109,7 @@ export default function CashierPerformanceReport() {
     } catch (error) {
       toast({
         title: 'Xatolik',
-        description: 'Kassir faoliyati ma\'lumotlarini yuklab bo\'lmadi',
+        description: "Kassir faoliyati ma'lumotlarini yuklab bo'lmadi",
         variant: 'destructive',
       });
     } finally {
@@ -106,14 +117,12 @@ export default function CashierPerformanceReport() {
     }
   };
 
-  const calculateProfit = (order: any) => {
-    const items = order.items || [];
-    const totalCost = items.reduce((sum: number, item: any) => {
-      const cost = Number(item?.cost_price ?? 0) || 0;
-      return sum + (cost * Number(item.quantity));
-    }, 0);
-    return Number(order.total_amount) - totalCost;
-  };
+  useReportAutoRefresh(loadData);
+
+  useEffect(() => {
+    loadData();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [dateFrom, dateTo]);
 
   const sortedPerformance = useMemo(() => {
     const list = [...performance];
@@ -161,12 +170,16 @@ export default function CashierPerformanceReport() {
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-4">
-          <Button variant="ghost" size="icon" onClick={() => navigate('/reports')}>
+          <Button variant="ghost" size="icon" onClick={() => navigate('/reports/employee')}>
             <ArrowLeft className="h-4 w-4" />
           </Button>
           <div>
-            <h1 className="text-3xl font-bold">Kassir faoliyati</h1>
-            <p className="text-muted-foreground">Kassirlarning sotuv samaradorligini ko'rish</p>
+            <h1 className="page-heading">Kassir faoliyati</h1>
+            <p className="text-muted-foreground text-sm">
+              Kassirlarning sotuv samaradorligi. Sana filtri:{' '}
+              <span className="text-foreground/80">Asia/Tashkent</span> (har bir buyurtma kuni shu vaqt
+              zonasida hisoblanadi).
+            </p>
           </div>
         </div>
         <div className="flex gap-2">

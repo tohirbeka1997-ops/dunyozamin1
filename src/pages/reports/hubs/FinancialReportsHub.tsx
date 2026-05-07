@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { useAuth } from '@/contexts/AuthContext';
-import { ArrowLeft, ChevronDown, ChevronUp, DollarSign, FileDown, AlertTriangle, Clock, TrendingDown } from 'lucide-react';
+import { ArrowLeft, ChevronDown, ChevronUp, DollarSign, FileDown, AlertTriangle, Clock, TrendingDown, Scale } from 'lucide-react';
 
 type ReportLink = { title: string; description: string; path: string; icon: React.ReactNode };
 
@@ -26,6 +26,12 @@ export default function FinancialReportsHub() {
 
   const mainReports = useMemo<ReportLink[]>(
     () => [
+      {
+        title: 'Moliyaviy akt sverka (umumiy hisob-kitob)',
+        description: 'Kirim, sotuv, foyda, xarajat, qarzlar, ombor — bitta varaqda',
+        path: '/reports/financial/business-summary',
+        icon: <Scale className="h-4 w-4 opacity-90" />,
+      },
       {
         title: 'Foyda va zarar (P&L)',
         description: 'Daromad, xarajat va foyda',
@@ -91,7 +97,7 @@ export default function FinancialReportsHub() {
           <ArrowLeft className="h-4 w-4" />
         </Button>
         <div>
-          <h1 className="text-3xl font-bold">Moliyaviy</h1>
+          <h1 className="page-heading">Moliyaviy</h1>
           <p className="text-muted-foreground">Moliyaviy ko‘rsatkichlar va nazorat hisobotlari</p>
         </div>
       </div>

@@ -142,6 +142,24 @@ function registerReportsHandlers(services) {
     })
   );
 
+  console.log('Registering pos:reports:productActSverkaByPeriod handler...');
+  ipcMain.removeHandler('pos:reports:productActSverkaByPeriod');
+  ipcMain.handle(
+    'pos:reports:productActSverkaByPeriod',
+    wrapHandler(async (_event, filters) => {
+      return reports.getProductActSverkaByPeriod(filters || {});
+    })
+  );
+
+  console.log('Registering pos:reports:productDocumentHistory handler...');
+  ipcMain.removeHandler('pos:reports:productDocumentHistory');
+  ipcMain.handle(
+    'pos:reports:productDocumentHistory',
+    wrapHandler(async (_event, filters) => {
+      return reports.getProductDocumentHistory(filters || {});
+    })
+  );
+
   console.log('Registering pos:reports:customerActSverka handler...');
   ipcMain.removeHandler('pos:reports:customerActSverka');
   ipcMain.handle(
@@ -324,6 +342,15 @@ function registerReportsHandlers(services) {
     })
   );
 
+  console.log('Registering pos:reports:purchaseVsSold handler...');
+  ipcMain.removeHandler('pos:reports:purchaseVsSold');
+  ipcMain.handle(
+    'pos:reports:purchaseVsSold',
+    wrapHandler(async (_event, filters) => {
+      return reports.getPurchaseVsSold(filters || {});
+    })
+  );
+
   console.log('Registering pos:reports:spreadTimeSeries handler...');
   ipcMain.removeHandler('pos:reports:spreadTimeSeries');
   ipcMain.handle(
@@ -394,7 +421,7 @@ function registerReportsHandlers(services) {
   ipcMain.handle(
     'pos:reports:deviceHealth',
     wrapHandler(async (_event) => {
-      return reports.getDeviceHealth();
+      return await reports.getDeviceHealth();
     })
   );
 
@@ -403,7 +430,7 @@ function registerReportsHandlers(services) {
   ipcMain.handle(
     'pos:reports:deviceIncidents',
     wrapHandler(async (_event) => {
-      return reports.getDeviceIncidents();
+      return await reports.getDeviceIncidents();
     })
   );
 

@@ -179,3 +179,14 @@ All colors MUST be HSL.
     @apply bg-background text-foreground;
   }
 }
+
+@layer components {
+  /* Sahifa sarlavhalari — barcha bo‘limlar uchun ixcham umumiy ko‘rinish */
+  .page-heading {
+    @apply text-xl font-semibold tracking-tight text-foreground sm:text-2xl;
+  }
+
+  .page-heading-sub {
+    @apply mt-0.5 text-xs leading-snug text-muted-foreground sm:text-sm;
+  }
+}

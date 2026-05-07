@@ -35,7 +35,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog';
-import { Plus, Search, MoreVertical, Edit, Trash2, Key } from 'lucide-react';
+import { Plus, Search, MoreVertical, Edit, Trash2, Key, Users } from 'lucide-react';
 import { getAllEmployees, deleteEmployee } from '@/db/api';
 import type { Profile } from '@/types/database';
 import { useToast } from '@/hooks/use-toast';
@@ -136,7 +136,11 @@ export default function Employees() {
       warehouse: { label: 'Ombor xodimi', className: 'bg-purple-500/10 text-purple-700 dark:text-purple-400' },
     };
     const positionData = positions[role] || { label: role, className: 'bg-muted' };
-    return <Badge className={positionData.className}>{positionData.label}</Badge>;
+    return (
+      <Badge className={`${positionData.className} px-1.5 py-0 text-[10px] font-normal sm:text-xs`}>
+        {positionData.label}
+      </Badge>
+    );
   };
 
   const getStatusIndicator = (isActive: boolean) => {
@@ -147,13 +151,13 @@ export default function Employees() {
             isActive ? 'bg-green-500' : 'bg-red-500'
           }`}
         />
-        <span className="text-sm">{isActive ? 'Faol' : 'Faol emas'}</span>
+        <span className="text-xs">{isActive ? 'Faol' : 'Faol emas'}</span>
       </div>
     );
   };
 
   return (
-    <div className="space-y-6">
+    <div className="w-full min-w-0 space-y-4">
       <PageBreadcrumb
         items={[
           { label: 'Dashboard', href: '/' },
@@ -161,139 +165,150 @@ export default function Employees() {
         ]}
       />
 
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-3xl font-bold">Xodimlar</h1>
-          <p className="text-muted-foreground">Xodimlar hisoblarini va huquqlarini boshqarish</p>
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+        <div className="min-w-0 space-y-0.5">
+          <h1 className="page-heading">Xodimlar</h1>
+          <p className="page-heading-sub">Xodimlar hisoblarini va huquqlarini boshqarish</p>
         </div>
-        <Button onClick={() => {
-          setEditingEmployeeId(undefined);
-          setEmployeeFormOpen(true);
-        }}>
-          <Plus className="mr-2 h-4 w-4" />
+        <Button
+          size="sm"
+          className="h-8 shrink-0 text-xs"
+          onClick={() => {
+            setEditingEmployeeId(undefined);
+            setEmployeeFormOpen(true);
+          }}
+        >
+          <Plus className="mr-2 h-3.5 w-3.5" />
           Yangi xodim qo'shish
         </Button>
       </div>
 
-      {/* Summary Cards */}
-      <div className="grid gap-4 xl:grid-cols-3">
-        <Card>
-          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="text-sm font-medium">Umumiy xodimlar soni</CardTitle>
+      <div className="grid gap-2 xl:grid-cols-3">
+        <Card className="gap-0 py-0 shadow-sm">
+          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-1 pt-3">
+            <CardTitle className="text-xs font-medium text-muted-foreground">Umumiy xodimlar soni</CardTitle>
           </CardHeader>
-          <CardContent>
-            <div className="text-2xl font-bold">{totalEmployees}</div>
-            <p className="text-xs text-muted-foreground">Ro'yxatdan o'tgan barcha xodimlar</p>
+          <CardContent className="pb-3 pt-0">
+            <div className="text-xl font-bold tabular-nums">{totalEmployees}</div>
+            <p className="text-[11px] text-muted-foreground">Ro'yxatdan o'tgan barcha xodimlar</p>
           </CardContent>
         </Card>
 
-        <Card>
-          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="text-sm font-medium">Faol xodimlar</CardTitle>
+        <Card className="gap-0 py-0 shadow-sm">
+          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-1 pt-3">
+            <CardTitle className="text-xs font-medium text-muted-foreground">Faol xodimlar</CardTitle>
           </CardHeader>
-          <CardContent>
-            <div className="text-2xl font-bold">{activeEmployees}</div>
-            <p className="text-xs text-muted-foreground">Hozirda faol hisoblar</p>
+          <CardContent className="pb-3 pt-0">
+            <div className="text-xl font-bold tabular-nums">{activeEmployees}</div>
+            <p className="text-[11px] text-muted-foreground">Hozirda faol hisoblar</p>
           </CardContent>
         </Card>
 
-        <Card>
-          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="text-sm font-medium">Administratorlar soni</CardTitle>
+        <Card className="gap-0 py-0 shadow-sm">
+          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-1 pt-3">
+            <CardTitle className="text-xs font-medium text-muted-foreground">Administratorlar soni</CardTitle>
           </CardHeader>
-          <CardContent>
-            <div className="text-2xl font-bold">{administratorsCount}</div>
-            <p className="text-xs text-muted-foreground">Administrator huquqlariga ega foydalanuvchilar</p>
+          <CardContent className="pb-3 pt-0">
+            <div className="text-xl font-bold tabular-nums">{administratorsCount}</div>
+            <p className="text-[11px] text-muted-foreground">Administrator huquqlariga ega foydalanuvchilar</p>
           </CardContent>
         </Card>
       </div>
 
-      {/* Search and Filters */}
-      <Card>
-        <CardHeader>
-          <CardTitle>Xodimlar ro'yxati</CardTitle>
+      <Card className="gap-0 py-0 shadow-sm">
+        <CardHeader className="flex flex-row flex-wrap items-center justify-between gap-2 border-b px-4 py-2 space-y-0">
+          <CardTitle className="flex items-center gap-2 text-base font-semibold">
+            <Users className="h-4 w-4 shrink-0 text-muted-foreground" />
+            <span className="min-w-0 truncate">Xodimlar ro&apos;yxati</span>
+            {!loading && (
+              <span className="text-xs font-normal tabular-nums text-muted-foreground">
+                ({filteredEmployees.length})
+              </span>
+            )}
+          </CardTitle>
         </CardHeader>
-        <CardContent>
-          <div className="mb-6 flex flex-col gap-4 xl:flex-row xl:items-center xl:justify-between">
-            <div className="relative flex-1 xl:max-w-sm">
-              <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-              <Input
-                placeholder="Ism yoki telefon raqam bo'yicha qidirish…"
-                value={searchTerm}
-                onChange={(e) => setSearchTerm(e.target.value)}
-                className="pl-9"
-              />
-            </div>
-            <div className="flex gap-2">
-              <Select value={positionFilter} onValueChange={setPositionFilter}>
-                <SelectTrigger className="w-[180px]">
-                  <SelectValue placeholder="Lavozim bo'yicha filtr" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="all">Barcha lavozimlar</SelectItem>
-                  <SelectItem value="admin">Administrator</SelectItem>
-                  <SelectItem value="manager">Manager</SelectItem>
-                  <SelectItem value="cashier">Kassir</SelectItem>
-                  <SelectItem value="warehouse">Ombor xodimi</SelectItem>
-                </SelectContent>
-              </Select>
-              <Select value={statusFilter} onValueChange={setStatusFilter}>
-                <SelectTrigger className="w-[150px]">
-                  <SelectValue placeholder="Holat bo'yicha filtr" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="all">Barcha holatlar</SelectItem>
-                  <SelectItem value="active">Faol</SelectItem>
-                  <SelectItem value="inactive">Faol emas</SelectItem>
-                </SelectContent>
-              </Select>
+        <CardContent className="px-3 pb-3 pt-2">
+          <div className="mb-3 rounded-md border bg-muted/30 px-2 py-1.5">
+            <span className="mb-1 inline-block text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+              Filtrlar
+            </span>
+            <div className="flex min-w-0 flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-center">
+              <div className="relative h-8 min-w-0 flex-1 sm:max-w-xs">
+                <Search className="pointer-events-none absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
+                <Input
+                  placeholder="Ism yoki telefon raqam bo'yicha qidirish…"
+                  value={searchTerm}
+                  onChange={(e) => setSearchTerm(e.target.value)}
+                  className="h-8 py-1 pl-8 text-xs sm:text-sm"
+                />
+              </div>
+              <div className="flex min-w-0 flex-wrap items-center gap-2">
+                <Select value={positionFilter} onValueChange={setPositionFilter}>
+                  <SelectTrigger className="h-8 w-[180px] bg-background text-xs [&_span]:truncate">
+                    <SelectValue placeholder="Lavozim bo'yicha filtr" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">Barcha lavozimlar</SelectItem>
+                    <SelectItem value="admin">Administrator</SelectItem>
+                    <SelectItem value="manager">Manager</SelectItem>
+                    <SelectItem value="cashier">Kassir</SelectItem>
+                    <SelectItem value="warehouse">Ombor xodimi</SelectItem>
+                  </SelectContent>
+                </Select>
+                <Select value={statusFilter} onValueChange={setStatusFilter}>
+                  <SelectTrigger className="h-8 w-[150px] bg-background text-xs [&_span]:truncate">
+                    <SelectValue placeholder="Holat bo'yicha filtr" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">Barcha holatlar</SelectItem>
+                    <SelectItem value="active">Faol</SelectItem>
+                    <SelectItem value="inactive">Faol emas</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
             </div>
           </div>
 
           {loading ? (
-            <div className="py-8 text-center text-muted-foreground">Xodimlar yuklanmoqda...</div>
+            <div className="py-10 text-center text-sm text-muted-foreground">Xodimlar yuklanmoqda...</div>
           ) : filteredEmployees.length === 0 ? (
-            <div className="py-8 text-center text-muted-foreground">
+            <div className="rounded-lg border bg-muted/20 py-10 text-center text-sm text-muted-foreground">
               Filtrlarga mos keladigan xodimlar topilmadi
             </div>
           ) : (
             <div className="overflow-x-auto">
               <Table>
                 <TableHeader>
-                  <TableRow>
-                    <TableHead>To'liq ismi</TableHead>
-                    <TableHead>Telefon raqami / Login</TableHead>
-                    <TableHead>Lavozimi</TableHead>
-                    <TableHead>Holati</TableHead>
-                    <TableHead>Ishga kirgan sana</TableHead>
-                    <TableHead className="text-right">Amallar</TableHead>
+                  <TableRow className="hover:bg-transparent">
+                    <TableHead className="text-xs font-semibold sm:text-sm">To'liq ismi</TableHead>
+                    <TableHead className="text-xs font-semibold sm:text-sm">Telefon raqami / Login</TableHead>
+                    <TableHead className="text-xs font-semibold sm:text-sm">Lavozimi</TableHead>
+                    <TableHead className="text-xs font-semibold sm:text-sm">Holati</TableHead>
+                    <TableHead className="text-xs font-semibold sm:text-sm">Ishga kirgan sana</TableHead>
+                    <TableHead className="w-[1%] text-right text-xs font-semibold sm:text-sm">Amallar</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
                   {filteredEmployees.map((employee) => (
-                    <TableRow key={employee.id}>
-                      <TableCell className="font-medium">
+                    <TableRow key={employee.id} className="text-sm">
+                      <TableCell className="max-w-[14rem] truncate py-2 font-medium">
                         {employee.full_name || employee.username}
                       </TableCell>
-                      <TableCell>
+                      <TableCell className="py-2">
                         <div>
-                          <div>{employee.phone || '-'}</div>
-                          <div className="text-xs text-muted-foreground">
-                            Login: {employee.username}
-                          </div>
+                          <div className="text-xs">{employee.phone || '-'}</div>
+                          <div className="text-[11px] text-muted-foreground">Login: {employee.username}</div>
                         </div>
                       </TableCell>
-                      <TableCell>{getPositionBadge(employee.role)}</TableCell>
-                      <TableCell>{getStatusIndicator(employee.is_active)}</TableCell>
-                      <TableCell>
-                        {employee.created_at
-                          ? formatDate(employee.created_at)
-                          : '-'}
+                      <TableCell className="py-2">{getPositionBadge(employee.role)}</TableCell>
+                      <TableCell className="py-2">{getStatusIndicator(employee.is_active)}</TableCell>
+                      <TableCell className="whitespace-nowrap py-2 text-xs text-muted-foreground">
+                        {employee.created_at ? formatDate(employee.created_at) : '-'}
                       </TableCell>
-                      <TableCell className="text-right">
+                      <TableCell className="py-2 text-right">
                         <DropdownMenu>
                           <DropdownMenuTrigger asChild>
-                            <Button variant="ghost" size="sm">
+                            <Button variant="ghost" size="icon" className="h-8 w-8">
                               <MoreVertical className="h-4 w-4" />
                             </Button>
                           </DropdownMenuTrigger>

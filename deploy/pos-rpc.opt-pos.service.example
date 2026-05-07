@@ -1,0 +1,30 @@
+# POS HTTP RPC (/rpc) — Electron CLIENT ulanishi uchun.
+# public-api (3334) alohida; nginx odatda /rpc ni shu portga yo‘naltiradi.
+#
+# DIQQAT: docker-compose 127.0.0.1:3333 ni allaqachon publish qilsa, bu unit ni
+# VOQE ENABLE QILMANG — ikkalasi EADDRINUSE beradi. Faqat Docker siz RPC kerak bo‘lsa ishlating.
+#
+#   sudo cp deploy/pos-rpc.opt-pos.service.example /etc/systemd/system/pos-rpc.service
+#   sudo systemctl daemon-reload && sudo systemctl enable --now pos-rpc.service
+#
+# .env da: POS_HOST_PORT, POS_HOST_SECRET, POS_DATA_DIR, POS_CORS_ORIGINS va hok.
+
+[Unit]
+Description=DunyoZamin POS RPC (electron/server.cjs)
+After=network-online.target
+
+[Service]
+Type=simple
+User=root
+Group=root
+WorkingDirectory=/opt/pos
+EnvironmentFile=-/opt/pos/.env
+ExecStart=/usr/bin/node /opt/pos/electron/server.cjs
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=pos-rpc
+
+[Install]
+WantedBy=multi-user.target

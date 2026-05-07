@@ -143,6 +143,47 @@ class ReturnsService {
     return { customer, oldBalance, newBalance };
   }
 
+  _revertCustomerRefund(customerId, returnId, fallbackAmount = 0) {
+    if (!customerId) return 0;
+    const customer = this.db.prepare('SELECT * FROM customers WHERE id = ?').get(customerId);
+    if (!customer) return 0;
+
+    let reverseAmount = 0;
+    let usedLedger = false;
+    try {
+      const tableExists = this.db.prepare(`
+        SELECT name FROM sqlite_master
+        WHERE type='table' AND name='customer_ledger'
+      `).get();
+      if (tableExists) {
+        const row = this.db.prepare(`
+          SELECT COALESCE(SUM(amount), 0) AS total
+          FROM customer_ledger
+          WHERE ref_id = ? AND type = 'refund'
+        `).get(returnId);
+        reverseAmount = Number(row?.total || 0);
+        usedLedger = true;
+        this.db.prepare(`DELETE FROM customer_ledger WHERE ref_id = ? AND type = 'refund'`).run(returnId);
+      }
+    } catch (ledgerError) {
+      console.warn('⚠️ Failed to inspect/delete customer_ledger for return rollback:', ledgerError.message);
+    }
+
+    if (!usedLedger) {
+      reverseAmount = Number(fallbackAmount || 0);
+    }
+    if (!(reverseAmount > 0)) return 0;
+
+    const oldBalance = Number(customer.balance || 0);
+    const newBalance = oldBalance - reverseAmount;
+    this.db.prepare(`
+      UPDATE customers
+      SET balance = ?
+      WHERE id = ?
+    `).run(newBalance, customerId);
+    return reverseAmount;
+  }
+
   /**
    * Create return for an order
    * BULLETPROOF: Hardcoded safe IDs, comprehensive error handling
@@ -194,8 +235,12 @@ class ReturnsService {
           throw createError(ERROR_CODES.VALIDATION_ERROR, 'No users exist in DB. Cannot create return.');
         };
 
-        const resolveSafeWarehouseId = () => {
-          // Prefer seeded main warehouse id, then any active warehouse.
+        const resolveSafeWarehouseId = (preferredId = null) => {
+          // Prefer order warehouse when valid, then seeded main warehouse, then any warehouse.
+          if (preferredId) {
+            const preferred = this.db.prepare('SELECT id FROM warehouses WHERE id = ?').get(String(preferredId));
+            if (preferred?.id) return String(preferred.id);
+          }
           const byId = this.db.prepare('SELECT id FROM warehouses WHERE id = ?').get(SAFE_WAREHOUSE_ID);
           if (byId?.id) return String(byId.id);
           const anyWh = this.db.prepare('SELECT id FROM warehouses ORDER BY created_at ASC LIMIT 1').get();
@@ -216,7 +261,7 @@ class ReturnsService {
         // Resolve warehouse_id (single warehouse mode)
         // IMPORTANT: Always use a warehouse that is guaranteed to exist in DB.
         // Some installations enforce FK(warehouse_id) on sales_returns and orders may have NULL/old warehouse_id.
-        const warehouseId = resolveSafeWarehouseId();
+        const warehouseId = resolveSafeWarehouseId(order.warehouse_id || data.warehouse_id || null);
 
         // CRITICAL FIX: Step 2 - Validate ALL items FIRST before inserting return record
         // This prevents orphan return records when validation fails
@@ -672,9 +717,16 @@ class ReturnsService {
         // - Refund cash/card on an order that had unpaid credit (credit sale): must also reduce debt;
         //   otherwise qarz ayrilmaydi (bug) when user picks naqd/karta in the return form.
         const creditOnOrder = Number(order.credit_amount || 0);
+        const paidOnOrder = Number(order.paid_amount || 0);
+        const totalOnOrder = Number(order.total_amount || 0);
         const ps = String(order.payment_status || '').toLowerCase();
-        // `credit_amount` is authoritative; `on_credit` matches finalizeOrder when customer owes the remainder.
-        const orderHadUnpaidCredit = creditOnOrder > 0.009 || ps === 'on_credit';
+        // Buyurtmada hali to‘lanmagan summa (nasiya / qisman to‘lov). Ba’zi bazalarda credit_amount 0
+        // qolib ketishi mumkin — shunda cash qaytarish balansga umuman yozilmasdi (haqdor yo‘qolardi).
+        const outstandingOnOrder = Math.max(0, totalOnOrder - paidOnOrder);
+        const orderHadUnpaidCredit =
+          creditOnOrder > 0.009 ||
+          ps === 'on_credit' ||
+          outstandingOnOrder > 0.02;
         const shouldAdjustBalance =
           customerId &&
           String(customerId) !== 'default-customer-001' &&
@@ -770,7 +822,11 @@ class ReturnsService {
         throw createError(ERROR_CODES.VALIDATION_ERROR, 'No users exist in DB. Cannot create return.');
       };
 
-      const resolveSafeWarehouseId = () => {
+      const resolveSafeWarehouseId = (preferredId = null) => {
+        if (preferredId) {
+          const preferred = this.db.prepare('SELECT id FROM warehouses WHERE id = ?').get(String(preferredId));
+          if (preferred?.id) return String(preferred.id);
+        }
         const byId = this.db.prepare('SELECT id FROM warehouses WHERE id = ?').get(SAFE_WAREHOUSE_ID);
         if (byId?.id) return String(byId.id);
         const anyWh = this.db.prepare('SELECT id FROM warehouses ORDER BY created_at ASC LIMIT 1').get();
@@ -780,7 +836,7 @@ class ReturnsService {
 
       const cashierId = resolveSafeUserId();
       const userId = cashierId;
-      const warehouseId = resolveSafeWarehouseId();
+      const warehouseId = resolveSafeWarehouseId(data.warehouse_id || null);
       const now = new Date().toISOString().replace('T', ' ').replace('Z', '').substring(0, 19);
       const returnId = randomUUID();
       const returnNumber = `RET-${Date.now()}`;
@@ -1502,7 +1558,7 @@ class ReturnsService {
    */
   updateReturn(returnId, data) {
     const SAFE_ADMIN_ID = 'default-admin-001';
-    const SAFE_WAREHOUSE_ID = 'default-warehouse-001';
+    const SAFE_WAREHOUSE_ID = 'main-warehouse-001';
     
     console.log('[RETURNS] updateReturn called:', {
       returnId,
@@ -1554,8 +1610,8 @@ class ReturnsService {
           }
           
           const newQuantity = Number(itemUpdate.quantity);
-          if (!Number.isInteger(newQuantity) || newQuantity < 1) {
-            throw createError(ERROR_CODES.VALIDATION_ERROR, `Quantity must be integer >= 1 for item ${itemUpdate.return_item_id}`);
+          if (!Number.isFinite(newQuantity) || newQuantity <= 0) {
+            throw createError(ERROR_CODES.VALIDATION_ERROR, `Quantity must be greater than 0 for item ${itemUpdate.return_item_id}`);
           }
           
           // Get original sold quantity and already returned quantity (excluding current return)
@@ -1642,9 +1698,21 @@ class ReturnsService {
               throw createError(ERROR_CODES.VALIDATION_ERROR, 'InventoryService is not available. Cannot update stock.');
             }
 
+            const inventoryWarehouseId = (() => {
+              const preferred = returnRecord.warehouse_id || null;
+              if (preferred) {
+                const wh = this.db.prepare('SELECT id FROM warehouses WHERE id = ?').get(String(preferred));
+                if (wh?.id) return String(wh.id);
+              }
+              const byId = this.db.prepare('SELECT id FROM warehouses WHERE id = ?').get(SAFE_WAREHOUSE_ID);
+              if (byId?.id) return String(byId.id);
+              const anyWh = this.db.prepare('SELECT id FROM warehouses ORDER BY created_at ASC LIMIT 1').get();
+              if (anyWh?.id) return String(anyWh.id);
+              throw createError(ERROR_CODES.VALIDATION_ERROR, 'No warehouses exist in DB. Cannot update return inventory.');
+            })();
             const stockUpdate = this.inventoryService._updateBalance(
                 delta.product_id,
-                SAFE_WAREHOUSE_ID,
+                inventoryWarehouseId,
                 delta.deltaQuantity,
               'return_update',
                 'return',
@@ -1670,6 +1738,73 @@ class ReturnsService {
       });
       throw error;
     }
+  }
+
+  /**
+   * Delete return and rollback stock/order/customer effects
+   */
+  deleteReturn(returnId) {
+    if (!returnId) {
+      throw createError(ERROR_CODES.VALIDATION_ERROR, 'Return ID is required');
+    }
+
+    return this.db.transaction(() => {
+      const returnRecord = this.db.prepare('SELECT * FROM sales_returns WHERE id = ?').get(returnId);
+      if (!returnRecord) {
+        throw createError(ERROR_CODES.NOT_FOUND, `Return ${returnId} not found`);
+      }
+
+      const returnItems = this.db.prepare('SELECT * FROM return_items WHERE return_id = ?').all(returnId) || [];
+      const safeWarehouseId = (() => {
+        const preferred = returnRecord.warehouse_id;
+        if (preferred) {
+          const byPreferred = this.db.prepare('SELECT id FROM warehouses WHERE id = ?').get(String(preferred));
+          if (byPreferred?.id) return String(byPreferred.id);
+        }
+        const byMain = this.db.prepare("SELECT id FROM warehouses WHERE id = 'main-warehouse-001'").get();
+        if (byMain?.id) return String(byMain.id);
+        const anyWh = this.db.prepare('SELECT id FROM warehouses ORDER BY created_at ASC LIMIT 1').get();
+        if (anyWh?.id) return String(anyWh.id);
+        throw createError(ERROR_CODES.VALIDATION_ERROR, 'No warehouses exist in DB. Cannot rollback return.');
+      })();
+
+      for (const item of returnItems) {
+        const qtyBase = Number(item.qty_base ?? item.quantity ?? 0) || 0;
+        const qtySale = Number(item.quantity || 0) || 0;
+        if (qtyBase > 0) {
+          const product = this.db.prepare('SELECT track_stock FROM products WHERE id = ?').get(item.product_id);
+          if (product?.track_stock) {
+            if (!this.inventoryService) {
+              throw createError(ERROR_CODES.VALIDATION_ERROR, 'InventoryService is not available. Cannot rollback stock.');
+            }
+            this.inventoryService._updateBalance(
+              item.product_id,
+              safeWarehouseId,
+              -qtyBase,
+              'return_delete',
+              'return',
+              returnId,
+              `Rollback return ${returnRecord.return_number || returnId}`,
+              returnRecord.user_id || returnRecord.cashier_id || 'default-admin-001'
+            );
+          }
+        }
+
+        if (item.order_item_id) {
+          const orderItem = this.db.prepare('SELECT returned_quantity FROM order_items WHERE id = ?').get(item.order_item_id);
+          if (orderItem) {
+            const currentReturned = Number(orderItem.returned_quantity || 0);
+            const nextReturned = Math.max(0, currentReturned - qtySale);
+            this.db.prepare('UPDATE order_items SET returned_quantity = ? WHERE id = ?').run(nextReturned, item.order_item_id);
+          }
+        }
+      }
+
+      this._revertCustomerRefund(returnRecord.customer_id, returnId, Number(returnRecord.refund_amount || 0));
+      this.db.prepare('DELETE FROM return_items WHERE return_id = ?').run(returnId);
+      this.db.prepare('DELETE FROM sales_returns WHERE id = ?').run(returnId);
+      return { success: true };
+    })();
   }
 
   /**
@@ -1699,10 +1834,14 @@ class ReturnsService {
         sr.created_at,
         o.order_number as original_order_number,
         o.created_at as order_created_at,
-        c.name as customer_name
+        c.name as customer_name,
+        COALESCE(u.username, p.username) as cashier_username,
+        COALESCE(u.full_name, p.full_name) as cashier_full_name
       FROM sales_returns sr
       LEFT JOIN orders o ON sr.order_id = o.id
       LEFT JOIN customers c ON sr.customer_id = c.id
+      LEFT JOIN users u ON u.id = COALESCE(sr.cashier_id, sr.user_id)
+      LEFT JOIN profiles p ON p.id = COALESCE(sr.cashier_id, sr.user_id)
       WHERE 1=1
     `;
     const params = [];

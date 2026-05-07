@@ -153,7 +153,7 @@ export default function ScaleBarcodeServicePage() {
     <div className="container mx-auto p-6 space-y-6">
       <div className="flex items-center justify-between gap-4">
         <div>
-          <h1 className="text-3xl font-bold">Scale Barcode Service</h1>
+          <h1 className="page-heading">Scale Barcode Service</h1>
           <p className="text-muted-foreground mt-2">
             Kiloli mahsulotlar uchun tarozi eksport formatlari.
           </p>

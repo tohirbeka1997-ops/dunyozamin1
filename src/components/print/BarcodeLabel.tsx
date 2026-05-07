@@ -146,7 +146,7 @@ export default function BarcodeLabel({
   const subLine = subText || (product?.name ? truncateToMaxChars(product.name, 18) : value);
   const resolvedPriceText =
     priceText ||
-    (product && showPrice ? formatMoneyUZS(product.sale_price).replace(' so‘m', ' uzs') : '');
+    (product && showPrice ? formatMoneyUZS(product.sale_price) : '');
 
   return (
     <div className={`barcode-label-container${isLabelPrinterSize ? ' small-label' : ''}`}>

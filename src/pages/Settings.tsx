@@ -42,6 +42,8 @@ import {
   Loader2,
   HardDrive,
   Database,
+  SlidersHorizontal,
+  Truck,
 } from 'lucide-react';
 import { getSettingsByCategory, bulkUpdateSettings } from '@/db/api';
 import { useAuth } from '@/contexts/AuthContext';
@@ -63,6 +65,68 @@ import type {
   LocalizationSettings,
 } from '@/types/database';
 import PageBreadcrumb from '@/components/common/PageBreadcrumb';
+
+const MARKETPLACE_TUNING_DEFAULTS = {
+  search_prefilter_limit: 500,
+  trending_recent_weight: 2,
+  trending_availability_bonus: 8,
+  trending_margin_divisor: 1000,
+  trending_margin_cap: 80,
+};
+
+type CourierRow = {
+  id: number;
+  telegram_id?: number | null;
+  username?: string | null;
+  display_name?: string | null;
+  phone?: string | null;
+  active: number;
+  created_at?: string;
+  updated_at?: string;
+};
+
+function normalizeMarketplaceTuning(input: typeof MARKETPLACE_TUNING_DEFAULTS): typeof MARKETPLACE_TUNING_DEFAULTS {
+  const intInRange = (v: number, min: number, max: number, fallback: number) => {
+    const n = Number.isFinite(v) ? Math.floor(v) : fallback;
+    return Math.min(max, Math.max(min, n));
+  };
+  const floatInRange = (v: number, min: number, max: number, fallback: number) => {
+    const n = Number.isFinite(v) ? v : fallback;
+    return Math.min(max, Math.max(min, n));
+  };
+  return {
+    search_prefilter_limit: intInRange(
+      Number(input.search_prefilter_limit),
+      100,
+      5000,
+      MARKETPLACE_TUNING_DEFAULTS.search_prefilter_limit,
+    ),
+    trending_recent_weight: floatInRange(
+      Number(input.trending_recent_weight),
+      0,
+      20,
+      MARKETPLACE_TUNING_DEFAULTS.trending_recent_weight,
+    ),
+    trending_availability_bonus: floatInRange(
+      Number(input.trending_availability_bonus),
+      0,
+      100,
+      MARKETPLACE_TUNING_DEFAULTS.trending_availability_bonus,
+    ),
+    trending_margin_divisor: intInRange(
+      Number(input.trending_margin_divisor),
+      1,
+      1_000_000,
+      MARKETPLACE_TUNING_DEFAULTS.trending_margin_divisor,
+    ),
+    trending_margin_cap: floatInRange(
+      Number(input.trending_margin_cap),
+      0,
+      10_000,
+      MARKETPLACE_TUNING_DEFAULTS.trending_margin_cap,
+    ),
+  };
+}
 
 async function clearAllLocalData() {
   // Minimal safe implementation: clear browser storage and reload.
@@ -188,6 +252,7 @@ export default function Settings() {
   const [resettingDB, setResettingDB] = useState(false);
   const [clearingLocal, setClearingLocal] = useState(false);
   const [showResetConfirm, setShowResetConfirm] = useState(false);
+  const [showMarketplaceResetConfirm, setShowMarketplaceResetConfirm] = useState(false);
   const [resetConfirmText, setResetConfirmText] = useState('');
   /** Tab to activate after user discards unsaved changes */
   const pendingTabRef = useRef<string | null>(null);
@@ -206,6 +271,12 @@ export default function Settings() {
   const [posNetSaving, setPosNetSaving] = useState(false);
   const [posNetTesting, setPosNetTesting] = useState(false);
   const [posNetTestResult, setPosNetTestResult] = useState<{ ok: boolean; message: string } | null>(null);
+  const [couriers, setCouriers] = useState<CourierRow[]>([]);
+  const [couriersLoading, setCouriersLoading] = useState(false);
+  const [courierSaving, setCourierSaving] = useState(false);
+  const [newCourierIdentifier, setNewCourierIdentifier] = useState('');
+  const [newCourierName, setNewCourierName] = useState('');
+  const [newCourierPhone, setNewCourierPhone] = useState('');
 
   const [companySettings, setCompanySettings] = useState<CompanySettings>({
     name: '',
@@ -291,6 +362,7 @@ export default function Settings() {
     thousand_separator: ' ',
     decimal_separator: '.',
   });
+  const [marketplaceTuning, setMarketplaceTuning] = useState(MARKETPLACE_TUNING_DEFAULTS);
 
   /** Usta (master-tier) mijoz loyalty — `settings.category` = sales */
   const [masterLoyaltyEnabled, setMasterLoyaltyEnabled] = useState(false);
@@ -309,6 +381,7 @@ export default function Settings() {
   useEffect(() => {
     loadAllSettings();
     loadPosNetConfig();
+    loadCouriers();
   }, []);
 
   useEffect(() => {
@@ -430,7 +503,7 @@ export default function Settings() {
     const silent = !!opts?.silent;
     try {
       if (!silent) setLoading(true);
-      const [company, pos, payment, tax, receipt, inventory, numbering, security, localization, sales] =
+      const [company, pos, payment, tax, receipt, inventory, numbering, security, localization, sales, marketplace] =
         await Promise.all([
           getSettingsByCategory('company'),
           getSettingsByCategory('pos'),
@@ -442,6 +515,7 @@ export default function Settings() {
           getSettingsByCategory('security'),
           getSettingsByCategory('localization'),
           getSettingsByCategory('sales'),
+          getSettingsByCategory('marketplace'),
         ]);
 
       setCompanySettings(company as unknown as CompanySettings);
@@ -482,6 +556,20 @@ export default function Settings() {
       const rmax = Number(salesRec['loyalty.redeem.max_percent_of_order']);
       setLoyaltyRedeemMaxPercent(Number.isFinite(rmax) && rmax > 0 ? Math.min(100, rmax) : 50);
 
+      const mpRec = marketplace as Record<string, unknown>;
+      const prefilter = Number(mpRec['search_prefilter_limit']);
+      const recentWeight = Number(mpRec['trending_recent_weight']);
+      const availBonus = Number(mpRec['trending_availability_bonus']);
+      const marginDivisor = Number(mpRec['trending_margin_divisor']);
+      const marginCap = Number(mpRec['trending_margin_cap']);
+      setMarketplaceTuning(normalizeMarketplaceTuning({
+        search_prefilter_limit: Number.isFinite(prefilter) && prefilter >= 100 ? Math.floor(prefilter) : MARKETPLACE_TUNING_DEFAULTS.search_prefilter_limit,
+        trending_recent_weight: Number.isFinite(recentWeight) && recentWeight >= 0 ? recentWeight : MARKETPLACE_TUNING_DEFAULTS.trending_recent_weight,
+        trending_availability_bonus: Number.isFinite(availBonus) && availBonus >= 0 ? availBonus : MARKETPLACE_TUNING_DEFAULTS.trending_availability_bonus,
+        trending_margin_divisor: Number.isFinite(marginDivisor) && marginDivisor >= 1 ? marginDivisor : MARKETPLACE_TUNING_DEFAULTS.trending_margin_divisor,
+        trending_margin_cap: Number.isFinite(marginCap) && marginCap >= 0 ? marginCap : MARKETPLACE_TUNING_DEFAULTS.trending_margin_cap,
+      }));
+
       if (isElectron()) await loadBatchConfig();
     } catch (error) {
       console.error('Error loading settings:', error);
@@ -492,6 +580,87 @@ export default function Settings() {
       });
     } finally {
       if (!silent) setLoading(false);
+    }
+  };
+
+  const loadCouriers = async () => {
+    if (!isElectron()) return;
+    try {
+      setCouriersLoading(true);
+      const api = requireElectron();
+      const rows = await handleIpcResponse<CourierRow[]>(
+        api.couriers.list({ includeInactive: true })
+      );
+      setCouriers(Array.isArray(rows) ? rows : []);
+    } catch (error) {
+      console.error('Error loading couriers:', error);
+      toast({
+        title: t('settings.offline.toastErrTitle'),
+        description: error instanceof Error ? error.message : 'Kuryerlar yuklanmadi',
+        variant: 'destructive',
+      });
+    } finally {
+      setCouriersLoading(false);
+    }
+  };
+
+  const handleAddCourier = async () => {
+    const identifier = newCourierIdentifier.trim();
+    if (!identifier) {
+      toast({
+        title: t('settings.offline.toastErrTitle'),
+        description: 'Telegram username yoki ID kiriting',
+        variant: 'destructive',
+      });
+      return;
+    }
+    try {
+      setCourierSaving(true);
+      const api = requireElectron();
+      const payload: Record<string, unknown> = {
+        display_name: newCourierName.trim() || undefined,
+        phone: newCourierPhone.trim() || undefined,
+        active: true,
+      };
+      if (/^-?\d+$/.test(identifier)) {
+        payload.telegram_id = Number.parseInt(identifier, 10);
+      } else {
+        payload.username = identifier.replace(/^@/, '');
+      }
+      await handleIpcResponse(api.couriers.upsert(payload));
+      setNewCourierIdentifier('');
+      setNewCourierName('');
+      setNewCourierPhone('');
+      await loadCouriers();
+      toast({
+        title: t('settings.toast.savedTitle'),
+        description: 'Kuryer saqlandi',
+      });
+    } catch (error) {
+      toast({
+        title: t('settings.offline.toastErrTitle'),
+        description: error instanceof Error ? error.message : 'Kuryer saqlanmadi',
+        variant: 'destructive',
+      });
+    } finally {
+      setCourierSaving(false);
+    }
+  };
+
+  const handleCourierActive = async (courier: CourierRow, active: boolean) => {
+    try {
+      setCourierSaving(true);
+      const api = requireElectron();
+      await handleIpcResponse(api.couriers.setActive(courier.id, active));
+      await loadCouriers();
+    } catch (error) {
+      toast({
+        title: t('settings.offline.toastErrTitle'),
+        description: error instanceof Error ? error.message : 'Kuryer holati yangilanmadi',
+        variant: 'destructive',
+      });
+    } finally {
+      setCourierSaving(false);
     }
   };
 
@@ -562,12 +731,12 @@ export default function Settings() {
       />
 
       <div>
-        <h1 className="text-3xl font-bold">{t('settings.header.title')}</h1>
+        <h1 className="page-heading">{t('settings.header.title')}</h1>
         <p className="text-muted-foreground">{t('settings.header.subtitle')}</p>
       </div>
 
       <Tabs value={activeTab} onValueChange={handleTabChange} className="space-y-6">
-        <TabsList className={`grid w-full grid-cols-4 ${profile?.role === 'admin' ? 'xl:grid-cols-10' : 'xl:grid-cols-9'}`}>
+        <TabsList className={`grid w-full grid-cols-4 ${profile?.role === 'admin' ? 'xl:grid-cols-12' : 'xl:grid-cols-9'}`}>
           <TabsTrigger value="company" className="gap-2">
             <Building2 className="h-4 w-4" />
             <span className="hidden xl:inline">{t('settings.tabs.company')}</span>
@@ -604,6 +773,18 @@ export default function Settings() {
             <HardDrive className="h-4 w-4" />
             <span className="hidden xl:inline">{t('settings.tabs.local')}</span>
           </TabsTrigger>
+          {profile?.role === 'admin' && (
+            <TabsTrigger value="marketplace" className="gap-2">
+              <SlidersHorizontal className="h-4 w-4" />
+              <span className="hidden xl:inline">{t('settings.marketplace.tab')}</span>
+            </TabsTrigger>
+          )}
+          {profile?.role === 'admin' && (
+            <TabsTrigger value="couriers" className="gap-2">
+              <Truck className="h-4 w-4" />
+              <span className="hidden xl:inline">Kuryerlar</span>
+            </TabsTrigger>
+          )}
           {profile?.role === 'admin' && (
             <TabsTrigger value="network" className="gap-2">
               <Server className="h-4 w-4" />
@@ -2033,6 +2214,244 @@ export default function Settings() {
 
         {/* POS Network (HOST/CLIENT) - Admin only */}
         {profile?.role === 'admin' && (
+          <TabsContent value="marketplace">
+            <Card>
+              <CardHeader>
+                <CardTitle className="flex items-center gap-2">
+                  <SlidersHorizontal className="h-5 w-5" />
+                  {t('settings.marketplace.title')}
+                </CardTitle>
+                <CardDescription>{t('settings.marketplace.description')}</CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-6">
+                <div className="grid gap-6 xl:grid-cols-2">
+                  <div className="space-y-2">
+                    <Label>{t('settings.marketplace.searchPrefilterLimit')}</Label>
+                    <Input
+                      type="number"
+                      min={100}
+                      max={5000}
+                      value={marketplaceTuning.search_prefilter_limit}
+                      onChange={(e) => {
+                        setMarketplaceTuning({
+                          ...marketplaceTuning,
+                          search_prefilter_limit: Math.max(100, Number.parseInt(e.target.value || '500', 10) || 500),
+                        });
+                        setHasUnsavedChanges(true);
+                      }}
+                    />
+                    <p className="text-xs text-muted-foreground">{t('settings.marketplace.searchPrefilterLimitHint')}</p>
+                  </div>
+                  <div className="space-y-2">
+                    <Label>{t('settings.marketplace.trendingRecentWeight')}</Label>
+                    <Input
+                      type="number"
+                      min={0}
+                      max={20}
+                      step={0.1}
+                      value={marketplaceTuning.trending_recent_weight}
+                      onChange={(e) => {
+                        setMarketplaceTuning({
+                          ...marketplaceTuning,
+                          trending_recent_weight: Math.max(0, Number.parseFloat(e.target.value || '2') || 2),
+                        });
+                        setHasUnsavedChanges(true);
+                      }}
+                    />
+                    <p className="text-xs text-muted-foreground">{t('settings.marketplace.trendingRecentWeightHint')}</p>
+                  </div>
+                  <div className="space-y-2">
+                    <Label>{t('settings.marketplace.trendingAvailabilityBonus')}</Label>
+                    <Input
+                      type="number"
+                      min={0}
+                      max={100}
+                      step={0.5}
+                      value={marketplaceTuning.trending_availability_bonus}
+                      onChange={(e) => {
+                        setMarketplaceTuning({
+                          ...marketplaceTuning,
+                          trending_availability_bonus: Math.max(0, Number.parseFloat(e.target.value || '8') || 8),
+                        });
+                        setHasUnsavedChanges(true);
+                      }}
+                    />
+                    <p className="text-xs text-muted-foreground">{t('settings.marketplace.trendingAvailabilityBonusHint')}</p>
+                  </div>
+                  <div className="space-y-2">
+                    <Label>{t('settings.marketplace.trendingMarginDivisor')}</Label>
+                    <Input
+                      type="number"
+                      min={1}
+                      max={1000000}
+                      value={marketplaceTuning.trending_margin_divisor}
+                      onChange={(e) => {
+                        setMarketplaceTuning({
+                          ...marketplaceTuning,
+                          trending_margin_divisor: Math.max(1, Number.parseInt(e.target.value || '1000', 10) || 1000),
+                        });
+                        setHasUnsavedChanges(true);
+                      }}
+                    />
+                    <p className="text-xs text-muted-foreground">{t('settings.marketplace.trendingMarginDivisorHint')}</p>
+                  </div>
+                  <div className="space-y-2">
+                    <Label>{t('settings.marketplace.trendingMarginCap')}</Label>
+                    <Input
+                      type="number"
+                      min={0}
+                      max={10000}
+                      step={0.5}
+                      value={marketplaceTuning.trending_margin_cap}
+                      onChange={(e) => {
+                        setMarketplaceTuning({
+                          ...marketplaceTuning,
+                          trending_margin_cap: Math.max(0, Number.parseFloat(e.target.value || '80') || 80),
+                        });
+                        setHasUnsavedChanges(true);
+                      }}
+                    />
+                    <p className="text-xs text-muted-foreground">{t('settings.marketplace.trendingMarginCapHint')}</p>
+                  </div>
+                </div>
+                <Alert>
+                  <SlidersHorizontal className="h-4 w-4" />
+                  <AlertTitle>{t('settings.marketplace.effectivePreviewTitle')}</AlertTitle>
+                  <AlertDescription className="space-y-2 text-xs">
+                    <p>{t('settings.marketplace.effectivePreviewDesc')}</p>
+                    <div className="rounded-md border bg-muted/40 p-2 font-mono text-[11px] leading-relaxed">
+                      <div>{`search_prefilter_limit = ${marketplaceTuning.search_prefilter_limit}`}</div>
+                      <div>{`recent_weight = ${marketplaceTuning.trending_recent_weight}`}</div>
+                      <div>{`availability_bonus = ${marketplaceTuning.trending_availability_bonus}`}</div>
+                      <div>{`margin_divisor = ${marketplaceTuning.trending_margin_divisor}`}</div>
+                      <div>{`margin_cap = ${marketplaceTuning.trending_margin_cap}`}</div>
+                      <div className="mt-1">{`score = sold_total + sold_recent*recent_weight + availability_bonus + min(margin_cap, margin/divisor)`}</div>
+                    </div>
+                  </AlertDescription>
+                </Alert>
+                <div className="flex justify-end gap-3 border-t pt-6">
+                  <Button variant="secondary" onClick={() => setShowMarketplaceResetConfirm(true)}>
+                    {t('settings.marketplace.resetDefaults')}
+                  </Button>
+                  <Button variant="outline" onClick={() => loadAllSettings({ silent: true })}>
+                    {t('settings.common.cancel')}
+                  </Button>
+                  <Button
+                    onClick={() => {
+                      const normalized = normalizeMarketplaceTuning(marketplaceTuning);
+                      setMarketplaceTuning(normalized);
+                      void handleSave('marketplace', normalized as unknown as Record<string, unknown>);
+                    }}
+                    disabled={saving}
+                  >
+                    <Save className="mr-2 h-4 w-4" />
+                    {saving ? t('settings.common.saving') : t('settings.common.saveChanges')}
+                  </Button>
+                </div>
+              </CardContent>
+            </Card>
+          </TabsContent>
+        )}
+
+        {/* Telegram Couriers - Admin only */}
+        {profile?.role === 'admin' && (
+          <TabsContent value="couriers">
+            <Card>
+              <CardHeader>
+                <CardTitle className="flex items-center gap-2">
+                  <Truck className="h-5 w-5" />
+                  Kuryerlar
+                </CardTitle>
+                <CardDescription>
+                  Telegram bot kuryer paneliga kira oladigan foydalanuvchilarni boshqaring.
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-6">
+                <div className="grid gap-4 rounded-lg border p-4 xl:grid-cols-[1fr_1fr_1fr_auto]">
+                  <div className="space-y-2">
+                    <Label>Telegram username yoki ID</Label>
+                    <Input
+                      value={newCourierIdentifier}
+                      onChange={(e) => setNewCourierIdentifier(e.target.value)}
+                      placeholder="@TOHIR3 yoki 123456789"
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <Label>Ism</Label>
+                    <Input
+                      value={newCourierName}
+                      onChange={(e) => setNewCourierName(e.target.value)}
+                      placeholder="Tohirbek Abdullajonov"
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <Label>Telefon</Label>
+                    <Input
+                      value={newCourierPhone}
+                      onChange={(e) => setNewCourierPhone(e.target.value)}
+                      placeholder="+998901234567"
+                    />
+                  </div>
+                  <div className="flex items-end">
+                    <Button onClick={handleAddCourier} disabled={courierSaving || !newCourierIdentifier.trim()}>
+                      {courierSaving ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Save className="mr-2 h-4 w-4" />}
+                      Qo'shish
+                    </Button>
+                  </div>
+                </div>
+
+                <div className="rounded-lg border">
+                  <div className="flex items-center justify-between border-b p-4">
+                    <div>
+                      <h3 className="font-semibold">Kuryerlar ro'yxati</h3>
+                      <p className="text-sm text-muted-foreground">Aktiv kuryerlar botdan buyurtma statusini o'zgartira oladi.</p>
+                    </div>
+                    <Button variant="outline" size="sm" onClick={loadCouriers} disabled={couriersLoading}>
+                      <RefreshCw className={`mr-2 h-4 w-4 ${couriersLoading ? 'animate-spin' : ''}`} />
+                      Yangilash
+                    </Button>
+                  </div>
+                  <div className="divide-y">
+                    {couriersLoading ? (
+                      <div className="p-4 text-sm text-muted-foreground">Yuklanmoqda...</div>
+                    ) : couriers.length === 0 ? (
+                      <div className="p-4 text-sm text-muted-foreground">Kuryerlar yo'q.</div>
+                    ) : (
+                      couriers.map((courier) => (
+                        <div key={courier.id} className="flex items-center justify-between gap-4 p-4">
+                          <div>
+                            <div className="font-medium">
+                              {courier.display_name || courier.username || courier.telegram_id || `#${courier.id}`}
+                            </div>
+                            <div className="text-sm text-muted-foreground">
+                              {courier.username ? `@${courier.username}` : 'Username yo‘q'} · ID: {courier.telegram_id || 'hali bog‘lanmagan'}
+                            </div>
+                            {courier.phone && (
+                              <div className="text-sm text-muted-foreground">Tel: {courier.phone}</div>
+                            )}
+                          </div>
+                          <div className="flex items-center gap-3">
+                            <span className={Number(courier.active) ? 'text-sm text-emerald-600' : 'text-sm text-muted-foreground'}>
+                              {Number(courier.active) ? 'Aktiv' : 'Noaktiv'}
+                            </span>
+                            <Switch
+                              checked={!!Number(courier.active)}
+                              disabled={courierSaving}
+                              onCheckedChange={(checked) => handleCourierActive(courier, checked)}
+                            />
+                          </div>
+                        </div>
+                      ))
+                    )}
+                  </div>
+                </div>
+              </CardContent>
+            </Card>
+          </TabsContent>
+        )}
+
+        {/* POS Network (HOST/CLIENT) - Admin only */}
+        {profile?.role === 'admin' && (
           <TabsContent value="network">
             <Card>
               <CardHeader>
@@ -2304,6 +2723,35 @@ export default function Settings() {
               }}
             >
               {t('settings.dialogs.discardGo')}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={showMarketplaceResetConfirm} onOpenChange={setShowMarketplaceResetConfirm}>
+        <DialogContent className="sm:max-w-[460px]">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <AlertTriangle className="h-5 w-5 text-amber-600" />
+              {t('settings.marketplace.resetDialogTitle')}
+            </DialogTitle>
+            <DialogDescription>
+              {t('settings.marketplace.resetDialogDescription')}
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setShowMarketplaceResetConfirm(false)}>
+              {t('settings.marketplace.resetDialogCancel')}
+            </Button>
+            <Button
+              variant="destructive"
+              onClick={() => {
+                setMarketplaceTuning(normalizeMarketplaceTuning(MARKETPLACE_TUNING_DEFAULTS));
+                setHasUnsavedChanges(true);
+                setShowMarketplaceResetConfirm(false);
+              }}
+            >
+              {t('settings.marketplace.resetDialogConfirm')}
             </Button>
           </DialogFooter>
         </DialogContent>

@@ -2,9 +2,14 @@ const { ipcMain } = require('electron');
 const { getDb } = require('../db/open.cjs');
 const { createServices } = require('../services/index.cjs');
 const { wrapHandler } = require('../lib/errors.cjs');
+const { requireAdmin } = require('../lib/ipcAuth.cjs');
 
 // IPC timing instrumentation (main process)
 const IPC_PERF_SAMPLES = 5;
+const IPC_VERBOSE =
+  String(process.env.POS_VERBOSE_LOGS || '').trim() === '1' ||
+  String(process.env.POS_IPC_LOGS || '').trim() === '1';
+const IPC_SLOW_LOG_MS = Number(process.env.POS_IPC_SLOW_MS || 50);
 const IPC_BUDGETS_MS = {
   'pos:products:searchScreen': 300,
   'pos:products:getByBarcode': 150,
@@ -52,9 +57,11 @@ function installIpcTiming() {
         stats.set(channel, stat);
         const budget = IPC_BUDGETS_MS[channel];
         const warn = budget && ms > budget ? ' ⚠️' : '';
-        console.log(
-          `[IPC] ${channel} took ${Math.round(ms)}ms | args=${formatBytes(payloadBytes)} | resp=${formatBytes(respBytes)} | items=${items} | avg=${Math.round(avg)}ms | max=${Math.round(stat.max)}ms${warn}`
-        );
+        if (IPC_VERBOSE || ms >= IPC_SLOW_LOG_MS || warn) {
+          console.log(
+            `[IPC] ${channel} took ${Math.round(ms)}ms | args=${formatBytes(payloadBytes)} | resp=${formatBytes(respBytes)} | items=${items} | avg=${Math.round(avg)}ms | max=${Math.round(stat.max)}ms${warn}`
+          );
+        }
         return result;
       } catch (error) {
         const end = process.hrtime.bigint();
@@ -91,6 +98,7 @@ const { registerAppConfigHandlers } = require('./appConfig.ipc.cjs');
 const { registerPrintHandlers } = require('./print.ipc.cjs');
 const { registerQuotesHandlers } = require('./quotes.ipc.cjs');
 const { registerPromotionsHandlers } = require('./promotions.ipc.cjs');
+const { registerCouriersHandlers } = require('./couriers.ipc.cjs');
 
 let handlersRegistered = false;
 let services = null;
@@ -193,6 +201,8 @@ function registerAllHandlers() {
   const { registerWebOrdersHandlers } = require('./webOrders.ipc.cjs');
   console.log('Registering web orders handlers...');
   registerWebOrdersHandlers(services);
+  console.log('Registering couriers handlers...');
+  registerCouriersHandlers(services);
 
   console.log('Registering files handlers...');
   registerFilesHandlers();
@@ -236,6 +246,7 @@ function registerAllHandlers() {
 
   // Data-only wipe endpoint - Preserves main warehouse and admin user
   ipcMain.handle('pos:database:wipeDataOnly', wrapHandler(async (event) => {
+    requireAdmin(dbInstance || getDb());
     console.log('🗑️  [IPC] pos:database:wipeDataOnly called - DATA-ONLY WIPE');
     try {
       if (!services || !services.database) {
@@ -269,6 +280,7 @@ function registerAllHandlers() {
 
   // Database wipe endpoint - DESTRUCTIVE OPERATION
   ipcMain.handle('pos:database:wipeAllData', wrapHandler(async (event) => {
+    requireAdmin(dbInstance || getDb());
     console.log('🗑️  [IPC] pos:database:wipeAllData called - DESTRUCTIVE OPERATION');
     try {
       if (!services || !services.database) {

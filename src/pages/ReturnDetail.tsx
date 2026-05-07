@@ -188,7 +188,7 @@ export default function ReturnDetail() {
             <ArrowLeft className="h-4 w-4" />
           </Button>
           <div>
-            <h1 className="text-2xl font-bold">Qaytarish tafsilotlari</h1>
+            <h1 className="page-heading">Qaytarish tafsilotlari</h1>
             <p className="text-sm text-muted-foreground">{returnData.return_number}</p>
           </div>
         </div>
@@ -218,7 +218,12 @@ export default function ReturnDetail() {
                 <AlertDialogHeader>
                   <AlertDialogTitle>Qaytarishni o‘chirasizmi?</AlertDialogTitle>
                   <AlertDialogDescription>
-                    Bu qaytarishni butunlay o‘chiradi va ombordagi barcha o‘zgarishlarni bekor qiladi.
+                    Bu qaytarishni butunlay o‘chiradi va quyidagi rollback bajariladi:
+                    <br />
+                    • Omborda qaytarilgan <strong>{returnData.items?.length || 0}</strong> ta pozitsiya bekor qilinadi
+                    <br />
+                    • Jami qaytarilgan <strong>{formatMoneyUZS(returnData.total_amount || 0)}</strong> summaga bog‘liq yozuvlar qaytariladi
+                    <br />
                     Bu amalni ortga qaytarib bo‘lmaydi.
                   </AlertDialogDescription>
                 </AlertDialogHeader>

@@ -1,5 +1,6 @@
 const { ipcMain, dialog, BrowserWindow, app } = require('electron');
 const fs = require('fs');
+const os = require('os');
 const path = require('path');
 const { pathToFileURL } = require('url');
 const iconv = require('iconv-lite');
@@ -9,6 +10,66 @@ const IMAGE_FILTERS = [
   { name: 'Rasmlar', extensions: ['jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp'] },
   { name: 'Barcha fayllar', extensions: ['*'] },
 ];
+
+/**
+ * Path traversal sandbox.
+ *
+ * Renderer code (or anything that captured the preload bridge) can ask us
+ * to read/write/check arbitrary paths. We must refuse anything outside a
+ * known-safe root so a compromised renderer cannot exfiltrate files like
+ * `..\..\Windows\system32\config\SAM` or overwrite system binaries.
+ *
+ * Two ways to be considered safe:
+ *  1) The path was just blessed by an OS dialog (Save As / Open / select
+ *     image), so the user explicitly chose it. We track those in
+ *     `dialogBlessedPaths`.
+ *  2) The path resolves under one of the well-known, user-scoped roots
+ *     (userData, documents, downloads, temp).
+ */
+const dialogBlessedPaths = new Set();
+const DIALOG_PATH_TTL_MS = 10 * 60 * 1000;
+
+function blessPath(fp) {
+  if (!fp) return;
+  const resolved = path.resolve(fp);
+  dialogBlessedPaths.add(resolved);
+  setTimeout(() => dialogBlessedPaths.delete(resolved), DIALOG_PATH_TTL_MS).unref?.();
+}
+
+function getAllowedRoots() {
+  const roots = new Set();
+  const add = (p) => {
+    if (p) roots.add(path.resolve(p));
+  };
+  try { add(app.getPath('userData')); } catch { /* main not ready */ }
+  try { add(app.getPath('documents')); } catch { /* not configured */ }
+  try { add(app.getPath('downloads')); } catch { /* not configured */ }
+  try { add(app.getPath('temp')); } catch { /* not configured */ }
+  add(os.tmpdir());
+  return [...roots];
+}
+
+function isUnderRoot(resolvedFile, root) {
+  if (!root) return false;
+  if (resolvedFile === root) return true;
+  return resolvedFile.startsWith(root + path.sep);
+}
+
+function assertPathAllowed(fp) {
+  if (typeof fp !== 'string' || !fp.trim()) {
+    throw createError(ERROR_CODES.VALIDATION_ERROR, 'filePath is required');
+  }
+  const resolved = path.resolve(fp);
+  if (dialogBlessedPaths.has(resolved)) return resolved;
+  const roots = getAllowedRoots();
+  for (const root of roots) {
+    if (isUnderRoot(resolved, root)) return resolved;
+  }
+  throw createError(
+    ERROR_CODES.PERMISSION_DENIED,
+    'File path is outside the allowed sandbox. Use a Save/Open dialog or a path under userData/Documents/Downloads/Temp.'
+  );
+}
 
 /**
  * Files / OS dialogs IPC Handlers
@@ -35,6 +96,7 @@ function registerFilesHandlers() {
         return { canceled: true };
       }
 
+      blessPath(filePath);
       return { canceled: false, filePath };
     })
   );
@@ -44,10 +106,7 @@ function registerFilesHandlers() {
   ipcMain.handle(
     'pos:files:writeFile',
     wrapHandler(async (_event, filePath, data, encoding) => {
-      const fp = typeof filePath === 'string' && filePath.trim() ? filePath.trim() : null;
-      if (!fp) {
-        throw createError(ERROR_CODES.VALIDATION_ERROR, 'filePath is required');
-      }
+      const fp = assertPathAllowed(filePath);
 
       const encRaw = typeof encoding === 'string' ? encoding.trim().toLowerCase() : 'utf8';
       const enc =
@@ -61,7 +120,6 @@ function registerFilesHandlers() {
       } else if (typeof data === 'string') {
         payload = enc === 'utf8' ? data : iconv.encode(data, enc);
       } else if (data && typeof data === 'object' && data.type === 'Buffer' && Array.isArray(data.data)) {
-        // best-effort support for structured buffer
         payload = Buffer.from(data.data);
       } else {
         throw createError(ERROR_CODES.VALIDATION_ERROR, 'data must be string or Buffer');
@@ -78,10 +136,7 @@ function registerFilesHandlers() {
   ipcMain.handle(
     'pos:files:readFile',
     wrapHandler(async (_event, filePath, encoding) => {
-      const fp = typeof filePath === 'string' && filePath.trim() ? filePath.trim() : null;
-      if (!fp) {
-        throw createError(ERROR_CODES.VALIDATION_ERROR, 'filePath is required');
-      }
+      const fp = assertPathAllowed(filePath);
 
       const encRaw = typeof encoding === 'string' ? encoding.trim().toLowerCase() : 'utf8';
       const enc =
@@ -100,10 +155,7 @@ function registerFilesHandlers() {
   ipcMain.handle(
     'pos:files:exists',
     wrapHandler(async (_event, filePath) => {
-      const fp = typeof filePath === 'string' && filePath.trim() ? filePath.trim() : null;
-      if (!fp) {
-        throw createError(ERROR_CODES.VALIDATION_ERROR, 'filePath is required');
-      }
+      const fp = assertPathAllowed(filePath);
       return fs.existsSync(fp);
     })
   );
@@ -140,6 +192,7 @@ function registerFilesHandlers() {
         return { canceled: true };
       }
 
+      blessPath(filePath);
       await fs.promises.mkdir(path.dirname(filePath), { recursive: true }).catch(() => {});
       const encRaw = typeof opts?.encoding === 'string' ? opts.encoding.trim().toLowerCase() : 'utf8';
       const enc =
@@ -173,6 +226,7 @@ function registerFilesHandlers() {
       }
 
       const filePath = filePaths[0];
+      blessPath(filePath);
       const encRaw = typeof opts?.encoding === 'string' ? opts.encoding.trim().toLowerCase() : 'utf8';
       const enc =
         encRaw === 'ansi' || encRaw === 'win1251' || encRaw === 'windows-1251'
@@ -203,6 +257,7 @@ function registerFilesHandlers() {
         return { canceled: true };
       }
 
+      filePaths.forEach(blessPath);
       return { canceled: false, filePath: filePaths[0], filePaths };
     })
   );
@@ -243,8 +298,8 @@ function registerFilesHandlers() {
   ipcMain.handle(
     'pos:files:pathToFileUrl',
     wrapHandler(async (_event, filePath) => {
-      const fp = typeof filePath === 'string' && filePath.trim() ? filePath.trim() : null;
-      if (!fp || !fs.existsSync(fp)) {
+      const fp = assertPathAllowed(filePath);
+      if (!fs.existsSync(fp)) {
         return null;
       }
       return pathToFileURL(fp).href;

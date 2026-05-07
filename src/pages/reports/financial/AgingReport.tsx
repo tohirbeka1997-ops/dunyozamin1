@@ -25,6 +25,7 @@ import { handleIpcResponse, isElectron, requireElectron } from '@/utils/electron
 import { formatMoneyUZS } from '@/lib/format';
 import { useReportAutoRefresh } from '@/hooks/useReportAutoRefresh';
 import { useSessionSearchParams } from '@/hooks/useSessionSearchParams';
+import { todayYMD } from '@/lib/datetime';
 
 interface AgingRow {
   id: string;
@@ -37,6 +38,12 @@ interface AgingRow {
   days_60_plus: number; // 60+ days
 }
 
+interface AgingInsight {
+  level: 'info' | 'warning' | 'critical';
+  title: string;
+  description: string;
+}
+
 export default function AgingReport() {
   const navigate = useNavigate();
   const { toast } = useToast();
@@ -46,6 +53,7 @@ export default function AgingReport() {
   });
 
   const [loading, setLoading] = useState(true);
+  const [showInsights, setShowInsights] = useState(false);
   const [customerRows, setCustomerRows] = useState<AgingRow[]>([]);
   const [supplierRows, setSupplierRows] = useState<AgingRow[]>([]);
   const searchTerm = searchParams.get('search') || '';
@@ -133,6 +141,123 @@ export default function AgingReport() {
     );
   }, [filteredSuppliers]);
 
+  const insights = useMemo(() => {
+    const rows = activeTab === 'customers' ? filteredCustomers : filteredSuppliers;
+    const totals = activeTab === 'customers' ? customerTotals : supplierTotals;
+    const sideLabel = activeTab === 'customers' ? 'mijoz' : 'yetkazib beruvchi';
+    const sideLabelPlural = activeTab === 'customers' ? 'mijozlar' : 'yetkazib beruvchilar';
+
+    const severeRows = rows
+      .filter((r) => Number(r.days_60_plus || 0) > 0)
+      .sort((a, b) => Number(b.days_60_plus || 0) - Number(a.days_60_plus || 0))
+      .slice(0, 3);
+
+    const delayedRows = rows
+      .filter((r) => Number(r.days_31_60 || 0) > 0)
+      .sort((a, b) => Number(b.days_31_60 || 0) - Number(a.days_31_60 || 0))
+      .slice(0, 3);
+
+    const severeShare = totals.total > 0 ? (totals.days_60_plus / totals.total) * 100 : 0;
+    const delayedShare = totals.total > 0 ? ((totals.days_31_60 + totals.days_60_plus) / totals.total) * 100 : 0;
+
+    const reminders: AgingInsight[] = [];
+    const recommendations: AgingInsight[] = [];
+
+    if (severeRows.length > 0) {
+      reminders.push({
+        level: 'critical',
+        title: `60+ kunlik qarzdorlik bo'yicha zudlik bilan aloqa`,
+        description: `${severeRows
+          .map((r) => `${r.name} (${formatMoneyUZS(r.days_60_plus)})`)
+          .join(', ')}`,
+      });
+    } else {
+      reminders.push({
+        level: 'info',
+        title: `60+ kunlik qarzdorlik topilmadi`,
+        description: `Hozircha ${sideLabelPlural} orasida jiddiy kechikkan qarzdorlik yo'q.`,
+      });
+    }
+
+    if (delayedRows.length > 0) {
+      reminders.push({
+        level: 'warning',
+        title: `31-60 kun oralig'idagi risk guruh`,
+        description: `${delayedRows
+          .map((r) => `${r.name} (${formatMoneyUZS(r.days_31_60)})`)
+          .join(', ')}`,
+      });
+    }
+
+    if (severeShare >= 30) {
+      recommendations.push({
+        level: 'critical',
+        title: `Qattiq nazorat rejimi`,
+        description: `60+ kun ulushi ${severeShare.toFixed(
+          1
+        )}% — yangi ${sideLabel} limitlarini vaqtincha cheklang va qayta jadval tuzing.`,
+      });
+    } else if (severeShare >= 10) {
+      recommendations.push({
+        level: 'warning',
+        title: `Undirish/to'lov jadvalini kuchaytirish`,
+        description: `60+ kun ulushi ${severeShare.toFixed(
+          1
+        )}% — haftalik eslatma qo'ng'iroqlari va bosqichma-bosqich yopish rejasini yoqing.`,
+      });
+    } else {
+      recommendations.push({
+        level: 'info',
+        title: `Sog'lom qarzdorlik profili`,
+        description: `60+ kun ulushi past (${severeShare.toFixed(
+          1
+        )}%). Mavjud nazorat tartibini saqlang.`,
+      });
+    }
+
+    recommendations.push({
+      level: delayedShare >= 40 ? 'warning' : 'info',
+      title: `Oldindan ogohlantirish siyosati`,
+      description:
+        delayedShare >= 40
+          ? `31+ kun ulushi ${delayedShare.toFixed(
+              1
+            )}% — 8-kundan boshlab avtomatik eslatma va 30-kunda majburiy follow-up kiriting.`
+          : `31+ kun ulushi ${delayedShare.toFixed(
+              1
+            )}%. 8-30 kun segmentida yumshoq eslatma rejimini davom ettiring.`,
+    });
+
+    return { reminders, recommendations };
+  }, [activeTab, filteredCustomers, filteredSuppliers, customerTotals, supplierTotals]);
+
+  const copyInsights = async (kind: 'reminders' | 'recommendations') => {
+    try {
+      const isCustomers = activeTab === 'customers';
+      const title = isCustomers ? 'Mijozlar qarzdorligi' : 'Yetkazib beruvchilar qarzdorligi';
+      const list = kind === 'reminders' ? insights.reminders : insights.recommendations;
+      const header = kind === 'reminders' ? 'QARZDORLIK ESLATMALARI' : 'QARZDORLIK TAVSIYALARI';
+      const payload = [
+        `${header}`,
+        `Sana: ${todayYMD()}`,
+        `Bo'lim: ${title}`,
+        '',
+        ...list.map((x, idx) => `${idx + 1}) ${x.title}\n   ${x.description}`),
+      ].join('\n');
+      await navigator.clipboard.writeText(payload);
+      toast({
+        title: 'Nusxalandi',
+        description: kind === 'reminders' ? "Eslatma matni nusxalandi" : "Tavsiyalar matni nusxalandi",
+      });
+    } catch (error: any) {
+      toast({
+        title: 'Xatolik',
+        description: error?.message || "Nusxalab bo'lmadi",
+        variant: 'destructive',
+      });
+    }
+  };
+
   if (loading) {
     return (
       <div className="flex justify-center items-center min-h-[400px]">
@@ -204,14 +329,14 @@ export default function AgingReport() {
   );
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-4">
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-4">
-          <Button variant="ghost" size="icon" onClick={() => navigate('/reports')}>
+          <Button variant="ghost" size="icon" onClick={() => navigate('/reports/financial')}>
             <ArrowLeft className="h-4 w-4" />
           </Button>
           <div>
-            <h1 className="text-3xl font-bold">Qarzdorlik yoshi (Aging)</h1>
+            <h1 className="page-heading">Qarzdorlik yoshi (Aging)</h1>
             <p className="text-muted-foreground">
               Mijoz va yetkazib beruvchi qarzdorliklari bo'yicha yosh tahlili
             </p>
@@ -223,24 +348,45 @@ export default function AgingReport() {
       </div>
 
       <Card>
-        <CardContent className="pt-6">
-          <div className="flex items-center gap-4">
+        <CardContent className="py-3">
+          <div className="flex flex-col gap-2 lg:flex-row lg:items-center lg:justify-between">
             <Input
               placeholder="Qidirish (nomi yoki telefon)..."
               value={searchTerm}
               onChange={(e) => updateParams({ search: e.target.value })}
-              className="max-w-sm"
+              className="w-full lg:max-w-sm h-8"
             />
+            <div className="flex items-center justify-end gap-2">
+              <Button variant="outline" size="sm" className="h-7 px-2 text-xs" onClick={() => copyInsights('reminders')}>
+                Eslatma nusxalash
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                className="h-7 px-2 text-xs"
+                onClick={() => copyInsights('recommendations')}
+              >
+                Tavsiya nusxalash
+              </Button>
+              <Button
+                variant={showInsights ? 'default' : 'outline'}
+                size="sm"
+                className="h-7 px-2 text-xs"
+                onClick={() => setShowInsights((v) => !v)}
+              >
+                {showInsights ? 'Yopish' : 'Ko‘rsatish'}
+              </Button>
+            </div>
           </div>
         </CardContent>
       </Card>
 
       {/* Summary Cards */}
-      <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+      <div className="grid grid-cols-2 xl:grid-cols-4 gap-3">
         <Card>
-          <CardContent className="pt-6">
-            <div className="text-sm text-muted-foreground">0-7 kun</div>
-            <div className="text-2xl font-bold">
+          <CardContent className="py-3">
+            <div className="text-xs text-muted-foreground">0-7 kun</div>
+            <div className="text-xl font-bold">
               {formatMoneyUZS(
                 activeTab === 'customers' ? customerTotals.current : supplierTotals.current
               )}
@@ -249,9 +395,9 @@ export default function AgingReport() {
           </CardContent>
         </Card>
         <Card>
-          <CardContent className="pt-6">
-            <div className="text-sm text-muted-foreground">8-30 kun</div>
-            <div className="text-2xl font-bold text-warning">
+          <CardContent className="py-3">
+            <div className="text-xs text-muted-foreground">8-30 kun</div>
+            <div className="text-xl font-bold text-warning">
               {formatMoneyUZS(
                 activeTab === 'customers' ? customerTotals.days_8_30 : supplierTotals.days_8_30
               )}
@@ -260,9 +406,9 @@ export default function AgingReport() {
           </CardContent>
         </Card>
         <Card>
-          <CardContent className="pt-6">
-            <div className="text-sm text-muted-foreground">31-60 kun</div>
-            <div className="text-2xl font-bold text-orange-500">
+          <CardContent className="py-3">
+            <div className="text-xs text-muted-foreground">31-60 kun</div>
+            <div className="text-xl font-bold text-orange-500">
               {formatMoneyUZS(
                 activeTab === 'customers' ? customerTotals.days_31_60 : supplierTotals.days_31_60
               )}
@@ -271,9 +417,9 @@ export default function AgingReport() {
           </CardContent>
         </Card>
         <Card>
-          <CardContent className="pt-6">
-            <div className="text-sm text-muted-foreground">60+ kun</div>
-            <div className="text-2xl font-bold text-destructive">
+          <CardContent className="py-3">
+            <div className="text-xs text-muted-foreground">60+ kun</div>
+            <div className="text-xl font-bold text-destructive">
               {formatMoneyUZS(
                 activeTab === 'customers'
                   ? customerTotals.days_60_plus
@@ -284,6 +430,52 @@ export default function AgingReport() {
           </CardContent>
         </Card>
       </div>
+
+      {showInsights && (
+        <div className="grid grid-cols-1 xl:grid-cols-2 gap-3">
+          <Card>
+            <CardContent className="py-3 space-y-2">
+              <h3 className="text-sm font-semibold">Qarzdorlik bo'yicha eslatmalar</h3>
+              {insights.reminders.map((item, idx) => (
+                <div
+                  key={`reminder-${idx}`}
+                  className={`rounded-md p-2 border ${
+                    item.level === 'critical'
+                      ? 'border-destructive/40 bg-destructive/5'
+                      : item.level === 'warning'
+                        ? 'border-warning/50 bg-warning/10'
+                        : 'border-border bg-muted/40'
+                  }`}
+                >
+                  <p className="text-sm font-medium">{item.title}</p>
+                  <p className="text-xs text-muted-foreground">{item.description}</p>
+                </div>
+              ))}
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardContent className="py-3 space-y-2">
+              <h3 className="text-sm font-semibold">Tavsiyalar</h3>
+              {insights.recommendations.map((item, idx) => (
+                <div
+                  key={`recommendation-${idx}`}
+                  className={`rounded-md p-2 border ${
+                    item.level === 'critical'
+                      ? 'border-destructive/40 bg-destructive/5'
+                      : item.level === 'warning'
+                        ? 'border-warning/50 bg-warning/10'
+                        : 'border-border bg-muted/40'
+                  }`}
+                >
+                  <p className="text-sm font-medium">{item.title}</p>
+                  <p className="text-xs text-muted-foreground">{item.description}</p>
+                </div>
+              ))}
+            </CardContent>
+          </Card>
+        </div>
+      )}
 
       <Tabs
         value={activeTab}
@@ -300,7 +492,7 @@ export default function AgingReport() {
           </TabsTrigger>
         </TabsList>
 
-        <TabsContent value="customers" className="mt-6">
+        <TabsContent value="customers" className="mt-4">
           <Card>
             <CardContent className="p-0">
               {renderTable(filteredCustomers, customerTotals)}
@@ -308,7 +500,7 @@ export default function AgingReport() {
           </Card>
         </TabsContent>
 
-        <TabsContent value="suppliers" className="mt-6">
+        <TabsContent value="suppliers" className="mt-4">
           <Card>
             <CardContent className="p-0">
               {renderTable(filteredSuppliers, supplierTotals)}

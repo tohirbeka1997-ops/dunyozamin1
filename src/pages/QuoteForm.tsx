@@ -1,7 +1,7 @@
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useMemo, useCallback } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
@@ -124,7 +124,13 @@ export default function QuoteForm() {
   const [notes, setNotes] = useState('');
   const [items, setItems] = useState<QuoteItemRow[]>([]);
   const [productPickerOpen, setProductPickerOpen] = useState(false);
+  /** Qidiruv maydoni — yozishda API chaqirilmaydi */
   const [searchTerm, setSearchTerm] = useState('');
+  /** Ro‘yxat Enter / «Qidiruv» bilan yangilanganmi */
+  const [pickerSearchRan, setPickerSearchRan] = useState(false);
+  /** Tanlangan mahsulot + miqdor oynasi */
+  const [qtyDialogProduct, setQtyDialogProduct] = useState<ProductWithCategory | null>(null);
+  const [qtyDraft, setQtyDraft] = useState('1');
   const [searchResults, setSearchResults] = useState<ProductWithCategory[]>([]);
   const [productSearchLoading, setProductSearchLoading] = useState(false);
   const [pickerSort, setPickerSort] = useState<PickerSort>('relevance');
@@ -183,28 +189,28 @@ export default function QuoteForm() {
   }, 0);
   const totalProfit = total - totalCost;
 
+  const executePickerSearch = useCallback(async () => {
+    setProductSearchLoading(true);
+    try {
+      const term = (searchTerm || '').trim().toLowerCase();
+      const res = await searchProductsScreen(term, { limit: 80 });
+      setSearchResults(Array.isArray(res) ? res : []);
+      setPickerSearchRan(true);
+    } catch {
+      setSearchResults([]);
+      setPickerSearchRan(true);
+    } finally {
+      setProductSearchLoading(false);
+    }
+  }, [searchTerm]);
+
   useEffect(() => {
     if (!productPickerOpen) {
       setSearchResults([]);
       setProductSearchLoading(false);
-      return;
+      setPickerSearchRan(false);
     }
-    const id = setTimeout(() => {
-      void (async () => {
-        setProductSearchLoading(true);
-        try {
-          const term = (searchTerm || '').trim().toLowerCase();
-          const res = await searchProductsScreen(term, { limit: 80 });
-          setSearchResults(Array.isArray(res) ? res : []);
-        } catch {
-          setSearchResults([]);
-        } finally {
-          setProductSearchLoading(false);
-        }
-      })();
-    }, 200);
-    return () => clearTimeout(id);
-  }, [searchTerm, productPickerOpen]);
+  }, [productPickerOpen]);
 
   useEffect(() => {
     if (!productPickerOpen) return;
@@ -228,11 +234,12 @@ export default function QuoteForm() {
     return list;
   }, [searchResults, pickerSort]);
 
-  const addProduct = (p: ProductWithCategory) => {
+  const addProduct = (p: ProductWithCategory, quantityIn: number) => {
     if (items.some((it) => it.product_id === p.id)) {
       toast({ title: t('quotes.duplicate_product'), variant: 'destructive' });
       return;
     }
+    const qty = Math.max(0.001, Number(quantityIn) || 1);
     const retail = p.sale_price;
     const usta = (p as any).master_price ?? p.sale_price;
     const up = getUnitPrice(p, priceType, null);
@@ -242,7 +249,7 @@ export default function QuoteForm() {
       product_name: p.name,
       sku: p.sku || undefined,
       unit: (p as any).base_unit || p.unit || 'pcs',
-      quantity: 1,
+      quantity: qty,
       unit_price: up,
       price_type_used: priceType,
       override_price: null,
@@ -251,12 +258,41 @@ export default function QuoteForm() {
       discount_percent: 0,
       discount_amount: 0,
       cost_price: p.purchase_price ?? null,
-      line_total: up,
-      line_profit: Number.isFinite(p.purchase_price) ? up - p.purchase_price : null,
+      line_total: 0,
+      line_profit: null,
     };
+    row.line_total = computeLineTotal(row);
+    const cp = Number(row.cost_price);
+    if (Number.isFinite(cp)) {
+      row.line_profit = (row.unit_price - cp) * qty;
+    }
     setItems((prev) => [...prev, row]);
-    setProductPickerOpen(false);
-    setSearchTerm('');
+    // Modal ochiq qoladi; qidiruv matni saqlanadi — ketma-ket bir xil qidiruvdan turli mahsulot qo‘shish mumkin
+  };
+
+  const openProductQtyDialog = (p: ProductWithCategory) => {
+    if (items.some((it) => it.product_id === p.id)) {
+      toast({ title: t('quotes.duplicate_product'), variant: 'destructive' });
+      return;
+    }
+    setQtyDraft('1');
+    setQtyDialogProduct(p);
+  };
+
+  const confirmQtyAndAdd = () => {
+    if (!qtyDialogProduct) return;
+    const raw = String(qtyDraft || '').trim().replace(',', '.');
+    const q = parseFloat(raw);
+    if (!Number.isFinite(q) || q <= 0) {
+      toast({
+        title: t('common.error'),
+        description: t('quotes.product_qty_invalid'),
+        variant: 'destructive',
+      });
+      return;
+    }
+    addProduct(qtyDialogProduct, q);
+    setQtyDialogProduct(null);
   };
 
   const removeItem = (idx: number) => {
@@ -323,32 +359,49 @@ export default function QuoteForm() {
     toast({ title: t('quotes.toast_excel') });
   };
 
+  const esc = (s: string) =>
+    String(s ?? '')
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;');
+
   const handlePrint = () => {
-    const itemsHtml = items
-      .map(
-        (it, idx) =>
-          `<tr><td>${idx + 1}</td><td>${(it.product_name || '-').replace(/</g, '&lt;')}</td><td>${it.quantity} ${formatUnit(it.unit)}</td><td>${formatMoneyUZS(it.unit_price)}</td><td>${formatMoneyUZS(it.discount_amount || 0)}</td><td>${formatMoneyUZS(computeLineTotal(it))}</td></tr>`
-      )
-      .join('');
     const pt = priceType === 'usta' ? t('quotes.price_usta') : t('quotes.price_retail');
+    const linesHtml = items
+      .map((it, idx) => {
+        const nm = esc(it.product_name || '—');
+        const line = formatMoneyUZS(computeLineTotal(it));
+        const qty = `${it.quantity} ${formatUnit(it.unit)}`;
+        const price = formatMoneyUZS(it.unit_price);
+        const disc = formatMoneyUZS(it.discount_amount || 0);
+        return `
+          <div style="border-bottom:1px dashed #999;padding:6px 0;word-break:break-word;">
+            <div style="font-weight:700;margin-bottom:2px;">${idx + 1}. ${nm}</div>
+            <div class="flex justify-between" style="font-size:11px;margin-top:2px;"><span>${esc(qty)}</span><span>${line}</span></div>
+            <div class="flex justify-between" style="font-size:10px;margin-top:2px;"><span>${t('quotes.col_price')}</span><span>${price}</span></div>
+            <div class="flex justify-between" style="font-size:10px;"><span>${t('quotes.col_discount')}</span><span>${disc}</span></div>
+          </div>`;
+      })
+      .join('');
     const html = `
-      <div class="receipt-a4" style="font-family: Arial; padding: 20px;">
-        <h2 style="text-align: center; margin-bottom: 16px;">${t('quotes.print_title')}</h2>
-        <p><strong>${t('quotes.quote_number')}:</strong> ${(quoteNumber || '—').replace(/</g, '&lt;')}</p>
-        <p><strong>${t('quotes.customer_section')}:</strong> ${(customerName || '—').replace(/</g, '&lt;')}</p>
-        <p><strong>${t('quotes.phone')}:</strong> ${(phone || '—').replace(/</g, '&lt;')}</p>
-        <p><strong>${t('quotes.price_type')}:</strong> ${pt}</p>
-        <table style="width: 100%; border-collapse: collapse; margin-top: 16px;">
-          <thead><tr style="background: #f0f0f0;"><th style="border: 1px solid #ddd; padding: 6px;">№</th><th style="border: 1px solid #ddd; padding: 6px;">${t('quotes.col_name')}</th><th style="border: 1px solid #ddd; padding: 6px;">${t('quotes.col_qty')}</th><th style="border: 1px solid #ddd; padding: 6px;">${t('quotes.col_price')}</th><th style="border: 1px solid #ddd; padding: 6px;">${t('quotes.col_discount')}</th><th style="border: 1px solid #ddd; padding: 6px;">${t('quotes.col_line_total')}</th></tr></thead>
-          <tbody>${itemsHtml}</tbody>
-        </table>
-        <div style="margin-top: 16px; text-align: right;">
-          <p>${t('quotes.subtotal')}: ${formatMoneyUZS(subtotal)}</p>
-          <p>${t('quotes.discount')}: -${formatMoneyUZS(orderDiscNumber)}</p>
-          <p><strong>${t('quotes.total')}: ${formatMoneyUZS(total)}</strong></p>
+      <div class="receipt-thermal" style="max-width:100%;padding:4px 2px;font-size:11px;">
+        <div class="text-center font-bold" style="font-size:14px;margin-bottom:6px;">${esc(t('quotes.print_title'))}</div>
+        <div class="space-y-1" style="font-size:11px;">
+          <div class="flex justify-between"><span>${esc(t('quotes.quote_number'))}</span><span style="text-align:right;max-width:65%;word-break:break-all;">${esc(quoteNumber || '—')}</span></div>
+          <div class="flex justify-between"><span>${esc(t('quotes.customer_section'))}</span><span style="text-align:right;max-width:65%;word-break:break-word;">${esc(customerName || '—')}</span></div>
+          <div class="flex justify-between"><span>${esc(t('quotes.phone'))}</span><span>${esc(phone || '—')}</span></div>
+          <div class="flex justify-between"><span>${esc(t('quotes.price_type'))}</span><span>${esc(pt)}</span></div>
+        </div>
+        <div style="border-top:1px dashed #999;margin:8px 0 6px;padding-top:6px;font-weight:700;font-size:11px;">${esc(t('quotes.products_section'))}</div>
+        ${linesHtml || `<div style="padding:8px 0;font-size:11px;">—</div>`}
+        <div class="border-t pt-2 mt-2" style="border-top:1px dashed #999;">
+          <div class="flex justify-between" style="margin-bottom:4px;"><span>${esc(t('quotes.subtotal'))}</span><span style="font-weight:600;">${formatMoneyUZS(subtotal)}</span></div>
+          <div class="flex justify-between" style="margin-bottom:4px;"><span>${esc(t('quotes.discount'))}</span><span>−${formatMoneyUZS(orderDiscNumber)}</span></div>
+          <div class="flex justify-between" style="font-size:13px;font-weight:700;padding-top:4px;border-top:1px dashed #999;margin-top:4px;">
+            <span>${esc(t('quotes.total'))}</span><span>${formatMoneyUZS(total)}</span>
+          </div>
         </div>
       </div>`;
-    printHtml(t('quotes.print_title'), html, 'A4');
+    printHtml(t('quotes.print_title'), html, '80mm');
     toast({ title: t('quotes.toast_print') });
   };
 
@@ -533,48 +586,61 @@ export default function QuoteForm() {
   }
 
   return (
-    <div className="space-y-6 w-full min-w-0">
-      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
-        <div className="flex items-center gap-4">
+    <div className="w-full min-w-0 space-y-4 px-1 py-1 sm:space-y-6 sm:p-0">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <div className="flex min-w-0 items-center gap-3">
           <Button
             variant="ghost"
             size="icon"
+            className="h-10 w-10 shrink-0 touch-manipulation"
             onClick={() => navigate(-1)}
             aria-label={t('common.back')}
           >
             <ArrowLeft className="h-4 w-4" />
           </Button>
-          <div>
-            <h1 className="text-2xl font-bold tracking-tight">
+          <div className="min-w-0">
+            <h1 className="page-heading">
               {isEdit ? t('quotes.edit_quote') : t('quotes.new_quote')}
             </h1>
+            <p className="page-heading-sub">{t('quotes.subtitle')}</p>
             {quoteNumber ? (
-              <p className="text-sm text-muted-foreground mt-0.5 font-mono">
+              <p className="mt-0.5 font-mono text-xs text-muted-foreground sm:text-sm">
                 {t('quotes.quote_number')}: {quoteNumber}
               </p>
             ) : null}
           </div>
         </div>
-        <div className="flex justify-end gap-2">
-          <Button variant="outline" onClick={() => navigate(-1)}>
+        <div className="flex w-full flex-col-reverse gap-2 sm:w-auto sm:flex-row sm:justify-end">
+          <Button
+            variant="outline"
+            className="h-10 w-full touch-manipulation sm:h-9 sm:w-auto"
+            onClick={() => navigate(-1)}
+          >
             {t('quotes.cancel')}
           </Button>
-          <Button onClick={handleSave} disabled={loading}>
+          <Button
+            className="h-10 w-full touch-manipulation sm:h-9 sm:w-auto"
+            onClick={handleSave}
+            disabled={loading}
+          >
             {isEdit ? t('quotes.save') : t('quotes.create')}
           </Button>
         </div>
       </div>
 
-      <div className="flex flex-col lg:flex-row gap-6">
-        <Card className="flex-1 min-w-0 flex flex-col">
-            <CardHeader className="pb-4">
-              <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
-                <CardTitle className="text-lg">{t('quotes.products_section')}</CardTitle>
+      <div className="flex flex-col gap-4 lg:flex-row lg:gap-6">
+        <Card className="flex min-w-0 flex-1 flex-col shadow-sm">
+            <CardHeader className="space-y-0 border-b pb-3">
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                <div>
+                  <CardTitle className="text-base sm:text-lg">{t('quotes.products_section')}</CardTitle>
+                  <CardDescription className="text-xs sm:text-sm">{t('quotes.product_picker_hint')}</CardDescription>
+                </div>
                 <div>
                   <Button
                     type="button"
                     variant="outline"
-                    className="w-full gap-2 sm:w-auto sm:justify-start"
+                    className="h-10 w-full touch-manipulation gap-2 sm:h-9 sm:w-auto sm:justify-start"
                     onClick={() => setProductPickerOpen(true)}
                   >
                     <Plus className="h-4 w-4 shrink-0" />
@@ -588,12 +654,13 @@ export default function QuoteForm() {
                       if (!open) {
                         setSearchTerm('');
                         setPickerSort('relevance');
+                        setQtyDialogProduct(null);
                       }
                     }}
                   >
                     <DialogContent
                       className={cn(
-                        'flex max-h-[min(88vh,820px)] flex-col gap-0 overflow-hidden p-0 sm:max-w-[min(96vw,52rem)]'
+                        'flex max-h-[min(92dvh,820px)] flex-col gap-0 overflow-hidden p-0 sm:max-w-[min(96vw,52rem)]'
                       )}
                     >
                       <DialogHeader className="space-y-1 border-b px-6 py-4 text-left">
@@ -602,18 +669,38 @@ export default function QuoteForm() {
                       </DialogHeader>
 
                       <div className="space-y-3 px-6 pt-4">
-                        <div className="relative">
-                          <Search
-                            className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground"
-                            aria-hidden
-                          />
-                          <Input
-                            className="h-11 pl-9"
-                            placeholder={t('quotes.product_picker_search_placeholder')}
-                            value={searchTerm}
-                            onChange={(e) => setSearchTerm(e.target.value)}
-                            autoFocus
-                          />
+                        <div className="flex flex-col gap-2 sm:flex-row sm:items-stretch">
+                          <div className="relative min-w-0 flex-1">
+                            <Search
+                              className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground"
+                              aria-hidden
+                            />
+                            <Input
+                              className="h-11 pl-9"
+                              placeholder={t('quotes.product_picker_search_placeholder')}
+                              value={searchTerm}
+                              onChange={(e) => setSearchTerm(e.target.value)}
+                              onKeyDown={(e) => {
+                                if (e.key === 'Enter') {
+                                  e.preventDefault();
+                                  void executePickerSearch();
+                                }
+                              }}
+                              autoFocus
+                              autoComplete="off"
+                            />
+                          </div>
+                          <Button
+                            type="button"
+                            className="inline-flex h-11 shrink-0 touch-manipulation items-center justify-center gap-2 sm:min-w-[7rem]"
+                            onClick={() => void executePickerSearch()}
+                            disabled={productSearchLoading}
+                          >
+                            {productSearchLoading ? (
+                              <Loader2 className="h-4 w-4 shrink-0 animate-spin" aria-hidden />
+                            ) : null}
+                            <span>{t('quotes.product_picker_search_button')}</span>
+                          </Button>
                         </div>
                         <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
                           <p className="text-xs text-muted-foreground">{t('quotes.product_picker_browse_hint')}</p>
@@ -624,8 +711,9 @@ export default function QuoteForm() {
                             <Select
                               value={pickerSort}
                               onValueChange={(v) => setPickerSort(v as PickerSort)}
+                              disabled={!pickerSearchRan || searchResults.length === 0}
                             >
-                              <SelectTrigger className="h-9 w-[190px]">
+                              <SelectTrigger className="h-9 w-full min-w-0 sm:w-[190px]">
                                 <SelectValue />
                               </SelectTrigger>
                               <SelectContent>
@@ -640,12 +728,17 @@ export default function QuoteForm() {
                         </div>
                       </div>
 
-                      <ScrollArea className="h-[min(50vh,440px)] min-h-[200px] border-y">
+                      <ScrollArea className="h-[min(52dvh,440px)] min-h-[200px] border-y">
                         <div className="space-y-1 p-2">
                           {productSearchLoading ? (
                             <div className="flex items-center justify-center gap-2 py-16 text-muted-foreground">
                               <Loader2 className="h-5 w-5 animate-spin shrink-0" />
                               <span>{t('quotes.product_picker_loading')}</span>
+                            </div>
+                          ) : !pickerSearchRan ? (
+                            <div className="px-2 py-16 text-center text-sm text-muted-foreground">
+                              <p className="font-medium text-foreground">{t('quotes.product_picker_idle_title')}</p>
+                              <p className="mx-auto mt-2 max-w-md">{t('quotes.product_picker_idle_hint')}</p>
                             </div>
                           ) : sortedPickerResults.length === 0 ? (
                             <div className="py-16 text-center text-sm text-muted-foreground">
@@ -672,7 +765,7 @@ export default function QuoteForm() {
                                   key={p.id}
                                   type="button"
                                   disabled={inList}
-                                  onClick={() => addProduct(p)}
+                                  onClick={() => openProductQtyDialog(p)}
                                   className={cn(
                                     'flex w-full gap-3 rounded-lg border border-transparent p-3 text-left transition-colors hover:bg-muted/80',
                                     inList && 'cursor-not-allowed opacity-50 hover:bg-transparent',
@@ -772,96 +865,213 @@ export default function QuoteForm() {
                       </div>
                     </DialogContent>
                   </Dialog>
-                </div>
-              </div>
-            </CardHeader>
-            <CardContent className="overflow-visible flex flex-col flex-1 min-h-0">
-              {items.length === 0 ? (
-                <div className="py-12 text-center text-muted-foreground border rounded-lg bg-muted/30">
-                  <p className="font-medium mb-1">{t('quotes.items_empty_title')}</p>
-                  <p className="text-sm max-w-md mx-auto">{t('quotes.items_empty_hint')}</p>
-                </div>
-              ) : (
-              <div className="overflow-auto max-h-[calc(100vh-280px)] min-h-[180px] rounded-md border">
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead className="min-w-[140px]">{t('quotes.col_name')}</TableHead>
-                    <TableHead>{t('quotes.col_qty')}</TableHead>
-                    <TableHead>{t('quotes.col_price')}</TableHead>
-                    <TableHead>{t('quotes.col_discount')}</TableHead>
-                    <TableHead className="w-28 text-right">{t('quotes.col_line_total')}</TableHead>
-                    <TableHead className="w-12 px-1" aria-hidden />
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {items.map((row, idx) => (
-                    <TableRow key={row.id}>
-                      <TableCell className="min-w-[140px] font-medium">
-                        <span className="truncate block max-w-[200px]" title={row.product_name}>
-                          {row.product_name}
-                        </span>
-                      </TableCell>
-                      <TableCell>
+
+                  <Dialog
+                    open={!!qtyDialogProduct}
+                    onOpenChange={(open) => {
+                      if (!open) setQtyDialogProduct(null);
+                    }}
+                  >
+                    <DialogContent className="z-[120] w-[min(calc(100vw-2rem),22rem)] gap-4">
+                      <DialogHeader>
+                        <DialogTitle>{t('quotes.product_picker_quantity_title')}</DialogTitle>
+                        <DialogDescription className="line-clamp-3">
+                          {qtyDialogProduct ? (
+                            <span className="font-medium text-foreground">{qtyDialogProduct.name}</span>
+                          ) : null}
+                        </DialogDescription>
+                      </DialogHeader>
+                      <div className="space-y-2">
+                        <Label htmlFor="quote-picker-qty">{t('quotes.col_qty')}</Label>
                         <Input
+                          id="quote-picker-qty"
                           type="number"
                           min={0.001}
                           step="any"
-                          className="w-20"
-                          value={row.quantity}
-                          onChange={(e) =>
-                            updateItem(idx, 'quantity', Number(e.target.value) || 1)
-                          }
+                          inputMode="decimal"
+                          className="h-11 tabular-nums"
+                          value={qtyDraft}
+                          onChange={(e) => setQtyDraft(e.target.value)}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter') {
+                              e.preventDefault();
+                              confirmQtyAndAdd();
+                            }
+                          }}
                         />
-                        <span className="ml-1 text-muted-foreground text-sm">
-                          {formatUnit(row.unit)}
-                        </span>
-                      </TableCell>
-                      <TableCell>
-                        <MoneyInput
-                          value={row.unit_price}
-                          onValueChange={(v) => updateItem(idx, 'unit_price', Number(v ?? 0))}
-                          className="w-28"
-                        />
-                      </TableCell>
-                      <TableCell>
-                        <Input
-                          type="number"
-                          min={0}
-                          className="w-20"
-                          value={row.discount_amount || ''}
-                          onChange={(e) =>
-                            updateItem(idx, 'discount_amount', Number(e.target.value) || 0)
-                          }
-                          placeholder="0"
-                        />
-                      </TableCell>
-                      <TableCell className="text-right font-medium">
-                        {formatMoneyUZS(computeLineTotal(row))}
-                      </TableCell>
-                      <TableCell className="w-12 px-1">
-                        <Button
-                          variant="ghost"
-                          size="icon"
-                          className="h-8 w-8 shrink-0 text-destructive hover:text-destructive hover:bg-destructive/10"
-                          onClick={() => removeItem(idx)}
-                          aria-label={t('quotes.remove_line')}
-                        >
-                          <Trash2 className="h-4 w-4" />
+                      </div>
+                      <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
+                        <Button type="button" variant="outline" onClick={() => setQtyDialogProduct(null)}>
+                          {t('quotes.cancel')}
                         </Button>
-                      </TableCell>
-                    </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
+                        <Button type="button" onClick={confirmQtyAndAdd}>
+                          {t('quotes.product_picker_add_with_qty')}
+                        </Button>
+                      </div>
+                    </DialogContent>
+                  </Dialog>
+                </div>
               </div>
+            </CardHeader>
+            <CardContent className="flex min-h-0 flex-1 flex-col overflow-visible">
+              {items.length === 0 ? (
+                <div className="rounded-lg border bg-muted/30 py-12 text-center text-muted-foreground">
+                  <p className="mb-1 font-medium">{t('quotes.items_empty_title')}</p>
+                  <p className="mx-auto max-w-md text-sm">{t('quotes.items_empty_hint')}</p>
+                </div>
+              ) : (
+                <>
+                  <div className="space-y-3 md:hidden">
+                    {items.map((row, idx) => (
+                      <div
+                        key={row.id}
+                        className="rounded-lg border border-border bg-card p-3 text-sm shadow-sm"
+                      >
+                        <div className="flex items-start justify-between gap-2">
+                          <p className="min-w-0 flex-1 font-medium leading-snug">{row.product_name}</p>
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            className="h-10 w-10 shrink-0 touch-manipulation text-destructive hover:bg-destructive/10 hover:text-destructive"
+                            onClick={() => removeItem(idx)}
+                            aria-label={t('quotes.remove_line')}
+                          >
+                            <Trash2 className="h-4 w-4" />
+                          </Button>
+                        </div>
+                        <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2">
+                          <div>
+                            <Label className="text-xs text-muted-foreground">{t('quotes.col_qty')}</Label>
+                            <div className="mt-1 flex items-center gap-2">
+                              <Input
+                                type="number"
+                                min={0.001}
+                                step="any"
+                                className="h-10 max-w-[8rem] touch-manipulation"
+                                value={row.quantity}
+                                onChange={(e) =>
+                                  updateItem(idx, 'quantity', Number(e.target.value) || 1)
+                                }
+                              />
+                              <span className="text-muted-foreground">{formatUnit(row.unit)}</span>
+                            </div>
+                          </div>
+                          <div>
+                            <Label className="text-xs text-muted-foreground">{t('quotes.col_price')}</Label>
+                            <div className="mt-1">
+                              <MoneyInput
+                                value={row.unit_price}
+                                onValueChange={(v) => updateItem(idx, 'unit_price', Number(v ?? 0))}
+                                className="h-10 max-w-full"
+                              />
+                            </div>
+                          </div>
+                          <div className="sm:col-span-2">
+                            <Label className="text-xs text-muted-foreground">{t('quotes.col_discount')}</Label>
+                            <Input
+                              type="number"
+                              min={0}
+                              className="mt-1 h-10 max-w-[10rem] touch-manipulation"
+                              value={row.discount_amount || ''}
+                              onChange={(e) =>
+                                updateItem(idx, 'discount_amount', Number(e.target.value) || 0)
+                              }
+                              placeholder="0"
+                            />
+                          </div>
+                        </div>
+                        <div className="mt-3 flex items-center justify-between border-t border-border/60 pt-2 text-sm font-semibold">
+                          <span className="text-muted-foreground">{t('quotes.col_line_total')}</span>
+                          <span className="tabular-nums">{formatMoneyUZS(computeLineTotal(row))}</span>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                  <div className="hidden min-h-[180px] max-h-[min(65dvh,560px)] overflow-auto rounded-md border md:block">
+                    <Table>
+                      <TableHeader>
+                        <TableRow className="hover:bg-transparent">
+                          <TableHead className="min-w-[140px] py-2 text-xs font-semibold">
+                            {t('quotes.col_name')}
+                          </TableHead>
+                          <TableHead className="py-2 text-xs font-semibold">{t('quotes.col_qty')}</TableHead>
+                          <TableHead className="py-2 text-xs font-semibold">{t('quotes.col_price')}</TableHead>
+                          <TableHead className="py-2 text-xs font-semibold">{t('quotes.col_discount')}</TableHead>
+                          <TableHead className="w-28 py-2 text-right text-xs font-semibold">
+                            {t('quotes.col_line_total')}
+                          </TableHead>
+                          <TableHead className="w-12 px-1 py-2" aria-hidden />
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {items.map((row, idx) => (
+                          <TableRow key={row.id} className="text-xs sm:text-sm">
+                            <TableCell className="min-w-[140px] py-2 font-medium">
+                              <span className="block max-w-[200px] truncate" title={row.product_name}>
+                                {row.product_name}
+                              </span>
+                            </TableCell>
+                            <TableCell className="py-2">
+                              <Input
+                                type="number"
+                                min={0.001}
+                                step="any"
+                                className="h-8 w-20"
+                                value={row.quantity}
+                                onChange={(e) =>
+                                  updateItem(idx, 'quantity', Number(e.target.value) || 1)
+                                }
+                              />
+                              <span className="ml-1 text-sm text-muted-foreground">
+                                {formatUnit(row.unit)}
+                              </span>
+                            </TableCell>
+                            <TableCell className="py-2">
+                              <MoneyInput
+                                value={row.unit_price}
+                                onValueChange={(v) => updateItem(idx, 'unit_price', Number(v ?? 0))}
+                                className="w-28"
+                              />
+                            </TableCell>
+                            <TableCell className="py-2">
+                              <Input
+                                type="number"
+                                min={0}
+                                className="h-8 w-20"
+                                value={row.discount_amount || ''}
+                                onChange={(e) =>
+                                  updateItem(idx, 'discount_amount', Number(e.target.value) || 0)
+                                }
+                                placeholder="0"
+                              />
+                            </TableCell>
+                            <TableCell className="py-2 text-right font-medium">
+                              {formatMoneyUZS(computeLineTotal(row))}
+                            </TableCell>
+                            <TableCell className="w-12 px-1 py-2">
+                              <Button
+                                variant="ghost"
+                                size="icon"
+                                className="h-8 w-8 shrink-0 text-destructive hover:bg-destructive/10 hover:text-destructive"
+                                onClick={() => removeItem(idx)}
+                                aria-label={t('quotes.remove_line')}
+                              >
+                                <Trash2 className="h-4 w-4" />
+                              </Button>
+                            </TableCell>
+                          </TableRow>
+                        ))}
+                      </TableBody>
+                    </Table>
+                  </div>
+                </>
               )}
             </CardContent>
           </Card>
 
-          <aside className="lg:w-80 shrink-0 flex flex-col gap-4 lg:sticky lg:top-4 lg:self-start lg:max-h-[calc(100vh-2rem)] lg:overflow-y-auto">
-          <Card>
-            <CardHeader className="py-3">
+          <aside className="flex shrink-0 flex-col gap-4 lg:sticky lg:top-4 lg:w-80 lg:max-h-[calc(100dvh-2rem)] lg:self-start lg:overflow-y-auto">
+          <Card className="shadow-sm">
+            <CardHeader className="border-b py-3">
               <CardTitle className="text-base">{t('quotes.customer_section')}</CardTitle>
             </CardHeader>
             <CardContent className="space-y-3 pt-0">
@@ -895,16 +1105,17 @@ export default function QuoteForm() {
             </CardContent>
           </Card>
 
-          <Card>
-            <CardHeader className="py-3">
+          <Card className="shadow-sm">
+            <CardHeader className="border-b py-3">
               <CardTitle className="text-base">{t('quotes.price_type')}</CardTitle>
             </CardHeader>
             <CardContent className="pt-0">
-              <div className="flex gap-2 flex-wrap">
+              <div className="flex flex-wrap gap-2">
                 <Button
                   type="button"
                   variant={priceType === 'retail' ? 'default' : 'outline'}
                   size="sm"
+                  className="min-h-10 flex-1 touch-manipulation sm:min-h-9 sm:flex-none"
                   onClick={() => {
                     setPriceType('retail');
                     void recalcPrices('retail');
@@ -916,6 +1127,7 @@ export default function QuoteForm() {
                   type="button"
                   variant={priceType === 'usta' ? 'default' : 'outline'}
                   size="sm"
+                  className="min-h-10 flex-1 touch-manipulation sm:min-h-9 sm:flex-none"
                   onClick={() => {
                     setPriceType('usta');
                     void recalcPrices('usta');
@@ -927,8 +1139,8 @@ export default function QuoteForm() {
             </CardContent>
           </Card>
 
-          <Card>
-            <CardHeader className="py-3">
+          <Card className="shadow-sm">
+            <CardHeader className="border-b py-3">
               <CardTitle className="text-base">{t('quotes.order_discount')}</CardTitle>
             </CardHeader>
             <CardContent className="space-y-3 pt-0">
@@ -993,9 +1205,9 @@ export default function QuoteForm() {
             />
           </div>
 
-          <Card>
-            <CardHeader>
-              <CardTitle>{t('quotes.totals')}</CardTitle>
+          <Card className="shadow-sm">
+            <CardHeader className="border-b py-3">
+              <CardTitle className="text-base">{t('quotes.totals')}</CardTitle>
             </CardHeader>
             <CardContent className="space-y-2">
               <div className="flex justify-between text-sm">

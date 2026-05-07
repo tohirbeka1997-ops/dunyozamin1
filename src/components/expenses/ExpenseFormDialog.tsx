@@ -25,6 +25,7 @@ import type { ExpenseWithDetails, ExpenseCategory, ExpensePaymentMethod } from '
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import MoneyInput from '@/components/common/MoneyInput';
 import { invalidateDashboardQueries } from '@/utils/dashboard';
+import { todayYMD } from '@/lib/datetime';
 
 const EXPENSE_CATEGORIES: ExpenseCategory[] = [
   'Ijara',
@@ -108,7 +109,7 @@ export default function ExpenseFormDialog({
         setEmployeeId(expense.employee_id && typeof expense.employee_id === 'string' && expense.employee_id.trim() !== '' ? expense.employee_id : undefined);
       } else {
         // Create mode
-        const today = new Date().toISOString().split('T')[0];
+        const today = todayYMD();
         setExpenseDate(today);
         setCategory('Boshqa');
         setAmount(undefined);

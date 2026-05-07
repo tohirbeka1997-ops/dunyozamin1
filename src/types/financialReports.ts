@@ -16,6 +16,9 @@ export type SupplierProductSalesRow = {
   product_name: string | null;
   product_sku: string | null;
   product_barcode: string | null;
+  received_qty?: number;
+  received_amount_uzs?: number;
+  is_estimated?: number;
   sold_qty: number;
   sales_amount_uzs: number;
   discount_uzs: number;

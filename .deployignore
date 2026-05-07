@@ -1,0 +1,6 @@
+.env
+.env.*
+deploy/deploy.env
+*.local
+*.log
+agent-transcripts/

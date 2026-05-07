@@ -15,7 +15,7 @@ import { Badge } from '@/components/ui/badge';
 import { ArrowLeft, XCircle, RefreshCw, AlertTriangle, TrendingDown } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 import { handleIpcResponse, isElectron, requireElectron } from '@/utils/electron';
-import { todayYMD, formatDate } from '@/lib/datetime';
+import { todayYMD, formatDate, formatDateYMD } from '@/lib/datetime';
 import { formatMoneyUZS } from '@/lib/format';
 import { useReportAutoRefresh } from '@/hooks/useReportAutoRefresh';
 
@@ -27,7 +27,7 @@ interface CashierError {
   cancelled_value: number;
   returns_count: number;
   returns_value: number;
-  error_rate: number; // (cancelled + returns) / total_sales * 100
+  error_rate: number; // (cancelled + returns) / (tugallangan + bekor + qaytarish) * 100
   avg_cancelled_value: number;
   avg_return_value: number;
   error_score: number; // 0-100, higher is worse
@@ -53,15 +53,15 @@ export default function CashierErrorsReport() {
   const [loading, setLoading] = useState(true);
   const [summaryRows, setSummaryRows] = useState<CashierError[]>([]);
   const [detailRows, setDetailRows] = useState<ErrorDetail[]>([]);
-  const [dateFrom, setDateFrom] = useState(
-    new Date(new Date().setMonth(new Date().getMonth() - 1)).toISOString().split('T')[0]
-  );
-  const [dateTo, setDateTo] = useState(todayYMD());
+  const [dateFrom, setDateFrom] = useState(() => {
+    const d = new Date();
+    d.setDate(d.getDate() - 30);
+    return formatDateYMD(d);
+  });
+  const [dateTo, setDateTo] = useState(() => todayYMD());
   const [searchTerm, setSearchTerm] = useState('');
   const [viewMode, setViewMode] = useState<'summary' | 'details'>('summary');
   const [typeFilter, setTypeFilter] = useState<string>('all');
-
-  useReportAutoRefresh(loadData);
 
   useEffect(() => {
     loadData();
@@ -106,6 +106,8 @@ export default function CashierErrorsReport() {
       setLoading(false);
     }
   }
+
+  useReportAutoRefresh(loadData);
 
   const filteredSummary = useMemo(() => {
     if (!searchTerm) return summaryRows;
@@ -188,16 +190,17 @@ export default function CashierErrorsReport() {
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-4">
-          <Button variant="ghost" size="icon" onClick={() => navigate('/reports')}>
+          <Button variant="ghost" size="icon" onClick={() => navigate('/reports/employee')}>
             <ArrowLeft className="h-4 w-4" />
           </Button>
           <div>
-            <h1 className="text-3xl font-bold flex items-center gap-2">
+            <h1 className="page-heading flex items-center gap-2">
               <AlertTriangle className="h-8 w-8 text-orange-500" />
               Kassir xatolari
             </h1>
-            <p className="text-muted-foreground">
-              Bekor qilingan cheklar va qaytarishlar tahlili
+            <p className="text-muted-foreground text-sm">
+              Bekor qilingan cheklar va sotuvdan qaytarishlar (sales_returns) tahlili. Sana/vaqt filtri:{' '}
+              <span className="text-foreground/80">Asia/Tashkent</span> — batafsilda vaqt O‘zbekiston vaqti.
             </p>
           </div>
         </div>
@@ -307,9 +310,11 @@ export default function CashierErrorsReport() {
           <CardContent className="pt-6">
             <div className="flex items-center gap-2">
               <TrendingDown className="h-5 w-5 text-muted-foreground" />
-              <p className="text-sm text-muted-foreground">Jami sotuv</p>
+              <p className="text-sm text-muted-foreground">Tugallangan buyurtmalar</p>
             </div>
-            <div className="text-2xl font-bold mt-2">{overallStats.totalSales}</div>
+            <div className="text-2xl font-bold mt-2" title="Tugallangan buyurtmalar (soni)">
+              {overallStats.totalSales}
+            </div>
           </CardContent>
         </Card>
       </div>
@@ -327,7 +332,7 @@ export default function CashierErrorsReport() {
                 <TableHeader>
                   <TableRow>
                     <TableHead>Kassir</TableHead>
-                    <TableHead className="text-right">Jami sotuv</TableHead>
+                    <TableHead className="text-right">Tugall. buyurtma</TableHead>
                     <TableHead className="text-right">Bekor qilindi</TableHead>
                     <TableHead className="text-right">Bekor summa</TableHead>
                     <TableHead className="text-right">Qaytarishlar</TableHead>

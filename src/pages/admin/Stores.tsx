@@ -117,7 +117,7 @@ export default function StoresAdmin() {
     <div className="p-6 space-y-6">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-bold flex items-center gap-2">
+          <h1 className="page-heading flex items-center gap-2">
             <Store className="h-6 w-6" /> Do'konlar (tenants)
           </h1>
           <p className="text-sm text-muted-foreground">

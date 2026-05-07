@@ -34,7 +34,7 @@ export default function ReturnReceiptPrint({ returnData, variant = 'thermal' }: 
         )}
         
         <div className="text-center mb-6">
-          <h1 className="text-2xl font-bold mb-2">{storeName}</h1>
+          <h1 className="page-heading mb-1">{storeName}</h1>
           <p className="text-sm text-muted-foreground">Sotuv qaytarilishi cheki</p>
         </div>
 

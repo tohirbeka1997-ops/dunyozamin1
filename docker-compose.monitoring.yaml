@@ -26,11 +26,31 @@ services:
     container_name: pos-prometheus
     profiles: [monitoring]
     restart: unless-stopped
+    # `prometheus.yml` references `credentials_file:
+    # /etc/prometheus/pos-metrics-token`. We render that file from the
+    # `POS_METRICS_SECRET` env var (falling back to `POS_HOST_SECRET`) at
+    # startup so the token never lives in the compose file or git. The
+    # entrypoint runs under prometheus's default `nobody` user — it has
+    # write access to /etc/prometheus on the official image.
+    entrypoint: ["/bin/sh", "-c"]
     command:
-      - '--config.file=/etc/prometheus/prometheus.yml'
-      - '--storage.tsdb.path=/prometheus'
-      - '--storage.tsdb.retention.time=30d'
-      - '--web.enable-lifecycle'   # allow hot-reload via POST /-/reload
+      - |
+        set -e
+        token="$${POS_METRICS_SECRET:-$${POS_HOST_SECRET:-}}"
+        if [ -z "$$token" ]; then
+          echo "[prometheus] POS_METRICS_SECRET (or POS_HOST_SECRET) is required so the /metrics scrape can authenticate." >&2
+          exit 1
+        fi
+        umask 077
+        printf '%s' "$$token" > /etc/prometheus/pos-metrics-token
+        exec /bin/prometheus \
+          --config.file=/etc/prometheus/prometheus.yml \
+          --storage.tsdb.path=/prometheus \
+          --storage.tsdb.retention.time=30d \
+          --web.enable-lifecycle
+    environment:
+      POS_METRICS_SECRET: ${POS_METRICS_SECRET:-}
+      POS_HOST_SECRET:    ${POS_HOST_SECRET:-}
     volumes:
       - ./deploy/monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - ./deploy/monitoring/alerts.yml:/etc/prometheus/alerts.yml:ro

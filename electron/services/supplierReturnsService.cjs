@@ -1,5 +1,6 @@
 const { ERROR_CODES, createError } = require('../lib/errors.cjs');
 const { randomUUID } = require('crypto');
+const { UZBEKISTAN_TZ_SQLITE_OFFSET } = require('../lib/timezone.cjs');
 
 /**
  * Supplier Returns Service
@@ -10,6 +11,10 @@ class SupplierReturnsService {
   constructor(db, inventoryService) {
     this.db = db;
     this.inventoryService = inventoryService;
+  }
+
+  _tzDateExpr(columnExpr) {
+    return `date(datetime(replace(replace(${columnExpr}, 'T', ' '), 'Z', ''), '${UZBEKISTAN_TZ_SQLITE_OFFSET}'))`;
   }
 
   /**
@@ -28,7 +33,9 @@ class SupplierReturnsService {
     }
 
     // Validate supplier exists
-    const supplier = this.db.prepare('SELECT id, name FROM suppliers WHERE id = ?').get(supplierId);
+    const supplier = this.db
+      .prepare('SELECT id, name, settlement_currency FROM suppliers WHERE id = ?')
+      .get(supplierId);
     if (!supplier) throw createError(ERROR_CODES.NOT_FOUND, 'Supplier not found');
 
     // Single warehouse system default
@@ -162,6 +169,10 @@ class SupplierReturnsService {
         const hasNote = cols.includes('note');
         const notesCol = hasNotes ? 'notes' : hasNote ? 'note' : null;
         const hasReferenceNumber = cols.includes('reference_number');
+        const hasCurrency = cols.includes('currency');
+        const hasAmountUsd = cols.includes('amount_usd');
+        const settlementCurrency =
+          String(supplier?.settlement_currency || 'USD').toUpperCase() === 'USD' ? 'USD' : 'UZS';
 
         const paymentId = randomUUID();
         const paymentNumber = `SCN-${Date.now()}`; // Supplier Credit Note
@@ -180,10 +191,19 @@ class SupplierReturnsService {
           paymentNumber,
           supplierId,
           payload.purchase_order_id || null,
-          totalAmount,
+          settlementCurrency === 'USD' ? 0 : totalAmount,
           'credit_note',
           `${returnDate} 00:00:00`,
         ];
+
+        if (hasCurrency) {
+          insertCols.push('currency');
+          values.push(settlementCurrency);
+        }
+        if (hasAmountUsd && settlementCurrency === 'USD') {
+          insertCols.push('amount_usd');
+          values.push(totalAmount);
+        }
 
         if (hasReferenceNumber) {
           insertCols.push('reference_number');
@@ -208,24 +228,45 @@ class SupplierReturnsService {
           try {
             const poCols = this.db.prepare(`PRAGMA table_info(purchase_orders)`).all().map((c) => c.name);
             if (poCols.includes('paid_amount') && poCols.includes('payment_status')) {
-              const totalRow = this.db
-                .prepare(`SELECT total_amount FROM purchase_orders WHERE id = ?`)
-                .get(payload.purchase_order_id);
-              const total = Number(totalRow?.total_amount ?? 0);
-              const sumRow = this.db
-                .prepare(
+              if (settlementCurrency === 'USD' && poCols.includes('paid_amount_usd') && poCols.includes('total_usd')) {
+                const totalRow = this.db
+                  .prepare(`SELECT total_usd FROM purchase_orders WHERE id = ?`)
+                  .get(payload.purchase_order_id);
+                const total = Number(totalRow?.total_usd ?? 0);
+                const sumRow = this.db
+                  .prepare(
+                    `
+                    SELECT COALESCE(SUM(amount_usd), 0) AS paid_amount_usd
+                    FROM supplier_payments
+                    WHERE purchase_order_id = ?
                   `
-                  SELECT COALESCE(SUM(amount), 0) AS paid_amount
-                  FROM supplier_payments
-                  WHERE purchase_order_id = ?
-                `
-                )
-                .get(payload.purchase_order_id);
-              const paid = Number(sumRow?.paid_amount ?? 0);
-              const status = paid <= 0 ? 'UNPAID' : paid >= total ? 'PAID' : 'PARTIALLY_PAID';
-              this.db
-                .prepare(`UPDATE purchase_orders SET paid_amount = ?, payment_status = ?, updated_at = datetime('now') WHERE id = ?`)
-                .run(paid, status, payload.purchase_order_id);
+                  )
+                  .get(payload.purchase_order_id);
+                const paid = Number(sumRow?.paid_amount_usd ?? 0);
+                const status = paid <= 0 ? 'UNPAID' : paid >= total ? 'PAID' : 'PARTIALLY_PAID';
+                this.db
+                  .prepare(`UPDATE purchase_orders SET paid_amount_usd = ?, payment_status = ?, updated_at = datetime('now') WHERE id = ?`)
+                  .run(paid, status, payload.purchase_order_id);
+              } else {
+                const totalRow = this.db
+                  .prepare(`SELECT total_amount FROM purchase_orders WHERE id = ?`)
+                  .get(payload.purchase_order_id);
+                const total = Number(totalRow?.total_amount ?? 0);
+                const sumRow = this.db
+                  .prepare(
+                    `
+                    SELECT COALESCE(SUM(amount), 0) AS paid_amount
+                    FROM supplier_payments
+                    WHERE purchase_order_id = ?
+                  `
+                  )
+                  .get(payload.purchase_order_id);
+                const paid = Number(sumRow?.paid_amount ?? 0);
+                const status = paid <= 0 ? 'UNPAID' : paid >= total ? 'PAID' : 'PARTIALLY_PAID';
+                this.db
+                  .prepare(`UPDATE purchase_orders SET paid_amount = ?, payment_status = ?, updated_at = datetime('now') WHERE id = ?`)
+                  .run(paid, status, payload.purchase_order_id);
+              }
             }
           } catch {
             // ignore
@@ -293,11 +334,11 @@ class SupplierReturnsService {
       params.push(filters.status);
     }
     if (filters.date_from) {
-      query += ' AND date(sr.created_at) >= date(?)';
+      query += ` AND ${this._tzDateExpr('sr.created_at')} >= date(?)`;
       params.push(filters.date_from);
     }
     if (filters.date_to) {
-      query += ' AND date(sr.created_at) <= date(?)';
+      query += ` AND ${this._tzDateExpr('sr.created_at')} <= date(?)`;
       params.push(filters.date_to);
     }
 

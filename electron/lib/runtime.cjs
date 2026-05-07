@@ -97,7 +97,34 @@ function getAppLike(electronAppOverride = null) {
       'Set POS_SERVER_MODE=1 to run in Node.js-only server mode.'
     );
   }
+  // In plain Node.js runs (tests, server scripts) the `electron` package may
+  // exist but `electron.app` is not bootstrapped. In that case we gracefully
+  // fall back to the server shim instead of crashing with INTERNAL_ERROR.
   if (!electron || !electron.app) {
+    if (!process.versions?.electron) {
+      if (!cachedUserData) {
+        cachedUserData = resolveServerUserDataDir();
+        ensureDir(cachedUserData);
+      }
+      return {
+        getPath(name) {
+          if (name === 'userData' || name === 'appData' || name === 'home') {
+            return cachedUserData;
+          }
+          if (name === 'logs') {
+            const logsDir = path.join(cachedUserData, 'logs');
+            ensureDir(logsDir);
+            return logsDir;
+          }
+          if (name === 'temp') {
+            return os.tmpdir();
+          }
+          throw new Error(`[runtime] getPath('${name}') is not supported in server shim mode`);
+        },
+        isPackaged: true,
+        __serverShim: true,
+      };
+    }
     throw new Error('[runtime] require("electron").app is unavailable');
   }
   return electron.app;

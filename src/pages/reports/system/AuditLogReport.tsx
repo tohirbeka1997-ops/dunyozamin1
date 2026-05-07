@@ -15,7 +15,7 @@ import { Badge } from '@/components/ui/badge';
 import { ArrowLeft, FileText, User, Clock, Edit, Trash2, Plus, Eye } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 import { handleIpcResponse, isElectron, requireElectron } from '@/utils/electron';
-import { todayYMD, formatDateTime } from '@/lib/datetime';
+import { todayYMD, formatDateYMD, formatDateTime } from '@/lib/datetime';
 import { useReportAutoRefresh } from '@/hooks/useReportAutoRefresh';
 
 interface AuditLog {
@@ -40,16 +40,16 @@ export default function AuditLogReport() {
 
   const [loading, setLoading] = useState(true);
   const [logRows, setLogRows] = useState<AuditLog[]>([]);
-  const [dateFrom, setDateFrom] = useState(
-    new Date(new Date().setDate(new Date().getDate() - 7)).toISOString().split('T')[0]
-  );
+  const [dateFrom, setDateFrom] = useState(() => {
+    const t = new Date();
+    t.setTime(t.getTime() - 7 * 24 * 60 * 60 * 1000);
+    return formatDateYMD(t, { timeZone: 'Asia/Tashkent' });
+  });
   const [dateTo, setDateTo] = useState(todayYMD());
   const [searchTerm, setSearchTerm] = useState('');
   const [actionFilter, setActionFilter] = useState<string>('all');
   const [entityTypeFilter, setEntityTypeFilter] = useState<string>('all');
   const [userFilter, setUserFilter] = useState<string>('all');
-
-  useReportAutoRefresh(loadData);
 
   useEffect(() => {
     loadData();
@@ -88,12 +88,14 @@ export default function AuditLogReport() {
     }
   }
 
+  useReportAutoRefresh(loadData);
+
   const filteredLogs = useMemo(() => {
     if (!searchTerm) return logRows;
     const term = searchTerm.toLowerCase();
     return logRows.filter(
       (row) =>
-        row.user_name.toLowerCase().includes(term) ||
+        (row.user_name || '').toLowerCase().includes(term) ||
         row.action.toLowerCase().includes(term) ||
         row.entity_type.toLowerCase().includes(term) ||
         (row.entity_name && row.entity_name.toLowerCase().includes(term)) ||
@@ -104,8 +106,9 @@ export default function AuditLogReport() {
   const uniqueUsers = useMemo(() => {
     const users = new Map<string, string>();
     for (const log of logRows) {
-      if (!users.has(log.user_id)) {
-        users.set(log.user_id, log.user_name);
+      const id = log.user_id || `__empty__${(log.user_name || '').slice(0, 20)}`;
+      if (!users.has(id)) {
+        users.set(id, log.user_name || "Noma'lum");
       }
     }
     return Array.from(users.entries()).sort((a, b) => a[1].localeCompare(b[1]));
@@ -146,16 +149,16 @@ export default function AuditLogReport() {
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-4">
-          <Button variant="ghost" size="icon" onClick={() => navigate('/reports')}>
+          <Button variant="ghost" size="icon" onClick={() => navigate('/reports/system')}>
             <ArrowLeft className="h-4 w-4" />
           </Button>
           <div>
-            <h1 className="text-3xl font-bold flex items-center gap-2">
+            <h1 className="page-heading flex items-center gap-2">
               <FileText className="h-8 w-8 text-purple-500" />
               Harakatlar jurnali (Audit)
             </h1>
             <p className="text-muted-foreground">
-              Kim, qachon, nima qildi — barcha harakatlar jurnali
+              Jurnal: audit_log (asosan mahsulot). Sana filtri va jadval vaqti: O'zbekiston (Asia/Tashkent).
             </p>
           </div>
         </div>
@@ -314,7 +317,7 @@ export default function AuditLogReport() {
                     <TableCell>
                       <div className="flex items-center gap-2">
                         <User className="h-3 w-3 text-muted-foreground" />
-                        <span className="font-medium">{row.user_name}</span>
+                        <span className="font-medium">{(row.user_name || "Noma'lum").trim() || "Noma'lum"}</span>
                       </div>
                     </TableCell>
                     <TableCell className="text-center">

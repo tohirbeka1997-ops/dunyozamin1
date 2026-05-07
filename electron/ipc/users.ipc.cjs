@@ -47,6 +47,14 @@ function registerUsersHandlers(services) {
       return users.delete(id);
     })
   );
+
+  ipcMain.removeHandler('pos:users:listLoginSessions');
+  ipcMain.handle(
+    'pos:users:listLoginSessions',
+    wrapHandler(async (_event, filters) => {
+      return users.listLoginSessions(filters || {});
+    })
+  );
 }
 
 module.exports = { registerUsersHandlers };

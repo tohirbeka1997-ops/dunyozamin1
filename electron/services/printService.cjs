@@ -91,9 +91,28 @@ class PrintService {
       throw createError(ERROR_CODES.INTERNAL_ERROR, 'Spooler raw print only supported on Windows');
     }
 
+    // Defense in depth — Windows printer names allow spaces and a small
+    // set of punctuation, but should never contain control chars, quotes,
+    // or PowerShell metachars. Reject anything outside the conservative
+    // set before the value can reach the shell.
+    const printerNameStr = String(printerName);
+    if (
+      printerNameStr.length === 0 ||
+      printerNameStr.length > 220 ||
+      /[\u0000-\u001F"`$;|&<>\\\/\r\n]/.test(printerNameStr)
+    ) {
+      throw createError(ERROR_CODES.VALIDATION_ERROR, 'Invalid printer name');
+    }
+
+    // Pass the printer name via an environment variable instead of
+    // interpolating into the PowerShell script — this eliminates
+    // PowerShell quoting/escape pitfalls (backticks, $(...), here-string
+    // boundaries, etc.). The base64 payload is safe to inline since its
+    // alphabet (`A-Za-z0-9+/=`) contains no PowerShell metacharacters.
     const base64 = buffer.toString('base64');
     const script = `
-$printerName = "${printerName.replace(/"/g, '""')}"
+$printerName = $env:POS_PRINTER_NAME
+if ([string]::IsNullOrEmpty($printerName)) { exit 3 }
 $data = [System.Convert]::FromBase64String("${base64}")
 Add-Type -TypeDefinition @"
 using System;
@@ -138,9 +157,14 @@ if (-not $ok) { exit 2 } else { exit 0 }
 `;
 
     await new Promise((resolve, reject) => {
-      const ps = spawn('powershell', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', script], {
-        windowsHide: true,
-      });
+      const ps = spawn(
+        'powershell',
+        ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', script],
+        {
+          windowsHide: true,
+          env: { ...process.env, POS_PRINTER_NAME: printerNameStr },
+        },
+      );
       ps.on('error', reject);
       ps.on('exit', (code) => {
         if (code === 0) resolve();

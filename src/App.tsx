@@ -11,6 +11,7 @@ import { openOfflineDB } from './offline/db';
 import Loading from './components/common/Loading';
 import { ErrorBoundary } from './components/common/ErrorBoundary';
 import { ConfirmDialogProvider } from './contexts/ConfirmDialogContext';
+import { hasSessionTokenIfRequired } from '@/lib/auth/sessionToken';
 
 // Create QueryClient instance with default options
 const queryClient = new QueryClient({
@@ -42,11 +43,18 @@ function SyncEngineInitializer() {
 
 function App() {
   const Router = typeof window !== 'undefined' && window.location?.protocol === 'file:' ? HashRouter : BrowserRouter;
+  if (typeof window !== 'undefined' && window.location.hostname === 'app.dunyozamin.com') {
+    const nextUrl = new URL(window.location.href);
+    nextUrl.hostname = 'api.dunyozamin.com';
+    window.location.replace(nextUrl.toString());
+    return <Loading />;
+  }
   return (
     <QueryClientProvider client={queryClient}>
       <AuthProvider>
         <Router>
           <Toaster />
+          <GlobalErrorOverlay />
           <ConfirmDialogProvider>
             <SyncEngineInitializer />
             <AppContent />
@@ -54,6 +62,53 @@ function App() {
         </Router>
       </AuthProvider>
     </QueryClientProvider>
+  );
+}
+
+function GlobalErrorOverlay() {
+  const [message, setMessage] = React.useState<string | null>(null);
+
+  React.useEffect(() => {
+    const formatError = (value: unknown) => {
+      if (value instanceof Error) return value.message;
+      if (value && typeof value === 'object' && 'message' in value) {
+        return String((value as { message?: unknown }).message || value);
+      }
+      return String(value || 'Nomaʼlum frontend xatosi');
+    };
+    const onError = (event: ErrorEvent) => {
+      setMessage(formatError(event.error || event.message));
+    };
+    const onRejection = (event: PromiseRejectionEvent) => {
+      setMessage(formatError(event.reason));
+    };
+    window.addEventListener('error', onError);
+    window.addEventListener('unhandledrejection', onRejection);
+    return () => {
+      window.removeEventListener('error', onError);
+      window.removeEventListener('unhandledrejection', onRejection);
+    };
+  }, []);
+
+  if (!message) return null;
+  return (
+    <div className="fixed inset-0 z-[9999] flex items-center justify-center bg-background/95 p-4">
+      <div className="w-full max-w-lg rounded-lg border bg-card p-5 text-card-foreground shadow-lg">
+        <h2 className="text-lg font-semibold">Sahifa ochilishida xatolik</h2>
+        <p className="mt-2 text-sm text-muted-foreground">
+          Oq ekran o‘rniga xatolik ko‘rsatildi. Sahifani qayta yuklab ko‘ring yoki login sahifasiga qayting.
+        </p>
+        <pre className="mt-3 max-h-40 overflow-auto rounded bg-muted p-3 text-xs whitespace-pre-wrap">{message}</pre>
+        <div className="mt-4 flex gap-2">
+          <button className="rounded bg-primary px-3 py-2 text-sm text-primary-foreground" onClick={() => window.location.reload()}>
+            Qayta yuklash
+          </button>
+          <button className="rounded border px-3 py-2 text-sm" onClick={() => window.location.assign('/login')}>
+            Login
+          </button>
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -117,18 +172,6 @@ function AppContent() {
   );
 }
 
-/**
- * True when the current deployment uses HTTP RPC (web/SaaS) and a valid
- * session token is present. Returns `true` in Electron where there is no
- * token-based session (the desktop window is trusted).
- */
-function hasSessionTokenIfRequired(): boolean {
-  if (typeof window === 'undefined') return true;
-  const api = (window as any).posApi;
-  if (!api?._session || typeof api._session.hasToken !== 'function') return true;
-  return !!api._session.hasToken();
-}
-
 function PrivateRoute({ children, allowedRoles }: { children: ReactNode; allowedRoles?: string[] }) {
   const { user, loading } = useAuth();
   const location = useLocation();
@@ -141,8 +184,11 @@ function PrivateRoute({ children, allowedRoles }: { children: ReactNode; allowed
     );
   }
 
-  // Require BOTH: local user state AND (if remote) a valid session token.
-  if (!user || !hasSessionTokenIfRequired()) {
+  // Web deployments can run in either session-token mode or legacy shared-secret
+  // RPC mode. The auth store clears `user` on 401, so route guards should only
+  // depend on the authenticated user state; requiring a token here can create a
+  // /login <-> /pos redirect loop on legacy hosts.
+  if (!user) {
     return <Navigate to="/login" state={{ from: location }} replace />;
   }
 
@@ -167,7 +213,7 @@ function PublicRoute({ children }: { children: ReactNode }) {
   // If logged in as a tenant user, redirect to home (dashboard).
   // Master sessions have no tenant-scoped home — send them to /admin/stores
   // so a stale master token on /login doesn't get dropped into a tenant page.
-  if (user && scope === 'tenant') return <Navigate to="/" replace />;
+  if (user && scope === 'tenant') return <Navigate to="/pos" replace />;
   if (user && scope === 'master') return <Navigate to="/admin/stores" replace />;
 
   return <>{children}</>;

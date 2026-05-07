@@ -1,5 +1,6 @@
 const { ERROR_CODES, createError } = require('../lib/errors.cjs');
 const { randomUUID } = require('crypto');
+const { UZBEKISTAN_TZ_SQLITE_OFFSET } = require('../lib/timezone.cjs');
 
 /**
  * Supplier Service
@@ -35,6 +36,24 @@ class SupplierService {
   _hasSupplierPaymentCol(name) {
     if (!this._supplierPaymentsColumns) this._supplierPaymentsColumns = this._getCols('supplier_payments');
     return this._supplierPaymentsColumns.has(name);
+  }
+
+  _tzDateExpr(columnExpr) {
+    return `date(datetime(replace(replace(${columnExpr}, 'T', ' '), 'Z', ''), '${UZBEKISTAN_TZ_SQLITE_OFFSET}'))`;
+  }
+
+  _isValidEmail(email) {
+    const value = String(email || '').trim();
+    if (!value) return true;
+    return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
+  }
+
+  _normalizeStatus(status, fallback = 'active') {
+    const normalized = String(status || fallback).trim().toLowerCase();
+    if (!['active', 'inactive'].includes(normalized)) {
+      throw createError(ERROR_CODES.VALIDATION_ERROR, 'Supplier status must be active or inactive');
+    }
+    return normalized;
   }
 
   /**
@@ -264,6 +283,9 @@ class SupplierService {
     if (!data.name || !data.name.trim()) {
       throw createError(ERROR_CODES.VALIDATION_ERROR, 'Supplier name is required');
     }
+    if (!this._isValidEmail(data.email)) {
+      throw createError(ERROR_CODES.VALIDATION_ERROR, 'Invalid supplier email');
+    }
 
     const id = data.id || randomUUID();
     // Use SQLite-friendly datetime format (consistent across services)
@@ -286,7 +308,7 @@ class SupplierService {
           data.email?.trim() || null,
           data.address?.trim() || null,
           data.note?.trim() || null,
-          data.status || 'active',
+          this._normalizeStatus(data.status, 'active'),
           String(data.settlement_currency || 'USD').toUpperCase() === 'USD' ? 'USD' : 'UZS',
           now,
           now
@@ -305,7 +327,7 @@ class SupplierService {
           data.email?.trim() || null,
           data.address?.trim() || null,
           data.note?.trim() || null,
-          data.status || 'active',
+          this._normalizeStatus(data.status, 'active'),
           now,
           now
         );
@@ -333,6 +355,9 @@ class SupplierService {
     const params = [];
 
     if (data.name !== undefined) {
+      if (!String(data.name || '').trim()) {
+        throw createError(ERROR_CODES.VALIDATION_ERROR, 'Supplier name is required');
+      }
       updates.push('name = ?');
       params.push(data.name.trim());
     }
@@ -348,6 +373,9 @@ class SupplierService {
     }
 
     if (data.email !== undefined) {
+      if (!this._isValidEmail(data.email)) {
+        throw createError(ERROR_CODES.VALIDATION_ERROR, 'Invalid supplier email');
+      }
       updates.push('email = ?');
       params.push(data.email?.trim() || null);
     }
@@ -364,7 +392,7 @@ class SupplierService {
 
     if (data.status !== undefined) {
       updates.push('status = ?');
-      params.push(data.status);
+      params.push(this._normalizeStatus(data.status, String(existing?.status || 'active')));
     }
 
     if (data.settlement_currency !== undefined && this._hasSupplierCol('settlement_currency')) {
@@ -505,12 +533,12 @@ class SupplierService {
     const paymentParams = [supplierId];
 
     if (filters.date_from) {
-      paymentQuery += ' AND DATE(paid_at) >= ?';
+      paymentQuery += ` AND ${this._tzDateExpr('paid_at')} >= date(?)`;
       paymentParams.push(filters.date_from);
     }
 
     if (filters.date_to) {
-      paymentQuery += ' AND DATE(paid_at) <= ?';
+      paymentQuery += ` AND ${this._tzDateExpr('paid_at')} <= date(?)`;
       paymentParams.push(filters.date_to);
     }
 
@@ -567,6 +595,13 @@ class SupplierService {
       paymentCurrency === 'USD'
         ? Number(data.amount_usd ?? data.amount)
         : Number(data.amount);
+    const amountUsdInput = Number(data.amount_usd);
+    const normalizedAmountUsd =
+      Number.isFinite(amountUsdInput) && amountUsdInput !== 0
+        ? amountUsdInput
+        : paymentCurrency === 'USD'
+          ? inputAmount
+          : null;
 
     if (inputAmount === null || inputAmount === undefined || Number(inputAmount) === 0) {
       throw createError(ERROR_CODES.VALIDATION_ERROR, 'Payment amount must be non-zero');
@@ -618,9 +653,13 @@ class SupplierService {
         insertCols.push('currency');
         values.push(paymentCurrency);
       }
-      if (paymentCurrency === 'USD' && hasAmountUsd) {
+      if (hasAmountUsd && settlementCurrency === 'USD') {
         insertCols.push('amount_usd');
-        values.push(inputAmount);
+        values.push(
+          normalizedAmountUsd !== null && Number.isFinite(Number(normalizedAmountUsd))
+            ? Number(normalizedAmountUsd)
+            : 0
+        );
       }
 
       if (hasReferenceNumber) {
@@ -648,26 +687,64 @@ class SupplierService {
         try {
           const poCols = this.db.prepare(`PRAGMA table_info(purchase_orders)`).all().map(c => c.name);
           if (poCols.includes('paid_amount') && poCols.includes('payment_status')) {
-            // For USD suppliers, we don't update UZS cached fields (MVP).
             if (settlementCurrency === 'USD') {
-              // Skip cached fields update, but continue returning the payment row.
-            } else {
-            const totalRow = this.db.prepare(`SELECT total_amount FROM purchase_orders WHERE id = ?`).get(data.purchase_order_id);
-            const totalAmount = Number(totalRow?.total_amount ?? 0);
-            const sumRow = this.db.prepare(`
-              SELECT COALESCE(SUM(amount), 0) AS paid_amount
-              FROM supplier_payments
-              WHERE purchase_order_id = ?
-            `).get(data.purchase_order_id);
-            const paidAmount = Number(sumRow?.paid_amount ?? 0);
-            const status =
-              paidAmount <= 0 ? 'UNPAID' : paidAmount >= totalAmount ? 'PAID' : 'PARTIALLY_PAID';
+              const hasPaidAmountUsd = poCols.includes('paid_amount_usd');
+              const hasTotalUsd = poCols.includes('total_usd');
+              if (hasPaidAmountUsd && hasTotalUsd) {
+                const totalRow = this.db
+                  .prepare(`SELECT total_usd FROM purchase_orders WHERE id = ?`)
+                  .get(data.purchase_order_id);
+                const totalAmountUsd = Number(totalRow?.total_usd ?? 0);
+                const sumRow = this.db
+                  .prepare(
+                    `
+                    SELECT COALESCE(SUM(amount_usd), 0) AS paid_amount_usd
+                    FROM supplier_payments
+                    WHERE purchase_order_id = ?
+                  `
+                  )
+                  .get(data.purchase_order_id);
+                const paidAmountUsd = Number(sumRow?.paid_amount_usd ?? 0);
+                const status =
+                  paidAmountUsd <= 0 ? 'UNPAID' : paidAmountUsd >= totalAmountUsd ? 'PAID' : 'PARTIALLY_PAID';
 
-            this.db.prepare(`
-              UPDATE purchase_orders
-              SET paid_amount = ?, payment_status = ?, updated_at = datetime('now')
-              WHERE id = ?
-            `).run(paidAmount, status, data.purchase_order_id);
+                this.db
+                  .prepare(
+                    `
+                    UPDATE purchase_orders
+                    SET paid_amount_usd = ?, payment_status = ?, updated_at = datetime('now')
+                    WHERE id = ?
+                  `
+                  )
+                  .run(paidAmountUsd, status, data.purchase_order_id);
+              }
+            } else {
+              const totalRow = this.db
+                .prepare(`SELECT total_amount FROM purchase_orders WHERE id = ?`)
+                .get(data.purchase_order_id);
+              const totalAmount = Number(totalRow?.total_amount ?? 0);
+              const sumRow = this.db
+                .prepare(
+                  `
+                  SELECT COALESCE(SUM(amount), 0) AS paid_amount
+                  FROM supplier_payments
+                  WHERE purchase_order_id = ?
+                `
+                )
+                .get(data.purchase_order_id);
+              const paidAmount = Number(sumRow?.paid_amount ?? 0);
+              const status =
+                paidAmount <= 0 ? 'UNPAID' : paidAmount >= totalAmount ? 'PAID' : 'PARTIALLY_PAID';
+
+              this.db
+                .prepare(
+                  `
+                  UPDATE purchase_orders
+                  SET paid_amount = ?, payment_status = ?, updated_at = datetime('now')
+                  WHERE id = ?
+                `
+                )
+                .run(paidAmount, status, data.purchase_order_id);
             }
           }
         } catch {
@@ -704,7 +781,27 @@ class SupplierService {
       try {
         const poCols = this.db.prepare(`PRAGMA table_info(purchase_orders)`).all().map(c => c.name);
         if (poCols.includes('paid_amount') && poCols.includes('payment_status')) {
-          if (paymentCurrency !== 'USD') {
+          if (paymentCurrency === 'USD') {
+            const hasPaidAmountUsd = poCols.includes('paid_amount_usd');
+            const hasTotalUsd = poCols.includes('total_usd');
+            if (hasPaidAmountUsd && hasTotalUsd) {
+              const totalRow = this.db.prepare(`SELECT total_usd FROM purchase_orders WHERE id = ?`).get(poId);
+              const totalAmountUsd = Number(totalRow?.total_usd ?? 0);
+              const sumRow = this.db.prepare(`
+                SELECT COALESCE(SUM(amount_usd), 0) AS paid_amount_usd
+                FROM supplier_payments
+                WHERE purchase_order_id = ?
+              `).get(poId);
+              const paidAmountUsd = Number(sumRow?.paid_amount_usd ?? 0);
+              const status =
+                paidAmountUsd <= 0 ? 'UNPAID' : paidAmountUsd >= totalAmountUsd ? 'PAID' : 'PARTIALLY_PAID';
+              this.db.prepare(`
+                UPDATE purchase_orders
+                SET paid_amount_usd = ?, payment_status = ?, updated_at = datetime('now')
+                WHERE id = ?
+              `).run(paidAmountUsd, status, poId);
+            }
+          } else {
             const totalRow = this.db.prepare(`SELECT total_amount FROM purchase_orders WHERE id = ?`).get(poId);
             const totalAmount = Number(totalRow?.total_amount ?? 0);
             const sumRow = this.db.prepare(`

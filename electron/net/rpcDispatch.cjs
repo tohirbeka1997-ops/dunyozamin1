@@ -1,5 +1,6 @@
 const { wrapHandler, ERROR_CODES, createError } = require('../lib/errors.cjs');
 const appConfigModule = require('../config/appConfig.cjs');
+const { assertAppConfigPatchAllowed } = require('../lib/ipcAuth.cjs');
 // Metrics are optional — `metrics.cjs` pulls in prom-client. If the module
 // is missing (e.g. dependency not yet installed), fall back to no-ops so the
 // dispatcher keeps working.
@@ -51,6 +52,7 @@ function createRpcDispatcher({ services, db, sessions }) {
       ch === 'pos:auth:login' ||
       ch === 'pos:auth:logout' ||
       ch === 'pos:auth:me' ||
+      ch === 'pos:auth:setSessionUser' ||
       ch.startsWith('pos:products:') && !ch.includes(':create') && !ch.includes(':update') && !ch.includes(':delete') ||
       ch.startsWith('pos:categories:') && ch.endsWith(':list') ||
       ch.startsWith('pos:warehouses:') && ch.endsWith(':list') ||
@@ -62,9 +64,11 @@ function createRpcDispatcher({ services, db, sessions }) {
       ch.startsWith('pos:sales:') ||
       ch.startsWith('pos:returns:') ||
       ch.startsWith('pos:shifts:') ||
+      ch === 'pos:shift:getSummary' ||
       ch.startsWith('pos:reports:dailySales') ||
       ch.startsWith('pos:reports:cashFlow') ||
-      ch === 'pos:dashboard:getStats' ||
+      ch === 'pos:reports:topProducts' ||
+      ch.startsWith('pos:dashboard:') ||
       ch === 'pos:debug:tableCounts',
   };
 
@@ -80,7 +84,10 @@ function createRpcDispatcher({ services, db, sessions }) {
 
   // meta is passed by hostServer; in legacy Electron IPC path meta is undefined.
   const exec = wrapHandler(async (_event, channel, args, meta) => {
-    const a = Array.isArray(args) ? args : [];
+    // POST /rpc ba'zan `args` ni massiv o'rniga bitta obyekt yuboradi — bo'sh massivga
+    // aylantirmaslik kerak (masalan getSummary uchun).
+    const a =
+      Array.isArray(args) ? args : args === undefined || args === null ? [] : [args];
     const authContext = meta?.authContext || null;
     const adminBypass = !!meta?.adminBypass;
     const requestIp = meta?.ip || null;
@@ -160,9 +167,15 @@ function createRpcDispatcher({ services, db, sessions }) {
       case 'pos:products:getNextBarcodeForUnit':
         return services.products.getNextBarcodeForUnit(a[0]);
       case 'pos:products:create':
-        return services.products.create(a[0], { event: _event });
+        return services.products.create(a[0], {
+          event: _event,
+          actorUserId: authContext?.userId || a[1] || null,
+        });
       case 'pos:products:update':
-        return services.products.update(a[0], a[1], { event: _event });
+        return services.products.update(a[0], a[1], {
+          event: _event,
+          actorUserId: authContext?.userId || a[2] || null,
+        });
       case 'pos:products:delete':
         return services.products.delete(a[0], { event: _event });
       case 'pos:products:exportScaleRongtaTxt': {
@@ -370,7 +383,11 @@ function createRpcDispatcher({ services, db, sessions }) {
       case 'pos:customers:list':
         return services.customers.list(a[0] || {});
       case 'pos:customers:get':
-        return services.customers.get(a[0]);
+        return services.customers.getById(a[0]);
+      case 'pos:customers:getByLoyaltyQr':
+        return services.customers.getByLoyaltyQr(a[0]);
+      case 'pos:customers:getLoyaltyCard':
+        return services.customers.getLoyaltyCardByCustomerId(a[0]);
       case 'pos:customers:create':
         return services.customers.create(a[0] || {});
       case 'pos:customers:update':
@@ -379,8 +396,21 @@ function createRpcDispatcher({ services, db, sessions }) {
         return services.customers.delete(a[0]);
       case 'pos:customers:updateBalance':
         return services.customers.updateBalance(a[0], a[1], a[2]);
-      case 'pos:customers:receivePayment':
-        return services.customers.receivePayment(a[0] || {});
+      case 'pos:customers:receivePayment': {
+        const raw = a[0];
+        // HTTP RPC: renderer localStorage user id boshqa tenant bazasidagi users bilan
+        // mos kelmasligi mumkin — sessiyadagi userIdni received_by sifatida majburan qo‘llash.
+        if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
+          const payload = { ...raw };
+          const rpcUid = meta?.authContext?.userId;
+          if (rpcUid) {
+            payload.received_by = rpcUid;
+            payload.receivedBy = rpcUid;
+          }
+          return services.customers.receivePayment(payload);
+        }
+        return services.customers.receivePayment(raw || {});
+      }
       case 'pos:customers:getPayments':
         return services.customers.getPayments(a[0], a[1] || {});
       case 'pos:customers:getLedger':
@@ -537,7 +567,10 @@ function createRpcDispatcher({ services, db, sessions }) {
       case 'pos:shifts:getActive':
         return (services.shifts.getActiveShift || services.shifts.getActive).call(services.shifts, a[0]);
       case 'pos:shifts:getCurrent':
-        return (services.shifts.getActiveShift || services.shifts.getCurrent).call(services.shifts, a[0]);
+        return (services.shifts.getOpenShiftForCashier || services.shifts.getCurrent).call(
+          services.shifts,
+          a[0],
+        );
       case 'pos:shifts:getStatus':
         return services.shifts.getStatus(a[0], a[1]);
       case 'pos:shifts:require':
@@ -545,25 +578,84 @@ function createRpcDispatcher({ services, db, sessions }) {
       case 'pos:shifts:list':
         return services.shifts.list(a[0] || {});
       case 'pos:shifts:getSummary':
-        return (services.shifts.getShiftSummary || services.shifts.getSummary).call(services.shifts, a[0] || {});
+      case 'pos:shift:getSummary':
+        // Accept: string id | { shiftId | shift_id | id } | ['uuid'] (noto'g'ri JSON)
+        {
+          let raw = a[0];
+          // Ba'zi mijozlar [[{ shiftId }]] yoki ['uuid'] ichki massivlarini yuboradi
+          while (Array.isArray(raw) && raw.length === 1) {
+            raw = raw[0];
+          }
+          let shiftId = null;
+          if (typeof raw === 'string') {
+            shiftId = raw.trim() || null;
+          } else if (Array.isArray(raw) && raw.length) {
+            const x = raw[0];
+            shiftId = x != null && String(x).trim() ? String(x).trim() : null;
+          } else if (raw && typeof raw === 'object') {
+            const s = raw.shiftId ?? raw.shift_id ?? raw.id;
+            shiftId = s != null && String(s).trim() ? String(s).trim() : null;
+          }
+          if (!shiftId) {
+            throw createError(ERROR_CODES.VALIDATION_ERROR, 'Faol smena topilmadi — shiftId kerak');
+          }
+          const shiftIdStr = String(shiftId).trim();
+          if (!shiftIdStr) {
+            throw createError(ERROR_CODES.VALIDATION_ERROR, 'Faol smena topilmadi — shiftId kerak');
+          }
+          return (services.shifts.getShiftSummary || services.shifts.getSummary).call(
+            services.shifts,
+            shiftIdStr,
+          );
+        }
 
       // Reports
-      case 'pos:reports:dailySales':
-        return services.reports.dailySales(a[0], a[1]);
-      case 'pos:reports:topProducts':
-        return services.reports.topProducts(a[0] || {});
+      case 'pos:reports:dailySales': {
+        const fn =
+          typeof services.reports.getDailySales === 'function'
+            ? services.reports.getDailySales.bind(services.reports)
+            : typeof services.reports.dailySales === 'function'
+              ? services.reports.dailySales.bind(services.reports)
+              : null;
+        if (!fn) {
+          throw createError(
+            ERROR_CODES.INTERNAL_ERROR,
+            'reports service has no getDailySales/dailySales method',
+          );
+        }
+        return fn(a[0], a[1]);
+      }
+      case 'pos:reports:topProducts': {
+        const fn =
+          typeof services.reports.getTopProducts === 'function'
+            ? services.reports.getTopProducts.bind(services.reports)
+            : typeof services.reports.topProducts === 'function'
+              ? services.reports.topProducts.bind(services.reports)
+              : null;
+        if (!fn) {
+          throw createError(
+            ERROR_CODES.INTERNAL_ERROR,
+            'reports service has no getTopProducts/topProducts method',
+          );
+        }
+        return fn(a[0] || {});
+      }
       case 'pos:reports:productSales':
         return services.reports.getProductSalesReport(a[0] || {});
       case 'pos:reports:stock':
-        return services.reports.stock(a[0]);
+        return services.reports.getStockReport(a[0]);
       case 'pos:reports:returns':
-        return services.reports.returns(a[0] || {});
+        return services.reports.getReturnsReport(a[0] || {});
       case 'pos:reports:profit':
-        return services.reports.profit(a[0] || {});
+        return services.reports.getProfitEstimate(a[0] || {});
       case 'pos:reports:batchReconciliation':
         return services.reports.getBatchReconciliation(a[0] || {});
       case 'pos:reports:actSverka':
         return services.reports.getActSverka(a[0] || {});
+      case 'pos:reports:productActSverkaByPeriod':
+        return services.reports.getProductActSverkaByPeriod(a[0] || {});
+      case 'pos:reports:productDocumentHistory':
+        return services.reports.getProductDocumentHistory(a[0] || {});
       case 'pos:reports:customerActSverka':
         return services.reports.getCustomerActSverka(a[0] || {});
       case 'pos:reports:supplierActSverka':
@@ -574,14 +666,16 @@ function createRpcDispatcher({ services, db, sessions }) {
         return services.reports.getSupplierProductSales(a[0] || {});
       case 'pos:reports:purchasePlanning':
         return services.reports.getPurchasePlanning(a[0] || {});
+      case 'pos:reports:purchaseVsSold':
+        return services.reports.getPurchaseVsSold(a[0] || {});
       case 'pos:reports:getLatestPurchaseCosts':
         return services.reports.getLatestPurchaseCosts();
       case 'pos:reports:cashFlow':
-        return services.reports.cashFlow(a[0] || {});
+        return services.reports.getCashFlow(a[0] || {});
       case 'pos:reports:cashDiscrepancies':
-        return services.reports.cashDiscrepancies(a[0] || {});
+        return services.reports.getCashDiscrepancies(a[0] || {});
       case 'pos:reports:aging':
-        return services.reports.aging(a[0] || {});
+        return services.reports.getAging(a[0] || {});
 
       // Dashboard
       case 'pos:dashboard:getStats':
@@ -673,6 +767,21 @@ function createRpcDispatcher({ services, db, sessions }) {
           expiresAt: new Date(authContext.expiresAtMs).toISOString(),
         };
       }
+      case 'pos:auth:setSessionUser': {
+        const { setCurrentUserId } = require('../lib/currentUser.cjs');
+        if (authContext?.userId) {
+          if (a[0] && String(a[0]) !== String(authContext.userId)) {
+            throw createError(
+              ERROR_CODES.PERMISSION_DENIED,
+              'Sessiya foydalanuvchisi ID bilan mos kelmaydi',
+            );
+          }
+          setCurrentUserId(authContext.userId);
+        } else {
+          setCurrentUserId(a[0] || null);
+        }
+        return { success: true };
+      }
       case 'pos:auth:getUser': {
         const userId = a[0];
         const user = db.prepare('SELECT * FROM users WHERE id = ?').get(userId);
@@ -755,6 +864,8 @@ function createRpcDispatcher({ services, db, sessions }) {
         return services.users.update(a[0], a[1] || {});
       case 'pos:users:delete':
         return services.users.delete(a[0]);
+      case 'pos:users:listLoginSessions':
+        return services.users.listLoginSessions(a[0] || {});
 
       // System/Debug
       case 'pos:health': {
@@ -800,9 +911,23 @@ function createRpcDispatcher({ services, db, sessions }) {
       // ======================================================================
       case 'pos:appConfig:get':
         return appConfigModule.readConfig();
-      case 'pos:appConfig:set':
-        return appConfigModule.writeConfig(a[0] || {});
+      case 'pos:appConfig:set': {
+        const patch = a[0] || {};
+        // Sensitive keys (host.secret, host.bind, ...) require admin even
+        // when the caller passed our role check above (manager would
+        // otherwise be able to rotate the LAN admin-bypass token).
+        if (!adminBypass) {
+          assertAppConfigPatchAllowed(patch, authContext?.role || null);
+        }
+        return appConfigModule.writeConfig(patch);
+      }
       case 'pos:appConfig:reset':
+        if (!adminBypass && String(authContext?.role || '').toLowerCase() !== 'admin') {
+          throw createError(
+            ERROR_CODES.PERMISSION_DENIED,
+            'Only admins may reset application configuration'
+          );
+        }
         return appConfigModule.resetConfig();
 
       // ======================================================================
@@ -964,12 +1089,53 @@ function createRpcDispatcher({ services, db, sessions }) {
       }
 
       // Onlayn buyurtmalar (Telegram / marketplace) — admin/manager
-      case 'pos:webOrders:list':
+      // Legacy typo / old clients: "pos:webOrdersList" (missing colon before list)
+      case 'pos:webOrdersList':
+      case 'pos:webOrders:list': {
+        if (!services.webOrders || typeof services.webOrders.list !== 'function') {
+          return { data: [], meta: { page: 1, limit: 50, total: 0, total_pages: 0 } };
+        }
         return services.webOrders.list(a[0] || {});
+      }
       case 'pos:webOrders:get':
+        if (!services.webOrders || typeof services.webOrders.get !== 'function') return null;
         return services.webOrders.get(a[0]);
       case 'pos:webOrders:updateStatus':
+        if (!services.webOrders || typeof services.webOrders.updateStatus !== 'function') {
+          throw createError(ERROR_CODES.NOT_FOUND, 'Web orders service unavailable');
+        }
         return services.webOrders.updateStatus(a[0], a[1]);
+      case 'pos:webOrders:update':
+        if (!services.webOrders || typeof services.webOrders.update !== 'function') {
+          throw createError(ERROR_CODES.NOT_FOUND, 'Web orders service unavailable');
+        }
+        return services.webOrders.update(a[0], a[1] || {});
+      case 'pos:webOrders:cancel':
+        if (!services.webOrders || typeof services.webOrders.cancel !== 'function') {
+          throw createError(ERROR_CODES.NOT_FOUND, 'Web orders service unavailable');
+        }
+        return services.webOrders.cancel(a[0]);
+      case 'pos:webOrders:dispatchToCourier':
+        if (!services.webOrders || typeof services.webOrders.dispatchToCourier !== 'function') {
+          throw createError(ERROR_CODES.NOT_FOUND, 'Web orders service unavailable');
+        }
+        return services.webOrders.dispatchToCourier(a[0]);
+
+      case 'pos:couriers:list':
+        if (!services.couriers || typeof services.couriers.list !== 'function') {
+          throw createError(ERROR_CODES.NOT_FOUND, 'Couriers service unavailable');
+        }
+        return services.couriers.list(a[0] || {});
+      case 'pos:couriers:upsert':
+        if (!services.couriers || typeof services.couriers.upsert !== 'function') {
+          throw createError(ERROR_CODES.NOT_FOUND, 'Couriers service unavailable');
+        }
+        return services.couriers.upsert(a[0] || {});
+      case 'pos:couriers:setActive':
+        if (!services.couriers || typeof services.couriers.setActive !== 'function') {
+          throw createError(ERROR_CODES.NOT_FOUND, 'Couriers service unavailable');
+        }
+        return services.couriers.setActive(a[0], !!a[1]);
 
       // ======================================================================
       // Suppliers — extra
@@ -1072,6 +1238,8 @@ function createRpcDispatcher({ services, db, sessions }) {
         return services.reports.getProductPriceSummary(a[0] || {});
       case 'pos:reports:purchaseSaleSpread':
         return services.reports.getPurchaseSaleSpread(a[0] || {});
+      case 'pos:reports:purchaseVsSold':
+        return services.reports.getPurchaseVsSold(a[0] || {});
       case 'pos:reports:spreadTimeSeries':
         return services.reports.getSpreadTimeSeries(a[0] || {});
       case 'pos:reports:cashierErrors':
@@ -1087,9 +1255,9 @@ function createRpcDispatcher({ services, db, sessions }) {
       case 'pos:reports:fraudIncidents':
         return services.reports.getFraudIncidents(a[0] || {});
       case 'pos:reports:deviceHealth':
-        return services.reports.getDeviceHealth();
+        return await services.reports.getDeviceHealth();
       case 'pos:reports:deviceIncidents':
-        return services.reports.getDeviceIncidents();
+        return await services.reports.getDeviceIncidents();
       case 'pos:reports:auditLog':
         return services.reports.getAuditLog(a[0] || {});
       case 'pos:reports:priceChangeHistory':

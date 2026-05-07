@@ -390,7 +390,7 @@ export default function InventoryDetail() {
             <ArrowLeft className="h-4 w-4" />
           </Button>
           <div>
-            <h1 className="text-3xl font-bold">{product.name}</h1>
+            <h1 className="page-heading">{product.name}</h1>
             <p className="text-muted-foreground">SKU: {product.sku}</p>
           </div>
         </div>

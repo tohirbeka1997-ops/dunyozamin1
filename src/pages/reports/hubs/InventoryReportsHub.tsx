@@ -27,6 +27,12 @@ export default function InventoryReportsHub() {
   const mainReports = useMemo<ReportLink[]>(
     () => [
       {
+        title: "Mahsulot bo‘yicha akt sverka (davr)",
+        description: "Kirim, sotuv, qaytarish va foyda — bitta jadvalda, sana oraliq bilan",
+        path: '/reports/inventory/product-act-sverka',
+        icon: <FileText className="h-4 w-4 opacity-90" />,
+      },
+      {
         title: 'Ombor qoldiqlari',
         description: 'Mahsulot qoldig‘i va min/max nazorat',
         path: '/reports/inventory/stock-levels',
@@ -57,6 +63,12 @@ export default function InventoryReportsHub() {
   const advancedReports = useMemo<ReportLink[]>(
     () => [
       {
+        title: 'Yaxshi sotuv & muzlagan mahsulotlar',
+        description: 'Eng yaxshi sotilayotgan va muzlab yotgan mahsulotlar ro‘yxati',
+        path: '/reports/inventory/stock-health',
+        icon: <BarChart3 className="h-4 w-4 opacity-90" />,
+      },
+      {
         title: 'Ombor tahlili (kengaytirilgan)',
         description: 'Dead stock va qo‘shimcha tahlillar',
         path: '/reports/inventory/advanced',
@@ -69,8 +81,8 @@ export default function InventoryReportsHub() {
         icon: <FileText className="h-4 w-4 opacity-90" />,
       },
       {
-        title: 'Akt sverka (partiya)',
-        description: 'Partiya bo‘yicha akt sverka (FIFO)',
+        title: 'Akt sverka (FIFO, barcha davr)',
+        description: 'Partiya narxida yig‘ma hisob; FIFO jadvali kerak',
         path: '/reports/act-sverka',
         icon: <FileText className="h-4 w-4 opacity-90" />,
       },
@@ -87,7 +99,7 @@ export default function InventoryReportsHub() {
           <ArrowLeft className="h-4 w-4" />
         </Button>
         <div>
-          <h1 className="text-3xl font-bold">Ombor</h1>
+          <h1 className="page-heading">Ombor</h1>
           <p className="text-muted-foreground">Ombor qoldig‘i va harakatlar bo‘yicha hisobotlar</p>
         </div>
       </div>

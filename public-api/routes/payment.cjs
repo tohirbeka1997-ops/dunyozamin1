@@ -6,6 +6,7 @@ const { handlePaycomRpc } = require('../lib/payme.cjs');
 const { handleClickCallback } = require('../lib/click.cjs');
 const { buildPaymeCheckoutUrl, buildClickCheckoutUrl } = require('../lib/paymentLinks.cjs');
 const { notifyOrderPaid } = require('../lib/telegramNotify.cjs');
+const { awardPaidOrderPoints } = require('../lib/marketplaceLoyalty.cjs');
 
 function logPaymentSafe(db, orderId, provider, event, payload) {
   try {
@@ -26,7 +27,7 @@ async function notifyAfterPaid(dbGetter, orderId) {
   const row = db
     .prepare(
       `
-    SELECT wo.order_number, wo.total_amount, mc.telegram_id
+    SELECT wo.order_number, wo.total_amount, wo.customer_id, mc.telegram_id
     FROM web_orders wo
     INNER JOIN marketplace_customers mc ON mc.id = wo.customer_id
     WHERE wo.id = ?
@@ -36,11 +37,26 @@ async function notifyAfterPaid(dbGetter, orderId) {
   if (!row?.telegram_id) return;
   const token = process.env.TELEGRAM_BOT_TOKEN;
   if (!token) return;
+  let earned = 0;
+  let balance = null;
+  try {
+    const loyalty = awardPaidOrderPoints(db, {
+      customerId: row.customer_id,
+      orderId,
+      totalAmount: row.total_amount,
+    });
+    earned = loyalty.earned_points || 0;
+    balance = loyalty.balance;
+  } catch (e) {
+    console.warn('[payment] loyalty award failed:', e.message || String(e));
+  }
   await notifyOrderPaid({
     botToken: token,
     telegramId: row.telegram_id,
     orderNumber: row.order_number,
     totalSums: row.total_amount,
+    earnedPoints: earned,
+    pointsBalance: balance,
   });
 }
 

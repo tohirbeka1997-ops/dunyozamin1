@@ -103,14 +103,14 @@ export default function PurchaseOrderSummaryReport() {
   }
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-4">
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-4">
-          <Button variant="ghost" size="icon" onClick={() => navigate('/reports')}>
+          <Button variant="ghost" size="icon" onClick={() => navigate('/reports/purchase')}>
             <ArrowLeft className="h-4 w-4" />
           </Button>
           <div>
-            <h1 className="text-3xl font-bold">Xarid buyurtmalari umumiy hisobot</h1>
+            <h1 className="page-heading">Xarid buyurtmalari umumiy hisobot</h1>
             <p className="text-muted-foreground">Xarid buyurtmalari haqida umumiy ma'lumot</p>
           </div>
         </div>
@@ -126,43 +126,43 @@ export default function PurchaseOrderSummaryReport() {
         </div>
       </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+      <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-3">
         <Card>
-          <CardContent className="pt-6">
+          <CardContent className="py-3">
             <div className="flex items-center justify-between">
               <div>
-                <p className="text-sm text-muted-foreground">Jami buyurtma summasi</p>
-                <p className="text-2xl font-bold">{formatMoneyUZS(totalOrdered)}</p>
+                <p className="text-xs text-muted-foreground">Jami buyurtma summasi</p>
+                <p className="text-xl font-bold leading-tight">{formatMoneyUZS(totalOrdered)}</p>
               </div>
             </div>
           </CardContent>
         </Card>
         <Card>
-          <CardContent className="pt-6">
+          <CardContent className="py-3">
             <div className="flex items-center justify-between">
               <div>
-                <p className="text-sm text-muted-foreground">Jami qabul qilingan summa (tovar)</p>
-                <p className="text-2xl font-bold text-success">{formatMoneyUZS(totalReceived)}</p>
+                <p className="text-xs text-muted-foreground">Jami qabul qilingan summa (tovar)</p>
+                <p className="text-xl font-bold leading-tight text-success">{formatMoneyUZS(totalReceived)}</p>
               </div>
             </div>
           </CardContent>
         </Card>
         <Card>
-          <CardContent className="pt-6">
+          <CardContent className="py-3">
             <div className="flex items-center justify-between">
               <div>
-                <p className="text-sm text-muted-foreground">Jami to'langan summa</p>
-                <p className="text-2xl font-bold">{formatMoneyUZS(totalPaid)}</p>
+                <p className="text-xs text-muted-foreground">Jami to'langan summa</p>
+                <p className="text-xl font-bold leading-tight">{formatMoneyUZS(totalPaid)}</p>
               </div>
             </div>
           </CardContent>
         </Card>
         <Card>
-          <CardContent className="pt-6">
+          <CardContent className="py-3">
             <div className="flex items-center justify-between">
               <div>
-                <p className="text-sm text-muted-foreground">Jami qarz (to'lash kerak)</p>
-                <p className="text-2xl font-bold text-destructive">{formatMoneyUZS(totalDebt)}</p>
+                <p className="text-xs text-muted-foreground">Jami qarz (to'lash kerak)</p>
+                <p className="text-xl font-bold leading-tight text-destructive">{formatMoneyUZS(totalDebt)}</p>
               </div>
             </div>
           </CardContent>
@@ -170,22 +170,24 @@ export default function PurchaseOrderSummaryReport() {
       </div>
 
       <Card>
-        <CardContent className="pt-6">
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <CardContent className="py-3">
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
             <div>
-              <label className="text-sm text-muted-foreground">Boshlanish sanasi</label>
+              <label className="text-xs text-muted-foreground">Boshlanish sanasi</label>
               <Input
                 type="date"
                 value={dateFrom}
                 onChange={(e) => setDateFrom(e.target.value)}
+                className="h-8"
               />
             </div>
             <div>
-              <label className="text-sm text-muted-foreground">Tugash sanasi</label>
+              <label className="text-xs text-muted-foreground">Tugash sanasi</label>
               <Input
                 type="date"
                 value={dateTo}
                 onChange={(e) => setDateTo(e.target.value)}
+                className="h-8"
               />
             </div>
           </div>

@@ -27,6 +27,7 @@ import {
   generateSKU,
   generateBarcodeForUnit,
   getProductByBarcode,
+  getProductBySku,
 } from '@/db/api';
 import type { Category, ProductWithCategory } from '@/types/database';
 import MoneyInput from '@/components/common/MoneyInput';
@@ -41,8 +42,8 @@ const UNIT_OPTIONS = [
   { value: 'pcs', labelKey: 'productForm.unit_pcs' },
   { value: 'kg', labelKey: 'productForm.unit_kg' },
   { value: 'g', labelKey: 'productForm.unit_g' },
-  { value: 'l', labelKey: 'productForm.unit_l' },
-  { value: 'ml', labelKey: 'productForm.unit_ml' },
+  { value: 'L', labelKey: 'productForm.unit_l' },
+  { value: 'mL', labelKey: 'productForm.unit_ml' },
   { value: 'm', labelKey: 'productForm.unit_m' },
   { value: 'pack', labelKey: 'productForm.unit_pack' },
   { value: 'box', labelKey: 'productForm.unit_box' },
@@ -198,6 +199,15 @@ export default function CreateProductModal({
           });
           return;
         }
+      }
+      const existingSku = await getProductBySku(trimmedSku);
+      if (existingSku?.id) {
+        toast({
+          title: t('common.error'),
+          description: `Bu SKU allaqachon boshqa mahsulotda mavjud: ${existingSku.name || '-'} (SKU: ${existingSku.sku || '-'})`,
+          variant: 'destructive',
+        });
+        return;
       }
 
       const productData = {

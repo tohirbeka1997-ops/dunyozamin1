@@ -4,6 +4,12 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const { isServerMode } = require('../lib/runtime.cjs');
+const {
+  nowSqlInTimeZone,
+  formatYmdInTimeZone,
+  UZBEKISTAN_TZ_SQLITE_OFFSET,
+} = require('../lib/timezone.cjs');
+const { getCurrentUserId } = require('../lib/currentUser.cjs');
 
 /**
  * Customers Service
@@ -30,6 +36,97 @@ class CustomersService {
     }
   }
 
+  _tzDateExpr(columnExpr) {
+    return `date(datetime(replace(replace(${columnExpr}, 'T', ' '), 'Z', ''), '${UZBEKISTAN_TZ_SQLITE_OFFSET}'))`;
+  }
+
+  /**
+   * customer_payments.received_by references users(id). Renderer user id may not
+   * exist in users; main-process session (login) is tried next, then defaults.
+   */
+  _resolveReceivedByForPayment(receivedBy) {
+    const KNOWN_DEFAULT_USER = 'default-admin-001';
+    const candidates = [];
+    const push = (v) => {
+      if (v == null || v === '') return;
+      const s = String(v).trim();
+      if (s && !candidates.includes(s)) candidates.push(s);
+    };
+    push(receivedBy);
+    push(getCurrentUserId());
+
+    for (const id of candidates) {
+      const row = this.db.prepare('SELECT id FROM users WHERE id = ?').get(id);
+      if (row?.id) return id;
+    }
+
+    if (candidates.length) {
+      console.warn(
+        '[CustomersService.receivePayment] received_by / session user not in users table; tried:',
+        candidates
+      );
+    }
+
+    const def = this.db
+      .prepare('SELECT id FROM users WHERE id = ?')
+      .get(KNOWN_DEFAULT_USER);
+    if (def?.id) return KNOWN_DEFAULT_USER;
+
+    let any = null;
+    try {
+      any = this.db
+        .prepare(
+          `SELECT id FROM users WHERE COALESCE(is_active, 1) = 1 ORDER BY datetime(created_at) ASC LIMIT 1`
+        )
+        .get();
+    } catch {
+      try {
+        any = this.db
+          .prepare(`SELECT id FROM users ORDER BY datetime(created_at) ASC LIMIT 1`)
+          .get();
+      } catch {
+        any = null;
+      }
+    }
+    return any?.id || null;
+  }
+
+  /**
+   * Optional shift link — only if shift row exists (avoids FK issues if schema/tooling adds one).
+   */
+  _normalizeShiftIdForPayment(shiftId) {
+    const raw =
+      shiftId != null && shiftId !== '' ? String(shiftId).trim() : '';
+    if (!raw) return null;
+    try {
+      const row = this.db.prepare(`SELECT id FROM shifts WHERE id = ?`).get(raw);
+      if (row?.id) return raw;
+    } catch {
+      return null;
+    }
+    console.warn(
+      '[CustomersService.receivePayment] shift_id not found in shifts; omitting:',
+      raw
+    );
+    return null;
+  }
+
+  /**
+   * customer_payments.order_id references orders(id); empty or stale IDs break FK.
+   */
+  _normalizeOrderIdForPayment(orderId) {
+    const raw =
+      orderId != null && orderId !== '' ? String(orderId).trim() : '';
+    if (!raw) return null;
+    const ord = this.db.prepare('SELECT id FROM orders WHERE id = ?').get(raw);
+    if (ord?.id) return raw;
+    console.warn(
+      '[CustomersService.receivePayment] order_id not in orders; omitting:',
+      raw
+    );
+    return null;
+  }
+
   /**
    * List customers
    */
@@ -53,7 +150,18 @@ class CustomersService {
       params.push(filters.type);
     }
 
-    query += ' ORDER BY name ASC';
+    const sortByRaw = String(filters.sortBy || 'created_at').toLowerCase();
+    const sortOrderRaw = String(filters.sortOrder || 'desc').toLowerCase();
+    const sortOrder = sortOrderRaw === 'asc' ? 'ASC' : 'DESC';
+    const sortMap = {
+      name: 'name',
+      created_at: "datetime(replace(replace(created_at, 'T', ' '), 'Z', ''))",
+      balance: 'COALESCE(balance, 0)',
+      total_sales: 'COALESCE(total_sales, 0)',
+      last_order_date: "datetime(replace(replace(COALESCE(last_order_date, created_at), 'T', ' '), 'Z', ''))",
+    };
+    const sortExpr = sortMap[sortByRaw] || sortMap.created_at;
+    query += ` ORDER BY ${sortExpr} ${sortOrder}, name ASC`;
 
     return this.db.prepare(query).all(params);
   }
@@ -76,6 +184,64 @@ class CustomersService {
   }
 
   /**
+   * Find POS customer by marketplace loyalty QR/card code.
+   * Accepted inputs:
+   * - "LOYALTY:LC-123-1" (QR payload)
+   * - "LC-123-1" (plain card code)
+   */
+  getByLoyaltyQr(input) {
+    const raw = String(input || '').trim();
+    if (!raw) return null;
+    const normalized = raw.toUpperCase().startsWith('LOYALTY:')
+      ? raw.slice('LOYALTY:'.length).trim()
+      : raw;
+    if (!normalized) return null;
+
+    const hasBindingTable = this.db
+      .prepare(`SELECT name FROM sqlite_master WHERE type='table' AND name='marketplace_customer_bindings'`)
+      .get();
+    if (!hasBindingTable) return null;
+
+    const row = this.db
+      .prepare(
+        `
+        SELECT b.pos_customer_id
+        FROM marketplace_customer_bindings b
+        WHERE b.loyalty_card_code = ? OR b.qr_payload = ?
+        LIMIT 1
+      `,
+      )
+      .get(normalized, raw);
+    if (!row?.pos_customer_id) return null;
+
+    try {
+      return this.getById(row.pos_customer_id);
+    } catch {
+      return null;
+    }
+  }
+
+  getLoyaltyCardByCustomerId(customerId) {
+    if (!customerId) return null;
+    const hasBindingTable = this.db
+      .prepare(`SELECT name FROM sqlite_master WHERE type='table' AND name='marketplace_customer_bindings'`)
+      .get();
+    if (!hasBindingTable) return null;
+    const row = this.db
+      .prepare(
+        `
+        SELECT loyalty_card_code, qr_payload, marketplace_customer_id, created_at
+        FROM marketplace_customer_bindings
+        WHERE pos_customer_id = ?
+        LIMIT 1
+      `,
+      )
+      .get(customerId);
+    if (!row) return null;
+    return row;
+  }
+
+  /**
    * Create customer
    */
   create(data) {
@@ -84,7 +250,7 @@ class CustomersService {
     }
 
     const id = data.id || randomUUID();
-    const now = new Date().toISOString();
+    const now = nowSqlInTimeZone();
 
     // Generate code if not provided
     let code = data.code;
@@ -321,7 +487,7 @@ class CustomersService {
     }
 
     updates.push('updated_at = ?');
-    params.push(new Date().toISOString());
+    params.push(nowSqlInTimeZone());
     params.push(id);
 
     try {
@@ -356,7 +522,7 @@ class CustomersService {
       // Soft delete
       this.db.prepare('UPDATE customers SET status = ?, updated_at = ? WHERE id = ?').run(
         'inactive',
-        new Date().toISOString(),
+        nowSqlInTimeZone(),
         id
       );
       return { success: true, softDeleted: true };
@@ -402,7 +568,7 @@ class CustomersService {
 
     this.db.prepare('UPDATE customers SET balance = ?, updated_at = ? WHERE id = ?').run(
       newBalance,
-      new Date().toISOString(),
+      nowSqlInTimeZone(),
       customerId
     );
 
@@ -433,11 +599,38 @@ class CustomersService {
    * @param {string} orderId - Optional order ID if payment is for specific order
    * @param {string} source - 'pos' or 'customers' (for logging)
    * @param {string} operation - 'payment_in' (receive) or 'payment_out' (give), required
+   * @param {string|null} shiftId - ochiq smena ID (kassa / smena hisobi uchun)
    * @returns {Object} { customer_id, old_balance, requested_amount, applied_amount, new_balance, payment_id, payment_number, created_at }
    */
-  receivePayment(customerId, amount, paymentMethod = 'cash', notes = null, receivedBy = null, orderId = null, source = null, operation = 'payment_in') {
-    // Validation: customer_id required
-    if (!customerId) {
+  receivePayment(
+    customerId,
+    amount,
+    paymentMethod = 'cash',
+    notes = null,
+    receivedBy = null,
+    orderId = null,
+    source = null,
+    operation = 'payment_in',
+    shiftId = null
+  ) {
+    if (customerId && typeof customerId === 'object' && !Array.isArray(customerId)) {
+      const p = customerId;
+      return this.receivePayment(
+        p.customer_id,
+        p.amount,
+        p.payment_method || p.method || 'cash',
+        p.notes ?? p.note ?? null,
+        p.received_by ?? p.receivedBy ?? null,
+        p.order_id ?? p.orderId ?? null,
+        p.source ?? null,
+        p.operation || 'payment_in',
+        p.shift_id ?? p.shiftId ?? null
+      );
+    }
+
+    const normalizedCustomerId =
+      customerId != null && customerId !== '' ? String(customerId).trim() : '';
+    if (!normalizedCustomerId) {
       throw createError(ERROR_CODES.VALIDATION_ERROR, 'Customer ID is required');
     }
 
@@ -457,10 +650,14 @@ class CustomersService {
       throw createError(ERROR_CODES.VALIDATION_ERROR, `Invalid operation type: ${operation}. Must be 'payment_in' or 'payment_out'`);
     }
 
+    const resolvedReceivedBy = this._resolveReceivedByForPayment(receivedBy);
+    const normalizedOrderId = this._normalizeOrderIdForPayment(orderId);
+    const normalizedShiftId = this._normalizeShiftIdForPayment(shiftId);
+
     // Use transaction for atomicity and consistency
     return this.db.transaction(() => {
       // Read current customer balance
-      const customer = this.getById(customerId);
+      const customer = this.getById(normalizedCustomerId);
       const oldBalance = Number(customer.balance) || 0;
       
       // Calculate signed amount based on operation type
@@ -476,12 +673,12 @@ class CustomersService {
       // payment_out: balance = balance - amount (decreases)
       const newBalance = oldBalance + signedAmount;
 
-      const now = new Date().toISOString();
+      const now = nowSqlInTimeZone();
 
       // Log payment operation for debugging
       const operationLabel = operation === 'payment_in' ? 'Receiving' : 'Giving';
       console.log(`💰 ${operationLabel} customer payment:`, {
-        customer_id: customerId,
+        customer_id: normalizedCustomerId,
         customer_name: customer.name,
         operation: operation,
         old_balance: oldBalance,
@@ -511,7 +708,7 @@ class CustomersService {
       const updateResult = this.db.prepare('UPDATE customers SET balance = balance + ?, updated_at = ? WHERE id = ?').run(
         signedAmount, // Signed amount: +amount for payment_in, -amount for payment_out
         now,
-        customerId
+        normalizedCustomerId
       );
 
       if (updateResult.changes !== 1) {
@@ -550,7 +747,7 @@ class CustomersService {
               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             `).run(
               ledgerId,
-              customerId,
+              normalizedCustomerId,
               operation, // 'payment_in' or 'payment_out'
               paymentId,
               paymentNumber,
@@ -559,7 +756,7 @@ class CustomersService {
               ledgerNote,
               paymentMethod,
               now,
-              receivedBy || null
+              resolvedReceivedBy
             );
           } else {
             // Schema without method column (backward compatibility)
@@ -570,7 +767,7 @@ class CustomersService {
               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             `).run(
               ledgerId,
-              customerId,
+              normalizedCustomerId,
               operation, // 'payment_in' or 'payment_out'
               paymentId,
               paymentNumber,
@@ -578,10 +775,10 @@ class CustomersService {
               newBalance,
               ledgerNote || `Method: ${paymentMethod}`, // Include method in note if column doesn't exist
               now,
-              receivedBy || null
+              resolvedReceivedBy
             );
           }
-          console.log('✅ Ledger entry inserted for payment:', { customerId, operation, signedAmount, newBalance });
+          console.log('✅ Ledger entry inserted for payment:', { customerId: normalizedCustomerId, operation, signedAmount, newBalance });
         } else {
           console.warn('⚠️ customer_ledger table does not exist. Run migration 020_create_customer_ledger.sql');
         }
@@ -591,62 +788,58 @@ class CustomersService {
       }
 
       // Insert payment record into ledger with all balance tracking fields
-      // Check if old_balance, applied_amount, new_balance columns exist (for backward compatibility)
-      const tableInfo = this.db.prepare("PRAGMA table_info(customer_payments)").all();
-      const hasLedgerFields = tableInfo.some(col => col.name === 'old_balance');
+      const tableInfo = this.db.prepare('PRAGMA table_info(customer_payments)').all();
+      const hasLedgerFields = tableInfo.some((col) => col.name === 'old_balance');
+      const hasShiftIdCol = tableInfo.some((col) => col.name === 'shift_id');
+      const hasOperationCol = tableInfo.some((col) => col.name === 'operation');
 
+      const cols = [
+        'id',
+        'payment_number',
+        'customer_id',
+        'order_id',
+        'amount',
+        'payment_method',
+        'reference_number',
+        'notes',
+        'received_by',
+        'paid_at',
+        'created_at',
+      ];
+      const vals = [
+        paymentId,
+        paymentNumber,
+        normalizedCustomerId,
+        normalizedOrderId,
+        requestedAmount,
+        paymentMethod,
+        null,
+        notes || null,
+        resolvedReceivedBy,
+        now,
+        now,
+      ];
       if (hasLedgerFields) {
-        // New schema with ledger fields
-        this.db.prepare(`
-          INSERT INTO customer_payments (
-            id, payment_number, customer_id, order_id, amount,
-            payment_method, reference_number, notes, received_by, paid_at, created_at,
-            old_balance, applied_amount, new_balance
-          )
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        `).run(
-          paymentId,
-          paymentNumber,
-          customerId,
-          orderId || null,
-          requestedAmount, // amount field (always positive for customer_payments table)
-          paymentMethod,
-          null, // reference_number
-          notes || null,
-          receivedBy || null,
-          now,
-          now,
-          oldBalance, // old_balance ledger field
-          requestedAmount, // applied_amount ledger field (always positive)
-          newBalance // new_balance ledger field
-        );
-      } else {
-        // Old schema without ledger fields (backward compatibility)
-        this.db.prepare(`
-          INSERT INTO customer_payments (
-            id, payment_number, customer_id, order_id, amount,
-            payment_method, reference_number, notes, received_by, paid_at, created_at
-          )
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        `).run(
-          paymentId,
-          paymentNumber,
-          customerId,
-          orderId || null,
-          requestedAmount, // amount field (always positive for customer_payments table)
-          paymentMethod,
-          null,
-          notes || null,
-          receivedBy || null,
-          now,
-          now
-        );
+        cols.push('old_balance', 'applied_amount', 'new_balance');
+        vals.push(oldBalance, requestedAmount, newBalance);
       }
+      if (hasShiftIdCol) {
+        cols.push('shift_id');
+        vals.push(normalizedShiftId);
+      }
+      if (hasOperationCol) {
+        cols.push('operation');
+        vals.push(operation);
+      }
+      const ph = cols.map(() => '?').join(', ');
+      this.db
+        .prepare(`INSERT INTO customer_payments (${cols.join(', ')}) VALUES (${ph})`)
+        .run(...vals);
 
       // Return standardized response with all required fields
       return {
         success: true,
-        customer_id: customerId,
+        customer_id: normalizedCustomerId,
         old_balance: oldBalance,
         requested_amount: requestedAmount, // Always positive (amount from UI)
         applied_amount: requestedAmount, // Always positive (amount from UI)
@@ -749,16 +942,20 @@ class CustomersService {
 
     // Filter by date range if provided
     if (filters.from) {
-      query += ' AND created_at >= ?';
+      query += ` AND ${this._tzDateExpr('created_at')} >= date(?)`;
       params.push(filters.from);
     }
     if (filters.to) {
-      query += ' AND created_at <= ?';
+      query += ` AND ${this._tzDateExpr('created_at')} <= date(?)`;
       params.push(filters.to);
     }
 
-    // Order by created_at DESC (latest first)
-    query += ' ORDER BY created_at DESC';
+    // Order by normalized datetime DESC (latest first).
+    // We normalize mixed formats like:
+    // - 2026-04-24 20:47:45
+    // - 2026-04-24 20:47:45.7082
+    // - 2026-04-24T20:47:45.708Z
+    query += " ORDER BY datetime(replace(replace(created_at, 'T', ' '), 'Z', '')) DESC, created_at DESC";
 
     // Apply limit and offset if provided
     if (filters.limit) {
@@ -910,7 +1107,7 @@ class CustomersService {
       throw createError(ERROR_CODES.VALIDATION_ERROR, 'Ball manfiy bo‘lishi mumkin emas');
     }
 
-    const now = new Date().toISOString().replace('T', ' ').replace('Z', '').substring(0, 19);
+    const now = nowSqlInTimeZone();
     this.db.transaction(() => {
       this.db
         .prepare('UPDATE customers SET bonus_points = ?, updated_at = ? WHERE id = ?')
@@ -988,7 +1185,7 @@ class CustomersService {
 
       const csvContent = csvRows.join('\n');
 
-      const dateStr = new Date().toISOString().split('T')[0]; // YYYY-MM-DD
+      const dateStr = formatYmdInTimeZone(new Date()) || 'export'; // YYYY-MM-DD (Asia/Tashkent)
       const defaultFilename = `customers_${dateStr}.csv`;
 
       let filePath;

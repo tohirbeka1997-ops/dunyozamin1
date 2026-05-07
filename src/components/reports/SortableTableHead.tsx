@@ -39,14 +39,23 @@ export function SortableTableHead<K extends string>({
         type="button"
         variant="ghost"
         className={cn(
-          'h-8 gap-1 px-2',
-          align === 'right' && 'flex w-full flex-row-reverse justify-end',
-          align === 'center' && 'mx-auto flex',
-          align === 'left' && '-ml-2 inline-flex'
+          'h-8 min-h-8 max-w-full gap-1 px-1.5 sm:px-2',
+          align === 'right' && 'inline-flex w-full min-w-0 flex-row-reverse items-center justify-end',
+          align === 'center' && 'mx-auto inline-flex w-full min-w-0 items-center justify-center',
+          align === 'left' && 'inline-flex min-w-0 max-w-full items-center justify-start'
         )}
         onClick={() => onSort(columnKey, kind)}
       >
-        <span className="whitespace-normal text-left font-medium leading-tight">{children}</span>
+        <span
+          className={cn(
+            'min-w-0 whitespace-nowrap text-sm font-medium leading-tight',
+            align === 'right' && 'w-full min-w-0 text-right',
+            align === 'center' && 'w-full text-center',
+            align === 'left' && 'text-left',
+          )}
+        >
+          {children}
+        </span>
         {active ? (
           sortOrder === 'asc' ? (
             <ArrowUp className="h-3.5 w-3.5 shrink-0 opacity-80" aria-hidden />

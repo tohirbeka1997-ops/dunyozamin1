@@ -1,4 +1,7 @@
 const http = require('http');
+const fs = require('fs');
+const path = require('path');
+const { randomUUID } = require('crypto');
 const { createRpcDispatcher } = require('./rpcDispatch.cjs');
 const { createSessionStore } = require('./sessions.cjs');
 const { metrics, startTimer, renderMetrics } = require('./metrics.cjs');
@@ -32,9 +35,13 @@ function clientIp(req, { trustProxy = false } = {}) {
 async function readJson(req) {
   return new Promise((resolve, reject) => {
     let body = '';
+    const maxJsonBytes = Math.max(
+      2_000_000,
+      Number.parseInt(String(process.env.POS_RPC_MAX_JSON_BYTES || '12000000'), 10) || 12_000_000,
+    );
     req.on('data', (chunk) => {
       body += chunk;
-      if (body.length > 2_000_000) {
+      if (body.length > maxJsonBytes) {
         reject(new Error('Payload too large'));
       }
     });
@@ -49,6 +56,23 @@ async function readJson(req) {
   });
 }
 
+async function readRaw(req, maxBytes) {
+  return new Promise((resolve, reject) => {
+    const chunks = [];
+    let total = 0;
+    req.on('data', (chunk) => {
+      total += chunk.length;
+      if (total > maxBytes) {
+        reject(new Error('Payload too large'));
+        return;
+      }
+      chunks.push(chunk);
+    });
+    req.on('end', () => resolve(Buffer.concat(chunks)));
+    req.on('error', reject);
+  });
+}
+
 function json(res, status, payload, extraHeaders = {}) {
   const text = JSON.stringify(payload);
   res.writeHead(status, {
@@ -59,23 +83,54 @@ function json(res, status, payload, extraHeaders = {}) {
   res.end(text);
 }
 
-/** @param {string[]|undefined|null} corsOrigins — empty / missing => allow any origin (`*`). */
+/**
+ * Build CORS headers for a request.
+ *
+ * @param {object} req
+ * @param {string[]|undefined|null} corsOrigins
+ *   - Explicit allowlist (e.g. ['https://pos.example.com']) — only these
+ *     origins receive a reflected `Access-Control-Allow-Origin` and
+ *     `Access-Control-Allow-Credentials: true` is enabled.
+ *   - Missing / empty / contains '*' — wildcard mode: `*` is reflected
+ *     WITHOUT credentials so a stolen Bearer token cannot be replayed
+ *     cross-origin via cookies. In that mode browsers cannot use
+ *     credentials anyway, so we don't lose functionality but we close
+ *     the credentials-with-wildcard footgun.
+ *
+ * Returns `null` when the origin is not allowed (caller should respond
+ * with the request even without CORS headers — browser will block).
+ */
 function corsHeadersForRequest(req, corsOrigins) {
   const origin = req.headers?.origin ? String(req.headers.origin) : '';
   const list = Array.isArray(corsOrigins) ? corsOrigins.map((s) => String(s).trim()).filter(Boolean) : [];
   const allowAll = list.length === 0 || list.includes('*');
-  let allowOrigin = '*';
-  if (!allowAll) {
-    if (origin && list.includes(origin)) allowOrigin = origin;
-    else return null;
+
+  let allowOrigin;
+  let allowCredentials = false;
+
+  if (!origin) {
+    allowOrigin = allowAll ? '*' : (list[0] || '*');
+  } else if (allowAll) {
+    allowOrigin = '*';
+  } else if (list.includes(origin)) {
+    allowOrigin = origin;
+    allowCredentials = true;
+  } else {
+    return null;
   }
-  return {
+
+  const headers = {
     'Access-Control-Allow-Origin': allowOrigin,
     'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
     'Access-Control-Allow-Headers':
-      'Authorization, Content-Type, X-Client-Version, X-Requested-With, ngrok-skip-browser-warning',
+      'Authorization, Content-Type, X-Client-Version, X-Requested-With, X-File-Name, X-Product-Id, X-Image-Index, ngrok-skip-browser-warning',
     'Access-Control-Max-Age': '86400',
+    Vary: 'Origin',
   };
+  if (allowCredentials) {
+    headers['Access-Control-Allow-Credentials'] = 'true';
+  }
+  return headers;
 }
 
 /**
@@ -165,6 +220,38 @@ function startHostServer({
     } catch { /* never fail the response because of metrics */ }
   }
 
+  const imageDir = path.join(process.env.POS_DATA_DIR || process.cwd(), 'product-images');
+  const maxUploadBytes = Math.max(
+    1_000_000,
+    Number.parseInt(String(process.env.POS_PRODUCT_IMAGE_MAX_BYTES || '8000000'), 10) || 8_000_000,
+  );
+
+  function externalBaseUrl(req) {
+    const proto = String(req.headers?.['x-forwarded-proto'] || '').split(',')[0].trim() || 'http';
+    const host = String(req.headers?.['x-forwarded-host'] || req.headers?.host || '').split(',')[0].trim();
+    return host ? `${proto}://${host}` : '';
+  }
+
+  function imageContentType(fileName) {
+    const ext = path.extname(fileName).toLowerCase();
+    if (ext === '.jpg' || ext === '.jpeg') return 'image/jpeg';
+    if (ext === '.png') return 'image/png';
+    if (ext === '.webp') return 'image/webp';
+    if (ext === '.gif') return 'image/gif';
+    return 'application/octet-stream';
+  }
+
+  function extFromUpload(contentType, originalName) {
+    const nameExt = path.extname(String(originalName || '')).toLowerCase();
+    if (['.jpg', '.jpeg', '.png', '.webp', '.gif'].includes(nameExt)) return nameExt === '.jpeg' ? '.jpg' : nameExt;
+    const type = String(contentType || '').toLowerCase();
+    if (type.includes('jpeg')) return '.jpg';
+    if (type.includes('png')) return '.png';
+    if (type.includes('webp')) return '.webp';
+    if (type.includes('gif')) return '.gif';
+    return '';
+  }
+
   const server = http.createServer(async (req, res) => {
     const method = req.method || 'GET';
     const url = req.url || '/';
@@ -183,7 +270,7 @@ function startHostServer({
       const cors = corsHeadersForRequest(req, corsOrigins);
       const c = cors || {};
 
-      if (method === 'OPTIONS' && (url === '/health' || url === '/rpc' || url === '/metrics')) {
+      if (method === 'OPTIONS' && (url === '/health' || url === '/rpc' || url === '/metrics' || url === '/uploads/product-images')) {
         routeRef.value = url.slice(1);
         if (!cors) {
           res.writeHead(403).end();
@@ -196,6 +283,56 @@ function startHostServer({
       if (method === 'GET' && url === '/health') {
         routeRef.value = 'health';
         return json(res, 200, { ok: true, status: 'ok', time: new Date().toISOString() }, c);
+      }
+
+      if (method === 'GET' && url.startsWith('/product-images/')) {
+        routeRef.value = 'product-images';
+        const fileName = path.basename(decodeURIComponent(url.split('?')[0].slice('/product-images/'.length)));
+        if (!fileName || fileName.includes('..')) {
+          return json(res, 404, { ok: false, error: { code: 'NOT_FOUND', message: 'Not Found' } }, c);
+        }
+        const filePath = path.join(imageDir, fileName);
+        if (!fs.existsSync(filePath)) {
+          return json(res, 404, { ok: false, error: { code: 'NOT_FOUND', message: 'Not Found' } }, c);
+        }
+        res.writeHead(200, {
+          'Content-Type': imageContentType(fileName),
+          'Cache-Control': 'public, max-age=31536000, immutable',
+          ...c,
+        });
+        fs.createReadStream(filePath).pipe(res);
+        return;
+      }
+
+      if (method === 'POST' && url === '/uploads/product-images') {
+        routeRef.value = 'uploads-product-images';
+        const token = parseAuth(req);
+        if (!token) {
+          return json(res, 401, { ok: false, error: { code: 'AUTH_ERROR', message: 'Unauthorized' } }, c);
+        }
+        if (token !== secret && !sessions.verify(token)) {
+          return json(res, 401, { ok: false, error: { code: 'AUTH_ERROR', message: 'Invalid or expired session' } }, c);
+        }
+        const contentType = String(req.headers?.['content-type'] || '').toLowerCase();
+        if (!contentType.startsWith('image/')) {
+          return json(res, 400, { ok: false, error: { code: 'VALIDATION_ERROR', message: 'Only image uploads are allowed' } }, c);
+        }
+        const originalName = String(req.headers?.['x-file-name'] || '');
+        const ext = extFromUpload(contentType, originalName);
+        if (!ext) {
+          return json(res, 400, { ok: false, error: { code: 'VALIDATION_ERROR', message: 'Unsupported image type' } }, c);
+        }
+        const body = await readRaw(req, maxUploadBytes);
+        if (!body.length) {
+          return json(res, 400, { ok: false, error: { code: 'VALIDATION_ERROR', message: 'Empty upload' } }, c);
+        }
+        fs.mkdirSync(imageDir, { recursive: true });
+        const fileName = `${Date.now()}-${randomUUID()}${ext}`;
+        const filePath = path.join(imageDir, fileName);
+        fs.writeFileSync(filePath, body);
+        const publicPath = `/product-images/${fileName}`;
+        const baseUrl = externalBaseUrl(req);
+        return json(res, 200, { ok: true, data: { fileUrl: baseUrl ? `${baseUrl}${publicPath}` : publicPath, url: publicPath } }, c);
       }
 
       // ---- /metrics — Prometheus scrape endpoint ----
@@ -279,7 +416,10 @@ function startHostServer({
 
         const payload = await readJson(req);
         const channel = payload?.channel;
-        const args = payload?.args;
+        // Brauzer/proksi ba'zan `args` ni massiv emas, bitta obyekt yuboradi — [] ga aylantirmaslik kerak
+        const rawArgs = payload?.args;
+        const args =
+          Array.isArray(rawArgs) ? rawArgs : rawArgs === undefined || rawArgs === null ? [] : [rawArgs];
         // `tenant` — optional string (slug) when caller wants to target a
         // specific tenant. Only trusted in multi-tenant mode; silently
         // ignored in single-tenant mode.
@@ -467,6 +607,14 @@ function startHostServer({
 
   server.listen(port, bind, () => {
     console.log(`[POSNET] HOST server listening on http://${bind}:${port}`);
+    const list = Array.isArray(corsOrigins)
+      ? corsOrigins.map((s) => String(s).trim()).filter(Boolean)
+      : [];
+    if (list.length === 0 || list.includes('*')) {
+      console.warn(
+        '[POSNET] CORS: origin cheklanmagan (*) — prod uchun POS_RPC_CORS_ORIGINS yoki pos-config host.corsOrigins ni aniq domenlarga qoling.'
+      );
+    }
   });
 
   return {

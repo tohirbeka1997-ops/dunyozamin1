@@ -153,7 +153,7 @@ export default function ReceiptBarcodePage() {
   return (
     <div className="container mx-auto p-6 space-y-6">
       <div className="mb-6">
-        <h1 className="text-3xl font-bold mb-2">Cheklar va shtrix-kodlar</h1>
+        <h1 className="page-heading mb-1">Cheklar va shtrix-kodlar</h1>
         <p className="text-muted-foreground">
           Chek yaratish va shtrix-kod generatsiya qilish vositalari
         </p>

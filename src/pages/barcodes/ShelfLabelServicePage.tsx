@@ -29,6 +29,7 @@ import { formatMoneyUZS } from '@/lib/format';
 import { openPrintWindowLabel } from '@/lib/print';
 import ShelfLabelPrint from '@/components/print/ShelfLabelPrint';
 import { useToast } from '@/hooks/use-toast';
+import { Checkbox } from '@/components/ui/checkbox';
 
 type LabelPreset = '20x20' | '25x30' | '35x35';
 type SizeMode = 'preset' | 'custom';
@@ -38,6 +39,8 @@ const PRESETS: Record<LabelPreset, { w: number; h: number; label: string }> = {
   '25x30': { w: 25, h: 30, label: '25×30' },
   '35x35': { w: 35, h: 35, label: '35×35' },
 };
+const SHELF_SAFE_AREA_ENABLED_KEY = 'barcode.shelf.safeArea.enabled';
+const SHELF_SAFE_AREA_INSET_KEY = 'barcode.shelf.safeArea.insetMm';
 
 export default function ShelfLabelServicePage() {
   const { toast } = useToast();
@@ -58,6 +61,17 @@ export default function ShelfLabelServicePage() {
   const [sizeMode, setSizeMode] = useState<SizeMode>('preset');
   const [customWmm, setCustomWmm] = useState<number>(20);
   const [customHmm, setCustomHmm] = useState<number>(20);
+  const [showSafeArea, setShowSafeArea] = useState<boolean>(() => {
+    if (typeof window === 'undefined') return true;
+    const raw = window.localStorage.getItem(SHELF_SAFE_AREA_ENABLED_KEY);
+    return raw == null ? true : raw === '1';
+  });
+  const [safeAreaInsetMm, setSafeAreaInsetMm] = useState<number>(() => {
+    if (typeof window === 'undefined') return 1.5;
+    const raw = Number(window.localStorage.getItem(SHELF_SAFE_AREA_INSET_KEY));
+    if (!Number.isFinite(raw)) return 1.5;
+    return Math.max(0, Math.min(10, raw));
+  });
 
   useEffect(() => {
     const term = String(productSearchValue || '').trim();
@@ -83,7 +97,7 @@ export default function ShelfLabelServicePage() {
     if (!labelFieldsTouched) {
       setLabelName(selectedProduct.name || '');
       setLabelSku(selectedProduct.sku ? String(selectedProduct.sku) : '');
-      setLabelPriceText(formatMoneyUZS(Number(selectedProduct.sale_price)).replace(' so‘m', ' uzs'));
+      setLabelPriceText(formatMoneyUZS(Number(selectedProduct.sale_price)));
     }
   }, [selectedProduct, labelFieldsTouched]);
 
@@ -103,6 +117,16 @@ export default function ShelfLabelServicePage() {
       price: labelPriceText || '',
     };
   }, [labelName, labelSku, labelPriceText]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    window.localStorage.setItem(SHELF_SAFE_AREA_ENABLED_KEY, showSafeArea ? '1' : '0');
+  }, [showSafeArea]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    window.localStorage.setItem(SHELF_SAFE_AREA_INSET_KEY, String(safeAreaInsetMm));
+  }, [safeAreaInsetMm]);
 
   const doPrint = () => {
     try {
@@ -133,7 +157,7 @@ export default function ShelfLabelServicePage() {
     <div className="container mx-auto p-6 space-y-6">
       <div className="flex items-center justify-between gap-4">
         <div>
-          <h1 className="text-3xl font-bold">Shelf Label Service</h1>
+          <h1 className="page-heading">Shelf Label Service</h1>
           <p className="text-muted-foreground mt-2">
             Stelaj uchun nom + SKU + narx yorlig‘i (barcode yo‘q).
           </p>
@@ -292,7 +316,7 @@ export default function ShelfLabelServicePage() {
                       setLabelFieldsTouched(true);
                       setLabelPriceText(e.target.value);
                     }}
-                    placeholder="Masalan: 25 000 uzs"
+                    placeholder="Masalan: 25 000 so'm"
                   />
                 </div>
               </div>
@@ -305,7 +329,7 @@ export default function ShelfLabelServicePage() {
                   if (!selectedProduct) return;
                   setLabelName(selectedProduct.name || '');
                   setLabelSku(selectedProduct.sku ? String(selectedProduct.sku) : '');
-                  setLabelPriceText(formatMoneyUZS(Number(selectedProduct.sale_price)).replace(' so‘m', ' uzs'));
+                  setLabelPriceText(formatMoneyUZS(Number(selectedProduct.sale_price)));
                   setLabelFieldsTouched(false);
                 }}
                 disabled={!selectedProduct}
@@ -317,19 +341,54 @@ export default function ShelfLabelServicePage() {
         </Card>
 
         <Card>
-          <CardHeader>
-            <CardTitle>Preview</CardTitle>
-            <CardDescription>Chop etishda aynan shu ko‘rinish chiqadi.</CardDescription>
+          <CardHeader className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+            <div>
+              <CardTitle>Preview</CardTitle>
+              <CardDescription>Chop etishda aynan shu ko‘rinish chiqadi.</CardDescription>
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
+              <div className="flex items-center gap-2 rounded border px-2 py-1">
+                <Checkbox checked={showSafeArea} onCheckedChange={(v) => setShowSafeArea(Boolean(v))} id="shelf-safe-area" />
+                <Label htmlFor="shelf-safe-area" className="cursor-pointer text-xs">Safe area</Label>
+              </div>
+              <div className="flex items-center gap-2 rounded border px-2 py-1">
+                <Label htmlFor="shelf-safe-area-mm" className="text-xs">Inset</Label>
+                <Input
+                  id="shelf-safe-area-mm"
+                  type="number"
+                  min={0}
+                  max={10}
+                  step={0.1}
+                  value={safeAreaInsetMm}
+                  onChange={(e) => {
+                    const n = Number(e.target.value);
+                    if (!Number.isFinite(n)) return;
+                    setSafeAreaInsetMm(Math.max(0, Math.min(10, n)));
+                  }}
+                  className="h-7 w-20 text-xs"
+                  disabled={!showSafeArea}
+                />
+                <span className="text-xs text-muted-foreground">mm</span>
+              </div>
+            </div>
           </CardHeader>
           <CardContent>
-            <ShelfLabelPrint
-              name={resolvedTexts.name}
-              sku={resolvedTexts.sku}
-              priceText={resolvedTexts.price}
-              copies={Math.min(copies, 6)}
-              labelWidthMm={effectiveWmm}
-              labelHeightMm={effectiveHmm}
-            />
+            <div className="relative" style={{ width: `${effectiveWmm}mm`, height: `${effectiveHmm}mm` }}>
+              <ShelfLabelPrint
+                name={resolvedTexts.name}
+                sku={resolvedTexts.sku}
+                priceText={resolvedTexts.price}
+                copies={1}
+                labelWidthMm={effectiveWmm}
+                labelHeightMm={effectiveHmm}
+              />
+              {showSafeArea && (
+                <div
+                  className="pointer-events-none absolute border border-dashed border-muted-foreground/40"
+                  style={{ inset: `${safeAreaInsetMm}mm` }}
+                />
+              )}
+            </div>
             <div className="mt-3 text-xs text-muted-foreground">
               Hozirgi o‘lcham: {effectiveWmm}×{effectiveHmm} mm
             </div>

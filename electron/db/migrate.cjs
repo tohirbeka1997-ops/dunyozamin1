@@ -256,8 +256,21 @@ function ensureMigrationsTable(db) {
  * - ALTER TABLE ADD COLUMN -> Check first, then add
  */
 function makeSqlIdempotent(sql, db) {
-  // For now, we handle idempotency at the execution level
-  // SQL files should use IF NOT EXISTS where possible
+  // Intentional no-op.
+  //
+  // Historical note: earlier versions tried to rewrite migration SQL on
+  // the fly to add `IF NOT EXISTS` and similar guards. That approach was
+  // brittle (SQL parser edge-cases) and masked real migration defects.
+  //
+  // Current strategy:
+  // 1) keep migration files deterministic/explicit,
+  // 2) enforce idempotency at execution-time via safe `already exists`
+  //    handling in `runMigrations`, and
+  // 3) fail fast on semantic conflicts (e.g. UNIQUE violations) so
+  //    operators can fix data instead of silently drifting schema.
+  //
+  // The function remains to keep call-sites stable and to document that
+  // SQL text is intentionally not rewritten.
   return sql;
 }
 
@@ -350,6 +363,42 @@ function runMigrations(db) {
 
     // Calculate checksum
     const checksum = calculateChecksum(sql);
+
+    if (file === '073_web_orders_out_for_delivery_status.sql') {
+      // Drop+rebuild migrations need atomic semantics: if anything fails
+      // mid-way we must NOT leave the DB with `web_orders` already dropped
+      // and `web_orders_new` un-renamed. We run the whole file inside an
+      // IMMEDIATE transaction and use `defer_foreign_keys` so FK checks
+      // happen at COMMIT — that lets us drop a referenced table inside the
+      // same tx without violating constraints temporarily.
+      const tx073 = db.transaction(() => {
+        db.pragma('defer_foreign_keys = 1');
+        db.exec(sql);
+        db.prepare(`
+          INSERT INTO schema_migrations (id, applied_at, checksum)
+          VALUES (?, datetime('now'), ?)
+        `).run(file, checksum);
+      });
+
+      try {
+        console.log(`  🔄 ${file}...`);
+        tx073.immediate();
+        console.log(`  ✅ ${file} applied successfully`);
+        appliedCount++;
+      } catch (error) {
+        console.error('');
+        console.error('═══════════════════════════════════════════════════════════════');
+        console.error('🚨 MIGRATION FAILED - APP WILL EXIT');
+        console.error('═══════════════════════════════════════════════════════════════');
+        console.error('');
+        console.error('Failed migration:', file);
+        console.error('Error:', error.message);
+        console.error('The transaction was rolled back; database is unchanged.');
+        console.error('');
+        throw error;
+      }
+      continue;
+    }
 
     // Run migration in a transaction
     const transaction = db.transaction(() => {
@@ -465,6 +514,36 @@ function runMigrations(db) {
             console.log('    ✓ Added orders.loyalty_redeem_points');
           }
           db.exec(sql);
+        } else if (file === '069_categories_image_marketplace.sql') {
+          // ALTER ADD COLUMN — safeAddColumn bilan qayta ishga tushirish xavfsiz
+          if (!hasTable(db, 'categories')) {
+            throw new Error(
+              'categories jadvali yo‘q — bu fayl to‘liq POS bazasi emas. To‘g‘ri pos.db yo‘lini ko‘rsating.'
+            );
+          }
+          if (!hasColumn(db, 'categories', 'image_url')) {
+            safeAddColumn(db, 'categories', 'image_url', 'TEXT');
+            console.log('    ✓ Added categories.image_url');
+          }
+          if (!hasColumn(db, 'categories', 'show_in_marketplace')) {
+            safeAddColumn(db, 'categories', 'show_in_marketplace', 'INTEGER NOT NULL DEFAULT 1');
+            console.log('    ✓ Added categories.show_in_marketplace');
+          }
+        } else if (file === '070_customer_payments_shift_operation.sql') {
+          if (hasTable(db, 'customer_payments')) {
+            if (!hasColumn(db, 'customer_payments', 'shift_id')) {
+              safeAddColumn(db, 'customer_payments', 'shift_id', 'TEXT');
+              console.log('    ✓ Added customer_payments.shift_id');
+            }
+            if (!hasColumn(db, 'customer_payments', 'operation')) {
+              safeAddColumn(db, 'customer_payments', 'operation', 'TEXT');
+              console.log('    ✓ Added customer_payments.operation');
+            }
+            db.exec(
+              'CREATE INDEX IF NOT EXISTS idx_customer_payments_shift ON customer_payments(shift_id);'
+            );
+          }
+          db.exec(sql);
         } else {
           // Execute migration SQL normally
           // SQL files should use IF NOT EXISTS for tables/indexes
@@ -480,31 +559,47 @@ function runMigrations(db) {
         console.log(`  ✅ ${file} applied successfully`);
         appliedCount++;
       } catch (error) {
-        // Check if error is idempotent (duplicate column/table/index/view)
-        const isIdempotentError = error.message && (
-          error.message.includes('duplicate column') ||
-          error.message.includes('already exists') ||
-          error.message.includes('UNIQUE constraint') ||
-          error.message.includes('no such table') && error.message.includes('customer_ledger') // Table might not exist yet
-        );
-        
+        // Check if error is genuinely idempotent (the schema is already in
+        // the desired post-migration state).
+        //
+        // IMPORTANT: We deliberately do NOT treat `UNIQUE constraint failed`
+        // as idempotent. That error usually indicates DATA-level duplicates
+        // (e.g. building a unique index on a column that already has dupes),
+        // not a re-run of an already-applied migration. Marking such a
+        // migration as "applied" while the index never actually got created
+        // leaves the database in a silently-corrupt state.
+        const msg = error.message || '';
+        const isIdempotentError =
+          msg.includes('duplicate column') ||
+          msg.includes('already exists') ||
+          (msg.includes('no such table') && msg.includes('customer_ledger'));
+
         if (isIdempotentError) {
-          // For idempotent errors, mark as applied and continue
-          console.log(`  ⚠️  ${file} - ${error.message} (marking as applied - idempotent)`);
+          console.log(`  ⚠️  ${file} - ${msg} (marking as applied - idempotent)`);
           try {
-            // Insert migration record (checksum may be NULL, but ensureMigrationsTable should have added the column)
             db.prepare(`
-              INSERT OR IGNORE INTO schema_migrations (id, applied_at, checksum) 
+              INSERT OR IGNORE INTO schema_migrations (id, applied_at, checksum)
               VALUES (?, datetime('now'), ?)
             `).run(file, checksum);
             skippedCount++;
-          } catch (insertError) {
-            // Migration already recorded, ignore
+          } catch {
+            // Migration row already present, ignore
           }
-          return; // Continue to next migration
+          return;
         }
-        
-        // For real errors, throw (transaction will rollback)
+
+        if (msg.includes('UNIQUE constraint')) {
+          console.error('');
+          console.error('═══════════════════════════════════════════════════════════════');
+          console.error(`🚨 MIGRATION ${file} FAILED ON UNIQUE CONSTRAINT`);
+          console.error('   This usually means existing data violates the new');
+          console.error('   uniqueness rule (e.g. duplicate values on a column being');
+          console.error('   indexed). Resolve the duplicates and re-run — DO NOT mark');
+          console.error('   this migration as applied or the index will be missing.');
+          console.error('═══════════════════════════════════════════════════════════════');
+          console.error('');
+        }
+
         throw error;
       }
     });
@@ -513,14 +608,14 @@ function runMigrations(db) {
       transaction();
     } catch (error) {
       // Transaction failed - check if it was an idempotent error we handled
+      // (UNIQUE constraint is intentionally NOT in this list — see inner catch.)
       if (error.message && (
         error.message.includes('duplicate column') ||
         error.message.includes('already exists')
       )) {
-        // Already handled in transaction, continue
         continue;
       }
-      
+
       // Real error - fail-fast
       console.error('');
       console.error('═══════════════════════════════════════════════════════════════');

@@ -328,7 +328,7 @@ export default function EmployeeForm() {
           Orqaga
         </Button>
         <div>
-          <h1 className="text-3xl font-bold">{isEditMode ? 'Xodimni tahrirlash' : 'Yangi xodim qo\'shish'}</h1>
+          <h1 className="page-heading">{isEditMode ? 'Xodimni tahrirlash' : 'Yangi xodim qo\'shish'}</h1>
           <p className="text-muted-foreground">
             {isEditMode ? 'Xodim ma\'lumotlari va huquqlarini yangilash' : 'Yangi xodim hisobi yaratish'}
           </p>

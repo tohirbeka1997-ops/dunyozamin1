@@ -125,6 +125,7 @@ const PricingService = requireService('./pricingService.cjs', 'PricingService');
 const CacheService = requireService('./cacheService.cjs', 'CacheService');
 const PromotionService = requireService('./promotionService.cjs', 'PromotionService');
 const WebOrdersService = requireService('./webOrdersService.cjs', 'WebOrdersService');
+const CouriersService = requireService('./couriersService.cjs', 'CouriersService');
 
 /**
  * Initialize all services with database instance
@@ -174,6 +175,7 @@ function createServices(db) {
   };
   services.quotes = new QuotesService(db, salesService);
   services.webOrders = new WebOrdersService(db);
+  services.couriers = new CouriersService(db);
   return services;
 }
 

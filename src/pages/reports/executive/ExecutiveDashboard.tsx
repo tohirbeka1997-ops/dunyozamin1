@@ -127,11 +127,11 @@ export default function ExecutiveDashboard() {
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-4">
-          <Button variant="ghost" size="icon" onClick={() => navigate('/reports')}>
+          <Button variant="ghost" size="icon" onClick={() => navigate('/reports/financial')}>
             <ArrowLeft className="h-4 w-4" />
           </Button>
           <div>
-            <h1 className="text-3xl font-bold flex items-center gap-2">
+            <h1 className="page-heading flex items-center gap-2">
               <BarChart3 className="h-8 w-8 text-blue-500" />
               Boshqaruv Dashboard
             </h1>

@@ -297,11 +297,11 @@ export default function DailySalesReport() {
       ) : null}
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-4">
-          <Button variant="ghost" size="icon" onClick={() => navigate('/reports')}>
+          <Button variant="ghost" size="icon" onClick={() => navigate('/reports/sales')}>
             <ArrowLeft className="h-4 w-4" />
           </Button>
           <div>
-            <h1 className="text-3xl font-bold">Kunlik sotuv hisobotlari</h1>
+            <h1 className="page-heading">Kunlik sotuv hisobotlari</h1>
             <p className="text-muted-foreground">Kunlik sotuvlar samaradorligi va foydasini kuzatish</p>
           </div>
         </div>

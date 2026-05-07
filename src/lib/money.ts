@@ -1,7 +1,20 @@
 /**
- * Uzbekistan currency (UZS) formatting and parsing utilities
- * 
+ * Uzbekistan currency (UZS) formatting and parsing utilities.
+ *
  * Format: 1.000.000 so'm (dot thousand separators, no decimals, Uzbek suffix)
+ *
+ * MONEY MODEL (read this before adding new monetary code):
+ * - UZS has NO sub-unit. Every monetary value in this app must end up as
+ *   a whole-UZS integer at the storage and display boundary.
+ * - Older schemas (orders, products, sales_returns, ...) use SQLite
+ *   `REAL` for amount columns, while newer marketplace tables
+ *   (`web_orders`, `web_order_items`) use `INTEGER`. Both conventions are
+ *   acceptable as long as writers route through `roundUZS()` /
+ *   `applyPercentUZS()` first; never insert a fractional UZS into either
+ *   column type.
+ * - Incoming JSON from the marketplace API (INTEGER columns) and from the
+ *   POS IPC layer (REAL columns) is reconciled by callers using the
+ *   helpers below — don't open-code `(amount * pct) / 100` anywhere.
  */
 
 /**
@@ -226,4 +239,51 @@ export function parseMoneyUZS(input: string): number {
  */
 export function parseUZS(input: string): number {
   return parseMoneyUZS(input);
+}
+
+/**
+ * Round to nearest whole UZS — UZS has no sub-unit. Use this for any
+ * computed monetary value before persisting, displaying, or comparing
+ * against another monetary value, so floating-point arithmetic
+ * (`(subtotal * pct) / 100`, line-prorate, batch-cost) doesn't leak
+ * fractional sums into receipts or order totals.
+ *
+ * Returns 0 for null/undefined/NaN/Infinity to keep call sites safe.
+ */
+export function roundUZS(amount: number | null | undefined): number {
+  if (amount === null || amount === undefined) return 0;
+  if (!Number.isFinite(amount)) return 0;
+  return Math.round(amount);
+}
+
+/**
+ * Apply a percent discount/markup to a UZS amount and round to whole UZS.
+ *
+ * `applyPercent(1234, 7.5)` -> 92  (1234 * 0.075 = 92.55 -> rounded)
+ *
+ * Negative or non-finite inputs return 0. Percent is clamped to [0, 100]
+ * because POS callers always want a valid discount fraction; if you need
+ * markups > 100 % use `roundUZS(amount * pct / 100)` directly.
+ */
+export function applyPercentUZS(
+  amount: number | null | undefined,
+  percent: number | null | undefined,
+): number {
+  const a = Number(amount);
+  const p = Number(percent);
+  if (!Number.isFinite(a) || !Number.isFinite(p)) return 0;
+  if (a <= 0) return 0;
+  const pct = Math.max(0, Math.min(100, p));
+  return Math.round((a * pct) / 100);
+}
+
+/**
+ * Sum an array of UZS amounts with rounding at each step. Useful for
+ * receipt totals where every line was already rounded — summing rounded
+ * lines is exact, but summing then rounding can drift by 1-2 UZS.
+ */
+export function sumUZS(values: ReadonlyArray<number | null | undefined>): number {
+  let total = 0;
+  for (const v of values) total += roundUZS(v);
+  return total;
 }

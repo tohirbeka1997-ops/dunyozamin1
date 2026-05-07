@@ -1,4 +1,7 @@
-import type { ReactNode } from 'react';
+import { lazy, Suspense, type ReactNode, type ComponentType } from 'react';
+
+// Hot-path routes that the cashier hits within the first few seconds of
+// every session — keep eager so cold start has no chunk fetch.
 import Login from './pages/Login';
 import Dashboard from './pages/Dashboard';
 import POSTerminal from './pages/POSTerminal';
@@ -13,86 +16,122 @@ import OrderDetail from './pages/OrderDetail';
 import Customers from './pages/Customers';
 import CustomerForm from './pages/CustomerForm';
 import CustomerDetail from './pages/CustomerDetail';
-import Inventory from './pages/Inventory';
-import InventoryDetail from './pages/InventoryDetail';
-import PurchaseOrders from './pages/PurchaseOrders';
-import PurchaseOrderForm from './pages/PurchaseOrderForm';
-import PurchaseOrderDetail from './pages/PurchaseOrderDetail';
-import PurchaseReceiptForm from './pages/PurchaseReceiptForm';
-import Suppliers from './pages/Suppliers';
-import SupplierForm from './pages/SupplierForm';
-import SupplierDetail from './pages/SupplierDetail';
 import SalesReturns from './pages/SalesReturns';
 import CreateReturn from './pages/CreateReturn';
 import EditReturn from './pages/EditReturn';
 import ReturnDetail from './pages/ReturnDetail';
 import Reports from './pages/Reports';
-import DailySalesReport from './pages/reports/sales/DailySalesReport';
-import ProductSalesReport from './pages/reports/sales/ProductSalesReport';
-import CustomerSalesReport from './pages/reports/sales/CustomerSalesReport';
-import PromotionReport from './pages/reports/sales/PromotionReport';
-import StockLevelsReport from './pages/reports/inventory/StockLevelsReport';
-import InventoryMovementReport from './pages/reports/inventory/InventoryMovementReport';
-import ValuationReport from './pages/reports/inventory/ValuationReport';
-import InventoryAdvancedReport from './pages/reports/inventory/InventoryAdvancedReport';
-import ProductTraceabilityReport from './pages/reports/inventory/ProductTraceabilityReport';
-import PurchasePlanningReport from './pages/reports/inventory/PurchasePlanningReport';
-import ActSverkaReport from './pages/reports/act-sverka/ActSverkaReport';
-import ProfitLossReport from './pages/reports/financial/ProfitLossReport';
-import PaymentMethodReport from './pages/reports/financial/PaymentMethodReport';
-import CashFlowReport from './pages/reports/financial/CashFlowReport';
-import CashDiscrepancyReport from './pages/reports/financial/CashDiscrepancyReport';
-import AgingReport from './pages/reports/financial/AgingReport';
-import VIPCustomersReport from './pages/reports/customer/VIPCustomersReport';
-import LoyaltyPointsReport from './pages/reports/customer/LoyaltyPointsReport';
-import LostCustomersReport from './pages/reports/customer/LostCustomersReport';
-import CustomerProfitabilityReport from './pages/reports/customer/CustomerProfitabilityReport';
-import CustomerActSverkaReport from './pages/reports/customer/CustomerActSverkaReport';
-import SupplierActSverkaReport from './pages/reports/supplier/SupplierActSverkaReport';
-import DeliveryAccuracyReport from './pages/reports/supplier/DeliveryAccuracyReport';
-import PriceHistoryReport from './pages/reports/supplier/PriceHistoryReport';
-import SupplierProductSalesReport from './pages/reports/supplier/SupplierProductSalesReport';
-import PurchaseSaleSpreadReport from './pages/reports/supplier/PurchaseSaleSpreadReport';
-import CashierPerformanceReport from './pages/reports/employee/CashierPerformanceReport';
-import CashierErrorsReport from './pages/reports/employee/CashierErrorsReport';
-import ShiftProductivityReport from './pages/reports/employee/ShiftProductivityReport';
-import FraudSignalsReport from './pages/reports/employee/FraudSignalsReport';
-import DeviceHealthReport from './pages/reports/system/DeviceHealthReport';
-import AuditLogReport from './pages/reports/system/AuditLogReport';
-import PriceChangeHistoryReport from './pages/reports/system/PriceChangeHistoryReport';
-import ExecutiveDashboard from './pages/reports/executive/ExecutiveDashboard';
-import LoginActivityReport from './pages/reports/employee/LoginActivityReport';
-import PurchaseOrderSummaryReport from './pages/reports/purchase/PurchaseOrderSummaryReport';
-import SupplierPerformanceReport from './pages/reports/purchase/SupplierPerformanceReport';
-import ExportManager from './pages/reports/export/ExportManager';
-import Employees from './pages/Employees';
-import EmployeeForm from './pages/employees/EmployeeForm';
-import EmployeeDetail from './pages/employees/EmployeeDetail';
 import Settings from './pages/Settings';
-import ReceiptBarcodePage from './pages/tools/ReceiptBarcodePage';
-import BarcodeDesignerPage from './pages/tools/BarcodeDesignerPage';
-import BarcodeCenterPage from './pages/barcodes/BarcodeCenterPage';
-import Quotes from './pages/Quotes';
-import QuoteForm from './pages/QuoteForm';
-import QuoteDetail from './pages/QuoteDetail';
-import ReceiptDesignerPage from './pages/barcodes/ReceiptDesignerPage';
-import ProductBarcodeServicePage from './pages/barcodes/ProductBarcodeServicePage';
-import ScaleBarcodeServicePage from './pages/barcodes/ScaleBarcodeServicePage';
-import ShelfLabelServicePage from './pages/barcodes/ShelfLabelServicePage';
 import ResetPassword from './pages/ResetPassword';
-import MasterLogin from './pages/admin/MasterLogin';
-import StoresAdmin from './pages/admin/Stores';
-import Expenses from './pages/Expenses';
-import Promotions from './pages/Promotions';
-import PromotionForm from './pages/PromotionForm';
-import PromotionDetail from './pages/PromotionDetail';
-import SalesReportsHub from './pages/reports/hubs/SalesReportsHub';
-import FinancialReportsHub from './pages/reports/hubs/FinancialReportsHub';
-import InventoryReportsHub from './pages/reports/hubs/InventoryReportsHub';
-import PurchaseSupplierReportsHub from './pages/reports/hubs/PurchaseSupplierReportsHub';
-import CrmReportsHub from './pages/reports/hubs/CrmReportsHub';
-import EmployeeControlReportsHub from './pages/reports/hubs/EmployeeControlReportsHub';
-import TechAuditReportsHub from './pages/reports/hubs/TechAuditReportsHub';
+
+// Cold-path routes — split into separate chunks so the initial bundle
+// stays small. Reports, admin, barcode tooling, and supplier/inventory
+// management are accessed rarely (and never in cashier mode), so paying
+// a one-time chunk fetch when the user opens them is a clear win.
+const CourierOrders = lazy(() => import('./pages/CourierOrders'));
+const Inventory = lazy(() => import('./pages/Inventory'));
+const InventoryDetail = lazy(() => import('./pages/InventoryDetail'));
+const PurchaseOrders = lazy(() => import('./pages/PurchaseOrders'));
+const PurchaseOrderForm = lazy(() => import('./pages/PurchaseOrderForm'));
+const PurchaseOrderDetail = lazy(() => import('./pages/PurchaseOrderDetail'));
+const PurchaseReceiptForm = lazy(() => import('./pages/PurchaseReceiptForm'));
+const Suppliers = lazy(() => import('./pages/Suppliers'));
+const SupplierForm = lazy(() => import('./pages/SupplierForm'));
+const SupplierDetail = lazy(() => import('./pages/SupplierDetail'));
+const Expenses = lazy(() => import('./pages/Expenses'));
+const Quotes = lazy(() => import('./pages/Quotes'));
+const QuoteForm = lazy(() => import('./pages/QuoteForm'));
+const QuoteDetail = lazy(() => import('./pages/QuoteDetail'));
+const Promotions = lazy(() => import('./pages/Promotions'));
+const PromotionForm = lazy(() => import('./pages/PromotionForm'));
+const PromotionDetail = lazy(() => import('./pages/PromotionDetail'));
+const Employees = lazy(() => import('./pages/Employees'));
+const EmployeeForm = lazy(() => import('./pages/employees/EmployeeForm'));
+const EmployeeDetail = lazy(() => import('./pages/employees/EmployeeDetail'));
+const MasterLogin = lazy(() => import('./pages/admin/MasterLogin'));
+const StoresAdmin = lazy(() => import('./pages/admin/Stores'));
+
+// Reports — by far the largest and least-used chunk in the app.
+const DailySalesReport = lazy(() => import('./pages/reports/sales/DailySalesReport'));
+const ProductSalesReport = lazy(() => import('./pages/reports/sales/ProductSalesReport'));
+const CustomerSalesReport = lazy(() => import('./pages/reports/sales/CustomerSalesReport'));
+const PromotionReport = lazy(() => import('./pages/reports/sales/PromotionReport'));
+const StockLevelsReport = lazy(() => import('./pages/reports/inventory/StockLevelsReport'));
+const InventoryMovementReport = lazy(() => import('./pages/reports/inventory/InventoryMovementReport'));
+const ValuationReport = lazy(() => import('./pages/reports/inventory/ValuationReport'));
+const InventoryAdvancedReport = lazy(() => import('./pages/reports/inventory/InventoryAdvancedReport'));
+const ProductTraceabilityReport = lazy(() => import('./pages/reports/inventory/ProductTraceabilityReport'));
+const StockHealthReport = lazy(() => import('./pages/reports/inventory/StockHealthReport'));
+const PurchasePlanningReport = lazy(() => import('./pages/reports/inventory/PurchasePlanningReport'));
+const ActSverkaReport = lazy(() => import('./pages/reports/act-sverka/ActSverkaReport'));
+const ProductActSverkaReport = lazy(() => import('./pages/reports/inventory/ProductActSverkaReport'));
+const OverallSummaryReport = lazy(() => import('./pages/reports/financial/OverallSummaryReport'));
+const ProfitLossReport = lazy(() => import('./pages/reports/financial/ProfitLossReport'));
+const PaymentMethodReport = lazy(() => import('./pages/reports/financial/PaymentMethodReport'));
+const CashFlowReport = lazy(() => import('./pages/reports/financial/CashFlowReport'));
+const CashDiscrepancyReport = lazy(() => import('./pages/reports/financial/CashDiscrepancyReport'));
+const AgingReport = lazy(() => import('./pages/reports/financial/AgingReport'));
+const VIPCustomersReport = lazy(() => import('./pages/reports/customer/VIPCustomersReport'));
+const LoyaltyPointsReport = lazy(() => import('./pages/reports/customer/LoyaltyPointsReport'));
+const LostCustomersReport = lazy(() => import('./pages/reports/customer/LostCustomersReport'));
+const CustomerProfitabilityReport = lazy(() => import('./pages/reports/customer/CustomerProfitabilityReport'));
+const CustomerActSverkaReport = lazy(() => import('./pages/reports/customer/CustomerActSverkaReport'));
+const SupplierActSverkaReport = lazy(() => import('./pages/reports/supplier/SupplierActSverkaReport'));
+const DeliveryAccuracyReport = lazy(() => import('./pages/reports/supplier/DeliveryAccuracyReport'));
+const PriceHistoryReport = lazy(() => import('./pages/reports/supplier/PriceHistoryReport'));
+const SupplierProductSalesReport = lazy(() => import('./pages/reports/supplier/SupplierProductSalesReport'));
+const PurchaseSaleSpreadReport = lazy(() => import('./pages/reports/supplier/PurchaseSaleSpreadReport'));
+const PurchaseVsSoldReport = lazy(() => import('./pages/reports/supplier/PurchaseVsSoldReport'));
+const CashierPerformanceReport = lazy(() => import('./pages/reports/employee/CashierPerformanceReport'));
+const CashierErrorsReport = lazy(() => import('./pages/reports/employee/CashierErrorsReport'));
+const ShiftProductivityReport = lazy(() => import('./pages/reports/employee/ShiftProductivityReport'));
+const FraudSignalsReport = lazy(() => import('./pages/reports/employee/FraudSignalsReport'));
+const DeviceHealthReport = lazy(() => import('./pages/reports/system/DeviceHealthReport'));
+const AuditLogReport = lazy(() => import('./pages/reports/system/AuditLogReport'));
+const PriceChangeHistoryReport = lazy(() => import('./pages/reports/system/PriceChangeHistoryReport'));
+const ExecutiveDashboard = lazy(() => import('./pages/reports/executive/ExecutiveDashboard'));
+const LoginActivityReport = lazy(() => import('./pages/reports/employee/LoginActivityReport'));
+const PurchaseOrderSummaryReport = lazy(() => import('./pages/reports/purchase/PurchaseOrderSummaryReport'));
+const SupplierPerformanceReport = lazy(() => import('./pages/reports/purchase/SupplierPerformanceReport'));
+const ExportManager = lazy(() => import('./pages/reports/export/ExportManager'));
+const SalesReportsHub = lazy(() => import('./pages/reports/hubs/SalesReportsHub'));
+const FinancialReportsHub = lazy(() => import('./pages/reports/hubs/FinancialReportsHub'));
+const InventoryReportsHub = lazy(() => import('./pages/reports/hubs/InventoryReportsHub'));
+const PurchaseSupplierReportsHub = lazy(() => import('./pages/reports/hubs/PurchaseSupplierReportsHub'));
+const CrmReportsHub = lazy(() => import('./pages/reports/hubs/CrmReportsHub'));
+const EmployeeControlReportsHub = lazy(() => import('./pages/reports/hubs/EmployeeControlReportsHub'));
+const TechAuditReportsHub = lazy(() => import('./pages/reports/hubs/TechAuditReportsHub'));
+
+// Barcode/receipt designer tooling — opened a few times a year by an
+// admin. Always worth splitting.
+const ReceiptBarcodePage = lazy(() => import('./pages/tools/ReceiptBarcodePage'));
+const BarcodeDesignerPage = lazy(() => import('./pages/tools/BarcodeDesignerPage'));
+const BarcodeCenterPage = lazy(() => import('./pages/barcodes/BarcodeCenterPage'));
+const ReceiptDesignerPage = lazy(() => import('./pages/barcodes/ReceiptDesignerPage'));
+const ProductBarcodeServicePage = lazy(() => import('./pages/barcodes/ProductBarcodeServicePage'));
+const ScaleBarcodeServicePage = lazy(() => import('./pages/barcodes/ScaleBarcodeServicePage'));
+const ShelfLabelServicePage = lazy(() => import('./pages/barcodes/ShelfLabelServicePage'));
+
+/**
+ * Wraps a lazily-loaded page in a minimal Suspense fallback. The fallback
+ * deliberately matches the styling of `ProtectedRoute`'s "loading"
+ * screen so the in-app navigation feels seamless.
+ */
+function lazyElement(Component: ComponentType): ReactNode {
+  return (
+    <Suspense
+      fallback={
+        <div className="flex h-full min-h-[40vh] items-center justify-center">
+          <div className="text-muted-foreground" aria-busy="true">
+            …
+          </div>
+        </div>
+      }
+    >
+      <Component />
+    </Suspense>
+  );
+}
 
 export interface RouteConfig {
   name: string;
@@ -132,14 +171,14 @@ const routes: RouteConfig[] = [
   {
     name: 'Master Login',
     path: '/admin/login',
-    element: <MasterLogin />,
+    element: lazyElement(MasterLogin),
     visible: false,
     requireAuth: false,
   },
   {
     name: 'Stores Admin',
     path: '/admin/stores',
-    element: <StoresAdmin />,
+    element: lazyElement(StoresAdmin),
     visible: false,
     // requireAuth stays false here; App.tsx applies AdminRoute which demands
     // scope='master' rather than a tenant user.
@@ -206,7 +245,7 @@ const routes: RouteConfig[] = [
   {
     name: 'Promotions',
     path: '/promotions',
-    element: <Promotions />,
+    element: lazyElement(Promotions),
     visible: true,
     requireAuth: true,
     allowedRoles: ['admin', 'manager'],
@@ -214,7 +253,7 @@ const routes: RouteConfig[] = [
   {
     name: 'New Promotion',
     path: '/promotions/new',
-    element: <PromotionForm />,
+    element: lazyElement(PromotionForm),
     visible: false,
     requireAuth: true,
     allowedRoles: ['admin', 'manager'],
@@ -222,7 +261,7 @@ const routes: RouteConfig[] = [
   {
     name: 'Promotion Detail',
     path: '/promotions/:id',
-    element: <PromotionDetail />,
+    element: lazyElement(PromotionDetail),
     visible: false,
     requireAuth: true,
     allowedRoles: ['admin', 'manager'],
@@ -230,7 +269,7 @@ const routes: RouteConfig[] = [
   {
     name: 'Edit Promotion',
     path: '/promotions/:id/edit',
-    element: <PromotionForm />,
+    element: lazyElement(PromotionForm),
     visible: false,
     requireAuth: true,
     allowedRoles: ['admin', 'manager'],
@@ -246,6 +285,14 @@ const routes: RouteConfig[] = [
     name: 'Online Orders',
     path: '/web-orders',
     element: <WebOrders />,
+    visible: true,
+    requireAuth: true,
+    allowedRoles: ['admin', 'manager'],
+  },
+  {
+    name: 'Courier',
+    path: '/courier',
+    element: lazyElement(CourierOrders),
     visible: true,
     requireAuth: true,
     allowedRoles: ['admin', 'manager'],
@@ -288,35 +335,35 @@ const routes: RouteConfig[] = [
   {
     name: 'Expenses',
     path: '/expenses',
-    element: <Expenses />,
+    element: lazyElement(Expenses),
     visible: true,
     requireAuth: true,
   },
   {
     name: 'Smeta',
     path: '/quotes',
-    element: <Quotes />,
+    element: lazyElement(Quotes),
     visible: true,
     requireAuth: true,
   },
   {
     name: 'New Quote',
     path: '/quotes/new',
-    element: <QuoteForm />,
+    element: lazyElement(QuoteForm),
     visible: false,
     requireAuth: true,
   },
   {
     name: 'Quote Detail',
     path: '/quotes/:id',
-    element: <QuoteDetail />,
+    element: lazyElement(QuoteDetail),
     visible: false,
     requireAuth: true,
   },
   {
     name: 'Edit Quote',
     path: '/quotes/:id/edit',
-    element: <QuoteForm />,
+    element: lazyElement(QuoteForm),
     visible: false,
     requireAuth: true,
   },
@@ -380,7 +427,7 @@ const routes: RouteConfig[] = [
   {
     name: 'Inventory',
     path: '/inventory',
-    element: <Inventory />,
+    element: lazyElement(Inventory),
     visible: true,
     requireAuth: true,
     allowedRoles: ['admin', 'manager'],
@@ -388,7 +435,7 @@ const routes: RouteConfig[] = [
   {
     name: 'Inventory Detail',
     path: '/inventory/:id',
-    element: <InventoryDetail />,
+    element: lazyElement(InventoryDetail),
     visible: false,
     requireAuth: true,
     allowedRoles: ['admin', 'manager'],
@@ -396,7 +443,7 @@ const routes: RouteConfig[] = [
   {
     name: 'Purchase Orders',
     path: '/purchase-orders',
-    element: <PurchaseOrders />,
+    element: lazyElement(PurchaseOrders),
     visible: true,
     requireAuth: true,
     allowedRoles: ['admin', 'manager'],
@@ -404,7 +451,7 @@ const routes: RouteConfig[] = [
   {
     name: 'New Purchase Order',
     path: '/purchase-orders/new',
-    element: <PurchaseOrderForm />,
+    element: lazyElement(PurchaseOrderForm),
     visible: false,
     requireAuth: true,
     allowedRoles: ['admin', 'manager'],
@@ -412,7 +459,7 @@ const routes: RouteConfig[] = [
   {
     name: 'Edit Purchase Order',
     path: '/purchase-orders/:id/edit',
-    element: <PurchaseOrderForm />,
+    element: lazyElement(PurchaseOrderForm),
     visible: false,
     requireAuth: true,
     allowedRoles: ['admin', 'manager'],
@@ -420,7 +467,7 @@ const routes: RouteConfig[] = [
   {
     name: 'Purchase Order Detail',
     path: '/purchase-orders/:id',
-    element: <PurchaseOrderDetail />,
+    element: lazyElement(PurchaseOrderDetail),
     visible: false,
     requireAuth: true,
     allowedRoles: ['admin', 'manager'],
@@ -428,7 +475,7 @@ const routes: RouteConfig[] = [
   {
     name: 'Purchase Receipt',
     path: '/purchase-orders/:id/receive',
-    element: <PurchaseReceiptForm />,
+    element: lazyElement(PurchaseReceiptForm),
     visible: false,
     requireAuth: true,
     allowedRoles: ['admin', 'manager'],
@@ -436,7 +483,7 @@ const routes: RouteConfig[] = [
   {
     name: 'New Purchase Receipt',
     path: '/purchase-receipts/new',
-    element: <PurchaseReceiptForm />,
+    element: lazyElement(PurchaseReceiptForm),
     visible: false,
     requireAuth: true,
     allowedRoles: ['admin', 'manager'],
@@ -444,7 +491,7 @@ const routes: RouteConfig[] = [
   {
     name: 'Suppliers',
     path: '/suppliers',
-    element: <Suppliers />,
+    element: lazyElement(Suppliers),
     visible: true,
     requireAuth: true,
     allowedRoles: ['admin', 'manager'],
@@ -452,7 +499,7 @@ const routes: RouteConfig[] = [
   {
     name: 'New Supplier',
     path: '/suppliers/new',
-    element: <SupplierForm />,
+    element: lazyElement(SupplierForm),
     visible: false,
     requireAuth: true,
     allowedRoles: ['admin', 'manager'],
@@ -460,7 +507,7 @@ const routes: RouteConfig[] = [
   {
     name: 'Edit Supplier',
     path: '/suppliers/:id/edit',
-    element: <SupplierForm />,
+    element: lazyElement(SupplierForm),
     visible: false,
     requireAuth: true,
     allowedRoles: ['admin', 'manager'],
@@ -468,7 +515,7 @@ const routes: RouteConfig[] = [
   {
     name: 'Supplier Detail',
     path: '/suppliers/:id',
-    element: <SupplierDetail />,
+    element: lazyElement(SupplierDetail),
     visible: false,
     requireAuth: true,
     allowedRoles: ['admin', 'manager'],
@@ -485,7 +532,7 @@ const routes: RouteConfig[] = [
   {
     name: 'Sotuv hisobotlari',
     path: '/reports/sales',
-    element: <SalesReportsHub />,
+    element: lazyElement(SalesReportsHub),
     visible: false,
     requireAuth: true,
     allowedRoles: ['admin', 'manager'],
@@ -493,7 +540,7 @@ const routes: RouteConfig[] = [
   {
     name: 'Moliyaviy hisobotlar',
     path: '/reports/financial',
-    element: <FinancialReportsHub />,
+    element: lazyElement(FinancialReportsHub),
     visible: false,
     requireAuth: true,
     allowedRoles: ['admin', 'manager'],
@@ -501,7 +548,7 @@ const routes: RouteConfig[] = [
   {
     name: 'Ombor hisobotlari',
     path: '/reports/inventory',
-    element: <InventoryReportsHub />,
+    element: lazyElement(InventoryReportsHub),
     visible: false,
     requireAuth: true,
     allowedRoles: ['admin', 'manager'],
@@ -509,7 +556,7 @@ const routes: RouteConfig[] = [
   {
     name: 'Xarid va yetkazib beruvchi',
     path: '/reports/purchase',
-    element: <PurchaseSupplierReportsHub />,
+    element: lazyElement(PurchaseSupplierReportsHub),
     visible: false,
     requireAuth: true,
     allowedRoles: ['admin', 'manager'],
@@ -517,7 +564,7 @@ const routes: RouteConfig[] = [
   {
     name: 'Mijozlar (CRM)',
     path: '/reports/customer',
-    element: <CrmReportsHub />,
+    element: lazyElement(CrmReportsHub),
     visible: false,
     requireAuth: true,
     allowedRoles: ['admin', 'manager'],
@@ -525,7 +572,7 @@ const routes: RouteConfig[] = [
   {
     name: 'Xodimlar va nazorat',
     path: '/reports/employee',
-    element: <EmployeeControlReportsHub />,
+    element: lazyElement(EmployeeControlReportsHub),
     visible: false,
     requireAuth: true,
     allowedRoles: ['admin', 'manager'],
@@ -533,7 +580,7 @@ const routes: RouteConfig[] = [
   {
     name: 'Texnik va audit',
     path: '/reports/system',
-    element: <TechAuditReportsHub />,
+    element: lazyElement(TechAuditReportsHub),
     visible: false,
     requireAuth: true,
     allowedRoles: ['admin', 'manager'],
@@ -541,7 +588,7 @@ const routes: RouteConfig[] = [
   {
     name: 'Boshqaruv dashboard',
     path: '/reports/executive/dashboard',
-    element: <ExecutiveDashboard />,
+    element: lazyElement(ExecutiveDashboard),
     visible: false,
     requireAuth: true,
     allowedRoles: ['admin'],
@@ -549,7 +596,7 @@ const routes: RouteConfig[] = [
   {
     name: 'Kunlik savdo',
     path: '/reports/sales/daily',
-    element: <DailySalesReport />,
+    element: lazyElement(DailySalesReport),
     visible: false,
     requireAuth: true,
     allowedRoles: ['admin', 'manager'],
@@ -557,7 +604,7 @@ const routes: RouteConfig[] = [
   {
     name: 'Mahsulotlar bo‘yicha savdo',
     path: '/reports/sales/products',
-    element: <ProductSalesReport />,
+    element: lazyElement(ProductSalesReport),
     visible: false,
     requireAuth: true,
     allowedRoles: ['admin', 'manager'],
@@ -565,7 +612,7 @@ const routes: RouteConfig[] = [
   {
     name: 'Aksiyalar hisoboti',
     path: '/reports/sales/promotions',
-    element: <PromotionReport />,
+    element: lazyElement(PromotionReport),
     visible: false,
     requireAuth: true,
     allowedRoles: ['admin', 'manager'],
@@ -573,7 +620,7 @@ const routes: RouteConfig[] = [
   {
     name: 'Ombor qoldiqlari',
     path: '/reports/inventory/stock-levels',
-    element: <StockLevelsReport />,
+    element: lazyElement(StockLevelsReport),
     visible: false,
     requireAuth: true,
     allowedRoles: ['admin', 'manager'],
@@ -581,7 +628,15 @@ const routes: RouteConfig[] = [
   {
     name: 'Bozorga borish hisoboti',
     path: '/reports/inventory/purchase-planning',
-    element: <PurchasePlanningReport />,
+    element: lazyElement(PurchasePlanningReport),
+    visible: false,
+    requireAuth: true,
+    allowedRoles: ['admin', 'manager'],
+  },
+  {
+    name: 'Moliyaviy akt sverka (umumiy hisob-kitob)',
+    path: '/reports/financial/business-summary',
+    element: lazyElement(OverallSummaryReport),
     visible: false,
     requireAuth: true,
     allowedRoles: ['admin', 'manager'],
@@ -589,7 +644,7 @@ const routes: RouteConfig[] = [
   {
     name: 'Foyda va zarar (P&L)',
     path: '/reports/financial/profit-loss',
-    element: <ProfitLossReport />,
+    element: lazyElement(ProfitLossReport),
     visible: false,
     requireAuth: true,
     allowedRoles: ['admin', 'manager'],
@@ -597,7 +652,7 @@ const routes: RouteConfig[] = [
   {
     name: 'Mijozlar bo‘yicha savdo',
     path: '/reports/sales/customers',
-    element: <CustomerSalesReport />,
+    element: lazyElement(CustomerSalesReport),
     visible: false,
     requireAuth: true,
     allowedRoles: ['admin', 'manager'],
@@ -605,7 +660,7 @@ const routes: RouteConfig[] = [
   {
     name: 'Ombor harakatlari',
     path: '/reports/inventory/movements',
-    element: <InventoryMovementReport />,
+    element: lazyElement(InventoryMovementReport),
     visible: false,
     requireAuth: true,
     allowedRoles: ['admin', 'manager'],
@@ -613,7 +668,7 @@ const routes: RouteConfig[] = [
   {
     name: 'Mahsulot tarixi (Traceability)',
     path: '/reports/inventory/traceability',
-    element: <ProductTraceabilityReport />,
+    element: lazyElement(ProductTraceabilityReport),
     visible: false,
     requireAuth: true,
     allowedRoles: ['admin', 'manager'],
@@ -623,7 +678,15 @@ const routes: RouteConfig[] = [
   {
     name: 'Ombor qiymati',
     path: '/reports/inventory/valuation',
-    element: <ValuationReport />,
+    element: lazyElement(ValuationReport),
+    visible: false,
+    requireAuth: true,
+    allowedRoles: ['admin', 'manager'],
+  },
+  {
+    name: 'Yaxshi sotuv & muzlagan mahsulotlar',
+    path: '/reports/inventory/stock-health',
+    element: lazyElement(StockHealthReport),
     visible: false,
     requireAuth: true,
     allowedRoles: ['admin', 'manager'],
@@ -631,15 +694,23 @@ const routes: RouteConfig[] = [
   {
     name: 'Ombor tahlili (kengaytirilgan)',
     path: '/reports/inventory/advanced',
-    element: <InventoryAdvancedReport />,
+    element: lazyElement(InventoryAdvancedReport),
     visible: false,
     requireAuth: true,
     allowedRoles: ['admin', 'manager'],
   },
   {
-    name: 'Akt sverka (partiya)',
+    name: "Mahsulot bo‘yicha akt sverka (davr)",
+    path: '/reports/inventory/product-act-sverka',
+    element: lazyElement(ProductActSverkaReport),
+    visible: false,
+    requireAuth: true,
+    allowedRoles: ['admin', 'manager'],
+  },
+  {
+    name: 'Akt sverka (FIFO partiya, barcha davr)',
     path: '/reports/act-sverka',
-    element: <ActSverkaReport />,
+    element: lazyElement(ActSverkaReport),
     visible: false,
     requireAuth: true,
     allowedRoles: ['admin', 'manager'],
@@ -647,7 +718,7 @@ const routes: RouteConfig[] = [
   {
     name: "To‘lov usullari bo‘yicha",
     path: '/reports/financial/payment-methods',
-    element: <PaymentMethodReport />,
+    element: lazyElement(PaymentMethodReport),
     visible: false,
     requireAuth: true,
     allowedRoles: ['admin', 'manager'],
@@ -655,7 +726,7 @@ const routes: RouteConfig[] = [
   {
     name: 'Pul oqimi',
     path: '/reports/financial/cash-flow',
-    element: <CashFlowReport />,
+    element: lazyElement(CashFlowReport),
     visible: false,
     requireAuth: true,
     allowedRoles: ['admin', 'manager'],
@@ -663,7 +734,7 @@ const routes: RouteConfig[] = [
   {
     name: 'Kassa tafovuti',
     path: '/reports/financial/cash-discrepancies',
-    element: <CashDiscrepancyReport />,
+    element: lazyElement(CashDiscrepancyReport),
     visible: false,
     requireAuth: true,
     allowedRoles: ['admin', 'manager'],
@@ -671,7 +742,7 @@ const routes: RouteConfig[] = [
   {
     name: 'Qarzdorlik (Aging)',
     path: '/reports/financial/aging',
-    element: <AgingReport />,
+    element: lazyElement(AgingReport),
     visible: false,
     requireAuth: true,
     allowedRoles: ['admin', 'manager'],
@@ -679,7 +750,7 @@ const routes: RouteConfig[] = [
   {
     name: 'VIP mijozlar',
     path: '/reports/customer/vip',
-    element: <VIPCustomersReport />,
+    element: lazyElement(VIPCustomersReport),
     visible: false,
     requireAuth: true,
     allowedRoles: ['admin', 'manager'],
@@ -687,7 +758,7 @@ const routes: RouteConfig[] = [
   {
     name: 'Bonus ball hisoboti',
     path: '/reports/customer/loyalty',
-    element: <LoyaltyPointsReport />,
+    element: lazyElement(LoyaltyPointsReport),
     visible: false,
     requireAuth: true,
     allowedRoles: ['admin', 'manager'],
@@ -695,7 +766,7 @@ const routes: RouteConfig[] = [
   {
     name: 'Yo‘qolgan mijozlar',
     path: '/reports/customer/lost',
-    element: <LostCustomersReport />,
+    element: lazyElement(LostCustomersReport),
     visible: false,
     requireAuth: true,
     allowedRoles: ['admin', 'manager'],
@@ -703,7 +774,7 @@ const routes: RouteConfig[] = [
   {
     name: 'Mijoz rentabelligi',
     path: '/reports/customer/profitability',
-    element: <CustomerProfitabilityReport />,
+    element: lazyElement(CustomerProfitabilityReport),
     visible: false,
     requireAuth: true,
     allowedRoles: ['admin', 'manager'],
@@ -711,7 +782,7 @@ const routes: RouteConfig[] = [
   {
     name: 'Akt sverka (mijoz)',
     path: '/reports/customer/act-sverka',
-    element: <CustomerActSverkaReport />,
+    element: lazyElement(CustomerActSverkaReport),
     visible: false,
     requireAuth: true,
     allowedRoles: ['admin', 'manager'],
@@ -719,7 +790,7 @@ const routes: RouteConfig[] = [
   {
     name: 'Akt sverka (yetkazib beruvchi)',
     path: '/reports/supplier/act-sverka',
-    element: <SupplierActSverkaReport />,
+    element: lazyElement(SupplierActSverkaReport),
     visible: false,
     requireAuth: true,
     allowedRoles: ['admin', 'manager'],
@@ -727,7 +798,7 @@ const routes: RouteConfig[] = [
   {
     name: 'Kassir samaradorligi',
     path: '/reports/employee/cashier',
-    element: <CashierPerformanceReport />,
+    element: lazyElement(CashierPerformanceReport),
     visible: false,
     requireAuth: true,
     allowedRoles: ['admin', 'manager'],
@@ -735,7 +806,7 @@ const routes: RouteConfig[] = [
   {
     name: 'Kirishlar tarixi',
     path: '/reports/employee/activity',
-    element: <LoginActivityReport />,
+    element: lazyElement(LoginActivityReport),
     visible: false,
     requireAuth: true,
     allowedRoles: ['admin', 'manager'],
@@ -743,7 +814,7 @@ const routes: RouteConfig[] = [
   {
     name: 'Kassir xatolari',
     path: '/reports/employee/errors',
-    element: <CashierErrorsReport />,
+    element: lazyElement(CashierErrorsReport),
     visible: false,
     requireAuth: true,
     allowedRoles: ['admin', 'manager'],
@@ -751,7 +822,7 @@ const routes: RouteConfig[] = [
   {
     name: 'Smena unumdorligi',
     path: '/reports/employee/shift-productivity',
-    element: <ShiftProductivityReport />,
+    element: lazyElement(ShiftProductivityReport),
     visible: false,
     requireAuth: true,
     allowedRoles: ['admin', 'manager'],
@@ -759,7 +830,7 @@ const routes: RouteConfig[] = [
   {
     name: 'Firibgarlik signallari',
     path: '/reports/employee/fraud-signals',
-    element: <FraudSignalsReport />,
+    element: lazyElement(FraudSignalsReport),
     visible: false,
     requireAuth: true,
     allowedRoles: ['admin', 'manager'],
@@ -767,7 +838,7 @@ const routes: RouteConfig[] = [
   {
     name: 'Xaridlar xulosasi',
     path: '/reports/purchase/summary',
-    element: <PurchaseOrderSummaryReport />,
+    element: lazyElement(PurchaseOrderSummaryReport),
     visible: false,
     requireAuth: true,
     allowedRoles: ['admin', 'manager'],
@@ -775,7 +846,7 @@ const routes: RouteConfig[] = [
   {
     name: 'Yetkazib beruvchi samaradorligi',
     path: '/reports/purchase/suppliers',
-    element: <SupplierPerformanceReport />,
+    element: lazyElement(SupplierPerformanceReport),
     visible: false,
     requireAuth: true,
     allowedRoles: ['admin', 'manager'],
@@ -783,7 +854,7 @@ const routes: RouteConfig[] = [
   {
     name: 'Yetkazib berish aniqligi',
     path: '/reports/supplier/delivery-accuracy',
-    element: <DeliveryAccuracyReport />,
+    element: lazyElement(DeliveryAccuracyReport),
     visible: false,
     requireAuth: true,
     allowedRoles: ['admin', 'manager'],
@@ -791,7 +862,7 @@ const routes: RouteConfig[] = [
   {
     name: 'Narxlar tarixi',
     path: '/reports/supplier/price-history',
-    element: <PriceHistoryReport />,
+    element: lazyElement(PriceHistoryReport),
     visible: false,
     requireAuth: true,
     allowedRoles: ['admin', 'manager'],
@@ -799,7 +870,7 @@ const routes: RouteConfig[] = [
   {
     name: 'Yetkazib beruvchi → mahsulot sotuvlari',
     path: '/reports/supplier/product-sales',
-    element: <SupplierProductSalesReport />,
+    element: lazyElement(SupplierProductSalesReport),
     visible: false,
     requireAuth: true,
     allowedRoles: ['admin', 'manager'],
@@ -807,7 +878,15 @@ const routes: RouteConfig[] = [
   {
     name: 'Xarid–sotuv farqi',
     path: '/reports/supplier/purchase-sale-spread',
-    element: <PurchaseSaleSpreadReport />,
+    element: lazyElement(PurchaseSaleSpreadReport),
+    visible: false,
+    requireAuth: true,
+    allowedRoles: ['admin', 'manager'],
+  },
+  {
+    name: 'Sotib oldim / Sotdim',
+    path: '/reports/supplier/purchase-vs-sold',
+    element: lazyElement(PurchaseVsSoldReport),
     visible: false,
     requireAuth: true,
     allowedRoles: ['admin', 'manager'],
@@ -815,7 +894,7 @@ const routes: RouteConfig[] = [
   {
     name: 'Eksport',
     path: '/reports/export',
-    element: <ExportManager />,
+    element: lazyElement(ExportManager),
     visible: false,
     requireAuth: true,
     allowedRoles: ['admin', 'manager'],
@@ -823,7 +902,7 @@ const routes: RouteConfig[] = [
   {
     name: 'Qurilma holati',
     path: '/reports/system/device-health',
-    element: <DeviceHealthReport />,
+    element: lazyElement(DeviceHealthReport),
     visible: false,
     requireAuth: true,
     allowedRoles: ['admin', 'manager'],
@@ -831,7 +910,7 @@ const routes: RouteConfig[] = [
   {
     name: 'Audit log',
     path: '/reports/system/audit-log',
-    element: <AuditLogReport />,
+    element: lazyElement(AuditLogReport),
     visible: false,
     requireAuth: true,
     allowedRoles: ['admin', 'manager'],
@@ -839,7 +918,7 @@ const routes: RouteConfig[] = [
   {
     name: 'Narx o‘zgarish tarixi',
     path: '/reports/system/price-history',
-    element: <PriceChangeHistoryReport />,
+    element: lazyElement(PriceChangeHistoryReport),
     visible: false,
     requireAuth: true,
     allowedRoles: ['admin', 'manager'],
@@ -847,7 +926,7 @@ const routes: RouteConfig[] = [
   {
     name: 'Employees',
     path: '/employees',
-    element: <Employees />,
+    element: lazyElement(Employees),
     visible: true,
     requireAuth: true,
     allowedRoles: ['admin'],
@@ -855,7 +934,7 @@ const routes: RouteConfig[] = [
   {
     name: 'Add Employee',
     path: '/employees/new',
-    element: <EmployeeForm />,
+    element: lazyElement(EmployeeForm),
     visible: false,
     requireAuth: true,
     allowedRoles: ['admin'],
@@ -863,7 +942,7 @@ const routes: RouteConfig[] = [
   {
     name: 'Edit Employee',
     path: '/employees/:id/edit',
-    element: <EmployeeForm />,
+    element: lazyElement(EmployeeForm),
     visible: false,
     requireAuth: true,
     allowedRoles: ['admin'],
@@ -871,7 +950,7 @@ const routes: RouteConfig[] = [
   {
     name: 'Employee Detail',
     path: '/employees/:id',
-    element: <EmployeeDetail />,
+    element: lazyElement(EmployeeDetail),
     visible: false,
     requireAuth: true,
     allowedRoles: ['admin'],
@@ -882,12 +961,13 @@ const routes: RouteConfig[] = [
     element: <Settings />,
     visible: true,
     requireAuth: true,
-    allowedRoles: ['admin'],
+    /** Manager ham kassa/korxona sozlamalariga kirishi kerak; maxsus xavfli bo‘limlar Settings.tsx ichida faqat admin uchun */
+    allowedRoles: ['admin', 'manager'],
   },
   {
     name: 'Barcode Center',
     path: '/barcodes',
-    element: <BarcodeCenterPage />,
+    element: lazyElement(BarcodeCenterPage),
     visible: true,
     requireAuth: true,
     allowedRoles: ['admin', 'manager'],
@@ -895,7 +975,7 @@ const routes: RouteConfig[] = [
   {
     name: 'Receipt Designer',
     path: '/barcodes/receipt-designer',
-    element: <ReceiptDesignerPage />,
+    element: lazyElement(ReceiptDesignerPage),
     visible: false,
     requireAuth: true,
     allowedRoles: ['admin'],
@@ -903,7 +983,7 @@ const routes: RouteConfig[] = [
   {
     name: 'Product Barcode Service',
     path: '/barcodes/product',
-    element: <ProductBarcodeServicePage />,
+    element: lazyElement(ProductBarcodeServicePage),
     visible: false,
     requireAuth: true,
     allowedRoles: ['admin', 'manager'],
@@ -911,7 +991,7 @@ const routes: RouteConfig[] = [
   {
     name: 'Scale Barcode Service',
     path: '/barcodes/scale',
-    element: <ScaleBarcodeServicePage />,
+    element: lazyElement(ScaleBarcodeServicePage),
     visible: false,
     requireAuth: true,
     allowedRoles: ['admin', 'manager'],
@@ -919,7 +999,7 @@ const routes: RouteConfig[] = [
   {
     name: 'Shelf Label Service',
     path: '/barcodes/shelf-label',
-    element: <ShelfLabelServicePage />,
+    element: lazyElement(ShelfLabelServicePage),
     visible: false,
     requireAuth: true,
     allowedRoles: ['admin', 'manager'],
@@ -927,7 +1007,7 @@ const routes: RouteConfig[] = [
   {
     name: 'Receipt & Barcode Tools',
     path: '/tools/receipt-barcode',
-    element: <ReceiptBarcodePage />,
+    element: lazyElement(ReceiptBarcodePage),
     visible: false,
     requireAuth: true,
     allowedRoles: ['admin', 'manager'],
@@ -935,7 +1015,7 @@ const routes: RouteConfig[] = [
   {
     name: 'Barcode Designer',
     path: '/tools/barcode-designer',
-    element: <BarcodeDesignerPage />,
+    element: lazyElement(BarcodeDesignerPage),
     visible: false,
     requireAuth: true,
     allowedRoles: ['admin', 'manager'],

@@ -15,13 +15,15 @@ import { useToast } from '@/hooks/use-toast';
 import { Clock, Lock, Unlock } from 'lucide-react';
 import { formatMoneyUZS } from '@/lib/format';
 import { getShiftSummary } from '@/db/api';
-import MoneyInput from '@/components/common/MoneyInput';
 import { formatDateTime, formatTime } from '@/lib/datetime';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
 
 export default function ShiftControl() {
   const { user } = useAuth();
   const { toast } = useToast();
-  const { currentShift, openShift, closeShift, addSale, addRefund, sales, refunds, setCurrentShift, syncFromDatabase } = useShiftStore();
+  const { currentShift, openShift, closeShift, addSale, addRefund, sales, refunds, setCurrentShift, syncFromDatabase } =
+    useShiftStore();
   
   const [openDialogOpen, setOpenDialogOpen] = useState(false);
   const [closeDialogOpen, setCloseDialogOpen] = useState(false);
@@ -37,8 +39,19 @@ export default function ShiftControl() {
     openingCash: number;
     totalSales: number;
     cashSales: number;
+    /** Mijozga berilgan qarz (buyurtma bo‘yicha nasiya) — kassaga tushmaydi */
+    creditDebtIssued: number;
+    /** Mijoz qarzini toʻlash (balansdan, barcha usullar) */
+    debtRepaidTotal: number;
+    /** Shundan naqd kassaga */
+    debtRepaidCash: number;
+    /** Mijoz balansiga naqd oqimi (+kirim / −chiqim), kutilayotgan naqdga qo‘shiladi */
+    customerDrawerCashNet: number;
     orders: number; // Changed from orderCount to orders
+    /** Kassadan chiqgan naqd qaytarishlar (kutilayotgan naqd dan ayiriladi) */
     totalRefunds: number;
+    cashRefundsOut?: number;
+    totalReturnsGross?: number;
     expectedCash: number;
   } | null>(null);
   const [loadingSummary, setLoadingSummary] = useState(false);
@@ -60,56 +73,131 @@ export default function ShiftControl() {
 
   // NOTE: Removed duplicate checkActiveShift useEffect - syncFromDatabase already handles this
 
-  // Fetch shift summary from backend when close dialog opens
-  // CRITICAL: Reset summary when dialog closes to force fresh fetch on next open
+  // Fetch shift summary when close dialog opens: avval bazadan smenani sinxronlash,
+  // keyin summary — aks holda localStorage / eski state bo‘yicha noto‘g‘ri shift_id bilan 0 chiqadi.
   useEffect(() => {
-    if (closeDialogOpen && currentShift?.id) {
-      setLoadingSummary(true);
-      console.log('[SHIFT UI] Fetching shift summary for shiftId:', currentShift.id);
-      getShiftSummary(currentShift.id)
-        .then((data) => {
-          // Normalize keys (handle both camelCase and snake_case from backend)
-          const normalized = {
-            shiftId: data.shiftId || currentShift.id,
-            openedAt: data.openedAt || data.opened_at || currentShift.opened_at,
-            closedAt: data.closedAt || data.closed_at || currentShift.closed_at || null,
-            status: data.status || currentShift.status || 'open',
-            openingCash: data.openingCash ?? data.opening_cash ?? currentShift.opening_cash ?? 0,
-            totalSales: data.totalSales ?? data.total_payments ?? 0,
-            cashSales: data.cashSales ?? data.cash_payments ?? 0,
-            orders: data.orders ?? data.order_count ?? 0,
-            totalRefunds: data.totalRefunds ?? data.total_refunds ?? 0,
-            expectedCash: data.expectedCash ?? data.expected_cash ?? (data.openingCash ?? data.opening_cash ?? 0) + (data.cashSales ?? data.cash_payments ?? 0)
-          };
-          
-          console.log('[UI] shift summary (normalized):', normalized);
-          console.log('[UI] shift summary (raw from backend):', data);
-          
-          setShiftSummary(normalized);
-          setLoadingSummary(false);
-        })
-        .catch((error) => {
-          console.error('[SHIFT UI] Error fetching shift summary:', error);
-          setLoadingSummary(false);
-          // Fallback to local calculation if backend fails
-          setShiftSummary({
-            shiftId: currentShift.id,
-            openedAt: currentShift.opened_at,
-            closedAt: currentShift.closed_at || null,
-            status: currentShift.status || 'open',
-            openingCash: currentShift.opening_cash || 0,
-            totalSales: sales.reduce((sum, sale) => sum + (sale.amount || sale.total_amount || 0), 0),
-            cashSales: 0,
-            orders: 0,
-            totalRefunds: refunds.reduce((sum, refund) => sum + (refund.amount || refund.total_amount || 0), 0),
-            expectedCash: currentShift.opening_cash || 0,
-          });
-        });
-    } else if (!closeDialogOpen) {
-      // Reset summary when dialog closes to ensure fresh fetch on next open
+    if (!closeDialogOpen) {
       setShiftSummary(null);
+      return;
     }
-  }, [closeDialogOpen, currentShift?.id]);
+
+    if (!user?.id) {
+      setLoadingSummary(false);
+      return;
+    }
+
+    let cancelled = false;
+    setLoadingSummary(true);
+    console.log('[SHIFT UI] Close dialog — sync then summary');
+
+    syncFromDatabase(user.id)
+      .then((synced) => {
+        if (cancelled) return null;
+        const shiftId = synced?.id || useShiftStore.getState().currentShift?.id;
+        if (!shiftId) {
+          setLoadingSummary(false);
+          setShiftSummary(null);
+          toast({
+            title: 'Smena topilmadi',
+            description: 'Bazada ochiq smena yo‘q yoki sinxronlash muvaffaqiyatsiz. Sahifani yangilang yoki smena oching.',
+            variant: 'destructive',
+          });
+          return null;
+        }
+        console.log('[SHIFT UI] Fetching shift summary for shiftId:', shiftId);
+        return getShiftSummary(shiftId);
+      })
+      .then((data) => {
+        if (cancelled || data == null) {
+          if (!cancelled && data == null) {
+            setLoadingSummary(false);
+          }
+          return;
+        }
+
+        const storeShift = useShiftStore.getState().currentShift;
+        const opening =
+          Number(data.openingCash ?? data.opening_cash ?? storeShift?.opening_cash ?? 0) || 0;
+        const cashS = Number(data.cashSales ?? data.cash_payments ?? 0) || 0;
+        const refundsOut =
+          Number(
+            data.cashRefundsOut ??
+              data.cash_refunds_out ??
+              data.totalRefunds ??
+              data.total_refunds ??
+              0
+          ) || 0;
+        const creditDebt = Number(data.creditDebtIssued ?? data.credit_debt_issued ?? 0) || 0;
+        const debtRepaidTotal = Number(data.debtRepaidTotal ?? data.debt_repaid_total ?? 0) || 0;
+        const debtRepaidCash = Number(data.debtRepaidCash ?? data.debt_repaid_cash ?? 0) || 0;
+        const customerDrawerCashNet =
+          Number(data.customerDrawerCashNet ?? data.customer_drawer_cash_net ?? 0) || 0;
+        const normalized = {
+          shiftId: String(data.shiftId ?? storeShift?.id ?? ''),
+          openedAt: data.openedAt || data.opened_at || storeShift?.opened_at,
+          closedAt: data.closedAt || data.closed_at || storeShift?.closed_at || null,
+          status: data.status || storeShift?.status || 'open',
+          openingCash: opening,
+          totalSales: Number(data.totalSales ?? data.total_payments ?? 0) || 0,
+          cashSales: cashS,
+          creditDebtIssued: creditDebt,
+          debtRepaidTotal,
+          debtRepaidCash,
+          customerDrawerCashNet,
+          orders: Number(data.orders ?? data.order_count ?? 0) || 0,
+          totalRefunds: refundsOut,
+          cashRefundsOut:
+            data.cashRefundsOut != null || data.cash_refunds_out != null
+              ? Number(data.cashRefundsOut ?? data.cash_refunds_out ?? 0) || 0
+              : refundsOut,
+          totalReturnsGross:
+            data.totalReturnsGross != null || data.total_returns_gross != null
+              ? Number(data.totalReturnsGross ?? data.total_returns_gross ?? 0) || 0
+              : undefined,
+          expectedCash:
+            data.expectedCash != null || data.expected_cash != null
+              ? Number(data.expectedCash ?? data.expected_cash ?? 0) || 0
+              : opening + cashS + customerDrawerCashNet - refundsOut,
+        };
+
+        console.log('[UI] shift summary (normalized):', normalized);
+        console.log('[UI] shift summary (raw from backend):', data);
+
+        setShiftSummary(normalized);
+        setLoadingSummary(false);
+      })
+      .catch((error) => {
+        if (cancelled) return;
+        console.error('[SHIFT UI] Error fetching shift summary:', error);
+        setLoadingSummary(false);
+        const sid = useShiftStore.getState().currentShift?.id || '';
+        setShiftSummary({
+          shiftId: sid,
+          openedAt: useShiftStore.getState().currentShift?.opened_at,
+          closedAt: useShiftStore.getState().currentShift?.closed_at || null,
+          status: useShiftStore.getState().currentShift?.status || 'open',
+          openingCash: useShiftStore.getState().currentShift?.opening_cash || 0,
+          totalSales: sales.reduce((sum, sale) => sum + (sale.amount || sale.total_amount || 0), 0),
+          cashSales: 0,
+          creditDebtIssued: 0,
+          debtRepaidTotal: 0,
+          debtRepaidCash: 0,
+          customerDrawerCashNet: 0,
+          orders: 0,
+          totalRefunds: refunds.reduce((sum, refund) => sum + (refund.amount || refund.total_amount || 0), 0),
+          expectedCash: useShiftStore.getState().currentShift?.opening_cash || 0,
+        });
+        toast({
+          title: 'Smena yakuni yuklanmadi',
+          description: error instanceof Error ? error.message : String(error),
+          variant: 'destructive',
+        });
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [closeDialogOpen, user?.id, syncFromDatabase, toast, sales, refunds]);
 
   const handleOpenShift = async () => {
     if (isOpening) {
@@ -186,6 +274,10 @@ export default function ShiftControl() {
   };
 
   const handleCloseShift = async () => {
+    if (isClosing) {
+      return;
+    }
+
     if (!user) {
       toast({
         title: 'Xatolik',
@@ -216,15 +308,20 @@ export default function ShiftControl() {
       return;
     }
 
+    setIsClosing(true);
     try {
       // Use summary totals if available, otherwise fallback to local calculation
-      const totals = shiftSummary ? {
-        sales: shiftSummary.totalSales,
-        refunds: shiftSummary.totalRefunds,
-      } : {
-        sales: sales.reduce((sum, sale) => sum + (sale.amount || sale.total_amount || 0), 0),
-        refunds: refunds.reduce((sum, refund) => sum + (refund.amount || refund.total_amount || 0), 0),
-      };
+      const totals = shiftSummary
+        ? {
+            cashSales: shiftSummary.cashSales,
+            refunds: shiftSummary.totalRefunds,
+            customerDrawerCashNet: shiftSummary.customerDrawerCashNet ?? 0,
+          }
+        : {
+            cashSales: 0,
+            refunds: refunds.reduce((sum, refund) => sum + (refund.amount || refund.total_amount || 0), 0),
+            customerDrawerCashNet: 0,
+          };
       
       await closeShift(cash, totals, user.id);
       setCloseDialogOpen(false);
@@ -241,6 +338,8 @@ export default function ShiftControl() {
         description: error instanceof Error ? error.message : 'Smenani yopib bo‘lmadi',
         variant: 'destructive',
       });
+    } finally {
+      setIsClosing(false);
     }
   };
 
@@ -279,6 +378,7 @@ export default function ShiftControl() {
             </Badge>
             <Button
               size="sm"
+              id="open-shift-trigger"
               onClick={() => setOpenDialogOpen(true)}
             >
               <Unlock className="h-4 w-4 mr-1" />
@@ -299,15 +399,15 @@ export default function ShiftControl() {
           </DialogHeader>
           <div className="space-y-4 py-4">
             <div className="space-y-2">
-              <MoneyInput
+              <Input
                 id="opening-cash"
-                label="Ochilish naqd puli"
-                value={openingCash}
-                onValueChange={setOpeningCash}
+                inputMode="numeric"
+                value={openingCash ?? ''}
+                onChange={(e) => {
+                  const digits = e.target.value.replace(/[^\d]/g, '');
+                  setOpeningCash(digits ? Number(digits) : null);
+                }}
                 placeholder="0"
-                required
-                allowZero
-                min={0}
                 autoFocus
               />
               <p className="text-xs text-muted-foreground">
@@ -364,12 +464,41 @@ export default function ShiftControl() {
                           {formatMoneyUZS(shiftSummary.totalSales ?? 0)}
                         </span>
                       </div>
+                      <p className="text-[11px] text-muted-foreground mb-2 leading-snug -mt-0.5">
+                        Barcha to‘lov usullari: naqd, karta, QR va hokazo (nasiya alohida)
+                      </p>
                       <div className="flex items-center justify-between text-sm mb-1">
                         <span className="text-muted-foreground">Naqd savdo:</span>
                         <span className="font-medium">
                           {formatMoneyUZS(shiftSummary.cashSales ?? 0)}
                         </span>
                       </div>
+                      <div className="flex items-center justify-between text-sm mb-1 rounded-md bg-amber-500/10 px-2 py-1">
+                        <span className="text-muted-foreground">Mijozga qarz (nasiya):</span>
+                        <span className="font-semibold tabular-nums text-amber-900 dark:text-amber-100">
+                          {formatMoneyUZS(shiftSummary.creditDebtIssued ?? 0)}
+                        </span>
+                      </div>
+                      <div className="flex items-center justify-between text-sm mb-1 rounded-md bg-sky-500/10 px-2 py-1">
+                        <span className="text-muted-foreground">Mijoz qarzini toʻladi (jami):</span>
+                        <span className="font-semibold tabular-nums text-sky-950 dark:text-sky-100">
+                          {formatMoneyUZS(shiftSummary.debtRepaidTotal ?? 0)}
+                        </span>
+                      </div>
+                      <div className="flex items-center justify-between text-sm mb-1 pl-2 text-xs text-muted-foreground">
+                        <span>shundan naqd kassaga:</span>
+                        <span className="font-medium tabular-nums">
+                          {formatMoneyUZS(shiftSummary.debtRepaidCash ?? 0)}
+                        </span>
+                      </div>
+                      {(shiftSummary.customerDrawerCashNet ?? 0) !== 0 && (
+                        <div className="flex items-center justify-between text-sm mb-1 pl-2 text-xs text-muted-foreground">
+                          <span>Mijoz balansiga naqd (±):</span>
+                          <span className="font-medium tabular-nums">
+                            {formatMoneyUZS(shiftSummary.customerDrawerCashNet ?? 0)}
+                          </span>
+                        </div>
+                      )}
                       <div className="flex items-center justify-between text-sm mb-1">
                         <span className="text-muted-foreground">Buyurtmalar:</span>
                         <span className="font-medium">
@@ -377,7 +506,7 @@ export default function ShiftControl() {
                         </span>
                       </div>
                       <div className="flex items-center justify-between text-sm">
-                        <span className="text-muted-foreground">Jami qaytarishlar:</span>
+                        <span className="text-muted-foreground">Naqd qaytarishlar:</span>
                         <span className="font-semibold text-red-600 dark:text-red-400">
                           {formatMoneyUZS(shiftSummary.totalRefunds ?? 0)}
                         </span>
@@ -389,6 +518,9 @@ export default function ShiftControl() {
                             {formatMoneyUZS(shiftSummary.expectedCash ?? shiftSummary.openingCash ?? 0)}
                           </span>
                         </div>
+                        <p className="text-[11px] text-muted-foreground mt-1 leading-snug">
+                          Ochilish naqd + Naqd savdo + Mijoz balansiga naqd (kirim/chiqim) − Naqd qaytarishlar
+                        </p>
                       </div>
                     </div>
                   </>
@@ -427,17 +559,24 @@ export default function ShiftControl() {
             )}
 
             <div className="space-y-2">
-              <MoneyInput
+              <Label htmlFor="closing-cash">
+                Kassadagi yopilish naqd puli <span className="text-destructive">*</span>
+              </Label>
+              <Input
                 id="closing-cash"
-                label="Kassadagi yopilish naqd puli"
-                value={closingCash}
-                onValueChange={setClosingCash}
+                inputMode="numeric"
+                value={closingCash ?? ''}
+                onChange={(e) => {
+                  const digits = e.target.value.replace(/[^\d]/g, '');
+                  setClosingCash(digits ? Number(digits) : null);
+                }}
                 placeholder="0"
-                required
-                allowZero
-                min={0}
                 autoFocus
+                disabled={isClosing}
               />
+              <p className="text-xs text-muted-foreground">
+                Kassada sanab tekshirilgan naqd pulni kiriting
+              </p>
             </div>
 
             <div className="rounded-lg border border-yellow-200 bg-yellow-50 p-3 dark:border-yellow-800 dark:bg-yellow-950">
@@ -447,16 +586,16 @@ export default function ShiftControl() {
             </div>
           </div>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setCloseDialogOpen(false)}>
+            <Button variant="outline" onClick={() => setCloseDialogOpen(false)} disabled={isClosing}>
               Bekor qilish
             </Button>
             <Button
               onClick={handleCloseShift}
-              disabled={closingCash === null || closingCash < 0}
+              disabled={closingCash === null || closingCash < 0 || isClosing || loadingSummary}
               variant="destructive"
               className="text-white"
             >
-              Smenani yopish
+              {isClosing ? 'Yopilmoqda...' : 'Smenani yopish'}
             </Button>
           </DialogFooter>
         </DialogContent>

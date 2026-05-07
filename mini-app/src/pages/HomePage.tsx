@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { apiUrl } from '../lib/api';
+import { apiUrl, readJsonSafe } from '../lib/api';
 import { Skeleton } from '../components/Skeleton';
 import { ProductCard } from '../components/ProductCard';
 
@@ -11,11 +11,13 @@ type Product = {
   price_uzs: number;
   image_url: string | null;
   is_available: boolean;
+  track_stock?: boolean;
+  stock_quantity?: number | null;
 };
 
 type Cat = { id: string; name: string };
 
-export function HomePage() {
+export function HomePage({ onCartChange }: { onCartChange?: () => void }) {
   const [cats, setCats] = useState<Cat[]>([]);
   const [products, setProducts] = useState<Product[]>([]);
   const [loading, setLoading] = useState(true);
@@ -32,8 +34,11 @@ export function HomePage() {
           fetch(apiUrl('/v1/products?limit=12&sort=name')),
         ]);
         if (!ok) return;
-        const cj = (await c.json()) as { data?: Cat[] };
-        const pj = (await p.json()) as { data?: Product[] };
+        if (!c.ok || !p.ok) {
+          throw new Error(`HTTP ${!c.ok ? c.status : p.status}`);
+        }
+        const cj = await readJsonSafe<{ data?: Cat[] }>(c);
+        const pj = await readJsonSafe<{ data?: Product[] }>(p);
         setCats(cj.data || []);
         setProducts(pj.data || []);
       } catch (e) {
@@ -48,18 +53,41 @@ export function HomePage() {
   }, []);
 
   return (
-    <div className="space-y-6">
-      <section className="overflow-hidden rounded-3xl bg-gradient-to-br from-[var(--dz-accent)] to-[#1a5f96] p-5 text-white shadow-[var(--dz-card-shadow)]">
-        <p className="text-sm font-medium opacity-90">Xush kelibsiz</p>
-        <h1 className="mt-1 text-xl font-bold leading-tight">DunyoZamin onlayn do&apos;koni</h1>
-        <p className="mt-2 text-sm opacity-90">
+    <div className="space-y-5">
+      <section className="relative overflow-hidden rounded-[1.6rem] bg-gradient-to-br from-[#5b6cff] via-[#6b63ff] to-[#8f59ff] p-4 text-white shadow-[var(--dz-card-shadow)]">
+        <div className="pointer-events-none absolute -right-10 -top-10 h-28 w-28 rounded-full bg-white/20 blur-2xl" />
+        <div className="pointer-events-none absolute -left-10 bottom-0 h-20 w-20 rounded-full bg-cyan-200/30 blur-xl" />
+        <p className="text-xs font-medium opacity-90">Xush kelibsiz</p>
+        <h1 className="mt-1 text-lg font-bold leading-tight">DunyoZamin onlayn do&apos;koni</h1>
+        <p className="mt-1.5 text-xs opacity-90">
           Mahsulotlarni tanlang, savatga qo&apos;shing va buyurtma bering.
         </p>
         <Link
           to="/catalog"
-          className="mt-4 inline-flex items-center justify-center rounded-xl bg-white/15 px-4 py-2.5 text-sm font-semibold backdrop-blur-sm transition hover:bg-white/25"
+          className="mt-3 inline-flex items-center justify-center rounded-lg bg-white/20 px-3.5 py-2 text-xs font-semibold backdrop-blur-sm transition hover:bg-white/30"
         >
           Katalogni ko&apos;rish →
+        </Link>
+      </section>
+
+      <section className="grid grid-cols-3 gap-2">
+        <Link
+          to="/catalog"
+          className="rounded-2xl border border-white/45 bg-gradient-to-br from-[#edf2ff] to-[#e4ebff] px-3 py-3 text-center text-xs font-semibold text-[#2f3f7a] shadow-[var(--dz-card-shadow-soft)]"
+        >
+          ⚡ Tezkor xarid
+        </Link>
+        <Link
+          to="/favorites"
+          className="rounded-2xl border border-white/45 bg-gradient-to-br from-[#ffe9f4] to-[#ffe1f3] px-3 py-3 text-center text-xs font-semibold text-[#7a2f68] shadow-[var(--dz-card-shadow-soft)]"
+        >
+          ❤ Sevimlilar
+        </Link>
+        <Link
+          to="/profile"
+          className="rounded-2xl border border-white/45 bg-gradient-to-br from-[#e6fbff] to-[#def6ff] px-3 py-3 text-center text-xs font-semibold text-[#215c77] shadow-[var(--dz-card-shadow-soft)]"
+        >
+          👤 Profil
         </Link>
       </section>
 
@@ -129,6 +157,9 @@ export function HomePage() {
                 image_url={p.image_url}
                 is_available={p.is_available}
                 description={p.description}
+                track_stock={p.track_stock}
+                stock_quantity={p.stock_quantity}
+                onQuickAdd={onCartChange}
               />
             ))}
           </div>

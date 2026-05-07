@@ -6,7 +6,7 @@
   "main": "server.cjs",
   "scripts": {
     "start": "node server.cjs",
-    "test": "node --test telegramAuth.test.cjs"
+    "test": "node --test *.test.cjs"
   },
   "engines": {
     "node": ">=18"

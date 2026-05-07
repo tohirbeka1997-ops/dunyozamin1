@@ -1,6 +1,7 @@
 const { ERROR_CODES, createError } = require('../lib/errors.cjs');
 const { randomUUID } = require('crypto');
 const { readConfig } = require('../config/appConfig.cjs');
+const { UZBEKISTAN_TZ_SQLITE_OFFSET } = require('../lib/timezone.cjs');
 
 /**
  * Sales Service (POS Terminal)
@@ -302,7 +303,9 @@ class SalesService {
     if (!this._isLoyaltyGeneralEnabled()) return;
 
     const scope = this._getLoyaltyEarnScope();
-    if (scope === 'master_only') return;
+    // "master_only" = ball faqat usta (master) toifasidagi mijozlarga; chakanaga emas.
+    // Ilgari butun funksiyadan chiqarilgani uchun usta + umumiy yig'ish yoq + usta-loyalnost o'chiq bo'lsa hech narsa yig'ilmay qolardi.
+    if (scope === 'master_only' && tier !== 'master') return;
     if (skipWalkInCustomerId && customerId === skipWalkInCustomerId) return;
 
     const perUzs = this._getLoyaltyGeneralPointsPerUzs();
@@ -756,13 +759,39 @@ class SalesService {
     // Use transaction for atomicity and concurrency safety
     // better-sqlite3's transaction() provides serializable isolation
     return this.db.transaction(() => {
-      const order = this.db.prepare('SELECT * FROM orders WHERE id = ?').get(orderId);
+      let order = this.db.prepare('SELECT * FROM orders WHERE id = ?').get(orderId);
       if (!order) {
         throw createError(ERROR_CODES.NOT_FOUND, `Order ${orderId} not found`);
       }
 
       if (order.status !== 'hold') {
         throw createError(ERROR_CODES.VALIDATION_ERROR, 'Can only finalize draft orders');
+      }
+
+      // Qoralama buyurtmada shift_id bo‘lmasa, joriy ochiq smenaga bog‘lash (yakunda smena xulosasi 0 bo‘lib qolmasin)
+      if (!order.shift_id) {
+        const wh = order.warehouse_id || 'main-warehouse-001';
+        const uid = order.cashier_id || order.user_id;
+        if (uid) {
+          const activeShift = this.db.prepare(`
+            SELECT id FROM shifts 
+            WHERE (user_id = ? OR cashier_id = ?) 
+              AND warehouse_id = ? 
+              AND status = 'open' 
+              AND closed_at IS NULL
+            ORDER BY opened_at DESC 
+            LIMIT 1
+          `).get(uid, uid, wh);
+          if (activeShift?.id) {
+            const iso = new Date().toISOString();
+            this.db.prepare('UPDATE orders SET shift_id = ?, updated_at = ? WHERE id = ?').run(
+              activeShift.id,
+              iso,
+              orderId
+            );
+            order = this.db.prepare('SELECT * FROM orders WHERE id = ?').get(orderId);
+          }
+        }
       }
 
       // Check shift status if shift_id is present
@@ -1048,6 +1077,9 @@ class SalesService {
     const KNOWN_DEFAULT_USER = 'default-admin-001';
     const MAIN_WAREHOUSE_ID = 'main-warehouse-001'; // SINGLE WAREHOUSE SYSTEM
     const KNOWN_DEFAULT_CUSTOMER = 'default-customer-001'; // Walk-in customer
+
+    /** Klient yuborgan haqiqiy kassir — user_id keyin default-admin ga majbur qilinadi; smena qidiruvi shu ID bo‘yicha ham bo‘lishi kerak */
+    const cashierIdBeforeForce = orderData.cashier_id || orderData.user_id || null;
     
     // FORCE Real Admin ID: Always use 'default-admin-001' for user_id
     // This ensures FK constraint is satisfied (user exists in users table)
@@ -1105,9 +1137,23 @@ class SalesService {
       console.log('🔍 No shift_id provided. Looking for active shift...');
       console.log('   User ID:', orderData.user_id);
       console.log('   Warehouse ID:', warehouseId);
-      
-      // Find the ACTIVE SHIFT for the user/warehouse
-      const activeShift = this.db.prepare(`
+
+      const tryUserIds = [];
+      const seen = new Set();
+      const pushUid = (uid) => {
+        if (!uid || seen.has(uid)) return;
+        const row = this.db.prepare('SELECT id FROM users WHERE id = ?').get(uid);
+        if (row?.id) {
+          seen.add(uid);
+          tryUserIds.push(uid);
+        }
+      };
+      pushUid(cashierIdBeforeForce);
+      pushUid(orderData.user_id);
+
+      let activeShift = null;
+      for (const uid of tryUserIds) {
+        activeShift = this.db.prepare(`
         SELECT id FROM shifts 
         WHERE (user_id = ? OR cashier_id = ?) 
           AND warehouse_id = ? 
@@ -1115,7 +1161,9 @@ class SalesService {
           AND closed_at IS NULL
         ORDER BY opened_at DESC 
         LIMIT 1
-      `).get(orderData.user_id, orderData.user_id, warehouseId);
+      `).get(uid, uid, warehouseId);
+        if (activeShift) break;
+      }
 
       if (!activeShift) {
         console.error('❌ ERROR: No active shift found for user/warehouse');
@@ -2055,16 +2103,20 @@ class SalesService {
       if (orderData.customer_id && orderData.customer_id !== KNOWN_DEFAULT_CUSTOMER) {
         const customerBefore = this.db.prepare('SELECT balance FROM customers WHERE id = ?').get(orderData.customer_id);
         const currentBalance = Number(customerBefore?.balance) || 0;
-        // Almashuv: jami manfiy (mijozga naqd qaytim) — agar mijozda qarz bo'lsa, returnsService dagi
-        // kabi qisman kamaytirish kerak; aks holda balans 0 bo'lsa faqat kassa harakati (hisob o'zgarishi yo'q).
+        // Almashuv: jami manfiy (mijozga naqd qaytim).
+        // Old (buggy): balance ga faqat min(qaytim, qarz) qo'shilardi — ortiqcha faqat kassadan chiqardi,
+        // mijoz haqdori (balance > 0) aks etmasdi (masalan qarz 100k, qaytim 150k → 50k yo'qolardi).
+        // Yangi: jami qaytim summasi balansga qo'shiladi: qarzni yopadi va ortiqchani haqdor qilib qoldiradi.
         let refundDebtReduction = 0;
+        let refundMagForBalance = 0;
         if (orderTotalAfterRecalc < -payEps) {
           const refundMag = Math.abs(orderTotalAfterRecalc);
           const debtMag = Math.max(0, -currentBalance);
           refundDebtReduction = Math.min(refundMag, debtMag);
+          refundMagForBalance = refundMag;
         }
         const balanceCreditIn =
-          Number(debtPaidFromOverpay || 0) + Number(refundDebtReduction || 0);
+          Number(debtPaidFromOverpay || 0) + Number(refundMagForBalance || 0);
         const newBalance = currentBalance - finalCreditAmount + balanceCreditIn;
 
         console.log('💰 Updating customer stats:', {
@@ -2073,6 +2125,7 @@ class SalesService {
           creditAmount: finalCreditAmount,
           debtPaidFromOverpay,
           refundDebtReduction,
+          refundMagForBalance,
           new_balance: newBalance,
           order_total: order.total_amount,
           client_declared_total: clientDeclaredTotal,
@@ -2098,7 +2151,7 @@ class SalesService {
           orderData.customer_id
         );
 
-        // Insert ledger entry for sale (both credit and fully paid)
+        // Insert ledger entries for sale and, when applicable, the part of cash that closes prior debt.
         try {
           const tableExists = this.db.prepare(`
             SELECT name FROM sqlite_master 
@@ -2106,47 +2159,94 @@ class SalesService {
           `).get();
 
           if (tableExists) {
+            const ledgerCols = this.db.prepare(`PRAGMA table_info(customer_ledger)`).all().map((c) => c.name);
+            const hasLedgerMethod = ledgerCols.includes('method');
+            const insertLedger = (entry) => {
+              const cols = [
+                'id',
+                'customer_id',
+                'type',
+                'ref_id',
+                'ref_no',
+                'amount',
+                'balance_after',
+                'note',
+              ];
+              const values = [
+                entry.id,
+                orderData.customer_id,
+                entry.type,
+                orderId,
+                order.order_number,
+                entry.amount,
+                entry.balance_after,
+                entry.note,
+              ];
+              if (hasLedgerMethod) {
+                cols.push('method');
+                values.push(entry.method || null);
+              }
+              cols.push('created_at', 'created_by');
+              values.push(now, orderData.cashier_id || orderData.user_id || null);
+              const placeholders = cols.map(() => '?').join(', ');
+              this.db
+                .prepare(`INSERT INTO customer_ledger (${cols.join(', ')}) VALUES (${placeholders})`)
+                .run(...values);
+            };
+
             const ledgerId = randomUUID();
             const ledgerAmount =
               finalCreditAmount > 0
                 ? -finalCreditAmount
-                : refundDebtReduction > 0
-                  ? refundDebtReduction
+                : refundMagForBalance > 0
+                  ? refundMagForBalance
                   : 0;
             const ledgerType =
-              finalCreditAmount > 0 ? 'sale' : refundDebtReduction > 0 ? 'refund' : 'sale';
+              finalCreditAmount > 0 ? 'sale' : refundMagForBalance > 0 ? 'refund' : 'sale';
+            const ledgerSurplus =
+              refundMagForBalance > refundDebtReduction ? refundMagForBalance - refundDebtReduction : 0;
             const ledgerNote =
               finalCreditAmount > 0
                 ? `Sotuv: ${order.order_number} (Qarz: ${finalCreditAmount} so'm)`
-                : refundDebtReduction > 0
-                  ? `POS almashuv / qaytim: ${order.order_number} (qarzdan ${refundDebtReduction} so'm)`
+                : refundMagForBalance > 0
+                  ? ledgerSurplus > 0 && refundDebtReduction > 0
+                    ? `POS almashuv / qaytim: ${order.order_number} (jami ${refundMagForBalance} so'm — qarz ${refundDebtReduction}; haqdor ${ledgerSurplus})`
+                    : `POS almashuv / qaytim: ${order.order_number} (${refundMagForBalance} so'm)`
                   : debtPaidFromOverpay > 0
-                    ? `Sotuv: ${order.order_number} (To'liq to'langan: ${order.total_amount} so'm; hisobga ortiqcha ${debtPaidFromOverpay} so'm)`
+                    ? `Sotuv: ${order.order_number} (To'liq to'langan: ${order.total_amount} so'm)`
                     : `Sotuv: ${order.order_number} (To'liq to'langan: ${order.total_amount} so'm)`;
+            const saleBalanceAfter = debtPaidFromOverpay > 0 ? newBalance - debtPaidFromOverpay : newBalance;
 
-            this.db.prepare(`
-              INSERT INTO customer_ledger (
-                id, customer_id, type, ref_id, ref_no, amount, balance_after, note, created_at, created_by
-              )
-              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            `).run(
-              ledgerId,
-              orderData.customer_id,
-              ledgerType,
-              orderId,
-              order.order_number,
-              ledgerAmount,
-              newBalance,
-              ledgerNote,
-              now,
-              orderData.cashier_id || orderData.user_id || null
-            );
+            insertLedger({
+              id: ledgerId,
+              type: ledgerType,
+              amount: ledgerAmount,
+              balance_after: saleBalanceAfter,
+              note: ledgerNote,
+              method: null,
+            });
             console.log('✅ Ledger entry inserted for sale:', {
               customerId: orderData.customer_id,
               amount: ledgerAmount,
               type: ledgerType,
-              newBalance,
+              balanceAfter: saleBalanceAfter,
             });
+
+            if (debtPaidFromOverpay > payEps) {
+              insertLedger({
+                id: randomUUID(),
+                type: 'payment_in',
+                amount: debtPaidFromOverpay,
+                balance_after: newBalance,
+                note: `Qarz yopildi: ${order.order_number} (to'lovdan hisobga o'tkazildi: ${debtPaidFromOverpay} so'm)`,
+                method: validPayments.find((p) => Number(p.amount) > 0)?.payment_method || null,
+              });
+              console.log('✅ Ledger entry inserted for prior debt payment:', {
+                customerId: orderData.customer_id,
+                amount: debtPaidFromOverpay,
+                balanceAfter: newBalance,
+              });
+            }
           }
         } catch (ledgerError) {
           console.error('❌ Failed to insert ledger entry for sale (non-critical):', ledgerError.message);
@@ -2373,8 +2473,15 @@ class SalesService {
     //   Previously we overwrote order.discount_amount with item discount sum, losing order-level discount and causing
     //   paid orders to appear as "partial" (paid == discounted total, but total_amount got recomputed without discount).
 
-    const grossSubtotal = items.reduce((sum, item) => sum + (Number(item.unit_price || 0) * Number(item.quantity || 0)), 0);
+    const grossSubtotal = items.reduce((sum, item) => {
+      const q = Number(item.qty_sale ?? item.quantity ?? 0);
+      return sum + Number(item.unit_price || 0) * q;
+    }, 0);
     const itemsDiscountSum = items.reduce((sum, item) => sum + Number(item.discount_amount || 0), 0);
+    const sumLineTotal = items.reduce(
+      (sum, item) => sum + Number(item.line_total ?? item.final_total ?? 0),
+      0
+    );
 
     const existingOrderDiscount = Number(orderRow.discount_amount || 0);
     const existingOrderDiscountPercent = Number(orderRow.discount_percent || 0);
@@ -2390,12 +2497,23 @@ class SalesService {
         ? (itemsDiscountSum / grossSubtotal) * 100
         : existingOrderDiscountPercent;
 
+    // Net merchandise before tax (same as legacy: gross − effective discount).
+    const netFromQtyPath = grossSubtotal - effectiveDiscountAmount;
+    let netMerchandise = netFromQtyPath;
+    const eps = 0.02;
+    // Exchange / qaytarish: ba'zi qatorlarda `qty_sale` bilan tiklangan jami va `quantity` noto‘g‘ri
+    // bo‘lishi mumkin — qator `line_total`lari manfiy bo‘lsa, lekin qty yo‘li ~0/musbat bo‘lsa,
+    // `orders.total_amount` musbatga aylanadi va mijozga haqdorlik balansga tushmaydi.
+    if (items.length && sumLineTotal < -eps && netFromQtyPath >= -eps) {
+      netMerchandise = sumLineTotal;
+    }
+
     // Get tax rate from settings
     const taxRateSetting = this.db.prepare('SELECT value FROM settings WHERE key = ?').get('tax_rate');
     const taxRate = taxRateSetting ? parseFloat(taxRateSetting.value) : 0;
-    const taxAmount = (grossSubtotal - effectiveDiscountAmount) * taxRate;
+    const taxAmount = netMerchandise * taxRate;
 
-    const totalAmount = grossSubtotal - effectiveDiscountAmount + taxAmount;
+    const totalAmount = netMerchandise + taxAmount;
 
     // CRITICAL FIX: Normalize timestamp to SQLite format
     const nowNormalized = new Date().toISOString().replace('T', ' ').replace('Z', '').substring(0, 19);
@@ -2437,23 +2555,18 @@ class SalesService {
     `;
     const params = [];
 
-    // CRITICAL FIX: Date filters - handle ISO format timestamps
-    // Don't use datetime() function on created_at as it may return NULL for ISO strings
-    // Instead, normalize the filter values and compare strings directly
+    // Date filters using Tashkent business day semantics (UTC+5), consistent with reports.
+    const orderDateExpr = `date(datetime(replace(replace(o.created_at, 'T', ' '), 'Z', ''), '${UZBEKISTAN_TZ_SQLITE_OFFSET}'))`;
     if (filters.date_from) {
-      // Normalize ISO timestamp to SQLite format: YYYY-MM-DD HH:MM:SS
-      const normalizedDate = filters.date_from.replace('T', ' ').replace('Z', '').substring(0, 19);
-      // Compare as strings (SQLite string comparison works for ISO format)
-      // CRITICAL: replace 'Z' with '' (empty string), not ')' - was causing wrong date filtering
-      query += " AND replace(replace(o.created_at, 'T', ' '), 'Z', '') >= ?";
-      params.push(normalizedDate);
+      const fromYmd = String(filters.date_from).substring(0, 10);
+      query += ` AND ${orderDateExpr} >= date(?)`;
+      params.push(fromYmd);
     }
 
     if (filters.date_to) {
-      const normalizedDate = filters.date_to.replace('T', ' ').replace('Z', '').substring(0, 19);
-      // Compare as strings (SQLite string comparison works for ISO format)
-      query += " AND replace(replace(o.created_at, 'T', ' '), 'Z', '') <= ?";
-      params.push(normalizedDate);
+      const toYmd = String(filters.date_to).substring(0, 10);
+      query += ` AND ${orderDateExpr} <= date(?)`;
+      params.push(toYmd);
     }
 
     if (filters.customer_id) {

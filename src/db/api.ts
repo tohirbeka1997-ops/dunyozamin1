@@ -4,6 +4,18 @@
 import { addToOutbox, saveLocalOrder } from '@/offline/db';
 import { handleIpcResponse, isElectron, requireElectron } from '@/utils/electron';
 import { formatDateYMD } from '@/lib/datetime';
+import { useAuthStore } from '@/store/useAuth';
+
+/** Audit uchun joriy foydalanuvchi (renderer Zustand — main `currentUser` ni almashtiradi) */
+function getActorUserIdForAudit(): string | null {
+  try {
+    const id = useAuthStore.getState().profile?.id;
+    if (id != null && String(id).trim() !== '') return String(id).trim();
+  } catch {
+    // ignore
+  }
+  return null;
+}
 
 import type {
   Profile,
@@ -36,6 +48,7 @@ import type {
   CartItem,
   CustomerLedgerEntry,
   CustomerBonusLedgerEntry,
+  CustomerLoyaltyCard,
   Expense,
   ExpenseWithDetails,
   ExpenseCategory,
@@ -78,6 +91,10 @@ const mockDB = {
       color: null,
       icon: null,
       parent_id: null,
+      sort_order: 0,
+      is_active: true,
+      image_url: null,
+      show_in_marketplace: true,
       created_at: new Date().toISOString(),
     },
     {
@@ -87,6 +104,10 @@ const mockDB = {
       color: null,
       icon: null,
       parent_id: null,
+      sort_order: 1,
+      is_active: true,
+      image_url: null,
+      show_in_marketplace: true,
       created_at: new Date().toISOString(),
     },
     {
@@ -96,6 +117,10 @@ const mockDB = {
       color: null,
       icon: null,
       parent_id: null,
+      sort_order: 2,
+      is_active: true,
+      image_url: null,
+      show_in_marketplace: true,
       created_at: new Date().toISOString(),
     },
   ] as Category[],
@@ -340,13 +365,18 @@ export const updateProfile = async (id: string, updates: Partial<Profile>) => {
 // CATEGORY FUNCTIONS
 // ============================================================================
 
-export const getCategories = async () => {
+export const getCategories = async (opts?: { includeInactive?: boolean }) => {
   if (hasPosApi()) {
     const api = requireElectron();
-    return ipc<Category[]>(api.categories.list({ is_active: true }));
+    const filters = opts?.includeInactive ? {} : { is_active: true };
+    return ipc<Category[]>(api.categories.list(filters));
   }
   await delay();
-  return [...mockDB.categories] as Category[];
+  let rows = [...mockDB.categories] as Category[];
+  if (!opts?.includeInactive) {
+    rows = rows.filter((c) => (c as Category).is_active !== false);
+  }
+  return rows;
 };
 
 export const createCategory = async (category: Omit<Category, 'id' | 'created_at'>) => {
@@ -462,6 +492,14 @@ export const applyPromotionsToCart = async (
 // ============================================================================
 
 export const getCategoryProductCount = async (categoryId: string): Promise<number> => {
+  if (hasPosApi()) {
+    const api = requireElectron();
+    const result = await ipc<{ count?: number } | number>(
+      api.products.count({ category_id: categoryId, status: 'all' })
+    );
+    if (typeof result === 'number') return result;
+    return Number((result as any)?.count || 0);
+  }
   await delay();
   return mockDB.products.filter(p => p.category_id === categoryId).length;
 };
@@ -478,6 +516,13 @@ export const getCategoryById = async (id: string) => {
 };
 
 export const getProductsByCategoryId = async (categoryId: string) => {
+  if (hasPosApi()) {
+    const api = requireElectron();
+    const rows = await ipc<Product[]>(
+      api.products.list({ category_id: categoryId, status: 'all', limit: 5000, offset: 0 })
+    );
+    return Array.isArray(rows) ? rows : [];
+  }
   await delay();
   return mockDB.products.filter(p => p.category_id === categoryId) as Product[];
 };
@@ -562,6 +607,7 @@ export const getProducts = async (
     sortOrder?: 'asc' | 'desc';
     limit?: number;
     offset?: number;
+    warehouse_id?: string | null;
   }
 ) => {
   if (hasPosApi()) {
@@ -583,8 +629,10 @@ export const getProducts = async (
       f.stock_filter = filters.stockStatus;
     }
 
-    // Always pass warehouse to get correct current_stock from stock_balances
-    f.warehouse_id = MAIN_WAREHOUSE_ID;
+    // If omitted, backend aggregates stock across all warehouses.
+    if (filters?.warehouse_id) {
+      f.warehouse_id = filters.warehouse_id;
+    }
 
     if (filters?.sortBy) f.sort_by = filters.sortBy;
     f.sort_order = (filters?.sortOrder || 'asc') === 'desc' ? 'DESC' : 'ASC';
@@ -779,7 +827,10 @@ export const getProductBySku = async (sku: string) => {
   } as ProductWithCategory;
 };
 
-export const searchProducts = async (searchTerm: string) => {
+export const searchProducts = async (
+  searchTerm: string,
+  opts?: { warehouse_id?: string | null }
+) => {
   const term = String(searchTerm || '').trim().toLowerCase();
   const prioritize = (items: ProductWithCategory[]) => {
     const getRank = (p: ProductWithCategory) => {
@@ -814,7 +865,7 @@ export const searchProducts = async (searchTerm: string) => {
       api.products.list({
         search: term.length > 0 ? term : undefined,
         status: 'active',
-        warehouse_id: MAIN_WAREHOUSE_ID,
+        ...(opts?.warehouse_id ? { warehouse_id: opts.warehouse_id } : {}),
         // Keep POS search snappy and consistent with the UI expectations.
         limit: 20,
         offset: 0,
@@ -844,7 +895,7 @@ export const searchProducts = async (searchTerm: string) => {
 
 export const searchProductsScreen = async (
   searchTerm: string,
-  opts?: { limit?: number }
+  opts?: { limit?: number; warehouse_id?: string | null }
 ) => {
   const term = String(searchTerm || '').trim().toLowerCase();
   const limit =
@@ -857,7 +908,7 @@ export const searchProductsScreen = async (
       api.products.searchScreen({
         search: term.length > 0 ? term : undefined,
         status: 'active',
-        warehouse_id: MAIN_WAREHOUSE_ID,
+        ...(opts?.warehouse_id ? { warehouse_id: opts.warehouse_id } : {}),
         limit,
         offset: 0,
       })
@@ -954,7 +1005,7 @@ export const createProduct = async (
 ) => {
   if (hasPosApi()) {
     const api = requireElectron();
-    const created = await ipc<Product>(api.products.create(product));
+    const created = await ipc<Product>(api.products.create(product, getActorUserIdForAudit()));
 
     // If caller requested initial stock, apply via inventory adjustment (transactional)
     const qty = Number(initialStock || 0);
@@ -1028,7 +1079,7 @@ export const createProduct = async (
 export const updateProduct = async (id: string, updates: Partial<Product>) => {
   if (hasPosApi()) {
     const api = requireElectron();
-    return ipc<Product>(api.products.update(id, updates));
+    return ipc<Product>(api.products.update(id, updates, getActorUserIdForAudit()));
   }
   await delay();
   const index = mockDB.products.findIndex(p => p.id === id);
@@ -1078,7 +1129,9 @@ export const assignProductsToCategory = async (
 export const deleteProduct = async (id: string) => {
   if (hasPosApi()) {
     const api = requireElectron();
-    const res = await ipc<{ success: boolean; softDeleted?: boolean }>(api.products.delete(id));
+    const res = await ipc<{ success: boolean; softDeleted?: boolean }>(
+      api.products.delete(id, getActorUserIdForAudit())
+    );
     productUpdateEmitter.emit();
     return res;
   }
@@ -1124,6 +1177,21 @@ export const getInventoryAll = async (): Promise<ProductWithCategory[]> => {
 };
 
 export const getLowStockProducts = async () => {
+  if (hasPosApi()) {
+    const api = requireElectron();
+    const rows = await ipc<ProductWithCategory[]>(
+      api.products.list({
+        status: 'active',
+        stock_filter: 'low',
+        sort_by: 'name',
+        sort_order: 'ASC',
+        limit: 5000,
+        offset: 0,
+      })
+    );
+    return Array.isArray(rows) ? rows : [];
+  }
+
   await delay();
   const products = mockDB.products.filter(
     p => p.is_active && p.current_stock <= p.min_stock_level
@@ -1163,10 +1231,11 @@ export const getAllInventoryMovements = async (filters?: {
       backendFilters.move_type = filters.movementType;
     }
     if (filters?.startDate) {
-      backendFilters.date_from = filters.startDate;
+      backendFilters.date_from = String(filters.startDate).slice(0, 10);
     }
     if (filters?.endDate) {
-      backendFilters.date_to = filters.endDate + ' 23:59:59'; // End of day
+      // Kun filtri `inventory.getMoves` da Asia/Tashkent bo‘yicha (serverda _tzDateExpr)
+      backendFilters.date_to = String(filters.endDate).slice(0, 10);
     }
     // Return raw stock_moves (backend joins product, user, warehouse already)
     return ipc<any>(api.inventory.getMoves(backendFilters));
@@ -1815,7 +1884,8 @@ export const getCustomers = async (filters?: {
     if (filters?.searchTerm) f.search = filters.searchTerm;
     if (filters?.status) f.status = filters.status;
     if (filters?.type) f.type = filters.type;
-    // Backend list doesn't support hasDebt/sort; keep those as client-side concerns.
+    if (filters?.sortBy) f.sortBy = filters.sortBy;
+    if (filters?.sortOrder) f.sortOrder = filters.sortOrder;
     return ipc<Customer[]>(api.customers.list(f));
   }
   await delay();
@@ -1844,9 +1914,9 @@ export const getCustomers = async (filters?: {
     
     if (filters.hasDebt !== undefined) {
       if (filters.hasDebt) {
-        customers = customers.filter(c => (c.balance || 0) > 0);
+        customers = customers.filter(c => (c.balance || 0) < 0);
       } else {
-        customers = customers.filter(c => (c.balance || 0) <= 0);
+        customers = customers.filter(c => (c.balance || 0) >= 0);
       }
     }
     
@@ -1884,11 +1954,20 @@ export const getCustomers = async (filters?: {
 export const getCustomerById = async (id: string) => {
   if (hasPosApi()) {
     const api = requireElectron();
-    return ipc<Customer>(api.customers.get(id));
+    try {
+      return await ipc<Customer>(api.customers.get(id));
+    } catch {
+      // Fallback for environments where single-customer endpoint is unstable.
+      // Use list endpoint and resolve on client.
+      const list = await ipc<Customer[]>(api.customers.list({}));
+      const found = list.find((c) => String((c as any).id) === String(id));
+      if (found) return found;
+      throw new Error('Customer not found');
+    }
   }
   await delay();
   const customers = getStoredCustomers();
-  const customer = customers.find(c => c.id === id);
+  const customer = customers.find(c => String((c as any).id) === String(id));
   if (!customer) {
     throw new Error('Customer not found');
   }
@@ -2054,8 +2133,14 @@ export const getActiveShift = async (cashierId?: string) => {
 };
 
 // Back-compat alias used by some UI code.
+/** Joriy ochiq smena — kassir bo‘yicha (getOpenShiftForCashier), getActive dan torroq */
 export const getCurrentShift = async (cashierId: string) => {
-  return getActiveShift(cashierId);
+  if (hasPosApi()) {
+    const api = requireElectron();
+    return ipc<Shift | null>(api.shifts.getCurrent(cashierId));
+  }
+  await delay();
+  return null;
 };
 
 export const generateShiftNumber = async () => {
@@ -2078,19 +2163,27 @@ export const closeShift = async (shiftId: string, closingCash: number, notes?: s
 };
 
 export const getShiftSummary = async (shiftId: string) => {
+  const sid = String(shiftId ?? '').trim();
+  if (!sid) {
+    throw new Error('Smena ID kiritilmagan. Sahifani yangilang yoki smenani qayta sinxronlang.');
+  }
   if (hasPosApi()) {
     const api = requireElectron();
-    return ipc<any>(api.shifts.getSummary({ shiftId }));
+    return ipc<any>(api.shifts.getSummary({ shiftId: sid }));
   }
   await delay();
   return {
-    shiftId,
+    shiftId: sid,
     openedAt: null,
     closedAt: null,
     status: 'open',
     openingCash: 0,
     totalSales: 0,
     cashSales: 0,
+    creditDebtIssued: 0,
+    debtRepaidTotal: 0,
+    debtRepaidCash: 0,
+    customerDrawerCashNet: 0,
     orders: 0,
     totalRefunds: 0,
     expectedCash: 0,
@@ -2140,6 +2233,7 @@ export const getOrdersPage = async (opts?: {
   status?: string | null;
   payment_status?: string | null;
   payment_method?: string | null;
+  warehouse_id?: string | null;
   search?: string | null;
   sort_by?: 'created_at' | 'total_amount' | 'order_number' | null;
   sort_order?: 'ASC' | 'DESC' | null;
@@ -2162,6 +2256,7 @@ export const getOrdersPage = async (opts?: {
     if (opts?.status) payload.status = opts.status;
     if (opts?.payment_status) payload.payment_status = opts.payment_status;
     if (opts?.payment_method) payload.payment_method = opts.payment_method;
+    if (opts?.warehouse_id) payload.warehouse_id = opts.warehouse_id;
     if (opts?.search) payload.search = opts.search;
     if (opts?.sort_by) payload.sort_by = opts.sort_by;
     if (opts?.sort_order) payload.sort_order = opts.sort_order;
@@ -2533,6 +2628,10 @@ export const updateOrderStatus = async (id: string, status: string): Promise<Ord
  * Cancel an order (sets status to 'voided' or 'cancelled')
  */
 export const cancelOrder = async (id: string): Promise<Order> => {
+  if (hasPosApi()) {
+    const api = requireElectron();
+    return ipc<Order>(api.orders.cancel(id));
+  }
   await delay();
   const orders = getStoredOrders();
   const index = orders.findIndex(o => o.id === id);
@@ -2633,6 +2732,7 @@ export const getPurchaseOrders = async (filters?: {
   date_from?: string;
   date_to?: string;
   search?: string;
+  include_items?: boolean;
 }) => {
   if (hasPosApi()) {
     const api = requireElectron();
@@ -3324,12 +3424,37 @@ export const getSalesReturns = async (filters?: {
       if (v === 'cancelled') return 'Cancelled';
       return s;
     };
-    return (rows || []).map((r: any) => ({
-      ...r,
-      status: normalizeStatus(r?.status),
-      reason: r?.reason ?? r?.return_reason ?? null,
-      return_reason: r?.return_reason ?? r?.reason ?? null,
-    })) as any;
+    return (rows || []).map((r: any) => {
+      const orderId = r?.order_id;
+      const orderNum = r?.original_order_number ?? r?.order_number;
+      const cashierName =
+        String(r?.cashier_username || r?.cashier_full_name || '').trim() || null;
+      return {
+        ...r,
+        status: normalizeStatus(r?.status),
+        reason: r?.reason ?? r?.return_reason ?? null,
+        return_reason: r?.return_reason ?? r?.reason ?? null,
+        /** Ro‘yxat UI: SalesReturnWithDetails order / customer / cashier */
+        order:
+          orderId && orderNum
+            ? { id: orderId, order_number: orderNum }
+            : orderId
+              ? { id: orderId, order_number: orderNum || '—' }
+              : undefined,
+        customer:
+          r?.customer_id && r?.customer_name
+            ? { id: r.customer_id, name: r.customer_name }
+            : r?.customer_name
+              ? { name: r.customer_name }
+              : undefined,
+        cashier: cashierName
+          ? {
+              username: r.cashier_username || cashierName,
+              full_name: r.cashier_full_name ?? null,
+            }
+          : undefined,
+      };
+    }) as any;
   }
 
   await delay();
@@ -3372,10 +3497,23 @@ export const updateSalesReturn = async (
     reason?: string;
     notes?: string | null;
     status?: string;
+    items?: Array<{
+      return_item_id: string;
+      order_item_id?: string;
+      quantity: number;
+    }>;
   }
 ) => {
   if (hasPosApi()) {
-    throw new Error("Desktop rejimda qaytarishni tahrirlash (status) hozircha qo'llab-quvvatlanmaydi.");
+    const api = requireElectron();
+    if (updates.status !== undefined) {
+      throw new Error("Desktop rejimda qaytarish statusini alohida o'zgartirish qo'llab-quvvatlanmaydi.");
+    }
+    const payload: any = {};
+    if (updates.reason !== undefined) payload.return_reason = updates.reason;
+    if (updates.notes !== undefined) payload.notes = updates.notes;
+    if (Array.isArray(updates.items)) payload.items = updates.items;
+    return ipc<any>(api.returns.update(id, payload));
   }
   await delay();
   const returns = getStoredSalesReturns();
@@ -3399,7 +3537,9 @@ export const updateSalesReturn = async (
 
 export const deleteSalesReturn = async (id: string) => {
   if (hasPosApi()) {
-    throw new Error("Desktop rejimda qaytarishni o'chirish hozircha qo'llab-quvvatlanmaydi.");
+    const api = requireElectron();
+    await ipc<any>(api.returns.delete(id));
+    return;
   }
   await delay();
   const returns = getStoredSalesReturns();
@@ -3665,28 +3805,61 @@ export const createSalesReturn = async (returnData: {
   // Emit product update event for real-time stock updates
   productUpdateEmitter.emit();
   
-  // If refund is written to customer account, increase balance (reduces debt / creates credit)
-  if (((returnData.mode === 'manual' && returnData.customer_id) || returnData.refund_method === 'credit' || returnData.refund_method === 'customer_account') && returnData.customer_id) {
-    const customers = getStoredCustomers();
-    const customerIndex = customers.findIndex(c => c.id === returnData.customer_id);
-    
-    if (customerIndex >= 0) {
-      const customer = customers[customerIndex];
-      const currentBalance = customer.balance || 0;
-      const newBalance = currentBalance + returnData.total_amount;
-      
-      customers[customerIndex] = {
-        ...customer,
-        balance: newBalance,
-        updated_at: createdAt,
-      };
-      saveCustomers(customers);
-    } else {
-      // Customer not found - this shouldn't happen if validation is correct, but handle gracefully
-      console.warn(`Customer ${returnData.customer_id} not found when processing store credit return`);
+  // Web / localStorage: align with electron/services/returnsService.cjs
+  // - Mijoz hisobiga (credit / customer_account) doim to'liq qaytim balansga qo'shiladi
+  // - Naqd/karta: buyurtmada nasiya yoki to'lanmagan qism bo'lsa ham (total - paid), kreditor
+  //   (ortiqcha qaytim) to'g'ri hisoblansin — avvalgi bug: faqat "hisobga" uslubda balans o'zgardi
+  {
+    const refundMethod = String(returnData.refund_method || '').toLowerCase();
+    const isAccountRefund = refundMethod === 'credit' || refundMethod === 'customer_account';
+    const refundTotal = Number(returnData.total_amount || 0) || 0;
+    const orderId = returnData.order_id;
+    const fromOrder = Boolean(orderId);
+    const orders = fromOrder ? getStoredOrders() : [];
+    const order = fromOrder ? orders.find((o) => o.id === orderId) : null;
+    const customerId =
+      returnData.customer_id || (order ? (order as any).customer_id : null) || null;
+
+    let orderHadUnpaidCredit = false;
+    if (order) {
+      const creditOnOrder = Number((order as any).credit_amount || 0);
+      const paidOnOrder = Number((order as any).paid_amount || 0);
+      const totalOnOrder = Number((order as any).total_amount || 0);
+      const ps = String((order as any).payment_status || '').toLowerCase();
+      const outstandingOnOrder = Math.max(0, totalOnOrder - paidOnOrder);
+      orderHadUnpaidCredit =
+        creditOnOrder > 0.009 || ps === 'on_credit' || outstandingOnOrder > 0.02;
+    }
+
+    const isManual = (returnData.mode || (orderId ? 'order' : 'manual')) === 'manual';
+    const shouldAdjustBalance =
+      Boolean(customerId) &&
+      refundTotal > 0 &&
+      (isAccountRefund ||
+        orderHadUnpaidCredit ||
+        (isManual && Boolean(returnData.customer_id)));
+
+    if (shouldAdjustBalance && customerId) {
+      const customers = getStoredCustomers();
+      const customerIndex = customers.findIndex((c) => c.id === customerId);
+
+      if (customerIndex >= 0) {
+        const customer = customers[customerIndex];
+        const currentBalance = Number(customer.balance || 0) || 0;
+        const newBalance = currentBalance + refundTotal;
+
+        customers[customerIndex] = {
+          ...customer,
+          balance: newBalance,
+          updated_at: createdAt,
+        };
+        saveCustomers(customers);
+      } else {
+        console.warn(`Customer ${customerId} not found when updating balance after sales return (mock)`);
+      }
     }
   }
-  
+
   return salesReturn;
 };
 
@@ -3841,7 +4014,34 @@ export const deleteEmployee = async (_id: string) => {
   await delay();
 };
 
-export const getEmployeeSessions = async (_employeeId?: string) => {
+export type GetEmployeeSessionsFilters = {
+  employeeId?: string;
+  dateFrom?: string;
+  dateTo?: string;
+};
+
+/**
+ * Jurnal: `dateFrom` + `dateTo` (YYYY-MM-DD, Tashkent kuni) bilan.
+ * Xodim kartochkasi: `employeeId` (oxirgi 500 ta).
+ */
+export const getEmployeeSessions = async (
+  employeeIdOrFilters?: string | GetEmployeeSessionsFilters
+): Promise<EmployeeSessionWithProfile[]> => {
+  const filters: GetEmployeeSessionsFilters =
+    typeof employeeIdOrFilters === 'string'
+      ? { employeeId: employeeIdOrFilters }
+      : employeeIdOrFilters || {};
+
+  if (hasPosApi()) {
+    const api = requireElectron();
+    return ipc<EmployeeSessionWithProfile[]>(
+      api.users.listLoginSessions({
+        employee_id: filters.employeeId,
+        date_from: filters.dateFrom,
+        date_to: filters.dateTo,
+      })
+    );
+  }
   await delay();
   return [] as EmployeeSessionWithProfile[];
 };
@@ -4290,14 +4490,117 @@ export const deleteQuote = async (id: string) => {
 export const convertQuoteToSale = async (
   quoteId: string,
   orderData: { cashier_id: string; shift_id?: string | null; warehouse_id?: string }
-) => {
+): Promise<{ order_id: string; order_number: string }> => {
   if (hasPosApi()) {
     const api = requireElectron();
     return ipc<{ order_id: string; order_number: string }>(
       api.quotes.convertToSale(quoteId, orderData)
     );
   }
-  throw new Error('Quote to sale conversion requires Electron desktop app');
+
+  await delay();
+  const list = loadQuotesFromStorage();
+  const quote = list.find((q: any) => q.id === quoteId);
+  if (!quote) {
+    throw new Error('Smeta topilmadi');
+  }
+  if (String(quote.status) === 'converted') {
+    throw new Error('Smeta allaqachon sotuvga aylantirilgan');
+  }
+  const rawItems = Array.isArray(quote.items) ? quote.items : [];
+  if (rawItems.length === 0) {
+    throw new Error('Smetada mahsulot yo‘q');
+  }
+
+  const notePrefix = quote.quote_number ? `Smeta ${quote.quote_number}` : 'Smeta';
+
+  const lineItems: Omit<OrderItem, 'id' | 'order_id'>[] = rawItems.map((it: any) => {
+    const qty = Number(it.quantity) || 0;
+    const unitPrice = Number(it.unit_price) || 0;
+    const discAmt = Number(it.discount_amount) || 0;
+    const pct = Number(it.discount_percent) || 0;
+    const gross = qty * unitPrice;
+    const discFromPct = pct > 0 ? (gross * pct) / 100 : 0;
+    const lineDisc = discAmt > 0 ? discAmt : discFromPct;
+    const total = Number.isFinite(Number(it.line_total))
+      ? Number(it.line_total)
+      : Math.max(0, gross - lineDisc);
+    const productName =
+      String(it.name_snapshot || it.product_name || '').trim() || 'Mahsulot';
+    const tier = it.price_type_used === 'usta' ? 'master' : 'retail';
+    return {
+      product_id: it.product_id,
+      product_name: productName,
+      quantity: qty,
+      sale_unit: it.unit || 'pcs',
+      qty_sale: qty,
+      qty_base: qty,
+      unit_price: unitPrice,
+      price_tier: tier as OrderItem['price_tier'],
+      subtotal: gross,
+      discount_amount: lineDisc,
+      total,
+    };
+  });
+
+  const totalAmount = Number(quote.total) || 0;
+  const payAmount = Math.max(0, totalAmount);
+
+  const order: Omit<Order, 'id' | 'created_at'> = {
+    order_number: '',
+    customer_id: quote.customer_id ?? null,
+    cashier_id: orderData.cashier_id,
+    shift_id: orderData.shift_id ?? null,
+    subtotal: Number(quote.subtotal) || 0,
+    discount_amount: Number(quote.discount_amount) || 0,
+    discount_percent: Number(quote.discount_percent) || 0,
+    tax_amount: 0,
+    total_amount: totalAmount,
+    paid_amount: payAmount,
+    credit_amount: 0,
+    change_amount: 0,
+    status: 'completed',
+    payment_status: 'paid',
+    notes: `${notePrefix}${quote.notes ? ` · ${quote.notes}` : ''}`,
+  };
+
+  const payments: Omit<Payment, 'id' | 'order_id' | 'created_at'>[] =
+    payAmount <= 0
+      ? []
+      : [
+          {
+            payment_number: `PAY-${Date.now()}`,
+            payment_method: 'cash',
+            amount: payAmount,
+            reference_number: null,
+            notes: notePrefix,
+          },
+        ];
+
+  const res = (await completePOSOrder(order, lineItems as any, payments)) as {
+    id?: string;
+    order_id?: string;
+    order_number?: string;
+  };
+  const orderId = res.order_id ?? res.id ?? '';
+  const orderNumber = res.order_number ?? '';
+  if (!orderId) {
+    throw new Error('Buyurtma yaratilmadi (mock)');
+  }
+
+  const next = list.map((q: any) =>
+    q.id === quoteId
+      ? {
+          ...q,
+          status: 'converted',
+          converted_order_id: orderId,
+          updated_at: new Date().toISOString(),
+        }
+      : q
+  );
+  saveQuotesToStorage(next);
+
+  return { order_id: orderId, order_number: orderNumber };
 };
 
 // ============================================================================
@@ -4305,10 +4608,13 @@ export const convertQuoteToSale = async (
 // ============================================================================
 
 export interface DashboardAnalytics {
+  period?: { date_from: string; date_to: string };
+  warehouse_id?: string | null;
   total_sales: number;
   total_orders: number;
   total_cogs: number;
   total_profit: number;
+  net_profit?: number;
   profit_margin: number;
   total_expenses: number;
   low_stock_count: number;
@@ -4317,7 +4623,21 @@ export interface DashboardAnalytics {
   items_sold: number;
   returns_count: number;
   returns_amount: number;
+  returns_cogs?: number;
   pending_purchase_orders: number;
+  warnings?: {
+    missing_cost_count?: number;
+    missing_cost_samples?: Array<{
+      order_item_id: string;
+      order_id: string;
+      order_number?: string;
+      product_id?: string;
+      product_name?: string;
+      created_at?: string;
+    }>;
+    using_legacy_returns_table?: boolean;
+    expenses_filtered_by_warehouse?: boolean;
+  };
 }
 
 export interface DailySales {
@@ -4333,35 +4653,23 @@ export interface TopProduct {
   total_amount: number;
 }
 
-export const getDashboardAnalytics = async (startDate: Date, endDate: Date): Promise<DashboardAnalytics> => {
+export const getDashboardAnalytics = async (
+  startDate: Date,
+  endDate: Date,
+  opts?: { warehouse_id?: string }
+): Promise<DashboardAnalytics> => {
   // Electron (real DB) mode
   if (hasPosApi()) {
     const api = requireElectron();
     const date_from = formatDateYMD(startDate);
     const date_to = formatDateYMD(endDate);
-    const base = await ipc<DashboardAnalytics>(api.dashboard.getAnalytics({ date_from, date_to }));
-
-    // IMPORTANT:
-    // Our current Expenses UI still uses localStorage (legacy) even in Electron mode.
-    // To keep Dashboard "Jami xarajatlar" consistent with the Expenses section,
-    // compute expenses from localStorage for the selected period.
-    try {
-      const stored = loadExpensesFromStorage();
-      const total_expenses_local = (stored || [])
-        .filter((e) => {
-          const d = String((e as any).expense_date || '').slice(0, 10);
-          if (!d) return false;
-          return d >= date_from && d <= date_to;
-        })
-        .reduce((sum, e: any) => sum + (Number(e?.amount || 0) || 0), 0);
-
-      return {
-        ...base,
-        total_expenses: total_expenses_local,
-      };
-    } catch {
-      return base;
-    }
+    return ipc<DashboardAnalytics>(
+      api.dashboard.getAnalytics({
+        date_from,
+        date_to,
+        warehouse_id: opts?.warehouse_id,
+      })
+    );
   }
 
   await delay();
@@ -4932,6 +5240,9 @@ export const receiveCustomerPayment = async (_paymentData: {
   received_by?: string | null;
   order_id?: string | null;
   source?: 'pos' | 'customers' | string;
+  /** Ochiq smena — smena/kassa hisobiga bogʻlash */
+  shift_id?: string | null;
+  shiftId?: string | null;
 }): Promise<{
   success: boolean;
   payment_number?: string;
@@ -4960,6 +5271,7 @@ export const receiveCustomerPayment = async (_paymentData: {
         received_by: _paymentData.received_by ?? null,
         order_id: _paymentData.order_id ?? null,
         source: _paymentData.source ?? null,
+        shift_id: _paymentData.shift_id ?? _paymentData.shiftId ?? null,
       })
     );
   }
@@ -5027,16 +5339,34 @@ export const adjustCustomerBonusPoints = async (payload: {
   throw new Error('Bonus korreksiyasi faqat desktop ilovada mavjud');
 };
 
+export const getCustomerLoyaltyCard = async (customerId: string): Promise<CustomerLoyaltyCard | null> => {
+  if (hasPosApi()) {
+    const api = requireElectron();
+    return ipc<CustomerLoyaltyCard | null>(api.customers.getLoyaltyCard(customerId));
+  }
+  await delay();
+  return null;
+};
+
 export const getCustomersWithDebt = async (): Promise<Customer[]> => {
   await delay();
   return [];
 };
 
 export const getTotalCustomerDebt = async (): Promise<number> => {
+  if (hasPosApi()) {
+    const api = requireElectron();
+    const customers = await ipc<Customer[]>(api.customers.list({ status: 'all' }));
+    return (Array.isArray(customers) ? customers : []).reduce(
+      (sum, customer) => sum + Math.max(0, -(Number(customer?.balance || 0))),
+      0
+    );
+  }
+
   await delay();
   const customers = getStoredCustomers();
-  // Sum all positive balances (debt)
-  return customers.reduce((sum, customer) => sum + Math.max(0, customer.balance || 0), 0);
+  // Debt convention: negative balance = debt
+  return customers.reduce((sum, customer) => sum + Math.max(0, -(customer.balance || 0)), 0);
 };
 
 // ============================================================================
@@ -5378,6 +5708,7 @@ export const getExpenses = async (filters?: {
   category?: ExpenseCategory;
   paymentMethod?: ExpensePaymentMethod;
   employeeId?: string;
+  status?: ExpenseStatus;
   search?: string;
 }): Promise<ExpenseWithDetails[]> => {
   // Use Electron IPC if available (real DB)
@@ -5386,6 +5717,7 @@ export const getExpenses = async (filters?: {
     const payload: any = {};
     if (filters?.dateFrom) payload.date_from = filters.dateFrom;
     if (filters?.dateTo) payload.date_to = filters.dateTo;
+    if (filters?.status) payload.status = filters.status;
     // Backend filters by category_id/status only; we filter by category/payment/search client-side.
     const rows = await ipc<any[]>(api.expenses.list(payload));
     const profiles = await getProfiles();
@@ -5406,6 +5738,7 @@ export const getExpenses = async (filters?: {
     if (filters?.category) mapped = mapped.filter((e) => String(e.category) === String(filters.category));
     if (filters?.paymentMethod) mapped = mapped.filter((e) => String(e.payment_method) === String(filters.paymentMethod));
     if (filters?.employeeId) mapped = mapped.filter((e) => String(e.employee_id || '') === String(filters.employeeId));
+    if (filters?.status) mapped = mapped.filter((e) => String(e.status || '').toLowerCase() === String(filters.status).toLowerCase());
     if (filters?.search) {
       const s = String(filters.search).toLowerCase();
       mapped = mapped.filter((e) =>
@@ -5443,6 +5776,9 @@ export const getExpenses = async (filters?: {
   }
   if (filters?.employeeId) {
     expenses = expenses.filter(e => e.employee_id === filters.employeeId);
+  }
+  if (filters?.status) {
+    expenses = expenses.filter(e => String(e.status || '').toLowerCase() === String(filters.status).toLowerCase());
   }
   if (filters?.search) {
     const searchLower = filters.search.toLowerCase();
@@ -5533,7 +5869,8 @@ export const createExpense = async (expenseData: {
       cat = await ipc<any>(api.expenses.createCategory({ code, name, description: null, is_active: 1 }));
     }
 
-    const createdBy = expenseData.created_by || expenseData.employee_id || null;
+    // `expenses` table stores only `created_by`, so map selected employee first.
+    const createdBy = expenseData.employee_id || expenseData.created_by || null;
     const description = String(expenseData.note ?? '').trim() || name;
     const row = await ipc<any>(
       api.expenses.create({
@@ -5611,6 +5948,7 @@ export const updateExpense = async (
     if (updates.expense_date !== undefined) payload.expense_date = updates.expense_date;
     if (updates.note !== undefined) payload.description = String(updates.note ?? '').trim() || null;
     if (updates.status !== undefined) payload.status = updates.status;
+    if (updates.employee_id !== undefined) payload.created_by = updates.employee_id || null;
 
     // Category change: ensure category exists and pass category_id
     if (updates.category !== undefined) {
@@ -5635,6 +5973,8 @@ export const updateExpense = async (
       ...row,
       category: categoryName,
       note: row?.description ?? null,
+      employee_id: row?.employee_id ?? row?.created_by ?? null,
+      created_by: row?.created_by ?? null,
     } as any;
   }
 
@@ -5693,6 +6033,7 @@ export const deleteExpense = async (id: string): Promise<void> => {
 export const getExpenseStats = async (filters?: {
   dateFrom?: string;
   dateTo?: string;
+  status?: ExpenseStatus;
 }): Promise<{
   total: number;
   today: number;
@@ -5702,19 +6043,20 @@ export const getExpenseStats = async (filters?: {
   if (hasPosApi()) {
     // Compute stats client-side from DB list (backend doesn't expose a stats endpoint)
     const all = await getExpenses({});
-    const today = new Date().toISOString().split('T')[0];
+    const today = formatDateYMD(new Date());
     const now = new Date();
-    const monthStart = new Date(now.getFullYear(), now.getMonth(), 1).toISOString().split('T')[0];
-    const monthEnd = new Date(now.getFullYear(), now.getMonth() + 1, 0).toISOString().split('T')[0];
+    const monthStart = formatDateYMD(new Date(now.getFullYear(), now.getMonth(), 1));
+    const monthEnd = formatDateYMD(new Date(now.getFullYear(), now.getMonth() + 1, 0));
 
-    // Apply date filters only for "total"
+    // Apply status/date filters for totals and keep consistent semantics with reports.
     let filtered = [...all] as any[];
+    if (filters?.status) filtered = filtered.filter((e) => String(e.status || '').toLowerCase() === String(filters.status).toLowerCase());
     if (filters?.dateFrom) filtered = filtered.filter((e) => String(e.expense_date) >= String(filters.dateFrom));
     if (filters?.dateTo) filtered = filtered.filter((e) => String(e.expense_date) <= String(filters.dateTo));
 
     const total = filtered.reduce((sum, e) => sum + Number(e.amount || 0), 0);
-    const todayTotal = all.filter((e) => e.expense_date === today).reduce((sum, e) => sum + Number(e.amount || 0), 0);
-    const monthlyTotal = all
+    const todayTotal = filtered.filter((e) => e.expense_date === today).reduce((sum, e) => sum + Number(e.amount || 0), 0);
+    const monthlyTotal = filtered
       .filter((e) => e.expense_date >= monthStart && e.expense_date <= monthEnd)
       .reduce((sum, e) => sum + Number(e.amount || 0), 0);
 
@@ -5736,8 +6078,11 @@ export const getExpenseStats = async (filters?: {
   // Load ALL expenses from storage (for today/monthly calculations)
   const allExpenses = [...loadExpensesFromStorage()];
   
-  // Apply date filters only for "total" calculation
+  // Apply status/date filters and keep consistent semantics with reports.
   let filteredExpenses = [...allExpenses];
+  if (filters?.status) {
+    filteredExpenses = filteredExpenses.filter(e => String(e.status || '').toLowerCase() === String(filters.status).toLowerCase());
+  }
   if (filters?.dateFrom) {
     filteredExpenses = filteredExpenses.filter(e => e.expense_date >= filters.dateFrom!);
   }
@@ -5748,16 +6093,16 @@ export const getExpenseStats = async (filters?: {
   // Total for filtered range
   const total = filteredExpenses.reduce((sum, e) => sum + e.amount, 0);
   
-  // Today's expenses (ALWAYS unfiltered - all expenses for today)
-  const today = new Date().toISOString().split('T')[0];
-  const todayExpenses = allExpenses.filter(e => e.expense_date === today);
+  // Today's expenses (same status semantics)
+  const today = formatDateYMD(new Date());
+  const todayExpenses = filteredExpenses.filter(e => e.expense_date === today);
   const todayTotal = todayExpenses.reduce((sum, e) => sum + e.amount, 0);
   
-  // Monthly expenses (ALWAYS unfiltered - all expenses for current month)
+  // Monthly expenses (same status semantics)
   const now = new Date();
-  const monthStart = new Date(now.getFullYear(), now.getMonth(), 1).toISOString().split('T')[0];
-  const monthEnd = new Date(now.getFullYear(), now.getMonth() + 1, 0).toISOString().split('T')[0];
-  const monthlyExpenses = allExpenses.filter(e => e.expense_date >= monthStart && e.expense_date <= monthEnd);
+  const monthStart = formatDateYMD(new Date(now.getFullYear(), now.getMonth(), 1));
+  const monthEnd = formatDateYMD(new Date(now.getFullYear(), now.getMonth() + 1, 0));
+  const monthlyExpenses = filteredExpenses.filter(e => e.expense_date >= monthStart && e.expense_date <= monthEnd);
   const monthlyTotal = monthlyExpenses.reduce((sum, e) => sum + e.amount, 0);
   
   // Top category (from filtered expenses if filters applied, otherwise all)

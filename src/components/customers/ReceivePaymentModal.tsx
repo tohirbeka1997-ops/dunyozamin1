@@ -27,6 +27,7 @@ import {
   SelectValue,
 } from '@/components/ui/select';
 import { useAuth } from '@/contexts/AuthContext';
+import { useShiftStore } from '@/store/shiftStore';
 
 type PaymentMethod = 'cash' | 'card' | 'click' | 'payme' | 'transfer' | 'other';
 
@@ -47,6 +48,7 @@ export default function ReceivePaymentModal({
 }: ReceivePaymentModalProps) {
   const { toast } = useToast();
   const { user } = useAuth();
+  const { currentShift } = useShiftStore();
   const [direction, setDirection] = useState<'in' | 'out'>('in'); // 'in' = receive, 'out' = give
   const [amount, setAmount] = useState<number | null>(null);
   const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>('cash');
@@ -108,6 +110,7 @@ export default function ReceivePaymentModal({
         notes: note.trim() || null,
         received_by: user?.id || null,
         source: source,
+        shift_id: currentShift?.id ?? null,
       });
 
       if (!result.success) {

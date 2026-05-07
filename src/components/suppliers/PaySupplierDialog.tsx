@@ -232,7 +232,7 @@ export default function PaySupplierDialog({
           paymentCurrency === 'USD'
             ? `${Number(adjustedAmount || 0).toFixed(2)} USD`
             : formatMoneyUZS(adjustedAmount)
-        }. Yangi balans: ${formatMoneyUZS(result.new_balance ?? 0)}`,
+        }. Yangi balans: ${formatCurrency(Number(result.new_balance ?? 0), supplierCurrency)}`,
         className: 'bg-green-50 border-green-200',
       });
 

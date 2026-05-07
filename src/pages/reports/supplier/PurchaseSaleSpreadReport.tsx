@@ -56,6 +56,11 @@ interface SpreadTimeSeries {
   quantity_sold: number;
 }
 
+const n = (v: unknown): number => {
+  const x = Number(v);
+  return Number.isFinite(x) ? x : 0;
+};
+
 export default function PurchaseSaleSpreadReport() {
   const navigate = useNavigate();
   const { toast } = useToast();
@@ -63,16 +68,18 @@ export default function PurchaseSaleSpreadReport() {
   const [loading, setLoading] = useState(true);
   const [spreadRows, setSpreadRows] = useState<PurchaseSaleSpread[]>([]);
   const [timeSeriesRows, setTimeSeriesRows] = useState<SpreadTimeSeries[]>([]);
-  const [dateFrom, setDateFrom] = useState(
-    new Date(new Date().setMonth(new Date().getMonth() - 3)).toISOString().split('T')[0]
-  );
+  const [dateFrom, setDateFrom] = useState(() => {
+    const d = new Date();
+    d.setMonth(d.getMonth() - 3);
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  });
   const [dateTo, setDateTo] = useState(todayYMD());
   const [searchTerm, setSearchTerm] = useState('');
   const [marginFilter, setMarginFilter] = useState<string>('all');
   const [sortBy, setSortBy] = useState<'margin_percent' | 'margin_amount' | 'total_profit' | 'roi'>(
     'margin_percent'
   );
-  const [selectedProduct, setSelectedProduct] = useState<string>('');
+  const [selectedProduct, setSelectedProduct] = useState<string>('all');
   const [viewMode, setViewMode] = useState<'current' | 'timeseries'>('current');
 
   useReportAutoRefresh(loadData);
@@ -106,8 +113,33 @@ export default function PurchaseSaleSpreadReport() {
         ),
       ]);
 
-      setSpreadRows(Array.isArray(spread) ? spread : []);
-      setTimeSeriesRows(Array.isArray(timeseries) ? timeseries : []);
+      setSpreadRows(
+        (Array.isArray(spread) ? spread : []).map((r: any) => ({
+          ...r,
+          current_purchase_price: n(r?.current_purchase_price),
+          current_sale_price: n(r?.current_sale_price),
+          avg_purchase_price: n(r?.avg_purchase_price),
+          avg_sale_price: n(r?.avg_sale_price),
+          margin_amount: n(r?.margin_amount),
+          margin_percent: n(r?.margin_percent),
+          historical_min_margin: n(r?.historical_min_margin),
+          historical_max_margin: n(r?.historical_max_margin),
+          total_quantity_sold: n(r?.total_quantity_sold),
+          total_revenue: n(r?.total_revenue),
+          total_profit: n(r?.total_profit),
+          roi: n(r?.roi),
+        }))
+      );
+      setTimeSeriesRows(
+        (Array.isArray(timeseries) ? timeseries : []).map((r: any) => ({
+          ...r,
+          avg_cost_price: n(r?.avg_cost_price),
+          avg_sale_price: n(r?.avg_sale_price),
+          margin_amount: n(r?.margin_amount),
+          margin_percent: n(r?.margin_percent),
+          quantity_sold: n(r?.quantity_sold),
+        }))
+      );
     } catch (error: any) {
       console.error('[PurchaseSaleSpreadReport] loadData error:', error);
       toast({
@@ -129,8 +161,12 @@ export default function PurchaseSaleSpreadReport() {
       const term = searchTerm.toLowerCase();
       result = result.filter(
         (row) =>
-          row.product_name.toLowerCase().includes(term) ||
-          row.product_sku.toLowerCase().includes(term)
+          String(row.product_name || '')
+            .toLowerCase()
+            .includes(term) ||
+          String(row.product_sku || '')
+            .toLowerCase()
+            .includes(term)
       );
     }
 
@@ -154,15 +190,23 @@ export default function PurchaseSaleSpreadReport() {
       result = result.filter((row) => row.product_id === selectedProduct);
     }
 
-    return result.sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
+    return [...result].sort(
+      (a, b) => new Date(a.date).getTime() - new Date(b.date).getTime()
+    );
   }, [timeSeriesRows, selectedProduct]);
 
   const uniqueProducts = useMemo(() => {
-    const products = spreadRows.map((row) => ({
-      id: row.product_id,
-      name: row.product_name,
-    }));
-    return products.sort((a, b) => a.name.localeCompare(b.name));
+    const map = new Map<string, string>();
+    for (const row of spreadRows) {
+      const id = String(row.product_id || '');
+      if (!id) continue;
+      if (!map.has(id)) {
+        map.set(id, String(row.product_name || 'Nomaʼlum mahsulot'));
+      }
+    }
+    return Array.from(map.entries())
+      .map(([id, name]) => ({ id, name }))
+      .sort((a, b) => a.name.localeCompare(b.name));
   }, [spreadRows]);
 
   const summary = useMemo(() => {
@@ -202,11 +246,11 @@ export default function PurchaseSaleSpreadReport() {
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-4">
-          <Button variant="ghost" size="icon" onClick={() => navigate('/reports')}>
+          <Button variant="ghost" size="icon" onClick={() => navigate('/reports/purchase')}>
             <ArrowLeft className="h-4 w-4" />
           </Button>
           <div>
-            <h1 className="text-3xl font-bold flex items-center gap-2">
+            <h1 className="page-heading flex items-center gap-2">
               <Percent className="h-8 w-8 text-green-500" />
               Purchase vs Sale Spread
             </h1>
@@ -332,7 +376,7 @@ export default function PurchaseSaleSpreadReport() {
               <Percent className="h-5 w-5 text-blue-500" />
               <p className="text-sm text-muted-foreground">O'rtacha marja</p>
             </div>
-            <div className="text-2xl font-bold mt-2">{summary.avgMargin.toFixed(1)}%</div>
+            <div className="text-2xl font-bold mt-2">{n(summary.avgMargin).toFixed(1)}%</div>
           </CardContent>
         </Card>
         <Card>
@@ -341,7 +385,7 @@ export default function PurchaseSaleSpreadReport() {
               <TrendingUp className="h-5 w-5 text-purple-500" />
               <p className="text-sm text-muted-foreground">O'rtacha ROI</p>
             </div>
-            <div className="text-2xl font-bold mt-2">{summary.avgROI.toFixed(1)}%</div>
+            <div className="text-2xl font-bold mt-2">{n(summary.avgROI).toFixed(1)}%</div>
           </CardContent>
         </Card>
       </div>
@@ -398,7 +442,7 @@ export default function PurchaseSaleSpreadReport() {
                             : 'text-red-600'
                         }`}
                       >
-                        {row.margin_percent.toFixed(1)}%
+                        {n(row.margin_percent).toFixed(1)}%
                       </TableCell>
                       <TableCell className="text-center">
                         {getMarginBadge(row.margin_percent)}
@@ -407,7 +451,7 @@ export default function PurchaseSaleSpreadReport() {
                       <TableCell className="text-right text-green-600">
                         {formatMoneyUZS(row.total_profit)}
                       </TableCell>
-                      <TableCell className="text-right">{row.roi.toFixed(1)}%</TableCell>
+                      <TableCell className="text-right">{n(row.roi).toFixed(1)}%</TableCell>
                     </TableRow>
                   ))}
                 </TableBody>
@@ -463,7 +507,7 @@ export default function PurchaseSaleSpreadReport() {
                             : 'text-yellow-600'
                         }`}
                       >
-                        {row.margin_percent.toFixed(1)}%
+                        {n(row.margin_percent).toFixed(1)}%
                       </TableCell>
                       <TableCell className="text-right">{row.quantity_sold}</TableCell>
                     </TableRow>

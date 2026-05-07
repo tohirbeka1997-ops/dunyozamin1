@@ -314,7 +314,7 @@ export default function PurchaseReceiptForm() {
           <ArrowLeft className="h-4 w-4" />
         </Button>
         <div>
-          <h1 className="text-3xl font-bold">Qabul qilish</h1>
+          <h1 className="page-heading">Qabul qilish</h1>
           <p className="text-muted-foreground">Tovarni omborga kirim qilish</p>
         </div>
       </div>

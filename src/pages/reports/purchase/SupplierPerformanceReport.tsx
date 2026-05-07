@@ -65,10 +65,14 @@ export default function SupplierPerformanceReport() {
           date_to: dateTo,
         }),
       ]);
+      const receivedOrders = (Array.isArray(ordersData) ? ordersData : []).filter((order) => {
+        const st = String((order as any)?.status || '').toLowerCase();
+        return st === 'received' || st === 'partially_received';
+      });
 
       const supplierMap = new Map<string, SupplierPerformance>();
 
-      ordersData.forEach((order) => {
+      receivedOrders.forEach((order) => {
         const supplierId = order.supplier_id || 'unknown';
         const existing = supplierMap.get(supplierId);
         const amount = Number(order.total_amount || 0);
@@ -153,12 +157,12 @@ export default function SupplierPerformanceReport() {
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-4">
-          <Button variant="ghost" size="icon" onClick={() => navigate('/reports')}>
+          <Button variant="ghost" size="icon" onClick={() => navigate('/reports/purchase')}>
             <ArrowLeft className="h-4 w-4" />
           </Button>
           <div>
-            <h1 className="text-3xl font-bold">Yetkazib beruvchilar samaradorligi</h1>
-            <p className="text-muted-foreground">Yetkazib beruvchilarning xaridlar bo'yicha samaradorligini tahlil qilish</p>
+            <h1 className="page-heading">Yetkazib beruvchilar samaradorligi</h1>
+            <p className="text-muted-foreground">Faqat qabul qilingan xaridlar bo‘yicha yetkazib beruvchilar samaradorligi</p>
           </div>
         </div>
         <div className="flex gap-2">

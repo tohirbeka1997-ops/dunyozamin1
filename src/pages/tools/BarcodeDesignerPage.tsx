@@ -303,7 +303,7 @@ export default function BarcodeDesignerPage() {
   return (
     <div className="container mx-auto p-6 space-y-6">
       <div>
-        <h1 className="text-3xl font-bold">Barcode Designer — Pro Mode</h1>
+        <h1 className="page-heading">Barcode Designer — Pro Mode</h1>
         <p className="text-muted-foreground mt-2">Erkin layout: drag, resize, font, align, show/hide.</p>
       </div>
 

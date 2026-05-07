@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { useAuth } from '@/contexts/AuthContext';
-import { ArrowLeft, ChevronDown, ChevronUp, ShoppingCart, Truck, LineChart, Percent, FileText, CheckCircle2, Package } from 'lucide-react';
+import { ArrowLeft, ChevronDown, ChevronUp, ShoppingCart, Truck, LineChart, Percent, FileText, CheckCircle2, Package, BarChart3 } from 'lucide-react';
 
 type ReportLink = { title: string; description: string; path: string; icon: React.ReactNode };
 
@@ -50,6 +50,12 @@ export default function PurchaseSupplierReportsHub() {
         path: '/reports/supplier/product-sales',
         icon: <Package className="h-4 w-4 opacity-90" />,
       },
+      {
+        title: 'Sotib oldim / Sotdim',
+        description: 'Mahsulot bo‘yicha xarid va sotuvni solishtirish',
+        path: '/reports/supplier/purchase-vs-sold',
+        icon: <BarChart3 className="h-4 w-4 opacity-90" />,
+      },
     ],
     []
   );
@@ -87,7 +93,7 @@ export default function PurchaseSupplierReportsHub() {
           <ArrowLeft className="h-4 w-4" />
         </Button>
         <div>
-          <h1 className="text-3xl font-bold">Xarid & yetkazib beruvchi</h1>
+          <h1 className="page-heading">Xarid & yetkazib beruvchi</h1>
           <p className="text-muted-foreground">Xaridlar va yetkazib beruvchilar bo‘yicha hisobotlar</p>
         </div>
       </div>

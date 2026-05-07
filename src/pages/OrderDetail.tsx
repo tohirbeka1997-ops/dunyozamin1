@@ -15,7 +15,7 @@ import { useToast } from '@/hooks/use-toast';
 import { useAuth } from '@/contexts/AuthContext';
 import { getOrderById, cancelOrder, getSettingsByCategory } from '@/db/api';
 import type { OrderWithDetails } from '@/types/database';
-import { ArrowLeft, Printer, RotateCcw, XCircle } from 'lucide-react';
+import { ArrowLeft, Printer, RotateCcw, XCircle, Pencil } from 'lucide-react';
 import { formatMoneyUZS } from '@/lib/format';
 import { printHtml } from '@/lib/print';
 import { renderReceiptTemplate } from '@/lib/receipts/renderReceiptTemplate';
@@ -35,11 +35,18 @@ import {
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog';
 import { useQueryClient } from '@tanstack/react-query';
+import { useTranslation } from 'react-i18next';
 import { invalidateDashboardQueries } from '@/utils/dashboard';
 import { formatOrderDateTime, formatReceiptDateTime } from '@/lib/datetime';
 import { navigateBackTo, resolveBackTarget } from '@/lib/pageState';
 
+function canEditOrderInPos(o: { status?: string } | null | undefined) {
+  const s = String(o?.status || '').toLowerCase();
+  return s !== 'voided' && s !== 'refunded' && s !== 'returned';
+}
+
 export default function OrderDetail() {
+  const { t } = useTranslation();
   const { id } = useParams();
   const navigate = useNavigate();
   const location = useLocation();
@@ -101,9 +108,12 @@ export default function OrderDetail() {
     const variants: Record<string, { label: string; variant: 'default' | 'secondary' | 'destructive' }> = {
       paid: { label: 'To\'langan', variant: 'default' },
       partial: { label: 'Qisman to\'langan', variant: 'secondary' },
+      on_credit: { label: 'Nasiya', variant: 'destructive' },
+      partially_paid: { label: 'Qisman to\'langan', variant: 'secondary' },
+      pending: { label: 'Kutilmoqda', variant: 'destructive' },
       unpaid: { label: 'To\'lanmagan', variant: 'destructive' },
     };
-    const variant = variants[status] || variants.paid;
+    const variant = variants[String(status || '').toLowerCase()] || variants.paid;
     return <Badge variant={variant.variant}>{variant.label}</Badge>;
   };
 
@@ -193,6 +203,16 @@ export default function OrderDetail() {
   const handleCreateReturn = () => {
     if (!order || !id) return;
     navigate(`/returns/create?orderId=${id}`);
+  };
+
+  const handleEditInPos = () => {
+    if (!order) return;
+    try {
+      sessionStorage.setItem('pos_import_order_id', order.id);
+    } catch {
+      /* ignore */
+    }
+    navigate('/pos', { state: { importOrderId: order.id } });
   };
 
   const handleCancelOrder = async () => {
@@ -464,7 +484,10 @@ export default function OrderDetail() {
     );
   }
 
-  const canVoid = profile && ['admin', 'manager'].includes(profile.role) && order.status === 'completed';
+  const canVoid =
+    profile &&
+    ['admin', 'manager'].includes(profile.role) &&
+    ['draft', 'pending', 'on_hold'].includes(String(order.status || '').toLowerCase());
   const effectiveDiscountAmount = getEffectiveDiscountAmount(order);
 
   return (
@@ -475,11 +498,17 @@ export default function OrderDetail() {
             <ArrowLeft className="h-5 w-5" />
           </Button>
           <div>
-            <h1 className="text-3xl font-bold">Buyurtma tafsilotlari</h1>
+            <h1 className="page-heading">Buyurtma tafsilotlari</h1>
             <p className="text-muted-foreground">Buyurtma haqida batafsil ma'lumot</p>
           </div>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 flex-wrap justify-end">
+          {canEditOrderInPos(order) && (
+            <Button variant="secondary" onClick={handleEditInPos} title={t('orders.edit_in_pos_hint')}>
+              <Pencil className="h-4 w-4 mr-2" />
+              {t('orders.edit_in_pos')}
+            </Button>
+          )}
           <Button 
             variant="outline" 
             onClick={handlePrint}

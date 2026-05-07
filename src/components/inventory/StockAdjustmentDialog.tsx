@@ -55,7 +55,7 @@ export default function StockAdjustmentDialog({
   const [isSubmitting, setIsSubmitting] = useState(false);
 
   // Get current stock from product data (single source of truth from IPC)
-  const currentStock = product.current_stock ?? product.stock_quantity ?? 0;
+  const currentStock = product.current_stock ?? (product as any).stock_available ?? (product as any).available_stock ?? product.stock_quantity ?? 0;
   const unit = product.unit;
   const quantityMin = getQuantityMin(unit);
   const quantityStep = getQuantityStep(unit);

@@ -5,6 +5,7 @@
  * - We intentionally DO NOT include:
  *   - pos:files:* (should run on the local CLIENT machine for OS dialogs)
  *   - pos:appConfig:* (local config stored in userData)
+ *   - pos:print:* (thermal/USB printer — local only; LAN RPC rejects it)
  */
 module.exports = {
   POS_CHANNELS: [
@@ -31,6 +32,16 @@ module.exports = {
     'pos:pricing:getPrice',
     'pos:pricing:setPrice',
 
+    // Promotions (CLIENT forwarder — preload bilan bir xil)
+    'pos:promotions:list',
+    'pos:promotions:get',
+    'pos:promotions:create',
+    'pos:promotions:update',
+    'pos:promotions:delete',
+    'pos:promotions:activate',
+    'pos:promotions:pause',
+    'pos:promotions:applyToCart',
+
     // Categories
     'pos:categories:list',
     'pos:categories:get',
@@ -48,6 +59,8 @@ module.exports = {
     // Customers
     'pos:customers:list',
     'pos:customers:get',
+    'pos:customers:getByLoyaltyQr',
+    'pos:customers:getLoyaltyCard',
     'pos:customers:create',
     'pos:customers:update',
     'pos:customers:delete',
@@ -141,12 +154,14 @@ module.exports = {
     'pos:shifts:require',
     'pos:shifts:list',
     'pos:shifts:getSummary',
+    'pos:shift:getSummary',
 
     // Reports
     'pos:reports:dailySales',
     'pos:reports:dailySalesSQL',
     'pos:reports:topProducts',
     'pos:reports:productSales',
+    'pos:reports:promotionUsage',
     'pos:reports:stock',
     'pos:reports:returns',
     'pos:reports:profit',
@@ -155,11 +170,42 @@ module.exports = {
     'pos:reports:inventoryValuationSummary',
     'pos:reports:batchReconciliation',
     'pos:reports:actSverka',
+    'pos:reports:productActSverkaByPeriod',
+    'pos:reports:productDocumentHistory',
     'pos:reports:customerActSverka',
     'pos:reports:supplierActSverka',
     'pos:reports:productTraceability',
+    'pos:reports:supplierProductSales',
+    'pos:reports:cashFlow',
+    'pos:reports:cashDiscrepancies',
+    'pos:reports:aging',
+    'pos:reports:customerAging',
+    'pos:reports:supplierAging',
+    'pos:reports:vipCustomers',
+    'pos:reports:loyaltyPointsSummary',
+    'pos:reports:lostCustomers',
+    'pos:reports:customerProfitability',
+    'pos:reports:deliveryAccuracy',
+    'pos:reports:deliveryDetails',
+    'pos:reports:priceHistory',
+    'pos:reports:productPriceSummary',
     'pos:reports:purchasePlanning',
+    'pos:reports:purchaseSaleSpread',
+    'pos:reports:purchaseVsSold',
+    'pos:reports:spreadTimeSeries',
     'pos:reports:getLatestPurchaseCosts',
+    'pos:reports:cashierErrors',
+    'pos:reports:cashierErrorDetails',
+    'pos:reports:shiftProductivity',
+    'pos:reports:productivitySummary',
+    'pos:reports:fraudSignals',
+    'pos:reports:fraudIncidents',
+    'pos:reports:deviceHealth',
+    'pos:reports:deviceIncidents',
+    'pos:reports:auditLog',
+    'pos:reports:priceChangeHistory',
+    'pos:reports:executiveKPI',
+    'pos:reports:executiveTrends',
 
     // Dashboard
     'pos:dashboard:getStats',
@@ -181,6 +227,7 @@ module.exports = {
     'pos:auth:login',
     'pos:auth:logout',
     'pos:auth:me',
+    'pos:auth:setSessionUser',
     'pos:auth:getUser',
     'pos:auth:checkPermission',
     'pos:auth:requestPasswordReset',
@@ -194,6 +241,14 @@ module.exports = {
     'pos:webOrders:list',
     'pos:webOrders:get',
     'pos:webOrders:updateStatus',
+    'pos:webOrders:update',
+    'pos:webOrders:cancel',
+    'pos:webOrders:dispatchToCourier',
+
+    // Telegram couriers
+    'pos:couriers:list',
+    'pos:couriers:upsert',
+    'pos:couriers:setActive',
 
     // Users
     'pos:users:list',
@@ -201,9 +256,7 @@ module.exports = {
     'pos:users:create',
     'pos:users:update',
     'pos:users:delete',
-
-    // Print
-    'pos:print:receipt',
+    'pos:users:listLoginSessions',
 
     // System / Debug
     'pos:health',

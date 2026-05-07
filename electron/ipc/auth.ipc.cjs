@@ -1,6 +1,7 @@
 const { ipcMain } = require('electron');
 const { wrapHandler, ERROR_CODES, createError } = require('../lib/errors.cjs');
 const { randomUUID } = require('crypto');
+const { setCurrentUserId } = require('../lib/currentUser.cjs');
 
 // Defensive check: ensure wrapHandler is imported correctly
 if (typeof wrapHandler !== 'function') {
@@ -24,18 +25,12 @@ function registerAuthHandlers(services, db) {
   ipcMain.removeHandler('pos:auth:login');
   ipcMain.handle('pos:auth:login', async (_event, username, password) => {
     try {
-      console.log('🔐 pos:auth:login called (real handler)', { username });
-      
-      // auth.login returns { success: true, user, message } or { success: false, error }
       const result = auth.login(username, password);
-      
+
       if (result.success) {
-        console.log('✅ Login successful - User:', result.user.username, 'Role:', result.user.role);
-        console.log('✅ IPC Response:', JSON.stringify({ 
-          success: result.success, 
-          user: { id: result.user.id, username: result.user.username, role: result.user.role },
-          message: result.message 
-        }));
+        if (result.user?.id) {
+          setCurrentUserId(result.user.id);
+        }
 
         // Record login session for "Login Activity" report.
         // Desktop app: we don't have a real client IP; keep it null.
@@ -63,18 +58,13 @@ function registerAuthHandlers(services, db) {
             // ignore
           }
         } catch (sessionErr) {
-          console.warn('⚠️ Could not record login session:', sessionErr?.message || sessionErr);
+          console.warn('[auth] Could not record login session:', sessionErr?.message || sessionErr);
         }
-      } else {
-        console.log('❌ Login failed:', result.error);
       }
-      
-      // Return the result object directly (it already has success/error format)
-      // Format: { success: true, user: { id, username, full_name, email, role }, message: 'Welcome' }
+
       return result;
     } catch (error) {
-      console.error('❌ pos:auth:login error:', error);
-      // Return consistent error format
+      console.error('[auth] pos:auth:login error:', error?.message || String(error));
       return {
         success: false,
         error: error.message || 'Login failed'
@@ -134,6 +124,14 @@ function registerAuthHandlers(services, db) {
   // logged-in user (best-effort) or null.
   ipcMain.removeHandler('pos:auth:logout');
   ipcMain.handle('pos:auth:logout', wrapHandler(async () => {
+    setCurrentUserId(null);
+    return { success: true };
+  }));
+
+  // Renderer localStorage orqali qayta yuklanganda joriy foydalanuvchi ID sini main processga sinxronlash
+  ipcMain.removeHandler('pos:auth:setSessionUser');
+  ipcMain.handle('pos:auth:setSessionUser', wrapHandler(async (_event, userId) => {
+    setCurrentUserId(userId);
     return { success: true };
   }));
 

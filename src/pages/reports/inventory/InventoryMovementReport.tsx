@@ -23,7 +23,7 @@ import type { InventoryMovementWithDetails } from '@/types/database';
 import { FileDown, ArrowLeft, TrendingUp, TrendingDown } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 import { useNavigate } from 'react-router-dom';
-import { formatOrderDateTime, todayYMD } from '@/lib/datetime';
+import { formatOrderDateTime, todayYMD, formatDateYMD } from '@/lib/datetime';
 import { useReportAutoRefresh } from '@/hooks/useReportAutoRefresh';
 
 export default function InventoryMovementReport() {
@@ -31,8 +31,12 @@ export default function InventoryMovementReport() {
   const { toast } = useToast();
   const [movements, setMovements] = useState<InventoryMovementWithDetails[]>([]);
   const [loading, setLoading] = useState(true);
-  const [dateFrom, setDateFrom] = useState(todayYMD());
-  const [dateTo, setDateTo] = useState(todayYMD());
+  const [dateFrom, setDateFrom] = useState(() => {
+    const d = new Date();
+    d.setDate(d.getDate() - 7);
+    return formatDateYMD(d);
+  });
+  const [dateTo, setDateTo] = useState(() => todayYMD());
   const [typeFilter, setTypeFilter] = useState<string>('all');
   const [searchTerm, setSearchTerm] = useState('');
 
@@ -102,12 +106,15 @@ export default function InventoryMovementReport() {
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-4">
-          <Button variant="ghost" size="icon" onClick={() => navigate('/reports')}>
+          <Button variant="ghost" size="icon" onClick={() => navigate('/reports/inventory')}>
             <ArrowLeft className="h-4 w-4" />
           </Button>
           <div>
-            <h1 className="text-3xl font-bold">Ombor harakatlari hisobotlari</h1>
-            <p className="text-muted-foreground">Ombordagi barcha harakatlar va o'zgarishlarni kuzating</p>
+            <h1 className="page-heading">Ombor harakatlari hisobotlari</h1>
+            <p className="text-muted-foreground text-sm">
+              Ombordagi barcha harakatlar va o‘zgarishlar. Sana filtri va jadvaldagi vaqt:{' '}
+              <span className="text-foreground/80">Asia/Tashkent</span> (O‘zbekiston vaqti).
+            </p>
           </div>
         </div>
         <div className="flex gap-2">

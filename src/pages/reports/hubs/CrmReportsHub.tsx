@@ -64,7 +64,7 @@ export default function CrmReportsHub() {
           <ArrowLeft className="h-4 w-4" />
         </Button>
         <div>
-          <h1 className="text-3xl font-bold">Mijozlar (CRM)</h1>
+          <h1 className="page-heading">Mijozlar (CRM)</h1>
           <p className="text-muted-foreground">Mijozlar bo‘yicha tahlil va hisobotlar</p>
         </div>
       </div>

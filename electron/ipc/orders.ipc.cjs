@@ -58,6 +58,22 @@ function registerOrdersHandlers(services) {
     console.log('📋 pos:orders:getByCustomer called for customer:', customerId);
     return sales.getByCustomer(customerId);
   }));
+
+  ipcMain.removeHandler('pos:orders:cancel');
+  ipcMain.handle('pos:orders:cancel', wrapHandler(async (_event, id) => {
+    if (!id) throw new Error('Order ID is required');
+    const row = sales.db.prepare('SELECT id, status FROM orders WHERE id = ?').get(id);
+    if (!row) throw new Error(`Order not found: ${id}`);
+    const status = String(row.status || '').toLowerCase();
+    if (!['draft', 'pending', 'on_hold'].includes(status)) {
+      throw new Error(`Order in status '${status}' cannot be cancelled`);
+    }
+    const now = new Date().toISOString().replace('T', ' ').replace('Z', '').substring(0, 19);
+    sales.db
+      .prepare("UPDATE orders SET status = 'voided', updated_at = ? WHERE id = ?")
+      .run(now, id);
+    return sales._getOrderWithDetails(id);
+  }));
 }
 
 module.exports = { registerOrdersHandlers };

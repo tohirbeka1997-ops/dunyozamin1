@@ -323,7 +323,7 @@ export default function PurchaseOrderDetail() {
             <ArrowLeft className="h-4 w-4" />
           </Button>
           <div>
-            <h1 className="text-3xl font-bold">Xarid buyurtmasi tafsilotlari</h1>
+            <h1 className="page-heading">Xarid buyurtmasi tafsilotlari</h1>
             <p className="text-muted-foreground">{purchaseOrder.po_number}</p>
           </div>
         </div>

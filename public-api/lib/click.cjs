@@ -4,6 +4,30 @@ const crypto = require('crypto');
 const { sumsToTiyin } = require('./paymentLinks.cjs');
 const { decrementStockForPaidWebOrder } = require('./stockDecrement.cjs');
 
+const PROVIDER = 'click';
+
+function timingSafeEqualHex(a, b) {
+  try {
+    const ba = Buffer.from(String(a), 'hex');
+    const bb = Buffer.from(String(b), 'hex');
+    if (ba.length !== bb.length || ba.length === 0) return false;
+    return crypto.timingSafeEqual(ba, bb);
+  } catch {
+    return false;
+  }
+}
+
+function isPayableByClick(row) {
+  if (!row) return false;
+  if (row.status === 'cancelled') return false;
+  if (row.payment_method && String(row.payment_method) !== PROVIDER) return false;
+  if (row.payment_status === 'paid') {
+    return row.payment_provider == null || String(row.payment_provider) === PROVIDER;
+  }
+  if (row.payment_status === 'failed' || row.payment_status === 'refunded') return false;
+  return true;
+}
+
 /**
  * Click merchant callback — MD5 imzo (docs.click.uz).
  */
@@ -18,7 +42,7 @@ function verifyClickSign(params, secretKey) {
   const signTime = String(params.sign_time ?? '');
   const str = `${clickTransId}${serviceId}${secretKey}${merchantTransId}${amount}${action}${signTime}`;
   const digest = crypto.createHash('md5').update(str).digest('hex');
-  return digest === String(sign);
+  return timingSafeEqualHex(digest, String(sign));
 }
 
 /**
@@ -40,7 +64,11 @@ function handleClickCallback(db, params, { serviceId, secretKey }, onPaid) {
   const action = Number.parseInt(String(params.action ?? '-1'), 10);
   const amountTiyin = Number(params.amount);
 
-  const row = db.prepare('SELECT id, total_amount, status, payment_status FROM web_orders WHERE id = ?').get(orderId);
+  const row = db
+    .prepare(
+      'SELECT id, total_amount, status, payment_status, payment_method, payment_provider FROM web_orders WHERE id = ?'
+    )
+    .get(orderId);
   if (!row) {
     return { error: -5, error_note: 'Order not found' };
   }
@@ -54,6 +82,9 @@ function handleClickCallback(db, params, { serviceId, secretKey }, onPaid) {
     if (row.status === 'cancelled') {
       return { error: -4, error_note: 'Cancelled' };
     }
+    if (!isPayableByClick(row)) {
+      return { error: -9, error_note: 'Order is not payable via Click' };
+    }
     return {
       error: 0,
       error_note: 'Success',
@@ -65,6 +96,9 @@ function handleClickCallback(db, params, { serviceId, secretKey }, onPaid) {
 
   if (action === 1) {
     if (row.status === 'paid' && row.payment_status === 'paid') {
+      if (row.payment_provider && String(row.payment_provider) !== PROVIDER) {
+        return { error: -9, error_note: 'Order already paid via another provider' };
+      }
       return {
         error: 0,
         error_note: 'Success',
@@ -75,6 +109,9 @@ function handleClickCallback(db, params, { serviceId, secretKey }, onPaid) {
     }
     if (row.status === 'cancelled') {
       return { error: -4, error_note: 'Cancelled' };
+    }
+    if (!isPayableByClick(row)) {
+      return { error: -9, error_note: 'Order is not payable via Click' };
     }
 
     const transId = String(params.click_trans_id ?? '');

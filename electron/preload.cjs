@@ -85,9 +85,9 @@ contextBridge.exposeInMainWorld('posApi', {
     getNextSku: () => invoke('pos:products:getNextSku'),
     getNextBarcode: () => invoke('pos:products:getNextBarcode'),
     getNextBarcodeForUnit: (unit) => invoke('pos:products:getNextBarcodeForUnit', unit),
-    create: (data) => invoke('pos:products:create', data),
-    update: (id, data) => invoke('pos:products:update', id, data),
-    delete: (id) => invoke('pos:products:delete', id),
+    create: (data, actorUserId) => invoke('pos:products:create', data, actorUserId ?? null),
+    update: (id, data, actorUserId) => invoke('pos:products:update', id, data, actorUserId ?? null),
+    delete: (id, actorUserId) => invoke('pos:products:delete', id, actorUserId ?? null),
     exportScaleRongtaTxt: (opts) => invoke('pos:products:exportScaleRongtaTxt', opts),
     exportScaleSharqTxt: (opts) => invoke('pos:products:exportScaleSharqTxt', opts),
     exportScaleCsv3: (opts) => invoke('pos:products:exportScaleCsv3', opts),
@@ -121,6 +121,8 @@ contextBridge.exposeInMainWorld('posApi', {
   customers: {
     list: (filters) => invoke('pos:customers:list', filters),
     get: (id) => invoke('pos:customers:get', id),
+    getByLoyaltyQr: (payload) => invoke('pos:customers:getByLoyaltyQr', payload),
+    getLoyaltyCard: (customerId) => invoke('pos:customers:getLoyaltyCard', customerId),
     create: (data) => invoke('pos:customers:create', data),
     update: (id, data) => invoke('pos:customers:update', id, data),
     delete: (id) => invoke('pos:customers:delete', id),
@@ -214,6 +216,7 @@ contextBridge.exposeInMainWorld('posApi', {
     list: (filters) => invoke('pos:returns:list', filters),
     getOrderDetails: (orderId) => invoke('pos:returns:getOrderDetails', orderId),
     update: (returnId, payload) => invoke('pos:returns:update', returnId, payload),
+    delete: (id) => invoke('pos:returns:delete', id),
   },
 
   // Purchases
@@ -252,7 +255,16 @@ contextBridge.exposeInMainWorld('posApi', {
     // Extra shift helpers used by UI
     getActive: (userId) => invoke('pos:shifts:getActive', userId),
     getCurrent: (cashierId) => invoke('pos:shifts:getCurrent', cashierId),
-    getSummary: ({ shiftId }) => invoke('pos:shifts:getSummary', { shiftId }),
+    getSummary: (p) => {
+      const shiftId = p && (p.shiftId ?? p.shift_id);
+      if (shiftId == null || !String(shiftId).trim()) {
+        return Promise.resolve({
+          success: false,
+          error: { code: 'VALIDATION_ERROR', message: 'Faol smena topilmadi — shiftId kerak' },
+        });
+      }
+      return invoke('pos:shifts:getSummary', { shiftId: String(shiftId).trim() });
+    },
     getStatus: (userId, warehouseId) => invoke('pos:shifts:getStatus', userId, warehouseId),
     require: (userId, warehouseId) => invoke('pos:shifts:require', userId, warehouseId),
     list: (filters) => invoke('pos:shifts:list', filters),
@@ -274,6 +286,8 @@ contextBridge.exposeInMainWorld('posApi', {
     inventoryValuationSummary: (filters) => invoke('pos:reports:inventoryValuationSummary', filters),
     batchReconciliation: (filters) => invoke('pos:reports:batchReconciliation', filters),
     actSverka: (filters) => invoke('pos:reports:actSverka', filters),
+    productActSverkaByPeriod: (filters) => invoke('pos:reports:productActSverkaByPeriod', filters),
+    productDocumentHistory: (filters) => invoke('pos:reports:productDocumentHistory', filters),
     customerActSverka: (filters) => invoke('pos:reports:customerActSverka', filters),
     supplierActSverka: (filters) => invoke('pos:reports:supplierActSverka', filters),
     productTraceability: (filters) => invoke('pos:reports:productTraceability', filters),
@@ -299,6 +313,7 @@ contextBridge.exposeInMainWorld('posApi', {
     productPriceSummary: (filters) => invoke('pos:reports:productPriceSummary', filters),
     purchasePlanning: (filters) => invoke('pos:reports:purchasePlanning', filters),
     purchaseSaleSpread: (filters) => invoke('pos:reports:purchaseSaleSpread', filters),
+    purchaseVsSold: (filters) => invoke('pos:reports:purchaseVsSold', filters),
     spreadTimeSeries: (filters) => invoke('pos:reports:spreadTimeSeries', filters),
 
     latestPurchaseCosts: () => invoke('pos:reports:getLatestPurchaseCosts'),
@@ -350,6 +365,7 @@ contextBridge.exposeInMainWorld('posApi', {
     login: (username, password) => invoke('pos:auth:login', username, password),
     logout: () => invoke('pos:auth:logout'),
     me: () => invoke('pos:auth:me'),
+    setSessionUser: (userId) => invoke('pos:auth:setSessionUser', userId),
     getUser: (userId) => invoke('pos:auth:getUser', userId),
     checkPermission: (userId, permission) => invoke('pos:auth:checkPermission', userId, permission),
     requestPasswordReset: (identifier) => invoke('pos:auth:requestPasswordReset', identifier),
@@ -363,6 +379,7 @@ contextBridge.exposeInMainWorld('posApi', {
     create: (data) => invoke('pos:users:create', data),
     update: (id, data) => invoke('pos:users:update', id, data),
     delete: (id) => invoke('pos:users:delete', id),
+    listLoginSessions: (filters) => invoke('pos:users:listLoginSessions', filters),
     resetPassword: (userId, newPassword) => invoke('pos:users:resetPassword', userId, newPassword),
   },
 
@@ -390,6 +407,15 @@ contextBridge.exposeInMainWorld('posApi', {
     list: (filters) => invoke('pos:webOrders:list', filters),
     get: (id) => invoke('pos:webOrders:get', id),
     updateStatus: (id, status) => invoke('pos:webOrders:updateStatus', id, status),
+    update: (id, payload) => invoke('pos:webOrders:update', id, payload),
+    cancel: (id) => invoke('pos:webOrders:cancel', id),
+    dispatchToCourier: (id) => invoke('pos:webOrders:dispatchToCourier', id),
+  },
+
+  couriers: {
+    list: (filters) => invoke('pos:couriers:list', filters),
+    upsert: (payload) => invoke('pos:couriers:upsert', payload),
+    setActive: (id, active) => invoke('pos:couriers:setActive', id, active),
   },
 
   // Files (export/backups/import)

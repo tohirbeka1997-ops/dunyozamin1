@@ -2,6 +2,17 @@ const { ERROR_CODES, createError } = require('../lib/errors.cjs');
 const { randomUUID } = require('crypto');
 
 /**
+ * Yakunlangan savdo buyurtmasi (POS `orders`).
+ * SHABLON ichida alohida `` ` `` ishlatmaslik — ba’zi muhitlarda noto‘g‘ri interpolatsiya xavfi.
+ * Faqat bitta `?` — shift_id; bu qatorlarda `?` ISHLATILMAYDI.
+ */
+const WHERE_ORDER_DONE_ALIAS_O =
+  "(LOWER(TRIM(COALESCE(o.status, ''))) IN ('completed', 'paid', 'done'))";
+
+const WHERE_ORDER_DONE_STATUS_COL =
+  "(LOWER(TRIM(COALESCE(status, ''))) IN ('completed', 'paid', 'done'))";
+
+/**
  * Shifts Service
  * Handles cashier shift management
  */
@@ -16,6 +27,130 @@ class ShiftsService {
    */
   _isYmdDate(value) {
     return typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value);
+  }
+
+  /**
+   * Kassadan chiqgan naqd qaytarishlar (summasi):
+   * - sales_returns: refund_amount, faqat naqd/kassa (cash/naqd yoki bo'sh/default)
+   * - cash_movements: movement_type = refund (almashuvda mijozga naqd qaytim)
+   */
+  _getCashDrawerRefundsOut(shiftId) {
+    if (!shiftId) return 0;
+    const sid = String(shiftId).trim();
+    if (!sid) return 0;
+
+    let fromReturns = 0;
+    try {
+      const row = this.db
+        .prepare(
+          `
+        SELECT COALESCE(SUM(COALESCE(refund_amount, total_amount, 0)), 0) AS s
+        FROM sales_returns
+        WHERE shift_id = ?
+          AND status = 'completed'
+          AND (
+            refund_method IS NULL
+            OR TRIM(refund_method) = ''
+            OR LOWER(TRIM(refund_method)) IN ('cash', 'naqd')
+          )
+      `
+        )
+        .get(sid);
+      fromReturns = Number(row?.s || 0) || 0;
+    } catch (e) {
+      console.warn('[SHIFT] _getCashDrawerRefundsOut sales_returns:', e.message);
+    }
+
+    let fromMovements = 0;
+    try {
+      const row = this.db
+        .prepare(
+          `
+        SELECT COALESCE(SUM(amount), 0) AS s
+        FROM cash_movements
+        WHERE shift_id = ?
+          AND LOWER(TRIM(COALESCE(movement_type, ''))) = 'refund'
+      `
+        )
+        .get(sid);
+      fromMovements = Number(row?.s || 0) || 0;
+    } catch (e) {
+      /* jadval yo'q */
+    }
+
+    return fromReturns + fromMovements;
+  }
+
+  /**
+   * Mijoz balansiga toʻlovlar (customer_payments): smenaga bogʻlangan naqd oqimi va qarz yopish.
+   * - customerDrawerCashNet: kassaga naqd (+ kirim, − chiqim mijozga)
+   * - debtRepaidTotal: old_balance < 0 boʻlgan kirimlar (qarzni toʻlash, barcha usullar)
+   * - debtRepaidCash: shundan naqd/naqd
+   */
+  _getCustomerPaymentsShiftRollup(shiftId) {
+    const empty = { customerDrawerCashNet: 0, debtRepaidTotal: 0, debtRepaidCash: 0 };
+    if (!shiftId) return empty;
+    const sid = String(shiftId).trim();
+    if (!sid) return empty;
+    try {
+      const cols = this.db.prepare('PRAGMA table_info(customer_payments)').all();
+      if (!cols.some((c) => c.name === 'shift_id')) return empty;
+      const hasOld = cols.some((c) => c.name === 'old_balance');
+
+      const cashNetRow = this.db
+        .prepare(
+          `
+        SELECT COALESCE(SUM(
+          CASE
+            WHEN LOWER(TRIM(COALESCE(payment_method, ''))) NOT IN ('cash', 'naqd') THEN 0
+            WHEN COALESCE(operation, 'payment_in') = 'payment_out' THEN -ABS(COALESCE(amount, 0))
+            ELSE COALESCE(amount, 0)
+          END
+        ), 0) AS s
+        FROM customer_payments
+        WHERE shift_id = ?
+      `
+        )
+        .get(sid);
+      const customerDrawerCashNet = Number(cashNetRow?.s || 0) || 0;
+
+      if (!hasOld) {
+        return { customerDrawerCashNet, debtRepaidTotal: 0, debtRepaidCash: 0 };
+      }
+
+      const debtAll = this.db
+        .prepare(
+          `
+        SELECT COALESCE(SUM(COALESCE(amount, 0)), 0) AS s
+        FROM customer_payments
+        WHERE shift_id = ?
+          AND (operation IS NULL OR operation = 'payment_in')
+          AND COALESCE(old_balance, 0) < -0.009
+      `
+        )
+        .get(sid);
+      const debtCash = this.db
+        .prepare(
+          `
+        SELECT COALESCE(SUM(COALESCE(amount, 0)), 0) AS s
+        FROM customer_payments
+        WHERE shift_id = ?
+          AND (operation IS NULL OR operation = 'payment_in')
+          AND COALESCE(old_balance, 0) < -0.009
+          AND LOWER(TRIM(COALESCE(payment_method, ''))) IN ('cash', 'naqd')
+      `
+        )
+        .get(sid);
+
+      return {
+        customerDrawerCashNet,
+        debtRepaidTotal: Number(debtAll?.s || 0) || 0,
+        debtRepaidCash: Number(debtCash?.s || 0) || 0,
+      };
+    } catch (e) {
+      console.warn('[SHIFT] _getCustomerPaymentsShiftRollup:', e.message);
+      return empty;
+    }
   }
 
   /**
@@ -167,28 +302,54 @@ class ShiftsService {
       // This ensures we count actual payments, not just order totals
       const paymentsData = this.db.prepare(`
         SELECT 
-          COALESCE(SUM(p.amount), 0) as total_payments,
-          COALESCE(SUM(CASE WHEN p.payment_method = 'cash' THEN p.amount ELSE 0 END), 0) as cash_payments
+          COALESCE(SUM(CASE
+            WHEN LOWER(TRIM(COALESCE(p.payment_method, ''))) = 'refund_cash' THEN 0
+            ELSE p.amount
+          END), 0) as total_payments,
+          COALESCE(SUM(CASE
+            WHEN LOWER(TRIM(COALESCE(p.payment_method, ''))) IN ('cash', 'naqd') THEN p.amount
+            ELSE 0
+          END), 0) as cash_payments
         FROM payments p
         INNER JOIN orders o ON p.order_id = o.id
-        WHERE o.shift_id = ? AND o.status = 'completed'
+        WHERE o.shift_id = ? AND ${WHERE_ORDER_DONE_ALIAS_O}
       `).get(shiftId);
 
       // Also get order count and total for reference
       const ordersData = this.db.prepare(`
         SELECT 
           COUNT(*) as order_count,
-          COALESCE(SUM(total_amount), 0) as order_total
+          COALESCE(SUM(total_amount), 0) as order_total,
+          COALESCE(SUM(COALESCE(paid_amount, 0)), 0) as paid_sum
         FROM orders 
-        WHERE shift_id = ? AND status = 'completed'
+        WHERE shift_id = ? AND ${WHERE_ORDER_DONE_STATUS_COL}
       `).get(shiftId);
 
-      const systemTotal = paymentsData.total_payments || 0;
+      const systemTotal = Math.max(
+        Number(paymentsData.total_payments || 0) || 0,
+        Number(ordersData?.paid_sum || 0) || 0,
+        Number(ordersData?.order_total || 0) || 0
+      );
       const cashTotal = paymentsData.cash_payments || 0;
-      
-      // Calculate expected cash = opening_cash + cash_payments
-      const expectedCash = (shift.opening_cash || 0) + cashTotal;
-      
+      const cashRefundsOut = this._getCashDrawerRefundsOut(shiftId);
+      const custRoll = this._getCustomerPaymentsShiftRollup(shiftId);
+
+      let creditDebtIssuedClose = 0;
+      try {
+        const debtRow = this.db.prepare(`
+          SELECT COALESCE(SUM(COALESCE(o.credit_amount, 0)), 0) AS s
+          FROM orders o
+          WHERE o.shift_id = ? AND ${WHERE_ORDER_DONE_ALIAS_O}
+        `).get(shiftId);
+        creditDebtIssuedClose = Number(debtRow?.s || 0) || 0;
+      } catch {
+        /* ignore */
+      }
+
+      // Kutilayotgan naqd = ochilish + buyurtma naqdi + mijoz balansiga naqd (qarz / oldindan) − naqd qaytarishlar
+      const expectedCash =
+        (shift.opening_cash || 0) + cashTotal + custRoll.customerDrawerCashNet - cashRefundsOut;
+
       // Calculate difference = closing_cash - expected_cash
       const difference = closingCash - expectedCash;
 
@@ -196,6 +357,11 @@ class ShiftsService {
         shiftId,
         total_payments: systemTotal,
         cash_payments: cashTotal,
+        customer_drawer_cash_net: custRoll.customerDrawerCashNet,
+        debt_repaid_total: custRoll.debtRepaidTotal,
+        debt_repaid_cash: custRoll.debtRepaidCash,
+        cash_refunds_out: cashRefundsOut,
+        credit_debt_issued: creditDebtIssuedClose,
         order_count: ordersData.order_count || 0,
         order_total: ordersData.order_total || 0,
         opening_cash: shift.opening_cash || 0,
@@ -262,7 +428,12 @@ class ShiftsService {
         expectedCash, 
         cashDifference: difference,
         totalPayments: systemTotal,
-        cashPayments: cashTotal
+        cashPayments: cashTotal,
+        cashRefundsOut,
+        creditDebtIssued: creditDebtIssuedClose,
+        customerDrawerCashNet: custRoll.customerDrawerCashNet,
+        debtRepaidTotal: custRoll.debtRepaidTotal,
+        debtRepaidCash: custRoll.debtRepaidCash
       };
     })();
   }
@@ -293,56 +464,128 @@ class ShiftsService {
    * Uses the same calculation logic as closeShift
    */
   getShiftSummary(shiftId) {
-    if (!shiftId) {
-      throw createError(ERROR_CODES.VALIDATION_ERROR, 'Shift ID is required');
+    // Ba’zi RPC yo‘llari butun `{ shiftId }` obyektini uzatishi mumkin — faqat UUID ishlatamiz
+    let sid = shiftId;
+    if (Array.isArray(sid) && sid.length) {
+      sid = sid[0];
     }
+    const id =
+      typeof sid === 'string' && String(sid).trim()
+        ? String(sid).trim()
+        : sid && typeof sid === 'object'
+          ? String(sid.shiftId || sid.shift_id || sid.id || '').trim() || null
+          : sid != null && (typeof sid === 'number' || typeof sid === 'bigint')
+            ? String(sid)
+            : null;
+    if (!id) {
+      throw createError(ERROR_CODES.VALIDATION_ERROR, 'Faol smena topilmadi — shiftId kerak');
+    }
+    const bindId = String(id).trim();
 
     // Get shift basic info
     const shift = this.db.prepare(`
       SELECT opening_cash, opened_at, closed_at, status
       FROM shifts
       WHERE id = ?
-    `).get(shiftId);
+    `).get(bindId);
 
     if (!shift) {
-      throw createError(ERROR_CODES.NOT_FOUND, `Shift ${shiftId} not found`);
+      throw createError(ERROR_CODES.NOT_FOUND, `Shift ${bindId} not found`);
     }
 
-    // Calculate totals from PAYMENTS (same logic as closeShift)
+    // Totals from PAYMENTS (same as closeShift). Order count MUST come from `orders`
+    // alone — nasiya / to‘lovsiz yakunlangan buyurtmalar payments qatorida bo‘lmasligi
+    // mumkin; INNER JOIN ularni "0 buyurtma" qilib tashlaydi.
     const paymentsData = this.db.prepare(`
       SELECT 
-        COALESCE(SUM(p.amount), 0) as total_payments,
-        COALESCE(SUM(CASE WHEN p.payment_method = 'cash' THEN p.amount ELSE 0 END), 0) as cash_payments,
-        COUNT(DISTINCT o.id) as order_count
+        COALESCE(SUM(CASE
+          WHEN LOWER(TRIM(COALESCE(p.payment_method, ''))) = 'refund_cash' THEN 0
+          ELSE p.amount
+        END), 0) as total_payments,
+        COALESCE(SUM(CASE
+          WHEN LOWER(TRIM(COALESCE(p.payment_method, ''))) IN ('cash', 'naqd') THEN p.amount
+          ELSE 0
+        END), 0) as cash_payments
       FROM payments p
       INNER JOIN orders o ON p.order_id = o.id
-      WHERE o.shift_id = ? AND o.status = 'completed'
-    `).get(shiftId);
+      WHERE o.shift_id = ? AND ${WHERE_ORDER_DONE_ALIAS_O}
+    `).get(bindId);
 
-    // Calculate refunds (if returns table exists and has shift_id)
-    let totalRefunds = 0;
+    const orderCountRow = this.db
+      .prepare(
+        `
+      SELECT COUNT(*) AS order_count
+      FROM orders
+      WHERE shift_id = ? AND ${WHERE_ORDER_DONE_STATUS_COL}
+    `
+      )
+      .get(bindId);
+
+    /** To‘lovlar jadvali bilan tafovut bo‘lsa (qator yo‘qolgan bo‘lsa), buyurtmadagi paid_amount */
+    const orderPaidRow = this.db
+      .prepare(
+        `
+      SELECT COALESCE(SUM(COALESCE(paid_amount, 0)), 0) AS s
+      FROM orders
+      WHERE shift_id = ? AND ${WHERE_ORDER_DONE_STATUS_COL}
+    `
+      )
+      .get(bindId);
+
+    const orderMerchRow = this.db
+      .prepare(
+        `
+      SELECT COALESCE(SUM(COALESCE(total_amount, 0)), 0) AS s
+      FROM orders
+      WHERE shift_id = ? AND ${WHERE_ORDER_DONE_STATUS_COL}
+    `
+      )
+      .get(bindId);
+
+    /** Kassadan chiqqan naqd qaytarishlar (kutilayotgan naqd formulasi uchun) */
+    const cashRefundsOut = this._getCashDrawerRefundsOut(bindId);
+
+    /** Barcha yakunlangan qaytarishlar summasi (ma'lumot uchun) */
+    let totalReturnsGross = 0;
     try {
-      const refundsData = this.db.prepare(`
-        SELECT COALESCE(SUM(total_amount), 0) as total_refunds
+      const grossRow = this.db.prepare(`
+        SELECT COALESCE(SUM(COALESCE(total_amount, refund_amount, 0)), 0) AS g
         FROM sales_returns
         WHERE shift_id = ? AND status = 'completed'
-      `).get(shiftId);
-      totalRefunds = refundsData?.total_refunds || 0;
+      `).get(bindId);
+      totalReturnsGross = Number(grossRow?.g || 0) || 0;
     } catch (error) {
-      // sales_returns table might not exist or might not have shift_id column
-      console.log('[SHIFT] Could not calculate refunds (table may not exist):', error.message);
+      console.log('[SHIFT] Could not calculate gross returns:', error.message);
     }
 
-    const totalSales = paymentsData.total_payments || 0;
-    const cashSales = paymentsData.cash_payments || 0;
-    const orderCount = paymentsData.order_count || 0;
+    /** Smena ichida mijozga yozilgan qarz (buyurtmadagi nasiya qismi — kassaga tushmaydi) */
+    let creditDebtIssued = 0;
+    try {
+      const debtRow = this.db.prepare(`
+        SELECT COALESCE(SUM(COALESCE(o.credit_amount, 0)), 0) AS s
+        FROM orders o
+        WHERE o.shift_id = ? AND ${WHERE_ORDER_DONE_ALIAS_O}
+      `).get(bindId);
+      creditDebtIssued = Number(debtRow?.s || 0) || 0;
+    } catch (error) {
+      console.log('[SHIFT] Could not calculate credit debt issued:', error.message);
+    }
+
+    const fromPayments = Number(paymentsData.total_payments || 0) || 0;
+    const fromOrdersPaid = Number(orderPaidRow?.s || 0) || 0;
+    const fromOrdersMerch = Number(orderMerchRow?.s || 0) || 0;
+    /** To‘liq nasiya sotuvlarida paid/tolovlar 0 bo‘lishi mumkin — jami savdo uchun total_amount ham hisobga olinadi */
+    const totalSales = Math.max(fromPayments, fromOrdersPaid, fromOrdersMerch);
+    const cashSales = Number(paymentsData.cash_payments || 0) || 0;
+    const orderCount = Number(orderCountRow?.order_count || 0) || 0;
     const openingCash = shift.opening_cash || 0;
-    const expectedCash = openingCash + cashSales;
+    const custRoll = this._getCustomerPaymentsShiftRollup(bindId);
+    const expectedCash = openingCash + cashSales + custRoll.customerDrawerCashNet - cashRefundsOut;
 
     // CRITICAL: Return camelCase keys (not snake_case)
     // This ensures frontend can access fields correctly
     const summary = {
-      shiftId,
+      shiftId: bindId,
       openedAt: shift.opened_at || null,
       closedAt: shift.closed_at || null,
       status: shift.status || 'open',
@@ -350,17 +593,34 @@ class ShiftsService {
       totalSales: totalSales ?? 0,
       cashSales: cashSales ?? 0,
       orders: orderCount ?? 0, // Use 'orders' not 'orderCount' for consistency
-      totalRefunds: totalRefunds ?? 0,
+      /** Shunday qaytarishlar kutilayotgan naqd dan ayiriladi (naqd/kassa) */
+      totalRefunds: cashRefundsOut ?? 0,
+      /** Barcha usullar bo'yicha qaytarish yig'indisi (ixtiyoriy taqqoslash) */
+      totalReturnsGross: totalReturnsGross ?? 0,
+      cashRefundsOut: cashRefundsOut ?? 0,
+      /** Mijozga berilgan qarz (nasiya) — naqd kassa bilan aralashmasligi uchun alohida */
+      creditDebtIssued: creditDebtIssued ?? 0,
+      /** Mijoz qarzini toʻlash (jami) va shundan naqd — buyurtmadan tashqari balans toʻlovlari */
+      debtRepaidTotal: custRoll.debtRepaidTotal ?? 0,
+      debtRepaidCash: custRoll.debtRepaidCash ?? 0,
+      /** Mijoz hisobidan kassaga naqd (tarmoq: +kirim, mijozga naqd chiqarilsa −) */
+      customerDrawerCashNet: custRoll.customerDrawerCashNet ?? 0,
       expectedCash: expectedCash ?? openingCash ?? 0
     };
 
     console.log('[SHIFT] getShiftSummary returning:', summary);
     console.log('[SHIFT] getShiftSummary raw data:', {
-      shiftId,
+      shiftId: bindId,
       totalSales,
+      fromOrdersMerch,
       cashSales,
       orderCount,
-      totalRefunds,
+      cashRefundsOut,
+      totalReturnsGross,
+      creditDebtIssued,
+      debtRepaidTotal: custRoll.debtRepaidTotal,
+      debtRepaidCash: custRoll.debtRepaidCash,
+      customerDrawerCashNet: custRoll.customerDrawerCashNet,
       openingCash,
       expectedCash
     });
@@ -377,14 +637,33 @@ class ShiftsService {
       throw createError(ERROR_CODES.VALIDATION_ERROR, 'Cashier ID is required');
     }
 
-    const shift = this.db.prepare(`
+    const id = String(cashierId).trim();
+    // getActiveShift bilan bir xil: cashier_id yoki user_id (parallel sessiyalar / ba’zi API lar faqat bittasini to‘ldiradi)
+    let shift = this.db.prepare(`
       SELECT * FROM shifts
-      WHERE cashier_id = ?
+      WHERE (cashier_id = ? OR user_id = ?)
         AND status = 'open'
         AND closed_at IS NULL
       ORDER BY opened_at DESC
       LIMIT 1
-    `).get(cashierId);
+    `).get(id, id);
+
+    // users.current_shift_id — ochiq smenani topishda qo‘shimcha ishonch (UUID mos kelmasa ham)
+    if (!shift) {
+      try {
+        const u = this.db.prepare('SELECT current_shift_id FROM users WHERE id = ?').get(id);
+        const sid = u?.current_shift_id ? String(u.current_shift_id).trim() : '';
+        if (sid) {
+          const s = this.db.prepare(`
+            SELECT * FROM shifts
+            WHERE id = ? AND status = 'open' AND closed_at IS NULL
+          `).get(sid);
+          if (s) shift = s;
+        }
+      } catch {
+        /* ustun yo‘q */
+      }
+    }
 
     if (!shift) {
       return null;
@@ -534,16 +813,21 @@ class ShiftsService {
 
     query += ' ORDER BY opened_at DESC';
 
-    if (filters.limit) {
+    const limRaw = filters.limit;
+    const offRaw = filters.offset;
+    const lim = limRaw != null && limRaw !== '' ? Number(limRaw) : NaN;
+    const off = offRaw != null && offRaw !== '' ? Number(offRaw) : NaN;
+    // offset=0 valid — `if (filters.offset)` noto‘g‘ri (0 falsy), LIMIT/OFFSET va `?` soni mos bo‘lishi kerak
+    if (Number.isFinite(lim) && lim >= 0) {
       query += ' LIMIT ?';
-      params.push(filters.limit);
-      if (filters.offset) {
+      params.push(lim);
+      if (Number.isFinite(off) && off > 0) {
         query += ' OFFSET ?';
-        params.push(filters.offset);
+        params.push(off);
       }
     }
 
-    return this.db.prepare(query).all(params);
+    return this.db.prepare(query).all(...params);
   }
 }
 

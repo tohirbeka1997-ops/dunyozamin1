@@ -10,6 +10,29 @@ const {
   newJti,
 } = require('../lib/jwtUtil.cjs');
 
+function toLatinName(value) {
+  const raw = String(value || '').trim();
+  if (!raw) return '';
+  if (/^(nomalum|noma'lum|unknown|неизвестно|номаълум)$/i.test(raw)) return '';
+  const map = {
+    а: 'a', б: 'b', в: 'v', г: 'g', д: 'd', е: 'e', ё: 'yo', ж: 'j', з: 'z', и: 'i', й: 'y',
+    к: 'k', л: 'l', м: 'm', н: 'n', о: 'o', п: 'p', р: 'r', с: 's', т: 't', у: 'u',
+    ф: 'f', х: 'x', ц: 'ts', ч: 'ch', ш: 'sh', щ: 'sh', ъ: '', ы: 'i', ь: '', э: 'e',
+    ю: 'yu', я: 'ya', ў: "o'", қ: 'q', ғ: "g'", ҳ: 'h',
+  };
+  return raw
+    .split('')
+    .map((ch) => {
+      const lower = ch.toLowerCase();
+      const out = map[lower];
+      if (out == null) return ch;
+      return ch === lower ? out : out.charAt(0).toUpperCase() + out.slice(1);
+    })
+    .join('')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
 function mountAuthRoutes(dbGetter) {
   const router = express.Router();
 
@@ -20,8 +43,8 @@ function mountAuthRoutes(dbGetter) {
       err.code = 'INVALID_USER_ID';
       throw err;
     }
-    const first = tgUser.first_name ? String(tgUser.first_name) : null;
-    const last = tgUser.last_name ? String(tgUser.last_name) : null;
+    const first = toLatinName(tgUser.first_name) || null;
+    const last = toLatinName(tgUser.last_name) || null;
 
     const stmt = db.prepare(`
       INSERT INTO marketplace_customers (telegram_id, first_name, last_name, created_at)

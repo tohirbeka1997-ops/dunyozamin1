@@ -22,8 +22,9 @@ export default function Login() {
   const { toast } = useToast();
   const { signIn, signUp, loading, multiTenantMode } = useAuth();
 
-  // Get redirect path from location state or default to /
-  const from = (location.state as { from?: { pathname?: string } })?.from?.pathname || '/';
+  // Get redirect path from location state or default to POS terminal.
+  // In the hosted admin app the blank dashboard route is less useful after login.
+  const from = (location.state as { from?: { pathname?: string } })?.from?.pathname || '/pos';
 
   // Auto-prefill tenant slug from subdomain (e.g. acme.pos.example.com → "acme").
   // Falls back to whatever is already stored from a previous session. Users
@@ -166,10 +167,7 @@ export default function Login() {
         title: 'Muvaffaqiyatli',
         description: 'Tizimga muvaffaqiyatli kirdingiz',
       });
-      // Wait a moment for auth state to update, then navigate
-      setTimeout(() => {
-        navigate(from, { replace: true });
-      }, 100);
+      navigate(from, { replace: true });
     } catch (error) {
       console.error('❌ Sign in error:', error);
       const errorMessage = error instanceof Error ? error.message : 'Kirishda xatolik yuz berdi';
@@ -236,10 +234,7 @@ export default function Login() {
         title: 'Muvaffaqiyatli',
         description: 'Hisob yaratildi va tizimga kirildi',
       });
-      // Wait a moment for auth state to update, then navigate
-      setTimeout(() => {
-        navigate(from, { replace: true });
-      }, 100);
+      navigate(from, { replace: true });
     } catch (error) {
       console.error('Sign up error:', error);
       toast({

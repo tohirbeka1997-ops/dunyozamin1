@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -66,7 +66,7 @@ export default function Inventory() {
 
   const PAGE_SIZE = 200;
 
-  const loadData = async (opts?: { append?: boolean; pageOverride?: number }) => {
+  const loadData = useCallback(async (opts?: { append?: boolean; pageOverride?: number }) => {
     try {
       setLoading(true);
       const effectivePage = opts?.pageOverride ?? 0;
@@ -85,7 +85,7 @@ export default function Inventory() {
       const [productsData, categoriesData] = await Promise.all([
         getProducts(false, {
           searchTerm: searchDebounced,
-          categoryId: categoryFilter,
+          categoryId: categoryFilter === 'all' ? undefined : categoryFilter,
           status: 'active',
           stockStatus: backendStockStatus as any,
           sortBy: backendSortField as any,
@@ -96,7 +96,8 @@ export default function Inventory() {
         getCategories(),
       ]);
 
-      setProducts((prev) => (opts?.append ? [...prev, ...(productsData as any)] : (productsData as any)));
+      const nextProducts = Array.isArray(productsData) ? productsData : [];
+      setProducts((prev) => (opts?.append ? [...prev, ...nextProducts] : nextProducts));
       setCategories(categoriesData);
       setPage(effectivePage);
       setHasMore(Array.isArray(productsData) && productsData.length >= PAGE_SIZE);
@@ -110,11 +111,9 @@ export default function Inventory() {
     } finally {
       setLoading(false);
     }
-  };
+  }, [searchDebounced, categoryFilter, stockFilter, sortBy, toast]);
 
   useEffect(() => {
-    loadData({ append: false, pageOverride: 0 });
-
     const handleProductUpdate = () => {
       console.log('Product update detected, refreshing inventory...');
       loadData({ append: false, pageOverride: 0 });
@@ -128,13 +127,11 @@ export default function Inventory() {
     return () => {
       if (unsubscribe) unsubscribe();
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [loadData]);
 
   useEffect(() => {
     setPage(0);
     loadData({ append: false, pageOverride: 0 });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [searchDebounced, categoryFilter, stockFilter, sortBy]);
 
   // Products are loaded paginated + mostly filtered server-side via getProducts().
@@ -143,7 +140,7 @@ export default function Inventory() {
     stockFilter === 'in_stock'
       ? products.filter((p) => {
           const s = getCurrentStock(p);
-          return s >= p.min_stock_level && s > 0;
+          return s > 0;
         })
       : products;
 
@@ -156,7 +153,10 @@ export default function Inventory() {
   })();
 
   const lowStockCount = products.filter(
-    (p) => getCurrentStock(p) < p.min_stock_level
+    (p) => {
+      const s = getCurrentStock(p);
+      return s > 0 && s <= p.min_stock_level;
+    }
   ).length;
 
   const handleAdjustStock = (product: ProductWithCategory) => {
@@ -191,7 +191,7 @@ export default function Inventory() {
   };
 
   return (
-    <div className="space-y-3">
+    <div className="w-full min-w-0 space-y-4">
       <PageBreadcrumb
         items={[
           { label: 'Bosh sahifa', href: '/' },
@@ -199,185 +199,231 @@ export default function Inventory() {
         ]}
       />
 
-      <div className="flex items-center justify-between">
-        <div className="space-y-0.5">
-          <h1 className="text-2xl font-bold tracking-tight sm:text-3xl">Ombor bo'limi</h1>
-          <p className="text-sm text-muted-foreground">Mahsulot qoldiqlari va harakatlarini boshqarish</p>
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+        <div className="min-w-0 space-y-0.5">
+          <h1 className="page-heading">Ombor bo'limi</h1>
+          <p className="page-heading-sub">Mahsulot qoldiqlari va harakatlarini boshqarish</p>
         </div>
       </div>
 
-      {/* Summary Card */}
       {lowStockCount > 0 && (
-        <Card className="border-yellow-200 bg-yellow-50 py-3 dark:border-yellow-800 dark:bg-yellow-950">
-          <CardContent className="px-4 py-0 sm:px-6">
-            <div className="flex items-center gap-3">
-              <AlertTriangle className="h-5 w-5 text-yellow-600 dark:text-yellow-400" />
-              <div>
-                <p className="font-semibold text-yellow-900 dark:text-yellow-100">
-                  {lowStockCount} ta mahsulot minimal qoldiqdan past
-                </p>
-                <p className="text-sm text-yellow-700 dark:text-yellow-300">
-                  Ushbu mahsulotlarni tekshiring va qo'shimcha qoldiq qo'shing
-                </p>
-              </div>
+        <Card className="border-yellow-200 bg-yellow-50 py-0 shadow-sm dark:border-yellow-800 dark:bg-yellow-950">
+          <CardContent className="flex items-start gap-2.5 px-3 py-2">
+            <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-yellow-600 dark:text-yellow-400" />
+            <div className="min-w-0 space-y-0.5">
+              <p className="text-sm font-semibold leading-snug text-yellow-900 dark:text-yellow-100">
+                {lowStockCount} ta mahsulot minimal qoldiqdan past
+              </p>
+              <p className="text-xs leading-snug text-yellow-800 dark:text-yellow-300">
+                Ushbu mahsulotlarni tekshiring va qo'shimcha qoldiq qo'shing
+              </p>
             </div>
           </CardContent>
         </Card>
       )}
 
-      {/* Filters */}
-      <Card className="gap-3 py-3">
-        <CardHeader className="px-4 pb-0 pt-0 sm:px-6">
-          <CardTitle className="text-lg">Mahsulot qoldiqlari ro'yxati</CardTitle>
-        </CardHeader>
-        <CardContent className="px-4 pb-3 pt-2 sm:px-6">
-          <div className="mb-4 flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
-            <div className="relative flex-1 xl:max-w-sm">
-              <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-              <Input
-                placeholder="Mahsulot nomi yoki SKU bo'yicha qidirish..."
-                value={searchTerm}
-                onChange={(e) => updateParams({ search: e.target.value })}
-                className="pl-9"
-              />
-            </div>
-            <div className="flex gap-2 flex-wrap">
-              <Select value={categoryFilter} onValueChange={(value) => updateParams({ category: value })}>
-                <SelectTrigger className="w-[180px]">
-                  <SelectValue placeholder="Kategoriya bo'yicha" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="all">Barcha kategoriyalar</SelectItem>
-                  {categories.map((category) => (
-                    <SelectItem key={category.id} value={category.id}>
-                      {category.name}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-              <Select value={stockFilter} onValueChange={(value) => updateParams({ stock: value })}>
-                <SelectTrigger className="w-[180px]">
-                  <SelectValue placeholder="Qoldiq bo'yicha" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="all">Barcha zaxira holatlari</SelectItem>
-                  <SelectItem value="low">Qoldiq kam</SelectItem>
-                  <SelectItem value="in_stock">Omborda bor</SelectItem>
-                  <SelectItem value="out_of_stock">Omborda yo'q</SelectItem>
-                </SelectContent>
-              </Select>
-              <Select value={sortBy} onValueChange={(value) => updateParams({ sortBy: value })}>
-                <SelectTrigger className="w-[180px]">
-                  <SelectValue placeholder="Saralash" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="name-asc">Nomi (A-Z)</SelectItem>
-                  <SelectItem value="name-desc">Nomi (Z-A)</SelectItem>
-                  <SelectItem value="sku-asc">SKU (A-Z)</SelectItem>
-                  <SelectItem value="sku-desc">SKU (Z-A)</SelectItem>
-                  <SelectItem value="stock-desc">Qoldiq (Ko'p → Kam)</SelectItem>
-                  <SelectItem value="stock-asc">Qoldiq (Kam → Ko'p)</SelectItem>
-                  <SelectItem value="created_at-desc">Eng yangisi</SelectItem>
-                  <SelectItem value="created_at-asc">Eng eskisi</SelectItem>
-                </SelectContent>
-              </Select>
+      <Card className="gap-0 py-0 shadow-sm">
+        <CardContent className="px-3 py-2 sm:px-3">
+          <div className="rounded-md border bg-muted/30 px-2 py-1.5">
+            <span className="mb-1 inline-block text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+              Filtrlar
+            </span>
+            <div className="flex min-w-0 flex-col gap-2 lg:flex-row lg:flex-wrap lg:items-center">
+              <div className="relative h-8 min-w-0 flex-1 lg:min-w-[14rem] lg:max-w-md">
+                <Search className="pointer-events-none absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
+                <Input
+                  placeholder="Mahsulot nomi yoki SKU bo'yicha qidirish..."
+                  value={searchTerm}
+                  onChange={(e) => updateParams({ search: e.target.value })}
+                  className="h-8 py-1 pl-8 text-xs sm:text-sm"
+                />
+              </div>
+              <div className="flex min-w-0 flex-1 flex-wrap items-center gap-2 lg:flex-[2]">
+                <div className="min-w-[10rem] flex-1 sm:max-w-[13rem]">
+                  <Select value={categoryFilter} onValueChange={(value) => updateParams({ category: value })}>
+                    <SelectTrigger className="h-8 w-full bg-background text-xs [&_span]:truncate">
+                      <SelectValue placeholder="Kategoriya bo'yicha" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="all">Barcha kategoriyalar</SelectItem>
+                      {categories.map((category) => (
+                        <SelectItem key={category.id} value={category.id}>
+                          {category.name}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="min-w-[10rem] flex-1 sm:max-w-[13rem]">
+                  <Select value={stockFilter} onValueChange={(value) => updateParams({ stock: value })}>
+                    <SelectTrigger className="h-8 w-full bg-background text-xs [&_span]:truncate">
+                      <SelectValue placeholder="Qoldiq bo'yicha" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="all">Barcha zaxira holatlari</SelectItem>
+                      <SelectItem value="low">Qoldiq kam</SelectItem>
+                      <SelectItem value="in_stock">Omborda bor</SelectItem>
+                      <SelectItem value="out_of_stock">Omborda yo'q</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="min-w-[10rem] flex-1 sm:max-w-[14rem]">
+                  <Select value={sortBy} onValueChange={(value) => updateParams({ sortBy: value })}>
+                    <SelectTrigger className="h-8 w-full bg-background text-xs [&_span]:truncate">
+                      <SelectValue placeholder="Saralash" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="name-asc">Nomi (A-Z)</SelectItem>
+                      <SelectItem value="name-desc">Nomi (Z-A)</SelectItem>
+                      <SelectItem value="sku-asc">SKU (A-Z)</SelectItem>
+                      <SelectItem value="sku-desc">SKU (Z-A)</SelectItem>
+                      <SelectItem value="stock-desc">Qoldiq (Ko'p → Kam)</SelectItem>
+                      <SelectItem value="stock-asc">Qoldiq (Kam → Ko'p)</SelectItem>
+                      <SelectItem value="created_at-desc">Eng yangisi</SelectItem>
+                      <SelectItem value="created_at-asc">Eng eskisi</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  className="h-8 px-3 text-xs"
+                  onClick={() =>
+                    updateParams({
+                      search: '',
+                      category: 'all',
+                      stock: 'all',
+                      sortBy: 'name-asc',
+                    })
+                  }
+                >
+                  Filtrni tozalash
+                </Button>
+              </div>
             </div>
           </div>
+        </CardContent>
+      </Card>
 
+      <Card className="gap-0 py-0 shadow-sm">
+        <CardHeader className="flex flex-row flex-wrap items-center justify-between gap-2 border-b px-4 py-2 space-y-0">
+          <CardTitle className="flex items-center gap-2 text-base font-semibold">
+            <Package className="h-4 w-4 shrink-0 text-muted-foreground" />
+            <span className="min-w-0 truncate">Mahsulot qoldiqlari ro&apos;yxati</span>
+            {!loading && (
+              <span className="text-xs font-normal tabular-nums text-muted-foreground">
+                ({filteredProducts.length})
+              </span>
+            )}
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="px-0 pb-3 pt-0">
           {loading ? (
-            <div className="py-8 text-center text-muted-foreground">Omborni yuklanmoqda...</div>
+            <div className="py-10 text-center text-sm text-muted-foreground">Omborni yuklanmoqda...</div>
           ) : filteredProducts.length === 0 ? (
-            <div className="py-8 text-center text-muted-foreground">
+            <div className="mx-4 my-8 rounded-lg border bg-muted/20 py-10 text-center text-sm text-muted-foreground">
               Filtrga mos mahsulotlar topilmadi
             </div>
           ) : (
-            <div className="overflow-x-auto">
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead>Mahsulot nomi</TableHead>
-                    <TableHead>SKU</TableHead>
-                    <TableHead>O'lchov birligi</TableHead>
-                    <TableHead>Joriy qoldiq</TableHead>
-                    <TableHead>Minimal qoldiq</TableHead>
-                    <TableHead>Holati</TableHead>
-                    <TableHead className="text-right">Amallar</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {filteredProducts.map((product) => {
-                    // Use current_stock from product data (single source of truth from IPC)
-                    const currentStock = getCurrentStock(product);
-                    const isLowStock = currentStock < product.min_stock_level;
-                    const isOutOfStock = currentStock === 0;
+            <>
+              <div className="overflow-x-auto">
+                <Table>
+                  <TableHeader>
+                    <TableRow className="hover:bg-transparent">
+                      <TableHead className="text-xs font-semibold sm:text-sm">Mahsulot nomi</TableHead>
+                      <TableHead className="text-xs font-semibold sm:text-sm">SKU</TableHead>
+                      <TableHead className="text-xs font-semibold sm:text-sm">O&apos;lchov birligi</TableHead>
+                      <TableHead className="text-xs font-semibold sm:text-sm">Joriy qoldiq</TableHead>
+                      <TableHead className="text-xs font-semibold sm:text-sm">Minimal qoldiq</TableHead>
+                      <TableHead className="text-xs font-semibold sm:text-sm">Holati</TableHead>
+                      <TableHead className="w-[1%] text-right text-xs font-semibold sm:text-sm">Amallar</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {filteredProducts.map((product) => {
+                      const currentStock = getCurrentStock(product);
+                      const isLowStock = currentStock > 0 && currentStock <= product.min_stock_level;
+                      const isOutOfStock = currentStock === 0;
 
-                    return (
-                      <TableRow
-                        key={product.id}
-                        className={`cursor-pointer transition-colors hover:bg-muted/50 ${
-                          isLowStock ? 'bg-red-50 dark:bg-red-950/20' : ''
-                        }`}
-                        onClick={() => handleRowClick(product)}
-                      >
-                        <TableCell className="font-medium">
-                          <div className="flex items-center gap-2">
-                            {searchDebounced ? highlightMatch(product.name, searchDebounced) : product.name}
-                            {isLowStock && (
-                              <Badge variant="destructive" className="text-xs">
+                      return (
+                        <TableRow
+                          key={product.id}
+                          className={`cursor-pointer text-sm hover:bg-muted/50 ${
+                            isLowStock ? 'bg-red-50 dark:bg-red-950/20' : ''
+                          }`}
+                          onClick={() => handleRowClick(product)}
+                        >
+                          <TableCell className="max-w-[16rem] py-2 font-medium">
+                            <div className="flex min-w-0 flex-wrap items-center gap-1.5">
+                              <span className="min-w-0 truncate">
+                                {searchDebounced ? highlightMatch(product.name, searchDebounced) : product.name}
+                              </span>
+                              {isLowStock && (
+                                <Badge variant="destructive" className="px-1 py-0 text-[10px] font-normal sm:text-xs">
+                                  Qoldiq kam
+                                </Badge>
+                              )}
+                            </div>
+                          </TableCell>
+                          <TableCell className="max-w-[9rem] truncate py-2 font-mono text-xs">
+                            {searchDebounced ? highlightMatch(product.sku, searchDebounced) : product.sku}
+                          </TableCell>
+                          <TableCell className="whitespace-nowrap py-2 text-xs">{formatUnit(product.unit)}</TableCell>
+                          <TableCell className="py-2">
+                            <span
+                              className={`text-xs tabular-nums ${
+                                isOutOfStock
+                                  ? 'font-bold text-red-600 dark:text-red-400'
+                                  : isLowStock
+                                    ? 'font-semibold text-orange-600 dark:text-orange-400'
+                                    : 'font-medium text-green-600 dark:text-green-400'
+                              }`}
+                            >
+                              {formatNumberUZ(currentStock)}
+                            </span>
+                          </TableCell>
+                          <TableCell className="py-2 text-xs tabular-nums">{formatNumberUZ(product.min_stock_level)}</TableCell>
+                          <TableCell className="py-2">
+                            {isOutOfStock ? (
+                              <Badge variant="destructive" className="px-1.5 py-0 text-[10px] font-normal sm:text-xs">
+                                Omborda yo'q
+                              </Badge>
+                            ) : isLowStock ? (
+                              <Badge
+                                variant="outline"
+                                className="border-orange-300 px-1.5 py-0 text-[10px] font-normal text-orange-700 dark:border-orange-700 dark:text-orange-400 sm:text-xs"
+                              >
                                 Qoldiq kam
                               </Badge>
+                            ) : (
+                              <Badge className="bg-green-500/10 px-1.5 py-0 text-[10px] font-normal text-green-700 dark:text-green-400 sm:text-xs">
+                                Omborda bor
+                              </Badge>
                             )}
-                          </div>
-                        </TableCell>
-                        <TableCell>
-                          {searchDebounced ? highlightMatch(product.sku, searchDebounced) : product.sku}
-                        </TableCell>
-                        <TableCell>{formatUnit(product.unit)}</TableCell>
-                        <TableCell>
-                          <span
-                            className={
-                              isOutOfStock
-                                ? 'font-bold text-red-600 dark:text-red-400'
-                                : isLowStock
-                                ? 'font-semibold text-orange-600 dark:text-orange-400'
-                                : 'font-medium text-green-600 dark:text-green-400'
-                            }
-                          >
-                            {formatNumberUZ(currentStock)}
-                          </span>
-                        </TableCell>
-                        <TableCell>{formatNumberUZ(product.min_stock_level)}</TableCell>
-                        <TableCell>
-                          {isOutOfStock ? (
-                            <Badge variant="destructive">Omborda yo'q</Badge>
-                          ) : isLowStock ? (
-                            <Badge variant="outline" className="border-orange-300 text-orange-700 dark:border-orange-700 dark:text-orange-400">
-                              Qoldiq kam
-                            </Badge>
-                          ) : (
-                            <Badge className="bg-green-500/10 text-green-700 dark:text-green-400">
-                              Omborda bor
-                            </Badge>
-                          )}
-                        </TableCell>
-                        <TableCell className="text-right">
-                          <Button
-                            variant="outline"
-                            size="sm"
-                            onClick={(e) => handleAdjustStockClick(e, product)}
-                          >
-                            Qoldiqni to'g'rilash
-                          </Button>
-                        </TableCell>
-                      </TableRow>
-                    );
-                  })}
-                </TableBody>
-              </Table>
+                          </TableCell>
+                          <TableCell className="py-2 text-right">
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              className="h-8 px-2 text-xs"
+                              onClick={(e) => handleAdjustStockClick(e, product)}
+                            >
+                              Qoldiqni to'g'rilash
+                            </Button>
+                          </TableCell>
+                        </TableRow>
+                      );
+                    })}
+                  </TableBody>
+                </Table>
+              </div>
               {hasMore && (
-                <div className="flex justify-center py-4">
+                <div className="flex justify-center px-4 pb-1 pt-3">
                   <Button
                     variant="outline"
+                    size="sm"
+                    className="h-8 text-xs"
                     onClick={() => loadData({ append: true, pageOverride: page + 1 })}
                     disabled={loading}
                   >
@@ -385,7 +431,7 @@ export default function Inventory() {
                   </Button>
                 </div>
               )}
-            </div>
+            </>
           )}
         </CardContent>
       </Card>

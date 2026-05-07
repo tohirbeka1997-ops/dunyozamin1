@@ -48,6 +48,140 @@ class PurchaseService {
     return 'PARTIALLY_PAID';
   }
 
+  _hasAnyReceivedQty(purchaseOrderId) {
+    const row = this.db
+      .prepare(
+        `
+        SELECT COALESCE(SUM(received_qty), 0) AS received_total
+        FROM purchase_order_items
+        WHERE purchase_order_id = ?
+      `
+      )
+      .get(purchaseOrderId);
+    return Number(row?.received_total || 0) > 0;
+  }
+
+  _syncReceivedProductsPurchasePriceFromLandedCost(purchaseOrderId, now) {
+    const hasExpenseTable = this.db
+      .prepare(`SELECT 1 FROM sqlite_master WHERE type='table' AND name='purchase_order_expenses'`)
+      .get();
+    if (!hasExpenseTable) return;
+
+    const items = this.db
+      .prepare(
+        `
+        SELECT id, product_id, ordered_qty, received_qty, unit_cost, line_total
+        FROM purchase_order_items
+        WHERE purchase_order_id = ?
+        ORDER BY id DESC
+      `
+      )
+      .all(purchaseOrderId);
+    if (!items.length) return;
+
+    const expenses = this.db
+      .prepare(
+        `
+        SELECT amount, allocation_method
+        FROM purchase_order_expenses
+        WHERE purchase_order_id = ?
+      `
+      )
+      .all(purchaseOrderId);
+    if (!expenses.length) return;
+
+    const baseValueTotal = items.reduce(
+      (sum, it) =>
+        sum + (Number(it.line_total || 0) || Number(it.ordered_qty || 0) * Number(it.unit_cost || 0)),
+      0
+    );
+    const baseQtyTotal = items.reduce((sum, it) => sum + (Number(it.ordered_qty || 0) || 0), 0);
+    const picked = new Map();
+    for (const it of items) {
+      if (!it.product_id || picked.has(it.product_id)) continue;
+      picked.set(it.product_id, it);
+    }
+
+    for (const [, it] of picked) {
+      if (Number(it.received_qty || 0) <= 0) continue;
+      const orderedQty = Number(it.ordered_qty || 0) || 0;
+      const baseLineValue =
+        Number(it.line_total || 0) || orderedQty * (Number(it.unit_cost || 0) || 0);
+      let allocated = 0;
+      for (const exp of expenses) {
+        const amt = Number(exp.amount || 0) || 0;
+        if (amt <= 0) continue;
+        if (exp.allocation_method === 'by_qty') {
+          allocated += baseQtyTotal > 0 ? (orderedQty / baseQtyTotal) * amt : 0;
+        } else {
+          allocated += baseValueTotal > 0 ? (baseLineValue / baseValueTotal) * amt : 0;
+        }
+      }
+      const landedUnit = (Number(it.unit_cost || 0) || 0) + (orderedQty > 0 ? allocated / orderedQty : 0);
+      if (!Number.isFinite(landedUnit) || landedUnit < 0) continue;
+      this.db.prepare(`UPDATE products SET purchase_price = ?, updated_at = ? WHERE id = ?`).run(landedUnit, now, it.product_id);
+      if (this.cacheService?.invalidateProduct) this.cacheService.invalidateProduct(it.product_id);
+      if (this.cacheService?.invalidatePricesForProduct) this.cacheService.invalidatePricesForProduct(it.product_id);
+    }
+  }
+
+  _buildLandedCostByPoiId(purchaseOrderId) {
+    const hasExpenseTable = this.db
+      .prepare(`SELECT 1 FROM sqlite_master WHERE type='table' AND name='purchase_order_expenses'`)
+      .get();
+    if (!hasExpenseTable) return new Map();
+
+    const items = this.db
+      .prepare(
+        `
+        SELECT id, ordered_qty, unit_cost, line_total
+        FROM purchase_order_items
+        WHERE purchase_order_id = ?
+      `
+      )
+      .all(purchaseOrderId);
+    if (!items.length) return new Map();
+
+    const expenses = this.db
+      .prepare(
+        `
+        SELECT amount, allocation_method
+        FROM purchase_order_expenses
+        WHERE purchase_order_id = ?
+      `
+      )
+      .all(purchaseOrderId);
+    if (!expenses.length) return new Map();
+
+    const baseValueTotal = items.reduce(
+      (sum, it) =>
+        sum + (Number(it.line_total || 0) || Number(it.ordered_qty || 0) * Number(it.unit_cost || 0)),
+      0
+    );
+    const baseQtyTotal = items.reduce((sum, it) => sum + (Number(it.ordered_qty || 0) || 0), 0);
+    const byId = new Map();
+
+    for (const it of items) {
+      const orderedQty = Number(it.ordered_qty || 0) || 0;
+      const baseLineValue =
+        Number(it.line_total || 0) || orderedQty * (Number(it.unit_cost || 0) || 0);
+      let allocated = 0;
+      for (const exp of expenses) {
+        const amt = Number(exp.amount || 0) || 0;
+        if (amt <= 0) continue;
+        if (exp.allocation_method === 'by_qty') {
+          allocated += baseQtyTotal > 0 ? (orderedQty / baseQtyTotal) * amt : 0;
+        } else {
+          allocated += baseValueTotal > 0 ? (baseLineValue / baseValueTotal) * amt : 0;
+        }
+      }
+      const landedUnit = (Number(it.unit_cost || 0) || 0) + (orderedQty > 0 ? allocated / orderedQty : 0);
+      byId.set(it.id, landedUnit);
+    }
+
+    return byId;
+  }
+
   /**
    * List purchase orders with filters
    * filters.include_items: if true, includes items[] for each PO
@@ -326,6 +460,11 @@ class PurchaseService {
     if (!purchaseOrderId) {
       throw createError(ERROR_CODES.VALIDATION_ERROR, 'Purchase order ID is required');
     }
+    const po = this.get(purchaseOrderId);
+    if (String(po.status || '').toLowerCase() === 'cancelled') {
+      throw createError(ERROR_CODES.VALIDATION_ERROR, 'Cancelled buyurtmaga xarajat qo‘shib bo‘lmaydi');
+    }
+
     const title = String(payload.title || '').trim();
     const amount = Number(payload.amount);
     const allocationMethod = payload.allocation_method === 'by_qty' ? 'by_qty' : 'by_value';
@@ -362,6 +501,11 @@ class PurchaseService {
         now
       );
 
+    this.db.prepare(`UPDATE purchase_orders SET updated_at = ? WHERE id = ?`).run(now, purchaseOrderId);
+    if (this._hasAnyReceivedQty(purchaseOrderId)) {
+      this._syncReceivedProductsPurchasePriceFromLandedCost(purchaseOrderId, now);
+    }
+
     return this.listExpenses(purchaseOrderId);
   }
 
@@ -371,6 +515,11 @@ class PurchaseService {
     }
     if (!expenseId) {
       throw createError(ERROR_CODES.VALIDATION_ERROR, 'Expense ID is required');
+    }
+
+    const po = this.get(purchaseOrderId);
+    if (String(po.status || '').toLowerCase() === 'cancelled') {
+      throw createError(ERROR_CODES.VALIDATION_ERROR, 'Cancelled buyurtmada xarajatni o‘chirib bo‘lmaydi');
     }
 
     const tableExists = this.db
@@ -383,6 +532,11 @@ class PurchaseService {
       .run(expenseId, purchaseOrderId);
     if (res.changes === 0) {
       throw createError(ERROR_CODES.NOT_FOUND, 'Expense not found');
+    }
+    const now = new Date().toISOString().replace('T', ' ').replace('Z', '').substring(0, 19);
+    this.db.prepare(`UPDATE purchase_orders SET updated_at = ? WHERE id = ?`).run(now, purchaseOrderId);
+    if (this._hasAnyReceivedQty(purchaseOrderId)) {
+      this._syncReceivedProductsPurchasePriceFromLandedCost(purchaseOrderId, now);
     }
     return this.listExpenses(purchaseOrderId);
   }
@@ -1256,18 +1410,32 @@ class PurchaseService {
 
       insertReceipt.run(...receiptValues);
 
+      const landedByPoiId = purchaseOrderId ? this._buildLandedCostByPoiId(purchaseOrderId) : new Map();
+
       for (const item of data.items) {
         const qty = Number(item.received_qty || 0);
         if (!Number.isFinite(qty) || qty <= 0) {
           throw createError(ERROR_CODES.VALIDATION_ERROR, 'received_qty must be > 0');
         }
-        const unitUsd = currency === 'USD' ? Number(item.unit_cost_usd ?? item.unit_cost ?? 0) : null;
-        if (currency === 'USD' && (!Number.isFinite(unitUsd) || unitUsd < 0)) {
-          throw createError(ERROR_CODES.VALIDATION_ERROR, 'unit_cost_usd must be >= 0 for USD receipt');
+        const poiId = item.purchase_order_item_id || null;
+        const landedUnitFromPo = poiId ? Number(landedByPoiId.get(poiId)) : NaN;
+        const hasLanded = Number.isFinite(landedUnitFromPo) && landedUnitFromPo >= 0;
+
+        let unitUsd = currency === 'USD' ? Number(item.unit_cost_usd ?? item.unit_cost ?? 0) : null;
+        if (currency === 'USD') {
+          if (hasLanded) {
+            unitUsd = Number(exchangeRate) > 0 ? landedUnitFromPo / Number(exchangeRate) : unitUsd;
+          }
+          if (!Number.isFinite(unitUsd) || unitUsd < 0) {
+            throw createError(ERROR_CODES.VALIDATION_ERROR, 'unit_cost_usd must be >= 0 for USD receipt');
+          }
         }
-        const unitCost = currency === 'USD' ? Number(unitUsd || 0) * Number(exchangeRate || 0) : Number(item.unit_cost || 0) || 0;
-        const lineTotal = Number(item.line_total) || qty * unitCost;
-        const lineUsd = currency === 'USD' ? (Number(item.line_total_usd) || qty * Number(unitUsd || 0)) : null;
+
+        const unitCost = hasLanded
+          ? landedUnitFromPo
+          : (currency === 'USD' ? Number(unitUsd || 0) * Number(exchangeRate || 0) : Number(item.unit_cost || 0) || 0);
+        const lineTotal = qty * unitCost;
+        const lineUsd = currency === 'USD' ? qty * Number(unitUsd || 0) : null;
         totalUzs += Number(lineTotal || 0);
         if (currency === 'USD') totalUsd += Number(lineUsd || 0);
 
@@ -1291,14 +1459,34 @@ class PurchaseService {
         insertItem.run(...itemValues);
 
         if (purchaseOrderId && item.purchase_order_item_id) {
-          // Update PO item cost to actual receipt cost
-          this.db.prepare(
+          // Update PO item cost snapshot to actual receipt cost.
+          // For USD receipts, keep BOTH UZS and USD columns in sync so
+          // next partial receipt does not treat UZS value as USD.
+          const poiHasUsdCols = this._hasPOItemCol('unit_cost_usd') && this._hasPOItemCol('line_total_usd');
+          if (currency === 'USD' && poiHasUsdCols) {
+            this.db.prepare(
+              `
+              UPDATE purchase_order_items
+              SET unit_cost = ?, line_total = ?, unit_cost_usd = ?, line_total_usd = ?
+              WHERE id = ? AND purchase_order_id = ?
             `
-            UPDATE purchase_order_items
-            SET unit_cost = ?, line_total = ?
-            WHERE id = ? AND purchase_order_id = ?
-          `
-          ).run(unitCost, lineTotal, item.purchase_order_item_id, purchaseOrderId);
+            ).run(
+              unitCost,
+              lineTotal,
+              Number(unitUsd || 0),
+              Number(lineUsd || 0),
+              item.purchase_order_item_id,
+              purchaseOrderId
+            );
+          } else {
+            this.db.prepare(
+              `
+              UPDATE purchase_order_items
+              SET unit_cost = ?, line_total = ?
+              WHERE id = ? AND purchase_order_id = ?
+            `
+            ).run(unitCost, lineTotal, item.purchase_order_item_id, purchaseOrderId);
+          }
         }
 
         if (status === 'received') {
@@ -1613,6 +1801,7 @@ class PurchaseService {
       WHERE id = ? AND purchase_order_id = ?
     `);
 
+    const landedByPoiId = this._buildLandedCostByPoiId(purchaseOrderId);
     const receiptItems = [];
     for (const row of receiptData.items) {
       const qty = Number(row.received_qty || 0);
@@ -1640,11 +1829,13 @@ class PurchaseService {
 
       const productId = row.product_id || poi.product_id;
       const productName = poi.product_name || '';
+      const landedUnit = Number(landedByPoiId.get(itemId));
+      const hasLanded = Number.isFinite(landedUnit) && landedUnit >= 0;
 
       if (currency === 'USD' && hasItemUsd) {
-        let unitUsd = Number(poi.unit_cost_usd);
+        let unitUsd = hasLanded && Number(exchangeRate) > 0 ? landedUnit / Number(exchangeRate) : Number(poi.unit_cost_usd);
         if (!Number.isFinite(unitUsd) || unitUsd < 0) {
-          const uc = Number(poi.unit_cost || 0);
+          const uc = hasLanded ? landedUnit : Number(poi.unit_cost || 0);
           if (Number.isFinite(exchangeRate) && exchangeRate > 0) {
             unitUsd = uc / exchangeRate;
           } else {
@@ -1660,7 +1851,7 @@ class PurchaseService {
           line_total_usd: qty * unitUsd,
         });
       } else {
-        const unitUzs = Number(poi.unit_cost || 0);
+        const unitUzs = hasLanded ? landedUnit : Number(poi.unit_cost || 0);
         receiptItems.push({
           product_id: productId,
           product_name: productName,

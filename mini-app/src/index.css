@@ -3,18 +3,18 @@
 @tailwind utilities;
 
 :root {
-  --dz-bg: var(--tg-theme-bg-color, #f2f4f7);
+  --dz-bg: var(--tg-theme-bg-color, #f4f6ff);
   --dz-surface: var(--tg-theme-secondary-bg-color, #ffffff);
   --dz-text: var(--tg-theme-text-color, #111827);
   --dz-muted: color-mix(in srgb, var(--dz-text) 62%, transparent);
   --dz-soft: color-mix(in srgb, var(--dz-text) 42%, transparent);
   --dz-border: color-mix(in srgb, var(--dz-text) 12%, transparent);
   --dz-border-strong: color-mix(in srgb, var(--dz-text) 20%, transparent);
-  --dz-accent: var(--tg-theme-button-color, #2481cc);
+  --dz-accent: var(--tg-theme-button-color, #5b6cff);
   --dz-accent-text: var(--tg-theme-button-text-color, #fff);
-  --dz-link: var(--tg-theme-link-color, #2481cc);
-  --dz-card-shadow: 0 10px 24px rgba(15, 23, 42, 0.06);
-  --dz-card-shadow-soft: 0 4px 14px rgba(15, 23, 42, 0.05);
+  --dz-link: var(--tg-theme-link-color, #5968ff);
+  --dz-card-shadow: 0 14px 30px rgba(66, 71, 125, 0.15);
+  --dz-card-shadow-soft: 0 6px 18px rgba(43, 58, 106, 0.1);
 }
 
 body {
@@ -31,7 +31,10 @@ body {
     sans-serif;
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
-  background: var(--dz-bg);
+  background:
+    radial-gradient(80% 55% at 10% 0%, #dbe6ff 0%, transparent 68%),
+    radial-gradient(70% 45% at 95% 15%, #e9dcff 0%, transparent 72%),
+    linear-gradient(180deg, #f6f8ff 0%, var(--dz-bg) 38%, #eff3ff 100%);
   color: var(--dz-text);
 }
 
@@ -41,4 +44,43 @@ body {
 
 #root {
   min-height: 100dvh;
+}
+
+.dz-glass {
+  background: color-mix(in srgb, var(--dz-surface) 74%, #ffffff 26%);
+  backdrop-filter: blur(14px);
+}
+
+body[data-tg='1'] {
+  background: var(--dz-bg);
+}
+
+body[data-tg='1'] .tg-decor {
+  display: none;
+}
+
+body[data-tg='1'] .dz-glass {
+  background: color-mix(in srgb, var(--dz-surface) 92%, transparent);
+}
+
+body[data-tg='1'][data-tg-theme='light'] {
+  --dz-bg: #eef2fb;
+  --dz-surface: #ffffff;
+  --dz-text: #13233b;
+  --dz-muted: rgba(19, 35, 59, 0.74);
+  --dz-soft: rgba(19, 35, 59, 0.56);
+  --dz-border: rgba(19, 35, 59, 0.14);
+  --dz-border-strong: rgba(19, 35, 59, 0.22);
+}
+
+body[data-tg='1'][data-tg-theme='dark'] {
+  --dz-bg: #0f1726;
+  --dz-surface: #1b2638;
+  --dz-text: #e7eefb;
+  --dz-muted: rgba(231, 238, 251, 0.82);
+  --dz-soft: rgba(231, 238, 251, 0.62);
+  --dz-border: rgba(231, 238, 251, 0.2);
+  --dz-border-strong: rgba(231, 238, 251, 0.3);
+  --dz-card-shadow: 0 12px 26px rgba(2, 8, 20, 0.5);
+  --dz-card-shadow-soft: 0 6px 16px rgba(2, 8, 20, 0.38);
 }

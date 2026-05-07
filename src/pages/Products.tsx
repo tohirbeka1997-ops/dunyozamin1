@@ -926,26 +926,30 @@ export default function Products() {
   };
 
   return (
-    <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-3xl font-bold">{t('products.title')}</h1>
-          <p className="text-muted-foreground">{t('products.subtitle')}</p>
+    <div className="space-y-4">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+        <div className="min-w-0 space-y-0.5">
+          <h1 className="page-heading">{t('products.title')}</h1>
+          <p className="page-heading-sub">{t('products.subtitle')}</p>
         </div>
-        <div className="flex items-center gap-4">
+        <div className="flex shrink-0 flex-col gap-2 sm:flex-row sm:items-center sm:gap-3">
           <Tabs value={statusFilter} onValueChange={(v) => updateFilter('status', v)}>
-            <TabsList>
-              <TabsTrigger value="active">{t('products.active_section')}</TabsTrigger>
-              <TabsTrigger value="inactive">{t('products.inactive_section')}</TabsTrigger>
+            <TabsList className="h-8 p-0.5">
+              <TabsTrigger value="active" className="h-7 px-2.5 text-xs">
+                {t('products.active_section')}
+              </TabsTrigger>
+              <TabsTrigger value="inactive" className="h-7 px-2.5 text-xs">
+                {t('products.inactive_section')}
+              </TabsTrigger>
             </TabsList>
           </Tabs>
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
-              <Button variant="outline" disabled={exporting || importing}>
-                <FileDown className="h-4 w-4 mr-2" />
+              <Button variant="outline" size="sm" className="h-8 text-xs" disabled={exporting || importing}>
+                <FileDown className="mr-2 h-3.5 w-3.5" />
                 Export / Import
-                <ChevronDown className="h-4 w-4 ml-2 opacity-70" />
+                <ChevronDown className="ml-2 h-3.5 w-3.5 opacity-70" />
               </Button>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end" className="min-w-[220px]">
@@ -967,8 +971,8 @@ export default function Products() {
             </DropdownMenuContent>
           </DropdownMenu>
           {statusFilter === 'active' && (
-            <Button onClick={() => navigate('/products/new')}>
-              <Plus className="h-4 w-4 mr-2" />
+            <Button size="sm" className="h-8 text-xs" onClick={() => navigate('/products/new')}>
+              <Plus className="mr-2 h-3.5 w-3.5" />
               {t('products.add_product')}
             </Button>
           )}
@@ -976,75 +980,85 @@ export default function Products() {
         </div>
       </div>
 
-      <Card>
-        <CardHeader>
-          <CardTitle>{t('products.filters')}</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-6 gap-4">
-            <div className="relative xl:col-span-2">
-              <Search className="absolute left-3 top-3 h-4 w-4 text-muted-foreground" />
-              <Input
-                placeholder={t('products.search_placeholder')}
-                value={searchTerm}
-                onChange={(e) => updateFilter('search', e.target.value)}
-                className="pl-9"
-              />
+      <Card className="gap-0 py-0 shadow-sm">
+        <CardContent className="px-3 py-2 sm:px-3">
+          <div className="rounded-md border bg-muted/30 px-2 py-1.5">
+            <span className="mb-1 inline-block text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+              {t('products.filters')}
+            </span>
+            <div className="flex min-w-0 flex-nowrap items-center gap-1 overflow-x-auto pb-0.5 [scrollbar-width:thin] [&::-webkit-scrollbar]:h-1">
+              <div className="relative h-8 w-[min(22rem,calc(100vw-8rem))] shrink-0">
+                <Search className="absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
+                <Input
+                  placeholder={t('products.search_placeholder')}
+                  value={searchTerm}
+                  onChange={(e) => updateFilter('search', e.target.value)}
+                  className="h-8 py-1 pl-8 text-xs sm:text-sm"
+                />
+              </div>
+              <div className="min-w-[6.5rem] shrink-0 flex-1 basis-0">
+                <Select value={categoryFilter} onValueChange={(val) => updateFilter('category', val)}>
+                  <SelectTrigger className="h-8 w-full min-w-0 bg-background px-2 text-xs [&_span]:truncate">
+                    <SelectValue placeholder={t('products.all_categories')} />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">{t('products.all_categories')}</SelectItem>
+                    {categories.map((category) => (
+                      <SelectItem key={category.id} value={category.id}>
+                        {category.name}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="min-w-[6.5rem] shrink-0 flex-1 basis-0">
+                <Select value={stockFilter} onValueChange={(val) => updateFilter('stock', val)}>
+                  <SelectTrigger className="h-8 w-full min-w-0 bg-background px-2 text-xs [&_span]:truncate">
+                    <SelectValue placeholder={t('products.all_stock')} />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">{t('products.all_stock')}</SelectItem>
+                    <SelectItem value="low">{t('products.low_stock')}</SelectItem>
+                    <SelectItem value="out">{t('products.out_of_stock')}</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="min-w-[6.5rem] shrink-0 flex-1 basis-0">
+                <Select
+                  value={`${sortBy}-${sortOrder}`}
+                  onValueChange={(val) => {
+                    const [field, order] = val.split('-');
+                    const newParams = new URLSearchParams(searchParams);
+                    if (field === 'name') newParams.delete('sortBy');
+                    else newParams.set('sortBy', field);
+                    if (order === 'asc') newParams.delete('sortOrder');
+                    else newParams.set('sortOrder', order);
+                    setSearchParams(newParams, { replace: true });
+                  }}
+                >
+                  <SelectTrigger className="h-8 w-full min-w-0 bg-background px-2 text-xs [&_span]:truncate">
+                    <SelectValue placeholder="Saralash" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="name-asc">Nomi (A-Z)</SelectItem>
+                    <SelectItem value="name-desc">Nomi (Z-A)</SelectItem>
+                    <SelectItem value="sale_price-asc">Narx (Arzon)</SelectItem>
+                    <SelectItem value="sale_price-desc">Narx (Qimmat)</SelectItem>
+                    <SelectItem value="current_stock-asc">Qoldiq (Kam)</SelectItem>
+                    <SelectItem value="current_stock-desc">Qoldiq (Ko'p)</SelectItem>
+                    <SelectItem value="created_at-desc">Yangi qo'shilgan</SelectItem>
+                    <SelectItem value="created_at-asc">Eski qo'shilgan</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
             </div>
-            <Select value={categoryFilter} onValueChange={(val) => updateFilter('category', val)}>
-              <SelectTrigger>
-                <SelectValue placeholder={t('products.all_categories')} />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="all">{t('products.all_categories')}</SelectItem>
-                {categories.map((category) => (
-                  <SelectItem key={category.id} value={category.id}>
-                    {category.name}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-            <Select value={stockFilter} onValueChange={(val) => updateFilter('stock', val)}>
-              <SelectTrigger>
-                <SelectValue placeholder={t('products.all_stock')} />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="all">{t('products.all_stock')}</SelectItem>
-                <SelectItem value="low">{t('products.low_stock')}</SelectItem>
-                <SelectItem value="out">{t('products.out_of_stock')}</SelectItem>
-              </SelectContent>
-            </Select>
-            <Select 
-              value={`${sortBy}-${sortOrder}`} 
-              onValueChange={(val) => {
-                const [field, order] = val.split('-');
-                const newParams = new URLSearchParams(searchParams);
-                if (field === 'name') newParams.delete('sortBy'); else newParams.set('sortBy', field);
-                if (order === 'asc') newParams.delete('sortOrder'); else newParams.set('sortOrder', order);
-                setSearchParams(newParams, { replace: true });
-              }}
-            >
-              <SelectTrigger>
-                <SelectValue placeholder="Saralash" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="name-asc">Nomi (A-Z)</SelectItem>
-                <SelectItem value="name-desc">Nomi (Z-A)</SelectItem>
-                <SelectItem value="sale_price-asc">Narx (Arzon)</SelectItem>
-                <SelectItem value="sale_price-desc">Narx (Qimmat)</SelectItem>
-                <SelectItem value="current_stock-asc">Qoldiq (Kam)</SelectItem>
-                <SelectItem value="current_stock-desc">Qoldiq (Ko'p)</SelectItem>
-                <SelectItem value="created_at-desc">Yangi qo'shilgan</SelectItem>
-                <SelectItem value="created_at-asc">Eski qo'shilgan</SelectItem>
-              </SelectContent>
-            </Select>
           </div>
         </CardContent>
       </Card>
 
-      <Card>
-        <CardHeader>
-          <CardTitle>
+      <Card className="gap-0 py-0 shadow-sm">
+        <CardHeader className="border-b px-4 py-2">
+          <CardTitle className="text-base font-semibold">
             {statusFilter === 'inactive' ? t('products.inactive_section') : t('products.active_section')} ({filteredProducts.length})
           </CardTitle>
         </CardHeader>

@@ -1,5 +1,5 @@
 const { ipcMain } = require('electron');
-const { wrapHandler } = require('../lib/errors.cjs');
+const { wrapHandler, createError, ERROR_CODES } = require('../lib/errors.cjs');
 
 // Defensive check: ensure wrapHandler is imported correctly
 if (typeof wrapHandler !== 'function') {
@@ -66,10 +66,32 @@ function registerShiftsHandlers(services) {
     return shifts.list(filters || {});
   }));
 
-  ipcMain.removeHandler('pos:shifts:getSummary');
-  ipcMain.handle('pos:shifts:getSummary', wrapHandler(async (_event, { shiftId }) => {
+  const getSummaryHandler = wrapHandler(async (_event, payload) => {
+    let p = payload;
+    while (Array.isArray(p) && p.length === 1) {
+      p = p[0];
+    }
+    let shiftId = null;
+    if (typeof p === 'string') {
+      shiftId = p.trim() || null;
+    } else if (Array.isArray(p) && p.length) {
+      const x = p[0];
+      shiftId = x != null && String(x).trim() ? String(x).trim() : null;
+    } else if (p && typeof p === 'object') {
+      const s = p.shiftId ?? p.shift_id ?? p.id;
+      shiftId = s != null && String(s).trim() ? String(s).trim() : null;
+    }
+    if (!shiftId) {
+      throw createError(ERROR_CODES.VALIDATION_ERROR, 'Faol smena topilmadi — shiftId kerak');
+    }
     return shifts.getShiftSummary(shiftId);
-  }));
+  });
+
+  ipcMain.removeHandler('pos:shifts:getSummary');
+  ipcMain.handle('pos:shifts:getSummary', getSummaryHandler);
+  // Back-compat / typo: ba’zi chaqiruvlarda `shifts` o‘rniga `shift` (birlik) ishlatilgan.
+  ipcMain.removeHandler('pos:shift:getSummary');
+  ipcMain.handle('pos:shift:getSummary', getSummaryHandler);
 }
 
 module.exports = { registerShiftsHandlers };

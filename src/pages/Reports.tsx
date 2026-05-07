@@ -24,7 +24,7 @@ export default function Reports() {
     },
     {
       title: 'Moliyaviy',
-      description: 'P&L, pul oqimi, to‘lov usullari, aging, kassa tafovuti',
+      description: 'Akt sverka, P&L, pul oqimi, to‘lov usullari, aging, kassa tafovuti',
       icon: DollarSign,
       color: 'text-accent',
       bgColor: 'bg-accent/10',
@@ -75,7 +75,7 @@ export default function Reports() {
   return (
     <div className="space-y-6">
       <div>
-        <h1 className="text-3xl font-bold">Hisobotlar</h1>
+        <h1 className="page-heading">Hisobotlar</h1>
         <p className="text-muted-foreground">
           Kerakli bo‘limni tanlang — keyingi sahifada hisobotlar guruhlangan holda chiqadi
         </p>

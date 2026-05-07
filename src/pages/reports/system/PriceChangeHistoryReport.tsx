@@ -15,7 +15,7 @@ import { Badge } from '@/components/ui/badge';
 import { ArrowLeft, DollarSign, TrendingUp, TrendingDown, Minus } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 import { handleIpcResponse, isElectron, requireElectron } from '@/utils/electron';
-import { todayYMD, formatDateTime } from '@/lib/datetime';
+import { todayYMD, formatDateYMD, formatDateTime } from '@/lib/datetime';
 import { formatMoneyUZS } from '@/lib/format';
 import { useReportAutoRefresh } from '@/hooks/useReportAutoRefresh';
 
@@ -24,7 +24,8 @@ interface PriceChange {
   product_id: string;
   product_name: string;
   product_sku: string;
-  price_type: 'purchase' | 'sale';
+  price_type: 'purchase' | 'sale' | 'master' | 'unit';
+  unit?: string | null;
   old_price: number;
   new_price: number;
   change_amount: number;
@@ -41,15 +42,15 @@ export default function PriceChangeHistoryReport() {
 
   const [loading, setLoading] = useState(true);
   const [changeRows, setChangeRows] = useState<PriceChange[]>([]);
-  const [dateFrom, setDateFrom] = useState(
-    new Date(new Date().setMonth(new Date().getMonth() - 1)).toISOString().split('T')[0]
-  );
+  const [dateFrom, setDateFrom] = useState(() => {
+    const t = new Date();
+    t.setTime(t.getTime() - 30 * 24 * 60 * 60 * 1000);
+    return formatDateYMD(t, { timeZone: 'Asia/Tashkent' });
+  });
   const [dateTo, setDateTo] = useState(todayYMD());
   const [searchTerm, setSearchTerm] = useState('');
   const [priceTypeFilter, setPriceTypeFilter] = useState<string>('all');
   const [selectedProduct, setSelectedProduct] = useState<string>('');
-
-  useReportAutoRefresh(loadData);
 
   useEffect(() => {
     loadData();
@@ -86,6 +87,8 @@ export default function PriceChangeHistoryReport() {
     }
   }
 
+  useReportAutoRefresh(loadData);
+
   const filteredChanges = useMemo(() => {
     let result = changeRows;
 
@@ -103,7 +106,11 @@ export default function PriceChangeHistoryReport() {
       result = result.filter((row) => row.product_id === selectedProduct);
     }
 
-    return result.sort((a, b) => new Date(b.changed_at).getTime() - new Date(a.changed_at).getTime());
+    // Copy before sort — `result` may still reference `changeRows`.
+    // Mutating state arrays breaks React reconciliation.
+    return [...result].sort(
+      (a, b) => new Date(b.changed_at).getTime() - new Date(a.changed_at).getTime()
+    );
   }, [changeRows, searchTerm, selectedProduct]);
 
   const uniqueProducts = useMemo(() => {
@@ -165,11 +172,25 @@ export default function PriceChangeHistoryReport() {
     );
   };
 
-  const getPriceTypeBadge = (type: string) => {
-    if (type === 'purchase') {
+  const getPriceTypeBadge = (row: PriceChange) => {
+    if (row.price_type === 'purchase') {
       return <Badge className="bg-blue-600">Xarid narxi</Badge>;
     }
-    return <Badge className="bg-purple-600">Sotuv narxi</Badge>;
+    if (row.price_type === 'sale') {
+      return <Badge className="bg-purple-600">Sotuv (asosiy)</Badge>;
+    }
+    if (row.price_type === 'master') {
+      return <Badge className="bg-amber-600">Yirik optom</Badge>;
+    }
+    if (row.price_type === 'unit') {
+      const u = (row.unit || '').trim();
+      return (
+        <Badge className="bg-slate-600" title={u || undefined}>
+          {u ? `Birlik: ${u}` : "O'lchov bo'yicha"}
+        </Badge>
+      );
+    }
+    return <Badge variant="secondary">{row.price_type}</Badge>;
   };
 
   if (loading) {
@@ -184,16 +205,16 @@ export default function PriceChangeHistoryReport() {
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-4">
-          <Button variant="ghost" size="icon" onClick={() => navigate('/reports')}>
+          <Button variant="ghost" size="icon" onClick={() => navigate('/reports/system')}>
             <ArrowLeft className="h-4 w-4" />
           </Button>
           <div>
-            <h1 className="text-3xl font-bold flex items-center gap-2">
+            <h1 className="page-heading flex items-center gap-2">
               <DollarSign className="h-8 w-8 text-green-500" />
               Narx o'zgartirish tarixi
             </h1>
             <p className="text-muted-foreground">
-              Barcha mahsulotlar narx o'zgarishlari audit jurnali
+              Barcha mahsulotlar narx o'zgarishlari — sana filtri Tashkent vaqti (UTC+5) bo'yicha
             </p>
           </div>
         </div>
@@ -230,7 +251,9 @@ export default function PriceChangeHistoryReport() {
               >
                 <option value="all">Hammasi</option>
                 <option value="purchase">Xarid narxi</option>
-                <option value="sale">Sotuv narxi</option>
+                <option value="sale">Sotuv (asosiy)</option>
+                <option value="master">Yirik optom</option>
+                <option value="unit">Birlik bo'yicha sotuv</option>
               </select>
             </div>
             <div>
@@ -341,7 +364,7 @@ export default function PriceChangeHistoryReport() {
                     </TableCell>
                     <TableCell className="font-medium">{row.product_name}</TableCell>
                     <TableCell>{row.product_sku}</TableCell>
-                    <TableCell className="text-center">{getPriceTypeBadge(row.price_type)}</TableCell>
+                    <TableCell className="text-center">{getPriceTypeBadge(row)}</TableCell>
                     <TableCell className="text-right">
                       {formatMoneyUZS(row.old_price)}
                     </TableCell>

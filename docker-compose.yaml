@@ -32,12 +32,16 @@ services:
       POS_SERVER_MODE: "1"
       POS_DATA_DIR: /var/lib/pos
       POS_HOST_BIND: 0.0.0.0
-      POS_HOST_PORT: "3333"
+      POS_HOST_PORT: ${POS_HOST_PORT:-3333}
       POS_HOST_SECRET: ${POS_HOST_SECRET:?POS_HOST_SECRET is required}
       POS_CORS_ORIGINS: ${POS_CORS_ORIGINS:-}
+      POS_TRUST_PROXY: ${POS_TRUST_PROXY:-1}
+      POS_RATE_LIMIT_RPC_MAX: ${POS_RATE_LIMIT_RPC_MAX:-1200}
       POS_BACKUP_ENABLED: ${POS_BACKUP_ENABLED:-1}
       POS_BACKUP_INTERVAL_MIN: ${POS_BACKUP_INTERVAL_MIN:-30}
       POS_BACKUP_MAX: ${POS_BACKUP_MAX:-48}
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
+      TELEGRAM_COURIER_GROUP_ID: ${TELEGRAM_COURIER_GROUP_ID:-}
       TZ: ${TZ:-Asia/Tashkent}
 
     # ---------------------------------------------------------------------
@@ -52,14 +56,18 @@ services:
     # servis qiling. Lokal test uchun override.yaml da 3333 ni ochish mumkin.
     # ---------------------------------------------------------------------
     ports:
-      - "127.0.0.1:3333:3333"
+      - "127.0.0.1:${POS_HOST_PORT:-3333}:${POS_HOST_PORT:-3333}"
 
     # ---------------------------------------------------------------------
     # Healthcheck — /health endpoint.
     # Dockerfile'dagi bilan bir xil, lekin compose'da logs uchun ham foydali.
     # ---------------------------------------------------------------------
+    # Healthcheck reads POS_HOST_PORT from the container env so that changing
+    # the port via .env propagates everywhere (env, port mapping, and probe).
     healthcheck:
-      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3333/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
+      test:
+        - CMD-SHELL
+        - 'node -e "fetch(''http://127.0.0.1:''+(process.env.POS_HOST_PORT||3333)+''/health'').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"'
       interval: 30s
       timeout: 5s
       start_period: 15s
