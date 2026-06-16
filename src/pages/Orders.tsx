@@ -1,4 +1,4 @@
-import { useEffect, useState, useMemo, useCallback, useRef, useLayoutEffect } from 'react';
+import { useEffect, useState, useMemo, useCallback, useRef } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -36,19 +36,25 @@ import {
 } from '@/components/ui/alert-dialog';
 import { Textarea } from '@/components/ui/textarea';
 import { Label } from '@/components/ui/label';
-import { formatMoneyUZS } from '@/lib/format';
+import { formatMoneyUZS, formatOrderMoney } from '@/lib/format';
 import { formatDateYMD, formatOrderDateTime } from '@/lib/datetime';
 import PrintDialog from '@/components/print/PrintDialog';
 import VirtualizedOrdersTable from '@/components/orders/VirtualizedOrdersTable';
 import { useSessionSearchParams } from '@/hooks/useSessionSearchParams';
+import { useMainScrollRestoration } from '@/hooks/useMainScrollRestoration';
 import { createBackNavigationState } from '@/lib/pageState';
 import { useOrdersListStore } from '@/store/ordersListStore';
 import { useDebounce } from '@/hooks/use-debounce';
 import { useTranslation } from 'react-i18next';
 
-function canEditOrderInPos(o: { status?: string } | null | undefined) {
+function isWebOrderRow(o: { order_source?: string; id?: string } | null | undefined) {
+  return o?.order_source === 'web' || String(o?.id || '').startsWith('web:');
+}
+
+function canEditOrderInPos(o: { status?: string; order_source?: string; id?: string } | null | undefined) {
+  if (isWebOrderRow(o)) return false;
   const s = String(o?.status || '').toLowerCase();
-  return s !== 'voided' && s !== 'refunded' && s !== 'returned';
+  return s !== 'voided' && s !== 'refunded' && s !== 'returned' && s !== 'amended';
 }
 
 export default function Orders() {
@@ -69,6 +75,7 @@ export default function Orders() {
       'status',
       'paymentMethod',
       'warehouse',
+      'channel',
       'sortBy',
     ],
   });
@@ -93,6 +100,7 @@ export default function Orders() {
   const statusFilter = searchParams.get('status') || 'all';
   const paymentMethodFilter = searchParams.get('paymentMethod') || 'all';
   const warehouseFilter = searchParams.get('warehouse') || 'all';
+  const channelFilter = searchParams.get('channel') || 'all';
   const sortBy = searchParams.get('sortBy') || 'created_at-desc';
   const [printDialogOpen, setPrintDialogOpen] = useState(false);
   const [selectedOrderIdForPrint, setSelectedOrderIdForPrint] = useState<string | null>(null);
@@ -101,7 +109,6 @@ export default function Orders() {
   const observerRef = useRef<IntersectionObserver | null>(null);
   const listAnchorRef = useRef<HTMLDivElement | null>(null);
   const prevFilterKeyRef = useRef<string | null>(null);
-  const scrollRestoredRef = useRef(false);
   const listQueryKey = searchParams.toString();
   const storedQueryKey = useOrdersListStore((state) => state.queryKey);
   const storedPage = useOrdersListStore((state) => state.page);
@@ -111,6 +118,14 @@ export default function Orders() {
   const resetForQuery = useOrdersListStore((state) => state.resetForQuery);
   const restoredPage = storedQueryKey === listQueryKey ? storedPage : 0;
   const restoredScrollTop = storedQueryKey === listQueryKey ? storedScrollTop : 0;
+  const useVirtualizedList = orders.length > 500;
+  const { saveScroll, resetRestoreFlag } = useMainScrollRestoration({
+    scrollTop: restoredScrollTop,
+    setScrollTop: setStoredScrollTop,
+    enabled: !useVirtualizedList,
+    ready: !loading && !loadingMore,
+    anchorRef: listAnchorRef,
+  });
 
   useEffect(() => {
     if (storedQueryKey !== listQueryKey) {
@@ -165,12 +180,14 @@ export default function Orders() {
       status: statusFilter !== 'all' ? statusFilter : null,
       payment_method: paymentMethodFilter !== 'all' ? paymentMethodFilter : null,
       warehouse_id: warehouseFilter !== 'all' ? warehouseFilter : null,
+      sales_channel: channelFilter !== 'all' ? channelFilter : null,
       sort_by,
       sort_order,
     } as const;
   }, [
     PAGE_SIZE,
     cashierFilter,
+    channelFilter,
     customerFilter,
     dateFilter,
     paymentMethodFilter,
@@ -246,6 +263,7 @@ export default function Orders() {
         statusFilter,
         paymentMethodFilter,
         warehouseFilter,
+        channelFilter,
         sortBy,
       ].join('|'),
     [
@@ -259,6 +277,7 @@ export default function Orders() {
       statusFilter,
       paymentMethodFilter,
       warehouseFilter,
+      channelFilter,
       sortBy,
     ]
   );
@@ -278,10 +297,10 @@ export default function Orders() {
     }
 
     if (prev !== filterKey) {
-      scrollRestoredRef.current = false;
+      resetRestoreFlag();
       void loadPage(0, { append: false });
     }
-  }, [filterKey, listQueryKey, loadPage, restoredPage, storedQueryKey]);
+  }, [filterKey, listQueryKey, loadPage, restoredPage, storedQueryKey, resetRestoreFlag]);
 
   useEffect(() => {
     const el = loadMoreRef.current;
@@ -309,23 +328,6 @@ export default function Orders() {
   useEffect(() => {
     setStoredPage(page);
   }, [page, setStoredPage]);
-
-  /** Ro‘yxat scrolli `main` ichida — saqlash va qayta tiklash */
-  useEffect(() => {
-    const root = listAnchorRef.current?.closest('main');
-    if (!root) return;
-    const onScroll = () => setStoredScrollTop(root.scrollTop);
-    root.addEventListener('scroll', onScroll, { passive: true });
-    return () => root.removeEventListener('scroll', onScroll);
-  }, [setStoredScrollTop]);
-
-  useLayoutEffect(() => {
-    if (loading || loadingMore) return;
-    const main = listAnchorRef.current?.closest('main');
-    if (!main || restoredScrollTop <= 0 || scrollRestoredRef.current) return;
-    main.scrollTop = restoredScrollTop;
-    scrollRestoredRef.current = true;
-  }, [loading, loadingMore, restoredScrollTop, orders.length]);
 
   // Navigate to Create Return screen with order preselected
   const handleCreateReturn = (order: OrderWithDetails) => {
@@ -376,10 +378,45 @@ export default function Orders() {
       pending: { label: 'Kutilmoqda', className: 'bg-primary text-white' },
       voided: { label: 'Bekor qilingan', className: 'bg-muted text-muted-foreground' },
       refunded: { label: 'Qaytarilgan', className: 'bg-warning text-white' },
+      new: { label: 'Yangi', className: 'bg-primary text-white' },
+      paid: { label: "To'langan", className: 'bg-success text-white' },
+      processing: { label: 'Tayyorlanmoqda', className: 'bg-primary text-white' },
+      ready: { label: 'Tayyor', className: 'bg-success text-white' },
+      out_for_delivery: { label: 'Yetkazilmoqda', className: 'bg-warning text-white' },
+      delivered: { label: 'Yetkazildi', className: 'bg-success text-white' },
+      cancelled: { label: 'Bekor qilingan', className: 'bg-muted text-muted-foreground' },
     };
     const variant = variants[String(status || '').toLowerCase()] || variants.completed;
     return <Badge className={variant.className}>{variant.label}</Badge>;
   };
+
+  const salesChannelLabel = (order: any) => {
+    const ch = String(order?.sales_channel || order?.order_source || 'pos').toLowerCase();
+    const labels: Record<string, string> = {
+      pos: 'Kassa',
+      staff_mobile: 'Mobil sotuv',
+      telegram: 'Telegram',
+      website: 'Veb-sayt',
+      uzum: 'Uzum',
+      yandex: 'Yandex',
+      other: 'Boshqa',
+      web: 'Onlayn',
+    };
+    return labels[ch] || ch;
+  };
+
+  const navigateToOrder = useCallback(
+    (order: any) => {
+      if (!useVirtualizedList) saveScroll();
+      if (isWebOrderRow(order)) {
+        const wid = order.web_order_id ?? String(order.id).replace(/^web:/, '');
+        navigate(`/web-orders?open=${wid}`, { state: createBackNavigationState(location) });
+        return;
+      }
+      navigate(`/orders/${order.id}`, { state: createBackNavigationState(location) });
+    },
+    [location, navigate, saveScroll, useVirtualizedList],
+  );
 
   const getPaymentStatusBadge = (status: string) => {
     const variants: Record<string, { label: string; variant: 'default' | 'secondary' | 'destructive' }> = {
@@ -463,7 +500,7 @@ export default function Orders() {
             Buyurtmalar
           </h1>
           <p className="mt-0.5 text-[10px] leading-snug text-muted-foreground sm:text-xs sm:mt-0.5">
-            Barcha savdo buyurtmalarini ko&apos;rish va boshqarish
+            Kassa, mobil sotuv va onlayn buyurtmalar — bitta ro&apos;yxatda
           </p>
         </div>
       </div>
@@ -633,6 +670,24 @@ export default function Orders() {
             </div>
 
             <div className="min-w-[6.5rem] shrink-0 flex-1 basis-0">
+            <Select value={channelFilter} onValueChange={(value) => updateParams({ channel: value })}>
+              <SelectTrigger className="h-8 w-full min-w-0 bg-background px-2 text-xs [&_span]:truncate">
+                <SelectValue placeholder="Kanal" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">{t('web_orders.all_channels', 'Barcha kanallar')}</SelectItem>
+                <SelectItem value="pos">Kassa (POS)</SelectItem>
+                <SelectItem value="staff_mobile">Mobil sotuv</SelectItem>
+                <SelectItem value="telegram">{t('web_orders.channel_telegram', 'Telegram')}</SelectItem>
+                <SelectItem value="website">{t('web_orders.channel_website', 'Veb-sayt')}</SelectItem>
+                <SelectItem value="uzum">{t('web_orders.channel_uzum', 'Uzum')}</SelectItem>
+                <SelectItem value="yandex">{t('web_orders.channel_yandex', 'Yandex')}</SelectItem>
+                <SelectItem value="other">{t('web_orders.channel_other', 'Boshqa')}</SelectItem>
+              </SelectContent>
+            </Select>
+            </div>
+
+            <div className="min-w-[6.5rem] shrink-0 flex-1 basis-0">
             <Select value={paymentStatusFilter} onValueChange={(value) => updateParams({ paymentStatus: value })}>
               <SelectTrigger className="h-8 w-full min-w-0 bg-background px-2 text-xs [&_span]:truncate">
                 <SelectValue placeholder="To'lov holati" />
@@ -757,11 +812,10 @@ export default function Orders() {
                   getPaymentStatusBadge={getPaymentStatusBadge}
                   getStatusBadge={getStatusBadge}
                   getPaymentMethodIcons={getPaymentMethodIcons}
-                  onView={(id) =>
-                    navigate(`/orders/${id}`, {
-                      state: createBackNavigationState(location),
-                    })
-                  }
+                  onView={(id) => {
+                    const order = filteredOrders.find((o: any) => o.id === id);
+                    if (order) navigateToOrder(order);
+                  }}
                   onEditPos={goToPosEditOrder}
                   canEditInPos={canEditOrderInPos}
                   onPrint={(id) => {
@@ -769,11 +823,13 @@ export default function Orders() {
                     setPrintDialogOpen(true);
                   }}
                   onReturn={(id) => navigate(`/returns/create?orderId=${id}`)}
-                  canReturn={(o) => String(o?.status || '') === 'completed'}
+                  canReturn={(o) => !isWebOrderRow(o) && String(o?.status || '') === 'completed'}
                   hasMore={hasMore}
                   loadingMore={loadingMore}
                   loadMore={loadMore}
-                  initialScrollTop={restoredScrollTop}
+                  initialScrollTop={
+                    !loading && !loadingMore && storedQueryKey === listQueryKey ? restoredScrollTop : 0
+                  }
                   onScrollTopChange={setStoredScrollTop}
                 />
               ) : (
@@ -782,6 +838,7 @@ export default function Orders() {
                     <TableHeader>
                       <TableRow className="hover:bg-transparent">
                         <TableHead className="h-9 text-xs font-medium">Buyurtma raqami</TableHead>
+                        <TableHead className="h-9 text-xs font-medium">Kanal</TableHead>
                         <TableHead className="h-9 text-xs font-medium">Sana va vaqt</TableHead>
                         <TableHead className="h-9 text-xs font-medium">Kassir</TableHead>
                         <TableHead className="h-9 text-xs font-medium">Mijoz</TableHead>
@@ -800,6 +857,11 @@ export default function Orders() {
                             {searchTerm ? highlightMatch(String(order.order_number ?? ''), searchTerm) : order.order_number}
                           </TableCell>
                           <TableCell>
+                            <Badge variant="outline" className="font-normal">
+                              {salesChannelLabel(order)}
+                            </Badge>
+                          </TableCell>
+                          <TableCell>
                             {formatOrderDateTime(order.created_at)}
                           </TableCell>
                           <TableCell>
@@ -811,7 +873,7 @@ export default function Orders() {
                               : (order.customer_name || 'Yangi mijoz')}
                           </TableCell>
                           <TableCell className="text-right align-top">
-                            <span className="font-medium tabular-nums">{formatMoneyUZS(order.total_amount)}</span>
+                            <span className="font-medium tabular-nums">{formatOrderMoney(order, order.total_amount)}</span>
                           </TableCell>
                           <TableCell className="text-right align-top">
                             {(() => {
@@ -822,7 +884,7 @@ export default function Orders() {
                                   className="tabular-nums font-normal border-emerald-600/35 bg-emerald-50 text-emerald-950 dark:bg-emerald-950/35 dark:text-emerald-50 dark:border-emerald-700/50"
                                   title="Aksiya yoki qator chegirmasi"
                                 >
-                                  −{formatMoneyUZS(d)}
+                                  −{formatOrderMoney(order, d)}
                                 </Badge>
                               ) : (
                                 <span className="text-muted-foreground text-sm">—</span>
@@ -853,27 +915,25 @@ export default function Orders() {
                               <Button
                                 variant="ghost"
                                 size="icon"
-                                onClick={() =>
-                                  navigate(`/orders/${order.id}`, {
-                                    state: createBackNavigationState(location),
-                                  })
-                                }
+                                onClick={() => navigateToOrder(order)}
                                 title="Tafsilotlarini ko'rish"
                               >
                                 <Eye className="h-4 w-4" />
                               </Button>
-                              <Button
-                                variant="ghost"
-                                size="icon"
-                                onClick={() => {
-                                  setSelectedOrderIdForPrint(order.id);
-                                  setPrintDialogOpen(true);
-                                }}
-                                title="Chek chiqarish"
-                              >
-                                <Printer className="h-4 w-4" />
-                              </Button>
-                              {order.status === 'completed' && (
+                              {!isWebOrderRow(order) && (
+                                <Button
+                                  variant="ghost"
+                                  size="icon"
+                                  onClick={() => {
+                                    setSelectedOrderIdForPrint(order.id);
+                                    setPrintDialogOpen(true);
+                                  }}
+                                  title="Chek chiqarish"
+                                >
+                                  <Printer className="h-4 w-4" />
+                                </Button>
+                              )}
+                              {!isWebOrderRow(order) && order.status === 'completed' && (
                                 <Button
                                   variant="ghost"
                                   size="icon"

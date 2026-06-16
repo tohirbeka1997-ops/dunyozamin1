@@ -23,6 +23,7 @@ import ReturnDetail from './pages/ReturnDetail';
 import Reports from './pages/Reports';
 import Settings from './pages/Settings';
 import ResetPassword from './pages/ResetPassword';
+import ForgotPassword from './pages/ForgotPassword';
 
 // Cold-path routes — split into separate chunks so the initial bundle
 // stays small. Reports, admin, barcode tooling, and supplier/inventory
@@ -45,6 +46,7 @@ const QuoteDetail = lazy(() => import('./pages/QuoteDetail'));
 const Promotions = lazy(() => import('./pages/Promotions'));
 const PromotionForm = lazy(() => import('./pages/PromotionForm'));
 const PromotionDetail = lazy(() => import('./pages/PromotionDetail'));
+const MarketplaceContent = lazy(() => import('./pages/MarketplaceContent'));
 const Employees = lazy(() => import('./pages/Employees'));
 const EmployeeForm = lazy(() => import('./pages/employees/EmployeeForm'));
 const EmployeeDetail = lazy(() => import('./pages/employees/EmployeeDetail'));
@@ -95,6 +97,7 @@ const PurchaseOrderSummaryReport = lazy(() => import('./pages/reports/purchase/P
 const SupplierPerformanceReport = lazy(() => import('./pages/reports/purchase/SupplierPerformanceReport'));
 const ExportManager = lazy(() => import('./pages/reports/export/ExportManager'));
 const SalesReportsHub = lazy(() => import('./pages/reports/hubs/SalesReportsHub'));
+const WebOnlineSalesReport = lazy(() => import('./pages/reports/sales/WebOnlineSalesReport'));
 const FinancialReportsHub = lazy(() => import('./pages/reports/hubs/FinancialReportsHub'));
 const InventoryReportsHub = lazy(() => import('./pages/reports/hubs/InventoryReportsHub'));
 const PurchaseSupplierReportsHub = lazy(() => import('./pages/reports/hubs/PurchaseSupplierReportsHub'));
@@ -147,6 +150,13 @@ const routes: RouteConfig[] = [
     name: 'Login',
     path: '/login',
     element: <Login />,
+    visible: false,
+    requireAuth: false,
+  },
+  {
+    name: 'Forgot Password',
+    path: '/forgot-password',
+    element: <ForgotPassword />,
     visible: false,
     requireAuth: false,
   },
@@ -284,7 +294,47 @@ const routes: RouteConfig[] = [
   {
     name: 'Online Orders',
     path: '/web-orders',
-    element: <WebOrders />,
+    element: <WebOrders queue="incoming" />,
+    visible: true,
+    requireAuth: true,
+    allowedRoles: ['admin', 'manager'],
+  },
+  {
+    name: 'Web Orders Preparing',
+    path: '/web-orders/preparing',
+    element: <WebOrders queue="preparing" />,
+    visible: true,
+    requireAuth: true,
+    allowedRoles: ['admin', 'manager'],
+  },
+  {
+    name: 'Web Orders Ready',
+    path: '/web-orders/ready',
+    element: <WebOrders queue="ready" />,
+    visible: true,
+    requireAuth: true,
+    allowedRoles: ['admin', 'manager'],
+  },
+  {
+    name: 'Web Orders Delivering',
+    path: '/web-orders/delivering',
+    element: <WebOrders queue="delivering" />,
+    visible: true,
+    requireAuth: true,
+    allowedRoles: ['admin', 'manager'],
+  },
+  {
+    name: 'Web Orders Delivered',
+    path: '/web-orders/delivered',
+    element: <WebOrders queue="delivered" />,
+    visible: true,
+    requireAuth: true,
+    allowedRoles: ['admin', 'manager'],
+  },
+  {
+    name: 'Mini-app Content',
+    path: '/marketplace-content',
+    element: lazyElement(MarketplaceContent),
     visible: true,
     requireAuth: true,
     allowedRoles: ['admin', 'manager'],
@@ -592,6 +642,14 @@ const routes: RouteConfig[] = [
     visible: false,
     requireAuth: true,
     allowedRoles: ['admin'],
+  },
+  {
+    name: 'Online Sales Report',
+    path: '/reports/sales/web-online',
+    element: lazyElement(WebOnlineSalesReport),
+    visible: true,
+    requireAuth: true,
+    allowedRoles: ['admin', 'manager'],
   },
   {
     name: 'Kunlik savdo',

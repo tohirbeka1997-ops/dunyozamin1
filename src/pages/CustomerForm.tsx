@@ -12,12 +12,13 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
-import { getCustomerById, getCustomers, createCustomer, updateCustomer } from '@/db/api';
+import { getCustomerById, getCustomers, createCustomer, updateCustomer, findCustomerByPhone } from '@/db/api';
 import type { Customer } from '@/types/database';
 import { useAuth } from '@/contexts/AuthContext';
 import { ArrowLeft, Save } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 import { navigateBackTo, resolveBackTarget } from '@/lib/pageState';
+import { DUPLICATE_PHONE_MESSAGE_UZ, formatUserFacingError } from '@/utils/electron';
 
 export default function CustomerForm() {
   const { id } = useParams<{ id: string }>();
@@ -33,7 +34,7 @@ export default function CustomerForm() {
   const [saving, setSaving] = useState(false);
   const [formData, setFormData] = useState({
     name: '',
-    phone: '',
+    phone: id ? '' : '+998',
     email: '',
     address: '',
     type: 'individual' as 'individual' | 'company',
@@ -112,6 +113,8 @@ export default function CustomerForm() {
       return;
     }
 
+    if (saving) return;
+
     try {
       setSaving(true);
 
@@ -135,6 +138,20 @@ export default function CustomerForm() {
         });
         navigate(backTo);
       } else {
+        const phoneInput = formData.phone?.trim();
+        if (phoneInput) {
+          const existingByPhone = await findCustomerByPhone(phoneInput);
+          if (existingByPhone) {
+            toast({
+              title: 'Xatolik',
+              description: DUPLICATE_PHONE_MESSAGE_UZ,
+              variant: 'destructive',
+            });
+            navigate(`/customers/${existingByPhone.id}`);
+            return;
+          }
+        }
+
         const newCustomer = await createCustomer({
           name: formData.name,
           phone: formData.phone || null,
@@ -164,9 +181,21 @@ export default function CustomerForm() {
         }
       }
     } catch (error) {
+      const errObj = error && typeof error === 'object' ? (error as { code?: string; details?: { existing_id?: string; existing_name?: string } }) : null;
+      const code = errObj?.code;
+      const existingId = errObj?.details?.existing_id;
+      if (code === 'DUPLICATE_PHONE' && existingId) {
+        toast({
+          title: 'Xatolik',
+          description: DUPLICATE_PHONE_MESSAGE_UZ,
+          variant: 'destructive',
+        });
+        navigate(`/customers/${existingId}`);
+        return;
+      }
       toast({
         title: 'Xatolik',
-        description: error instanceof Error ? error.message : 'Mijozni saqlab bo\'lmadi',
+        description: formatUserFacingError(error, "Mijozni saqlab bo'lmadi"),
         variant: 'destructive',
       });
     } finally {
@@ -288,7 +317,7 @@ export default function CustomerForm() {
                     type="tel"
                     value={formData.phone}
                     onChange={(e) => handleChange('phone', e.target.value)}
-                    placeholder="+998 90 123 45 67"
+                    placeholder="90 123 45 67"
                   />
                 </div>
 

@@ -3,12 +3,22 @@ import { useNavigate, useLocation } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
+import { Checkbox } from '@/components/ui/checkbox';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { useToast } from '@/hooks/use-toast';
 import { useAuth } from '@/contexts/AuthContext';
 import { handleIpcResponse } from '@/utils/electron';
-import { Store } from 'lucide-react';
+import { loadRememberedLogin, saveRememberedLogin } from '@/lib/auth/rememberLogin';
+import {
+  detectAppEntryMode,
+  loadPreferredEntryMode,
+  savePreferredEntryMode,
+  switchAppEntry,
+  type AppEntryMode,
+} from '@/lib/appEntry';
+import { cn } from '@/lib/utils';
+import { Monitor, ShoppingCart, Store } from 'lucide-react';
 
 type TenantBranding = {
   logoUrl?: string;
@@ -22,28 +32,51 @@ export default function Login() {
   const { toast } = useToast();
   const { signIn, signUp, loading, multiTenantMode } = useAuth();
 
-  // Get redirect path from location state or default to POS terminal.
-  // In the hosted admin app the blank dashboard route is less useful after login.
-  const from = (location.state as { from?: { pathname?: string } })?.from?.pathname || '/pos';
+  const redirectFrom = (location.state as { from?: { pathname?: string } })?.from?.pathname;
+
+  const [entryMode, setEntryMode] = useState<AppEntryMode>(() => {
+    return loadPreferredEntryMode() ?? detectAppEntryMode();
+  });
+
+  const resolvePostLoginRoute = (mode: AppEntryMode): string => {
+    if (mode === 'kassa') return '/pos';
+    if (redirectFrom && redirectFrom !== '/login' && redirectFrom !== '/pos') return redirectFrom;
+    return '/';
+  };
+
+  const completeLoginNavigation = (mode: AppEntryMode) => {
+    savePreferredEntryMode(mode);
+    const target = resolvePostLoginRoute(mode);
+    if (mode === detectAppEntryMode()) {
+      navigate(target, { replace: true });
+      return;
+    }
+    switchAppEntry(mode, target);
+  };
 
   // Auto-prefill tenant slug from subdomain (e.g. acme.pos.example.com → "acme").
   // Falls back to whatever is already stored from a previous session. Users
   // on apex / single-tenant installs see no field at all (see below).
   const [signInData, setSignInData] = useState(() => {
-    let tenant = '';
+    const remembered = loadRememberedLogin();
+    let tenant = remembered.enabled ? remembered.tenant : '';
     try {
       const api = (window as any).posApi;
-      tenant = api?._session?.getTenantSlug?.() || '';
+      if (!tenant) {
+        tenant = api?._session?.getTenantSlug?.() || '';
+      }
       if (!tenant && api?._session?.extractTenantSlugFromHost) {
         tenant = api._session.extractTenantSlugFromHost() || '';
       }
     } catch { /* ignore */ }
     return {
       tenant,
-      email: '',
+      email: remembered.enabled ? remembered.identifier : '',
       password: '',
     };
   });
+
+  const [rememberLogin, setRememberLogin] = useState(() => loadRememberedLogin().enabled);
 
   const [signUpData, setSignUpData] = useState({
     email: '',
@@ -162,12 +195,13 @@ export default function Login() {
     try {
       console.log('🔐 Login attempt:', { identifier: trimmedId, tenant: trimmedTenant || undefined });
       await signIn(trimmedId, signInData.password, trimmedTenant || null);
+      saveRememberedLogin(rememberLogin, trimmedId, trimmedTenant || null);
       console.log('✅ Login successful');
       toast({
         title: 'Muvaffaqiyatli',
         description: 'Tizimga muvaffaqiyatli kirdingiz',
       });
-      navigate(from, { replace: true });
+      completeLoginNavigation(entryMode);
     } catch (error) {
       console.error('❌ Sign in error:', error);
       const errorMessage = error instanceof Error ? error.message : 'Kirishda xatolik yuz berdi';
@@ -224,17 +258,15 @@ export default function Login() {
 
     setIsSubmitting(true);
     try {
-      await signUp(
-        signUpData.email,
-        signUpData.password,
-        signUpData.fullName || undefined,
-        signUpData.username || undefined
-      );
+      await signUp(signUpData.email, signUpData.password, {
+        fullName: signUpData.fullName || undefined,
+        username: signUpData.username || undefined,
+      });
       toast({
         title: 'Muvaffaqiyatli',
         description: 'Hisob yaratildi va tizimga kirildi',
       });
-      navigate(from, { replace: true });
+      completeLoginNavigation(entryMode);
     } catch (error) {
       console.error('Sign up error:', error);
       toast({
@@ -298,6 +330,47 @@ export default function Login() {
           </CardDescription>
         </CardHeader>
         <CardContent>
+          <div className="mb-6 space-y-2">
+            <p className="text-center text-sm font-medium text-muted-foreground">
+              Qaysi dasturga kirasiz?
+            </p>
+            <div className="grid grid-cols-2 gap-2">
+              <button
+                type="button"
+                onClick={() => setEntryMode('full')}
+                disabled={isSubmitting || loading}
+                className={cn(
+                  'flex flex-col items-center gap-2 rounded-lg border-2 p-3 text-left transition-colors',
+                  entryMode === 'full'
+                    ? 'border-primary bg-primary/5 shadow-sm'
+                    : 'border-border hover:border-primary/40 hover:bg-muted/50',
+                )}
+              >
+                <Monitor
+                  className={cn('h-6 w-6', entryMode === 'full' ? 'text-primary' : 'text-muted-foreground')}
+                />
+                <span className="text-sm font-semibold leading-tight">POS dastur</span>
+                <span className="text-center text-xs text-muted-foreground leading-snug">To&apos;liq tizim</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setEntryMode('kassa')}
+                disabled={isSubmitting || loading}
+                className={cn(
+                  'flex flex-col items-center gap-2 rounded-lg border-2 p-3 text-left transition-colors',
+                  entryMode === 'kassa'
+                    ? 'border-primary bg-primary/5 shadow-sm'
+                    : 'border-border hover:border-primary/40 hover:bg-muted/50',
+                )}
+              >
+                <ShoppingCart
+                  className={cn('h-6 w-6', entryMode === 'kassa' ? 'text-primary' : 'text-muted-foreground')}
+                />
+                <span className="text-sm font-semibold leading-tight">Kassa</span>
+                <span className="text-center text-xs text-muted-foreground leading-snug">Yengil rejim</span>
+              </button>
+            </div>
+          </div>
           <Tabs defaultValue="signin" className="w-full">
             <TabsList className="grid w-full grid-cols-2">
               <TabsTrigger value="signin">Kirish</TabsTrigger>
@@ -335,16 +408,19 @@ export default function Login() {
                   </div>
                 )}
                 <div className="space-y-2">
-                  <Label htmlFor="signin-email">Email</Label>
+                  <Label htmlFor="signin-email">Email yoki login</Label>
                   <Input
                     id="signin-email"
-                    type="email"
-                    placeholder="Email kiriting"
+                    type="text"
+                    placeholder="Email yoki foydalanuvchi nomi"
                     value={signInData.email}
                     onChange={(e) => setSignInData({ ...signInData, email: e.target.value })}
                     disabled={isSubmitting || loading}
-                    autoComplete="email"
+                    autoComplete="username"
                   />
+                  <p className="text-xs text-muted-foreground">
+                    Google/Gmail orqali kirish qo&apos;llab-quvvatlanmaydi — login va parol bilan kiring.
+                  </p>
                 </div>
                 <div className="space-y-2">
                   <Label htmlFor="signin-password">Parol</Label>
@@ -358,11 +434,25 @@ export default function Login() {
                     autoComplete="current-password"
                   />
                 </div>
-                <div className="flex items-center justify-end">
+                <div className="flex items-center justify-between gap-3">
+                  <div className="flex items-center gap-2">
+                    <Checkbox
+                      id="signin-remember"
+                      checked={rememberLogin}
+                      onCheckedChange={(checked) => setRememberLogin(checked === true)}
+                      disabled={isSubmitting || loading}
+                    />
+                    <Label
+                      htmlFor="signin-remember"
+                      className="text-sm font-normal cursor-pointer leading-none"
+                    >
+                      Meni eslab qol
+                    </Label>
+                  </div>
                   <button
                     type="button"
                     onClick={() => navigate('/forgot-password')}
-                    className="text-sm text-primary hover:underline"
+                    className="text-sm text-primary hover:underline shrink-0"
                     disabled={isSubmitting || loading}
                   >
                     Parolni unutdingizmi?

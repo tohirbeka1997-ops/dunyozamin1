@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
@@ -36,7 +36,9 @@ import {
   AlertTriangle,
   CheckCircle2,
 } from 'lucide-react';
-import { formatMoneyUZS } from '@/lib/format';
+import { formatExpenseMoney, aggregateExpenses } from '@/lib/format';
+import { DualCurrencyAmount } from '@/components/common/DualCurrencyAmount';
+import { formatMoney } from '@/lib/currency';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import ExpenseFormDialog from '@/components/expenses/ExpenseFormDialog';
 import { ErrorBoundary } from '@/components/common/ErrorBoundary';
@@ -117,8 +119,10 @@ export default function Expenses() {
     retry: 1,
   });
 
-  // Calculate filtered total from expenses (for "Jami xarajatlar" card)
-  const filteredTotal = expenses?.reduce((sum, e) => sum + (e?.amount || 0), 0) || 0;
+  const filteredBuckets = useMemo(
+    () => aggregateExpenses(expenses || []),
+    [expenses]
+  );
 
   const sortedExpenses = (() => {
     const list = Array.isArray(expenses) ? expenses : [];
@@ -157,45 +161,14 @@ export default function Expenses() {
     retry: 1,
   });
 
-  // Delete mutation
+  // React Query v5: useMutation no longer runs onSuccess/onError defined in
+  // options. Pass per-call callbacks to mutate() at each call site instead.
   const deleteMutation = useMutation({
     mutationFn: deleteExpense,
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['expenses'] });
-      queryClient.invalidateQueries({ queryKey: ['expenseStats'] });
-      invalidateDashboardQueries(queryClient);
-      toast({
-        title: 'Muvaffaqiyatli',
-        description: 'Xarajat o\'chirildi',
-      });
-    },
-    onError: (error) => {
-      toast({
-        title: 'Xatolik',
-        description: error instanceof Error ? error.message : 'Xarajatni o\'chirib bo\'lmadi',
-        variant: 'destructive',
-      });
-    },
   });
 
   const approveMutation = useMutation({
     mutationFn: (id: string) => updateExpense(id, { status: 'approved' }),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['expenses'] });
-      queryClient.invalidateQueries({ queryKey: ['expenseStats'] });
-      invalidateDashboardQueries(queryClient);
-      toast({
-        title: 'Muvaffaqiyatli',
-        description: 'Xarajat tasdiqlandi',
-      });
-    },
-    onError: (error) => {
-      toast({
-        title: 'Xatolik',
-        description: error instanceof Error ? error.message : 'Xarajatni tasdiqlab bo\'lmadi',
-        variant: 'destructive',
-      });
-    },
   });
 
   const handleCreate = () => {
@@ -217,7 +190,24 @@ export default function Expenses() {
       variant: 'destructive',
     });
     if (!confirmed) return;
-    deleteMutation.mutate(id);
+    deleteMutation.mutate(id, {
+      onSuccess: () => {
+        queryClient.invalidateQueries({ queryKey: ['expenses'] });
+        queryClient.invalidateQueries({ queryKey: ['expenseStats'] });
+        invalidateDashboardQueries(queryClient);
+        toast({
+          title: 'Muvaffaqiyatli',
+          description: 'Xarajat o\'chirildi',
+        });
+      },
+      onError: (error) => {
+        toast({
+          title: 'Xatolik',
+          description: error instanceof Error ? error.message : 'Xarajatni o\'chirib bo\'lmadi',
+          variant: 'destructive',
+        });
+      },
+    });
   };
 
   const handleView = (id: string) => {
@@ -226,7 +216,7 @@ export default function Expenses() {
     if (expense) {
       toast({
         title: expense.expense_number || 'Xarajat',
-        description: `${expense.category || 'Noma\'lum'} - ${formatMoneyUZS(expense.amount || 0)}`,
+        description: `${expense.category || 'Noma\'lum'} - ${formatExpenseMoney(expense, expense.amount || 0)}`,
       });
     }
   };
@@ -241,7 +231,24 @@ export default function Expenses() {
       cancelText: "Bekor qilish",
     });
     if (!confirmed) return;
-    approveMutation.mutate(expense.id);
+    approveMutation.mutate(expense.id, {
+      onSuccess: () => {
+        queryClient.invalidateQueries({ queryKey: ['expenses'] });
+        queryClient.invalidateQueries({ queryKey: ['expenseStats'] });
+        invalidateDashboardQueries(queryClient);
+        toast({
+          title: 'Muvaffaqiyatli',
+          description: 'Xarajat tasdiqlandi',
+        });
+      },
+      onError: (error) => {
+        toast({
+          title: 'Xatolik',
+          description: error instanceof Error ? error.message : 'Xarajatni tasdiqlab bo\'lmadi',
+          variant: 'destructive',
+        });
+      },
+    });
   };
 
   const handleResetFilters = () => {
@@ -278,6 +285,7 @@ export default function Expenses() {
       'Sana',
       'Kategoriya',
       'Summa',
+      'Valyuta',
       'To\'lov usuli',
       'Mas\'ul xodim',
       'Izoh',
@@ -289,6 +297,7 @@ export default function Expenses() {
       expense.expense_date,
       expense.category,
       expense.amount.toString(),
+      expense.currency || 'UZS',
       getPaymentMethodLabel(expense.payment_method),
       expense.employee?.full_name || expense.employee?.username || '',
       expense.note || '',
@@ -357,7 +366,10 @@ export default function Expenses() {
                     {isLoading ? (
                       <div className="h-6 w-28 max-w-full animate-pulse rounded bg-muted" />
                     ) : (
-                      formatMoneyUZS(filteredTotal)
+                      <DualCurrencyAmount
+                        uzs={filteredBuckets.totalUzs}
+                        usd={filteredBuckets.totalUsd}
+                      />
                     )}
                   </div>
                   <p className="text-xs text-muted-foreground">Filtrlarga mos</p>
@@ -371,7 +383,7 @@ export default function Expenses() {
                     {statsLoading ? (
                       <div className="h-6 w-28 max-w-full animate-pulse rounded bg-muted" />
                     ) : (
-                      formatMoneyUZS(stats?.today || 0)
+                      <DualCurrencyAmount uzs={stats?.todayUzs ?? 0} usd={stats?.todayUsd ?? 0} />
                     )}
                   </div>
                   <p className="text-xs text-muted-foreground">Bugungi xarajat</p>
@@ -385,7 +397,7 @@ export default function Expenses() {
                     {statsLoading ? (
                       <div className="h-6 w-28 max-w-full animate-pulse rounded bg-muted" />
                     ) : (
-                      formatMoneyUZS(stats?.monthly || 0)
+                      <DualCurrencyAmount uzs={stats?.monthlyUzs ?? 0} usd={stats?.monthlyUsd ?? 0} />
                     )}
                   </div>
                   <p className="text-xs text-muted-foreground">Oylik xarajat</p>
@@ -399,7 +411,10 @@ export default function Expenses() {
                     {statsLoading ? (
                       <div className="h-6 w-28 max-w-full animate-pulse rounded bg-muted" />
                     ) : stats?.topCategory ? (
-                      formatMoneyUZS(stats.topCategory.amount)
+                      formatMoney(
+                        stats.topCategory.amount,
+                        stats.topCategory.currency === 'USD' ? 'USD' : 'UZS'
+                      )
                     ) : (
                       '—'
                     )}
@@ -614,7 +629,16 @@ export default function Expenses() {
                           {expense.employee?.full_name || expense.employee?.username || '-'}
                         </TableCell>
                         <TableCell className="py-2 text-right text-xs tabular-nums font-medium">
-                          {formatMoneyUZS(expense.amount || 0)}
+                          <div className="flex flex-col items-end gap-0.5">
+                            {formatExpenseMoney(expense, expense.amount || 0)}
+                            {expense.currency === 'USD' &&
+                              expense.fx_rate != null &&
+                              Number(expense.fx_rate) > 0 && (
+                                <span className="text-[10px] text-muted-foreground">
+                                  ≈ {formatMoney((expense.amount || 0) * Number(expense.fx_rate), 'UZS')}
+                                </span>
+                              )}
+                          </div>
                         </TableCell>
                         <TableCell className="py-2 text-right">
                           <div className="flex items-center justify-end gap-1">

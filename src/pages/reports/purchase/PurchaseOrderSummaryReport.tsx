@@ -16,7 +16,8 @@ import type { PurchaseOrderWithDetails } from '@/types/database';
 import { FileDown, ArrowLeft } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 import { useNavigate } from 'react-router-dom';
-import { formatMoneyUZS } from '@/lib/format';
+import { aggregatePurchaseOrders, calculatePoReceivedAmountUzs, formatMoneyUZS, formatPoMoney, getPoPaidAmount, getPoRemainingAmount } from '@/lib/format';
+import { DualCurrencyAmount } from '@/components/common/DualCurrencyAmount';
 import { formatDate, todayYMD } from '@/lib/datetime';
 import { useReportAutoRefresh } from '@/hooks/useReportAutoRefresh';
 
@@ -68,24 +69,7 @@ export default function PurchaseOrderSummaryReport() {
     return <Badge className={config.className}>{config.label}</Badge>;
   };
 
-  const calculateReceivedAmount = (items: any[]) => {
-    if (!items || items.length === 0) return 0;
-    return items.reduce((sum, item) => {
-      const receivedQty = Number(item.received_qty) || 0;
-      const unitCost = Number(item.unit_cost) || 0;
-      return sum + (receivedQty * unitCost);
-    }, 0);
-  };
-
-  const totalOrdered = orders.reduce((sum, o) => sum + Number(o.total_amount || 0), 0);
-  const totalReceived = orders.reduce((sum, o) => sum + calculateReceivedAmount(o.items || []), 0);
-  const totalPaid = orders.reduce((sum, o) => sum + Number((o as any).paid_amount || 0), 0);
-  // Real payable debt is based on received goods minus paid amount (not on total_amount)
-  const totalDebt = orders.reduce((sum, o) => {
-    const received = calculateReceivedAmount(o.items || []);
-    const paid = Number((o as any).paid_amount || 0);
-    return sum + Math.max(0, received - paid);
-  }, 0);
+  const poTotals = aggregatePurchaseOrders(orders);
 
   const handleExport = (format: 'excel' | 'pdf') => {
     toast({
@@ -132,7 +116,11 @@ export default function PurchaseOrderSummaryReport() {
             <div className="flex items-center justify-between">
               <div>
                 <p className="text-xs text-muted-foreground">Jami buyurtma summasi</p>
-                <p className="text-xl font-bold leading-tight">{formatMoneyUZS(totalOrdered)}</p>
+                <DualCurrencyAmount
+                  uzs={poTotals.orderedUzs}
+                  usd={poTotals.orderedUsd}
+                  className="text-xl font-bold leading-tight"
+                />
               </div>
             </div>
           </CardContent>
@@ -142,7 +130,10 @@ export default function PurchaseOrderSummaryReport() {
             <div className="flex items-center justify-between">
               <div>
                 <p className="text-xs text-muted-foreground">Jami qabul qilingan summa (tovar)</p>
-                <p className="text-xl font-bold leading-tight text-success">{formatMoneyUZS(totalReceived)}</p>
+                <p className="text-xl font-bold leading-tight text-success">{formatMoneyUZS(poTotals.receivedUzs)}</p>
+                {poTotals.orderedUsd > 0 && (
+                  <p className="text-xs text-muted-foreground">Ombor qiymati (UZS)</p>
+                )}
               </div>
             </div>
           </CardContent>
@@ -152,7 +143,11 @@ export default function PurchaseOrderSummaryReport() {
             <div className="flex items-center justify-between">
               <div>
                 <p className="text-xs text-muted-foreground">Jami to'langan summa</p>
-                <p className="text-xl font-bold leading-tight">{formatMoneyUZS(totalPaid)}</p>
+                <DualCurrencyAmount
+                  uzs={poTotals.paidUzs}
+                  usd={poTotals.paidUsd}
+                  className="text-xl font-bold leading-tight"
+                />
               </div>
             </div>
           </CardContent>
@@ -162,7 +157,11 @@ export default function PurchaseOrderSummaryReport() {
             <div className="flex items-center justify-between">
               <div>
                 <p className="text-xs text-muted-foreground">Jami qarz (to'lash kerak)</p>
-                <p className="text-xl font-bold leading-tight text-destructive">{formatMoneyUZS(totalDebt)}</p>
+                <DualCurrencyAmount
+                  uzs={poTotals.debtUzs}
+                  usd={poTotals.debtUsd}
+                  className="text-xl font-bold leading-tight text-destructive"
+                />
               </div>
             </div>
           </CardContent>
@@ -216,9 +215,9 @@ export default function PurchaseOrderSummaryReport() {
               </TableHeader>
               <TableBody>
                 {orders.map((order) => {
-                  const receivedAmount = calculateReceivedAmount(order.items || []);
-                  const paidAmount = Number((order as any).paid_amount || 0);
-                  const debtAmount = Math.max(0, receivedAmount - paidAmount);
+                  const receivedAmount = calculatePoReceivedAmountUzs(order.items || []);
+                  const paidAmount = getPoPaidAmount(order as any);
+                  const debtAmount = getPoRemainingAmount(order as any);
                   return (
                     <TableRow key={order.id}>
                       <TableCell className="font-medium">{order.po_number}</TableCell>
@@ -226,18 +225,12 @@ export default function PurchaseOrderSummaryReport() {
                       <TableCell>
                         {formatDate(order.order_date)}
                       </TableCell>
-                      <TableCell className="text-right">
-                        {formatMoneyUZS(order.total_amount)}
-                      </TableCell>
-                      <TableCell className="text-right">
-                        {formatMoneyUZS(receivedAmount)}
-                      </TableCell>
-                      <TableCell className="text-right">
-                        {formatMoneyUZS(paidAmount)}
-                      </TableCell>
+                      <TableCell className="text-right">{formatPoMoney(order as any)}</TableCell>
+                      <TableCell className="text-right">{formatMoneyUZS(receivedAmount)}</TableCell>
+                      <TableCell className="text-right">{formatPoMoney(order as any, paidAmount)}</TableCell>
                       <TableCell className="text-right">
                         <span className={debtAmount > 0 ? 'text-destructive font-semibold' : ''}>
-                          {formatMoneyUZS(debtAmount)}
+                          {formatPoMoney(order as any, debtAmount)}
                         </span>
                       </TableCell>
                       <TableCell>{getStatusBadge(order.status)}</TableCell>

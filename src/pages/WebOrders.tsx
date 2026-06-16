@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import { Link, useSearchParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
@@ -30,18 +31,35 @@ import { useToast } from '@/hooks/use-toast';
 import { getElectronAPI, handleIpcResponse } from '@/utils/electron';
 import { formatMoneyUZS } from '@/lib/format';
 import { formatOrderDateTime } from '@/lib/datetime';
-import { Eye, Printer, RefreshCw, ShoppingCart } from 'lucide-react';
+import { ArrowRight, Eye, Printer, RefreshCw, Send, ShoppingCart } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
+import {
+  WEB_ORDER_QUEUES,
+  WEB_ORDER_QUEUE_IDS,
+  type WebOrderQueueId,
+} from '@/lib/webOrderQueues';
+import {
+  allowedNextStatuses,
+  normalizeDeliveryMethod,
+  normalizeWebOrderStatus,
+  suggestedAdvanceStatus,
+  type DeliveryMethod,
+  type WebOrderStatus,
+} from '@/lib/webOrderStatus';
 import { Label } from '@/components/ui/label';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
 import { printHtml } from '@/lib/print';
 
-const WEB_ORDER_STATUSES = ['new', 'paid', 'processing', 'ready', 'out_for_delivery', 'delivered', 'cancelled'] as const;
-const DELIVERY_METHODS = ['courier', 'pickup'] as const;
-
-type WebOrderStatus = (typeof WEB_ORDER_STATUSES)[number];
-type DeliveryMethod = (typeof DELIVERY_METHODS)[number];
+const WEB_ORDER_STATUSES = [
+  'new',
+  'paid',
+  'processing',
+  'ready',
+  'out_for_delivery',
+  'delivered',
+  'cancelled',
+] as const;
 
 type WebOrderRow = {
   id: number;
@@ -61,6 +79,7 @@ type WebOrderRow = {
   first_name?: string | null;
   last_name?: string | null;
   phone?: string | null;
+  sales_channel?: string | null;
 };
 
 type WebOrderItem = {
@@ -94,35 +113,25 @@ function escapeHtml(value: unknown): string {
     .replace(/'/g, '&#039;');
 }
 
-function normalizeDeliveryMethod(raw?: string | null): DeliveryMethod {
-  return raw === 'pickup' ? 'pickup' : 'courier';
-}
+type Props = {
+  queue?: WebOrderQueueId;
+};
 
-function normalizeWebOrderStatus(raw?: string | null): WebOrderStatus {
-  const status = String(raw || 'new').toLowerCase();
-  return WEB_ORDER_STATUSES.includes(status as WebOrderStatus) ? (status as WebOrderStatus) : 'new';
-}
-
-function allowedNextStatuses(status: string | undefined, deliveryMethod: DeliveryMethod): WebOrderStatus[] {
-  const s = String(status || '').toLowerCase();
-  if (s === 'new' || s === 'paid') return ['processing', 'cancelled'];
-  if (s === 'processing') return ['ready', 'cancelled'];
-  if (s === 'ready') return deliveryMethod === 'pickup' ? ['delivered', 'cancelled'] : ['out_for_delivery', 'cancelled'];
-  if (s === 'out_for_delivery') return ['delivered', 'cancelled'];
-  return [];
-}
-
-export default function WebOrders() {
+export default function WebOrders({ queue = 'incoming' }: Props) {
   const { t } = useTranslation();
   const { toast } = useToast();
   const navigate = useNavigate();
+  const [searchParams, setSearchParams] = useSearchParams();
   const api = getElectronAPI();
 
   const [rows, setRows] = useState<WebOrderRow[]>([]);
+  const [posNetMode, setPosNetMode] = useState<'host' | 'client' | null>(null);
   const [loading, setLoading] = useState(true);
   const [page, setPage] = useState(1);
   const [totalPages, setTotalPages] = useState(1);
   const [statusFilter, setStatusFilter] = useState<string>('all');
+  const queueConfig = WEB_ORDER_QUEUES[queue];
+  const lockedQueue = queue !== 'incoming';
   const [detailOpen, setDetailOpen] = useState(false);
   const [detailLoading, setDetailLoading] = useState(false);
   const [detail, setDetail] = useState<WebOrderDetail | null>(null);
@@ -134,8 +143,20 @@ export default function WebOrders() {
   const [editingNote, setEditingNote] = useState('');
   const [savingEdit, setSavingEdit] = useState(false);
   const [cancelling, setCancelling] = useState(false);
+  const [channelFilter, setChannelFilter] = useState('all');
+  const [daysFilter, setDaysFilter] = useState(queue === 'delivered' ? '30' : 'all');
+  const [searchQuery, setSearchQuery] = useState('');
+  const [dispatchingId, setDispatchingId] = useState<number | null>(null);
 
   const limit = 50;
+
+  useEffect(() => {
+    if (!api?.appConfig?.get) return;
+    void handleIpcResponse<{ mode?: string }>(api.appConfig.get())
+      .then((cfg) => setPosNetMode(cfg?.mode === 'client' ? 'client' : 'host'))
+      .catch(() => setPosNetMode(null));
+  }, [api]);
+
   const emitPendingWebOrdersCount = useCallback((count: number) => {
     if (typeof window === 'undefined') return;
     window.dispatchEvent(
@@ -146,10 +167,22 @@ export default function WebOrders() {
   }, []);
 
   const refreshPendingCount = useCallback(async () => {
-    if (!api?.webOrders?.list) return;
+    if (!api?.webOrders) return;
     try {
+      if (api.webOrders.countsByQueue) {
+        const counts = await handleIpcResponse<Record<string, number>>(api.webOrders.countsByQueue());
+        const incoming = Math.max(0, Number(counts?.incoming ?? 0));
+        emitPendingWebOrdersCount(incoming);
+        if (typeof window !== 'undefined') {
+          window.dispatchEvent(
+            new CustomEvent('pos:web-orders-queue-counts', { detail: counts }),
+          );
+        }
+        return;
+      }
+      if (!api.webOrders.list) return;
       const res = await handleIpcResponse<{ meta?: { total?: number } }>(
-        api.webOrders.list({ status: 'new', page: 1, limit: 1 })
+        api.webOrders.list({ queue: 'incoming', page: 1, limit: 1 }),
       );
       const total = Number(res?.meta?.total ?? 0);
       emitPendingWebOrdersCount(total);
@@ -167,7 +200,17 @@ export default function WebOrders() {
     setLoading(true);
     try {
       const filters: Record<string, unknown> = { page, limit };
-      if (statusFilter !== 'all') filters.status = statusFilter;
+      if (lockedQueue) {
+        filters.queue = queue;
+      } else if (statusFilter !== 'all') {
+        filters.status = statusFilter;
+      } else {
+        filters.queue = 'incoming';
+      }
+      if (channelFilter !== 'all') filters.sales_channel = channelFilter;
+      if (daysFilter !== 'all') filters.days = Number(daysFilter) || 30;
+      const q = searchQuery.trim();
+      if (q.length >= 2) filters.search = q;
       const res = await handleIpcResponse<{ data: WebOrderRow[]; meta: { total_pages?: number } }>(
         api.webOrders.list(filters),
       );
@@ -181,7 +224,15 @@ export default function WebOrders() {
     } finally {
       setLoading(false);
     }
-  }, [api, page, limit, statusFilter, t, toast]);
+  }, [api, page, limit, statusFilter, queue, lockedQueue, channelFilter, daysFilter, searchQuery, t, toast]);
+
+  useEffect(() => {
+    setPage(1);
+    setStatusFilter('all');
+    setDaysFilter(queue === 'delivered' ? '30' : 'all');
+    setChannelFilter('all');
+    setSearchQuery('');
+  }, [queue]);
 
   useEffect(() => {
     void load();
@@ -214,6 +265,16 @@ export default function WebOrders() {
       setDetailLoading(false);
     }
   };
+
+  useEffect(() => {
+    const openRaw = searchParams.get('open');
+    const openId = Number.parseInt(String(openRaw || ''), 10);
+    if (!Number.isFinite(openId) || openId <= 0) return;
+    void openDetail(openId);
+    const next = new URLSearchParams(searchParams);
+    next.delete('open');
+    setSearchParams(next, { replace: true });
+  }, [searchParams, setSearchParams]);
 
   const saveEditableFields = async () => {
     if (!detail?.id) return;
@@ -328,6 +389,57 @@ export default function WebOrders() {
     return tr === key ? s : tr;
   };
 
+  const salesChannelLabel = (ch?: string | null) => {
+    const key = `web_orders.channel_${String(ch || 'telegram').toLowerCase()}` as const;
+    const tr = t(key);
+    return tr === key ? String(ch || 'telegram') : tr;
+  };
+
+  const queueTabs = useMemo(
+    () =>
+      WEB_ORDER_QUEUE_IDS.map((id) => ({
+        id,
+        path: WEB_ORDER_QUEUES[id].path,
+        label: t(WEB_ORDER_QUEUES[id].titleKey),
+      })),
+    [t],
+  );
+
+  const dispatchToCourier = async (row: WebOrderRow) => {
+    if (!api?.webOrders?.dispatchToCourier) return;
+    setDispatchingId(row.id);
+    try {
+      await handleIpcResponse(api.webOrders.dispatchToCourier(row.id));
+      toast({ title: t('courier.sent') });
+      void load();
+      void refreshPendingCount();
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e);
+      toast({ variant: 'destructive', title: t('courier.send_error'), description: msg });
+    } finally {
+      setDispatchingId(null);
+    }
+  };
+
+  const advanceStatus = async (row: WebOrderRow) => {
+    if (!api?.webOrders?.updateStatus) return;
+    const method = normalizeDeliveryMethod(row.delivery_method);
+    const next = suggestedAdvanceStatus(row.status, method);
+    if (!next) return;
+    try {
+      await handleIpcResponse(api.webOrders.updateStatus(row.id, next));
+      toast({
+        title: t('web_orders.status_updated'),
+        description: statusLabel(next),
+      });
+      void load();
+      void refreshPendingCount();
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e);
+      toast({ variant: 'destructive', title: t('web_orders.load_error'), description: msg });
+    }
+  };
+
   const deliveryMethodLabel = (method?: string | null) => {
     return normalizeDeliveryMethod(method) === 'pickup' ? "O'zi olib ketish" : 'Kuryer';
   };
@@ -358,8 +470,8 @@ export default function WebOrders() {
     return (
       <div className="space-y-4">
         <div className="min-w-0 space-y-0.5">
-          <h1 className="page-heading">{t('navigation.web_online_orders')}</h1>
-          <p className="page-heading-sub">{t('web_orders.subtitle')}</p>
+          <h1 className="page-heading">{t(queueConfig.titleKey)}</h1>
+          <p className="page-heading-sub">{t(queueConfig.subtitleKey)}</p>
         </div>
         <Card className="gap-0 py-0 shadow-sm">
           <CardContent className="px-4 py-6">
@@ -376,9 +488,24 @@ export default function WebOrders() {
     <div className="space-y-4">
       <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
         <div className="min-w-0 space-y-0.5">
-          <h1 className="page-heading">{t('navigation.web_online_orders')}</h1>
-          <p className="page-heading-sub">{t('web_orders.subtitle')}</p>
+          <h1 className="page-heading">{t(queueConfig.titleKey)}</h1>
+          <p className="page-heading-sub">{t(queueConfig.subtitleKey)}</p>
         </div>
+      </div>
+
+      <div className="flex flex-wrap gap-1.5">
+        {queueTabs.map((tab) => (
+          <Button
+            key={tab.id}
+            type="button"
+            variant={tab.id === queue ? 'default' : 'outline'}
+            size="sm"
+            className="h-8 text-xs"
+            asChild
+          >
+            <Link to={tab.path}>{tab.label}</Link>
+          </Button>
+        ))}
       </div>
 
       <Card className="gap-0 py-0 shadow-sm">
@@ -388,6 +515,7 @@ export default function WebOrders() {
               {t('products.filters')}
             </span>
             <div className="flex min-w-0 flex-wrap items-center gap-2">
+              {!lockedQueue ? (
               <div className="min-w-[10rem] max-w-full flex-1 sm:max-w-[16rem]">
                 <Select
                   value={statusFilter}
@@ -400,8 +528,8 @@ export default function WebOrders() {
                     <SelectValue placeholder={t('web_orders.filter_status')} />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="all">{t('web_orders.all')}</SelectItem>
-                    {WEB_ORDER_STATUSES.map((s) => (
+                    <SelectItem value="all">{t('web_orders.all_incoming')}</SelectItem>
+                    {queueConfig.statuses.map((s) => (
                       <SelectItem key={s} value={s}>
                         {statusLabel(s)}
                       </SelectItem>
@@ -409,6 +537,46 @@ export default function WebOrders() {
                   </SelectContent>
                 </Select>
               </div>
+              ) : (
+                <p className="px-1 text-xs text-muted-foreground">
+                  {queueConfig.statuses.map((s) => statusLabel(s)).join(' · ')}
+                </p>
+              )}
+              <Select value={channelFilter} onValueChange={(v) => { setPage(1); setChannelFilter(v); }}>
+                <SelectTrigger className="h-8 w-[9.5rem] bg-background text-xs">
+                  <SelectValue placeholder={t('web_orders.channel')} />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">{t('web_orders.all_channels')}</SelectItem>
+                  {(['telegram', 'website', 'uzum', 'yandex', 'other'] as const).map((ch) => (
+                    <SelectItem key={ch} value={ch}>
+                      {salesChannelLabel(ch)}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              {(queue === 'delivered' || daysFilter !== 'all') && (
+                <Select value={daysFilter} onValueChange={(v) => { setPage(1); setDaysFilter(v); }}>
+                  <SelectTrigger className="h-8 w-[8.5rem] bg-background text-xs">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">{t('web_orders.all_dates')}</SelectItem>
+                    <SelectItem value="7">{t('web_orders.report_days_7')}</SelectItem>
+                    <SelectItem value="30">{t('web_orders.report_days_30')}</SelectItem>
+                    <SelectItem value="90">{t('web_orders.report_days_90')}</SelectItem>
+                  </SelectContent>
+                </Select>
+              )}
+              <Input
+                className="h-8 min-w-[8rem] flex-1 bg-background text-xs"
+                placeholder={t('web_orders.search_placeholder')}
+                value={searchQuery}
+                onChange={(e) => {
+                  setSearchQuery(e.target.value);
+                  setPage(1);
+                }}
+              />
               <Button
                 type="button"
                 variant="outline"
@@ -435,8 +603,9 @@ export default function WebOrders() {
                   <TableHead className="min-w-[9rem] whitespace-nowrap">{t('web_orders.created')}</TableHead>
                   <TableHead className="min-w-[8rem]">{t('web_orders.customer')}</TableHead>
                   <TableHead className="min-w-[7rem]">{t('web_orders.phone')}</TableHead>
-                  <TableHead className="min-w-[7rem] text-right whitespace-nowrap">{t('web_orders.total')}</TableHead>
+                  <TableHead className="min-w-[7rem] text-right whitespace-nowrap">{t('web_orders.total')} (UZS)</TableHead>
                   <TableHead className="min-w-[8rem]">{t('web_orders.payment')}</TableHead>
+                  <TableHead className="min-w-[6rem]">{t('web_orders.channel', 'Kanal')}</TableHead>
                   <TableHead className="min-w-[7rem]">{t('web_orders.delivery_method', 'Yetkazish')}</TableHead>
                   <TableHead className="min-w-[7rem] whitespace-nowrap">{t('web_orders.status')}</TableHead>
                   <TableHead className="w-[1%] whitespace-nowrap text-right pr-3" />
@@ -445,7 +614,7 @@ export default function WebOrders() {
               <TableBody>
                 {loading && (
                   <TableRow>
-                    <TableCell colSpan={9} className="py-12 text-center text-muted-foreground">
+                    <TableCell colSpan={10} className="py-12 text-center text-muted-foreground">
                       <RefreshCw className="mx-auto mb-2 h-6 w-6 animate-spin opacity-50" />
                       <span className="text-sm">{t('common.loading')}</span>
                     </TableCell>
@@ -453,9 +622,17 @@ export default function WebOrders() {
                 )}
                 {!loading && rows.length === 0 && (
                   <TableRow>
-                    <TableCell colSpan={9} className="py-14 text-center">
+                    <TableCell colSpan={10} className="py-14 text-center">
                       <ShoppingCart className="mx-auto mb-3 h-10 w-10 text-muted-foreground/60" />
                       <p className="text-sm text-muted-foreground">{t('web_orders.empty')}</p>
+                      {posNetMode === 'host' && queue === 'incoming' && (
+                        <p className="mx-auto mt-3 max-w-lg text-xs text-amber-700 dark:text-amber-400">
+                          Telegram buyurtmalari server bazasida saqlanadi. Agar mini-appda buyurtmalar ko‘rinsa, lekin bu yerda bo‘sh bo‘lsa —
+                          Sozlamalar → HOST/CLIENT da <strong>CLIENT</strong> rejimini tanlang va HOST URL:
+                          {' '}
+                          <code className="rounded bg-muted px-1">https://api.dunyozamin.com</code>
+                        </p>
+                      )}
                     </TableCell>
                   </TableRow>
                 )}
@@ -475,6 +652,9 @@ export default function WebOrders() {
                         {[r.payment_method, r.payment_status].filter(Boolean).join(' · ') || '—'}
                       </TableCell>
                       <TableCell className="text-xs text-muted-foreground sm:text-sm">
+                        {salesChannelLabel(r.sales_channel)}
+                      </TableCell>
+                      <TableCell className="text-xs text-muted-foreground sm:text-sm">
                         {deliveryMethodLabel(r.delivery_method)}
                       </TableCell>
                       <TableCell>
@@ -483,16 +663,50 @@ export default function WebOrders() {
                         </Badge>
                       </TableCell>
                       <TableCell className="text-right">
-                        <Button
-                          type="button"
-                          variant="ghost"
-                          size="sm"
-                          className="h-8 text-xs"
-                          onClick={() => void openDetail(r.id)}
-                        >
-                          <Eye className="mr-1 h-3.5 w-3.5" />
-                          {t('orders.view_details')}
-                        </Button>
+                        <div className="flex items-center justify-end gap-1">
+                          {queue === 'ready' &&
+                          normalizeDeliveryMethod(r.delivery_method) === 'courier' &&
+                          normalizeWebOrderStatus(r.status) === 'ready' ? (
+                            <Button
+                              type="button"
+                              variant="secondary"
+                              size="sm"
+                              className="h-8 text-xs"
+                              disabled={dispatchingId === r.id}
+                              onClick={() => void dispatchToCourier(r)}
+                            >
+                              <Send className="mr-1 h-3.5 w-3.5" />
+                              {dispatchingId === r.id ? t('courier.sending') : t('courier.send')}
+                            </Button>
+                          ) : null}
+                          {suggestedAdvanceStatus(r.status, normalizeDeliveryMethod(r.delivery_method)) ? (
+                            <Button
+                              type="button"
+                              variant="secondary"
+                              size="sm"
+                              className="h-8 text-xs"
+                              onClick={() => void advanceStatus(r)}
+                            >
+                              <ArrowRight className="mr-1 h-3.5 w-3.5" />
+                              {statusLabel(
+                                suggestedAdvanceStatus(
+                                  r.status,
+                                  normalizeDeliveryMethod(r.delivery_method),
+                                )!,
+                              )}
+                            </Button>
+                          ) : null}
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="sm"
+                            className="h-8 text-xs"
+                            onClick={() => void openDetail(r.id)}
+                          >
+                            <Eye className="mr-1 h-3.5 w-3.5" />
+                            {t('orders.view_details')}
+                          </Button>
+                        </div>
                       </TableCell>
                     </TableRow>
                   ))}
@@ -539,7 +753,7 @@ export default function WebOrders() {
                     <p>{detail.created_at ? formatOrderDateTime(detail.created_at) : '—'}</p>
                   </div>
                   <div>
-                    <span className="text-muted-foreground">{t('web_orders.total')}</span>
+                    <span className="text-muted-foreground">{t('web_orders.total')} (UZS)</span>
                     <p className="tabular-nums font-medium">{formatMoneyUZS(Number(detail.total_amount || 0))}</p>
                   </div>
                   <div className="col-span-2 sm:col-span-4">

@@ -78,85 +78,105 @@ All colors MUST be HSL.
 
 @layer base {
   :root {
-    --radius: 0.5rem;
-    --background: 0 0% 100%;
-    --foreground: 215 25% 27%;
+    --radius: 0.75rem;
+    --background: 38 33% 97%;
+    --foreground: 158 32% 12%;
     --card: 0 0% 100%;
-    --card-foreground: 215 25% 27%;
+    --card-foreground: 158 32% 12%;
     --popover: 0 0% 100%;
-    --popover-foreground: 215 25% 27%;
-    --primary: 217 91% 60%;
+    --popover-foreground: 158 32% 12%;
+    --primary: 152 69% 30%;
     --primary-foreground: 0 0% 100%;
-    --secondary: 215 16% 47%;
+    --secondary: 177 55% 38%;
     --secondary-foreground: 0 0% 100%;
-    --muted: 210 40% 96%;
-    --muted-foreground: 215 16% 47%;
-    --accent: 217 91% 60%;
-    --accent-foreground: 0 0% 100%;
-    --destructive: 0 84% 60%;
+    --muted: 38 28% 93%;
+    --muted-foreground: 158 18% 38%;
+    --accent: 68 61% 52%;
+    --accent-foreground: 158 32% 12%;
+    --destructive: 0 84% 55%;
     --destructive-foreground: 0 0% 100%;
-    /* Darker for better contrast with white foreground (badges/buttons) */
-    --success: 142 72% 32%;
+    --success: 152 72% 32%;
     --success-foreground: 0 0% 100%;
-    /* Yellow at 50% lightness is too bright for white text; darken to improve contrast */
-    --warning: 38 92% 38%;
+    --warning: 38 92% 42%;
     --warning-foreground: 0 0% 100%;
-    --border: 214 32% 91%;
-    --input: 214 32% 91%;
-    --ring: 217 91% 60%;
-    --chart-1: 217 91% 60%;
-    --chart-2: 142 71% 45%;
-    --chart-3: 38 92% 50%;
-    --chart-4: 280 65% 60%;
-    --chart-5: 340 75% 55%;
-    --sidebar-background: 0 0% 100%;
-    --sidebar-foreground: 215 25% 27%;
-    --sidebar-primary: 217 91% 60%;
+    --border: 38 22% 88%;
+    --input: 38 22% 88%;
+    --ring: 152 69% 30%;
+    --chart-1: 152 69% 38%;
+    --chart-2: 177 100% 36%;
+    --chart-3: 68 61% 52%;
+    --chart-4: 152 79% 45%;
+    --chart-5: 38 45% 62%;
+    --sidebar-background: 152 45% 18%;
+    --sidebar-foreground: 140 20% 96%;
+    --sidebar-primary: 152 69% 42%;
     --sidebar-primary-foreground: 0 0% 100%;
-    --sidebar-accent: 210 40% 96%;
-    --sidebar-accent-foreground: 215 25% 27%;
-    --sidebar-border: 214 32% 91%;
-    --sidebar-ring: 217 91% 60%;
+    --sidebar-accent: 152 35% 24%;
+    --sidebar-accent-foreground: 140 20% 96%;
+    --sidebar-border: 152 30% 26%;
+    --sidebar-ring: 68 61% 52%;
+    --gradient-primary: linear-gradient(135deg, hsl(152 69% 30%) 0%, hsl(152 69% 38%) 55%, hsl(152 79% 45%) 100%);
+    /* UI tugmalar/kartalar: ochiq limon emas — oq matn uchun to‘qroq ton */
+    --gradient-accent: linear-gradient(135deg, hsl(68 52% 38%) 0%, hsl(152 62% 32%) 100%);
+    --gradient-teal: linear-gradient(135deg, hsl(177 100% 32%) 0%, hsl(177 85% 38%) 100%);
+    --gradient-reports: linear-gradient(135deg, hsl(152 45% 22%) 0%, hsl(152 69% 34%) 50%, hsl(177 75% 36%) 100%);
+    --gradient-card: linear-gradient(145deg, hsl(0 0% 100% / 0.94) 0%, hsl(38 33% 97% / 0.88) 100%);
+    --gradient-sidebar: linear-gradient(180deg, hsl(152 45% 16%) 0%, hsl(152 50% 22%) 45%, hsl(152 42% 18%) 100%);
+    --shadow-card: 0 10px 28px -14px rgba(16, 137, 77, 0.16);
+    --shadow-card-hover: 0 14px 32px -12px rgba(16, 137, 77, 0.22);
+    --info: 177 100% 36%;
+    --education-blue: 177 100% 36%;
+    --education-green: 152 69% 38%;
   }
 
   .dark {
-    --background: 222 47% 11%;
-    --foreground: 210 40% 98%;
-    --card: 217 33% 17%;
-    --card-foreground: 210 40% 98%;
-    --popover: 217 33% 17%;
-    --popover-foreground: 210 40% 98%;
-    --primary: 217 91% 60%;
+    --background: 158 32% 7%;
+    --foreground: 140 25% 96%;
+    --card: 158 28% 12%;
+    --card-foreground: 140 25% 96%;
+    --popover: 158 28% 12%;
+    --popover-foreground: 140 25% 96%;
+    --primary: 152 65% 42%;
     --primary-foreground: 0 0% 100%;
-    --secondary: 215 16% 47%;
-    --secondary-foreground: 210 40% 98%;
-    --muted: 217 33% 17%;
-    --muted-foreground: 215 20% 65%;
-    --accent: 217 91% 60%;
-    --accent-foreground: 0 0% 100%;
-    --destructive: 0 63% 31%;
-    --destructive-foreground: 210 40% 98%;
-    /* Keep success/warning darker in dark mode too (ensures consistent contrast) */
-    --success: 142 72% 32%;
+    --secondary: 177 70% 38%;
+    --secondary-foreground: 0 0% 100%;
+    --muted: 158 24% 16%;
+    --muted-foreground: 140 15% 68%;
+    --accent: 68 61% 55%;
+    --accent-foreground: 158 32% 10%;
+    --destructive: 0 63% 45%;
+    --destructive-foreground: 0 0% 100%;
+    --success: 152 65% 38%;
     --success-foreground: 0 0% 100%;
-    --warning: 38 92% 38%;
+    --warning: 38 85% 48%;
     --warning-foreground: 0 0% 100%;
-    --border: 217 33% 17%;
-    --input: 217 33% 17%;
-    --ring: 217 91% 60%;
-    --chart-1: 217 91% 60%;
-    --chart-2: 142 71% 45%;
-    --chart-3: 38 92% 50%;
-    --chart-4: 280 65% 60%;
-    --chart-5: 340 75% 55%;
-    --sidebar-background: 217 33% 17%;
-    --sidebar-foreground: 210 40% 98%;
-    --sidebar-primary: 217 91% 60%;
+    --border: 158 22% 20%;
+    --input: 158 22% 20%;
+    --ring: 152 65% 42%;
+    --chart-1: 152 65% 48%;
+    --chart-2: 177 85% 42%;
+    --chart-3: 68 61% 58%;
+    --chart-4: 152 55% 55%;
+    --chart-5: 38 55% 58%;
+    --sidebar-background: 158 32% 8%;
+    --sidebar-foreground: 140 25% 96%;
+    --sidebar-primary: 152 65% 42%;
     --sidebar-primary-foreground: 0 0% 100%;
-    --sidebar-accent: 217 33% 22%;
-    --sidebar-accent-foreground: 210 40% 98%;
-    --sidebar-border: 217 33% 22%;
-    --sidebar-ring: 217 91% 60%;
+    --sidebar-accent: 158 26% 14%;
+    --sidebar-accent-foreground: 140 25% 96%;
+    --sidebar-border: 158 22% 18%;
+    --sidebar-ring: 68 61% 55%;
+    --gradient-card: linear-gradient(145deg, hsl(158 28% 14% / 0.95) 0%, hsl(158 32% 9% / 0.9) 100%);
+    --gradient-sidebar: linear-gradient(180deg, hsl(158 32% 6%) 0%, hsl(152 40% 14%) 50%, hsl(158 30% 10%) 100%);
+    --shadow-card: 0 14px 30px -14px rgba(0, 0, 0, 0.45);
+    --shadow-card-hover: 0 18px 36px -12px rgba(0, 0, 0, 0.55);
+    --gradient-primary: linear-gradient(135deg, hsl(152 65% 38%) 0%, hsl(152 65% 46%) 55%, hsl(152 55% 52%) 100%);
+    --gradient-accent: linear-gradient(135deg, hsl(68 48% 42%) 0%, hsl(152 58% 36%) 100%);
+    --gradient-teal: linear-gradient(135deg, hsl(177 85% 38%) 0%, hsl(177 70% 42%) 100%);
+    --gradient-reports: linear-gradient(135deg, hsl(152 40% 20%) 0%, hsl(152 60% 32%) 50%, hsl(177 70% 38%) 100%);
+    --info: 177 85% 42%;
+    --education-blue: 177 85% 42%;
+    --education-green: 152 65% 48%;
   }
 }
 
@@ -176,17 +196,307 @@ All colors MUST be HSL.
   }
 
   body {
-    @apply bg-background text-foreground;
+    @apply text-foreground antialiased;
+    background-color: hsl(var(--background));
+  }
+
+  html:not(.dark) body {
+    background:
+      radial-gradient(55vmax 42vmax at 0% -8%, hsl(177 100% 36% / 0.2) 0%, transparent 55%),
+      radial-gradient(50vmax 38vmax at 100% 0%, hsl(68 61% 52% / 0.14) 0%, transparent 58%),
+      radial-gradient(65vmax 50vmax at 100% 100%, hsl(152 69% 38% / 0.12) 0%, transparent 55%),
+      radial-gradient(48vmax 48vmax at -5% 100%, hsl(38 35% 88% / 0.9) 0%, transparent 55%),
+      linear-gradient(165deg, hsl(38 40% 97%) 0%, hsl(38 33% 96%) 40%, hsl(38 30% 94%) 100%);
+    background-attachment: fixed;
+  }
+
+  html.dark body {
+    background:
+      radial-gradient(55vmax 40vmax at 0% -10%, hsl(177 100% 36% / 0.15) 0%, transparent 55%),
+      radial-gradient(50vmax 35vmax at 105% 5%, hsl(68 61% 52% / 0.08) 0%, transparent 60%),
+      radial-gradient(70vmax 55vmax at 100% 110%, hsl(152 69% 30% / 0.35) 0%, transparent 60%),
+      linear-gradient(165deg, hsl(158 32% 6%) 0%, hsl(158 32% 8%) 50%, hsl(158 28% 10%) 100%);
+    background-attachment: fixed;
   }
 }
 
 @layer components {
-  /* Sahifa sarlavhalari — barcha bo‘limlar uchun ixcham umumiy ko‘rinish */
   .page-heading {
     @apply text-xl font-semibold tracking-tight text-foreground sm:text-2xl;
   }
 
   .page-heading-sub {
     @apply mt-0.5 text-xs leading-snug text-muted-foreground sm:text-sm;
+  }
+
+  /* Kartochkalar — mini-app dz-card uslubi */
+  [data-slot="card"] {
+    @apply relative overflow-hidden border border-border/70 shadow-[var(--shadow-card)] transition-shadow duration-200;
+    background: var(--gradient-card);
+  }
+
+  [data-slot="card"]::before {
+    content: '';
+    position: absolute;
+    width: 140px;
+    height: 140px;
+    top: -48px;
+    right: -40px;
+    border-radius: 9999px;
+    background: hsl(var(--primary) / 0.08);
+    filter: blur(32px);
+    pointer-events: none;
+  }
+
+  @media (hover: hover) {
+    [data-slot="card"]:not(.metric-card):hover {
+      box-shadow: var(--shadow-card-hover);
+    }
+  }
+
+  .app-sidebar {
+    background: var(--gradient-sidebar);
+    border-color: hsl(var(--sidebar-border));
+    color: hsl(var(--sidebar-foreground));
+  }
+
+  .app-sidebar [data-slot="card"]::before {
+    display: none;
+  }
+
+  .app-main-chrome {
+    @apply border-b border-border/60 bg-background/75 backdrop-blur-md;
+  }
+
+  /* Infografika / KPI kartalar */
+  .metric-card {
+    @apply relative gap-4 overflow-hidden border-0 py-4 text-white shadow-[var(--shadow-card)];
+  }
+
+  .metric-card::before {
+    display: none;
+  }
+
+  .metric-card::after {
+    content: '';
+    position: absolute;
+    width: 100px;
+    height: 100px;
+    bottom: -36px;
+    right: -28px;
+    border-radius: 9999px;
+    background: rgba(255, 255, 255, 0.12);
+    filter: blur(20px);
+    pointer-events: none;
+  }
+
+  .metric-card--sales {
+    background: linear-gradient(135deg, hsl(152 69% 32%) 0%, hsl(152 79% 40%) 100%) !important;
+  }
+
+  .metric-card--orders {
+    background: linear-gradient(135deg, hsl(177 100% 30%) 0%, hsl(177 85% 38%) 100%) !important;
+  }
+
+  .metric-card--warning {
+    background: linear-gradient(135deg, hsl(38 92% 42%) 0%, hsl(28 90% 48%) 100%) !important;
+  }
+
+  .metric-card--customers {
+    background: linear-gradient(135deg, hsl(68 52% 38%) 0%, hsl(152 65% 30%) 100%) !important;
+  }
+
+  .metric-card--lime {
+    background: linear-gradient(135deg, hsl(68 52% 38%) 0%, hsl(152 65% 30%) 100%) !important;
+  }
+
+  .metric-card-icon {
+    @apply flex h-10 w-10 items-center justify-center rounded-xl bg-white/25 text-white backdrop-blur-sm;
+  }
+
+  .metric-card--profit {
+    background: linear-gradient(135deg, hsl(152 79% 38%) 0%, hsl(177 85% 38%) 100%) !important;
+  }
+
+  .metric-card--expense {
+    background: linear-gradient(135deg, hsl(0 72% 48%) 0%, hsl(15 80% 42%) 100%) !important;
+  }
+
+  /* Barcha KPI: oq matn (ochiq fon + qora matn kontrast xatosini oldini olish) */
+  .metric-card .metric-card-title {
+    @apply text-sm font-medium text-white;
+    color: #fff !important;
+    opacity: 0.95;
+  }
+
+  .metric-card .metric-card-value {
+    @apply text-2xl font-bold text-white;
+    color: #fff !important;
+  }
+
+  .metric-card .metric-card-sub {
+    @apply text-xs text-white;
+    color: #fff !important;
+    opacity: 0.88;
+  }
+
+  .metric-card .metric-card-icon {
+    @apply bg-white/25 text-white;
+    color: #fff !important;
+  }
+
+  .metric-card .metric-card-icon svg {
+    color: #fff !important;
+  }
+
+  .app-sidebar .sidebar-nav-link {
+    @apply text-sidebar-foreground/85;
+  }
+
+  .app-sidebar .sidebar-nav-link:hover {
+    background: hsl(var(--sidebar-accent) / 0.85);
+    @apply text-sidebar-foreground;
+  }
+
+  .app-sidebar .sidebar-nav-link-active {
+    background: hsl(var(--sidebar-primary));
+    @apply text-sidebar-primary-foreground shadow-md;
+  }
+
+  .app-sidebar .sidebar-search {
+    @apply border-sidebar-border/60 bg-sidebar-accent/50 text-sidebar-foreground/80 hover:bg-sidebar-accent;
+  }
+
+  .app-sidebar .sidebar-muted {
+    color: hsl(var(--sidebar-foreground) / 0.78);
+  }
+
+  .app-sidebar .sidebar-border {
+    border-color: hsl(var(--sidebar-border));
+  }
+
+  .app-sidebar .sidebar-kbd {
+    @apply border-sidebar-border/50 bg-sidebar-accent/80 text-sidebar-foreground/70;
+  }
+
+  .app-sidebar .sidebar-signout {
+    @apply border-sidebar-border/60 bg-transparent text-sidebar-foreground hover:bg-sidebar-accent hover:text-sidebar-foreground;
+  }
+
+  .chart-card-accent {
+    @apply border-t-4 border-t-primary/80;
+  }
+
+  .chart-card-teal {
+    @apply border-t-4 border-t-secondary/90;
+  }
+
+  .quick-action-btn {
+    @apply min-h-[7.75rem] h-auto w-full flex-col items-center justify-center gap-3 whitespace-normal rounded-xl border-0 px-3 py-5 font-semibold shadow-md transition-all hover:-translate-y-0.5 hover:shadow-lg;
+  }
+
+  .quick-action-btn svg {
+    width: 2rem !important;
+    height: 2rem !important;
+    min-width: 2rem !important;
+    min-height: 2rem !important;
+    flex-shrink: 0;
+  }
+
+  .quick-action-icon {
+    @apply flex h-12 w-12 shrink-0 items-center justify-center rounded-xl bg-white/20 backdrop-blur-sm;
+  }
+
+  .quick-action-icon svg {
+    width: 1.75rem !important;
+    height: 1.75rem !important;
+    min-width: 1.75rem !important;
+    min-height: 1.75rem !important;
+  }
+
+  .quick-action-btn > span:not(.quick-action-icon) {
+    @apply max-w-full px-1 text-center text-sm font-semibold leading-snug text-white;
+    color: #fff !important;
+  }
+
+  .quick-action-primary {
+    @apply quick-action-btn text-white;
+    background: var(--gradient-primary) !important;
+    color: #fff !important;
+  }
+
+  .quick-action-accent {
+    @apply quick-action-btn text-white;
+    background: var(--gradient-accent) !important;
+    color: #fff !important;
+  }
+
+  .quick-action-accent .quick-action-icon {
+    @apply bg-white/25 text-white;
+  }
+
+  .quick-action-accent .quick-action-icon svg {
+    color: #fff !important;
+  }
+
+  .quick-action-teal {
+    @apply quick-action-btn text-white;
+    background: var(--gradient-teal) !important;
+    color: #fff !important;
+  }
+
+  .quick-action-reports {
+    @apply quick-action-btn text-white;
+    background: var(--gradient-reports) !important;
+    color: #fff !important;
+  }
+
+  .quick-action-primary:hover {
+    background: var(--gradient-primary) !important;
+    filter: brightness(1.06);
+    color: #fff !important;
+  }
+
+  .quick-action-teal:hover {
+    background: var(--gradient-teal) !important;
+    filter: brightness(1.06);
+    color: #fff !important;
+  }
+
+  .quick-action-reports:hover {
+    background: var(--gradient-reports) !important;
+    filter: brightness(1.06);
+    color: #fff !important;
+  }
+
+  .quick-action-accent:hover {
+    background: var(--gradient-accent) !important;
+    filter: brightness(1.06);
+    color: #fff !important;
+  }
+
+  .quick-action-primary .quick-action-icon,
+  .quick-action-teal .quick-action-icon,
+  .quick-action-reports .quick-action-icon {
+    @apply bg-white/25 text-white;
+  }
+
+  .quick-action-primary .quick-action-icon svg,
+  .quick-action-teal .quick-action-icon svg,
+  .quick-action-reports .quick-action-icon svg,
+  .quick-action-accent .quick-action-icon svg {
+    color: #fff !important;
+  }
+
+  .quick-actions-card {
+    @apply border-t-4 border-t-secondary/80;
+  }
+
+  .quick-actions-grid > a {
+    @apply block min-w-0;
+  }
+
+  .leak-blob {
+    @apply pointer-events-none absolute rounded-full blur-3xl opacity-50;
   }
 }

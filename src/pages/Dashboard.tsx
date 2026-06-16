@@ -1,4 +1,4 @@
-import { useState, useMemo, useRef } from 'react';
+import { useState, useMemo, useRef, useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useQuery } from '@tanstack/react-query';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -31,45 +31,62 @@ import { Link } from 'react-router-dom';
 import { formatUnit } from '@/utils/formatters';
 import { useToast } from '@/hooks/use-toast';
 import { formatMoneyUZS } from '@/lib/format';
-import { LineChart, Line, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
+import { DualCurrencyAmount } from '@/components/common/DualCurrencyAmount';
+import { LineChart, Line, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell } from 'recharts';
 import { formatMonthDay, formatMonthDayYear, todayYMD } from '@/lib/datetime';
+import { cn } from '@/lib/utils';
+
+type MetricVariant = 'sales' | 'teal' | 'profit' | 'accent' | 'warning' | 'expense';
+
+/** To‘liq klass nomlari — Tailwind purge uchun (template string ishlamaydi). */
+const METRIC_VARIANT_CLASS: Record<MetricVariant, string> = {
+  sales: 'metric-card--sales',
+  teal: 'metric-card--orders',
+  profit: 'metric-card--profit',
+  accent: 'metric-card--lime',
+  warning: 'metric-card--warning',
+  expense: 'metric-card--expense',
+};
 
 interface MetricCardProps {
   title: string;
-  value: string | number;
+  value: React.ReactNode;
   subtitle: string;
   icon: React.ReactNode;
+  variant?: MetricVariant;
   loading?: boolean;
   error?: boolean;
 }
 
-function MetricCard({ title, value, subtitle, icon, loading, error }: MetricCardProps) {
+function MetricCard({ title, value, subtitle, icon, variant = 'sales', loading, error }: MetricCardProps) {
   const { t } = useTranslation();
+  const variantClass = METRIC_VARIANT_CLASS[variant];
+
   return (
-    <Card>
-      <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-        <CardTitle className="text-sm font-medium">{title}</CardTitle>
-        {icon}
-      </CardHeader>
-      <CardContent>
+    <div className={cn('metric-card flex flex-col rounded-xl', variantClass)} role="group" aria-label={title}>
+      <div className="relative z-[1] flex flex-row items-center justify-between px-6 pb-2 pt-5">
+        <p className="metric-card-title">{title}</p>
+        <div className="metric-card-icon [&_svg]:h-5 [&_svg]:w-5">{icon}</div>
+      </div>
+      <div className="relative z-[1] px-6 pb-5">
         {loading ? (
           <>
-            <Skeleton className="h-8 w-24 mb-2 bg-muted" />
-            <Skeleton className="h-4 w-32 bg-muted" />
+            <Skeleton className="mb-2 h-8 w-24 bg-white/25" />
+            <Skeleton className="h-4 w-32 bg-white/20" />
           </>
         ) : error ? (
           <>
-            <div className="text-2xl font-bold text-muted-foreground">–</div>
-            <p className="text-xs text-destructive">{t('dashboard.error_loading_metric')}</p>
+            <div className="metric-card-value">–</div>
+            <p className="metric-card-sub text-red-100">{t('dashboard.error_loading_metric')}</p>
           </>
         ) : (
           <>
-            <div className="text-2xl font-bold">{value}</div>
-            <p className="text-xs text-muted-foreground">{subtitle}</p>
+            <div className="metric-card-value">{value}</div>
+            <p className="metric-card-sub">{subtitle}</p>
           </>
         )}
-      </CardContent>
-    </Card>
+      </div>
+    </div>
   );
 }
 
@@ -82,6 +99,14 @@ interface DateRange {
 
 const DASHBOARD_REFRESH_MS = 60_000;
 const DASHBOARD_SLOW_REFRESH_MS = 120_000;
+
+const CHART_COLORS = [
+  'hsl(var(--chart-1))',
+  'hsl(var(--chart-2))',
+  'hsl(var(--chart-3))',
+  'hsl(var(--chart-4))',
+  'hsl(var(--chart-5))',
+] as const;
 
 function ymdToUtcDate(ymd: string): Date {
   const [yy, mm, dd] = String(ymd || '').split('-').map((v) => Number(v));
@@ -117,26 +142,35 @@ export default function Dashboard() {
 
   // React Query hooks for dashboard data
   // Keep dashboard fresh without creating unnecessary background load on shared SQLite/server deployments.
-  const { data: analytics, isLoading: analyticsLoading, isError: analyticsError } = useQuery({
+  const {
+    data: analytics,
+    isLoading: analyticsLoading,
+    isError: analyticsError,
+    error: analyticsErrorObj,
+  } = useQuery({
     queryKey: ['dashboardAnalytics', dateRangeKey],
     queryFn: () => getDashboardAnalytics(dateRange.from, dateRange.to),
     refetchOnMount: true,
     refetchOnWindowFocus: true,
     refetchInterval: DASHBOARD_REFRESH_MS,
     retry: 1,
-    onError: (err: any) => {
-      console.error('[Dashboard] dashboardAnalytics error:', err);
-      const now = Date.now();
-      const THROTTLE_MS = 2 * 60 * 1000;
-      if (now - lastAnalyticsErrorToastAtRef.current < THROTTLE_MS) return;
-      lastAnalyticsErrorToastAtRef.current = now;
-      toast({
-        title: t('dashboard.error_loading_metric'),
-        description: err?.message || 'Unknown error',
-        variant: 'destructive',
-      });
-    },
   });
+
+  // React Query v5 removed `onError` from useQuery; surface errors via effect.
+  useEffect(() => {
+    if (!analyticsError) return;
+    const err = analyticsErrorObj as { message?: string } | null;
+    console.error('[Dashboard] dashboardAnalytics error:', err);
+    const now = Date.now();
+    const THROTTLE_MS = 2 * 60 * 1000;
+    if (now - lastAnalyticsErrorToastAtRef.current < THROTTLE_MS) return;
+    lastAnalyticsErrorToastAtRef.current = now;
+    toast({
+      title: t('dashboard.error_loading_metric'),
+      description: err?.message || 'Unknown error',
+      variant: 'destructive',
+    });
+  }, [analyticsError, analyticsErrorObj, t, toast]);
 
   const { data: lowStockProducts = [], isLoading: lowStockLoading, isError: lowStockError } = useQuery({
     queryKey: ['lowStockProducts'],
@@ -325,37 +359,51 @@ export default function Dashboard() {
       {/* Row 1: Main KPI Cards */}
       <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
         <MetricCard
+          variant="sales"
           title={t('dashboard.cards.total_sales.title')}
-          value={formatCurrency(analytics?.total_sales || 0)}
+          value={
+            (analytics?.total_sales_usd ?? 0) > 0 ? (
+              <DualCurrencyAmount
+                uzs={analytics?.total_sales_uzs ?? 0}
+                usd={analytics?.total_sales_usd ?? 0}
+                className="text-inherit"
+              />
+            ) : (
+              formatCurrency(analytics?.total_sales || 0)
+            )
+          }
           subtitle={`${analytics?.total_orders || 0} ${t('dashboard.cards.total_sales.orders')}`}
-          icon={<DollarSign className="h-4 w-4 text-muted-foreground" />}
+          icon={<DollarSign />}
           loading={analyticsLoading}
           error={analyticsError}
         />
 
         <MetricCard
+          variant="teal"
           title={t('dashboard.cards.total_cogs.title')}
           value={formatCurrency(analytics?.total_cogs || 0)}
           subtitle={t('dashboard.cards.total_cogs.subtitle')}
-          icon={<Package className="h-4 w-4 text-muted-foreground" />}
+          icon={<Package />}
           loading={analyticsLoading}
           error={analyticsError}
         />
 
         <MetricCard
+          variant="profit"
           title={t('dashboard.cards.total_profit.title')}
           value={formatCurrency((analytics?.net_profit ?? analytics?.total_profit) || 0)}
           subtitle={t('dashboard.cards.total_profit.subtitle')}
-          icon={<TrendingUp className="h-4 w-4 text-success" />}
+          icon={<TrendingUp />}
           loading={analyticsLoading}
           error={analyticsError}
         />
 
         <MetricCard
+          variant="profit"
           title={t('dashboard.cards.profit_margin.title')}
           value={`${Number(analytics?.profit_margin || 0).toFixed(1)}%`}
           subtitle={t('dashboard.cards.profit_margin.subtitle')}
-          icon={<TrendingUp className="h-4 w-4 text-muted-foreground" />}
+          icon={<TrendingUp />}
           loading={analyticsLoading}
           error={analyticsError}
         />
@@ -364,38 +412,42 @@ export default function Dashboard() {
       {/* Row 2: Other KPI Cards */}
       <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
         <MetricCard
+          variant="warning"
           title={t('dashboard.cards.low_stock.title')}
           value={analytics?.low_stock_count || 0}
           subtitle={t('dashboard.cards.low_stock.subtitle')}
-          icon={<AlertTriangle className="h-4 w-4 text-warning" />}
+          icon={<AlertTriangle />}
           loading={analyticsLoading}
           error={analyticsError}
         />
 
         <MetricCard
+          variant="accent"
           title={t('dashboard.cards.active_customers.title')}
           value={analytics?.active_customers || 0}
           subtitle={t('dashboard.cards.active_customers.subtitle')}
-          icon={<Users className="h-4 w-4 text-muted-foreground" />}
+          icon={<Users />}
           loading={analyticsLoading}
           error={analyticsError}
         />
 
         <MetricCard
+          variant="expense"
           title={t('dashboard.cards.total_expenses.title')}
           value={formatCurrency(analytics?.total_expenses || 0)}
           subtitle={t('dashboard.cards.total_expenses.subtitle')}
-          icon={<TrendingDown className="h-4 w-4 text-destructive" />}
+          icon={<TrendingDown />}
           loading={analyticsLoading}
           error={analyticsError}
         />
 
         {totalCustomerDebt > 0 && (
           <MetricCard
+            variant="expense"
             title={t('dashboard.cards.total_customer_debt.title')}
             value={formatCurrency(totalCustomerDebt)}
             subtitle={t('dashboard.cards.total_customer_debt.subtitle')}
-            icon={<DollarSign className="h-4 w-4 text-destructive" />}
+            icon={<DollarSign />}
             loading={analyticsLoading}
             error={analyticsError}
           />
@@ -405,10 +457,10 @@ export default function Dashboard() {
       {/* Charts Section */}
       <div className="grid gap-4 xl:grid-cols-2">
         {/* Sales Over Time Chart */}
-        <Card>
+        <Card className="chart-card-accent">
           <CardHeader>
             <CardTitle className="flex items-center gap-2">
-              <BarChart3 className="h-5 w-5" />
+              <BarChart3 className="h-5 w-5 text-primary" />
               {t('dashboard.charts.sales_over_time')}
             </CardTitle>
           </CardHeader>
@@ -425,19 +477,18 @@ export default function Dashboard() {
               <div className="h-80 flex items-center justify-center">
                 <p className="text-sm text-muted-foreground">{t('dashboard.charts.no_sales_data')}</p>
               </div>
-            ) : dailySales.length < 2 ? (
-              <div className="h-80 flex flex-col items-center justify-center text-center gap-2">
-                <p className="text-sm text-muted-foreground">
-                  Chiziq ko‘rinishi uchun kamida 2 kun tanlang (masalan: “So‘nggi 7 kun”).
-                </p>
-                <p className="text-xs text-muted-foreground">
-                  Hozirgi davr faqat 1 kun bo‘lgani uchun grafikda faqat nuqta ko‘rinadi.
-                </p>
-              </div>
             ) : (
+              <>
               <ResponsiveContainer width="100%" height={320}>
                 <LineChart data={dailySales}>
-                  <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
+                  <defs>
+                    <linearGradient id="salesLineGradient" x1="0" y1="0" x2="1" y2="0">
+                      <stop offset="0%" stopColor="hsl(var(--chart-1))" />
+                      <stop offset="50%" stopColor="hsl(var(--chart-2))" />
+                      <stop offset="100%" stopColor="hsl(var(--chart-3))" />
+                    </linearGradient>
+                  </defs>
+                  <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
                   <XAxis
                     dataKey="date"
                     tickFormatter={(value) => formatMonthDay(value)}
@@ -454,21 +505,28 @@ export default function Dashboard() {
                   <Line
                     type="monotone"
                     dataKey="total_sales"
-                    stroke="hsl(var(--primary))"
-                    strokeWidth={2}
-                    dot={{ fill: 'hsl(var(--primary))' }}
+                    stroke="url(#salesLineGradient)"
+                    strokeWidth={3}
+                    dot={{ fill: 'hsl(var(--chart-2))', strokeWidth: 2, r: 4 }}
+                    activeDot={{ r: 6, fill: 'hsl(var(--chart-1))' }}
                   />
                 </LineChart>
               </ResponsiveContainer>
+              {dailySales.length < 2 && (
+                <p className="mt-2 text-center text-xs text-muted-foreground">
+                  {t('dashboard.charts.line_chart_hint_sub')}
+                </p>
+              )}
+              </>
             )}
           </CardContent>
         </Card>
 
         {/* Top 5 Products Chart */}
-        <Card>
+        <Card className="chart-card-teal">
           <CardHeader>
             <CardTitle className="flex items-center gap-2">
-              <Package className="h-5 w-5" />
+              <Package className="h-5 w-5 text-secondary" />
               {t('dashboard.charts.top_5_products')}
             </CardTitle>
           </CardHeader>
@@ -497,9 +555,10 @@ export default function Dashboard() {
                   <YAxis
                     type="category"
                     dataKey="product_name"
-                    width={120}
+                    width={160}
                     className="text-xs"
-                    tickFormatter={(value) => value.length > 15 ? value.substring(0, 15) + '...' : value}
+                    tick={{ fontSize: 11 }}
+                    tickFormatter={(value) => (value.length > 22 ? `${value.substring(0, 22)}…` : value)}
                   />
                   <Tooltip
                     formatter={(value: number, name: string) => {
@@ -507,7 +566,11 @@ export default function Dashboard() {
                       return [value, t('dashboard.charts.quantity')];
                     }}
                   />
-                  <Bar dataKey="total_amount" fill="hsl(var(--primary))" radius={[0, 4, 4, 0]} />
+                  <Bar dataKey="total_amount" radius={[0, 6, 6, 0]}>
+                    {topProducts.map((_, index) => (
+                      <Cell key={`bar-${index}`} fill={CHART_COLORS[index % CHART_COLORS.length]} />
+                    ))}
+                  </Bar>
                 </BarChart>
               </ResponsiveContainer>
             )}
@@ -516,33 +579,41 @@ export default function Dashboard() {
       </div>
 
       {/* Quick Actions */}
-      <Card>
+      <Card className="quick-actions-card">
         <CardHeader>
           <CardTitle>{t('dashboard.quick_actions.title')}</CardTitle>
         </CardHeader>
         <CardContent>
-          <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+          <div className="quick-actions-grid grid gap-4 md:grid-cols-2 xl:grid-cols-4">
             <Link to="/pos">
-              <Button className="w-full h-24 flex flex-col gap-2" size="lg">
-                <ShoppingCart className="h-8 w-8" />
+              <Button type="button" variant="ghost" className="quick-action-primary">
+                <span className="quick-action-icon" aria-hidden>
+                  <ShoppingCart />
+                </span>
                 <span>{t('dashboard.quick_actions.open_pos')}</span>
               </Button>
             </Link>
             <Link to="/products">
-              <Button variant="outline" className="w-full h-24 flex flex-col gap-2" size="lg">
-                <Package className="h-8 w-8" />
+              <Button type="button" variant="ghost" className="quick-action-teal">
+                <span className="quick-action-icon" aria-hidden>
+                  <Package />
+                </span>
                 <span>{t('dashboard.quick_actions.manage_products')}</span>
               </Button>
             </Link>
             <Link to="/orders">
-              <Button variant="outline" className="w-full h-24 flex flex-col gap-2" size="lg">
-                <TrendingUp className="h-8 w-8" />
+              <Button type="button" variant="ghost" className="quick-action-accent">
+                <span className="quick-action-icon" aria-hidden>
+                  <TrendingUp />
+                </span>
                 <span>{t('dashboard.quick_actions.view_orders')}</span>
               </Button>
             </Link>
             <Link to="/reports">
-              <Button variant="outline" className="w-full h-24 flex flex-col gap-2" size="lg">
-                <BarChart3 className="h-8 w-8" />
+              <Button type="button" variant="ghost" className="quick-action-reports">
+                <span className="quick-action-icon" aria-hidden>
+                  <BarChart3 />
+                </span>
                 <span>{t('dashboard.quick_actions.view_reports')}</span>
               </Button>
             </Link>
@@ -605,7 +676,8 @@ export default function Dashboard() {
                   <div>
                     <p className="font-medium">{product.name}</p>
                     <p className="text-sm text-muted-foreground">
-                      {t('dashboard.low_stock_alert.sku')}: {product.sku} | {t('dashboard.low_stock_alert.category')}: {product.category?.name || t('dashboard.low_stock_alert.na')}
+                      {t('dashboard.low_stock_alert.sku')}: {product.sku} | {t('dashboard.low_stock_alert.category')}:{' '}
+                      {product.category?.name || (product as { category_name?: string }).category_name || t('dashboard.low_stock_alert.na')}
                     </p>
                   </div>
                   <div className="text-right">

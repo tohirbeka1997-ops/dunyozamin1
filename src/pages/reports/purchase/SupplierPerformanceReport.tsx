@@ -15,7 +15,9 @@ import type { Supplier, PurchaseOrderWithDetails } from '@/types/database';
 import { FileDown, ArrowLeft } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 import { useNavigate } from 'react-router-dom';
+import { getPoLedgerAmount, getPoLedgerCurrency } from '@/lib/currency';
 import { formatMoneyUZS } from '@/lib/format';
+import { DualCurrencyAmount } from '@/components/common/DualCurrencyAmount';
 import { todayYMD } from '@/lib/datetime';
 import { useReportAutoRefresh } from '@/hooks/useReportAutoRefresh';
 import { useTableSort } from '@/hooks/useTableSort';
@@ -26,8 +28,12 @@ interface SupplierPerformance {
   supplier_id: string;
   supplier_name: string;
   total_orders: number;
-  total_amount: number;
-  average_order_value: number;
+  total_amount_uzs: number;
+  total_amount_usd: number;
+  orders_uzs: number;
+  orders_usd: number;
+  average_order_value_uzs: number;
+  average_order_value_usd: number;
 }
 
 type SupplierPerfSortKey =
@@ -75,20 +81,34 @@ export default function SupplierPerformanceReport() {
       receivedOrders.forEach((order) => {
         const supplierId = order.supplier_id || 'unknown';
         const existing = supplierMap.get(supplierId);
-        const amount = Number(order.total_amount || 0);
+        const cur = getPoLedgerCurrency(order as any);
+        const amount = getPoLedgerAmount(order as any);
 
         if (existing) {
           existing.total_orders += 1;
-          existing.total_amount += amount;
-          existing.average_order_value = existing.total_amount / existing.total_orders;
+          if (cur === 'USD') {
+            existing.orders_usd += 1;
+            existing.total_amount_usd += amount;
+            existing.average_order_value_usd =
+              existing.total_amount_usd / existing.orders_usd;
+          } else {
+            existing.orders_uzs += 1;
+            existing.total_amount_uzs += amount;
+            existing.average_order_value_uzs =
+              existing.total_amount_uzs / existing.orders_uzs;
+          }
         } else {
           const supplier = suppliersData.find((s) => s.id === supplierId);
           supplierMap.set(supplierId, {
             supplier_id: supplierId,
             supplier_name: supplier?.name || order.supplier_name || 'Noma\'lum',
             total_orders: 1,
-            total_amount: amount,
-            average_order_value: amount,
+            total_amount_uzs: cur === 'UZS' ? amount : 0,
+            total_amount_usd: cur === 'USD' ? amount : 0,
+            orders_uzs: cur === 'UZS' ? 1 : 0,
+            orders_usd: cur === 'USD' ? 1 : 0,
+            average_order_value_uzs: cur === 'UZS' ? amount : 0,
+            average_order_value_usd: cur === 'USD' ? amount : 0,
           });
         }
       });
@@ -125,9 +145,9 @@ export default function SupplierPerformanceReport() {
         case 'total_orders':
           return compareScalar(a.total_orders, b.total_orders, ord);
         case 'total_amount':
-          return compareScalar(a.total_amount, b.total_amount, ord);
+          return compareScalar(a.total_amount_uzs, b.total_amount_uzs, ord);
         case 'average_order_value':
-          return compareScalar(a.average_order_value, b.average_order_value, ord);
+          return compareScalar(a.average_order_value_uzs, b.average_order_value_uzs, ord);
         default:
           return 0;
       }
@@ -136,7 +156,8 @@ export default function SupplierPerformanceReport() {
   }, [filteredSuppliers, sortKey, sortOrder]);
 
   const totalOrders = performance.reduce((sum, p) => sum + p.total_orders, 0);
-  const totalAmount = performance.reduce((sum, p) => sum + p.total_amount, 0);
+  const totalAmountUzs = performance.reduce((sum, p) => sum + p.total_amount_uzs, 0);
+  const totalAmountUsd = performance.reduce((sum, p) => sum + p.total_amount_usd, 0);
 
   const handleExport = (format: 'excel' | 'pdf') => {
     toast({
@@ -193,7 +214,11 @@ export default function SupplierPerformanceReport() {
             <div className="flex items-center justify-between">
               <div>
                 <p className="text-sm text-muted-foreground">Jami summa</p>
-                <p className="text-2xl font-bold">{formatMoneyUZS(totalAmount)}</p>
+                <DualCurrencyAmount
+                  uzs={totalAmountUzs}
+                  usd={totalAmountUsd}
+                  className="text-2xl font-bold"
+                />
               </div>
             </div>
           </CardContent>
@@ -287,8 +312,18 @@ export default function SupplierPerformanceReport() {
                   <TableRow key={supplier.supplier_id}>
                     <TableCell className="font-medium">{supplier.supplier_name}</TableCell>
                     <TableCell className="text-right">{supplier.total_orders}</TableCell>
-                    <TableCell className="text-right">{formatMoneyUZS(supplier.total_amount)}</TableCell>
-                    <TableCell className="text-right">{formatMoneyUZS(supplier.average_order_value)}</TableCell>
+                    <TableCell className="text-right">
+                      <DualCurrencyAmount
+                        uzs={supplier.total_amount_uzs}
+                        usd={supplier.total_amount_usd}
+                      />
+                    </TableCell>
+                    <TableCell className="text-right">
+                      <DualCurrencyAmount
+                        uzs={supplier.average_order_value_uzs}
+                        usd={supplier.average_order_value_usd}
+                      />
+                    </TableCell>
                   </TableRow>
                 ))}
               </TableBody>

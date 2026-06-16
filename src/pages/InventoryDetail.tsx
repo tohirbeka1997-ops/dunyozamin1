@@ -190,6 +190,8 @@ export default function InventoryDetail() {
   });
 
   // Stock adjustment mutation
+  // React Query v5: onSuccess/onError on useMutation options no longer run;
+  // the handlers are passed to mutate() in handleAdjustment instead.
   const adjustmentMutation = useMutation({
     mutationFn: async (adjustment: {
       product_id: string;
@@ -198,42 +200,6 @@ export default function InventoryDetail() {
       notes?: string;
     }) => {
       return await createStockAdjustment(adjustment);
-    },
-    onSuccess: () => {
-      console.log('[InventoryDetail] Stock adjustment successful, invalidating queries...');
-      
-      // Invalidate all related queries
-      queryClient.invalidateQueries({ queryKey: ['inventoryDetail', id] });
-      queryClient.invalidateQueries({ queryKey: ['inventoryMovements', resolvedProductId] });
-      queryClient.invalidateQueries({ queryKey: ['productPurchaseHistory', resolvedProductId] });
-      queryClient.invalidateQueries({ queryKey: ['productSalesHistory', resolvedProductId] });
-      queryClient.invalidateQueries({ queryKey: ['productBatches', resolvedProductId] });
-      
-      // Also invalidate inventory list and products list
-      queryClient.invalidateQueries({ queryKey: qk.products, exact: false });
-      queryClient.invalidateQueries({ queryKey: qk.inventory, exact: false });
-      queryClient.invalidateQueries({ queryKey: qk.stock, exact: false });
-      
-      toast({
-        title: 'Muvaffaqiyatli',
-        description: 'Qoldiq muvaffaqiyatli to\'g\'rilandi',
-      });
-
-      setAdjustmentOpen(false);
-      setAdjustmentForm({
-        type: 'increase',
-        quantity: '',
-        reason: '',
-        notes: '',
-      });
-    },
-    onError: (error) => {
-      console.error('[InventoryDetail] Stock adjustment error:', error);
-      toast({
-        title: 'Xatolik',
-        description: error instanceof Error ? error.message : 'Qoldiqni to\'g\'rilab bo\'lmadi',
-        variant: 'destructive',
-      });
     },
   });
 
@@ -296,12 +262,52 @@ export default function InventoryDetail() {
       ? qty 
       : -qty;
 
-    adjustmentMutation.mutate({
-      product_id: id,
-      quantity,
-      reason: adjustmentForm.reason,
-      notes: adjustmentForm.notes || undefined,
-    });
+    adjustmentMutation.mutate(
+      {
+        product_id: id,
+        quantity,
+        reason: adjustmentForm.reason,
+        notes: adjustmentForm.notes || undefined,
+      },
+      {
+        onSuccess: () => {
+          console.log('[InventoryDetail] Stock adjustment successful, invalidating queries...');
+
+          // Invalidate all related queries
+          queryClient.invalidateQueries({ queryKey: ['inventoryDetail', id] });
+          queryClient.invalidateQueries({ queryKey: ['inventoryMovements', resolvedProductId] });
+          queryClient.invalidateQueries({ queryKey: ['productPurchaseHistory', resolvedProductId] });
+          queryClient.invalidateQueries({ queryKey: ['productSalesHistory', resolvedProductId] });
+          queryClient.invalidateQueries({ queryKey: ['productBatches', resolvedProductId] });
+
+          // Also invalidate inventory list and products list
+          queryClient.invalidateQueries({ queryKey: qk.products, exact: false });
+          queryClient.invalidateQueries({ queryKey: qk.inventory, exact: false });
+          queryClient.invalidateQueries({ queryKey: qk.stock, exact: false });
+
+          toast({
+            title: 'Muvaffaqiyatli',
+            description: 'Qoldiq muvaffaqiyatli to\'g\'rilandi',
+          });
+
+          setAdjustmentOpen(false);
+          setAdjustmentForm({
+            type: 'increase',
+            quantity: '',
+            reason: '',
+            notes: '',
+          });
+        },
+        onError: (error) => {
+          console.error('[InventoryDetail] Stock adjustment error:', error);
+          toast({
+            title: 'Xatolik',
+            description: error instanceof Error ? error.message : 'Qoldiqni to\'g\'rilab bo\'lmadi',
+            variant: 'destructive',
+          });
+        },
+      },
+    );
   };
 
   const getStockStatusBadge = () => {

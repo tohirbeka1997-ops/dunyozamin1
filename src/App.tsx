@@ -25,19 +25,43 @@ const queryClient = new QueryClient({
 
 // Component to initialize sync engine inside QueryClientProvider
 function SyncEngineInitializer() {
-  try {
-    useSyncEngine();
-    
-    // Initialize IndexedDB on app start
-    React.useEffect(() => {
-      openOfflineDB().catch(error => {
-        console.error('Failed to initialize offline database:', error);
-      });
-    }, []);
-  } catch (error) {
-    console.error('Failed to initialize sync engine:', error);
-  }
-  
+  const { refreshPending } = useSyncEngine();
+
+  React.useEffect(() => {
+    openOfflineDB().catch((error) => {
+      console.error('Failed to initialize offline database:', error);
+    });
+  }, []);
+
+  // CLIENT mode: replay offline sales when connectivity returns
+  React.useEffect(() => {
+    let cancelled = false;
+
+    const runSync = async () => {
+      try {
+        const { tryAutoSyncOfflineSales } = await import('@/lib/offlineSalesSync');
+        const { getOfflineSalesQueueCount } = await import('@/lib/offlineSalesQueue');
+        const before = await getOfflineSalesQueueCount();
+        if (before === 0 || cancelled) return;
+        await tryAutoSyncOfflineSales();
+        if (!cancelled) await refreshPending();
+      } catch (error) {
+        console.warn('[offline] auto-sync failed:', error);
+      }
+    };
+
+    void runSync();
+    const onOnline = () => void runSync();
+    window.addEventListener('online', onOnline);
+    const interval = window.setInterval(() => void runSync(), 60_000);
+
+    return () => {
+      cancelled = true;
+      window.removeEventListener('online', onOnline);
+      window.clearInterval(interval);
+    };
+  }, [refreshPending]);
+
   return null;
 }
 
@@ -154,7 +178,7 @@ function AppContent() {
               );
             }
             // For login and reset password routes, redirect if already logged in
-            if (route.path === '/login' || route.path === '/reset-password' || route.path === '/auth/reset-password') {
+            if (route.path === '/login' || route.path === '/forgot-password' || route.path === '/reset-password' || route.path === '/auth/reset-password') {
               return (
                 <Route
                   key={index}

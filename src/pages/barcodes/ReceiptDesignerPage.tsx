@@ -86,7 +86,7 @@ const mockOrder: OrderWithDetails = {
     },
   ] as any,
   payments: [{ payment_method: 'cash', amount: 115000 }] as any,
-} as OrderWithDetails;
+} as unknown as OrderWithDetails;
 
 export default function ReceiptDesignerPage() {
   const { toast } = useToast();
@@ -113,9 +113,9 @@ export default function ReceiptDesignerPage() {
         ]);
         if (cancelled) return;
         const ensured = ensureReceiptTemplates(
-          (receiptTemplates as ReceiptTemplateStore) || loadReceiptTemplateStoreFromLocalStorage()
+          (receiptTemplates as unknown as ReceiptTemplateStore) || loadReceiptTemplateStoreFromLocalStorage()
         );
-        setCompanySettings(company as CompanySettings);
+        setCompanySettings(company as unknown as CompanySettings);
         setStore(ensured);
         setSelectedId(ensured.active_id || ensured.templates[0]?.id || '');
 

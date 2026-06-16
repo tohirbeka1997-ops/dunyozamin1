@@ -2,7 +2,7 @@
  * Loyiha ildizidagi pos.db uchun barcha SQL migratsiyalarni ishga tushiradi.
  * VPS: cd /opt/pos && node scripts/migrate-pos-db.cjs
  *
- * Yo'l: .env dagi PUBLIC_API_DB_PATH yoki POS_DATA_DIR/pos.db yoki 1-arg yoki cwd/pos.db
+ * Yo'l: .env dagi PUBLIC_API_DB_PATH yoki resolvePosDbPath() (POS_DATA_DIR/pos.db yoki multi-tenant tenant DB)
  */
 const path = require('path');
 const fs = require('fs');
@@ -14,15 +14,12 @@ try {
 
 const Database = require('better-sqlite3');
 const { runMigrations } = require('../electron/db/migrate.cjs');
+const { resolvePosDbPath } = require('../electron/lib/resolvePosDbPath.cjs');
 
 function resolveDbPath() {
-  const explicit = process.env.PUBLIC_API_DB_PATH && String(process.env.PUBLIC_API_DB_PATH).trim();
-  if (explicit) return path.resolve(explicit);
-  const dataDir = process.env.POS_DATA_DIR && String(process.env.POS_DATA_DIR).trim();
-  if (dataDir) return path.join(path.resolve(dataDir), 'pos.db');
   const arg = process.argv[2];
   if (arg) return path.resolve(arg);
-  return path.join(process.cwd(), 'pos.db');
+  return resolvePosDbPath();
 }
 
 const filePath = resolveDbPath();

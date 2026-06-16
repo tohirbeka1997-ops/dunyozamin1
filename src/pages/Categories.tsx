@@ -63,6 +63,7 @@ import { Switch } from '@/components/ui/switch';
 import { useToast } from '@/hooks/use-toast';
 import { formatDate } from '@/lib/datetime';
 import { getProductImageDisplayUrl } from '@/lib/productImageUrl';
+import { getMarketplaceCategories } from '@/lib/categoryTree';
 
 function buildCategoryTreeOptions(cats: Category[]): { id: string; label: string }[] {
   const byParent = new Map<string | null, Category[]>();
@@ -684,6 +685,11 @@ export default function Categories() {
     [categories]
   );
 
+  const marketplaceCategories = useMemo(
+    () => getMarketplaceCategories(categories),
+    [categories]
+  );
+
   const filteredAssignProducts = useMemo(() => {
     const q = assignProductSearch.trim().toLowerCase();
     if (!q) return assignProductsList;
@@ -764,6 +770,44 @@ export default function Categories() {
           </Button>
         </div>
       </div>
+
+      <Card className="gap-0 py-0 shadow-sm border-dashed">
+        <CardContent className="px-3 py-3 sm:px-4">
+          <p className="text-sm font-semibold">{t('categories.marketplace_preview_title')}</p>
+          <p className="mt-1 text-xs text-muted-foreground">{t('categories.marketplace_preview_hint')}</p>
+          {marketplaceCategories.length === 0 ? (
+            <p className="mt-3 text-xs text-muted-foreground">{t('categories.marketplace_preview_empty')}</p>
+          ) : (
+            <div className="mt-3 flex gap-2 overflow-x-auto pb-1 [scrollbar-width:thin]">
+              {marketplaceCategories.map((c) => (
+                <div
+                  key={c.id}
+                  className="flex shrink-0 items-center gap-2 rounded-full border bg-muted/40 px-3 py-1.5 text-xs font-medium"
+                >
+                  {c.image_url ? (
+                    <img
+                      src={getProductImageDisplayUrl(c.image_url) || c.image_url}
+                      alt=""
+                      className="h-5 w-5 rounded-full object-cover"
+                    />
+                  ) : (
+                    <span
+                      className="flex h-5 w-5 items-center justify-center rounded-full text-[11px] text-white"
+                      style={{ backgroundColor: c.color || '#2563EB' }}
+                    >
+                      {c.icon || '📁'}
+                    </span>
+                  )}
+                  <span className="max-w-[140px] truncate">{c.name}</span>
+                  <Badge variant="secondary" className="h-5 px-1.5 text-[10px] font-normal tabular-nums">
+                    {c.products_count ?? productCounts[c.id] ?? 0}
+                  </Badge>
+                </div>
+              ))}
+            </div>
+          )}
+        </CardContent>
+      </Card>
 
       <Card className="gap-0 py-0 shadow-sm">
         <CardContent className="px-3 py-2 sm:px-3">

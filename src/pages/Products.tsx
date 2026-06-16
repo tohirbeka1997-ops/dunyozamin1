@@ -30,13 +30,13 @@ import { Badge } from '@/components/ui/badge';
 import { createProduct, deleteProduct, getProducts, updateProduct, productUpdateEmitter } from '@/db/api';
 import { useProducts } from '@/hooks/useProducts';
 import type { ProductWithCategory } from '@/types/database';
-import { Plus, Search, Pencil, Trash2, Eye, AlertTriangle, Package, FileDown, ChevronDown, RotateCcw } from 'lucide-react';
+import { Plus, Search, Pencil, Trash2, Eye, AlertTriangle, Package, FileDown, ChevronDown, RotateCcw, Percent } from 'lucide-react';
 import { highlightMatch } from '@/utils/searchHighlight';
 import { useToast } from '@/hooks/use-toast';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { formatUnit } from '@/utils/formatters';
 import { formatMoneyUZS, formatNumberUZ } from '@/lib/format';
-import { getProductImageDisplayUrl } from '@/lib/productImageUrl';
+import { getProductImageDisplayUrl, normalizeImportImageUrl } from '@/lib/productImageUrl';
 import { handleIpcResponse, isElectron, requireElectron } from '@/utils/electron';
 import VirtualizedProductsTable from '@/components/products/VirtualizedProductsTable';
 import { useConfirmDialog } from '@/contexts/ConfirmDialogContext';
@@ -53,6 +53,8 @@ import {
 import MoneyInput from '@/components/common/MoneyInput';
 import { Sheet, SheetContent } from '@/components/ui/sheet';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
+import { productShowInMarketplace } from '@/lib/productMarketplace';
+import BulkPriceUpdateDialog from '@/components/products/BulkPriceUpdateDialog';
 
 export default function Products() {
   const { t } = useTranslation();
@@ -66,7 +68,7 @@ export default function Products() {
   const detailId = searchParams.get('detail');
   const filtersRestoredRef = useRef(false);
   const FILTERS_STORAGE_KEY = 'products.filters.query';
-  const FILTER_QUERY_KEYS = ['search', 'category', 'status', 'stock', 'sortBy', 'sortOrder'];
+  const FILTER_QUERY_KEYS = ['search', 'category', 'status', 'stock', 'marketplace', 'sortBy', 'sortOrder'];
   const [restoreNonce, setRestoreNonce] = useState(0);
   const refetchRef = useRef<(() => Promise<void>) | null>(null);
   const storedQueryKey = useProductsListStore((state) => state.queryKey);
@@ -87,6 +89,7 @@ export default function Products() {
   const categoryFilter = searchParams.get('category') || 'all';
   const statusFilter = searchParams.get('status') || 'active';
   const stockFilter = searchParams.get('stock') || 'all';
+  const marketplaceFilter = (searchParams.get('marketplace') || 'all') as 'all' | 'online' | 'pos_only';
   const sortBy = (searchParams.get('sortBy') || 'name') as 'name' | 'sku' | 'created_at' | 'current_stock' | 'sale_price';
   const sortOrder = (searchParams.get('sortOrder') || 'asc') as 'asc' | 'desc';
   
@@ -106,6 +109,7 @@ export default function Products() {
 
   const [exporting, setExporting] = useState(false);
   const [importing, setImporting] = useState(false);
+  const [bulkPriceOpen, setBulkPriceOpen] = useState(false);
   const reviewResolveRef = useRef<((result: ImportReviewResult) => void) | null>(null);
   const [reviewItems, setReviewItems] = useState<ImportReviewItem[] | null>(null);
   const [reviewError, setReviewError] = useState<string | null>(null);
@@ -179,6 +183,7 @@ export default function Products() {
     categoryId: categoryFilter !== 'all' ? categoryFilter : undefined,
     status: statusFilter === 'all' ? 'all' : (statusFilter as 'active' | 'inactive'),
     stockStatus: stockFilter === 'all' ? 'all' : (stockFilter as 'low' | 'out'),
+    marketplace: marketplaceFilter === 'all' ? 'all' : marketplaceFilter,
     sortBy,
     sortOrder,
   }, PAGE_SIZE);
@@ -350,6 +355,7 @@ export default function Products() {
         categoryId: categoryFilter,
         status,
         stockStatus,
+        marketplace: marketplaceFilter === 'all' ? 'all' : marketplaceFilter,
         sortBy: 'name',
         sortOrder: 'asc',
         limit: 100000,
@@ -367,12 +373,19 @@ export default function Products() {
         'Qoldiq',
         'Min zaxira',
         'Holat',
+        'Onlayn katalog',
+        'Zaxira kuzatish',
+        'Tavsif',
+        'Rasm URL',
       ];
 
       const rows = (productsAll || []).map((p: any) => {
         const categoryName = p?.category?.name || p?.category_name || '';
         const unit = p?.unit || p?.unit_code || '';
         const active = p?.is_active === false || p?.is_active === 0 ? 'Nofaol' : 'Faol';
+        const online = productShowInMarketplace(p) ? 'Ha' : 'Yoq';
+        const track =
+          p?.track_stock === false || p?.track_stock === 0 ? 'Yoq' : 'Ha';
         return [
           p?.name || '',
           p?.sku || '',
@@ -384,6 +397,10 @@ export default function Products() {
           String(p?.current_stock ?? ''),
           String(p?.min_stock_level ?? ''),
           active,
+          online,
+          track,
+          String(p?.description ?? ''),
+          String(p?.image_url ?? ''),
         ];
       });
 
@@ -524,10 +541,44 @@ export default function Products() {
       'Qoldiq',
       'Min zaxira',
       'Holat',
+      'Onlayn katalog',
+      'Zaxira kuzatish',
+      'Tavsif',
+      'Rasm URL',
     ];
     const rows = [
-      ['Sut 1L', 'MILK-1L-001', '4780123456789', 'Sut mahsulotlari', 'pcs', '9000', '12000', '20', '5', 'Faol'],
-      ['Guruch 1kg', 'RICE-1KG-001', '', 'Bakaleya', 'kg', '13000', '16000', '50', '10', 'Faol'],
+      [
+        'Sut 1L',
+        'MILK-1L-001',
+        '4780123456789',
+        'Sut mahsulotlari',
+        'pcs',
+        '9000',
+        '12000',
+        '20',
+        '5',
+        'Faol',
+        'Ha',
+        'Ha',
+        '1 litr sut',
+        '',
+      ],
+      [
+        'Guruch 1kg',
+        'RICE-1KG-001',
+        '',
+        'Bakaleya',
+        'kg',
+        '13000',
+        '16000',
+        '50',
+        '10',
+        'Faol',
+        'Ha',
+        'Ha',
+        '',
+        'https://example.com/rice.jpg',
+      ],
     ];
     const content = buildCsv(headers, rows);
     const fileName = `products_import_template.csv`;
@@ -709,6 +760,18 @@ export default function Products() {
       const iStock = findHeaderIndex(headers, ['qoldiq', 'current_stock', 'initial_stock']);
       const iMin = findHeaderIndex(headers, ['min zaxira', 'min_stock_level']);
       const iActive = findHeaderIndex(headers, ['holat', 'is_active']);
+      const iOnline = findHeaderIndex(headers, ['onlayn katalog', 'show_in_marketplace', 'marketplace']);
+      const iTrack = findHeaderIndex(headers, ['zaxira kuzatish', 'track_stock']);
+      const iDesc = findHeaderIndex(headers, ['tavsif', 'description']);
+      const iImage = findHeaderIndex(headers, ['rasm url', 'image_url', 'rasm']);
+
+      const parseYesNo = (raw: string, defaultVal: boolean) => {
+        const v = String(raw || '').trim().toLowerCase();
+        if (!v) return defaultVal;
+        if (['0', 'false', 'yoq', "yo'q", 'off', 'nofaol'].includes(v)) return false;
+        if (['1', 'true', 'ha', 'on', 'faol'].includes(v)) return true;
+        return defaultVal;
+      };
 
       if (iName < 0 || iSku < 0) {
         toast({
@@ -758,19 +821,31 @@ export default function Products() {
           activeRaw === '0' || activeRaw === 'false' || activeRaw === 'nofaol' || activeRaw === 'inactive'
             ? false
             : true;
+        const show_in_marketplace =
+          iOnline >= 0 ? parseYesNo(String(row[iOnline] || ''), true) : true;
+        const track_stock =
+          iTrack >= 0 ? parseYesNo(String(row[iTrack] || ''), true) : true;
+
+        const imageRaw = iImage >= 0 ? String(row[iImage] || '').trim() : '';
+        const image_url = imageRaw ? normalizeImportImageUrl(imageRaw) : null;
+        if (imageRaw && !image_url) {
+          failed += 1;
+          continue;
+        }
 
         const payload: any = {
           name,
           sku,
           barcode: iBarcode >= 0 ? (String(row[iBarcode] || '').trim() || null) : null,
-          description: null,
+          description: iDesc >= 0 ? String(row[iDesc] || '').trim() || null : null,
           category_id: categoryId,
           unit,
           purchase_price: Number.isFinite(purchase_price) ? purchase_price : 0,
           sale_price: Number.isFinite(sale_price) ? sale_price : 0,
           min_stock_level: Number.isFinite(min_stock_level) ? min_stock_level : 0,
-          track_stock: true,
-          image_url: null,
+          track_stock,
+          show_in_marketplace,
+          image_url,
           is_active,
         };
         reviewRows.push({
@@ -971,6 +1046,17 @@ export default function Products() {
             </DropdownMenuContent>
           </DropdownMenu>
           {statusFilter === 'active' && (
+            <Button
+              variant="outline"
+              size="sm"
+              className="h-8 text-xs"
+              onClick={() => setBulkPriceOpen(true)}
+            >
+              <Percent className="mr-2 h-3.5 w-3.5" />
+              Ommaviy narx yangilash
+            </Button>
+          )}
+          {statusFilter === 'active' && (
             <Button size="sm" className="h-8 text-xs" onClick={() => navigate('/products/new')}>
               <Plus className="mr-2 h-3.5 w-3.5" />
               {t('products.add_product')}
@@ -1008,6 +1094,21 @@ export default function Products() {
                         {category.name}
                       </SelectItem>
                     ))}
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="min-w-[6.5rem] shrink-0 flex-1 basis-0">
+                <Select
+                  value={marketplaceFilter}
+                  onValueChange={(val) => updateFilter('marketplace', val)}
+                >
+                  <SelectTrigger className="h-8 w-full min-w-0 bg-background px-2 text-xs [&_span]:truncate">
+                    <SelectValue placeholder="Katalog" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">Barcha (katalog)</SelectItem>
+                    <SelectItem value="online">{t('status.marketplace_on')}</SelectItem>
+                    <SelectItem value="pos_only">{t('status.marketplace_off')}</SelectItem>
                   </SelectContent>
                 </Select>
               </div>
@@ -1110,6 +1211,7 @@ export default function Products() {
                         <TableHead className="text-right">{t('products.sale_price')}</TableHead>
                         <TableHead className="text-right">{t('pos.stock')}</TableHead>
                         <TableHead>{t('common.status')}</TableHead>
+                        <TableHead>{t('productForm.marketplace_catalog')}</TableHead>
                         <TableHead className="text-right">{t('common.actions')}</TableHead>
                       </TableRow>
                     </TableHeader>
@@ -1186,6 +1288,20 @@ export default function Products() {
                                   {stockStatus.label}
                                 </Badge>
                               </div>
+                            </TableCell>
+                            <TableCell>
+                              <Badge
+                                variant={productShowInMarketplace(product) ? 'default' : 'outline'}
+                                className={
+                                  productShowInMarketplace(product)
+                                    ? 'bg-emerald-600 hover:bg-emerald-600'
+                                    : ''
+                                }
+                              >
+                                {productShowInMarketplace(product)
+                                  ? t('status.marketplace_on')
+                                  : t('status.marketplace_off')}
+                              </Badge>
                             </TableCell>
                             <TableCell className="text-right">
                               <div className="flex items-center justify-end gap-1">
@@ -1400,6 +1516,15 @@ export default function Products() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+      <BulkPriceUpdateDialog
+        open={bulkPriceOpen}
+        onOpenChange={setBulkPriceOpen}
+        categories={categories || []}
+        defaultCategoryId={categoryFilter !== 'all' ? categoryFilter : undefined}
+        onApplied={() => {
+          void refetch();
+        }}
+      />
     </div>
   );
 }

@@ -63,16 +63,44 @@ export default defineConfig(({ command }) => ({
     },
   },
   server: {
-    port: 5173,
-    strictPort: true,
+    port: Number(process.env.VITE_DEV_PORT || 5173),
+    strictPort: false,
   },
   build: {
     outDir: 'dist',
     emptyOutDir: true,
+    chunkSizeWarningLimit: 1500,
     rollupOptions: {
       input: {
         main: path.resolve(__dirname, 'index.html'),
+        kassa: path.resolve(__dirname, 'kassa.html'),
+      },
+      output: {
+        // Split heavy, stable third-party libs into separate cacheable chunks
+        // so the main app bundle is smaller and vendor code stays cached across
+        // app updates. Function form is safe: unmatched ids fall through to
+        // Vite's default chunking.
+        manualChunks(id) {
+          if (!id.includes('node_modules')) return undefined;
+          if (id.includes('recharts') || id.includes('/d3-') || id.includes('victory')) return 'charts';
+          if (id.includes('xlsx') || id.includes('exceljs')) return 'xlsx';
+          if (id.includes('jspdf')) return 'pdf';
+          if (
+            id.includes('/react/') ||
+            id.includes('/react-dom/') ||
+            id.includes('/react-router') ||
+            id.includes('/scheduler/')
+          ) {
+            return 'react-vendor';
+          }
+          return 'vendor';
+        },
       },
     },
+  },
+  // Drop noisy console.log/debug/info from production bundles (keeps
+  // console.error/warn). Dev builds are unaffected.
+  esbuild: {
+    pure: command === 'build' ? ['console.log', 'console.debug', 'console.info'] : [],
   },
 }));

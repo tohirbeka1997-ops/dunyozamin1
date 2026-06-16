@@ -17,9 +17,11 @@ import {
   SelectValue,
 } from '@/components/ui/select';
 import { useToast } from '@/hooks/use-toast';
-import { createCustomer } from '@/db/api';
+import { createCustomer, findCustomerByPhone } from '@/db/api';
 import type { Customer } from '@/types/database';
 import { Plus } from 'lucide-react';
+import { useNavigate } from 'react-router-dom';
+import { DUPLICATE_PHONE_MESSAGE_UZ, formatUserFacingError } from '@/utils/electron';
 
 interface QuickCustomerCreateProps {
   onCreated?: (customer: Customer) => void;
@@ -29,15 +31,16 @@ interface QuickCustomerCreateProps {
 
 export default function QuickCustomerCreate({ onCreated, showLabel = false, className = '' }: QuickCustomerCreateProps) {
   const { toast } = useToast();
+  const navigate = useNavigate();
   const [open, setOpen] = useState(false);
   const [saving, setSaving] = useState(false);
   const [name, setName] = useState('');
-  const [phone, setPhone] = useState('');
+  const [phone, setPhone] = useState('+998');
   const [pricingTier, setPricingTier] = useState<'retail' | 'master'>('retail');
 
   const reset = () => {
     setName('');
-    setPhone('');
+    setPhone('+998');
     setPricingTier('retail');
   };
 
@@ -53,8 +56,25 @@ export default function QuickCustomerCreate({ onCreated, showLabel = false, clas
       return;
     }
 
+    if (saving) return;
+
     try {
       setSaving(true);
+      if (cleanPhone) {
+        const existingByPhone = await findCustomerByPhone(cleanPhone);
+        if (existingByPhone) {
+          toast({
+            title: 'Xatolik',
+            description: DUPLICATE_PHONE_MESSAGE_UZ,
+            variant: 'destructive',
+          });
+          onCreated?.(existingByPhone);
+          setOpen(false);
+          reset();
+          return;
+        }
+      }
+
       const created = await createCustomer({
         name: cleanName,
         phone: cleanPhone || null,
@@ -78,9 +98,23 @@ export default function QuickCustomerCreate({ onCreated, showLabel = false, clas
       setOpen(false);
       reset();
     } catch (error) {
+      const errObj = error && typeof error === 'object' ? (error as { code?: string; details?: { existing_id?: string } }) : null;
+      const code = errObj?.code;
+      const existingId = errObj?.details?.existing_id;
+      if (code === 'DUPLICATE_PHONE' && existingId) {
+        toast({
+          title: 'Xatolik',
+          description: DUPLICATE_PHONE_MESSAGE_UZ,
+          variant: 'destructive',
+        });
+        navigate(`/customers/${existingId}`);
+        setOpen(false);
+        reset();
+        return;
+      }
       toast({
         title: 'Xatolik',
-        description: error instanceof Error ? error.message : "Mijozni yaratib bo'lmadi",
+        description: formatUserFacingError(error, "Mijozni yaratib bo'lmadi"),
         variant: 'destructive',
       });
     } finally {
@@ -123,7 +157,7 @@ export default function QuickCustomerCreate({ onCreated, showLabel = false, clas
                 id="quick-customer-phone"
                 value={phone}
                 onChange={(e) => setPhone(e.target.value)}
-                placeholder="+998..."
+                placeholder="90 123 45 67"
               />
             </div>
             <div className="space-y-1.5">

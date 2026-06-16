@@ -17,6 +17,7 @@ export default function ResetPassword() {
   const { t } = useTranslation();
   const [loading, setLoading] = useState(false);
   const [tokenId, setTokenId] = useState<string | null>(null);
+  const [tenantSlug, setTenantSlugState] = useState<string | null>(null);
 
   const [formData, setFormData] = useState({
     code: '',
@@ -27,6 +28,7 @@ export default function ResetPassword() {
   useEffect(() => {
     // Get token_id from route state or query param
     const stateTokenId = (location.state as any)?.token_id;
+    const stateTenant = (location.state as any)?.tenant;
     const queryParams = new URLSearchParams(location.search);
     const queryTokenId = queryParams.get('token_id');
     
@@ -34,6 +36,9 @@ export default function ResetPassword() {
     
     if (token) {
       setTokenId(token);
+      if (typeof stateTenant === 'string' && stateTenant.trim()) {
+        setTenantSlugState(stateTenant.trim().toLowerCase());
+      }
     } else {
       // No token provided, redirect to forgot password
       toast({
@@ -91,7 +96,7 @@ export default function ResetPassword() {
         token_id: tokenId,
         code: formData.code.trim(),
         new_password: formData.newPassword,
-      });
+      }, tenantSlug);
       
       toast({
         title: t('auth.successful'),

@@ -25,6 +25,7 @@ import { useToast } from '@/hooks/use-toast';
 import { useNavigate } from 'react-router-dom';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
 import { formatMoneyUZS } from '@/lib/format';
+import { DualCurrencyAmount } from '@/components/common/DualCurrencyAmount';
 import { formatDateYMD, todayYMD } from '@/lib/datetime';
 import { useReportAutoRefresh } from '@/hooks/useReportAutoRefresh';
 import { useTableSort } from '@/hooks/useTableSort';
@@ -38,6 +39,8 @@ interface ProductSalesData {
   category: string;
   quantity_sold: number;
   revenue: number;
+  revenue_uzs?: number;
+  revenue_usd?: number;
   retail_revenue: number;
   master_revenue: number;
   cost: number;
@@ -92,6 +95,8 @@ export default function ProductSalesReport() {
         category: r.category_name || 'Uncategorized',
         quantity_sold: Number(r.quantity_sold || 0),
         revenue: Number(r.revenue || 0),
+        revenue_uzs: Number(r.revenue_uzs ?? r.revenue ?? 0),
+        revenue_usd: Number(r.revenue_usd ?? 0),
         retail_revenue: Number(r.retail_revenue || 0),
         master_revenue: Number(r.master_revenue || 0),
         cost: Number(r.cost || 0),
@@ -172,6 +177,19 @@ export default function ProductSalesReport() {
     return list;
   }, [filteredProducts, sortKey, sortOrder]);
 
+  const salesTotals = useMemo(() => {
+    return filteredProducts.reduce(
+      (acc, p) => {
+        acc.revenue += p.revenue;
+        acc.revenue_uzs += p.revenue_uzs ?? p.revenue;
+        acc.revenue_usd += p.revenue_usd ?? 0;
+        acc.profit += p.profit;
+        return acc;
+      },
+      { revenue: 0, revenue_uzs: 0, revenue_usd: 0, profit: 0 }
+    );
+  }, [filteredProducts]);
+
   const chartData = topProducts.map((p) => ({
     name: p.product_name.length > 15 ? p.product_name.substring(0, 15) + '...' : p.product_name,
     quantity: p.quantity_sold,
@@ -202,7 +220,9 @@ export default function ProductSalesReport() {
           </Button>
           <div>
             <h1 className="page-heading">Mahsulotlar bo'yicha sotuv hisobotlari</h1>
-            <p className="text-muted-foreground">Mahsulotlarning sotuv samaradorligi va foydaliligini tahlil qilish</p>
+            <p className="text-muted-foreground">
+              Mahsulotlarning sotuv samaradorligi va foydaliligini tahlil qilish (daromad UZS ekvivalent + USD ajratilgan)
+            </p>
           </div>
         </div>
         <div className="flex gap-2">
@@ -278,6 +298,24 @@ export default function ProductSalesReport() {
           </div>
         </CardContent>
       </Card>
+
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <Card>
+          <CardContent className="pt-6">
+            <p className="text-sm text-muted-foreground">Jami daromad</p>
+            <div className="text-2xl font-bold mt-1">
+              <DualCurrencyAmount uzs={salesTotals.revenue_uzs} usd={salesTotals.revenue_usd} className="items-start" />
+            </div>
+            <p className="text-xs text-muted-foreground mt-1">COGS va foyda — UZS</p>
+          </CardContent>
+        </Card>
+        <Card>
+          <CardContent className="pt-6">
+            <p className="text-sm text-muted-foreground">Jami foyda</p>
+            <p className="text-2xl font-bold mt-1">{formatMoneyUZS(salesTotals.profit)}</p>
+          </CardContent>
+        </Card>
+      </div>
 
       <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
         <Card>
@@ -378,7 +416,7 @@ export default function ProductSalesReport() {
                     kind="number"
                     align="right"
                   >
-                    Daromad
+                    Daromad (UZS/USD)
                   </SortableTableHead>
                   <SortableTableHead<ProductSalesSortKey>
                     columnKey="retail_revenue"
@@ -429,7 +467,12 @@ export default function ProductSalesReport() {
                     <TableCell>{product.sku}</TableCell>
                     <TableCell>{product.category}</TableCell>
                     <TableCell className="text-right">{product.quantity_sold}</TableCell>
-                    <TableCell className="text-right">{formatMoneyUZS(product.revenue)}</TableCell>
+                    <TableCell className="text-right">
+                      <DualCurrencyAmount
+                        uzs={product.revenue_uzs ?? product.revenue}
+                        usd={product.revenue_usd}
+                      />
+                    </TableCell>
                     <TableCell className="text-right">{formatMoneyUZS(product.retail_revenue)}</TableCell>
                     <TableCell className="text-right">{formatMoneyUZS(product.master_revenue)}</TableCell>
                     <TableCell className={`text-right ${product.profit >= 0 ? 'text-success' : 'text-destructive'}`}>

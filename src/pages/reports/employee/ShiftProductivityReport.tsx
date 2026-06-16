@@ -17,6 +17,7 @@ import { useToast } from '@/hooks/use-toast';
 import { handleIpcResponse, isElectron, requireElectron } from '@/utils/electron';
 import { todayYMD, formatDate } from '@/lib/datetime';
 import { formatMoneyUZS } from '@/lib/format';
+import { DualCurrencyAmount } from '@/components/common/DualCurrencyAmount';
 import { useReportAutoRefresh } from '@/hooks/useReportAutoRefresh';
 
 interface ShiftProductivity {
@@ -29,6 +30,8 @@ interface ShiftProductivity {
   hours_worked: number;
   total_sales: number;
   total_revenue: number;
+  revenue_uzs?: number;
+  revenue_usd?: number;
   orders_count: number;
   avg_order_value: number;
   revenue_per_hour: number;
@@ -42,6 +45,8 @@ interface ProductivitySummary {
   total_shifts: number;
   total_hours: number;
   total_revenue: number;
+  total_revenue_uzs?: number;
+  total_revenue_usd?: number;
   total_orders: number;
   avg_revenue_per_hour: number;
   avg_orders_per_hour: number;
@@ -130,6 +135,11 @@ export default function ShiftProductivityReport() {
     const totalShifts = summaryRows.reduce((sum, r) => sum + Number(r.total_shifts || 0), 0);
     const totalHours = summaryRows.reduce((sum, r) => sum + Number(r.total_hours || 0), 0);
     const totalRevenue = summaryRows.reduce((sum, r) => sum + Number(r.total_revenue || 0), 0);
+    const revenueUzs = summaryRows.reduce(
+      (sum, r) => sum + Number(r.total_revenue_uzs ?? r.total_revenue ?? 0),
+      0
+    );
+    const revenueUsd = summaryRows.reduce((sum, r) => sum + Number(r.total_revenue_usd ?? 0), 0);
     const totalOrders = summaryRows.reduce((sum, r) => sum + Number(r.total_orders || 0), 0);
     const avgRevenuePerHour = totalHours > 0 ? totalRevenue / totalHours : 0;
     const avgOrdersPerHour = totalHours > 0 ? totalOrders / totalHours : 0;
@@ -137,6 +147,8 @@ export default function ShiftProductivityReport() {
       totalShifts,
       totalHours,
       totalRevenue,
+      revenueUzs,
+      revenueUsd,
       totalOrders,
       avgRevenuePerHour,
       avgOrdersPerHour,
@@ -171,7 +183,7 @@ export default function ShiftProductivityReport() {
               Smena samaradorligi
             </h1>
             <p className="text-muted-foreground">
-              Kassir × soat × tushum tahlili
+              Kassir × soat × tushum (UZS ekvivalent + USD ajratilgan)
             </p>
           </div>
         </div>
@@ -248,7 +260,11 @@ export default function ShiftProductivityReport() {
               <p className="text-sm text-muted-foreground">Jami tushum</p>
             </div>
             <div className="text-2xl font-bold mt-2 text-green-600">
-              {formatMoneyUZS(overallStats.totalRevenue)}
+              <DualCurrencyAmount
+                uzs={overallStats.revenueUzs}
+                usd={overallStats.revenueUsd}
+                className="items-start"
+              />
             </div>
           </CardContent>
         </Card>
@@ -265,7 +281,7 @@ export default function ShiftProductivityReport() {
           <CardContent className="pt-6">
             <div className="flex items-center gap-2">
               <TrendingUp className="h-5 w-5 text-purple-500" />
-              <p className="text-sm text-muted-foreground">Soat/tushum</p>
+              <p className="text-sm text-muted-foreground">Soat/tushum (UZS)</p>
             </div>
             <div className="text-2xl font-bold mt-2">
               {formatMoneyUZS(overallStats.avgRevenuePerHour)}
@@ -300,7 +316,7 @@ export default function ShiftProductivityReport() {
                     <TableHead>Kassir</TableHead>
                     <TableHead className="text-right">Smenalar</TableHead>
                     <TableHead className="text-right">Jami soatlar</TableHead>
-                    <TableHead className="text-right">Jami tushum</TableHead>
+                    <TableHead className="text-right">Jami tushum (UZS/USD)</TableHead>
                     <TableHead className="text-right">Buyurtmalar</TableHead>
                     <TableHead className="text-right">Soat/tushum</TableHead>
                     <TableHead className="text-right">Soat/buyurtma</TableHead>
@@ -315,7 +331,10 @@ export default function ShiftProductivityReport() {
                       <TableCell className="text-right">{row.total_shifts}</TableCell>
                       <TableCell className="text-right">{row.total_hours.toFixed(1)}</TableCell>
                       <TableCell className="text-right">
-                        {formatMoneyUZS(row.total_revenue)}
+                        <DualCurrencyAmount
+                          uzs={row.total_revenue_uzs ?? row.total_revenue}
+                          usd={row.total_revenue_usd}
+                        />
                       </TableCell>
                       <TableCell className="text-right">{row.total_orders}</TableCell>
                       <TableCell className="text-right font-semibold text-green-600">
@@ -355,7 +374,7 @@ export default function ShiftProductivityReport() {
                     <TableHead>Tugash</TableHead>
                     <TableHead className="text-right">Soatlar</TableHead>
                     <TableHead className="text-right">Buyurtmalar</TableHead>
-                    <TableHead className="text-right">Tushum</TableHead>
+                    <TableHead className="text-right">Tushum (UZS/USD)</TableHead>
                     <TableHead className="text-right">Soat/tushum</TableHead>
                     <TableHead className="text-right">Soat/buyurtma</TableHead>
                     <TableHead className="text-center">Daraja</TableHead>
@@ -373,7 +392,10 @@ export default function ShiftProductivityReport() {
                       <TableCell className="text-right">{row.hours_worked.toFixed(1)}</TableCell>
                       <TableCell className="text-right">{row.orders_count}</TableCell>
                       <TableCell className="text-right">
-                        {formatMoneyUZS(row.total_revenue)}
+                        <DualCurrencyAmount
+                          uzs={row.revenue_uzs ?? row.total_revenue}
+                          usd={row.revenue_usd}
+                        />
                       </TableCell>
                       <TableCell className="text-right font-semibold text-green-600">
                         {formatMoneyUZS(row.revenue_per_hour)}

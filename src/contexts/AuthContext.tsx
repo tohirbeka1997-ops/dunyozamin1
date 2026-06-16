@@ -1,10 +1,13 @@
 import { createContext, useContext, useEffect, type ReactNode } from 'react';
 import { useAuthStore } from '@/store/useAuth';
+import { useShiftStore } from '@/store/shiftStore';
+import { useIdleLogout } from '@/hooks/useIdleLogout';
+import { usePosTerminalSettings } from '@/hooks/usePosTerminalSettings';
 
 interface AuthContextType {
   session: { user: { id: string; email: string } } | null;
   user: { id: string; email: string; role: string; full_name?: string } | null;
-  profile: { id: string; full_name: string; email: string; role: string } | null;
+  profile: { id: string; full_name: string; email: string; role: string; username?: string } | null;
   role: 'admin' | 'cashier' | 'manager';
   /** Bosqich 16 — 'master' = super-admin session, 'tenant' = regular user. */
   scope: 'tenant' | 'master';
@@ -44,6 +47,14 @@ globalForAuthContext.__posAuthContext = AuthContext;
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const authStore = useAuthStore();
+  const posSettings = usePosTerminalSettings();
+  const openShift = useShiftStore((s) => s.currentShift);
+
+  // Restore shift from localStorage early so idle-logout sees an open shift
+  // before ShiftControl mounts and syncs from the database.
+  useEffect(() => {
+    useShiftStore.getState().loadFromStorage();
+  }, []);
 
   // Initialize auth on mount
   useEffect(() => {
@@ -66,6 +77,23 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     window.addEventListener('pos:auth:required', onAuthRequired);
     return () => window.removeEventListener('pos:auth:required', onAuthRequired);
   }, [authStore]);
+
+  // Auto logout after `pos.auto_logout_minutes` of user inactivity.
+  // Disabled when auto_logout_minutes is 0, or while a shift is open.
+  useIdleLogout({
+    enabled:
+      !!authStore.session?.user?.id &&
+      (posSettings.auto_logout_minutes ?? 0) > 0 &&
+      !openShift,
+    onIdle: () => {
+      try {
+        console.info('[Auth] Auto-logout: idle timeout reached.');
+        authStore.signOut();
+      } catch (e) {
+        console.warn('[Auth] Auto-logout signOut failed:', e);
+      }
+    },
+  });
 
   // Map store values to context, including role + full_name on user object
   // so UI code can read `user.full_name` / `user.role` without reaching into

@@ -23,12 +23,12 @@ import {
   AlertDialogTitle,
   AlertDialogTrigger,
 } from '@/components/ui/alert-dialog';
-import { getSalesReturnById, deleteSalesReturn, updateSalesReturn } from '@/db/api';
+import { getSalesReturnById, deleteSalesReturn, updateSalesReturn, completeSalesReturn } from '@/db/api';
 import type { SalesReturnWithDetails } from '@/types/database';
 import { ArrowLeft, Printer, Package, Edit, Trash2 } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 import { Skeleton } from '@/components/ui/skeleton';
-import { formatMoneyUZS } from '@/lib/format';
+import { formatReturnMoney } from '@/lib/format';
 import { formatOrderDateTime } from '@/lib/datetime';
 import { createBackNavigationState, navigateBackTo, resolveBackTarget } from '@/lib/pageState';
 
@@ -41,6 +41,14 @@ export default function ReturnDetail() {
   const [loading, setLoading] = useState(true);
   const [actionLoading, setActionLoading] = useState(false);
   const backTo = resolveBackTarget(location, '/sales-returns');
+
+  const fmtReturn = (amount?: number | null) =>
+    formatReturnMoney(
+      { total_amount: amount ?? 0 },
+      returnData?.order ?? {
+        currency: (returnData as any)?.order_currency,
+      }
+    );
 
   useEffect(() => {
     if (id) {
@@ -73,10 +81,10 @@ export default function ReturnDetail() {
     
     try {
       setActionLoading(true);
-      await updateSalesReturn(id, { status: 'Completed' });
+      await completeSalesReturn(id);
       toast({
         title: 'Muvaffaqiyatli',
-        description: 'Qaytarish yakunlangan deb belgilandi',
+        description: 'Qaytarish yakunlandi',
       });
       loadReturnData();
     } catch (error) {
@@ -114,13 +122,15 @@ export default function ReturnDetail() {
   };
 
   const getStatusBadge = (status: string) => {
-    switch (status) {
-      case 'Completed':
+    switch (String(status || '').toLowerCase()) {
+      case 'completed':
         return <Badge className="bg-success text-success-foreground">Yakunlangan</Badge>;
-      case 'Pending':
+      case 'pending':
         return <Badge className="bg-primary text-primary-foreground">Kutilmoqda</Badge>;
-      case 'Cancelled':
+      case 'cancelled':
         return <Badge variant="destructive">Bekor qilingan</Badge>;
+      case 'draft':
+        return <Badge variant="secondary">Qoralama</Badge>;
       default:
         return <Badge variant="outline">{status}</Badge>;
     }
@@ -176,8 +186,10 @@ export default function ReturnDetail() {
     );
   }
 
-  const canEdit = returnData.status !== 'Completed';
-  const canDelete = returnData.status !== 'Completed';
+  const statusKey = String(returnData.status || '').toLowerCase();
+  const canEdit = statusKey !== 'completed';
+  const canDelete = statusKey !== 'completed';
+  const canComplete = statusKey === 'draft' || statusKey === 'pending';
 
   return (
     <div className="space-y-6">
@@ -222,7 +234,7 @@ export default function ReturnDetail() {
                     <br />
                     • Omborda qaytarilgan <strong>{returnData.items?.length || 0}</strong> ta pozitsiya bekor qilinadi
                     <br />
-                    • Jami qaytarilgan <strong>{formatMoneyUZS(returnData.total_amount || 0)}</strong> summaga bog‘liq yozuvlar qaytariladi
+                    • Jami qaytarilgan <strong>{fmtReturn(returnData.total_amount || 0)}</strong> summaga bog‘liq yozuvlar qaytariladi
                     <br />
                     Bu amalni ortga qaytarib bo‘lmaydi.
                   </AlertDialogDescription>
@@ -236,7 +248,7 @@ export default function ReturnDetail() {
               </AlertDialogContent>
             </AlertDialog>
           )}
-          {returnData.status === 'Pending' && (
+          {canComplete && (
             <Button onClick={handleComplete} disabled={actionLoading}>
               Yakunlash
             </Button>
@@ -296,7 +308,7 @@ export default function ReturnDetail() {
               </div>
               <div>
                 <Label className="text-muted-foreground">Jami summa</Label>
-                <p className="font-medium text-lg">{formatMoneyUZS(returnData.total_amount)}</p>
+                <p className="font-medium text-lg">{fmtReturn(returnData.total_amount)}</p>
               </div>
               <div className="col-span-2">
                 <Label className="text-muted-foreground">Mijoz</Label>
@@ -372,9 +384,9 @@ export default function ReturnDetail() {
                     </TableCell>
                     <TableCell>{item.product?.sku || 'N/A'}</TableCell>
                     <TableCell className="text-center">{item.quantity}</TableCell>
-                    <TableCell className="text-right">{formatMoneyUZS(item.unit_price)}</TableCell>
+                    <TableCell className="text-right">{fmtReturn(item.unit_price)}</TableCell>
                     <TableCell className="text-right font-medium">
-                      {formatMoneyUZS(item.line_total)}
+                      {fmtReturn(item.line_total)}
                     </TableCell>
                   </TableRow>
                 ))
@@ -390,7 +402,7 @@ export default function ReturnDetail() {
           <div className="mt-4 flex justify-end border-t pt-4">
             <div className="text-right">
               <p className="text-sm text-muted-foreground">Jami qaytarilgan summa</p>
-              <p className="text-2xl font-bold">{formatMoneyUZS(returnData.total_amount)}</p>
+              <p className="text-2xl font-bold">{fmtReturn(returnData.total_amount)}</p>
             </div>
           </div>
         </CardContent>

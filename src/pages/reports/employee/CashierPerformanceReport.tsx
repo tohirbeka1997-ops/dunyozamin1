@@ -15,20 +15,25 @@ import { FileDown, ArrowLeft } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 import { useNavigate } from 'react-router-dom';
 import { formatMoneyUZS } from '@/lib/format';
+import { DualCurrencyAmount } from '@/components/common/DualCurrencyAmount';
 import { formatDateYMD, todayYMD } from '@/lib/datetime';
 import { useReportAutoRefresh } from '@/hooks/useReportAutoRefresh';
 import { useTableSort } from '@/hooks/useTableSort';
 import { compareScalar } from '@/lib/tableSort';
 import { SortableTableHead } from '@/components/reports/SortableTableHead';
+import { handleIpcResponse, isElectron, requireElectron } from '@/utils/electron';
 
 interface CashierPerformance {
   employee_id: string;
   employee_name: string;
   total_sales: number;
   total_revenue: number;
+  revenue_uzs?: number;
+  revenue_usd?: number;
   total_profit: number;
   order_count: number;
   voided_orders: number;
+  cancelled_value?: number;
 }
 
 type CashierSortKey =
@@ -63,49 +68,98 @@ export default function CashierPerformanceReport() {
   const loadData = async () => {
     try {
       setLoading(true);
+
+      // PRIMARY: backend SQL endpoint (no 100-order limit, includes cancelled stats and COGS)
+      if (isElectron()) {
+        try {
+          const api = requireElectron();
+          const rows = await handleIpcResponse<Array<{
+            employee_id: string;
+            employee_name: string;
+            order_count: number;
+            total_revenue: number;
+            revenue_uzs?: number;
+            revenue_usd?: number;
+            total_profit: number;
+            cancelled_count: number;
+            cancelled_value: number;
+          }>>(
+            api.reports?.cashierPerformance?.({
+              date_from: dateFrom,
+              date_to: dateTo,
+            }) || Promise.resolve([])
+          );
+          const performanceData: CashierPerformance[] = (rows || []).map((r) => ({
+            employee_id: r.employee_id,
+            employee_name: r.employee_name || r.employee_id,
+            total_sales: Number(r.total_revenue) || 0,
+            total_revenue: Number(r.total_revenue) || 0,
+            revenue_uzs: Number(r.revenue_uzs ?? r.total_revenue) || 0,
+            revenue_usd: Number(r.revenue_usd ?? 0) || 0,
+            total_profit: Number(r.total_profit) || 0,
+            order_count: Number(r.order_count) || 0,
+            voided_orders: Number(r.cancelled_count) || 0,
+            cancelled_value: Number(r.cancelled_value) || 0,
+          }));
+          setPerformance(performanceData);
+          return;
+        } catch (err) {
+          console.warn('[CashierPerformanceReport] backend endpoint failed, falling back:', err);
+        }
+      }
+
+      // FALLBACK: client-side aggregation (mock/browser mode), with high limit
       const [ordersData, profilesData] = await Promise.all([
-        getOrders(),
+        getOrders(100000),
         getProfiles(),
       ]);
 
       const cashierMap = new Map<string, CashierPerformance>();
 
-      const filteredOrders = ordersData.filter((order) => {
+      const inRange = ordersData.filter((order) => {
         const orderDate = formatDateYMD(order.created_at);
-        return orderDate >= dateFrom && orderDate <= dateTo && order.status === 'completed';
+        return orderDate >= dateFrom && orderDate <= dateTo;
       });
 
-      filteredOrders.forEach((order) => {
-        if (!order.cashier_id) return;
+      inRange.forEach((order: any) => {
+        // Use cashier_id with user_id fallback (matches backend convention)
+        const empId = order.cashier_id || order.user_id;
+        if (!empId) return;
 
-        const existing = cashierMap.get(order.cashier_id);
-        const revenue = Number(order.total_amount);
+        const existing = cashierMap.get(empId);
+        const revenue = Number(order.total_amount) || 0;
         const profit = calculateProfit(order);
 
+        const isCompleted = order.status === 'completed';
+        const isCancelled = order.status === 'cancelled' || order.status === 'hold';
+
         if (existing) {
-          existing.total_sales += revenue;
-          existing.total_revenue += revenue;
-          existing.total_profit += profit;
-          existing.order_count += 1;
-          if (order.status === 'cancelled' || order.status === 'hold') {
+          if (isCompleted) {
+            existing.total_sales += revenue;
+            existing.total_revenue += revenue;
+            existing.total_profit += profit;
+            existing.order_count += 1;
+          }
+          if (isCancelled) {
             existing.voided_orders += 1;
+            existing.cancelled_value = (existing.cancelled_value || 0) + revenue;
           }
         } else {
-          const employee = profilesData.find((p) => p.id === order.cashier_id);
-          cashierMap.set(order.cashier_id, {
-            employee_id: order.cashier_id,
+          const employee = profilesData.find((p) => p.id === empId);
+          cashierMap.set(empId, {
+            employee_id: empId,
             employee_name: employee?.full_name || employee?.username || 'Noma\'lum',
-            total_sales: revenue,
-            total_revenue: revenue,
-            total_profit: profit,
-            order_count: 1,
-            voided_orders: order.status === 'cancelled' || order.status === 'hold' ? 1 : 0,
+            total_sales: isCompleted ? revenue : 0,
+            total_revenue: isCompleted ? revenue : 0,
+            total_profit: isCompleted ? profit : 0,
+            order_count: isCompleted ? 1 : 0,
+            voided_orders: isCancelled ? 1 : 0,
+            cancelled_value: isCancelled ? revenue : 0,
           });
         }
       });
 
-      const performanceData = Array.from(cashierMap.values());
-      setPerformance(performanceData);
+      setPerformance(Array.from(cashierMap.values()));
     } catch (error) {
       toast({
         title: 'Xatolik',
@@ -147,7 +201,18 @@ export default function CashierPerformanceReport() {
     return list;
   }, [performance, sortKey, sortOrder]);
 
-  const totalRevenue = performance.reduce((sum, p) => sum + p.total_revenue, 0);
+  const revenueTotals = useMemo(
+    () =>
+      performance.reduce(
+        (acc, p) => {
+          acc.uzs += p.revenue_uzs ?? p.total_revenue;
+          acc.usd += p.revenue_usd ?? 0;
+          return acc;
+        },
+        { uzs: 0, usd: 0 }
+      ),
+    [performance]
+  );
   const totalOrders = performance.reduce((sum, p) => sum + p.order_count, 0);
   const totalProfit = performance.reduce((sum, p) => sum + p.total_profit, 0);
 
@@ -176,9 +241,8 @@ export default function CashierPerformanceReport() {
           <div>
             <h1 className="page-heading">Kassir faoliyati</h1>
             <p className="text-muted-foreground text-sm">
-              Kassirlarning sotuv samaradorligi. Sana filtri:{' '}
-              <span className="text-foreground/80">Asia/Tashkent</span> (har bir buyurtma kuni shu vaqt
-              zonasida hisoblanadi).
+              Kassirlarning sotuv samaradorligi (tushum UZS ekvivalent + USD ajratilgan; foyda — UZS). Sana:{' '}
+              <span className="text-foreground/80">Asia/Tashkent</span>.
             </p>
           </div>
         </div>
@@ -200,7 +264,9 @@ export default function CashierPerformanceReport() {
             <div className="flex items-center justify-between">
               <div>
                 <p className="text-sm text-muted-foreground">Jami tushum</p>
-                <p className="text-2xl font-bold">{formatMoneyUZS(totalRevenue)}</p>
+                <div className="text-2xl font-bold">
+                  <DualCurrencyAmount uzs={revenueTotals.uzs} usd={revenueTotals.usd} className="items-start" />
+                </div>
               </div>
             </div>
           </CardContent>
@@ -219,7 +285,7 @@ export default function CashierPerformanceReport() {
           <CardContent className="pt-6">
             <div className="flex items-center justify-between">
               <div>
-                <p className="text-sm text-muted-foreground">Jami foyda</p>
+                <p className="text-sm text-muted-foreground">Jami foyda (UZS)</p>
                 <p className="text-2xl font-bold text-success">{formatMoneyUZS(totalProfit)}</p>
               </div>
             </div>
@@ -287,7 +353,7 @@ export default function CashierPerformanceReport() {
                     kind="number"
                     align="right"
                   >
-                    Jami tushum
+                    Jami tushum (UZS/USD)
                   </SortableTableHead>
                   <SortableTableHead<CashierSortKey>
                     columnKey="total_profit"
@@ -316,7 +382,12 @@ export default function CashierPerformanceReport() {
                   <TableRow key={perf.employee_id}>
                     <TableCell className="font-medium">{perf.employee_name}</TableCell>
                     <TableCell className="text-right">{perf.order_count}</TableCell>
-                    <TableCell className="text-right">{formatMoneyUZS(perf.total_revenue)}</TableCell>
+                    <TableCell className="text-right">
+                      <DualCurrencyAmount
+                        uzs={perf.revenue_uzs ?? perf.total_revenue}
+                        usd={perf.revenue_usd}
+                      />
+                    </TableCell>
                     <TableCell className="text-right text-success">{formatMoneyUZS(perf.total_profit)}</TableCell>
                     <TableCell className="text-right">{perf.voided_orders}</TableCell>
                   </TableRow>

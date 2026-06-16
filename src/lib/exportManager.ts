@@ -20,6 +20,7 @@ import {
   getSalesReturnById,
   getSalesReturns,
   getEmployeeSessions,
+  getAllInventoryMovements,
 } from '@/db/api';
 import type { OrderWithDetails, Profile, Customer, Category, Product, SalesReturnWithDetails } from '@/types/database';
 import { formatDate, formatDateTime, formatDateYMD, todayYMD } from '@/lib/datetime';
@@ -149,16 +150,33 @@ export const exportDailySales = async (
 export const exportProductSales = async (
   format: 'excel' | 'pdf' | 'csv'
 ): Promise<void> => {
-  const [ordersData, categoriesData] = await Promise.all([
+  const [ordersBase] = await Promise.all([
     getOrders(),
-    getCategories(),
+    // categoriesData was unused — drop the call to avoid an extra DB round-trip.
   ]);
 
-  const today = new Date().toISOString().split('T')[0];
-  const filtered = ordersData.filter((order) => {
-    const orderDate = new Date(order.created_at).toISOString().split('T')[0];
+  const today = todayYMD();
+  // TZ-safe: formatDateYMD respects the runtime's local timezone so that orders
+  // created near midnight don't slip into the wrong day, unlike new Date(...)
+  // .toISOString() which always emits UTC.
+  const filteredBase = ordersBase.filter((order) => {
+    const orderDate = formatDateYMD(order.created_at);
     return orderDate === today && order.status === 'completed';
   });
+
+  // List endpoints may not include items; hydrate orders that need detail.
+  const filtered: OrderWithDetails[] = await Promise.all(
+    filteredBase.map(async (order) => {
+      const hasItems = Array.isArray((order as any).items) && (order as any).items.length > 0;
+      if (hasItems) return order as OrderWithDetails;
+      try {
+        const full = await getOrderById((order as any).id);
+        return (full || order) as OrderWithDetails;
+      } catch {
+        return order as OrderWithDetails;
+      }
+    })
+  );
 
   interface ProductSalesData {
     product_id: string;
@@ -181,10 +199,21 @@ export const exportProductSales = async (
 
       const key = product.id;
       const existing = productMap.get(key);
-      
+
       const quantity = Number(item.quantity);
-      const revenue = Number(item.subtotal);
-      const cost = Number(product.purchase_price || 0) * quantity;
+      // Prefer line_total then subtotal — order_items.line_total is the post-discount
+      // revenue actually booked for the line, which keeps this report consistent
+      // with both the in-app product sales report and the P&L export.
+      const revenue =
+        Number((item as any).line_total ?? 0) ||
+        Number((item as any).subtotal ?? 0) ||
+        Number((item as any).price ?? 0) * quantity;
+      // Frozen cost takes priority; fall back to the product's current purchase
+      // price only when the line never recorded a cost (legacy orders).
+      const unitCost =
+        Number((item as any).cost_price ?? 0) ||
+        Number((product as any).purchase_price ?? 0);
+      const cost = unitCost * quantity;
       const profit = revenue - cost;
 
       if (existing) {
@@ -192,7 +221,7 @@ export const exportProductSales = async (
         existing.revenue += revenue;
         existing.cost += cost;
         existing.profit += profit;
-        existing.profit_margin = (existing.profit / existing.revenue) * 100;
+        existing.profit_margin = existing.revenue > 0 ? (existing.profit / existing.revenue) * 100 : 0;
       } else {
         productMap.set(key, {
           product_id: product.id,
@@ -203,7 +232,7 @@ export const exportProductSales = async (
           revenue,
           cost,
           profit,
-          profit_margin: (profit / revenue) * 100,
+          profit_margin: revenue > 0 ? (profit / revenue) * 100 : 0,
         });
       }
     });
@@ -281,9 +310,11 @@ export const exportCustomerSales = async (
     getCustomers(),
   ]);
 
-  const today = new Date().toISOString().split('T')[0];
+  const today = todayYMD();
+  // TZ-safe: see the note in exportProductSales — UTC-based filtering would
+  // miss late-evening/early-morning orders for the user's local "today".
   const filtered = ordersData.filter((order) => {
-    const orderDate = new Date(order.created_at).toISOString().split('T')[0];
+    const orderDate = formatDateYMD(order.created_at);
     return orderDate === today && order.status === 'completed';
   });
 
@@ -440,24 +471,98 @@ export const exportStockLevels = async (
  * Export Inventory Movements Report
  */
 export const exportInventoryMovements = async (
-  format: 'excel' | 'pdf' | 'csv'
+  format: 'excel' | 'pdf' | 'csv',
+  opts?: { dateFrom?: string; dateTo?: string }
 ): Promise<void> => {
-  // For now, return empty - this would need inventory movements API
-  const today = new Date().toISOString().split('T')[0];
-  
+  // Default to today's range when caller did not supply one — keeps the report
+  // consistent with other "Bir kunlik" exports while still allowing wider ranges.
+  const today = todayYMD();
+  const dateFrom = opts?.dateFrom || today;
+  const dateTo = opts?.dateTo || today;
+
+  const moves = await getAllInventoryMovements({
+    startDate: dateFrom,
+    endDate: dateTo,
+  });
+
+  // Backend returns hydrated rows: product, user, warehouse already joined.
+  const movementTypeLabel = (t: string) => {
+    switch (String(t || '').toLowerCase()) {
+      case 'purchase':
+      case 'purchase_receipt':
+        return 'Qabul';
+      case 'sale':
+      case 'sale_out':
+        return 'Sotuv';
+      case 'return':
+      case 'sale_return':
+        return 'Sotuv qaytarish';
+      case 'purchase_return':
+        return 'Yetkazish qaytarish';
+      case 'transfer_in':
+        return "Ko'chirish (kirim)";
+      case 'transfer_out':
+        return "Ko'chirish (chiqim)";
+      case 'adjustment':
+      case 'inventory_adjust':
+        return 'Korreksiya';
+      case 'write_off':
+        return "Hisobdan chiqarish";
+      default:
+        return t || '-';
+    }
+  };
+
+  const tableRows = (moves || []).map((m: any) => [
+    m.product?.name || m.product_name || m.product_id || '-',
+    m.product?.sku || m.product_sku || '-',
+    movementTypeLabel(m.move_type || m.movement_type),
+    String(Number(m.quantity ?? m.qty ?? 0)),
+    m.warehouse?.name || m.warehouse_name || '-',
+    m.user?.full_name || m.user?.username || m.created_by_profile?.full_name || '-',
+    formatDateTime(m.created_at),
+    m.note || m.reason || '-',
+  ]);
+
+  const head = ['Mahsulot', 'SKU', 'Harakat turi', 'Miqdor', 'Ombor', 'Xodim', 'Sana/Vaqt', 'Izoh'];
+  const suffix = dateFrom === dateTo ? dateFrom : `${dateFrom}_${dateTo}`;
+
   if (format === 'excel') {
     const wb = XLSX.utils.book_new();
-    const ws = XLSX.utils.aoa_to_sheet([['Mahsulot', 'Harakat turi', 'Miqdor', 'Sana']]);
+    const headerData = [
+      ['Tovar harakatlari hisobotlari'],
+      ['Davr', `${dateFrom} — ${dateTo}`],
+      ['Jami harakatlar', String(tableRows.length)],
+      [],
+      head,
+    ];
+    const ws = XLSX.utils.aoa_to_sheet([...headerData, ...tableRows]);
+    ws['!cols'] = [
+      { wch: 30 }, { wch: 15 }, { wch: 18 }, { wch: 12 },
+      { wch: 18 }, { wch: 22 }, { wch: 20 }, { wch: 30 },
+    ];
     XLSX.utils.book_append_sheet(wb, ws, 'Hisobot');
-    XLSX.writeFile(wb, `inventory-movements-report_${today}.xlsx`);
+    XLSX.writeFile(wb, `inventory-movements-report_${suffix}.xlsx`);
   } else if (format === 'pdf') {
     const doc = new jsPDF('landscape', 'mm', 'a4');
-    doc.setFontSize(18);
-    doc.text('Tovar harakatlari hisobotlari', 14, 15);
-    doc.text('Ma\'lumotlar hozircha mavjud emas', 14, 25);
-    doc.save(`inventory-movements-report_${today}.pdf`);
+    doc.setFontSize(16);
+    doc.text('Tovar harakatlari hisobotlari', 14, 12);
+    doc.setFontSize(10);
+    doc.text(
+      `Davr: ${dateFrom} — ${dateTo}  |  Jami: ${tableRows.length} ta yozuv`,
+      14,
+      19
+    );
+    autoTable(doc, {
+      startY: 24,
+      head: [head],
+      body: tableRows,
+      styles: { fontSize: 7 },
+      headStyles: { fillColor: [66, 139, 202], textColor: 255 },
+    } as any);
+    doc.save(`inventory-movements-report_${suffix}.pdf`);
   } else {
-    downloadCSV(['Mahsulot', 'Harakat turi', 'Miqdor', 'Sana'], [], `inventory-movements-report_${today}.csv`);
+    downloadCSV(head, tableRows, `inventory-movements-report_${suffix}.csv`);
   }
 };
 
@@ -913,8 +1018,12 @@ export const exportProfitLoss = async (
   const calculateCOGS = (order: OrderWithDetails) => {
     const items = order.items || [];
     return items.reduce((sum, item) => {
+      // Frozen cost from the order line is the source of truth; product table
+      // purchase_price is just a last-resort fallback for legacy orders.
       const productId = (item as any).product_id || (item as any).productId;
-      const cost = productId ? Number(productCostById[String(productId)] || 0) : 0;
+      const frozen = Number((item as any).cost_price ?? 0);
+      const fallback = productId ? Number(productCostById[String(productId)] || 0) : 0;
+      const cost = frozen > 0 ? frozen : fallback;
       return sum + cost * Number((item as any).quantity || 0);
     }, 0);
   };
@@ -929,8 +1038,12 @@ export const exportProfitLoss = async (
     const items = Array.isArray(r.items) ? r.items : [];
     const c = items.reduce((s: number, it: any) => {
       const productId = String(it?.product_id || it?.productId || '');
-      if (!productId) return s;
-      return s + Number(productCostById[productId] || 0) * Number(it?.quantity || 0);
+      // Prefer the line's own cost (frozen at sale time), then the linked
+      // order_item's cost, only fallback to current purchase_price last.
+      const frozen = Number(it?.cost_price ?? it?.unit_cost ?? 0);
+      const fallback = productId ? Number(productCostById[productId] || 0) : 0;
+      const cost = frozen > 0 ? frozen : fallback;
+      return s + cost * Number(it?.quantity || 0);
     }, 0);
     return sum + c;
   }, 0);

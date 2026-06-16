@@ -1,4 +1,3 @@
-import type { CartTotals } from '@/types/cart';
 import { formatMoneyUZS, formatNumberUZ } from '@/lib/format';
 
 /**

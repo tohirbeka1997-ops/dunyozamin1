@@ -22,7 +22,13 @@ import { useToast } from '@/hooks/use-toast';
 import { createSupplierPayment, getLatestExchangeRate } from '@/db/api';
 import type { SupplierWithBalance, PurchaseOrder } from '@/types/database';
 import { DollarSign } from 'lucide-react';
+import { formatMoney, formatLedgerMoney, getPoLedgerCurrency, getPoRemainingAmount } from '@/lib/currency';
 import { formatMoneyUZS } from '@/lib/format';
+import {
+  buildSupplierPaymentPayload,
+  convertFromSettlementCurrency,
+  type LedgerCurrency,
+} from '@/lib/supplierPaymentPayload';
 import { useAuth } from '@/contexts/AuthContext';
 import MoneyInput from '@/components/common/MoneyInput';
 import { useQueryClient } from '@tanstack/react-query';
@@ -67,7 +73,7 @@ export default function PaySupplierDialog({
     Number((purchaseOrder as any)?.remaining_amount_usd ?? 0) > 0 ||
     poFxRateRaw > 0;
   const poCurrency = poCurrencyRaw === 'USD' && !hasUsdData ? 'UZS' : poCurrencyRaw;
-  const supplierCurrency = String((supplier as any)?.settlement_currency || 'USD').toUpperCase() as PaymentCurrency;
+  const supplierCurrency = String((supplier as any)?.settlement_currency || 'UZS').toUpperCase() as PaymentCurrency;
 
   // Initialize amount when dialog opens
   useEffect(() => {
@@ -80,11 +86,7 @@ export default function PaySupplierDialog({
       }
 
       // Calculate default amount (remaining if PO provided, or empty)
-      const defaultAmount =
-        purchaseOrder
-          ? (purchaseOrder.remaining_amount ??
-              purchaseOrder.total_amount - (purchaseOrder.paid_amount ?? 0))
-          : 0;
+      const defaultAmount = purchaseOrder ? getPoRemainingAmount(purchaseOrder as any) : 0;
       
       if (amount === undefined && defaultAmount > 0) {
         setAmount(defaultAmount);
@@ -136,9 +138,16 @@ export default function PaySupplierDialog({
   const adjustedAmount = Math.max(0, baseAmount * (1 + safeAdjustPercent / 100));
 
   const fxRateSafe = Number.isFinite(Number(fxRate)) && Number(fxRate) > 0 ? Number(fxRate) : null;
-  const amountUsd = paymentCurrency === 'USD' ? adjustedAmount : fxRateSafe ? adjustedAmount / fxRateSafe : 0;
-  const formatCurrency = (value: number, currency: PaymentCurrency) =>
-    currency === 'USD' ? `${Number(value || 0).toFixed(2)} USD` : formatMoneyUZS(value);
+  const settlementLedger: LedgerCurrency =
+    String((supplier as any)?.settlement_currency || 'UZS').toUpperCase() === 'USD' ? 'USD' : 'UZS';
+  const poLedgerCur: LedgerCurrency = purchaseOrder
+    ? (getPoLedgerCurrency(purchaseOrder as any) as LedgerCurrency)
+    : 'UZS';
+  const remainingAmount = purchaseOrder ? getPoRemainingAmount(purchaseOrder as any) : 0;
+  const remainingInPaymentCurrency = purchaseOrder
+    ? convertFromSettlementCurrency(remainingAmount, poLedgerCur, paymentCurrency, fxRateSafe)
+    : 0;
+  const formatCurrency = (value: number, currency: PaymentCurrency) => formatMoney(value, currency);
 
   const handleSubmit = async () => {
     // Validation
@@ -170,50 +179,65 @@ export default function PaySupplierDialog({
     }
 
     // If PO provided, validate amount doesn't exceed remaining
-    if (purchaseOrder) {
-      const remainingUzs =
-        purchaseOrder.remaining_amount ??
-        (purchaseOrder.total_amount - (purchaseOrder.paid_amount ?? 0));
-      const remainingUsd =
-        purchaseOrder.remaining_amount_usd ??
-        (purchaseOrder.total_usd ?? 0) - Number(purchaseOrder.paid_amount_usd ?? 0);
-      const remaining =
-        paymentCurrency === 'USD' && poCurrency === 'USD'
-          ? Number(remainingUsd || 0)
-          : Number(remainingUzs || 0);
-      if (adjustedAmount > remaining) {
-        toast({
-          title: 'Amount Exceeds Remaining',
-          description: `Payment amount cannot exceed remaining amount of ${
-            paymentCurrency === 'USD' ? `${Number(remaining || 0).toFixed(2)} USD` : formatMoneyUZS(remaining)
-          }.`,
-          variant: 'destructive',
-        });
-        return;
-      }
+    if (purchaseOrder && adjustedAmount > remainingInPaymentCurrency + 0.0001) {
+      toast({
+        title: 'Amount Exceeds Remaining',
+        description: `To'lov summasi qoldiqdan oshmasligi kerak: ${formatCurrency(
+          remainingInPaymentCurrency,
+          paymentCurrency
+        )}.`,
+        variant: 'destructive',
+      });
+      return;
     }
 
     try {
       setLoading(true);
-      const signedAmount = direction === 'receive' ? -adjustedAmount : adjustedAmount;
+      const sign = direction === 'receive' ? -1 : 1;
       const adjustmentNote =
         safeAdjustPercent !== 0 ? ` (${safeAdjustPercent > 0 ? '+' : ''}${safeAdjustPercent.toFixed(2)}%)` : '';
       const fullNote = note.trim() ? `${note.trim()}${adjustmentNote}` : adjustmentNote.trim() || null;
-      if (purchaseOrder && poCurrency === 'USD' && paymentCurrency === 'UZS' && !fxRateSafe) {
+      let ledgerPayload;
+      try {
+        ledgerPayload = buildSupplierPaymentPayload({
+          paid: adjustedAmount,
+          entryCurrency: paymentCurrency,
+          settlementCurrency: settlementLedger,
+          fxRate: fxRateSafe,
+        });
+      } catch (err: any) {
         toast({
           title: 'Xatolik',
-          description: 'Kurs topilmadi. USD buyurtma uchun UZS to‘lovida kurs majburiy.',
+          description: err?.message || 'To‘lov valyutasi noto‘g‘ri',
           variant: 'destructive',
         });
         return;
       }
 
+      const ledgerAmountUzs =
+        ledgerPayload.currency === 'UZS' ? sign * (Number(ledgerPayload.amount || 0) || adjustedAmount) : 0;
+      const ledgerAmountUsd =
+        ledgerPayload.amount_usd != null
+          ? sign * Number(ledgerPayload.amount_usd)
+          : ledgerPayload.currency === 'USD'
+            ? sign * adjustedAmount
+            : null;
+      const poUsdPaid =
+        purchaseOrder && poLedgerCur === 'USD'
+          ? paymentCurrency === 'USD'
+            ? sign * adjustedAmount
+            : fxRateSafe
+              ? sign * (adjustedAmount / fxRateSafe)
+              : null
+          : null;
+
       const result = await createSupplierPayment({
         supplier_id: supplier.id,
         purchase_order_id: purchaseOrder?.id || null,
-        amount: paymentCurrency === 'USD' ? 0 : signedAmount,
-        amount_usd: paymentCurrency === 'USD' ? signedAmount : (fxRateSafe ? signedAmount / fxRateSafe : null),
-        currency: paymentCurrency,
+        amount: ledgerAmountUzs,
+        amount_usd: poUsdPaid ?? ledgerAmountUsd,
+        currency: ledgerPayload.currency,
+        fx_rate: fxRateSafe,
         payment_method: paymentMethod,
         note: fullNote,
         created_by: profile?.id || null,
@@ -228,11 +252,10 @@ export default function PaySupplierDialog({
 
       toast({
         title: direction === 'pay' ? '✅ To‘lov saqlandi' : '✅ Pul qabul qilindi',
-        description: `${
-          paymentCurrency === 'USD'
-            ? `${Number(adjustedAmount || 0).toFixed(2)} USD`
-            : formatMoneyUZS(adjustedAmount)
-        }. Yangi balans: ${formatCurrency(Number(result.new_balance ?? 0), supplierCurrency)}`,
+        description: `${formatCurrency(adjustedAmount, paymentCurrency)}. Yangi balans: ${formatLedgerMoney(
+          Number(result.new_balance ?? 0),
+          supplierCurrency
+        )}`,
         className: 'bg-green-50 border-green-200',
       });
 
@@ -253,13 +276,6 @@ export default function PaySupplierDialog({
       setLoading(false);
     }
   };
-
-  const remainingAmount = purchaseOrder
-    ? (purchaseOrder.remaining_amount ?? purchaseOrder.total_amount - (purchaseOrder.paid_amount ?? 0))
-    : null;
-  const remainingAmountUsd =
-    purchaseOrder?.remaining_amount_usd ??
-    ((purchaseOrder?.total_usd ?? 0) - Number(purchaseOrder?.paid_amount_usd ?? 0));
 
   const signedAmountPreview = direction === 'receive' ? -adjustedAmount : adjustedAmount;
   const previewBalance = adjustedAmount > 0 ? supplier.balance - signedAmountPreview : null;
@@ -286,7 +302,15 @@ export default function PaySupplierDialog({
               ) : null}
               {purchaseOrder ? (
                 <span className="font-semibold text-primary">
-                  Qoldiq: {formatCurrency(poCurrency === 'USD' ? Number(remainingAmountUsd || 0) : Number(remainingAmount || 0), poCurrency)}
+                  Qoldiq: {formatCurrency(
+                    convertFromSettlementCurrency(
+                      Number(remainingAmount || 0),
+                      poLedgerCur,
+                      poCurrency,
+                      fxRateSafe
+                    ),
+                    poCurrency
+                  )}
                 </span>
               ) : (
                 <>
@@ -328,13 +352,7 @@ export default function PaySupplierDialog({
             required
             allowDecimals={paymentCurrency === 'USD'}
             min={paymentCurrency === 'USD' ? 0 : 1}
-            max={
-              purchaseOrder
-                ? paymentCurrency === 'USD'
-                  ? Number(remainingAmountUsd || 0)
-                  : Number(remainingAmount || 0)
-                : undefined
-            }
+            max={purchaseOrder ? remainingInPaymentCurrency : undefined}
           />
 
           {poCurrency === 'USD' && (
@@ -401,18 +419,18 @@ export default function PaySupplierDialog({
                   Qoladi:{' '}
                   <span className="font-medium">
                     {formatCurrency(
-                      Math.max(
-                        0,
-                        Number(paymentCurrency === 'USD' ? remainingAmountUsd || 0 : remainingAmount || 0) - adjustedAmount
-                      ),
+                      Math.max(0, remainingInPaymentCurrency - adjustedAmount),
                       paymentCurrency
                     )}
                   </span>
                 </span>
               )}
-              {paymentCurrency === 'UZS' && poCurrency === 'USD' && fxRateSafe && (
+              {paymentCurrency === 'UZS' && settlementLedger === 'USD' && fxRateSafe && (
                 <span className="text-muted-foreground">
-                  USD ekv: <span className="font-medium">{Number(amountUsd || 0).toFixed(2)} USD</span>
+                  USD ekv:{' '}
+                  <span className="font-medium">
+                    {formatMoney(adjustedAmount / fxRateSafe, 'USD')}
+                  </span>
                 </span>
               )}
             </div>

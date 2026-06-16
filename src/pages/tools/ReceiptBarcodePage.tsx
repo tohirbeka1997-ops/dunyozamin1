@@ -66,12 +66,12 @@ export default function ReceiptBarcodePage() {
 
   // Print handlers
   const handleReceiptPrint = useReactToPrint({
-    content: () => receiptRef.current,
+    contentRef: receiptRef,
     documentTitle: `Chek-${selectedOrder?.order_number || 'test'}`,
   });
 
   const handleBarcodePrint = useReactToPrint({
-    content: () => barcodeRef.current,
+    contentRef: barcodeRef,
     documentTitle: `Shtrix-kod-${barcodeValue || 'test'}`,
   });
 
@@ -85,8 +85,8 @@ export default function ReceiptBarcodePage() {
           getSettingsByCategory('receipt'),
         ]);
         setOrders(ordersData);
-        setCompanySettings(companyData as CompanySettings);
-        setReceiptSettings(receiptData as ReceiptSettings);
+        setCompanySettings(companyData as unknown as CompanySettings);
+        setReceiptSettings(receiptData as unknown as ReceiptSettings);
       } catch (error) {
         toast({
           title: 'Xatolik',

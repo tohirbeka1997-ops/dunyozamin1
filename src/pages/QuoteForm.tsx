@@ -397,7 +397,7 @@ export default function QuoteForm() {
           <div class="flex justify-between" style="margin-bottom:4px;"><span>${esc(t('quotes.subtotal'))}</span><span style="font-weight:600;">${formatMoneyUZS(subtotal)}</span></div>
           <div class="flex justify-between" style="margin-bottom:4px;"><span>${esc(t('quotes.discount'))}</span><span>−${formatMoneyUZS(orderDiscNumber)}</span></div>
           <div class="flex justify-between" style="font-size:13px;font-weight:700;padding-top:4px;border-top:1px dashed #999;margin-top:4px;">
-            <span>${esc(t('quotes.total'))}</span><span>${formatMoneyUZS(total)}</span>
+            <span>${esc(t('quotes.total'))} (UZS)</span><span>${formatMoneyUZS(total)}</span>
           </div>
         </div>
       </div>`;
@@ -1207,7 +1207,10 @@ export default function QuoteForm() {
 
           <Card className="shadow-sm">
             <CardHeader className="border-b py-3">
-              <CardTitle className="text-base">{t('quotes.totals')}</CardTitle>
+              <CardTitle className="text-base">
+                {t('quotes.totals')}{' '}
+                <span className="text-xs font-normal text-muted-foreground">(UZS)</span>
+              </CardTitle>
             </CardHeader>
             <CardContent className="space-y-2">
               <div className="flex justify-between text-sm">

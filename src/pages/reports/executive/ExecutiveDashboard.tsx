@@ -6,11 +6,16 @@ import { ArrowLeft, DollarSign, TrendingUp, TrendingDown, Package, Users, AlertC
 import { useToast } from '@/hooks/use-toast';
 import { handleIpcResponse, isElectron, requireElectron } from '@/utils/electron';
 import { formatMoneyUZS } from '@/lib/format';
+import { DualCurrencyAmount } from '@/components/common/DualCurrencyAmount';
 import { useReportAutoRefresh } from '@/hooks/useReportAutoRefresh';
 
 interface KPIData {
   revenue: number;
+  revenue_uzs?: number;
+  revenue_usd?: number;
   revenue_previous: number;
+  revenue_previous_uzs?: number;
+  revenue_previous_usd?: number;
   revenue_growth: number;
   profit: number;
   profit_previous: number;
@@ -19,6 +24,8 @@ interface KPIData {
   total_debt: number;
   customer_debt: number;
   supplier_debt: number;
+  supplier_debt_uzs?: number;
+  supplier_debt_usd?: number;
   debt_growth: number;
   inventory_value: number;
   inventory_value_previous: number;
@@ -181,15 +188,28 @@ export default function ExecutiveDashboard() {
               <DollarSign className="h-4 w-4 text-muted-foreground" />
             </CardHeader>
             <CardContent>
-              <div className="text-2xl font-bold">{formatMoneyUZS(kpiData.revenue)}</div>
+              <div className="text-2xl font-bold">
+                <DualCurrencyAmount
+                  uzs={kpiData.revenue_uzs ?? kpiData.revenue}
+                  usd={kpiData.revenue_usd}
+                  className="items-start"
+                />
+              </div>
+              <p className="text-[11px] text-muted-foreground mt-1">Foyda va COGS — UZS ekvivalent</p>
               <div className="flex items-center justify-between mt-2">
                 {getGrowthBadge(kpiData.revenue_growth)}
                 <span className="text-xs text-muted-foreground">
                   {getPeriodLabel()} taqqoslash
                 </span>
               </div>
-              <div className="text-xs text-muted-foreground mt-2">
-                Oldingi: {formatMoneyUZS(kpiData.revenue_previous)}
+              <div className="text-xs text-muted-foreground mt-2 flex flex-wrap items-center gap-1">
+                <span>Oldingi:</span>
+                <DualCurrencyAmount
+                  uzs={kpiData.revenue_previous_uzs ?? kpiData.revenue_previous}
+                  usd={kpiData.revenue_previous_usd}
+                  className="inline-flex flex-row gap-1 items-center"
+                  secondaryClassName="text-xs"
+                />
               </div>
             </CardContent>
           </Card>
@@ -238,8 +258,14 @@ export default function ExecutiveDashboard() {
                   <div className="font-medium">{formatMoneyUZS(kpiData.customer_debt)}</div>
                 </div>
                 <div>
-                  <span className="text-muted-foreground">Postavshik:</span>
-                  <div className="font-medium">{formatMoneyUZS(kpiData.supplier_debt)}</div>
+                  <span className="text-muted-foreground">Yetkazib beruvchi:</span>
+                  <div className="font-medium">
+                    <DualCurrencyAmount
+                      uzs={kpiData.supplier_debt_uzs ?? kpiData.supplier_debt}
+                      usd={kpiData.supplier_debt_usd}
+                      className="items-start"
+                    />
+                  </div>
                 </div>
               </div>
             </CardContent>
@@ -309,7 +335,7 @@ export default function ExecutiveDashboard() {
                 {formatMoneyUZS(kpiData.avg_order_value)}
               </div>
               <div className="text-xs text-muted-foreground mt-2">
-                Buyurtma uchun
+                Buyurtma uchun (UZS ekvivalent)
               </div>
             </CardContent>
           </Card>
@@ -356,6 +382,7 @@ export default function ExecutiveDashboard() {
                         </div>
                         <div className="text-right">
                           <div className="font-bold">{formatMoneyUZS(item.revenue)}</div>
+                          <div className="text-[10px] text-muted-foreground">UZS ekv.</div>
                           {idx > 0 && (
                             <div className="text-xs">{getGrowthBadge(change)}</div>
                           )}

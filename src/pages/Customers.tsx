@@ -1,5 +1,6 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
+import { useTranslation } from 'react-i18next';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
@@ -52,17 +53,22 @@ import {
   MoreVertical,
   AlertTriangle,
   Users,
+  ShoppingCart,
 } from 'lucide-react';
 import { highlightMatch } from '@/utils/searchHighlight';
 import { useToast } from '@/hooks/use-toast';
 import ReceivePaymentModal from '@/components/customers/ReceivePaymentModal';
 import { formatMoneyUZS, formatCustomerBalance } from '@/lib/format';
+import { getCustomerBalances } from '@/lib/currency';
 import { useDebounce } from '@/hooks/use-debounce';
 import { formatDate } from '@/lib/datetime';
 import { useSessionSearchParams } from '@/hooks/useSessionSearchParams';
+import { useMainScrollRestoration } from '@/hooks/useMainScrollRestoration';
 import { createBackNavigationState } from '@/lib/pageState';
+import { useCustomersListStore } from '@/store/customersListStore';
 
 export default function Customers() {
+  const { t } = useTranslation();
   const navigate = useNavigate();
   const location = useLocation();
   const { toast } = useToast();
@@ -86,6 +92,28 @@ export default function Customers() {
   const [paymentDialogOpen, setPaymentDialogOpen] = useState(false);
   const [selectedCustomerForPayment, setSelectedCustomerForPayment] = useState<Customer | null>(null);
   const [exporting, setExporting] = useState(false);
+  const listAnchorRef = useRef<HTMLDivElement | null>(null);
+  const prevFilterKeyRef = useRef<string | null>(null);
+  const listQueryKey = searchParams.toString();
+  const storedQueryKey = useCustomersListStore((state) => state.queryKey);
+  const storedScrollTop = useCustomersListStore((state) => state.scrollTop);
+  const setStoredScrollTop = useCustomersListStore((state) => state.setScrollTop);
+  const resetForQuery = useCustomersListStore((state) => state.resetForQuery);
+  const restoredScrollTop = storedQueryKey === listQueryKey ? storedScrollTop : 0;
+  const filterKey = `${debouncedSearchTerm}|${typeFilter}|${statusFilter}|${sortBy}|${sortOrder}|${pageSize}`;
+
+  useEffect(() => {
+    if (storedQueryKey !== listQueryKey) {
+      resetForQuery(listQueryKey);
+    }
+  }, [storedQueryKey, listQueryKey, resetForQuery]);
+
+  const { saveScroll } = useMainScrollRestoration({
+    scrollTop: restoredScrollTop,
+    setScrollTop: setStoredScrollTop,
+    ready: !loading,
+    anchorRef: listAnchorRef,
+  });
 
   const loadCustomers = useCallback(async () => {
     // Don't load if auth is still loading or user is not authenticated
@@ -143,20 +171,20 @@ export default function Customers() {
   }, [loadCustomers]);
 
   useEffect(() => {
-    updateParams({ page: '0' });
-  }, [debouncedSearchTerm, typeFilter, statusFilter, sortBy, sortOrder, pageSize]);
+    if (prevFilterKeyRef.current === null) {
+      prevFilterKeyRef.current = filterKey;
+      return;
+    }
+    if (prevFilterKeyRef.current !== filterKey) {
+      prevFilterKeyRef.current = filterKey;
+      updateParams({ page: '0' });
+    }
+  }, [filterKey, updateParams]);
 
   useEffect(() => {
     const maxPage = Math.max(0, Math.ceil(customers.length / pageSize) - 1);
     if (page > maxPage) updateParams({ page: String(maxPage) });
   }, [customers.length, pageSize, page]);
-
-  // Reload customers when navigating to this page (e.g., after creating a customer)
-  useEffect(() => {
-    if (location.pathname === '/customers') {
-      loadCustomers();
-    }
-  }, [location.pathname, loadCustomers]);
 
   const handleDelete = async (id: string, name: string) => {
     try {
@@ -274,13 +302,22 @@ export default function Customers() {
   };
 
   return (
-    <div className="w-full min-w-0 space-y-4">
+    <div ref={listAnchorRef} className="w-full min-w-0 space-y-4">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
         <div className="min-w-0 space-y-0.5">
           <h1 className="page-heading">Mijozlar</h1>
           <p className="page-heading-sub">Mijozlar bazasini boshqarish</p>
         </div>
         <div className="flex shrink-0 flex-wrap items-center gap-2">
+          <Button
+            variant="outline"
+            size="sm"
+            className="h-8 text-xs"
+            onClick={() => navigate('/pos')}
+          >
+            <ShoppingCart className="mr-2 h-3.5 w-3.5" />
+            {t('navigation.pos_terminal')}
+          </Button>
           <Button
             variant="outline"
             size="sm"
@@ -471,10 +508,13 @@ export default function Customers() {
                 </TableHeader>
                 <TableBody>
                   {pagedCustomers.map((customer) => {
-                    const balanceInfo = formatCustomerBalance(customer.balance);
-                    const hasDebt = (customer.balance || 0) < 0;
+                    const balances = getCustomerBalances(customer);
+                    const uzsInfo = formatCustomerBalance(balances.uzs, 'UZS');
+                    const usdInfo = formatCustomerBalance(balances.usd, 'USD');
+                    const hasDebt = balances.uzs < -0.001 || balances.usd < -0.001;
 
                     const handleRowClick = () => {
+                      saveScroll();
                       navigate(`/customers/${customer.id}`, {
                         state: createBackNavigationState(location),
                       });
@@ -512,14 +552,26 @@ export default function Customers() {
                           {formatMoneyUZS(customer.total_sales)}
                         </TableCell>
                         <TableCell className="py-2 text-right">
-                          <Badge
-                            variant={balanceInfo.variant}
-                            className={`px-1.5 py-0 text-[10px] font-normal sm:text-xs ${
-                              balanceInfo.type === 'balance' ? 'bg-green-600 text-white hover:bg-green-700' : ''
-                            }`}
-                          >
-                            {balanceInfo.label}
-                          </Badge>
+                          <div className="flex flex-col items-end gap-1">
+                            <Badge
+                              variant={uzsInfo.variant}
+                              className={`px-1.5 py-0 text-[10px] font-normal sm:text-xs ${
+                                uzsInfo.type === 'balance' ? 'bg-green-600 text-white hover:bg-green-700' : ''
+                              }`}
+                            >
+                              {uzsInfo.label}
+                            </Badge>
+                            {(Math.abs(balances.usd) > 0.0001 || balances.usd < -0.001) && (
+                              <Badge
+                                variant={usdInfo.variant}
+                                className={`px-1.5 py-0 text-[10px] font-normal sm:text-xs ${
+                                  usdInfo.type === 'balance' ? 'bg-green-600 text-white hover:bg-green-700' : ''
+                                }`}
+                              >
+                                {usdInfo.label}
+                              </Badge>
+                            )}
+                          </div>
                         </TableCell>
                         <TableCell className="whitespace-nowrap py-2 text-xs text-muted-foreground">
                           {customer.last_order_date ? formatDate(customer.last_order_date) : '-'}
@@ -569,6 +621,7 @@ export default function Customers() {
                                 <DropdownMenuItem 
                                   onClick={(e) => {
                                     e.stopPropagation();
+                                    saveScroll();
                                     navigate(`/customers/${customer.id}`, {
                                       state: createBackNavigationState(location),
                                     });
@@ -580,6 +633,7 @@ export default function Customers() {
                                 <DropdownMenuItem 
                                   onClick={(e) => {
                                     e.stopPropagation();
+                                    saveScroll();
                                     navigate(`/customers/${customer.id}/edit`, {
                                       state: createBackNavigationState(location),
                                     });

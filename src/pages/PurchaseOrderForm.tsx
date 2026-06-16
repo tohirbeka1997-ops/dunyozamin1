@@ -51,6 +51,7 @@ import {
   createPurchaseReceipt,
   approvePurchaseOrder,
   receiveGoods,
+  createSupplierPayment,
 } from '@/db/api';
 import CreateProductModal from '@/components/products/CreateProductModal';
 import type {
@@ -61,8 +62,15 @@ import type {
   PurchaseOrderStatus,
   PurchaseOrderExpense,
 } from '@/types/database';
-import { Plus, Trash2, Search, ArrowLeft, Save, Package, UserPlus, Barcode, CheckCircle, AlertTriangle, ChevronDown, ChevronRight } from 'lucide-react';
+import { Plus, Trash2, Search, ArrowLeft, Save, Package, UserPlus, Barcode, CheckCircle, AlertTriangle, ChevronDown, ChevronRight, Wallet } from 'lucide-react';
 import { todayYMD } from '@/lib/datetime';
+import {
+  buildSupplierPaymentPayload,
+  convertFromSettlementCurrency,
+  convertToSettlementCurrency,
+  type LedgerCurrency,
+} from '@/lib/supplierPaymentPayload';
+import { isElectron } from '@/utils/electron';
 
 interface OrderItem {
   product_id: string;
@@ -92,6 +100,8 @@ type POExpenseRow = {
 };
 
 type AuditFilterKey = 'all' | 'zeroCost' | 'negativeMargin' | 'discountAnomaly' | 'heavyExpenseItems';
+
+type PoPaymentMethod = 'cash' | 'card' | 'transfer' | 'click' | 'payme' | 'uzum';
 
 export default function PurchaseOrderForm() {
   const { id } = useParams();
@@ -129,6 +139,11 @@ export default function PurchaseOrderForm() {
   const [expenseNotes, setExpenseNotes] = useState('');
   const [expenseSaving, setExpenseSaving] = useState(false);
 
+  // Supplier payment (optional at save time)
+  const [paymentAmount, setPaymentAmount] = useState<number | null>(null);
+  const [paymentMethod, setPaymentMethod] = useState<PoPaymentMethod>('cash');
+  const [paymentNote, setPaymentNote] = useState('');
+
   // Product search
   const [searchTerm, setSearchTerm] = useState('');
   const [itemsSearchTerm, setItemsSearchTerm] = useState('');
@@ -137,6 +152,10 @@ export default function PurchaseOrderForm() {
   const [pendingSelectQty, setPendingSelectQty] = useState(1);
   const searchInputRef = useRef<HTMLInputElement>(null);
   const barcodeInputRef = useRef<HTMLInputElement>(null);
+  /** sale_price / base_unit_cost ratio per line — preserved across bulk tannarx increases */
+  const saleMarkupRef = useRef<Map<string, number>>(new Map());
+  const [bulkTannarxConfirm, setBulkTannarxConfirm] = useState<number | null>(null);
+  const BULK_TANNARX_CONFIRM_MIN_ITEMS = 5;
   const [barcodeInput, setBarcodeInput] = useState('');
   // Keep search open by default in NEW purchase order flow (faster product entry)
   const [showProductSearch, setShowProductSearch] = useState(false);
@@ -190,7 +209,9 @@ export default function PurchaseOrderForm() {
   const [creatingSupplier, setCreatingSupplier] = useState(false);
 
   const selectedSupplier = suppliers.find((s) => s.id === supplierId) || null;
-  const supplierSettlementCurrency = (selectedSupplier as any)?.settlement_currency || 'USD';
+  const supplierSettlementCurrency = String(
+    (selectedSupplier as any)?.settlement_currency || 'UZS'
+  ).toUpperCase() as LedgerCurrency;
 
   const clampPercent = (value: number) => Math.max(0, Math.min(100, value));
   const getFxRateSafe = () => {
@@ -206,6 +227,19 @@ export default function PurchaseOrderForm() {
     const rate = getFxRateSafe();
     if (!rate) return 0;
     return amountUzs / rate;
+  };
+
+  const roundUzsPrice = (value: number) => Math.round(value);
+  const roundUsdPrice = (value: number) => Math.round(value * 100) / 100;
+
+  const rememberSaleMarkupRatios = (list: OrderItem[]) => {
+    for (const item of list) {
+      const base = Number(item.base_unit_cost ?? 0) || 0;
+      const sale = Number(item.sale_price ?? 0) || 0;
+      if (base > 0 && sale > 0) {
+        saleMarkupRef.current.set(item.product_id, sale / base);
+      }
+    }
   };
 
   const computeItemTotals = (item: OrderItem): OrderItem => {
@@ -265,16 +299,25 @@ export default function PurchaseOrderForm() {
     return Math.min(amount, subtotal);
   };
 
-  // Auto currency from supplier + auto-load latest FX rate for USD
+  // Match PurchaseReceiptForm: new PO currency follows supplier settlement currency
+  useEffect(() => {
+    if (isEditMode || !supplierId) return;
+    const nextCurrency: 'UZS' | 'USD' =
+      supplierSettlementCurrency === 'USD' ? 'USD' : 'UZS';
+    setCurrency(nextCurrency);
+  }, [supplierId, supplierSettlementCurrency, isEditMode]);
+
+  // Auto-load USD/UZS rate when PO or supplier settlement needs conversion
   useEffect(() => {
     const run = async () => {
       if (!supplierId) return;
-      const nextCurrency = String(supplierSettlementCurrency || 'UZS').toUpperCase() === 'USD' ? 'USD' : 'UZS';
-      setCurrency(nextCurrency as 'UZS' | 'USD');
-      if (nextCurrency !== 'USD') {
-        setFxRate(null);
-        return;
-      }
+      const entry: LedgerCurrency = currency === 'USD' ? 'USD' : 'UZS';
+      const needsFx =
+        entry === 'USD' ||
+        supplierSettlementCurrency === 'USD' ||
+        entry !== supplierSettlementCurrency;
+      if (!needsFx) return;
+      if (getFxRateSafe()) return;
       try {
         const row = await getLatestExchangeRate({
           base_currency: 'USD',
@@ -285,13 +328,13 @@ export default function PurchaseOrderForm() {
         if (Number.isFinite(r) && r > 0) {
           setFxRate(r);
         }
-      } catch (_e) {
+      } catch {
         // ignore; user can enter manually
       }
     };
     void run();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [supplierId, supplierSettlementCurrency, orderDate]);
+  }, [supplierId, supplierSettlementCurrency, currency, orderDate]);
 
   // Recompute costs when currency or fxRate changes
   useEffect(() => {
@@ -365,8 +408,7 @@ export default function PurchaseOrderForm() {
 
           if (poData.items) {
             const rate = Number.isFinite(Number(poFxRate || 0)) && Number(poFxRate) > 0 ? Number(poFxRate) : null;
-            setItems(
-              poData.items.map((item) => {
+            const loadedItems = poData.items.map((item) => {
                 const discountAmount = Number((item as any).discount_amount ?? 0) || 0;
                 const discountPercent = Number((item as any).discount_percent ?? 0) || 0;
                 const unitUzs = Number(item.unit_cost || 0);
@@ -397,8 +439,9 @@ export default function PurchaseOrderForm() {
                   discount_mode: discountPercent > 0 ? 'percent' : 'amount',
                   sale_price: Number((item as any).sale_price) > 0 ? Number((item as any).sale_price) : null,
                 });
-              })
-            );
+              });
+            rememberSaleMarkupRatios(loadedItems);
+            setItems(loadedItems);
           }
 
           if (poData.expenses) {
@@ -438,7 +481,6 @@ export default function PurchaseOrderForm() {
       existing.ordered_qty = Number(existing.ordered_qty || 0) + safeQty;
       updated[existingIndex] = computeItemTotals(existing);
       setItems(updated);
-      setSearchTerm('');
       return;
     }
 
@@ -465,8 +507,14 @@ export default function PurchaseOrderForm() {
       sale_price: Number(product.sale_price) > 0 ? Number(product.sale_price) : null,
     });
 
+    if (Number(newItem.base_unit_cost ?? 0) > 0 && Number(newItem.sale_price ?? 0) > 0) {
+      saleMarkupRef.current.set(
+        newItem.product_id,
+        Number(newItem.sale_price) / Number(newItem.base_unit_cost)
+      );
+    }
+
     setItems([newItem, ...items]);
-    setSearchTerm('');
   };
 
   const openInlineSelect = (productId: string) => {
@@ -504,6 +552,13 @@ export default function PurchaseOrderForm() {
     }
 
     updatedItems[index] = computeItemTotals(item);
+    if (field === 'sale_price' || field === 'base_unit_cost' || field === 'base_unit_cost_usd') {
+      const base = Number(updatedItems[index].base_unit_cost ?? 0) || 0;
+      const sale = Number(updatedItems[index].sale_price ?? 0) || 0;
+      if (base > 0 && sale > 0) {
+        saleMarkupRef.current.set(updatedItems[index].product_id, sale / base);
+      }
+    }
     setItems(updatedItems);
   };
 
@@ -599,6 +654,15 @@ export default function PurchaseOrderForm() {
       toast({
         title: 'Validatsiya xatosi',
         description: 'Iltimos, kamida bitta mahsulot qo\'shing',
+        variant: 'destructive',
+      });
+      return false;
+    }
+
+    if (supplierSettlementCurrency === 'USD' && currency !== 'USD') {
+      toast({
+        title: 'Validatsiya xatosi',
+        description: 'USD hisobli yetkazib beruvchi uchun buyurtma USD valyutasida bo‘lishi kerak',
         variant: 'destructive',
       });
       return false;
@@ -859,6 +923,131 @@ export default function PurchaseOrderForm() {
     }
   };
 
+  const buildInitialPaymentForSave = (): Record<string, unknown> | null => {
+    const paid = Number(paymentAmount || 0);
+    if (!supplierId || paid <= 0) return null;
+
+    const entryCurrency: LedgerCurrency = currency === 'USD' ? 'USD' : 'UZS';
+    const ledger = buildSupplierPaymentPayload({
+      paid,
+      entryCurrency,
+      settlementCurrency: supplierSettlementCurrency,
+      fxRate: getFxRateSafe(),
+    });
+
+    return {
+      amount: ledger.amount,
+      amount_usd: ledger.amount_usd,
+      currency: ledger.currency,
+      payment_method: paymentMethod,
+      paid_at: orderDate ? `${orderDate}T12:00:00` : undefined,
+      note: paymentNote.trim() || "Xarid buyurtmasi to'lovi",
+      created_by: user?.id || null,
+    };
+  };
+
+  const paymentSuccessToast = (paid: number, entryCurrency: LedgerCurrency, newBalance?: number) => {
+    const paidLabel =
+      entryCurrency === 'USD' ? `${paid.toFixed(2)} USD` : formatMoneyUZS(paid);
+    const balanceLabel =
+      supplierSettlementCurrency === 'USD'
+        ? `${Number(newBalance ?? 0).toFixed(2)} USD`
+        : formatMoneyUZS(Number(newBalance ?? 0));
+    toast({
+      title: "To'lov qayd etildi",
+      description: `${paidLabel} · Yangi balans: ${balanceLabel}`,
+    });
+  };
+
+  const recordPurchaseOrderPayment = async (poId: string): Promise<void> => {
+    const paid = Number(paymentAmount || 0);
+    if (!supplierId || paid <= 0) return;
+
+    const entryCurrency: LedgerCurrency = currency === 'USD' ? 'USD' : 'UZS';
+    const initialPayment = buildInitialPaymentForSave();
+    if (!initialPayment) return;
+
+    const result = await createSupplierPayment({
+      supplier_id: supplierId,
+      purchase_order_id: poId,
+      amount: Number(initialPayment.amount ?? 0),
+      amount_usd: (initialPayment.amount_usd as number | null) ?? null,
+      currency: initialPayment.currency as 'UZS' | 'USD',
+      payment_method: paymentMethod,
+      paid_at: orderDate ? `${orderDate}T12:00:00` : undefined,
+      note: paymentNote.trim() || "Xarid buyurtmasi to'lovi",
+      created_by: user?.id || null,
+    });
+
+    if (!result.success) {
+      throw new Error(result.error || "To'lovni saqlab bo'lmadi");
+    }
+
+    paymentSuccessToast(paid, entryCurrency, Number(result.new_balance ?? 0));
+  };
+
+  const finalizeSaveWithOptionalPayment = async (
+    poId: string,
+    opts?: { paymentIncludedInSave?: boolean }
+  ) => {
+    const paid = Number(paymentAmount || 0);
+    if (opts?.paymentIncludedInSave) {
+      if (paid > 0) {
+        const entryCurrency: LedgerCurrency = currency === 'USD' ? 'USD' : 'UZS';
+        paymentSuccessToast(paid, entryCurrency);
+      }
+      invalidateDashboardQueries(queryClient);
+      navigate('/purchase-orders');
+      return;
+    }
+    if (paid <= 0) {
+      navigate('/purchase-orders');
+      return;
+    }
+    const entryCur: LedgerCurrency = currency === 'USD' ? 'USD' : 'UZS';
+    const missingFx =
+      paid > 0 && entryCur !== supplierSettlementCurrency && !getFxRateSafe();
+    if (missingFx) {
+      toast({
+        title: 'Kurs kerak',
+        description: "To'lovni saqlash uchun USD/UZS kursini kiriting.",
+        variant: 'destructive',
+      });
+      try {
+        const refreshedPo = await getPurchaseOrderById(poId);
+        setExistingPO(refreshedPo);
+        if (!isEditMode) navigate(`/purchase-orders/${poId}/edit`, { replace: true });
+      } catch {
+        // ignore
+      }
+      return;
+    }
+    try {
+      await recordPurchaseOrderPayment(poId);
+      invalidateDashboardQueries(queryClient);
+      navigate('/purchase-orders');
+    } catch (paymentError: unknown) {
+      const msg =
+        paymentError instanceof Error ? paymentError.message : "To'lovni saqlab bo'lmadi";
+      toast({
+        title: "Buyurtma saqlandi, to'lov qilinmadi",
+        description: `${msg}. Qayta urinish uchun shu sahifada to'lovni qayta kiriting va saqlang.`,
+        variant: 'destructive',
+      });
+      try {
+        const refreshedSuppliers = await getSuppliers();
+        setSuppliers(refreshedSuppliers);
+        const refreshedPo = await getPurchaseOrderById(poId);
+        setExistingPO(refreshedPo);
+        if (!isEditMode) {
+          navigate(`/purchase-orders/${poId}/edit`, { replace: true });
+        }
+      } catch {
+        // ignore refresh errors
+      }
+    }
+  };
+
   /**
    * Ro‘yxatdagi "Tasdiqlash" bilan bir xil: saqlash → tasdiqlash → qoldiqni qabul qilish (createReceipt orqali).
    * Qisman qabul qilingan buyurtmada faqat qolgan miqdor yuboriladi.
@@ -889,14 +1078,14 @@ export default function PurchaseOrderForm() {
           currency === 'USD' ? Math.max(0, calculateSubtotalUSD() - Number(orderDiscountUsd || 0)) : null;
 
         const existingItems = existingPO?.items || [];
+        // `received` is already handled by the early return above, so it cannot
+        // occur here; only draft / partially_received / fallthrough remain.
         const persistStatus =
           existingPO.status === 'draft'
             ? 'draft'
             : existingPO.status === 'partially_received'
               ? 'partially_received'
-              : existingPO.status === 'received'
-                ? 'received'
-                : (status as PurchaseOrderStatus);
+              : (status as PurchaseOrderStatus);
 
         const purchaseOrderData: Partial<PurchaseOrder> = {
           supplier_id: supplierId,
@@ -1012,7 +1201,13 @@ export default function PurchaseOrderForm() {
             ? 'Buyurtma tasdiqlandi va omborga qabul qilindi'
             : 'Buyurtma tasdiqlandi (qabul qilinadigan qoldiq yo‘q)',
       });
-      navigate('/purchase-orders');
+
+      const receivedNow =
+        receiveItems.length > 0 ||
+        finalPo.status === 'received' ||
+        finalPo.status === 'partially_received';
+      await finalizeSaveWithOptionalPayment(id);
+      return;
     } catch (error: unknown) {
       console.error('Confirm purchase order error:', error);
       const errorMessage =
@@ -1047,7 +1242,37 @@ export default function PurchaseOrderForm() {
       const orderDiscountUsd = currency === 'USD' ? toUsd(orderDiscount) : null;
       const totalUsd =
         currency === 'USD' ? Math.max(0, calculateSubtotalUSD() - Number(orderDiscountUsd || 0)) : null;
-      
+
+      let initialPayment: Record<string, unknown> | null = null;
+      let paymentIncludedInSave = false;
+      const paidOnSave = Number(paymentAmount || 0);
+      if (paidOnSave > 0) {
+        const entryCur: LedgerCurrency = currency === 'USD' ? 'USD' : 'UZS';
+        const missingFx = entryCur !== supplierSettlementCurrency && !getFxRateSafe();
+        if (missingFx) {
+          toast({
+            title: 'Kurs kerak',
+            description: "To'lovni saqlash uchun USD/UZS kursini kiriting.",
+            variant: 'destructive',
+          });
+          return;
+        }
+        try {
+          initialPayment = buildInitialPaymentForSave();
+          paymentIncludedInSave = isElectron() && !!initialPayment;
+        } catch (paymentBuildError: unknown) {
+          toast({
+            title: 'Xatolik',
+            description:
+              paymentBuildError instanceof Error
+                ? paymentBuildError.message
+                : "To'lov ma'lumotlari noto'g'ri",
+            variant: 'destructive',
+          });
+          return;
+        }
+      }
+
       let poId: string;
 
       if (isEditMode && id) {
@@ -1082,6 +1307,9 @@ export default function PurchaseOrderForm() {
           invoice_number: invoiceNumber.trim() || null,
           received_by: markAsReceived ? (user?.id || null) : undefined,
           notes,
+          ...(paymentIncludedInSave && initialPayment
+            ? { initial_payment: initialPayment as any }
+            : {}),
         };
 
         const itemsData = items.map((item) => ({
@@ -1145,6 +1373,9 @@ export default function PurchaseOrderForm() {
           approved_at: null,
           notes,
           created_by: user?.id || null,
+          ...(paymentIncludedInSave && initialPayment
+            ? { initial_payment: initialPayment as any }
+            : {}),
         };
 
         // IMPORTANT: Always set received_qty=0 when creating NEW PO
@@ -1166,7 +1397,10 @@ export default function PurchaseOrderForm() {
           sale_price: Number(item.sale_price ?? 0) > 0 ? Number(item.sale_price) : null,
         }));
 
-        const newPO = await createPurchaseOrder(purchaseOrderData, itemsData);
+        const newPO = await createPurchaseOrder(
+          purchaseOrderData as Omit<PurchaseOrder, 'id' | 'created_at' | 'updated_at'>,
+          itemsData
+        );
         poId = newPO.id;
         
         // Invalidate dashboard queries
@@ -1282,7 +1516,8 @@ export default function PurchaseOrderForm() {
         });
       }
 
-      navigate('/purchase-orders');
+      await finalizeSaveWithOptionalPayment(poId, { paymentIncludedInSave });
+      return;
     } catch (error: unknown) {
       console.error('Purchase order save error:', error);
       
@@ -1358,6 +1593,75 @@ export default function PurchaseOrderForm() {
     return ((salePrice - cost) / cost) * 100;
   };
 
+  const getSaleMarkupRatio = (item: OrderItem) => {
+    const stored = saleMarkupRef.current.get(item.product_id);
+    if (stored != null && Number.isFinite(stored) && stored > 0) return stored;
+    const base = Number(item.base_unit_cost ?? 0) || 0;
+    const sale = Number(item.sale_price ?? 0) || 0;
+    if (base <= 0 || sale <= 0) return null;
+    const ratio = sale / base;
+    saleMarkupRef.current.set(item.product_id, ratio);
+    return ratio;
+  };
+
+  const requestBulkTannarxIncrease = (percent: number) => {
+    if (items.length === 0) return;
+    if (items.length >= BULK_TANNARX_CONFIRM_MIN_ITEMS) {
+      setBulkTannarxConfirm(percent);
+      return;
+    }
+    applyBulkTannarxIncrease(percent);
+  };
+
+  const applyBulkTannarxIncrease = (percent: number) => {
+    const factor = 1 + percent / 100;
+    setItems((prev) => {
+      rememberSaleMarkupRatios(prev);
+      return prev.map((item) => {
+        const next = { ...item };
+        if (currency === 'USD') {
+          const usd = Number(item.base_unit_cost_usd ?? 0) || 0;
+          if (usd > 0) {
+            next.base_unit_cost_usd = roundUsdPrice(usd * factor);
+          }
+        }
+        const base = Number(item.base_unit_cost ?? 0) || 0;
+        if (base > 0) {
+          next.base_unit_cost = roundUzsPrice(base * factor);
+        }
+        return computeItemTotals(next);
+      });
+    });
+    toast({
+      title: `Tannarx +${percent}% qo'llandi`,
+      description: `${items.length} ta qator yangilandi`,
+    });
+  };
+
+  const recalculateSalePricesByMargin = () => {
+    let updatedCount = 0;
+    setItems((prev) =>
+      prev.map((item) => {
+        const ratio = getSaleMarkupRatio(item);
+        if (ratio == null) return item;
+        const cost = getEffectiveUnitCost(item);
+        if (cost <= 0) return item;
+        const newSale = roundUzsPrice(cost * ratio);
+        if (newSale <= 0) return { ...item, sale_price: null };
+        const oldSale = Number(item.sale_price ?? 0) || 0;
+        if (oldSale !== newSale) updatedCount += 1;
+        return { ...item, sale_price: newSale };
+      })
+    );
+    toast({
+      title: 'Sotuv narxlari qayta hisoblandi',
+      description:
+        updatedCount > 0
+          ? `${updatedCount} ta qator yangilandi (tannarx/sotuv nisbati saqlab)`
+          : 'O\'zgarish talab qilinmadi',
+    });
+  };
+
   const auditWarnings = useMemo(() => {
     const zeroCost: string[] = [];
     const negativeMargin: string[] = [];
@@ -1391,6 +1695,56 @@ export default function PurchaseOrderForm() {
   const totalAmount = Math.max(0, subtotal - orderDiscountApplied);
   const orderDiscountUsd = currency === 'USD' ? toUsd(orderDiscountApplied) : null;
   const totalUsd = currency === 'USD' ? Math.max(0, calculateSubtotalUSD() - Number(orderDiscountUsd || 0)) : null;
+
+  const entryCurrency: LedgerCurrency = currency === 'USD' ? 'USD' : 'UZS';
+  const paymentFx = getFxRateSafe();
+  const payableForPayment = currency === 'USD' ? Number(totalUsd || 0) : totalAmount;
+  const paymentEntered = Math.max(0, Number(paymentAmount || 0));
+  const existingPaidOnPo =
+    currency === 'USD'
+      ? Number((existingPO as any)?.paid_amount_usd ?? existingPO?.paid_amount ?? 0)
+      : Number(existingPO?.paid_amount ?? 0);
+  const payableSettlement = convertToSettlementCurrency(
+    payableForPayment,
+    entryCurrency,
+    supplierSettlementCurrency,
+    paymentFx
+  );
+  const existingPaidSettlement = convertToSettlementCurrency(
+    existingPaidOnPo,
+    entryCurrency,
+    supplierSettlementCurrency,
+    paymentFx
+  );
+  const paymentSettlement = convertToSettlementCurrency(
+    paymentEntered,
+    entryCurrency,
+    supplierSettlementCurrency,
+    paymentFx
+  );
+  const poRemainingBeforePay = Math.max(0, payableSettlement - existingPaidSettlement);
+  const poRemainingAfterPay = payableSettlement - existingPaidSettlement - paymentSettlement;
+  const needsFxForPayment =
+    paymentEntered > 0 &&
+    entryCurrency !== supplierSettlementCurrency &&
+    !paymentFx;
+  const formatSettlement = (value: number) =>
+    supplierSettlementCurrency === 'USD'
+      ? `${Number(value || 0).toFixed(2)} USD`
+      : formatMoneyUZS(value);
+  const supplierBalanceNow = Number(selectedSupplier?.balance ?? 0);
+  const poAlreadyReceived =
+    existingPO?.status === 'received' || existingPO?.status === 'partially_received';
+  const projectedIfReceived =
+    selectedSupplier && paymentEntered > 0 && !needsFxForPayment
+      ? poAlreadyReceived
+        ? supplierBalanceNow - paymentSettlement
+        : supplierBalanceNow + payableSettlement - existingPaidSettlement - paymentSettlement
+      : null;
+  const projectedIfDraftOnly =
+    selectedSupplier && paymentEntered > 0 && !poAlreadyReceived && !needsFxForPayment
+      ? supplierBalanceNow - paymentSettlement
+      : null;
 
   if (loading && !suppliers.length) {
     return (
@@ -1802,6 +2156,30 @@ export default function PurchaseOrderForm() {
                       </div>
                     </div>
                   )}
+                  {!isReadOnly && (
+                    <div className="flex flex-wrap items-center gap-2 rounded-md border bg-muted/30 px-3 py-2">
+                      <span className="text-xs font-medium text-muted-foreground shrink-0">Ommaviy:</span>
+                      {[5, 10, 15, 20].map((pct) => (
+                        <Button
+                          key={pct}
+                          type="button"
+                          size="sm"
+                          variant="outline"
+                          onClick={() => requestBulkTannarxIncrease(pct)}
+                        >
+                          Tannarx +{pct}%
+                        </Button>
+                      ))}
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="secondary"
+                        onClick={recalculateSalePricesByMargin}
+                      >
+                        Sotuv narxini marja bo'yicha qayta hisobla
+                      </Button>
+                    </div>
+                  )}
                   <div className="relative">
                     <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-muted-foreground" />
                     <Input
@@ -2128,6 +2506,186 @@ export default function PurchaseOrderForm() {
                 </div>
               </div>
 
+              {!isReadOnly && supplierId && (
+                <div className="border-t pt-3 space-y-2.5">
+                  <div className="flex items-center gap-2 text-sm font-medium">
+                    <Wallet className="h-4 w-4 text-primary" />
+                    To'lov
+                  </div>
+                  {selectedSupplier && (
+                    <div className="rounded-md border bg-muted/30 px-2.5 py-2 text-[12px] space-y-1">
+                      <div className="flex justify-between">
+                        <span className="text-muted-foreground">Yetkazib beruvchi balansi</span>
+                        <span
+                          className={
+                            supplierBalanceNow > 0
+                              ? 'font-medium text-destructive'
+                              : supplierBalanceNow < 0
+                                ? 'font-medium text-emerald-600'
+                                : 'font-medium'
+                          }
+                        >
+                          {formatSettlement(supplierBalanceNow)}
+                        </span>
+                      </div>
+                      {existingPaidOnPo > 0 && (
+                        <div className="flex justify-between">
+                          <span className="text-muted-foreground">Avval to'langan</span>
+                          <span className="font-medium">
+                            {currency === 'USD'
+                              ? `${existingPaidOnPo.toFixed(2)} USD`
+                              : formatMoneyUZS(existingPaidOnPo)}
+                          </span>
+                        </div>
+                      )}
+                    </div>
+                  )}
+                  {entryCurrency !== supplierSettlementCurrency && (
+                    <p className="text-[11px] text-muted-foreground">
+                      Hisob valyutasi: {supplierSettlementCurrency}
+                      {paymentFx ? ` · kurs ${paymentFx.toLocaleString('uz-UZ')}` : ''}
+                    </p>
+                  )}
+                  {needsFxForPayment && (
+                    <p className="text-[11px] text-destructive">
+                      To'lov uchun USD/UZS kursini kiriting yoki kurs avtomatik yuklanishini kuting.
+                    </p>
+                  )}
+                  <div className="space-y-1.5">
+                    <Label htmlFor="po-payment-amount" className="text-[12px]">
+                      To'lov summasi {entryCurrency === 'USD' ? '(USD)' : '(UZS)'}
+                    </Label>
+                    <div className="flex gap-2">
+                      {currency === 'USD' ? (
+                        <Input
+                          id="po-payment-amount"
+                          type="number"
+                          min={0}
+                          step="0.01"
+                          value={paymentAmount ?? ''}
+                          onChange={(e) =>
+                            setPaymentAmount(e.target.value === '' ? null : Number(e.target.value))
+                          }
+                          placeholder="0"
+                          className="h-9"
+                        />
+                      ) : (
+                        <MoneyInput
+                          id="po-payment-amount"
+                          value={paymentAmount}
+                          onValueChange={(val) => setPaymentAmount(val)}
+                          placeholder="0"
+                          allowDecimals
+                          allowZero
+                          min={0}
+                          containerClassName="flex-1 space-y-0"
+                          className="h-9"
+                        />
+                      )}
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        className="shrink-0 h-9"
+                        onClick={() =>
+                          setPaymentAmount(
+                            convertFromSettlementCurrency(
+                              poRemainingBeforePay,
+                              supplierSettlementCurrency,
+                              entryCurrency,
+                              paymentFx
+                            )
+                          )
+                        }
+                        disabled={poRemainingBeforePay <= 0 || needsFxForPayment}
+                      >
+                        To'liq
+                      </Button>
+                    </div>
+                  </div>
+                  <div className="space-y-1.5">
+                    <Label className="text-[12px]">To'lov usuli</Label>
+                    <Select
+                      value={paymentMethod}
+                      onValueChange={(v) => setPaymentMethod(v as PoPaymentMethod)}
+                    >
+                      <SelectTrigger className="h-9">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="cash">Naqd</SelectItem>
+                        <SelectItem value="card">Karta</SelectItem>
+                        <SelectItem value="transfer">O'tkazma</SelectItem>
+                        <SelectItem value="click">Click</SelectItem>
+                        <SelectItem value="payme">Payme</SelectItem>
+                        <SelectItem value="uzum">Uzum</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div className="space-y-1.5">
+                    <Label htmlFor="po-payment-note" className="text-[12px]">
+                      Izoh (ixtiyoriy)
+                    </Label>
+                    <Input
+                      id="po-payment-note"
+                      value={paymentNote}
+                      onChange={(e) => setPaymentNote(e.target.value)}
+                      placeholder="Masalan: naqd, oldindan to'lov"
+                      className="h-9"
+                    />
+                  </div>
+                  {paymentEntered > 0 && (
+                    <div className="rounded-md border border-primary/20 bg-primary/5 px-2.5 py-2 text-[11px] space-y-1">
+                      <div className="flex justify-between">
+                        <span>Buyurtma jami</span>
+                        <span className="font-medium">
+                          {currency === 'USD'
+                            ? `${payableForPayment.toFixed(2)} USD`
+                            : formatMoneyUZS(payableForPayment)}
+                        </span>
+                      </div>
+                      <div className="flex justify-between">
+                        <span>Farq (hisob valyutasida)</span>
+                        <span
+                          className={
+                            paymentSettlement > poRemainingBeforePay
+                              ? 'font-medium text-emerald-600'
+                              : paymentSettlement < poRemainingBeforePay
+                                ? 'font-medium text-destructive'
+                                : 'font-medium'
+                          }
+                        >
+                          {formatSettlement(paymentSettlement - poRemainingBeforePay)}
+                        </span>
+                      </div>
+                      {poRemainingAfterPay > 0 ? (
+                        <p className="text-destructive">
+                          Buyurtma bo'yicha qoldiq: {formatSettlement(poRemainingAfterPay)}
+                        </p>
+                      ) : poRemainingAfterPay < 0 ? (
+                        <p className="text-emerald-700">
+                          Ortiqcha to'lov (avans): {formatSettlement(Math.abs(poRemainingAfterPay))}
+                        </p>
+                      ) : (
+                        <p className="text-emerald-700">Buyurtma to'liq yopiladi</p>
+                      )}
+                      {projectedIfReceived != null && (
+                        <p>
+                          Qabul qilinganda taxminiy balans:{' '}
+                          <span className="font-semibold">{formatSettlement(projectedIfReceived)}</span>
+                        </p>
+                      )}
+                      {projectedIfDraftOnly != null && !poAlreadyReceived && (
+                        <p className="text-muted-foreground">
+                          Qoralama (qabulsiz) balans:{' '}
+                          <span className="font-medium">{formatSettlement(projectedIfDraftOnly)}</span>
+                        </p>
+                      )}
+                    </div>
+                  )}
+                </div>
+              )}
+
               {!isReadOnly && (
                 <div className="space-y-1.5">
                   {hasLandedCosts && (
@@ -2173,6 +2731,7 @@ export default function PurchaseOrderForm() {
               <div className="text-[11px] text-muted-foreground space-y-0.5">
                 <p>• Qoralama: Ombor miqdoriga ta'sir qilmaydi</p>
                 <p>• Qabul qilingan deb belgilash: Ombor qoldig'i darhol yangilanadi</p>
+                <p>• To'lov: kam to'lov — qarz qoladi, ko'p to'lov — yetkazib beruvchi balansida avans</p>
                 {showConfirmReceiveButton && (
                   <p>• Tasdiqlash: avval saqlaydi, keyin tasdiqlaydi va qoldiqni omborga yozadi</p>
                 )}
@@ -2316,6 +2875,39 @@ export default function PurchaseOrderForm() {
           </Card>
         </div>
       </div>
+
+      <Dialog
+        open={bulkTannarxConfirm != null}
+        onOpenChange={(open) => {
+          if (!open) setBulkTannarxConfirm(null);
+        }}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Tannarxni ommaviy oshirish</DialogTitle>
+            <DialogDescription>
+              Barcha {items.length} ta qatorga tannarx +{bulkTannarxConfirm}% qo'llansinmi? Sotuv narxi
+              o'zgarmaydi — kerak bo'lsa keyin marja bo'yicha qayta hisoblang.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button type="button" variant="outline" onClick={() => setBulkTannarxConfirm(null)}>
+              Bekor
+            </Button>
+            <Button
+              type="button"
+              onClick={() => {
+                if (bulkTannarxConfirm != null) {
+                  applyBulkTannarxIncrease(bulkTannarxConfirm);
+                }
+                setBulkTannarxConfirm(null);
+              }}
+            >
+              Qo'llash
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       {/* Add New Supplier Modal */}
       <Dialog open={showSupplierModal} onOpenChange={setShowSupplierModal}>

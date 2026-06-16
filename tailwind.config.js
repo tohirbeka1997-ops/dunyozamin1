@@ -11,7 +11,32 @@ export default {
         './src/**/*.{ts,tsx}',
         './node_modules/streamdown/dist/**/*.js'
     ],
-    safelist: ['border', 'border-border'],
+    // Custom @layer classes in index.css — Tailwind purges selectors not found as
+    // full strings in content (e.g. `metric-card--${variant}` is NOT detected).
+    safelist: [
+        'border',
+        'border-border',
+        'metric-card',
+        'metric-card--sales',
+        'metric-card--orders',
+        'metric-card--profit',
+        'metric-card--warning',
+        'metric-card--expense',
+        'metric-card--customers',
+        'metric-card--lime',
+        'metric-card-title',
+        'metric-card-value',
+        'metric-card-sub',
+        'metric-card-icon',
+        'quick-action-btn',
+        'quick-action-primary',
+        'quick-action-teal',
+        'quick-action-accent',
+        'quick-action-reports',
+        'quick-actions-card',
+        'quick-actions-grid',
+        'quick-action-icon',
+    ],
     prefix: '',
     theme: {
         container: {

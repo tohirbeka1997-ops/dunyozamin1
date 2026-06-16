@@ -1,4 +1,4 @@
-import { formatMoneyUZS } from '@/lib/format';
+import { formatMoney, type AppCurrency } from '@/lib/currency';
 import type { ReactNode } from 'react';
 
 /**
@@ -18,18 +18,20 @@ import type { ReactNode } from 'react';
 interface MoneyProps {
   /** The monetary value to display */
   value: number | string | null | undefined;
+  /** Display currency (default UZS) */
+  currency?: AppCurrency;
   /** Optional className for styling */
   className?: string;
   /** Optional children to render instead of the formatted value */
   children?: ReactNode;
 }
 
-export function Money({ value, className, children }: MoneyProps) {
+export function Money({ value, className, children, currency = 'UZS' }: MoneyProps) {
   if (children !== undefined) {
     return <span className={className}>{children}</span>;
   }
 
-  return <span className={className}>{formatMoneyUZS(value)}</span>;
+  return <span className={className}>{formatMoney(value, currency)}</span>;
 }
 
 

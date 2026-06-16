@@ -153,7 +153,7 @@ export default function VIPCustomersReport() {
               VIP mijozlar
             </h1>
             <p className="text-xs text-muted-foreground">
-              Eng ko'p xarid qilganlar va qayta-qayta keluvchilar
+              Eng ko&apos;p xarid qilganlar va qayta-qayta keluvchilar. Summalar UZS ekvivalentida.
             </p>
           </div>
         </div>
@@ -210,7 +210,7 @@ export default function VIPCustomersReport() {
           <CardContent className="py-3">
             <div className="flex items-center gap-2">
               <TrendingUp className="h-4 w-4 text-primary" />
-              <p className="text-xs text-muted-foreground">Jami sotuv</p>
+              <p className="text-xs text-muted-foreground">Jami sotuv (UZS ekv.)</p>
             </div>
             <div className="mt-1 text-xl font-bold">{formatMoneyUZS(summary.totalSpent)}</div>
             <div className="mt-0.5 text-xs text-muted-foreground">
@@ -234,7 +234,7 @@ export default function VIPCustomersReport() {
           <CardContent className="py-3">
             <div className="flex items-center gap-2">
               <Crown className="h-4 w-4 text-yellow-500" />
-              <p className="text-xs text-muted-foreground">O'rtacha check</p>
+              <p className="text-xs text-muted-foreground">O&apos;rtacha check (UZS ekv.)</p>
             </div>
             <div className="mt-1 text-xl font-bold">{formatMoneyUZS(summary.avgValue)}</div>
             <div className="mt-0.5 text-xs text-muted-foreground">
@@ -296,7 +296,7 @@ export default function VIPCustomersReport() {
                     kind="number"
                     align="right"
                   >
-                    Jami xarid
+                    Jami xarid (UZS ekv.)
                   </SortableTableHead>
                   <TableHead className="text-center">Daraja</TableHead>
                   <SortableTableHead<VipSortKey>
@@ -327,7 +327,7 @@ export default function VIPCustomersReport() {
                     kind="number"
                     align="right"
                   >
-                    O&apos;rtacha check
+                    O&apos;rtacha check (UZS ekv.)
                   </SortableTableHead>
                   <SortableTableHead<VipSortKey>
                     columnKey="loyalty_score"

@@ -47,15 +47,22 @@ import type {
   CustomerBonusLedgerEntry,
   CustomerLoyaltyCard,
 } from '@/types/database';
-import { ArrowLeft, Edit, Mail, Phone, MapPin, Building2, FileText, ShoppingCart, DollarSign, History, RefreshCw, Gift } from 'lucide-react';
+import { ArrowLeft, Edit, Mail, Phone, MapPin, Building2, FileText, ShoppingCart, DollarSign, History, RefreshCw, Gift, AlertTriangle } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 import { useAuth } from '@/contexts/AuthContext';
 import { isElectron } from '@/utils/electron';
 import ReceivePaymentModal from '@/components/customers/ReceivePaymentModal';
 import { formatMoneyUZS, formatCustomerBalance } from '@/lib/format';
+import { formatOrderMoney, getCustomerBalances, formatMoney, normalizeCurrency } from '@/lib/currency';
+import { DualCurrencyAmount } from '@/components/common/DualCurrencyAmount';
 import { formatDate, formatDateTime, parseDbDate } from '@/lib/datetime';
 import { createBackNavigationState, navigateBackTo, resolveBackTarget } from '@/lib/pageState';
 import QRCodeDataUrl from '@/components/ui/qrcodedataurl';
+
+function isActiveOrderForStats(order: { status?: string } | null | undefined) {
+  const s = String(order?.status || '').toLowerCase();
+  return s !== 'voided' && s !== 'refunded' && s !== 'returned' && s !== 'amended';
+}
 
 export default function CustomerDetail() {
   const { id } = useParams<{ id: string }>();
@@ -70,6 +77,7 @@ export default function CustomerDetail() {
   const [ledger, setLedger] = useState<CustomerLedgerEntry[]>([]);
   const [loading, setLoading] = useState(true);
   const [ordersLoading, setOrdersLoading] = useState(true);
+  const [ordersError, setOrdersError] = useState<string | null>(null);
   const [paymentsLoading, setPaymentsLoading] = useState(true);
   const [ledgerLoading, setLedgerLoading] = useState(true);
   const [bonusLedger, setBonusLedger] = useState<CustomerBonusLedgerEntry[]>([]);
@@ -97,6 +105,36 @@ export default function CustomerDetail() {
     });
     return list;
   }, [ledger, ledgerOrder]);
+
+  const activeOrders = useMemo(
+    () => orders.filter((o) => isActiveOrderForStats(o)),
+    [orders],
+  );
+
+  const orderSalesSummary = useMemo(() => {
+    let uzs = 0;
+    let usd = 0;
+    let uzsEquiv = 0;
+    for (const o of activeOrders) {
+      const amt = Number(o.total_amount || 0) || 0;
+      if (normalizeCurrency(o.currency) === 'USD') {
+        usd += amt;
+        const fx = Number(o.fx_rate || 0) || 0;
+        uzsEquiv += fx > 0 ? amt * fx : 0;
+      } else {
+        uzs += amt;
+        uzsEquiv += amt;
+      }
+    }
+    return { uzs, usd, uzsEquiv };
+  }, [activeOrders]);
+
+  const ordersTabCount = ordersError
+    ? (customer?.total_orders ?? 0)
+    : ordersLoading
+      ? (customer?.total_orders ?? 0)
+      : activeOrders.length;
+  const ordersCountIsFallback = !!ordersError || ordersLoading;
 
   useEffect(() => {
     if (id) {
@@ -149,10 +187,18 @@ export default function CustomerDetail() {
 
     try {
       setOrdersLoading(true);
+      setOrdersError(null);
       const data = await getOrdersByCustomer(id);
       setOrders(data);
     } catch (error) {
       console.error('Failed to load orders:', error);
+      setOrders([]);
+      setOrdersError(error instanceof Error ? error.message : 'Buyurtmalar ro‘yxatini yuklab bo‘lmadi');
+      toast({
+        title: 'Xatolik',
+        description: 'Buyurtmalar ro‘yxatini yuklab bo‘lmadi',
+        variant: 'destructive',
+      });
     } finally {
       setOrdersLoading(false);
     }
@@ -351,13 +397,32 @@ export default function CustomerDetail() {
           </CardHeader>
           <CardContent>
             <div className="text-2xl font-bold">
-              {formatMoneyUZS(
-                !ordersLoading && orders.length > 0
-                  ? orders.reduce((sum, o) => sum + Number(o.total_amount || 0), 0)
-                  : (customer.total_sales ?? 0)
+              {ordersError ? (
+                <span className="text-base text-muted-foreground" title={ordersError}>
+                  {customer.total_orders ?? 0}
+                  <span className="text-xs align-super text-muted-foreground">*</span>
+                </span>
+              ) : !ordersLoading && activeOrders.length > 0 ? (
+                <>
+                  <DualCurrencyAmount
+                    uzs={orderSalesSummary.uzs}
+                    usd={orderSalesSummary.usd}
+                    className="text-2xl font-bold"
+                  />
+                  {orderSalesSummary.usd > 0.0001 && (
+                    <p className="text-xs text-muted-foreground mt-1">
+                      UZS ekv.: {formatMoneyUZS(orderSalesSummary.uzsEquiv)}
+                    </p>
+                  )}
+                </>
+              ) : (
+                formatMoneyUZS(customer.total_sales ?? 0)
               )}
             </div>
-            <p className="text-xs text-muted-foreground">Umumiy (barcha davr)</p>
+            <p className="text-xs text-muted-foreground">
+              Umumiy (barcha davr)
+              {ordersError ? ' — saqlangan qiymat' : ''}
+            </p>
           </CardContent>
         </Card>
 
@@ -368,9 +433,19 @@ export default function CustomerDetail() {
           </CardHeader>
           <CardContent>
             <div className="text-2xl font-bold">
-              {!ordersLoading ? orders.length : (customer.total_orders ?? 0)}
+              {ordersCountIsFallback ? (
+                <>
+                  {ordersTabCount}
+                  <span className="text-xs align-super text-muted-foreground">*</span>
+                </>
+              ) : (
+                ordersTabCount
+              )}
             </div>
-            <p className="text-xs text-muted-foreground">Umumiy (barcha davr)</p>
+            <p className="text-xs text-muted-foreground">
+              Umumiy (barcha davr)
+              {ordersError ? ' — saqlangan qiymat' : ''}
+            </p>
           </CardContent>
         </Card>
 
@@ -381,15 +456,22 @@ export default function CustomerDetail() {
           </CardHeader>
           <CardContent>
             {(() => {
-              const balanceInfo = formatCustomerBalance(customer.balance);
+              const b = getCustomerBalances(customer);
+              const uzsInfo = formatCustomerBalance(b.uzs, 'UZS');
+              const usdInfo = formatCustomerBalance(b.usd, 'USD');
               return (
                 <>
-                  <div className="text-2xl font-bold">
-                    <Badge variant={balanceInfo.variant} className={balanceInfo.type === 'balance' ? 'bg-green-600 text-white hover:bg-green-700' : ''}>
-                      {balanceInfo.label}
+                  <div className="flex flex-col gap-2 text-sm font-semibold">
+                    <Badge variant={uzsInfo.variant} className={uzsInfo.type === 'balance' ? 'bg-green-600 text-white hover:bg-green-700' : ''}>
+                      UZS: {uzsInfo.label}
                     </Badge>
+                    {(Math.abs(b.usd) > 0.0001 || Math.abs(b.uzs) > 0.0001) && (
+                      <Badge variant={usdInfo.variant} className={usdInfo.type === 'balance' ? 'bg-green-600 text-white hover:bg-green-700' : ''}>
+                        USD: {usdInfo.label}
+                      </Badge>
+                    )}
                   </div>
-                  <p className="text-xs text-muted-foreground">Joriy balans</p>
+                  <p className="text-xs text-muted-foreground mt-2">Joriy balans (valyuta bo‘yicha alohida)</p>
                 </>
               );
             })()}
@@ -414,11 +496,11 @@ export default function CustomerDetail() {
       </div>
 
       {(() => {
-        const balanceInfo = formatCustomerBalance(customer.balance);
-        const hasDebt = (customer.balance || 0) < 0;
-        
-        if (!hasDebt) return null;
-        
+        const b = getCustomerBalances(customer);
+        const hasUzsDebt = b.uzs < -0.001;
+        const hasUsdDebt = b.usd < -0.001;
+        if (!hasUzsDebt && !hasUsdDebt) return null;
+
         return (
           <Card className="border-destructive/50">
             <CardHeader>
@@ -428,22 +510,32 @@ export default function CustomerDetail() {
               </CardTitle>
             </CardHeader>
             <CardContent className="space-y-4">
-              <div className="flex justify-between items-center">
-                <span className="text-sm text-muted-foreground">Joriy qarz:</span>
-                <span className="text-2xl font-bold text-destructive">
-                  {formatMoneyUZS(Math.abs(customer.balance || 0))}
-                </span>
-              </div>
-            {customer.credit_limit > 0 && (
+              {hasUzsDebt && (
+                <div className="flex justify-between items-center">
+                  <span className="text-sm text-muted-foreground">Qarz (UZS):</span>
+                  <span className="text-2xl font-bold text-destructive">
+                    {formatMoney(Math.abs(b.uzs), 'UZS')}
+                  </span>
+                </div>
+              )}
+              {hasUsdDebt && (
+                <div className="flex justify-between items-center">
+                  <span className="text-sm text-muted-foreground">Qarz (USD):</span>
+                  <span className="text-2xl font-bold text-destructive">
+                    {formatMoney(Math.abs(b.usd), 'USD')}
+                  </span>
+                </div>
+              )}
+            {hasUzsDebt && customer.credit_limit > 0 && (
               <>
                 <div className="flex justify-between items-center">
-                  <span className="text-sm text-muted-foreground">Nasiya limiti:</span>
+                  <span className="text-sm text-muted-foreground">Nasiya limiti (UZS):</span>
                   <span className="text-lg font-semibold">{formatMoneyUZS(customer.credit_limit)}</span>
                 </div>
                 <div className="flex justify-between items-center">
-                  <span className="text-sm text-muted-foreground">Qolgan limit:</span>
+                  <span className="text-sm text-muted-foreground">Qolgan limit (UZS):</span>
                   {(() => {
-                    const currentDebt = Math.max(0, -(customer.balance || 0));
+                    const currentDebt = Math.max(0, -b.uzs);
                     const remaining = Math.max(0, (customer.credit_limit || 0) - currentDebt);
                     return (
                       <span className={`text-lg font-semibold ${remaining > 0 ? 'text-success' : 'text-destructive'}`}>
@@ -454,6 +546,9 @@ export default function CustomerDetail() {
                 </div>
               </>
             )}
+              {hasUsdDebt && (
+                <p className="text-xs text-muted-foreground">USD qarz uchun alohida kredit limiti hozircha yo‘q.</p>
+              )}
             <Button 
               className="w-full bg-green-600 hover:bg-green-700 text-white" 
               onClick={() => setReceivePaymentOpen(true)}
@@ -479,7 +574,10 @@ export default function CustomerDetail() {
         <TabsList>
           <TabsTrigger value="info">Ma’lumot</TabsTrigger>
           <TabsTrigger value="loyalty">Loyalty karta</TabsTrigger>
-          <TabsTrigger value="orders">Buyurtmalar ({orders.length})</TabsTrigger>
+          <TabsTrigger value="orders">
+            Buyurtmalar ({ordersTabCount}
+            {ordersCountIsFallback ? '*' : ''})
+          </TabsTrigger>
           <TabsTrigger value="payments">To‘lovlar ({payments.length})</TabsTrigger>
           <TabsTrigger value="ledger">Hisob tarixi ({ledger.length})</TabsTrigger>
           <TabsTrigger value="bonus">Bonus tarixi ({bonusLedger.length})</TabsTrigger>
@@ -629,6 +727,15 @@ export default function CustomerDetail() {
                 <div className="flex justify-center py-8">
                   <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary" />
                 </div>
+              ) : ordersError ? (
+                <div className="rounded-lg border bg-muted/20 py-10 text-center">
+                  <AlertTriangle className="mx-auto mb-3 h-10 w-10 text-destructive" />
+                  <p className="mb-1 font-semibold">Xatolik</p>
+                  <p className="mb-4 text-sm text-muted-foreground">{ordersError}</p>
+                  <Button variant="outline" size="sm" onClick={loadOrders}>
+                    Qayta urinish
+                  </Button>
+                </div>
               ) : orders.length === 0 ? (
                 <div className="text-center py-8">
                   <p className="text-muted-foreground">Bu mijoz bo‘yicha buyurtmalar topilmadi</p>
@@ -650,7 +757,7 @@ export default function CustomerDetail() {
                         <TableCell className="font-medium">{order.order_number}</TableCell>
                         <TableCell>{formatDate(order.created_at)}</TableCell>
                         <TableCell className="text-right font-medium">
-                          {formatMoneyUZS(order.total_amount)}
+                          {formatOrderMoney(order, order.total_amount)}
                         </TableCell>
                         <TableCell>
                           <Badge
@@ -666,9 +773,11 @@ export default function CustomerDetail() {
                               ? 'Tugallangan'
                               : order.status === 'hold'
                                 ? 'Kutilmoqda'
-                                : order.status === 'refunded'
-                                  ? 'Qaytarilgan'
-                                  : order.status}
+                                : order.status === 'amended'
+                                  ? 'Tahrirlangan'
+                                  : order.status === 'returned'
+                                    ? 'Qaytarilgan'
+                                    : order.status}
                           </Badge>
                         </TableCell>
                         <TableCell className="text-right">
@@ -712,6 +821,7 @@ export default function CustomerDetail() {
                     <TableRow>
                       <TableHead>To‘lov raqami</TableHead>
                       <TableHead>Sana/vaqt</TableHead>
+                      <TableHead>Valyuta</TableHead>
                       <TableHead>Usul</TableHead>
                       <TableHead className="text-right">Summa</TableHead>
                       <TableHead>Izoh</TableHead>
@@ -739,7 +849,10 @@ export default function CustomerDetail() {
                           }`}
                         >
                           {payment.operation === 'payment_out' ? '-' : '+'}
-                          {formatMoneyUZS(Math.abs(Number(payment.amount || 0)))}
+                          {formatMoney(
+                            Math.abs(Number(payment.amount || 0)),
+                            normalizeCurrency(payment.currency, 'UZS')
+                          )}
                         </TableCell>
                         <TableCell className="text-muted-foreground">
                           {payment.notes || '-'}
@@ -862,7 +975,8 @@ export default function CustomerDetail() {
                             )}
                           </TableCell>
                           <TableCell className={`text-right font-medium ${entry.amount >= 0 ? 'text-green-600' : 'text-destructive'}`}>
-                            {entry.amount >= 0 ? '+' : ''}{formatMoneyUZS(entry.amount)}
+                            {entry.amount >= 0 ? '+' : ''}
+                            {formatMoney(entry.amount, normalizeCurrency(entry.currency, 'UZS'))}
                           </TableCell>
                           <TableCell>
                             {entry.method ? (
@@ -875,7 +989,8 @@ export default function CustomerDetail() {
                           </TableCell>
                           <TableCell className="text-right">
                             {(() => {
-                              const balanceInfo = formatCustomerBalance(entry.balance_after);
+                              const entryCur = normalizeCurrency(entry.currency, 'UZS');
+                              const balanceInfo = formatCustomerBalance(entry.balance_after, entryCur);
                               return (
                                 <Badge variant={balanceInfo.variant} className={balanceInfo.type === 'balance' ? 'bg-green-600 text-white hover:bg-green-700' : ''}>
                                   {balanceInfo.label}

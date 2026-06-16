@@ -33,7 +33,10 @@ import { ArrowLeft, Save, ImagePlus, X, Link, Upload, Plus, Trash2 } from 'lucid
 import { useInventoryStore } from '@/store/inventoryStore';
 import MoneyInput from '@/components/common/MoneyInput';
 import { isElectron, requireElectron, handleIpcResponse } from '@/utils/electron';
-import { getProductImageDisplayUrl } from '@/lib/productImageUrl';
+import { getProductImageDisplayUrl, normalizeImportImageUrl } from '@/lib/productImageUrl';
+import { MarketplaceProductPreview } from '@/components/products/MarketplaceProductPreview';
+import { loadRetailUsdPrice, saveRetailUsdPrice } from '@/lib/productPricing';
+import { optimizeProductImageFile } from '@/lib/optimizeProductImage';
 
 const MAX_VARIANT_OPTIONS = 16;
 const MAX_BROWSER_IMAGE_BYTES = 8 * 1024 * 1024;
@@ -72,6 +75,7 @@ export default function ProductForm() {
     base_unit: 'pcs',
     purchase_price: null as number | null,
     sale_price: null as number | null,
+    sale_price_usd: null as number | null,
     master_price: null as number | null,
     master_min_qty: '',
     min_stock_level: '0',
@@ -79,6 +83,7 @@ export default function ProductForm() {
     image_url: '',
     is_active: true,
     show_in_marketplace: true,
+    track_stock: true,
     brand: '',
     article: '',
   });
@@ -91,6 +96,8 @@ export default function ProductForm() {
   const [imageUrlInput, setImageUrlInput] = useState('');
   const [dragOver, setDragOver] = useState(false);
   const [variantOptions, setVariantOptions] = useState<ProductVariantOption[]>([]);
+  const [catalogStockQty, setCatalogStockQty] = useState(0);
+  const [imageOptimizing, setImageOptimizing] = useState(false);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   const isEditMode = !!id;
@@ -154,6 +161,7 @@ export default function ProductForm() {
           base_unit: baseUnit,
           purchase_price: product.purchase_price,
           sale_price: product.sale_price,
+          sale_price_usd: null,
           master_price: (product as any).master_price ?? null,
           master_min_qty:
             (product as any).master_min_qty === null || (product as any).master_min_qty === undefined
@@ -167,11 +175,24 @@ export default function ProductForm() {
             (product as any).show_in_marketplace === undefined ||
             (product as any).show_in_marketplace === 1 ||
             (product as any).show_in_marketplace === true,
+          track_stock:
+            (product as any).track_stock === undefined ||
+            (product as any).track_stock === 1 ||
+            (product as any).track_stock === true,
           brand: (product as any).brand || '',
           article: (product as any).article || '',
         });
         setDescriptionEnabled(!!product.description);
+        setCatalogStockQty(Number(product.current_stock ?? 0) || 0);
         setProductUnits(units);
+        try {
+          const usdRetail = await loadRetailUsdPrice(id, baseUnit);
+          if (usdRetail != null) {
+            setFormData((prev) => ({ ...prev, sale_price_usd: usdRetail }));
+          }
+        } catch {
+          // optional reference price
+        }
         try {
           const imgs = await getProductImages(id);
           setImages(imgs.map((i) => ({ url: i.url, id: i.id, sort_order: i.sort_order, is_primary: i.is_primary })));
@@ -336,12 +357,19 @@ export default function ProductForm() {
   const addImageUrl = (url: string) => {
     const u = String(url || '').trim();
     if (!u) return;
-    if (!/^https?:\/\//i.test(u) && !/^product-image:\/\//i.test(u) && !/^data:image\//i.test(u)) {
-      toast({ title: t('common.error'), description: 'Tekshirilgan URL kiriting (http://, https://...)', variant: 'destructive' });
+    const normalized = normalizeImportImageUrl(u);
+    if (!normalized) {
+      toast({
+        title: t('common.error'),
+        description: /^data:image\//i.test(u)
+          ? 'Onlayn katalog uchun rasmni fayl sifatida yuklang yoki HTTP URL kiriting'
+          : 'URL: http(s)://, /product-images/... yoki product-image://',
+        variant: 'destructive',
+      });
       return;
     }
     setImages((prev) => {
-      const next = [...prev, { url: u, sort_order: prev.length, is_primary: prev.length === 0 ? 1 : 0 }];
+      const next = [...prev, { url: normalized, sort_order: prev.length, is_primary: prev.length === 0 ? 1 : 0 }];
       setFormData((f) => ({ ...f, image_url: next[0]?.url || f.image_url }));
       return next;
     });
@@ -352,25 +380,60 @@ export default function ProductForm() {
     if (!isElectron()) return null;
     const api = requireElectron();
     const productIdOrTempId = id || `temp-${Date.now()}`;
-    const saved = await handleIpcResponse(api.files.saveProductImage(filePath, productIdOrTempId, index));
+    const saved = await handleIpcResponse<{ fileUrl?: string }>(api.files.saveProductImage(filePath, productIdOrTempId, index));
     return saved?.fileUrl || null;
   };
 
-  const readBrowserImageAsDataUrl = (file: File): Promise<string> =>
-    new Promise((resolve, reject) => {
-      if (!/^image\//.test(file.type || '')) {
-        reject(new Error('Faqat rasm fayllarini yuklash mumkin'));
-        return;
-      }
-      if (file.size > MAX_BROWSER_IMAGE_BYTES) {
-        reject(new Error('Rasm hajmi 8 MB dan oshmasin'));
-        return;
-      }
-      const reader = new FileReader();
-      reader.onload = () => resolve(String(reader.result || ''));
-      reader.onerror = () => reject(new Error('Rasmni o‘qib bo‘lmadi'));
-      reader.readAsDataURL(file);
-    });
+  const extFromFileName = (name: string) => {
+    const match = String(name || '').match(/(\.[a-z0-9]+)$/i);
+    return match ? match[1].toLowerCase() : '.jpg';
+  };
+
+  const pathToImageFile = async (filePath: string): Promise<File> => {
+    const api = requireElectron();
+    const fileUrl = await handleIpcResponse<string | null>(api.files.pathToFileUrl(filePath));
+    if (!fileUrl) throw new Error('Fayl topilmadi');
+    const res = await fetch(fileUrl);
+    const blob = await res.blob();
+    const name = filePath.replace(/^.*[/\\]/, '') || 'image.jpg';
+    return new File([blob], name, { type: blob.type || 'image/jpeg' });
+  };
+
+  const uploadPreparedImage = async (
+    file: File,
+    index: number,
+    sourcePath?: string | null,
+  ): Promise<string | null> => {
+    const productIdOrTempId = id || `temp-${Date.now()}`;
+    const api = getElectronApiSafe();
+    const optimized = await optimizeProductImageFile(file);
+    const uploadFile = optimized.file;
+
+    if (typeof api?.files?.uploadProductImage === 'function') {
+      const saved = await handleIpcResponse<{ fileUrl?: string }>(
+        api.files.uploadProductImage(uploadFile, productIdOrTempId, index),
+      );
+      return saved?.fileUrl || null;
+    }
+
+    if (optimized.skipped && sourcePath) {
+      return saveFileAsProductImage(sourcePath, index);
+    }
+
+    if (typeof api?.files?.saveProductImageBuffer === 'function') {
+      const buf = await uploadFile.arrayBuffer();
+      const saved = await handleIpcResponse<{ fileUrl?: string }>(
+        api.files.saveProductImageBuffer(buf, productIdOrTempId, index, extFromFileName(uploadFile.name)),
+      );
+      return saved?.fileUrl || null;
+    }
+
+    if (sourcePath) {
+      return saveFileAsProductImage(sourcePath, index);
+    }
+
+    throw new Error('Rasmni saqlab bo‘lmadi');
+  };
 
   const appendImageUrls = (urls: string[]) => {
     if (!urls.length) return;
@@ -391,23 +454,16 @@ export default function ProductForm() {
   const handleBrowserImageFiles = async (fileList: FileList | File[]) => {
     const files = Array.from(fileList || []).filter((f) => /^image\//.test(f.type || ''));
     if (!files.length) return;
+    setImageOptimizing(true);
     try {
-      const urls = [];
-      const api = getElectronApiSafe();
-      const productIdOrTempId = id || `temp-${Date.now()}`;
+      const urls: string[] = [];
       for (let i = 0; i < files.length; i++) {
         const file = files[i];
         if (file.size > MAX_BROWSER_IMAGE_BYTES) {
           throw new Error('Rasm hajmi 8 MB dan oshmasin');
         }
-        if (typeof api?.files?.uploadProductImage === 'function') {
-          const saved = await handleIpcResponse<{ fileUrl?: string }>(
-            api.files.uploadProductImage(file, productIdOrTempId, images.length + i)
-          );
-          if (saved?.fileUrl) urls.push(saved.fileUrl);
-        } else {
-          urls.push(await readBrowserImageAsDataUrl(file));
-        }
+        const saved = await uploadPreparedImage(file, images.length + i);
+        if (saved) urls.push(saved);
       }
       appendImageUrls(urls);
     } catch (error: any) {
@@ -416,6 +472,8 @@ export default function ProductForm() {
         description: error?.message || 'Rasm yuklab bo‘lmadi',
         variant: 'destructive',
       });
+    } finally {
+      setImageOptimizing(false);
     }
   };
 
@@ -427,20 +485,25 @@ export default function ProductForm() {
     if (!isElectron()) return;
     try {
       const api = requireElectron();
-      const res = await handleIpcResponse(api.files.selectImageFile());
+      const res = await handleIpcResponse<{ canceled?: boolean; filePaths?: string[] }>(api.files.selectImageFile());
       if (res?.canceled || !res?.filePaths?.length) return;
-      const filePaths = res.filePaths as string[];
-      const productIdOrTempId = id || `temp-${Date.now()}`;
-      const startIdx = images.length;
-      for (let i = 0; i < filePaths.length; i++) {
-        const saved = await saveFileAsProductImage(filePaths[i], startIdx + i);
-        if (saved) {
-          setImages((prev) => {
-            const next = [...prev, { url: saved, sort_order: prev.length, is_primary: prev.length === 0 ? 1 : 0 }];
-            setFormData((f) => ({ ...f, image_url: next[0]?.url || f.image_url }));
-            return next;
-          });
+      setImageOptimizing(true);
+      try {
+        const filePaths = res.filePaths as string[];
+        const startIdx = images.length;
+        for (let i = 0; i < filePaths.length; i++) {
+          const file = await pathToImageFile(filePaths[i]);
+          const saved = await uploadPreparedImage(file, startIdx + i, filePaths[i]);
+          if (saved) {
+            setImages((prev) => {
+              const next = [...prev, { url: saved, sort_order: prev.length, is_primary: prev.length === 0 ? 1 : 0 }];
+              setFormData((f) => ({ ...f, image_url: next[0]?.url || f.image_url }));
+              return next;
+            });
+          }
         }
+      } finally {
+        setImageOptimizing(false);
       }
     } catch (error: any) {
       toast({
@@ -470,16 +533,29 @@ export default function ProductForm() {
     if (!isElectron()) return;
     const files = Array.from(e.dataTransfer.files || []).filter((f) => /^image\//.test(f.type));
     if (!files.length) return;
-    const startIdx = images.length;
-    for (let i = 0; i < files.length; i++) {
-      const saved = await saveFileAsProductImage((files[i] as any).path, startIdx + i);
-      if (saved) {
-        setImages((prev) => {
-          const next = [...prev, { url: saved, sort_order: prev.length, is_primary: prev.length === 0 ? 1 : 0 }];
-          setFormData((f) => ({ ...f, image_url: next[0]?.url || f.image_url }));
-          return next;
-        });
+    setImageOptimizing(true);
+    try {
+      const startIdx = images.length;
+      for (let i = 0; i < files.length; i++) {
+        const dropped = files[i];
+        const sourcePath = (dropped as File & { path?: string }).path || null;
+        const saved = await uploadPreparedImage(dropped, startIdx + i, sourcePath);
+        if (saved) {
+          setImages((prev) => {
+            const next = [...prev, { url: saved, sort_order: prev.length, is_primary: prev.length === 0 ? 1 : 0 }];
+            setFormData((f) => ({ ...f, image_url: next[0]?.url || f.image_url }));
+            return next;
+          });
+        }
       }
+    } catch (error: any) {
+      toast({
+        title: t('common.error'),
+        description: error?.message || 'Rasm yuklab bo‘lmadi',
+        variant: 'destructive',
+      });
+    } finally {
+      setImageOptimizing(false);
     }
   };
 
@@ -507,27 +583,30 @@ export default function ProductForm() {
         await handleBrowserImageFiles(files);
         return;
       }
-      const api = requireElectron();
-      const productIdOrTempId = id || `temp-${Date.now()}`;
-      const newUrls: string[] = [];
-      for (let i = 0; i < items.length; i++) {
-        const item = items[i];
-        if (item.kind !== 'file' || !item.type.startsWith('image/')) continue;
-        const file = item.getAsFile();
-        if (!file) continue;
-        const path = (file as any).path;
-        if (!path) continue;
-        try {
-          const saved = await handleIpcResponse(api.files.saveProductImage(path, productIdOrTempId, newUrls.length));
-          if (saved?.fileUrl) newUrls.push(saved.fileUrl);
-        } catch (_) {}
-      }
-      if (newUrls.length > 0) {
-        setImages((prev) => {
-          const next = [...prev, ...newUrls.map((url, i) => ({ url, sort_order: prev.length + i, is_primary: prev.length === 0 && i === 0 ? 1 : 0 }))];
-          setFormData((f) => ({ ...f, image_url: next[0]?.url || f.image_url }));
-          return next;
-        });
+      setImageOptimizing(true);
+      try {
+        const api = requireElectron();
+        const newUrls: string[] = [];
+        for (let i = 0; i < items.length; i++) {
+          const item = items[i];
+          if (item.kind !== 'file' || !item.type.startsWith('image/')) continue;
+          const file = item.getAsFile();
+          if (!file) continue;
+          const sourcePath = (file as File & { path?: string }).path || null;
+          try {
+            const saved = await uploadPreparedImage(file, newUrls.length, sourcePath);
+            if (saved) newUrls.push(saved);
+          } catch (_) {}
+        }
+        if (newUrls.length > 0) {
+          setImages((prev) => {
+            const next = [...prev, ...newUrls.map((url, i) => ({ url, sort_order: prev.length + i, is_primary: prev.length === 0 && i === 0 ? 1 : 0 }))];
+            setFormData((f) => ({ ...f, image_url: next[0]?.url || f.image_url }));
+            return next;
+          });
+        }
+      } finally {
+        setImageOptimizing(false);
       }
     };
     window.addEventListener('paste', onPaste);
@@ -708,6 +787,7 @@ export default function ProductForm() {
         image_url: firstImageUrl,
         is_active: formData.is_active,
         show_in_marketplace: formData.show_in_marketplace,
+        track_stock: formData.track_stock,
         brand: formData.brand.trim() || null,
         article: formData.article.trim() || null,
         variant_options: cleanedVariants,
@@ -736,6 +816,8 @@ export default function ProductForm() {
         return;
       }
 
+      const defaultUnit = formData.base_unit || formData.unit || 'pcs';
+
       if (isEditMode && id) {
         await updateProduct(id, productData);
         try {
@@ -744,6 +826,11 @@ export default function ProductForm() {
           if (!e?.message?.includes('setImages') && !e?.message?.includes('setimages')) throw e;
           console.warn('[ProductForm] setProductImages failed, product saved without images sync:', e?.message);
         }
+        try {
+          await saveRetailUsdPrice(id, defaultUnit, formData.sale_price_usd);
+        } catch (e: any) {
+          console.warn('[ProductForm] USD retail price save failed:', e?.message);
+        }
         toast({
           title: t('common.success'),
           description: t('productForm.updated_success'),
@@ -751,6 +838,12 @@ export default function ProductForm() {
       } else {
         const initialStock = Number(formData.initial_stock) || 0;
         const newProduct = await createProduct(productData, initialStock);
+
+        try {
+          await saveRetailUsdPrice(newProduct.id, defaultUnit, formData.sale_price_usd);
+        } catch (e: any) {
+          console.warn('[ProductForm] USD retail price save failed:', e?.message);
+        }
 
         if (images.length > 0) {
           try {
@@ -1074,6 +1167,9 @@ export default function ProductForm() {
                     <span className="text-xs text-muted-foreground self-center">|</span>
                     <span className="text-xs text-muted-foreground self-center">Ctrl+V — buferdan</span>
                   </div>
+                  {imageOptimizing && (
+                    <p className="text-xs text-primary mt-2">Optimizatsiya qilinmoqda...</p>
+                  )}
                   <p className="text-xs text-muted-foreground mt-2">
                     {t('productForm.image_url_hint')} — Telegram bot / online market uchun
                   </p>
@@ -1111,11 +1207,44 @@ export default function ProductForm() {
                   <Label htmlFor="show_in_marketplace" className="text-sm">
                     {t('productForm.marketplace_catalog')}
                   </Label>
+                  <Switch
+                    id="track_stock"
+                    checked={formData.track_stock}
+                    onCheckedChange={(checked) =>
+                      setFormData({ ...formData, track_stock: checked })
+                    }
+                  />
+                  <Label htmlFor="track_stock" className="text-sm">
+                    Zaxirani kuzatish
+                  </Label>
                 </div>
               </div>
               <p className="text-xs text-muted-foreground pl-1">
                 {t('productForm.marketplace_catalog_hint')}
               </p>
+              <p className="text-xs text-muted-foreground pl-1">
+                «Zaxirani kuzatish» o‘chirilsa, onlayn do‘konda mahsulot doim mavjud ko‘rinadi.
+              </p>
+              <div className="pt-2">
+                <MarketplaceProductPreview
+                  name={formData.name}
+                  salePrice={Number(formData.sale_price ?? 0) || 0}
+                  imageUrl={images[0]?.url || formData.image_url || null}
+                  description={descriptionEnabled ? formData.description : ''}
+                  isAvailable={
+                    !formData.track_stock ||
+                    (isEditMode
+                      ? catalogStockQty > 0
+                      : Number(formData.initial_stock || 0) > 0)
+                  }
+                  showInMarketplace={formData.show_in_marketplace}
+                  trackStock={formData.track_stock}
+                  stockQuantity={
+                    isEditMode ? catalogStockQty : Number(formData.initial_stock || 0) || 0
+                  }
+                  options={variantOptions}
+                />
+              </div>
               {descriptionEnabled && (
                 <Textarea
                   id="description"
@@ -1172,6 +1301,25 @@ export default function ProductForm() {
                   onChange={(e) => setFormData({ ...formData, master_min_qty: e.target.value })}
                   placeholder="0"
                 />
+              </div>
+              <div className="space-y-2 md:col-span-3">
+                <Label htmlFor="sale_price_usd">Chakana narx (USD, ixtiyoriy)</Label>
+                <Input
+                  id="sale_price_usd"
+                  type="number"
+                  step="0.01"
+                  min="0"
+                  value={formData.sale_price_usd ?? ''}
+                  onChange={(e) =>
+                    setFormData({
+                      ...formData,
+                      sale_price_usd: e.target.value === '' ? null : Number(e.target.value),
+                    })
+                  }
+                  placeholder="0.00"
+                  className="text-right"
+                />
+                <p className="text-xs text-muted-foreground">POS da ko&apos;rsatish uchun; sotuv UZS da.</p>
               </div>
               <div className="space-y-2 md:col-span-3">
                 <Label>{t('productForm.profit_margin_label')}</Label>

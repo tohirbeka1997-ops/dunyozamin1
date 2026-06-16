@@ -17,6 +17,7 @@ import { openPrintWindow, openPrintWindowA4 } from '@/lib/print';
 import ReceiptTemplateView from '@/components/print/ReceiptTemplateView';
 import { renderReceiptTemplate } from '@/lib/receipts/renderReceiptTemplate';
 import { getActiveReceiptTemplate, resolveReceiptTemplateStore } from '@/lib/receipts/templateStore';
+import { applyReceiptSettingsToTemplate } from '@/hooks/useReceiptSettings';
 import { buildReceiptInputFromOrder } from '@/lib/receipts/receiptModel';
 import { buildReceiptLines, DEFAULT_CHARS_PER_LINE, DEFAULT_CHARS_PER_LINE_58 } from '@/lib/receipts/receiptTextBuilder';
 import { printEscposReceipt } from '@/lib/receipts/escposPrint';
@@ -40,7 +41,10 @@ export default function PrintDialog({ open, onOpenChange, orderId, order: initia
   const [receiptSettings, setReceiptSettings] = useState<ReceiptSettings | null>(null);
   const [companySettings, setCompanySettings] = useState<CompanySettings | null>(null);
   const [receiptTemplateStore, setReceiptTemplateStore] = useState<ReceiptTemplateStore | null>(null);
-  const activeTemplate = getActiveReceiptTemplate(receiptTemplateStore);
+  const rawActiveTemplate = getActiveReceiptTemplate(receiptTemplateStore);
+  const activeTemplate = rawActiveTemplate && receiptSettings
+    ? applyReceiptSettingsToTemplate(rawActiveTemplate, receiptSettings)
+    : rawActiveTemplate;
 
   useEffect(() => {
     if (open && !initialOrder) {
@@ -60,8 +64,8 @@ export default function PrintDialog({ open, onOpenChange, orderId, order: initia
         getSettingsByCategory('company'),
         getSettingsByCategory('receipt_templates'),
       ]);
-      setReceiptSettings(receipt as ReceiptSettings);
-      setCompanySettings(company as CompanySettings);
+      setReceiptSettings(receipt as unknown as ReceiptSettings);
+      setCompanySettings(company as unknown as CompanySettings);
       setReceiptTemplateStore(resolveReceiptTemplateStore(receiptTemplates));
     } catch {
       setReceiptSettings(null);

@@ -172,8 +172,8 @@ export default function FraudSignalsReport() {
     if (type === 'excessive_discount') {
       return <Badge className="bg-orange-500">Ko'p chegirma</Badge>;
     }
-    if (type === 'suspicious_return') {
-      return <Badge className="bg-yellow-600">Shubhali qaytarish</Badge>;
+    if (type === 'high_value_return' || type === 'suspicious_return') {
+      return <Badge className="bg-yellow-600">Yuqori summa qaytarish</Badge>;
     }
     return <Badge variant="secondary">Boshqa</Badge>;
   };
@@ -199,7 +199,7 @@ export default function FraudSignalsReport() {
               Fraud Signals (Nazorat)
             </h1>
             <p className="text-muted-foreground">
-              Juda ko'p bekor qilish va chegirma aniqlash
+              Bekor qilish va katta chegirma (summalar UZS ekvivalentida)
             </p>
           </div>
         </div>
@@ -318,7 +318,7 @@ export default function FraudSignalsReport() {
           <CardContent className="pt-6">
             <div className="flex items-center gap-2">
               <Percent className="h-5 w-5 text-destructive" />
-              <p className="text-sm text-muted-foreground">Chegirma yo'qotishi</p>
+              <p className="text-sm text-muted-foreground">Chegirma yo'qotishi (UZS)</p>
             </div>
             <div className="text-2xl font-bold mt-2 text-destructive">
               {formatMoneyUZS(overallStats.totalDiscountLoss)}
@@ -348,7 +348,7 @@ export default function FraudSignalsReport() {
                     <TableHead className="text-right">Bekor qilish</TableHead>
                     <TableHead className="text-right">Bekor %</TableHead>
                     <TableHead className="text-right">Ko'p chegirma</TableHead>
-                    <TableHead className="text-right">Chegirma yo'qotishi</TableHead>
+                    <TableHead className="text-right">Chegirma yo'qotishi (UZS)</TableHead>
                     <TableHead className="text-right">O'rtacha chegirma</TableHead>
                     <TableHead className="text-right">Xavf balli</TableHead>
                     <TableHead className="text-center">Daraja</TableHead>
@@ -413,7 +413,7 @@ export default function FraudSignalsReport() {
                     <TableHead>Kassir</TableHead>
                     <TableHead>Chek №</TableHead>
                     <TableHead className="text-center">Turi</TableHead>
-                    <TableHead className="text-right">Summa</TableHead>
+                    <TableHead className="text-right">Summa (UZS ekv.)</TableHead>
                     <TableHead className="text-right">Chegirma %</TableHead>
                     <TableHead>Tavsif</TableHead>
                     <TableHead className="text-right">Xavf</TableHead>

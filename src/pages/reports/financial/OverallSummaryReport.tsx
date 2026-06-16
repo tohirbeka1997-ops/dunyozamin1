@@ -15,6 +15,8 @@ import {
 } from '@/components/ui/table';
 import { useToast } from '@/hooks/use-toast';
 import { formatMoneyUZS } from '@/lib/format';
+import { aggregatePurchaseOrders, formatMoney, splitSupplierBalances } from '@/lib/currency';
+import { DualCurrencyAmount } from '@/components/common/DualCurrencyAmount';
 import { formatDateTime, todayYMD } from '@/lib/datetime';
 import { useReportAutoRefresh } from '@/hooks/useReportAutoRefresh';
 import {
@@ -62,8 +64,10 @@ export default function OverallSummaryReport() {
     low_stock_count: number;
   }>(null);
   const [customerDebt, setCustomerDebt] = useState<number>(0);
-  const [supplierPayables, setSupplierPayables] = useState<number>(0);
-  const [supplierCredits, setSupplierCredits] = useState<number>(0);
+  const [supplierPayablesUzs, setSupplierPayablesUzs] = useState(0);
+  const [supplierPayablesUsd, setSupplierPayablesUsd] = useState(0);
+  const [supplierCreditsUzs, setSupplierCreditsUzs] = useState(0);
+  const [supplierCreditsUsd, setSupplierCreditsUsd] = useState(0);
   const [warehouses, setWarehouses] = useState<Warehouse[]>([]);
   const [warehouseId, setWarehouseId] = useState<string>('all');
 
@@ -141,10 +145,11 @@ export default function OverallSummaryReport() {
       setInventorySummary(inv);
       setCustomerDebt(Number(custDebt || 0));
 
-      const payables = (suppliers || []).reduce((sum: number, s: any) => sum + (Number(s.balance || 0) > 0 ? Number(s.balance || 0) : 0), 0);
-      const credits = (suppliers || []).reduce((sum: number, s: any) => sum + (Number(s.balance || 0) < 0 ? Math.abs(Number(s.balance || 0)) : 0), 0);
-      setSupplierPayables(payables);
-      setSupplierCredits(credits);
+      const split = splitSupplierBalances(suppliers || []);
+      setSupplierPayablesUzs(split.payablesUzs);
+      setSupplierPayablesUsd(split.payablesUsd);
+      setSupplierCreditsUzs(split.creditsUzs);
+      setSupplierCreditsUsd(split.creditsUsd);
     } catch (error) {
       toast({
         title: 'Xatolik',
@@ -158,34 +163,15 @@ export default function OverallSummaryReport() {
 
   useReportAutoRefresh(loadData);
 
-  const purchaseTotals = useMemo(() => {
-    const active = (purchaseOrders || []).filter((po: any) => String(po.status || '').toLowerCase() !== 'cancelled');
+  const purchaseTotals = useMemo(
+    () => aggregatePurchaseOrders(purchaseOrders as any),
+    [purchaseOrders]
+  );
 
-    const totalOrdered = active.reduce((sum, po: any) => sum + Number(po.total_amount || 0), 0);
-    const totalPaid = active.reduce((sum, po: any) => sum + Number(po.paid_amount || 0), 0);
-
-    const totalReceived = active.reduce((sum, po: any) => {
-      const items = Array.isArray(po.items) ? po.items : [];
-      const received = items.reduce((s2: number, it: any) => s2 + (Number(it.received_qty || 0) * Number(it.unit_cost || 0)), 0);
-      return sum + received;
-    }, 0);
-
-    // Debt should be based on received goods (if not received yet, it’s not a payable yet)
-    const totalDebt = active.reduce((sum, po: any) => {
-      const items = Array.isArray(po.items) ? po.items : [];
-      const received = items.reduce((s2: number, it: any) => s2 + (Number(it.received_qty || 0) * Number(it.unit_cost || 0)), 0);
-      const paid = Number(po.paid_amount || 0);
-      return sum + Math.max(0, received - paid);
-    }, 0);
-
-    return { totalOrdered, totalReceived, totalPaid, totalDebt, count: active.length };
-  }, [purchaseOrders]);
-
-  const netDebtPosition = useMemo(() => {
-    // As requested: net = customer receivables - supplier payables
-    // Positive => we are owed overall; Negative => we owe overall.
-    return Number(customerDebt || 0) - Number(supplierPayables || 0);
-  }, [customerDebt, supplierPayables]);
+  const netDebtPositionUzs = useMemo(() => {
+    // UZS-only net: customer AR (UZS) minus UZS supplier payables (USD payables shown separately).
+    return Number(customerDebt || 0) - Number(supplierPayablesUzs || 0);
+  }, [customerDebt, supplierPayablesUzs]);
 
   const rangeLabel = useMemo(() => {
     const from = selectedRange.fromYMD;
@@ -217,7 +203,7 @@ export default function OverallSummaryReport() {
     if (!isElectron()) return;
     const rows: Array<[string, string]> = [
       ['Band', 'So‘m'],
-      ['Tovar kirimi (qabul qilingan)', String(purchaseTotals.totalReceived)],
+      ['Tovar kirimi (qabul qilingan)', String(purchaseTotals.receivedUzs)],
       ['Sotuv tushumi', String(netSales)],
       ['Sotilgan tovar tannarxi (COGS)', String(-totalCogs)],
       ['Yalpi foyda', String(grossProfit)],
@@ -247,6 +233,8 @@ export default function OverallSummaryReport() {
     );
   }
 
+  const netSalesUzs = Number(analytics?.total_sales_uzs ?? analytics?.total_sales ?? 0);
+  const netSalesUsd = Number(analytics?.total_sales_usd ?? 0);
   const netSales = Number(analytics?.total_sales || 0);
   const totalCogs = Number(analytics?.total_cogs || 0);
   const totalExpenses = Number(analytics?.total_expenses || 0);
@@ -360,9 +348,16 @@ export default function OverallSummaryReport() {
             <CardTitle className="text-sm text-muted-foreground">Jami sotuv (sof)</CardTitle>
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold">{formatMoneyUZS(netSales)}</div>
+            <div className="text-2xl font-bold">
+              <DualCurrencyAmount uzs={netSalesUzs} usd={netSalesUsd} />
+            </div>
             <div className="text-sm text-muted-foreground">
               Buyurtmalar: {Number(analytics?.total_orders || 0)} · Tovarlar: {Number(analytics?.items_sold || 0)}
+              {netSalesUsd > 0 && (
+                <span className="block text-xs mt-1">
+                  P&L (UZS ekv.): {formatMoneyUZS(netSales)}
+                </span>
+              )}
             </div>
           </CardContent>
         </Card>
@@ -420,7 +415,7 @@ export default function OverallSummaryReport() {
             <TableBody>
               <TableRow>
                 <TableCell className="text-muted-foreground">1. Tovar kirimi (qabul qilingan, xarid bo‘yicha)</TableCell>
-                <TableCell className="text-right font-medium">{formatMoneyUZS(purchaseTotals.totalReceived)}</TableCell>
+                <TableCell className="text-right font-medium">{formatMoneyUZS(purchaseTotals.receivedUzs)}</TableCell>
               </TableRow>
               <TableRow>
                 <TableCell className="text-muted-foreground">2. Sotuv tushumi (yakunlangan buyurtmalar)</TableCell>
@@ -481,24 +476,40 @@ export default function OverallSummaryReport() {
               <span className="font-bold">{formatMoneyUZS(customerDebt)}</span>
             </div>
             <div className="flex items-center justify-between">
-              <span className="text-muted-foreground">Yetkazib beruvchiga qarz (hozir)</span>
-              <span className="font-bold text-destructive">{formatMoneyUZS(supplierPayables)}</span>
+              <span className="text-muted-foreground">Yetkazib beruvchiga qarz (UZS)</span>
+              <span className="font-bold text-destructive">{formatMoney(supplierPayablesUzs, 'UZS')}</span>
             </div>
             <div className="flex items-center justify-between pt-2 border-t">
-              <span className="text-muted-foreground">Umumiy balans (mijoz − yetkazib beruvchi)</span>
-              <span className={`font-bold ${netDebtPosition >= 0 ? 'text-success' : 'text-destructive'}`}>
-                {formatMoneyUZS(Math.abs(netDebtPosition))}
+              <span className="text-muted-foreground">Umumiy balans (UZS, mijoz − UZS qarz)</span>
+              <span className={`font-bold ${netDebtPositionUzs >= 0 ? 'text-success' : 'text-destructive'}`}>
+                {formatMoney(Math.abs(netDebtPositionUzs), 'UZS')}
               </span>
             </div>
             <div className="text-xs text-muted-foreground -mt-1">
-              {netDebtPosition >= 0
-                ? `Natija: sizning haqqingiz ${formatMoneyUZS(netDebtPosition)}`
-                : `Natija: sizning qarzingiz ${formatMoneyUZS(Math.abs(netDebtPosition))}`}
+              {netDebtPositionUzs >= 0
+                ? `Natija (UZS): sizning haqqingiz ${formatMoney(netDebtPositionUzs, 'UZS')}`
+                : `Natija (UZS): sizning qarzingiz ${formatMoney(Math.abs(netDebtPositionUzs), 'UZS')}`}
             </div>
-            {supplierCredits > 0 && (
+            {supplierPayablesUsd > 0 && (
               <div className="flex items-center justify-between">
-                <span className="text-muted-foreground">Yetkazib beruvchidan haqim (hozir)</span>
-                <span className="font-bold text-success">{formatMoneyUZS(supplierCredits)}</span>
+                <span className="text-muted-foreground">Yetkazib beruvchiga qarz (USD)</span>
+                <span className="font-bold text-destructive">{formatMoney(supplierPayablesUsd, 'USD')}</span>
+              </div>
+            )}
+            {(supplierCreditsUzs > 0 || supplierCreditsUsd > 0) && (
+              <div className="space-y-1">
+                {supplierCreditsUzs > 0 && (
+                  <div className="flex items-center justify-between">
+                    <span className="text-muted-foreground">Yetkazib beruvchidan haq (UZS)</span>
+                    <span className="font-bold text-success">{formatMoney(supplierCreditsUzs, 'UZS')}</span>
+                  </div>
+                )}
+                {supplierCreditsUsd > 0 && (
+                  <div className="flex items-center justify-between">
+                    <span className="text-muted-foreground">Yetkazib beruvchidan haq (USD)</span>
+                    <span className="font-bold text-success">{formatMoney(supplierCreditsUsd, 'USD')}</span>
+                  </div>
+                )}
               </div>
             )}
             <div className="text-xs text-muted-foreground">
@@ -514,19 +525,31 @@ export default function OverallSummaryReport() {
           <CardContent className="space-y-3">
             <div className="flex items-center justify-between">
               <span className="text-muted-foreground">Buyurtma qilingan</span>
-              <span className="font-bold">{formatMoneyUZS(purchaseTotals.totalOrdered)}</span>
+              <DualCurrencyAmount
+                uzs={purchaseTotals.orderedUzs}
+                usd={purchaseTotals.orderedUsd}
+                className="font-bold"
+              />
             </div>
             <div className="flex items-center justify-between">
-              <span className="text-muted-foreground">Qabul qilingan (tovar)</span>
-              <span className="font-bold text-success">{formatMoneyUZS(purchaseTotals.totalReceived)}</span>
+              <span className="text-muted-foreground">Qabul qilingan (tovar, UZS)</span>
+              <span className="font-bold text-success">{formatMoneyUZS(purchaseTotals.receivedUzs)}</span>
             </div>
             <div className="flex items-center justify-between">
               <span className="text-muted-foreground">To‘langan</span>
-              <span className="font-bold">{formatMoneyUZS(purchaseTotals.totalPaid)}</span>
+              <DualCurrencyAmount
+                uzs={purchaseTotals.paidUzs}
+                usd={purchaseTotals.paidUsd}
+                className="font-bold"
+              />
             </div>
             <div className="flex items-center justify-between">
-              <span className="text-muted-foreground">Qarz (qabul qilingan − to‘langan)</span>
-              <span className="font-bold text-destructive">{formatMoneyUZS(purchaseTotals.totalDebt)}</span>
+              <span className="text-muted-foreground">Qarz</span>
+              <DualCurrencyAmount
+                uzs={purchaseTotals.debtUzs}
+                usd={purchaseTotals.debtUsd}
+                className="font-bold text-destructive"
+              />
             </div>
             <div className="text-xs text-muted-foreground">PO soni: {purchaseTotals.count}</div>
           </CardContent>

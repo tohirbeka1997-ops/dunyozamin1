@@ -35,7 +35,7 @@ import { Search, ArrowLeft, Package, AlertCircle } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 import { useInventoryStore } from '@/store/inventoryStore';
 import { useAuth } from '@/contexts/AuthContext';
-import { formatMoneyUZS } from '@/lib/format';
+import { formatMoneyUZS, formatOrderMoney } from '@/lib/format';
 import { useQueryClient } from '@tanstack/react-query';
 import { invalidateDashboardQueries } from '@/utils/dashboard';
 import { formatDate } from '@/lib/datetime';
@@ -53,6 +53,7 @@ interface ReturnItem {
   unit_price: number;
   line_total: number;
   sale_unit?: string;
+  qty_sale?: number;
   qty_base?: number;
   base_price?: number;
   usta_price?: number | null;
@@ -884,7 +885,7 @@ export default function CreateReturn() {
                       <TableCell className="font-medium">{order.order_number}</TableCell>
                       <TableCell>{order.customer?.name || t('pos.walk_in_customer')}</TableCell>
                       <TableCell>{formatDate(order.created_at)}</TableCell>
-                      <TableCell className="text-right">{formatMoneyUZS(order.total_amount)}</TableCell>
+                      <TableCell className="text-right">{formatOrderMoney(order, order.total_amount)}</TableCell>
                       <TableCell className="text-right">
                         <Button 
                           size="sm" 
@@ -1015,7 +1016,7 @@ export default function CreateReturn() {
                   </div>
                   <div>
                     <Label className="text-muted-foreground">{t('sales_returns.create.total_amount')}</Label>
-                    <p className="font-medium">{formatMoneyUZS(selectedOrder.total_amount)}</p>
+                    <p className="font-medium">{formatOrderMoney(selectedOrder, selectedOrder.total_amount)}</p>
                   </div>
                 </div>
               </CardContent>
@@ -1116,11 +1117,11 @@ export default function CreateReturn() {
                           title={!item.is_manual && item.available_quantity <= 0 ? 'Qolgan miqdor yo\'q' : undefined}
                         />
                       </TableCell>
-                      <TableCell className="text-right">{formatMoneyUZS(item.sold_unit_price || 0)}</TableCell>
-                      <TableCell className="text-right">{formatMoneyUZS(item.discount_per_unit || 0)}</TableCell>
-                      <TableCell className="text-right">{formatMoneyUZS(item.unit_price)}</TableCell>
+                      <TableCell className="text-right">{formatOrderMoney(selectedOrder ?? {}, item.sold_unit_price || 0)}</TableCell>
+                      <TableCell className="text-right">{formatOrderMoney(selectedOrder ?? {}, item.discount_per_unit || 0)}</TableCell>
+                      <TableCell className="text-right">{formatOrderMoney(selectedOrder ?? {}, item.unit_price)}</TableCell>
                       <TableCell className="text-right font-medium">
-                        {formatMoneyUZS(item.line_total)}
+                        {formatOrderMoney(selectedOrder ?? {}, item.line_total)}
                       </TableCell>
                     </TableRow>
                   ))}
@@ -1130,15 +1131,15 @@ export default function CreateReturn() {
               <div className="mt-6 space-y-2 border-t pt-4">
                 <div className="flex justify-between text-sm">
                   <span>{t('sales_returns.create.subtotal')}:</span>
-                  <span className="font-medium">{formatMoneyUZS(subtotal)}</span>
+                  <span className="font-medium">{formatOrderMoney(selectedOrder ?? {}, subtotal)}</span>
                 </div>
                 <div className="flex justify-between text-sm">
                   <span>{t('sales_returns.create.tax')}:</span>
-                  <span className="font-medium">{formatMoneyUZS(taxAmount)}</span>
+                  <span className="font-medium">{formatOrderMoney(selectedOrder ?? {}, taxAmount)}</span>
                 </div>
                 <div className="flex justify-between text-lg font-bold border-t pt-2">
                   <span>{t('sales_returns.create.total_refund')}:</span>
-                  <span>{formatMoneyUZS(totalRefund)}</span>
+                  <span>{formatOrderMoney(selectedOrder ?? {}, totalRefund)}</span>
                 </div>
               </div>
 
@@ -1267,7 +1268,7 @@ export default function CreateReturn() {
                       </>
                     )}
                     <p className="text-sm font-medium">
-                      {t('sales_returns.create.summary.total_refund')}: {formatMoneyUZS(totalRefund)}
+                      {t('sales_returns.create.summary.total_refund')}: {formatOrderMoney(selectedOrder ?? {}, totalRefund)}
                     </p>
                   </div>
                 </div>

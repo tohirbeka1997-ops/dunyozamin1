@@ -26,7 +26,7 @@ import type { SalesReturnWithDetails } from '@/types/database';
 import { ArrowLeft, Save, Plus, Minus } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 import { Skeleton } from '@/components/ui/skeleton';
-import { formatMoneyUZS } from '@/lib/format';
+import { formatMoneyUZS, formatOrderMoney, formatReturnMoney } from '@/lib/format';
 
 export default function EditReturn() {
   const { t } = useTranslation();
@@ -41,6 +41,15 @@ export default function EditReturn() {
   // Editable item quantities
   const [itemQuantities, setItemQuantities] = useState<Record<string, number>>({});
 
+  const saleOrder = useMemo(
+    () =>
+      returnData?.order ??
+      ({ currency: (returnData as { order_currency?: string | null })?.order_currency ?? 'UZS' } as {
+        currency?: string | null;
+      }),
+    [returnData]
+  );
+
   useEffect(() => {
     if (id) {
       loadReturnData();
@@ -53,26 +62,19 @@ export default function EditReturn() {
     try {
       setLoading(true);
       const data = await getSalesReturnById(id);
-      console.log('[EDIT_RETURN_RAW] Raw data from API:', JSON.stringify(data, null, 2));
-      
-      console.log('[EditReturn] Loaded return data:', {
-        id: data.id,
-        return_number: data.return_number,
-        items_count: data.items?.length || 0,
-        items_sample: data.items?.slice(0, 2).map(item => ({
-          id: item.id,
-          order_item_id: (item as any).order_item_id,
-          quantity: item.quantity,
-          sold_quantity: (item as any).sold_quantity,
-          original_sold_quantity: (item as any).original_sold_quantity,
-          returned_quantity: (item as any).returned_quantity,
-          already_returned_quantity: (item as any).already_returned_quantity,
-          current_quantity: (item as any).current_quantity,
-          max_allowed_quantity: (item as any).max_allowed_quantity,
-          all_fields: Object.keys(item),
-        })),
-      });
-      
+
+      if (String(data.status || '').toLowerCase() === 'completed') {
+        toast({
+          title: t('common.info', { defaultValue: 'Maʼlumot' }),
+          description: t('sales_returns.cannot_edit_completed', {
+            defaultValue:
+              "Yakunlangan qaytarishlarni tahrirlab bo'lmaydi. Kerak bo'lsa qaytarishni o'chirib, yangisini yarating.",
+          }),
+        });
+        navigate(`/returns/${id}`, { replace: true });
+        return;
+      }
+
       setReturnData(data);
       setReason(data.reason || '');
       setNotes(data.notes || '');
@@ -237,16 +239,9 @@ export default function EditReturn() {
     return null;
   }
 
-  // Check if return can be edited
-  const canEdit = returnData.status !== 'Completed';
-
-  if (!canEdit) {
-    toast({
-      title: t('common.error'),
-      description: t('sales_returns.cannot_edit_completed', { defaultValue: 'Yakunlangan qaytarishlarni tahrirlab bo\'lmaydi' }),
-      variant: 'destructive',
-    });
-    navigate(`/sales-returns/${id}`);
+  // loadReturnData already redirects completed returns; this is a safety net.
+  if (String(returnData.status || '').toLowerCase() === 'completed') {
+    navigate(`/returns/${id}`, { replace: true });
     return null;
   }
 
@@ -292,7 +287,7 @@ export default function EditReturn() {
             </div>
             <div>
               <Label className="text-muted-foreground">{t('sales_returns.create.total_amount')}</Label>
-              <p className="font-medium">{formatMoneyUZS(returnData.total_amount)}</p>
+              <p className="font-medium">{formatReturnMoney(returnData, saleOrder)}</p>
             </div>
             <div>
               <Label className="text-muted-foreground">{t('common.status')}</Label>
@@ -396,9 +391,9 @@ export default function EditReturn() {
                         </p>
                       )}
                     </TableCell>
-                    <TableCell className="text-right">{formatMoneyUZS(item.unit_price)}</TableCell>
+                    <TableCell className="text-right">{formatOrderMoney(saleOrder, item.unit_price)}</TableCell>
                     <TableCell className="text-right font-medium">
-                      {formatMoneyUZS(lineTotal)}
+                      {formatOrderMoney(saleOrder, lineTotal)}
                     </TableCell>
                   </TableRow>
                 );
@@ -408,7 +403,7 @@ export default function EditReturn() {
           <div className="mt-4 flex justify-end">
             <div className="text-right">
               <p className="text-sm text-muted-foreground">{t('sales_returns.create.total_refund')}</p>
-              <p className="text-2xl font-bold">{formatMoneyUZS(calculatedTotals.total)}</p>
+              <p className="text-2xl font-bold">{formatOrderMoney(saleOrder, calculatedTotals.total)}</p>
             </div>
           </div>
         </CardContent>

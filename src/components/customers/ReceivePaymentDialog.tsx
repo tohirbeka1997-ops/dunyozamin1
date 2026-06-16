@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Button } from '@/components/ui/button';
 import {
   Dialog,
@@ -8,7 +8,6 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog';
-import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import {
   Select,
@@ -22,7 +21,16 @@ import { useToast } from '@/hooks/use-toast';
 import { receiveCustomerPayment } from '@/db/api';
 import type { Customer } from '@/types/database';
 import { DollarSign } from 'lucide-react';
-import { formatMoneyUZS } from '@/lib/format';
+import {
+  formatCustomerBalance,
+  formatMoney,
+  formatMoneyUZS,
+} from '@/lib/format';
+import {
+  getCustomerBalances,
+  type AppCurrency,
+} from '@/lib/currency';
+import { fetchUzsPerUsdRate } from '@/lib/fxRate';
 import MoneyInput from '@/components/common/MoneyInput';
 import { useQueryClient } from '@tanstack/react-query';
 import { invalidateDashboardQueries } from '@/utils/dashboard';
@@ -38,6 +46,22 @@ interface ReceivePaymentDialogProps {
   onSuccess: () => void;
 }
 
+function BalanceLine({
+  variant,
+  label,
+}: {
+  variant: 'destructive' | 'default' | 'outline';
+  label: string;
+}) {
+  const cls =
+    variant === 'destructive'
+      ? 'text-destructive font-semibold'
+      : variant === 'default'
+        ? 'text-green-600 font-semibold'
+        : 'text-muted-foreground';
+  return <span className={cls}>{label}</span>;
+}
+
 export default function ReceivePaymentDialog({
   customer,
   open,
@@ -48,29 +72,48 @@ export default function ReceivePaymentDialog({
   const { user } = useAuth();
   const { currentShift } = useShiftStore();
   const [amount, setAmount] = useState<number | undefined>(undefined);
+  const [paymentCurrency, setPaymentCurrency] = useState<AppCurrency>('UZS');
+  const [fxRate, setFxRate] = useState<number | null>(null);
   const [paymentMethod, setPaymentMethod] = useState<CustomerPaymentMethod>('cash');
   const [note, setNote] = useState('');
   const [loading, setLoading] = useState(false);
   const queryClient = useQueryClient();
 
+  const balances = getCustomerBalances(customer);
+  const activeBalance = paymentCurrency === 'USD' ? balances.usd : balances.uzs;
+
+  useEffect(() => {
+    if (!open) return;
+    if (paymentCurrency !== 'USD') {
+      setFxRate(null);
+      return;
+    }
+    void fetchUzsPerUsdRate().then((r) => setFxRate(r));
+  }, [open, paymentCurrency]);
+
   const handleSubmit = async () => {
-    // Validation
     if (amount === undefined || amount === null || amount <= 0) {
       toast({
-        title: 'Invalid Amount',
-        description: 'Please enter a valid payment amount greater than zero.',
+        title: 'Noto‘g‘ri summa',
+        description: 'Musbat to‘lov summasini kiriting.',
         variant: 'destructive',
       });
       return;
     }
 
-    // Validation: For debt (negative balance), payment should not exceed debt amount
-    // Balance is negative for debt, so we check if payment > abs(balance)
-    const currentBalance = customer.balance || 0;
-    if (currentBalance < 0 && amount > Math.abs(currentBalance)) {
+    if (paymentCurrency === 'USD' && (!fxRate || fxRate <= 0)) {
       toast({
-        title: 'Amount Exceeds Debt',
-        description: `Payment amount cannot exceed customer debt of ${formatMoneyUZS(Math.abs(currentBalance))}.`,
+        title: 'Kurs kerak',
+        description: 'USD to‘lov uchun 1 USD = ? UZS kursini sozlamalardan oling.',
+        variant: 'destructive',
+      });
+      return;
+    }
+
+    if (activeBalance < 0 && amount > Math.abs(activeBalance)) {
+      toast({
+        title: 'Summa qarzdan oshdi',
+        description: `Qarz: ${formatMoney(Math.abs(activeBalance), paymentCurrency)}`,
         variant: 'destructive',
       });
       return;
@@ -80,7 +123,9 @@ export default function ReceivePaymentDialog({
       setLoading(true);
       const result = await receiveCustomerPayment({
         customer_id: customer.id,
-        amount: amount,
+        amount,
+        currency: paymentCurrency,
+        fx_rate: paymentCurrency === 'USD' ? fxRate : null,
         payment_method: paymentMethod,
         notes: note.trim() || null,
         operation: 'payment_in',
@@ -89,30 +134,34 @@ export default function ReceivePaymentDialog({
       });
 
       if (!result.success) {
-        throw new Error(result.error || 'Failed to receive payment');
+        throw new Error(result.error || 'To‘lovni qayd etib bo‘lmadi');
       }
 
-      // Invalidate dashboard queries and customers queries
       invalidateDashboardQueries(queryClient);
       queryClient.invalidateQueries({ queryKey: ['customers'] });
 
+      const newBal =
+        paymentCurrency === 'USD'
+          ? Number(result.new_balance_usd ?? result.new_balance ?? 0)
+          : Number(result.new_balance_uzs ?? result.new_balance ?? 0);
+
       toast({
-        title: '✅ Payment Received',
-        description: `Payment of ${formatMoneyUZS(amount)} received. New balance: ${formatMoneyUZS(result.new_balance || 0)}`,
+        title: 'To‘lov qabul qilindi',
+        description: `${formatMoney(amount, paymentCurrency)}. Yangi balans: ${formatMoney(newBal, paymentCurrency)}`,
         className: 'bg-green-50 border-green-200',
       });
 
-      // Reset form
       setAmount(undefined);
       setPaymentMethod('cash');
+      setPaymentCurrency('UZS');
       setNote('');
       onOpenChange(false);
       onSuccess();
     } catch (error) {
       console.error('Payment error:', error);
       toast({
-        title: '❌ Payment Failed',
-        description: error instanceof Error ? error.message : 'Failed to receive payment',
+        title: 'Xatolik',
+        description: error instanceof Error ? error.message : 'To‘lovni qayd etib bo‘lmadi',
         variant: 'destructive',
       });
     } finally {
@@ -120,63 +169,90 @@ export default function ReceivePaymentDialog({
     }
   };
 
+  const previewBalance = activeBalance + (amount && amount > 0 ? amount : 0);
+  const uzsInfo = formatCustomerBalance(balances.uzs, 'UZS');
+  const usdInfo = formatCustomerBalance(balances.usd, 'USD');
+
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="sm:max-w-[500px]">
         <DialogHeader>
-          <DialogTitle>Receive Payment</DialogTitle>
+          <DialogTitle>Mijozdan to‘lov</DialogTitle>
           <DialogDescription>
-            Record a payment from {customer.name} to reduce their outstanding balance.
+            {customer.name} — balansni UZS yoki USD da yangilang (valyutalar aralashmaydi).
           </DialogDescription>
         </DialogHeader>
         <div className="space-y-4 py-4">
           <div className="p-4 bg-muted rounded-lg space-y-2">
             <div className="flex justify-between">
-              <span className="text-sm text-muted-foreground">Customer:</span>
+              <span className="text-sm text-muted-foreground">Mijoz:</span>
               <span className="font-semibold">{customer.name}</span>
             </div>
-            <div className="flex justify-between">
-              <span className="text-sm text-muted-foreground">Current Balance:</span>
-              <span className={`font-bold ${(customer.balance || 0) < 0 ? 'text-destructive' : (customer.balance || 0) > 0 ? 'text-success' : ''}`}>
-                {formatMoneyUZS(customer.balance || 0)}
-                {(customer.balance || 0) < 0 && <span className="ml-1 text-xs">(QarZ)</span>}
-                {(customer.balance || 0) > 0 && <span className="ml-1 text-xs">(Balans)</span>}
-              </span>
+            <div className="flex justify-between items-center">
+              <span className="text-sm text-muted-foreground">Balans (UZS):</span>
+              <BalanceLine variant={uzsInfo.variant} label={uzsInfo.label} />
             </div>
+            {(Math.abs(balances.usd) > 0.0001 || paymentCurrency === 'USD') && (
+              <div className="flex justify-between items-center">
+                <span className="text-sm text-muted-foreground">Balans (USD):</span>
+                <BalanceLine variant={usdInfo.variant} label={usdInfo.label} />
+              </div>
+            )}
+          </div>
+
+          <div className="space-y-2">
+            <Label>To‘lov valyutasi</Label>
+            <Select
+              value={paymentCurrency}
+              onValueChange={(v) => setPaymentCurrency(v as AppCurrency)}
+            >
+              <SelectTrigger>
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="UZS">UZS (so‘m)</SelectItem>
+                <SelectItem value="USD">USD</SelectItem>
+              </SelectContent>
+            </Select>
+            {paymentCurrency === 'USD' && (
+              <p className="text-xs text-muted-foreground">
+                Kurs: {fxRate ? `1 USD = ${formatMoneyUZS(fxRate)}` : 'yuklanmoqda…'}
+              </p>
+            )}
           </div>
 
           <MoneyInput
             id="amount"
-            label="Payment Amount"
+            label={`To‘lov summasi (${paymentCurrency})`}
             value={amount ?? null}
             onValueChange={(val) => setAmount(val ?? undefined)}
             placeholder="0"
             required
             min={1}
-            max={(customer.balance || 0) < 0 ? Math.abs(customer.balance || 0) : undefined}
+            max={activeBalance < 0 ? Math.abs(activeBalance) : undefined}
           />
 
           <div className="space-y-2">
-            <Label htmlFor="method">Payment Method *</Label>
-            <Select value={paymentMethod} onValueChange={(value) => setPaymentMethod(value as CustomerPaymentMethod)}>
+            <Label htmlFor="method">To‘lov usuli</Label>
+            <Select value={paymentMethod} onValueChange={(v) => setPaymentMethod(v as CustomerPaymentMethod)}>
               <SelectTrigger id="method">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="cash">Cash</SelectItem>
-                <SelectItem value="card">Card</SelectItem>
-                <SelectItem value="qr">QR Pay</SelectItem>
+                <SelectItem value="cash">Naqd</SelectItem>
+                <SelectItem value="card">Karta</SelectItem>
+                <SelectItem value="qr">QR</SelectItem>
               </SelectContent>
             </Select>
           </div>
 
           <div className="space-y-2">
-            <Label htmlFor="note">Note (Optional)</Label>
+            <Label htmlFor="note">Izoh</Label>
             <Textarea
               id="note"
               value={note}
               onChange={(e) => setNote(e.target.value)}
-              placeholder="Add a note about this payment..."
+              placeholder="Ixtiyoriy izoh…"
               rows={3}
             />
           </div>
@@ -184,11 +260,9 @@ export default function ReceivePaymentDialog({
           {amount && amount > 0 && (
             <div className="p-3 bg-primary/10 border border-primary/20 rounded-lg">
               <div className="flex justify-between items-center">
-                <span className="text-sm font-medium">New Balance:</span>
-                <span className={`text-lg font-bold ${((customer.balance || 0) + amount) < 0 ? 'text-destructive' : ((customer.balance || 0) + amount) > 0 ? 'text-success' : 'text-primary'}`}>
-                  {formatMoneyUZS((customer.balance || 0) + amount)}
-                  {((customer.balance || 0) + amount) < 0 && <span className="ml-1 text-xs">(QarZ)</span>}
-                  {((customer.balance || 0) + amount) > 0 && <span className="ml-1 text-xs">(Balans)</span>}
+                <span className="text-sm font-medium">Yangi balans ({paymentCurrency}):</span>
+                <span className="text-lg font-bold tabular-nums">
+                  {formatMoney(previewBalance, paymentCurrency)}
                 </span>
               </div>
             </div>
@@ -196,11 +270,11 @@ export default function ReceivePaymentDialog({
         </div>
         <DialogFooter>
           <Button variant="outline" onClick={() => onOpenChange(false)} disabled={loading}>
-            Cancel
+            Bekor
           </Button>
           <Button onClick={handleSubmit} disabled={loading || !amount || amount <= 0}>
             <DollarSign className="h-4 w-4 mr-2" />
-            {loading ? 'Processing...' : 'Receive Payment'}
+            {loading ? 'Saqlanmoqda…' : 'Qabul qilish'}
           </Button>
         </DialogFooter>
       </DialogContent>

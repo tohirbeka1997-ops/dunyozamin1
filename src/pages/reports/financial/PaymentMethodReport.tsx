@@ -22,6 +22,7 @@ import { useReportAutoRefresh } from '@/hooks/useReportAutoRefresh';
 import { exportPaymentMethods } from '@/lib/exportManager';
 import { useTranslation } from 'react-i18next';
 import { getOrderById } from '@/db/api';
+import { handleIpcResponse, isElectron, requireElectron } from '@/utils/electron';
 
 interface PaymentMethodData {
   methodCode: string;
@@ -46,30 +47,58 @@ export default function PaymentMethodReport() {
     loadData();
   }, [dateFrom, dateTo]);
 
+  const labelForMethod = (method: string) =>
+    method === 'cash'
+      ? t('reports.payment_methods_page.methods.cash')
+      : method === 'card'
+        ? t('reports.payment_methods_page.methods.card')
+        : method === 'qr'
+          ? t('reports.payment_methods_page.methods.qr')
+          : method === 'terminal'
+            ? t('reports.payment_methods_page.methods.terminal')
+            : method === 'mixed'
+              ? t('reports.payment_methods_page.methods.mixed')
+              : method === 'credit'
+                ? t('reports.payment_methods_page.methods.credit')
+                : t('reports.payment_methods_page.methods.other');
+
   async function loadData() {
     try {
       setLoading(true);
-      const ordersData = await getOrders();
-      
+
+      // PRIMARY: Backend SQL endpoint (aggregates ALL payments by method, no 100-order limit).
+      if (isElectron()) {
+        try {
+          const api = requireElectron();
+          const res = await handleIpcResponse<{
+            methods: Array<{ method: string; count: number; total: number; percentage: number; avg: number }>;
+          }>(
+            api.reports?.paymentMethodsSummary?.({
+              date_from: dateFrom,
+              date_to: dateTo,
+            }) || Promise.resolve({ methods: [] })
+          );
+          const methods = (res?.methods || []).map((m) => ({
+            methodCode: m.method,
+            methodLabel: labelForMethod(m.method),
+            count: Number(m.count) || 0,
+            total: Number(m.total) || 0,
+            percentage: Number(m.percentage) || 0,
+          }));
+          setPaymentData(methods);
+          return;
+        } catch (err) {
+          console.warn('[PaymentMethodReport] backend endpoint failed, falling back to client aggregation:', err);
+        }
+      }
+
+      // FALLBACK (browser/mock or backend error): client-side aggregation with high limit.
+      const ordersData = await getOrders(100000);
+
       const filtered = ordersData.filter((order) => {
         const orderDate = formatDateYMD(order.created_at);
         return orderDate >= dateFrom && orderDate <= dateTo && order.status === 'completed';
       });
-
-      const labelForMethod = (method: string) =>
-        method === 'cash'
-          ? t('reports.payment_methods_page.methods.cash')
-          : method === 'card'
-            ? t('reports.payment_methods_page.methods.card')
-            : method === 'qr'
-              ? t('reports.payment_methods_page.methods.qr')
-              : method === 'terminal'
-                ? t('reports.payment_methods_page.methods.terminal')
-                : method === 'mixed'
-                  ? t('reports.payment_methods_page.methods.mixed')
-                  : method === 'credit'
-                    ? t('reports.payment_methods_page.methods.credit')
-                    : t('reports.payment_methods_page.methods.other');
 
       const normalizeMethod = (method: any) => String(method || 'other').toLowerCase();
       const isNonCashSettlementMethod = (method: string) =>
@@ -80,8 +109,6 @@ export default function PaymentMethodReport() {
 
       const methodMap = new Map<string, { count: number; total: number }>();
 
-      // IMPORTANT: In Electron mode, `getOrders()` may not include payment amounts.
-      // To keep the report in sync with POS, fetch full order details when needed.
       const resolvedOrders: OrderWithDetails[] = await Promise.all(
         filtered.map(async (order) => {
           const hasPaymentAmounts =
@@ -106,7 +133,6 @@ export default function PaymentMethodReport() {
           const amount = Number(order.total_amount);
           if (!shouldIncludeInDistribution(method, amount)) return;
           const existing = methodMap.get(method);
-
           if (existing) {
             existing.count += 1;
             existing.total += amount;
@@ -116,8 +142,6 @@ export default function PaymentMethodReport() {
           return;
         }
 
-        // If we have exactly one payment row but its amount is missing/zero,
-        // treat it as full order amount (common in Electron summary queries).
         const rawSum = payments.reduce((sum, p: any) => sum + Number(p?.amount ?? 0), 0);
         const shouldFallbackSinglePaymentAmount =
           payments.length === 1 && rawSum <= 0 && Number(order.total_amount) > 0;
@@ -129,7 +153,6 @@ export default function PaymentMethodReport() {
             : Number(payment.amount ?? 0);
           if (!shouldIncludeInDistribution(method, amount)) return;
           const existing = methodMap.get(method);
-
           if (existing) {
             existing.count += 1;
             existing.total += amount;
@@ -150,7 +173,6 @@ export default function PaymentMethodReport() {
       }));
 
       data.sort((a, b) => b.total - a.total);
-
       setPaymentData(data);
     } catch (error) {
       toast({
@@ -205,7 +227,9 @@ export default function PaymentMethodReport() {
           </Button>
           <div>
             <h1 className="page-heading">{t('reports.payment_methods_page.title')}</h1>
-            <p className="text-muted-foreground">{t('reports.payment_methods_page.subtitle')}</p>
+            <p className="text-muted-foreground">
+              {t('reports.payment_methods_page.subtitle')} (summalar UZS ekvivalentida)
+            </p>
           </div>
         </div>
         <div className="flex gap-2">
@@ -334,7 +358,9 @@ export default function PaymentMethodReport() {
                     <TableCell className="text-right">{item.count}</TableCell>
                     <TableCell className="text-right">{formatMoneyUZS(item.total)}</TableCell>
                     <TableCell className="text-right">{item.percentage.toFixed(1)}%</TableCell>
-                    <TableCell className="text-right">{formatMoneyUZS(item.total / item.count)}</TableCell>
+                    <TableCell className="text-right">
+                      {item.count > 0 ? formatMoneyUZS(item.total / item.count) : '—'}
+                    </TableCell>
                   </TableRow>
                 ))}
               </TableBody>

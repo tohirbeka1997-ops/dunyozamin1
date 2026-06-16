@@ -23,6 +23,8 @@ import { useToast } from '@/hooks/use-toast';
 import { handleIpcResponse, isElectron, requireElectron } from '@/utils/electron';
 import { formatDateYMD, todayYMD } from '@/lib/datetime';
 import { formatMoneyUZS } from '@/lib/format';
+import { expenseToUzsAmount, getOrderSaleCurrency } from '@/lib/currency';
+import { toShiftUzsAmount } from '@/lib/posSaleCurrency';
 import { useReportAutoRefresh } from '@/hooks/useReportAutoRefresh';
 import type { CashFlowGranularity, CashFlowRow } from '@/types/financialReports';
 import { getExpenses, getOrderById, getOrders, getSalesReturns, getSuppliers, getSupplierPayments } from '@/db/api';
@@ -113,12 +115,23 @@ export default function CashFlowReport() {
       })
     );
 
+    const toUzs = (order: any, amount: number) => {
+      const cur = getOrderSaleCurrency(order);
+      const fx = Number(order.fx_rate ?? 0);
+      return toShiftUzsAmount(amount, cur, fx);
+    };
+
     resolvedOrders.forEach((order) => {
       const ymd = formatDateYMD(order.created_at);
       const payments = order.payments || [];
       if (payments.length === 0) {
         const method = normalizeMethod((order as any).payment_type || 'cash');
-        entries.push({ date: ymd, method, inflow: Number(order.total_amount || 0), outflow: 0 });
+        entries.push({
+          date: ymd,
+          method,
+          inflow: toUzs(order, Number(order.total_amount || 0)),
+          outflow: 0,
+        });
         return;
       }
       const rawSum = payments.reduce((sum, p: any) => sum + Number(p?.amount ?? 0), 0);
@@ -127,7 +140,10 @@ export default function CashFlowReport() {
 
       payments.forEach((payment: any) => {
         const method = normalizeMethod(payment.payment_method);
-        const amount = shouldFallbackSinglePaymentAmount ? Number(order.total_amount || 0) : Number(payment?.amount ?? 0);
+        const raw = shouldFallbackSinglePaymentAmount
+          ? Number(order.total_amount || 0)
+          : Number(payment?.amount ?? 0);
+        const amount = toUzs(order, raw);
         if (amount <= 0) return;
         entries.push({
           date: ymd,
@@ -148,7 +164,7 @@ export default function CashFlowReport() {
           date: ymd,
           method: normalizeMethod(e.payment_method),
           inflow: 0,
-          outflow: Number(e.amount || 0),
+          outflow: expenseToUzsAmount(e),
         });
       });
 
@@ -156,11 +172,17 @@ export default function CashFlowReport() {
     (returns || []).forEach((r: any) => {
       const ymd = formatDateYMD(r.created_at);
       if (!inRange(ymd)) return;
+      const refundRaw = Number(r.refund_amount ?? r.total_amount ?? 0);
+      const refundUzs = toShiftUzsAmount(
+        refundRaw,
+        String(r.order_currency || 'UZS').toUpperCase() === 'USD' ? 'USD' : 'UZS',
+        Number(r.order_fx_rate ?? 0)
+      );
       entries.push({
         date: ymd,
         method: normalizeMethod(r.refund_method || 'cash'),
         inflow: 0,
-        outflow: Number(r.total_amount || 0),
+        outflow: refundUzs,
       });
     });
 
@@ -252,7 +274,9 @@ export default function CashFlowReport() {
           </Button>
           <div>
             <h1 className="page-heading">Pul oqimi</h1>
-            <p className="text-muted-foreground">Kirim / chiqim va net pul oqimi</p>
+            <p className="text-muted-foreground">
+              Kirim / chiqim va net pul oqimi (UZS ekvivalent, USD sotuvlar kurs bo‘yicha)
+            </p>
           </div>
         </div>
         <Button variant="outline" onClick={loadData}>

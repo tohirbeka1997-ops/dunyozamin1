@@ -12,9 +12,10 @@ import {
 import { useShiftStore } from '@/store/shiftStore';
 import { useAuth } from '@/contexts/AuthContext';
 import { useToast } from '@/hooks/use-toast';
-import { Clock, Lock, Unlock } from 'lucide-react';
+import { ArrowDownToLine, ArrowUpFromLine, Lock, Unlock } from 'lucide-react';
 import { formatMoneyUZS } from '@/lib/format';
-import { getShiftSummary } from '@/db/api';
+import { DualCurrencyAmount } from '@/components/common/DualCurrencyAmount';
+import { getShiftSummary, shiftCashIn, shiftCashOut } from '@/db/api';
 import { formatDateTime, formatTime } from '@/lib/datetime';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -31,14 +32,34 @@ export default function ShiftControl() {
   const [closingCash, setClosingCash] = useState<number | null>(null);
   const [isOpening, setIsOpening] = useState(false);
   const [isClosing, setIsClosing] = useState(false);
+
+  // Cash drawer in/out (kassa kirim / chiqim)
+  const [movementDialogOpen, setMovementDialogOpen] = useState<null | 'in' | 'out'>(null);
+  const [movementAmount, setMovementAmount] = useState<number | null>(null);
+  const [movementReason, setMovementReason] = useState('');
+  const [isMoving, setIsMoving] = useState(false);
   const [shiftSummary, setShiftSummary] = useState<{
     shiftId: string;
     openedAt: string;
     closedAt: string | null;
     status: string;
     openingCash: number;
+    /** Mijozdan kelgan barcha to‘lovlar (naqd + karta + QR + ...). Nasiya YO‘Q. */
     totalSales: number;
+    /** Tovar summasi (jami sotuv, nasiya bilan) */
+    salesGross?: number;
     cashSales: number;
+    /** To‘lov usullari bo‘yicha taqsimot */
+    paymentsByMethod?: {
+      cash: number;
+      card: number;
+      qr: number;
+      click: number;
+      payme: number;
+      transfer: number;
+      credit: number;
+      other: number;
+    };
     /** Mijozga berilgan qarz (buyurtma bo‘yicha nasiya) — kassaga tushmaydi */
     creditDebtIssued: number;
     /** Mijoz qarzini toʻlash (balansdan, barcha usullar) */
@@ -52,6 +73,19 @@ export default function ShiftControl() {
     totalRefunds: number;
     cashRefundsOut?: number;
     totalReturnsGross?: number;
+    /** Qaytarishlar batafsil */
+    refundsBreakdown?: {
+      strictCash: number;
+      legacyUnknown: number;
+      fromMovements: number;
+      total: number;
+    };
+    /** Smena ichida qilingan naqd xarajatlar */
+    cashExpenses?: number;
+    cashWithdrawals?: number;
+    cashOutflowTotal?: number;
+    /** Smena ichida kassaga qo'l bilan qilingan naqd kirim */
+    cashDeposits?: number;
     expectedCash: number;
   } | null>(null);
   const [loadingSummary, setLoadingSummary] = useState(false);
@@ -132,6 +166,35 @@ export default function ShiftControl() {
         const debtRepaidCash = Number(data.debtRepaidCash ?? data.debt_repaid_cash ?? 0) || 0;
         const customerDrawerCashNet =
           Number(data.customerDrawerCashNet ?? data.customer_drawer_cash_net ?? 0) || 0;
+        const pbmRaw = (data.paymentsByMethod ?? data.payments_by_method ?? null) as
+          | Record<string, number>
+          | null;
+        const paymentsByMethod = pbmRaw
+          ? {
+              cash: Number(pbmRaw.cash ?? 0) || 0,
+              card: Number(pbmRaw.card ?? 0) || 0,
+              qr: Number(pbmRaw.qr ?? 0) || 0,
+              click: Number(pbmRaw.click ?? 0) || 0,
+              payme: Number(pbmRaw.payme ?? 0) || 0,
+              transfer: Number(pbmRaw.transfer ?? 0) || 0,
+              credit: Number(pbmRaw.credit ?? 0) || 0,
+              other: Number(pbmRaw.other ?? 0) || 0,
+            }
+          : undefined;
+        const refundsBdRaw = (data.refundsBreakdown ?? data.refunds_breakdown ?? null) as
+          | Record<string, number>
+          | null;
+        const refundsBreakdown = refundsBdRaw
+          ? {
+              strictCash: Number(refundsBdRaw.strictCash ?? refundsBdRaw.strict_cash ?? 0) || 0,
+              legacyUnknown:
+                Number(refundsBdRaw.legacyUnknown ?? refundsBdRaw.legacy_unknown ?? 0) || 0,
+              fromMovements:
+                Number(refundsBdRaw.fromMovements ?? refundsBdRaw.from_movements ?? 0) || 0,
+              total: Number(refundsBdRaw.total ?? 0) || refundsOut,
+            }
+          : undefined;
+
         const normalized = {
           shiftId: String(data.shiftId ?? storeShift?.id ?? ''),
           openedAt: data.openedAt || data.opened_at || storeShift?.opened_at,
@@ -139,7 +202,12 @@ export default function ShiftControl() {
           status: data.status || storeShift?.status || 'open',
           openingCash: opening,
           totalSales: Number(data.totalSales ?? data.total_payments ?? 0) || 0,
+          salesGross:
+            data.salesGross != null || data.sales_gross != null
+              ? Number(data.salesGross ?? data.sales_gross ?? 0) || 0
+              : undefined,
           cashSales: cashS,
+          paymentsByMethod,
           creditDebtIssued: creditDebt,
           debtRepaidTotal,
           debtRepaidCash,
@@ -153,6 +221,23 @@ export default function ShiftControl() {
           totalReturnsGross:
             data.totalReturnsGross != null || data.total_returns_gross != null
               ? Number(data.totalReturnsGross ?? data.total_returns_gross ?? 0) || 0
+              : undefined,
+          refundsBreakdown,
+          cashExpenses:
+            data.cashExpenses != null || data.cash_expenses != null
+              ? Number(data.cashExpenses ?? data.cash_expenses ?? 0) || 0
+              : undefined,
+          cashWithdrawals:
+            data.cashWithdrawals != null || data.cash_withdrawals != null
+              ? Number(data.cashWithdrawals ?? data.cash_withdrawals ?? 0) || 0
+              : undefined,
+          cashOutflowTotal:
+            data.cashOutflowTotal != null || data.cash_outflow_total != null
+              ? Number(data.cashOutflowTotal ?? data.cash_outflow_total ?? 0) || 0
+              : undefined,
+          cashDeposits:
+            data.cashDeposits != null || data.cash_deposits != null
+              ? Number(data.cashDeposits ?? data.cash_deposits ?? 0) || 0
               : undefined,
           expectedCash:
             data.expectedCash != null || data.expected_cash != null
@@ -343,6 +428,90 @@ export default function ShiftControl() {
     }
   };
 
+  const handleCashMovement = async () => {
+    if (isMoving) return;
+    if (!movementDialogOpen || !currentShift?.id || !user?.id) return;
+    const amt = Number(movementAmount ?? 0);
+    if (!amt || amt <= 0) {
+      toast({
+        title: 'Xatolik',
+        description: 'Miqdor 0 dan katta bo‘lishi kerak',
+        variant: 'destructive',
+      });
+      return;
+    }
+
+    setIsMoving(true);
+    try {
+      const fn = movementDialogOpen === 'in' ? shiftCashIn : shiftCashOut;
+      await fn({
+        shiftId: String(currentShift.id),
+        amount: amt,
+        reason: movementReason.trim() || undefined,
+        createdBy: user.id,
+      });
+      toast({
+        title: 'Muvaffaqiyatli',
+        description: movementDialogOpen === 'in'
+          ? `Kassaga ${formatMoneyUZS(amt)} kirim qilindi`
+          : `Kassadan ${formatMoneyUZS(amt)} chiqim qilindi`,
+      });
+      setMovementDialogOpen(null);
+      setMovementAmount(null);
+      setMovementReason('');
+      if (closeDialogOpen && currentShift?.id) {
+        try {
+          const data = await getShiftSummary(String(currentShift.id));
+          if (data) {
+            const opening =
+              Number(data.openingCash ?? data.opening_cash ?? currentShift.opening_cash ?? 0) || 0;
+            const cashS = Number(data.cashSales ?? data.cash_payments ?? 0) || 0;
+            const refundsOut =
+              Number(
+                data.cashRefundsOut ??
+                  data.cash_refunds_out ??
+                  data.totalRefunds ??
+                  data.total_refunds ??
+                  0
+              ) || 0;
+            const customerDrawerCashNet =
+              Number(data.customerDrawerCashNet ?? data.customer_drawer_cash_net ?? 0) || 0;
+            setShiftSummary((prev) =>
+              prev
+                ? {
+                    ...prev,
+                    cashDeposits:
+                      data.cashDeposits != null || data.cash_deposits != null
+                        ? Number(data.cashDeposits ?? data.cash_deposits ?? 0) || 0
+                        : prev.cashDeposits,
+                    cashWithdrawals:
+                      data.cashWithdrawals != null || data.cash_withdrawals != null
+                        ? Number(data.cashWithdrawals ?? data.cash_withdrawals ?? 0) || 0
+                        : prev.cashWithdrawals,
+                    expectedCash:
+                      data.expectedCash != null || data.expected_cash != null
+                        ? Number(data.expectedCash ?? data.expected_cash ?? 0) || 0
+                        : opening + cashS + customerDrawerCashNet - refundsOut,
+                  }
+                : prev
+            );
+          }
+        } catch {
+          /* summary refresh ixtiyoriy */
+        }
+      }
+    } catch (error) {
+      console.error('[ShiftControl] cash movement error:', error);
+      toast({
+        title: 'Xatolik',
+        description: error instanceof Error ? error.message : 'Naqd harakatini saqlab bo‘lmadi',
+        variant: 'destructive',
+      });
+    } finally {
+      setIsMoving(false);
+    }
+  };
+
   return (
     <>
       <div className="flex items-center gap-3">
@@ -360,6 +529,34 @@ export default function ShiftControl() {
             <span className="text-sm text-muted-foreground">
               Ochilgan: {formatTime(currentShift.opened_at)}
             </span>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => {
+                setMovementDialogOpen('in');
+                setMovementAmount(null);
+                setMovementReason('');
+              }}
+              title="Kassaga naqd kirim"
+              className="border-emerald-300 text-emerald-700 hover:bg-emerald-50 dark:border-emerald-800 dark:text-emerald-400 dark:hover:bg-emerald-950"
+            >
+              <ArrowDownToLine className="h-4 w-4 mr-1" />
+              Kirim
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => {
+                setMovementDialogOpen('out');
+                setMovementAmount(null);
+                setMovementReason('');
+              }}
+              title="Kassadan naqd chiqim (inkassatsiya)"
+              className="border-amber-300 text-amber-700 hover:bg-amber-50 dark:border-amber-800 dark:text-amber-400 dark:hover:bg-amber-950"
+            >
+              <ArrowUpFromLine className="h-4 w-4 mr-1" />
+              Chiqim
+            </Button>
             <Button
               variant="destructive"
               size="sm"
@@ -387,6 +584,90 @@ export default function ShiftControl() {
           </>
         )}
       </div>
+
+      {/* Cash Movement Dialog (deposit / withdrawal) */}
+      <Dialog
+        open={movementDialogOpen !== null}
+        onOpenChange={(open) => {
+          if (!open) {
+            setMovementDialogOpen(null);
+            setMovementAmount(null);
+            setMovementReason('');
+          }
+        }}
+      >
+        <DialogContent className="max-w-sm">
+          <DialogHeader>
+            <DialogTitle>
+              {movementDialogOpen === 'in'
+                ? 'Kassaga naqd kirim'
+                : 'Kassadan naqd chiqim'}
+            </DialogTitle>
+            <DialogDescription>
+              {movementDialogOpen === 'in'
+                ? "Smena ichida kassani qo'l bilan to'ldirish"
+                : "Smena ichida kassadan inkassatsiya / chiqim qilish"}
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4 py-2">
+            <div className="space-y-2">
+              <Label htmlFor="movement-amount">
+                Miqdor (so'm) <span className="text-destructive">*</span>
+              </Label>
+              <Input
+                id="movement-amount"
+                inputMode="numeric"
+                value={movementAmount ?? ''}
+                onChange={(e) => {
+                  const digits = e.target.value.replace(/[^\d]/g, '');
+                  setMovementAmount(digits ? Number(digits) : null);
+                }}
+                placeholder="0"
+                autoFocus
+                disabled={isMoving}
+              />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="movement-reason">Sabab (ixtiyoriy)</Label>
+              <Input
+                id="movement-reason"
+                value={movementReason}
+                onChange={(e) => setMovementReason(e.target.value)}
+                placeholder={
+                  movementDialogOpen === 'in'
+                    ? "Masalan: ochilish kam edi, qo'shildi"
+                    : 'Masalan: bank inkassatsiya, mayda xarajat'
+                }
+                disabled={isMoving}
+              />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => setMovementDialogOpen(null)}
+              disabled={isMoving}
+            >
+              Bekor qilish
+            </Button>
+            <Button
+              onClick={handleCashMovement}
+              disabled={!movementAmount || movementAmount <= 0 || isMoving}
+              className={
+                movementDialogOpen === 'in'
+                  ? 'bg-emerald-600 text-white hover:bg-emerald-700'
+                  : 'bg-amber-600 text-white hover:bg-amber-700'
+              }
+            >
+              {isMoving
+                ? 'Saqlanmoqda...'
+                : movementDialogOpen === 'in'
+                  ? 'Kirim qilish'
+                  : 'Chiqim qilish'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       {/* Open Shift Dialog */}
       <Dialog open={openDialogOpen} onOpenChange={setOpenDialogOpen}>
@@ -459,20 +740,62 @@ export default function ShiftControl() {
                     </div>
                     <div className="border-t pt-2 mt-2">
                       <div className="flex items-center justify-between text-sm mb-1">
-                        <span className="text-muted-foreground">Jami savdo:</span>
+                        <span className="text-muted-foreground">Jami savdo (to'lovlar):</span>
                         <span className="font-semibold text-green-600 dark:text-green-400">
                           {formatMoneyUZS(shiftSummary.totalSales ?? 0)}
                         </span>
                       </div>
                       <p className="text-[11px] text-muted-foreground mb-2 leading-snug -mt-0.5">
-                        Barcha to‘lov usullari: naqd, karta, QR va hokazo (nasiya alohida)
+                        Mijoz to'lagan barcha pul (UZS ekvivalent): naqd + karta + QR + ... <strong>nasiyasiz</strong>
                       </p>
-                      <div className="flex items-center justify-between text-sm mb-1">
-                        <span className="text-muted-foreground">Naqd savdo:</span>
-                        <span className="font-medium">
-                          {formatMoneyUZS(shiftSummary.cashSales ?? 0)}
-                        </span>
-                      </div>
+
+                      {/* Tovar summasi (gross) — agar nasiya bo'lsa, ko'rsatiladi */}
+                      {(shiftSummary.salesGross ?? 0) > (shiftSummary.totalSales ?? 0) + 0.5 && (
+                        <div className="flex items-center justify-between text-xs mb-2 pl-2 text-muted-foreground gap-2">
+                          <span>Tovar summasi (nasiya bilan):</span>
+                          <span className="font-medium tabular-nums text-right">
+                            {(shiftSummary as { salesGrossUsd?: number }).salesGrossUsd ? (
+                              <DualCurrencyAmount
+                                uzs={(shiftSummary as { salesGrossUzs?: number }).salesGrossUzs ?? shiftSummary.salesGross}
+                                usd={(shiftSummary as { salesGrossUsd?: number }).salesGrossUsd}
+                              />
+                            ) : (
+                              formatMoneyUZS(shiftSummary.salesGross ?? 0)
+                            )}
+                          </span>
+                        </div>
+                      )}
+
+                      {/* To'lov usullari taqsimoti */}
+                      {shiftSummary.paymentsByMethod && (
+                        <div className="rounded-md bg-muted/40 px-2 py-1.5 mb-2 space-y-0.5">
+                          <p className="text-[11px] font-medium text-muted-foreground mb-1">
+                            To'lov usullari bo'yicha:
+                          </p>
+                          {([
+                            ['Naqd', shiftSummary.paymentsByMethod.cash],
+                            ['Karta', shiftSummary.paymentsByMethod.card],
+                            ['QR / Code', shiftSummary.paymentsByMethod.qr],
+                            ['Click', shiftSummary.paymentsByMethod.click],
+                            ['Payme', shiftSummary.paymentsByMethod.payme],
+                            ['Bank o\'tkazma', shiftSummary.paymentsByMethod.transfer],
+                            ['Boshqa', shiftSummary.paymentsByMethod.other],
+                          ] as const).map(([label, amt]) =>
+                            (amt ?? 0) > 0 ? (
+                              <div
+                                key={label}
+                                className="flex items-center justify-between text-xs pl-1.5"
+                              >
+                                <span className="text-muted-foreground">• {label}:</span>
+                                <span className="font-medium tabular-nums">
+                                  {formatMoneyUZS(amt)}
+                                </span>
+                              </div>
+                            ) : null
+                          )}
+                        </div>
+                      )}
+
                       <div className="flex items-center justify-between text-sm mb-1 rounded-md bg-amber-500/10 px-2 py-1">
                         <span className="text-muted-foreground">Mijozga qarz (nasiya):</span>
                         <span className="font-semibold tabular-nums text-amber-900 dark:text-amber-100">
@@ -505,12 +828,62 @@ export default function ShiftControl() {
                           {shiftSummary.orders ?? 0}
                         </span>
                       </div>
+
+                      {/* Qaytarishlar — naqd va jami */}
                       <div className="flex items-center justify-between text-sm">
                         <span className="text-muted-foreground">Naqd qaytarishlar:</span>
                         <span className="font-semibold text-red-600 dark:text-red-400">
                           {formatMoneyUZS(shiftSummary.totalRefunds ?? 0)}
                         </span>
                       </div>
+                      {(shiftSummary.totalReturnsGross ?? 0) >
+                        (shiftSummary.totalRefunds ?? 0) + 0.5 && (
+                        <div className="flex items-center justify-between text-xs mb-1 pl-2 text-muted-foreground">
+                          <span>Jami qaytarishlar (barcha usul):</span>
+                          <span className="font-medium tabular-nums">
+                            {formatMoneyUZS(shiftSummary.totalReturnsGross ?? 0)}
+                          </span>
+                        </div>
+                      )}
+                      {(shiftSummary.refundsBreakdown?.legacyUnknown ?? 0) > 0 && (
+                        <div className="flex items-center justify-between text-xs mb-1 pl-2 text-amber-700 dark:text-amber-400">
+                          <span>⚠ Usuli noma'lum (naqd deb sanaldi):</span>
+                          <span className="font-medium tabular-nums">
+                            {formatMoneyUZS(shiftSummary.refundsBreakdown?.legacyUnknown ?? 0)}
+                          </span>
+                        </div>
+                      )}
+
+                      {/* Naqd xarajatlar (smena ichida kassadan) */}
+                      {(shiftSummary.cashExpenses ?? 0) > 0 && (
+                        <div className="flex items-center justify-between text-sm mt-1">
+                          <span className="text-muted-foreground">Naqd xarajatlar:</span>
+                          <span className="font-semibold text-red-600 dark:text-red-400">
+                            −{formatMoneyUZS(shiftSummary.cashExpenses ?? 0)}
+                          </span>
+                        </div>
+                      )}
+
+                      {/* Qo'lda kassa chiqim (inkassatsiya) */}
+                      {(shiftSummary.cashWithdrawals ?? 0) > 0 && (
+                        <div className="flex items-center justify-between text-sm">
+                          <span className="text-muted-foreground">Qo'lda chiqim (inkassatsiya):</span>
+                          <span className="font-semibold text-red-600 dark:text-red-400">
+                            −{formatMoneyUZS(shiftSummary.cashWithdrawals ?? 0)}
+                          </span>
+                        </div>
+                      )}
+
+                      {/* Qo'lda kassa kirim */}
+                      {(shiftSummary.cashDeposits ?? 0) > 0 && (
+                        <div className="flex items-center justify-between text-sm">
+                          <span className="text-muted-foreground">Qo'lda kirim (kassaga):</span>
+                          <span className="font-semibold text-emerald-600 dark:text-emerald-400">
+                            +{formatMoneyUZS(shiftSummary.cashDeposits ?? 0)}
+                          </span>
+                        </div>
+                      )}
+
                       <div className="border-t pt-2 mt-2">
                         <div className="flex items-center justify-between text-sm">
                           <span className="text-muted-foreground">Kutilayotgan naqd:</span>
@@ -519,7 +892,8 @@ export default function ShiftControl() {
                           </span>
                         </div>
                         <p className="text-[11px] text-muted-foreground mt-1 leading-snug">
-                          Ochilish naqd + Naqd savdo + Mijoz balansiga naqd (kirim/chiqim) − Naqd qaytarishlar
+                          Ochilish + Naqd savdo + Mijoz balansiga naqd + Qo'lda kirim
+                          − Naqd qaytarishlar − Naqd xarajatlar − Qo'lda chiqim
                         </p>
                       </div>
                     </div>
@@ -578,6 +952,67 @@ export default function ShiftControl() {
                 Kassada sanab tekshirilgan naqd pulni kiriting
               </p>
             </div>
+
+            {/* Real-time tafovut (closingCash − expectedCash) */}
+            {closingCash !== null && shiftSummary && (() => {
+              const expected = shiftSummary.expectedCash ?? 0;
+              const diff = closingCash - expected;
+              const absDiff = Math.abs(diff);
+              if (absDiff < 0.5) {
+                return (
+                  <div className="rounded-lg border border-emerald-300 bg-emerald-50 dark:border-emerald-800 dark:bg-emerald-950 p-3 flex items-center justify-between">
+                    <span className="text-sm font-medium text-emerald-800 dark:text-emerald-200">
+                      ✓ Tafovut yo'q — kassa to'g'ri
+                    </span>
+                    <span className="text-sm font-bold text-emerald-700 dark:text-emerald-300 tabular-nums">
+                      0 so'm
+                    </span>
+                  </div>
+                );
+              }
+              const isShort = diff < 0; // kam chiqdi
+              return (
+                <div
+                  className={`rounded-lg border p-3 ${
+                    isShort
+                      ? 'border-red-300 bg-red-50 dark:border-red-800 dark:bg-red-950'
+                      : 'border-amber-300 bg-amber-50 dark:border-amber-800 dark:bg-amber-950'
+                  }`}
+                >
+                  <div className="flex items-center justify-between mb-1">
+                    <span
+                      className={`text-sm font-semibold ${
+                        isShort
+                          ? 'text-red-800 dark:text-red-200'
+                          : 'text-amber-800 dark:text-amber-200'
+                      }`}
+                    >
+                      {isShort ? '✗ Kam chiqdi (kamomad)' : '↑ Ortiqcha chiqdi'}
+                    </span>
+                    <span
+                      className={`text-sm font-bold tabular-nums ${
+                        isShort
+                          ? 'text-red-700 dark:text-red-300'
+                          : 'text-amber-700 dark:text-amber-300'
+                      }`}
+                    >
+                      {isShort ? '−' : '+'}
+                      {formatMoneyUZS(absDiff)}
+                    </span>
+                  </div>
+                  <p
+                    className={`text-[11px] leading-snug ${
+                      isShort
+                        ? 'text-red-700/80 dark:text-red-300/80'
+                        : 'text-amber-700/80 dark:text-amber-300/80'
+                    }`}
+                  >
+                    Kiritilgan: {formatMoneyUZS(closingCash)} • Kutilayotgan:{' '}
+                    {formatMoneyUZS(expected)}
+                  </p>
+                </div>
+              );
+            })()}
 
             <div className="rounded-lg border border-yellow-200 bg-yellow-50 p-3 dark:border-yellow-800 dark:bg-yellow-950">
               <p className="text-sm text-yellow-800 dark:text-yellow-200">

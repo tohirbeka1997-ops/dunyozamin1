@@ -273,7 +273,7 @@ export default function Quotes() {
                     <TableHead className="py-2 text-xs font-semibold sm:text-sm">{t('quotes.col_price_type')}</TableHead>
                     <TableHead className="py-2 text-xs font-semibold sm:text-sm">{t('quotes.col_status')}</TableHead>
                     <TableHead className="whitespace-nowrap py-2 text-right text-xs font-semibold sm:text-sm">
-                      {t('quotes.col_total')}
+                      {t('quotes.col_total')} (UZS)
                     </TableHead>
                     <TableHead className="whitespace-nowrap py-2 text-xs font-semibold sm:text-sm">
                       {t('quotes.col_date')}

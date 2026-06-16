@@ -42,6 +42,7 @@ import type { PurchaseOrderWithDetails, SupplierWithBalance } from '@/types/data
 import { Plus, Search, FileDown, Eye, Edit, Package, X, DollarSign, CheckCircle, Trash2 } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 import { formatMoneyUZS } from '@/lib/format';
+import { formatMoney } from '@/lib/currency';
 import PaySupplierDialog from '@/components/suppliers/PaySupplierDialog';
 import { useAuth } from '@/contexts/AuthContext';
 import { formatDate } from '@/lib/datetime';
@@ -303,11 +304,6 @@ export default function PurchaseOrders() {
     });
   })();
 
-  const formatUsd = (value: any) => {
-    const n = Number(value ?? 0) || 0;
-    return `${new Intl.NumberFormat('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(n)} USD`;
-  };
-
   if (loading) {
     return (
       <div className="flex min-h-[220px] items-center justify-center">
@@ -530,7 +526,7 @@ export default function PurchaseOrders() {
                       <TableCell className="py-2 text-right text-xs font-medium">
                         {currency === 'USD' ? (
                           <div className="flex flex-col items-end gap-0.5">
-                            <span className="font-medium">{formatUsd((po as any).total_usd ?? 0)}</span>
+                            <span className="font-medium">{formatMoney((po as any).total_usd ?? 0, 'USD')}</span>
                             <span className="text-xs text-muted-foreground">{formatMoneyUZS((po as any).total_amount ?? 0)}</span>
                           </div>
                         ) : (
@@ -540,7 +536,7 @@ export default function PurchaseOrders() {
                       <TableCell className="py-2 text-right text-xs">
                         {currency === 'USD' ? (
                           <div className="flex flex-col items-end gap-0.5">
-                            <span>{formatUsd(paidAmount)}</span>
+                            <span>{formatMoney(paidAmount, 'USD')}</span>
                             <span className="text-xs text-muted-foreground">{formatMoneyUZS((po as any).paid_amount_uzs ?? 0)}</span>
                           </div>
                         ) : (
@@ -549,7 +545,7 @@ export default function PurchaseOrders() {
                       </TableCell>
                       <TableCell className="py-2 text-right text-xs">
                         <span className={remainingAmount > 0 ? 'font-medium' : ''}>
-                          {currency === 'USD' ? formatUsd(remainingAmount) : formatMoneyUZS(remainingAmount)}
+                          {currency === 'USD' ? formatMoney(remainingAmount, 'USD') : formatMoneyUZS(remainingAmount)}
                         </span>
                         {currency === 'USD' && (
                           <div className="text-xs text-muted-foreground">

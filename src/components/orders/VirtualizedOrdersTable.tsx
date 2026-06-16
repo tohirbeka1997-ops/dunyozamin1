@@ -1,9 +1,10 @@
+import type { JSX } from 'react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Eye, Printer, RotateCcw, Pencil } from 'lucide-react';
-import { formatMoneyUZS } from '@/lib/format';
+import { formatOrderMoney } from '@/lib/format';
 import { formatOrderDateTime } from '@/lib/datetime';
 
 type Props = {
@@ -127,7 +128,7 @@ export default function VirtualizedOrdersTable({
                 <div className="col-span-2 text-xs">{o.cashier_name || '-'}</div>
                 <div className="col-span-2 text-xs truncate">{o.customer_name || 'Yangi mijoz'}</div>
                 <div className="col-span-2 text-right text-xs">
-                  <div className="font-medium tabular-nums">{formatMoneyUZS(o.total_amount)}</div>
+                  <div className="font-medium tabular-nums">{formatOrderMoney(o, o.total_amount)}</div>
                   {disc > 0 ? (
                     <div className="flex justify-end mt-0.5">
                       <Badge
@@ -135,7 +136,7 @@ export default function VirtualizedOrdersTable({
                         className="h-5 px-1.5 text-[10px] font-normal tabular-nums border-emerald-600/35 bg-emerald-50 text-emerald-950 dark:bg-emerald-950/35 dark:text-emerald-50 dark:border-emerald-700/50"
                         title="Chegirma"
                       >
-                        −{formatMoneyUZS(disc)}
+                        −{formatOrderMoney(o, disc)}
                       </Badge>
                     </div>
                   ) : null}

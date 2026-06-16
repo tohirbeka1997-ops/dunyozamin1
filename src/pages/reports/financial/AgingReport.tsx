@@ -23,6 +23,8 @@ import { ArrowLeft, Users, Truck } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 import { handleIpcResponse, isElectron, requireElectron } from '@/utils/electron';
 import { formatMoneyUZS } from '@/lib/format';
+import { formatLedgerMoney } from '@/lib/currency';
+import { DualCurrencyAmount } from '@/components/common/DualCurrencyAmount';
 import { useReportAutoRefresh } from '@/hooks/useReportAutoRefresh';
 import { useSessionSearchParams } from '@/hooks/useSessionSearchParams';
 import { todayYMD } from '@/lib/datetime';
@@ -31,11 +33,76 @@ interface AgingRow {
   id: string;
   name: string;
   phone?: string;
+  settlement_currency?: string;
+  ledger_currency?: string;
   total_debt: number;
   current: number; // 0-7 days
   days_8_30: number; // 8-30 days
   days_31_60: number; // 31-60 days
   days_60_plus: number; // 60+ days
+}
+
+type AgingBucketTotals = {
+  total: number;
+  current: number;
+  days_8_30: number;
+  days_31_60: number;
+  days_60_plus: number;
+};
+
+function formatAgingAmount(row: AgingRow, amount: number, isSupplier: boolean): string {
+  if (isSupplier && row.settlement_currency) {
+    return formatLedgerMoney(amount, row.settlement_currency);
+  }
+  const cur = String(row.ledger_currency || 'UZS').toUpperCase();
+  if (cur === 'USD') {
+    return formatLedgerMoney(amount, 'USD');
+  }
+  return formatMoneyUZS(amount);
+}
+
+function sumCustomerBuckets(rows: AgingRow[]): { uzs: AgingBucketTotals; usd: AgingBucketTotals } {
+  const empty = (): AgingBucketTotals => ({
+    total: 0,
+    current: 0,
+    days_8_30: 0,
+    days_31_60: 0,
+    days_60_plus: 0,
+  });
+  const uzs = empty();
+  const usd = empty();
+  for (const row of rows) {
+    const cur = String(row.ledger_currency || 'UZS').toUpperCase() === 'USD' ? 'usd' : 'uzs';
+    const bucket = cur === 'usd' ? usd : uzs;
+    bucket.total += Number(row.total_debt || 0);
+    bucket.current += Number(row.current || 0);
+    bucket.days_8_30 += Number(row.days_8_30 || 0);
+    bucket.days_31_60 += Number(row.days_31_60 || 0);
+    bucket.days_60_plus += Number(row.days_60_plus || 0);
+  }
+  return { uzs, usd };
+}
+
+function sumSupplierBuckets(rows: AgingRow[]): { uzs: AgingBucketTotals; usd: AgingBucketTotals } {
+  const empty = (): AgingBucketTotals => ({
+    total: 0,
+    current: 0,
+    days_8_30: 0,
+    days_31_60: 0,
+    days_60_plus: 0,
+  });
+  const uzs = empty();
+  const usd = empty();
+  for (const row of rows) {
+    const cur = String(row.settlement_currency || 'UZS').toUpperCase() === 'USD' ? 'usd' : 'uzs';
+    const bucket = cur === 'usd' ? usd : uzs;
+    bucket.total += Number(row.total_debt || 0);
+    bucket.current += Number(row.current || 0);
+    bucket.days_8_30 += Number(row.days_8_30 || 0);
+    bucket.days_31_60 += Number(row.days_31_60 || 0);
+    bucket.days_60_plus += Number(row.days_60_plus || 0);
+  }
+  return { uzs, usd };
 }
 
 interface AgingInsight {
@@ -115,35 +182,20 @@ export default function AgingReport() {
     );
   }, [supplierRows, searchTerm]);
 
-  const customerTotals = useMemo(() => {
-    return filteredCustomers.reduce(
-      (acc, row) => ({
-        total: acc.total + Number(row.total_debt || 0),
-        current: acc.current + Number(row.current || 0),
-        days_8_30: acc.days_8_30 + Number(row.days_8_30 || 0),
-        days_31_60: acc.days_31_60 + Number(row.days_31_60 || 0),
-        days_60_plus: acc.days_60_plus + Number(row.days_60_plus || 0),
-      }),
-      { total: 0, current: 0, days_8_30: 0, days_31_60: 0, days_60_plus: 0 }
-    );
-  }, [filteredCustomers]);
+  const customerTotalsSplit = useMemo(
+    () => sumCustomerBuckets(filteredCustomers),
+    [filteredCustomers]
+  );
 
-  const supplierTotals = useMemo(() => {
-    return filteredSuppliers.reduce(
-      (acc, row) => ({
-        total: acc.total + Number(row.total_debt || 0),
-        current: acc.current + Number(row.current || 0),
-        days_8_30: acc.days_8_30 + Number(row.days_8_30 || 0),
-        days_31_60: acc.days_31_60 + Number(row.days_31_60 || 0),
-        days_60_plus: acc.days_60_plus + Number(row.days_60_plus || 0),
-      }),
-      { total: 0, current: 0, days_8_30: 0, days_31_60: 0, days_60_plus: 0 }
-    );
-  }, [filteredSuppliers]);
+  const supplierTotalsSplit = useMemo(
+    () => sumSupplierBuckets(filteredSuppliers),
+    [filteredSuppliers]
+  );
 
   const insights = useMemo(() => {
     const rows = activeTab === 'customers' ? filteredCustomers : filteredSuppliers;
-    const totals = activeTab === 'customers' ? customerTotals : supplierTotals;
+    const totals =
+      activeTab === 'customers' ? customerTotalsSplit.uzs : supplierTotalsSplit.uzs;
     const sideLabel = activeTab === 'customers' ? 'mijoz' : 'yetkazib beruvchi';
     const sideLabelPlural = activeTab === 'customers' ? 'mijozlar' : 'yetkazib beruvchilar';
 
@@ -168,7 +220,9 @@ export default function AgingReport() {
         level: 'critical',
         title: `60+ kunlik qarzdorlik bo'yicha zudlik bilan aloqa`,
         description: `${severeRows
-          .map((r) => `${r.name} (${formatMoneyUZS(r.days_60_plus)})`)
+          .map((r) =>
+            `${r.name} (${formatAgingAmount(r, r.days_60_plus, activeTab === 'suppliers')})`
+          )
           .join(', ')}`,
       });
     } else {
@@ -229,7 +283,7 @@ export default function AgingReport() {
     });
 
     return { reminders, recommendations };
-  }, [activeTab, filteredCustomers, filteredSuppliers, customerTotals, supplierTotals]);
+  }, [activeTab, filteredCustomers, filteredSuppliers, customerTotalsSplit, supplierTotalsSplit]);
 
   const copyInsights = async (kind: 'reminders' | 'recommendations') => {
     try {
@@ -266,7 +320,12 @@ export default function AgingReport() {
     );
   }
 
-  const renderTable = (rows: AgingRow[], totals: typeof customerTotals) => (
+  const renderTable = (
+    rows: AgingRow[],
+    totals: AgingBucketTotals,
+    isSupplier = false,
+    supplierSplit?: { uzs: AgingBucketTotals; usd: AgingBucketTotals }
+  ) => (
     <>
       {rows.length === 0 ? (
         <div className="text-center py-12">
@@ -293,35 +352,72 @@ export default function AgingReport() {
                 <TableCell className="font-medium">{row.name}</TableCell>
                 <TableCell>{row.phone || '-'}</TableCell>
                 <TableCell className="text-right font-semibold">
-                  {formatMoneyUZS(row.total_debt)}
+                  {formatAgingAmount(row, row.total_debt, isSupplier)}
                 </TableCell>
-                <TableCell className="text-right">{formatMoneyUZS(row.current)}</TableCell>
+                <TableCell className="text-right">{formatAgingAmount(row, row.current, isSupplier)}</TableCell>
                 <TableCell className="text-right text-warning">
-                  {formatMoneyUZS(row.days_8_30)}
+                  {formatAgingAmount(row, row.days_8_30, isSupplier)}
                 </TableCell>
                 <TableCell className="text-right text-orange-500">
-                  {formatMoneyUZS(row.days_31_60)}
+                  {formatAgingAmount(row, row.days_31_60, isSupplier)}
                 </TableCell>
                 <TableCell className="text-right text-destructive font-semibold">
-                  {formatMoneyUZS(row.days_60_plus)}
+                  {formatAgingAmount(row, row.days_60_plus, isSupplier)}
                 </TableCell>
               </TableRow>
             ))}
             {/* Totals row */}
-            <TableRow className="font-bold bg-muted/50">
-              <TableCell colSpan={2}>JAMI</TableCell>
-              <TableCell className="text-right">{formatMoneyUZS(totals.total)}</TableCell>
-              <TableCell className="text-right">{formatMoneyUZS(totals.current)}</TableCell>
-              <TableCell className="text-right text-warning">
-                {formatMoneyUZS(totals.days_8_30)}
-              </TableCell>
-              <TableCell className="text-right text-orange-500">
-                {formatMoneyUZS(totals.days_31_60)}
-              </TableCell>
-              <TableCell className="text-right text-destructive">
-                {formatMoneyUZS(totals.days_60_plus)}
-              </TableCell>
-            </TableRow>
+            {isSupplier && supplierSplit ? (
+              <>
+                {(supplierSplit.uzs.total > 0 || supplierSplit.usd.total > 0) && (
+                  <TableRow className="font-bold bg-muted/50">
+                    <TableCell colSpan={2}>JAMI (UZS)</TableCell>
+                    <TableCell className="text-right">{formatMoneyUZS(supplierSplit.uzs.total)}</TableCell>
+                    <TableCell className="text-right">{formatMoneyUZS(supplierSplit.uzs.current)}</TableCell>
+                    <TableCell className="text-right text-warning">
+                      {formatMoneyUZS(supplierSplit.uzs.days_8_30)}
+                    </TableCell>
+                    <TableCell className="text-right text-orange-500">
+                      {formatMoneyUZS(supplierSplit.uzs.days_31_60)}
+                    </TableCell>
+                    <TableCell className="text-right text-destructive">
+                      {formatMoneyUZS(supplierSplit.uzs.days_60_plus)}
+                    </TableCell>
+                  </TableRow>
+                )}
+                {supplierSplit.usd.total > 0 && (
+                  <TableRow className="font-bold bg-muted/30">
+                    <TableCell colSpan={2}>JAMI (USD)</TableCell>
+                    <TableCell className="text-right">{formatLedgerMoney(supplierSplit.usd.total, 'USD')}</TableCell>
+                    <TableCell className="text-right">{formatLedgerMoney(supplierSplit.usd.current, 'USD')}</TableCell>
+                    <TableCell className="text-right text-warning">
+                      {formatLedgerMoney(supplierSplit.usd.days_8_30, 'USD')}
+                    </TableCell>
+                    <TableCell className="text-right text-orange-500">
+                      {formatLedgerMoney(supplierSplit.usd.days_31_60, 'USD')}
+                    </TableCell>
+                    <TableCell className="text-right text-destructive">
+                      {formatLedgerMoney(supplierSplit.usd.days_60_plus, 'USD')}
+                    </TableCell>
+                  </TableRow>
+                )}
+              </>
+            ) : (
+              <TableRow className="font-bold bg-muted/50">
+                <TableCell colSpan={2}>JAMI</TableCell>
+                <TableCell className="text-right">{formatMoneyUZS(totals.total)}</TableCell>
+                <TableCell className="text-right">{formatMoneyUZS(totals.current)}</TableCell>
+                <TableCell className="text-right text-warning">
+                  {formatMoneyUZS(totals.days_8_30)}
+                </TableCell>
+                <TableCell className="text-right text-orange-500">
+                  {formatMoneyUZS(totals.days_31_60)}
+                </TableCell>
+                <TableCell className="text-right text-destructive">
+                  {formatMoneyUZS(totals.days_60_plus)}
+                </TableCell>
+              </TableRow>
+            )}
           </TableBody>
         </Table>
       )}
@@ -387,8 +483,18 @@ export default function AgingReport() {
           <CardContent className="py-3">
             <div className="text-xs text-muted-foreground">0-7 kun</div>
             <div className="text-xl font-bold">
-              {formatMoneyUZS(
-                activeTab === 'customers' ? customerTotals.current : supplierTotals.current
+              {activeTab === 'customers' ? (
+                <DualCurrencyAmount
+                  uzs={customerTotalsSplit.uzs.current}
+                  usd={customerTotalsSplit.usd.current}
+                  className="text-xl font-bold"
+                />
+              ) : (
+                <DualCurrencyAmount
+                  uzs={supplierTotalsSplit.uzs.current}
+                  usd={supplierTotalsSplit.usd.current}
+                  className="text-xl font-bold"
+                />
               )}
             </div>
             <div className="text-xs text-muted-foreground mt-1">Yangi qarzdorlik</div>
@@ -398,8 +504,14 @@ export default function AgingReport() {
           <CardContent className="py-3">
             <div className="text-xs text-muted-foreground">8-30 kun</div>
             <div className="text-xl font-bold text-warning">
-              {formatMoneyUZS(
-                activeTab === 'customers' ? customerTotals.days_8_30 : supplierTotals.days_8_30
+              {activeTab === 'customers' ? (
+                formatMoneyUZS(customerTotalsSplit.uzs.days_8_30)
+              ) : (
+                <DualCurrencyAmount
+                  uzs={supplierTotalsSplit.uzs.days_8_30}
+                  usd={supplierTotalsSplit.usd.days_8_30}
+                  className="text-xl font-bold text-warning"
+                />
               )}
             </div>
             <div className="text-xs text-muted-foreground mt-1">Ogohlantirish</div>
@@ -409,8 +521,18 @@ export default function AgingReport() {
           <CardContent className="py-3">
             <div className="text-xs text-muted-foreground">31-60 kun</div>
             <div className="text-xl font-bold text-orange-500">
-              {formatMoneyUZS(
-                activeTab === 'customers' ? customerTotals.days_31_60 : supplierTotals.days_31_60
+              {activeTab === 'customers' ? (
+                <DualCurrencyAmount
+                  uzs={customerTotalsSplit.uzs.days_31_60}
+                  usd={customerTotalsSplit.usd.days_31_60}
+                  className="text-xl font-bold text-orange-500"
+                />
+              ) : (
+                <DualCurrencyAmount
+                  uzs={supplierTotalsSplit.uzs.days_31_60}
+                  usd={supplierTotalsSplit.usd.days_31_60}
+                  className="text-xl font-bold text-orange-500"
+                />
               )}
             </div>
             <div className="text-xs text-muted-foreground mt-1">Kechikish</div>
@@ -420,10 +542,18 @@ export default function AgingReport() {
           <CardContent className="py-3">
             <div className="text-xs text-muted-foreground">60+ kun</div>
             <div className="text-xl font-bold text-destructive">
-              {formatMoneyUZS(
-                activeTab === 'customers'
-                  ? customerTotals.days_60_plus
-                  : supplierTotals.days_60_plus
+              {activeTab === 'customers' ? (
+                <DualCurrencyAmount
+                  uzs={customerTotalsSplit.uzs.days_60_plus}
+                  usd={customerTotalsSplit.usd.days_60_plus}
+                  className="text-xl font-bold text-destructive"
+                />
+              ) : (
+                <DualCurrencyAmount
+                  uzs={supplierTotalsSplit.uzs.days_60_plus}
+                  usd={supplierTotalsSplit.usd.days_60_plus}
+                  className="text-xl font-bold text-destructive"
+                />
               )}
             </div>
             <div className="text-xs text-muted-foreground mt-1">Jiddiy kechikish</div>
@@ -495,7 +625,7 @@ export default function AgingReport() {
         <TabsContent value="customers" className="mt-4">
           <Card>
             <CardContent className="p-0">
-              {renderTable(filteredCustomers, customerTotals)}
+              {renderTable(filteredCustomers, customerTotalsSplit.uzs, false, customerTotalsSplit)}
             </CardContent>
           </Card>
         </TabsContent>
@@ -503,7 +633,7 @@ export default function AgingReport() {
         <TabsContent value="suppliers" className="mt-4">
           <Card>
             <CardContent className="p-0">
-              {renderTable(filteredSuppliers, supplierTotals)}
+              {renderTable(filteredSuppliers, supplierTotalsSplit.uzs, true, supplierTotalsSplit)}
             </CardContent>
           </Card>
         </TabsContent>

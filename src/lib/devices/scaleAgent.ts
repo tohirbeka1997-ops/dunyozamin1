@@ -29,9 +29,11 @@ export type ScalePortInfo = {
   friendlyName: string | null;
 };
 
-type AgentResponse<T> =
-  | { ok: true; data?: T }
-  | { ok: false; error: { code?: string; message?: string; details?: unknown } };
+type AgentResponse<T> = {
+  ok: boolean;
+  data?: T;
+  error?: { code?: string; message?: string; details?: unknown };
+};
 
 function readEnv(name: string): string | undefined {
   const metaEnv: Record<string, string | undefined> = (import.meta as any)?.env || {};
@@ -41,6 +43,13 @@ function readEnv(name: string): string | undefined {
 
 function getAgentConfig(): { baseUrl: string; secret?: string } {
   const baseUrl = (readEnv('VITE_PRINT_AGENT_URL') || DEFAULT_URL).replace(/\/$/, '');
+  // SECURITY: same client-exposed Bearer token as the print agent
+  // (`VITE_PRINT_AGENT_SECRET`) — it is compiled into the client bundle and
+  // must be treated as PUBLIC. It only authenticates to the loopback
+  // print/scale daemon on the cashier PC, so impact is limited to that PC/LAN.
+  // Remediation (outside the frontend): per-PC agent secret in the agent's
+  // config.json + localhost binding + rate limiting, instead of one shared
+  // VITE_* value shipped to every client. See src/lib/receipts/printAgent.ts.
   const secret = readEnv('VITE_PRINT_AGENT_SECRET');
   return { baseUrl, secret };
 }

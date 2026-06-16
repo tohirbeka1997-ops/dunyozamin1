@@ -122,49 +122,18 @@ export default function Promotions() {
     return list;
   }, [promotions, searchQuery, timeFilter, dateFrom, dateTo]);
 
+  // React Query v5: onSuccess/onError on useMutation options are no longer
+  // invoked. The success/error handling lives at the mutate() call sites below.
   const deleteMutation = useMutation({
     mutationFn: deletePromotion,
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['promotions'] });
-      toast({ title: "Aksiya o'chirildi" });
-    },
-    onError: (err: Error) => {
-      toast({
-        title: 'O‘chirish amalga oshmadi',
-        description: formatPromotionDbError(err.message),
-        variant: 'destructive',
-      });
-    },
   });
 
   const activateMutation = useMutation({
-    mutationFn: activatePromotion,
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['promotions'] });
-      toast({ title: 'Aksiya faollashtirildi' });
-    },
-    onError: (err: Error) => {
-      toast({
-        title: 'Faollashtirish amalga oshmadi',
-        description: formatPromotionDbError(err.message),
-        variant: 'destructive',
-      });
-    },
+    mutationFn: (id: string) => activatePromotion(id),
   });
 
   const pauseMutation = useMutation({
-    mutationFn: pausePromotion,
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['promotions'] });
-      toast({ title: "Aksiya to'xtatildi" });
-    },
-    onError: (err: Error) => {
-      toast({
-        title: 'To‘xtatish amalga oshmadi',
-        description: formatPromotionDbError(err.message),
-        variant: 'destructive',
-      });
-    },
+    mutationFn: (id: string) => pausePromotion(id),
   });
 
   const mutationsBusy =
@@ -182,11 +151,50 @@ export default function Promotions() {
       confirmText: 'O‘chirish',
       variant: 'destructive',
     });
-    if (ok) deleteMutation.mutate(p.id);
+    if (ok)
+      deleteMutation.mutate(p.id, {
+        onSuccess: () => {
+          queryClient.invalidateQueries({ queryKey: ['promotions'] });
+          toast({ title: "Aksiya o'chirildi" });
+        },
+        onError: (err: Error) => {
+          toast({
+            title: 'O‘chirish amalga oshmadi',
+            description: formatPromotionDbError(err.message),
+            variant: 'destructive',
+          });
+        },
+      });
   };
 
-  const handleActivate = (id: string) => activateMutation.mutate(id);
-  const handlePause = (id: string) => pauseMutation.mutate(id);
+  const handleActivate = (id: string) =>
+    activateMutation.mutate(id, {
+      onSuccess: () => {
+        queryClient.invalidateQueries({ queryKey: ['promotions'] });
+        toast({ title: 'Aksiya faollashtirildi' });
+      },
+      onError: (err: Error) => {
+        toast({
+          title: 'Faollashtirish amalga oshmadi',
+          description: formatPromotionDbError(err.message),
+          variant: 'destructive',
+        });
+      },
+    });
+  const handlePause = (id: string) =>
+    pauseMutation.mutate(id, {
+      onSuccess: () => {
+        queryClient.invalidateQueries({ queryKey: ['promotions'] });
+        toast({ title: "Aksiya to'xtatildi" });
+      },
+      onError: (err: Error) => {
+        toast({
+          title: 'To‘xtatish amalga oshmadi',
+          description: formatPromotionDbError(err.message),
+          variant: 'destructive',
+        });
+      },
+    });
 
   const hasFilters =
     searchQuery.trim() !== '' ||

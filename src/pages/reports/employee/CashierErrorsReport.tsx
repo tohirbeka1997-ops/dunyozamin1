@@ -268,7 +268,7 @@ export default function CashierErrorsReport() {
               {overallStats.totalCancelled}
             </div>
             <div className="text-xs text-muted-foreground mt-1">
-              {formatMoneyUZS(overallStats.totalCancelledValue)}
+              {formatMoneyUZS(overallStats.totalCancelledValue)} (UZS ekv.)
             </div>
           </CardContent>
         </Card>
@@ -282,7 +282,7 @@ export default function CashierErrorsReport() {
               {overallStats.totalReturns}
             </div>
             <div className="text-xs text-muted-foreground mt-1">
-              {formatMoneyUZS(overallStats.totalReturnsValue)}
+              {formatMoneyUZS(overallStats.totalReturnsValue)} (UZS ekv.)
             </div>
           </CardContent>
         </Card>
@@ -295,6 +295,7 @@ export default function CashierErrorsReport() {
             <div className="text-2xl font-bold mt-2 text-destructive">
               {formatMoneyUZS(overallStats.totalCancelledValue + overallStats.totalReturnsValue)}
             </div>
+            <p className="text-[10px] text-muted-foreground mt-1">UZS ekvivalent</p>
           </CardContent>
         </Card>
         <Card>

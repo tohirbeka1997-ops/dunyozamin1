@@ -50,8 +50,8 @@ export default function Reports() {
       title: 'Mijozlar (CRM)',
       description: 'VIP, yo‘qolgan mijozlar, rentabellik, akt sverka',
       icon: Users,
-      color: 'text-purple-600',
-      bgColor: 'bg-purple-100',
+      color: 'text-secondary',
+      bgColor: 'bg-secondary/10',
       path: '/reports/customer',
     },
     {
@@ -66,8 +66,8 @@ export default function Reports() {
       title: 'Texnik & audit',
       description: 'Audit log, qurilma holati, narx o‘zgarishlari',
       icon: Settings,
-      color: 'text-gray-600',
-      bgColor: 'bg-gray-100',
+      color: 'text-muted-foreground',
+      bgColor: 'bg-muted',
       path: '/reports/system',
     },
   ];

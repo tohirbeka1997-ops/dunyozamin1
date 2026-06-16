@@ -276,7 +276,9 @@ export default function QuoteDetail() {
 
         <Card className="shadow-sm">
           <CardHeader className="border-b py-3">
-            <CardTitle className="text-base">{t('quotes.totals')}</CardTitle>
+            <CardTitle className="text-base">
+              {t('quotes.totals')} <span className="text-xs font-normal text-muted-foreground">(UZS)</span>
+            </CardTitle>
           </CardHeader>
           <CardContent className="space-y-2">
             <div className="flex justify-between text-sm">

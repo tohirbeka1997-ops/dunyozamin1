@@ -2,6 +2,8 @@ import React, { forwardRef } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { CartItem, Customer } from '@/types/database';
 import { formatMoneyUZS } from '@/lib/format';
+import type { AppCurrency } from '@/lib/currency';
+import { formatMoney } from '@/lib/currency';
 import { formatQuantity } from '@/utils/quantity';
 
 export type ReceiptProps = {
@@ -30,6 +32,8 @@ export type ReceiptProps = {
   showCustomer?: boolean;
   showSku?: boolean;
   paperSize?: '58mm' | '78mm' | '80mm';
+  /** Sale document currency (default UZS) */
+  currency?: AppCurrency;
 };
 
 const ReceiptInner = (props: ReceiptProps & { forwardedRef: React.ForwardedRef<HTMLDivElement> }) => {
@@ -59,7 +63,9 @@ const ReceiptInner = (props: ReceiptProps & { forwardedRef: React.ForwardedRef<H
     showCustomer = true,
     showSku = true,
     paperSize = '78mm',
+    currency = 'UZS',
   } = props;
+  const fmt = (amount: number | string | null | undefined) => formatMoney(amount, currency);
 
   const thermalWidth = paperSize === '58mm' ? '58mm' : paperSize === '78mm' ? '78mm' : '80mm';
 
@@ -143,10 +149,10 @@ const ReceiptInner = (props: ReceiptProps & { forwardedRef: React.ForwardedRef<H
               <div className="flex justify-between mt-1">
                 <span className="text-gray-600">
                   {formatQuantity(q, (item as any).sale_unit || item.product?.unit)} ×{' '}
-                  {formatMoneyUZS(Number(item.unit_price || 0))}
+                  {fmt(Number(item.unit_price || 0))}
                 </span>
                 <span className={`font-semibold ${isReturnLine ? 'text-red-600' : ''}`}>
-                  {formatMoneyUZS(lineTotal(item))}
+                  {fmt(lineTotal(item))}
                 </span>
               </div>
             </div>
@@ -163,28 +169,28 @@ const ReceiptInner = (props: ReceiptProps & { forwardedRef: React.ForwardedRef<H
       <div className="mb-3 text-xs space-y-1">
         <div className="flex justify-between">
           <span>{t('receipt.subtotal')}</span>
-          <span>{formatMoneyUZS(subtotal)}</span>
+          <span>{fmt(subtotal)}</span>
         </div>
         {discountAmount > 0 && (
           <div className="flex justify-between text-red-600">
             <span>{t('receipt.discount')}</span>
-            <span>-{formatMoneyUZS(discountAmount)}</span>
+            <span>-{fmt(discountAmount)}</span>
           </div>
         )}
         <div className="flex justify-between font-bold border-t border-gray-400 pt-1 mt-1">
           <span>{t('receipt.total')}</span>
-          <span>{formatMoneyUZS(total)}</span>
+          <span>{fmt(total)}</span>
         </div>
         {total < 0 && (
           <div className="flex justify-between text-red-600 font-semibold">
             <span>{t('receipt.customer_refund')}</span>
-            <span>{formatMoneyUZS(Math.abs(total))}</span>
+            <span>{fmt(Math.abs(total))}</span>
           </div>
         )}
         {total > 0 && (
           <div className="flex justify-between">
             <span>{t('receipt.paid')}</span>
-            <span>{formatMoneyUZS(paidAmount)}</span>
+            <span>{fmt(paidAmount)}</span>
           </div>
         )}
         {total === 0 && (
@@ -196,7 +202,7 @@ const ReceiptInner = (props: ReceiptProps & { forwardedRef: React.ForwardedRef<H
         {changeAmount > 0 && total > 0 && (
           <div className="flex justify-between">
             <span>{t('receipt.change')}</span>
-            <span>{formatMoneyUZS(changeAmount)}</span>
+            <span>{fmt(changeAmount)}</span>
           </div>
         )}
         {Number(customerTotalDebt || 0) > 0 && (

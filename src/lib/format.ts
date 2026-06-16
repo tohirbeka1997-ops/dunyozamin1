@@ -17,6 +17,32 @@
  */
 
 import { formatMoneyUZS as formatMoneyUZSFromMoney } from './money';
+import { formatMoney } from './currency';
+
+export {
+  formatMoney,
+  formatMoneyUSD,
+  formatLedgerMoney,
+  formatPoMoney,
+  formatOrderMoney,
+  formatReturnMoney,
+  formatExpenseMoney,
+  aggregateReturnAmounts,
+  getOrderSaleCurrency,
+  getExpenseCurrency,
+  expenseToUzsAmount,
+  aggregateExpenses,
+  type ExpenseAggregateTotals,
+  getPoPaidAmount,
+  getPoRemainingAmount,
+  normalizeCurrency,
+  aggregatePurchaseOrders,
+  calculatePoReceivedAmountUzs,
+  type AppCurrency,
+  type PoAggregateTotals,
+  getCustomerBalances,
+  formatCustomerBalanceLine,
+} from './currency';
 
 /**
  * Formats a number as UZS currency with dot separators and " so'm" suffix
@@ -96,37 +122,40 @@ export function formatNumberUZ(
  * - balance > 0: Positive balance (prepaid/credit) - GREEN
  * - balance == 0: Zero balance - GRAY
  */
-export function formatCustomerBalance(balance: number | null | undefined): {
+export function formatCustomerBalance(
+  balance: number | null | undefined,
+  currency: 'UZS' | 'USD' = 'UZS'
+): {
   type: 'debt' | 'balance' | 'zero';
   label: string;
   color: string;
   variant: 'destructive' | 'default' | 'outline';
 } {
   const balanceNum = Number(balance || 0);
-  
-  if (balanceNum < 0) {
-    // Debt (negative balance) - customer owes money
+  const isUsd = currency === 'USD';
+
+  if (balanceNum < -0.0001) {
     return {
       type: 'debt',
-      label: `Qarz: ${formatMoneyUZS(Math.abs(balanceNum))}`,
+      label: isUsd
+        ? `Qarz: ${formatMoney(Math.abs(balanceNum), 'USD')}`
+        : `Qarz: ${formatMoneyUZS(Math.abs(balanceNum))}`,
       color: 'text-destructive',
       variant: 'destructive',
     };
-  } else if (balanceNum > 0) {
-    // Positive balance (prepaid/credit) - customer has credit
+  }
+  if (balanceNum > 0.0001) {
     return {
       type: 'balance',
-      label: `Haq: ${formatMoneyUZS(balanceNum)}`,
+      label: isUsd ? `Haq: ${formatMoney(balanceNum, 'USD')}` : `Haq: ${formatMoneyUZS(balanceNum)}`,
       color: 'text-success',
       variant: 'default',
     };
-  } else {
-    // Zero balance
-    return {
-      type: 'zero',
-      label: '0 so\'m',
-      color: 'text-muted-foreground',
-      variant: 'outline',
-    };
   }
+  return {
+    type: 'zero',
+    label: isUsd ? '0.00 USD' : "0 so'm",
+    color: 'text-muted-foreground',
+    variant: 'outline',
+  };
 }

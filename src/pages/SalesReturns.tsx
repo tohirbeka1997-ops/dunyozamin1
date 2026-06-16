@@ -23,7 +23,8 @@ import { getSalesReturns, getCustomers, getSalesReturnById } from '@/db/api';
 import type { Customer, SalesReturnWithDetails } from '@/types/database';
 import { Plus, Search, Eye, Printer, RotateCcw, Edit } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
-import { formatMoneyUZS } from '@/lib/format';
+import { formatMoneyUZS, formatOrderMoney, formatReturnMoney, aggregateReturnAmounts } from '@/lib/format';
+import { DualCurrencyAmount } from '@/components/common/DualCurrencyAmount';
 import { formatOrderDateTime } from '@/lib/datetime';
 import { printHtml } from '@/lib/print';
 import { useSessionSearchParams } from '@/hooks/useSessionSearchParams';
@@ -148,7 +149,7 @@ export default function SalesReturns() {
       
       // Generate HTML content for the receipt
       const htmlContent = generateReturnReceiptHTML(returnData, 'thermal');
-      printHtml('Qaytarish cheki', htmlContent, 'thermal');
+      printHtml('Qaytarish cheki', htmlContent, '78mm');
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : 'Chop etishda xatolik yuz berdi';
       toast({
@@ -171,6 +172,7 @@ export default function SalesReturns() {
     const orderNumber = returnData.order?.order_number || 'Ordersiz';
     const sourceLabel = returnData.return_mode === 'manual' ? 'Ordersiz qaytarish' : 'Buyurtma bo‘yicha qaytarish';
     const isPending = returnData.status === 'Pending';
+    const orderCur = { currency: (returnData as any).order_currency ?? returnData.order?.currency };
     
     const statusLabels: Record<string, string> = {
       Completed: 'Yakunlangan',
@@ -211,8 +213,8 @@ export default function SalesReturns() {
                   <tr class="border-b border-gray-200">
                     <td class="py-2 px-2">${item.product?.name || item.product_name || '-'}</td>
                     <td class="text-center py-2 px-2">${item.quantity}</td>
-                    <td class="text-right py-2 px-2">${formatMoneyUZS(item.unit_price)}</td>
-                    <td class="text-right py-2 px-2 font-medium">${formatMoneyUZS(item.line_total)}</td>
+                    <td class="text-right py-2 px-2">${formatOrderMoney(orderCur, item.unit_price)}</td>
+                    <td class="text-right py-2 px-2 font-medium">${formatOrderMoney(orderCur, item.line_total)}</td>
                   </tr>
                 `).join('') || ''}
               </tbody>
@@ -221,7 +223,7 @@ export default function SalesReturns() {
           <div class="mb-6 space-y-2 text-sm">
             <div class="flex justify-between font-bold text-lg border-t-2 border-gray-300 pt-2">
               <span>Jami qaytarilgan summa:</span>
-              <span>${formatMoneyUZS(returnData.total_amount)}</span>
+              <span>${formatReturnMoney(returnData, orderCur)}</span>
             </div>
           </div>
           ${returnData.notes ? `<div class="mb-6"><p class="font-semibold mb-2">Izoh:</p><p class="text-sm text-muted-foreground">${returnData.notes}</p></div>` : ''}
@@ -267,8 +269,8 @@ export default function SalesReturns() {
             <div class="mb-2 text-xs">
               <div class="font-medium">${item.product?.name || item.product_name || '-'}</div>
               <div class="flex justify-between mt-1">
-                <span class="text-gray-600">${item.quantity} x ${formatMoneyUZS(item.unit_price)}</span>
-                <span class="font-semibold">${formatMoneyUZS(item.line_total)}</span>
+                <span class="text-gray-600">${item.quantity} x ${formatOrderMoney(orderCur, item.unit_price)}</span>
+                <span class="font-semibold">${formatOrderMoney(orderCur, item.line_total)}</span>
               </div>
             </div>
           `).join('') || ''}
@@ -276,7 +278,7 @@ export default function SalesReturns() {
         <div class="mb-3 text-xs">
           <div class="flex justify-between font-bold border-t border-gray-400 pt-1 mt-1">
             <span>JAMI QAYTARILGAN:</span>
-            <span>${formatMoneyUZS(returnData.total_amount)}</span>
+            <span>${formatReturnMoney(returnData, orderCur)}</span>
           </div>
         </div>
         ${returnData.notes ? `<div class="mb-3 text-xs border-t border-dashed border-gray-400 pt-2"><p class="font-semibold">Izoh:</p><p class="text-gray-600">${returnData.notes}</p></div>` : ''}
@@ -298,7 +300,7 @@ export default function SalesReturns() {
     );
   });
 
-  const totalReturned = filteredReturns.reduce((sum, ret) => sum + Number(ret.total_amount || 0), 0);
+  const returnTotals = aggregateReturnAmounts(filteredReturns as any);
   const completedReturns = filteredReturns.filter(ret => ret.status === 'Completed').length;
   const pendingReturns = filteredReturns.filter(ret => ret.status === 'Pending').length;
 
@@ -327,7 +329,7 @@ export default function SalesReturns() {
               <div className="min-w-0 space-y-0.5">
                 <p className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">Jami qaytarilgan</p>
                 <p className="truncate text-base font-semibold tabular-nums leading-tight sm:text-lg">
-                  {formatMoneyUZS(totalReturned)}
+                  <DualCurrencyAmount uzs={returnTotals.totalUzs} usd={returnTotals.totalUsd} />
                 </p>
                 <p className="text-xs text-muted-foreground">{filteredReturns.length} qaytarish</p>
               </div>
@@ -483,7 +485,9 @@ export default function SalesReturns() {
                       {formatOrderDateTime(ret.created_at)}
                     </TableCell>
                     <TableCell className="py-2 text-right text-xs tabular-nums font-medium">
-                      {formatMoneyUZS(ret.total_amount)}
+                      {formatReturnMoney(ret, {
+                        currency: (ret as any).order_currency ?? ret.order?.currency,
+                      })}
                     </TableCell>
                     <TableCell className="py-2">{getStatusBadge(ret.status)}</TableCell>
                     <TableCell className="max-w-[7rem] truncate py-2 text-xs">{ret.cashier?.username || '-'}</TableCell>
@@ -514,7 +518,7 @@ export default function SalesReturns() {
                         >
                           <Eye className="h-4 w-4" />
                         </Button>
-                        {ret.status !== 'Completed' && (
+                        {String(ret.status || '').toLowerCase() !== 'completed' && (
                           <Button
                             variant="ghost"
                             size="icon"

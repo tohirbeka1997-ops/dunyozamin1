@@ -4,14 +4,6 @@ import { useTranslation } from 'react-i18next';
 import { useAuth } from '@/contexts/AuthContext';
 import { Button } from '@/components/ui/button';
 import GlobalSearch from '@/components/search/GlobalSearch';
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuLabel,
-  DropdownMenuSeparator,
-  DropdownMenuTrigger,
-} from '@/components/ui/dropdown-menu';
 import { Sheet, SheetContent, SheetTitle } from '@/components/ui/sheet';
 import {
   Store,
@@ -38,16 +30,20 @@ import {
   Barcode,
   Tag,
   Search,
-  ChevronDown,
   ChevronLeft,
   ChevronRight,
   Globe,
-  Check,
+  Sparkles,
+  ChefHat,
+  PackageCheck,
 } from 'lucide-react';
 import { useTheme } from '@/hooks/use-theme';
-import routes, { type RouteConfig } from '@/routes';
+import routes from '@/routes';
 import { getElectronAPI, handleIpcResponse } from '@/utils/electron';
 import { useToast } from '@/hooks/use-toast';
+import { SidebarNav } from '@/components/layout/SidebarNav';
+import { playNewOnlineOrderChime } from '@/lib/newOrderSound';
+import NetworkBadge from '@/components/common/NetworkBadge';
 
 const iconMap: Record<string, React.ReactNode> = {
   Dashboard: <LayoutDashboard className="h-5 w-5" />,
@@ -56,6 +52,11 @@ const iconMap: Record<string, React.ReactNode> = {
   Categories: <FolderTree className="h-5 w-5" />,
   Orders: <Receipt className="h-5 w-5" />,
   'Online Orders': <Globe className="h-5 w-5" />,
+  'Web Orders Preparing': <ChefHat className="h-5 w-5" />,
+  'Web Orders Ready': <PackageCheck className="h-5 w-5" />,
+  'Web Orders Delivering': <Truck className="h-5 w-5" />,
+  'Online Sales Report': <BarChart3 className="h-5 w-5" />,
+  'Web Orders Delivered': <PackageCheck className="h-5 w-5" />,
   Courier: <Truck className="h-5 w-5" />,
   'Sales Returns': <RotateCcw className="h-5 w-5" />,
   Customers: <Users className="h-5 w-5" />,
@@ -64,6 +65,7 @@ const iconMap: Record<string, React.ReactNode> = {
   Suppliers: <Truck className="h-5 w-5" />,
   'Expenses': <Wallet className="h-5 w-5" />,
   'Promotions': <Tag className="h-5 w-5" />,
+  'Mini-app Content': <Sparkles className="h-5 w-5" />,
   Reports: <BarChart3 className="h-5 w-5" />,
   Employees: <UserCog className="h-5 w-5" />,
   Settings: <Settings className="h-5 w-5" />,
@@ -78,7 +80,12 @@ const routeNameMap: Record<string, string> = {
   'Products': 'navigation.products',
   'Categories': 'navigation.categories',
   'Orders': 'navigation.orders',
-  'Online Orders': 'navigation.web_online_orders',
+  'Online Orders': 'navigation.web_orders_incoming',
+  'Web Orders Preparing': 'navigation.web_orders_preparing',
+  'Web Orders Ready': 'navigation.web_orders_ready',
+  'Web Orders Delivering': 'navigation.web_orders_delivering',
+  'Online Sales Report': 'navigation.web_orders_report',
+  'Web Orders Delivered': 'navigation.web_orders_delivered',
   'Courier': 'navigation.courier',
   'Sales Returns': 'navigation.sales_returns',
   'Customers': 'navigation.customers',
@@ -87,6 +94,7 @@ const routeNameMap: Record<string, string> = {
   'Suppliers': 'navigation.suppliers',
   'Expenses': 'navigation.expenses',
   'Promotions': 'navigation.promotions',
+  'Mini-app Content': 'navigation.mini_app_content',
   'Reports': 'navigation.reports',
   'Employees': 'navigation.employees',
   'Settings': 'navigation.settings',
@@ -106,6 +114,7 @@ export default function MainLayout({ children }: { children: React.ReactNode }) 
   const [globalSearchOpen, setGlobalSearchOpen] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [pendingWebOrdersCount, setPendingWebOrdersCount] = useState(0);
+  const [webOrderQueueBadges, setWebOrderQueueBadges] = useState<Record<string, number>>({});
   const hasInitializedWebOrdersCountRef = useRef(false);
   const previousWebOrdersCountRef = useRef(0);
 
@@ -133,7 +142,23 @@ export default function MainLayout({ children }: { children: React.ReactNode }) 
       }
     };
     window.addEventListener('pos:web-orders-pending-count', handler as EventListener);
-    return () => window.removeEventListener('pos:web-orders-pending-count', handler as EventListener);
+    const queueHandler = (event: Event) => {
+      const custom = event as CustomEvent<Record<string, number>>;
+      const counts = custom?.detail;
+      if (!counts || typeof counts !== 'object') return;
+      const incoming = Math.max(0, Number(counts.incoming ?? 0));
+      setPendingWebOrdersCount(incoming);
+      setWebOrderQueueBadges({
+        '/web-orders': incoming,
+        '/web-orders/preparing': Math.max(0, Number(counts.preparing ?? 0)),
+        '/web-orders/delivering': Math.max(0, Number(counts.delivering ?? 0)),
+      });
+    };
+    window.addEventListener('pos:web-orders-queue-counts', queueHandler as EventListener);
+    return () => {
+      window.removeEventListener('pos:web-orders-pending-count', handler as EventListener);
+      window.removeEventListener('pos:web-orders-queue-counts', queueHandler as EventListener);
+    };
   }, []);
 
   useEffect(() => {
@@ -150,14 +175,29 @@ export default function MainLayout({ children }: { children: React.ReactNode }) 
     const refreshPendingOrders = async () => {
       if (typeof document !== 'undefined' && document.visibilityState !== 'visible') return;
       try {
-        const res = await handleIpcResponse<{ data: unknown[]; meta?: { total?: number } }>(
-          api.webOrders.list({ status: 'new', page: 1, limit: 1 }),
-        );
-        if (isCancelled) return;
-
-        const total = Number(res?.meta?.total ?? 0);
-        const nextCount = Number.isFinite(total) ? Math.max(0, total) : 0;
-        setPendingWebOrdersCount(nextCount);
+        let nextCount = 0;
+        if (api.webOrders.countsByQueue) {
+          const counts = await handleIpcResponse<Record<string, number>>(
+            api.webOrders.countsByQueue(),
+          );
+          if (isCancelled) return;
+          nextCount = Math.max(0, Number(counts?.incoming ?? 0));
+          setPendingWebOrdersCount(nextCount);
+          setWebOrderQueueBadges({
+            '/web-orders': nextCount,
+            '/web-orders/preparing': Math.max(0, Number(counts?.preparing ?? 0)),
+            '/web-orders/ready': Math.max(0, Number(counts?.ready ?? 0)),
+            '/web-orders/delivering': Math.max(0, Number(counts?.delivering ?? 0)),
+          });
+        } else {
+          const res = await handleIpcResponse<{ meta?: { total?: number } }>(
+            api.webOrders.list({ queue: 'incoming', page: 1, limit: 1 }),
+          );
+          if (isCancelled) return;
+          nextCount = Number(res?.meta?.total ?? 0);
+          nextCount = Number.isFinite(nextCount) ? Math.max(0, nextCount) : 0;
+          setPendingWebOrdersCount(nextCount);
+        }
 
         if (!hasInitializedWebOrdersCountRef.current) {
           hasInitializedWebOrdersCountRef.current = true;
@@ -167,6 +207,7 @@ export default function MainLayout({ children }: { children: React.ReactNode }) 
 
         if (nextCount > previousWebOrdersCountRef.current) {
           const delta = nextCount - previousWebOrdersCountRef.current;
+          playNewOnlineOrderChime();
           toast({
             title: t('navigation.new_online_order_title'),
             description:
@@ -201,9 +242,6 @@ export default function MainLayout({ children }: { children: React.ReactNode }) 
     return true;
   });
 
-  /** Sidebar dropdown: ko'rinadigan route'lardan tezkor ro'yxat */
-  const quickNavRoutes = visibleRoutes.slice(0, 12);
-
   const handleSignOut = async () => {
     try {
       await signOut();
@@ -213,69 +251,26 @@ export default function MainLayout({ children }: { children: React.ReactNode }) 
     }
   };
 
-  const NavLinks = ({ compact = false }: { compact?: boolean }) => (
-    <>
-      {visibleRoutes.map((route) => {
-        const isActive = location.pathname === route.path;
-        const isOnlineOrdersRoute = route.path === '/web-orders';
-        return (
-          <Link
-            key={route.path}
-            to={route.path}
-            onClick={() => setMobileMenuOpen(false)}
-            title={compact ? (routeNameMap[route.name] ? t(routeNameMap[route.name]) : route.name) : undefined}
-            className={`flex items-center rounded-lg px-3 py-2 transition-colors ${
-              compact ? 'mx-auto h-10 w-10 justify-center px-0 py-0' : 'gap-3'
-            } ${
-              isActive
-                ? 'bg-primary text-primary-foreground'
-                : 'text-foreground/80 hover:bg-muted hover:text-foreground'
-            }`}
-          >
-            <span className="inline-flex h-5 w-5 items-center justify-center shrink-0">
-              {iconMap[route.name] ?? <LayoutDashboard className="h-5 w-5" />}
-            </span>
-            {!compact && (
-              <span className="flex min-w-0 flex-1 items-center gap-2">
-                <span className="truncate">
-                  {routeNameMap[route.name] ? t(routeNameMap[route.name]) : route.name}
-                </span>
-                {isOnlineOrdersRoute && pendingWebOrdersCount > 0 && (
-                  <span className="ml-auto inline-flex min-w-[1.5rem] items-center justify-center rounded-full bg-destructive px-1.5 py-0.5 text-[10px] font-semibold text-destructive-foreground">
-                    {pendingWebOrdersCount > 99 ? '99+' : pendingWebOrdersCount}
-                  </span>
-                )}
-              </span>
-            )}
-            {compact && isOnlineOrdersRoute && pendingWebOrdersCount > 0 && (
-              <span className="absolute right-1.5 top-1.5 h-2.5 w-2.5 rounded-full bg-destructive" />
-            )}
-          </Link>
-        );
-      })}
-    </>
-  );
-
   return (
     <>
     <GlobalSearch open={globalSearchOpen} onOpenChange={setGlobalSearchOpen} />
     <div className="flex h-screen w-full min-w-0 max-w-[100vw] overflow-hidden overflow-x-hidden">
       {/* Desktop Sidebar */}
-      <aside className={`hidden border-r bg-card transition-all duration-200 xl:flex xl:flex-col ${sidebarCollapsed ? 'w-[4.5rem]' : 'w-64'}`}>
-        <div className={`${sidebarCollapsed ? 'p-2' : 'p-6'} border-b`}>
+      <aside className={`app-sidebar hidden border-r transition-all duration-200 xl:flex xl:flex-col ${sidebarCollapsed ? 'w-[4.5rem]' : 'w-64'}`}>
+        <div className={`sidebar-border ${sidebarCollapsed ? 'p-2' : 'p-6'} border-b`}>
           <div className={`flex items-start ${sidebarCollapsed ? 'flex-col gap-2' : 'gap-2'}`}>
             <Link
               to="/"
               className={`flex items-center ${sidebarCollapsed ? 'w-full justify-center' : 'min-w-0 flex-1 gap-2'}`}
               title={sidebarCollapsed ? t('common.pos_system') : undefined}
             >
-              <div className="h-10 w-10 rounded-lg bg-primary flex items-center justify-center flex-shrink-0">
+              <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-gradient-primary shadow-md">
                 <Store className="h-6 w-6 text-primary-foreground" />
               </div>
               {!sidebarCollapsed && (
                 <div className="min-w-0">
-                  <h1 className="font-bold text-lg truncate">{t('common.pos_system')}</h1>
-                  <p className="text-xs text-muted-foreground truncate">{t('common.point_of_sale')}</p>
+                  <h1 className="truncate text-lg font-bold text-sidebar-foreground">{t('common.pos_system')}</h1>
+                  <p className="sidebar-muted truncate text-xs">{t('common.point_of_sale')}</p>
                 </div>
               )}
             </Link>
@@ -284,7 +279,7 @@ export default function MainLayout({ children }: { children: React.ReactNode }) 
                 variant="ghost"
                 size="icon"
                 onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}
-                className="flex-shrink-0"
+                className="shrink-0 text-sidebar-foreground hover:bg-sidebar-accent hover:text-sidebar-foreground"
                 title={theme === 'dark' ? t('navigation.theme_light_mode') : t('navigation.theme_dark_mode')}
               >
                 {theme === 'dark' ? <Sun className="h-5 w-5" /> : <Moon className="h-5 w-5" />}
@@ -292,7 +287,7 @@ export default function MainLayout({ children }: { children: React.ReactNode }) 
               <Button
                 variant="ghost"
                 size="icon"
-                className="flex-shrink-0"
+                className="shrink-0 text-sidebar-foreground hover:bg-sidebar-accent hover:text-sidebar-foreground"
                 onClick={() => setSidebarCollapsed((v) => !v)}
                 title={sidebarCollapsed ? t('navigation.sidebar_open') : t('navigation.sidebar_close')}
                 aria-label={sidebarCollapsed ? t('navigation.sidebar_open') : t('navigation.sidebar_close')}
@@ -302,86 +297,53 @@ export default function MainLayout({ children }: { children: React.ReactNode }) 
             </div>
           </div>
         </div>
-        {/* Qidiruv (1 bosish) + tezkor sahifalar (dropdown) */}
-        <div className={`px-4 pt-3 pb-1 flex gap-1.5 ${sidebarCollapsed ? 'justify-center' : ''}`}>
-          {!sidebarCollapsed && (
+        <div className={`px-4 pt-3 pb-1 ${sidebarCollapsed ? 'flex justify-center' : ''}`}>
           <button
             type="button"
             onClick={() => setGlobalSearchOpen(true)}
-            className="flex-1 min-w-0 flex items-center gap-2 px-3 py-2 rounded-lg border border-border bg-muted/50 hover:bg-muted text-muted-foreground text-sm transition-colors"
+            className={`sidebar-search flex items-center gap-2 rounded-lg border px-3 py-2 text-sm transition-colors ${
+              sidebarCollapsed ? 'h-9 w-9 justify-center p-0' : 'min-w-0 w-full'
+            }`}
+            title={sidebarCollapsed ? t('navigation.sidebar_search_placeholder') : undefined}
+            aria-label={t('navigation.sidebar_search_placeholder')}
           >
             <Search className="h-4 w-4 shrink-0" />
-            <span className="flex-1 text-left truncate">
-              {t('navigation.sidebar_search_placeholder')}
-            </span>
-            <kbd className="hidden xl:inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[10px] font-mono bg-background border border-border shadow-sm shrink-0">
-              Ctrl K
-            </kbd>
+            {!sidebarCollapsed && (
+              <>
+                <span className="min-w-0 flex-1 truncate text-left">
+                  {t('navigation.sidebar_search_placeholder')}
+                </span>
+                <kbd className="sidebar-kbd hidden shrink-0 items-center gap-0.5 rounded border px-1.5 py-0.5 font-mono text-[10px] shadow-sm xl:inline-flex">
+                  Ctrl K
+                </kbd>
+              </>
+            )}
           </button>
-          )}
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <Button
-                type="button"
-                variant="outline"
-                size="icon"
-                className="h-9 w-9 shrink-0 border-border bg-muted/50 hover:bg-muted"
-                title={t('navigation.sidebar_quick_pages')}
-                aria-label={t('navigation.sidebar_quick_pages')}
-              >
-                <ChevronDown className="h-4 w-4 opacity-70" />
-              </Button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent className="min-w-[14rem] z-[70]" align="end" sideOffset={6}>
-              <DropdownMenuLabel className="text-xs font-normal text-muted-foreground">
-                {t('navigation.sidebar_quick_pages')}
-              </DropdownMenuLabel>
-              <DropdownMenuItem
-                className="cursor-pointer"
-                onClick={() => setGlobalSearchOpen(true)}
-              >
-                <Search className="h-4 w-4 mr-2" />
-                {t('navigation.sidebar_global_search')}
-                <span className="ml-auto text-xs text-muted-foreground pl-2">Ctrl+K</span>
-              </DropdownMenuItem>
-              {quickNavRoutes.length > 0 && <DropdownMenuSeparator />}
-              {quickNavRoutes.map((route) => (
-                <DropdownMenuItem
-                  key={route.path}
-                  className="cursor-pointer"
-                  onClick={() => {
-                    navigate(route.path);
-                    setMobileMenuOpen(false);
-                  }}
-                >
-                  <span className="mr-2 flex shrink-0 [&_svg]:h-4 [&_svg]:w-4">
-                    {iconMap[route.name]}
-                  </span>
-                  <span className="truncate">
-                    {routeNameMap[route.name] ? t(routeNameMap[route.name]) : route.name}
-                  </span>
-                  {location.pathname === route.path && (
-                    <Check className="ml-auto h-4 w-4 text-primary" />
-                  )}
-                </DropdownMenuItem>
-              ))}
-            </DropdownMenuContent>
-          </DropdownMenu>
         </div>
-        <nav className="flex-1 overflow-y-auto p-4 space-y-1">
-          <NavLinks compact={sidebarCollapsed} />
+        <nav className="flex-1 overflow-y-auto p-3 xl:p-4">
+          <SidebarNav
+            visibleRoutes={visibleRoutes}
+            compact={sidebarCollapsed}
+            variant="sidebar"
+            iconMap={iconMap}
+            routeNameMap={routeNameMap}
+            pendingWebOrdersCount={pendingWebOrdersCount}
+            routeBadges={webOrderQueueBadges}
+          />
         </nav>
-        <div className="p-4 border-t">
+        <div className="sidebar-border border-t p-4">
           <div className="flex items-center gap-3 mb-3">
-            <div className="h-10 w-10 rounded-full bg-primary/10 flex items-center justify-center">
-              <User className="h-5 w-5 text-primary" />
+            <div className="flex h-10 w-10 items-center justify-center rounded-full bg-sidebar-accent">
+              <User className="h-5 w-5 text-sidebar-foreground" />
             </div>
-            {!sidebarCollapsed && <div className="flex-1 min-w-0">
-              <p className="font-medium text-sm truncate">{user?.full_name || user?.email}</p>
-              <p className="text-xs text-muted-foreground capitalize">{user?.role}</p>
-            </div>}
+            {!sidebarCollapsed && (
+              <div className="min-w-0 flex-1">
+                <p className="truncate text-sm font-medium text-sidebar-foreground">{user?.full_name || user?.email}</p>
+                <p className="sidebar-muted truncate text-xs capitalize">{user?.role}</p>
+              </div>
+            )}
           </div>
-          <Button variant="outline" size="sm" className={sidebarCollapsed ? 'w-10 px-0' : 'w-full'} onClick={handleSignOut} title={sidebarCollapsed ? t('common.sign_out') : undefined}>
+          <Button variant="outline" size="sm" className={`sidebar-signout ${sidebarCollapsed ? 'w-10 px-0' : 'w-full'}`} onClick={handleSignOut} title={sidebarCollapsed ? t('common.sign_out') : undefined}>
             <LogOut className={`h-4 w-4 ${sidebarCollapsed ? '' : 'mr-2'}`} />
             {!sidebarCollapsed && t('common.sign_out')}
           </Button>
@@ -391,7 +353,7 @@ export default function MainLayout({ children }: { children: React.ReactNode }) 
       {/* Main Content — min-w-0: flex qatorida kontent kengayib o‘ngda bo‘sh joy qolmasin */}
       <div className="flex min-h-0 min-w-0 flex-1 basis-0 flex-col overflow-hidden">
         {/* Mobil / planshet: sidebar yo‘q — chap menyu Sheet orqali */}
-        <header className="flex shrink-0 items-center gap-2 border-b bg-card px-3 py-2 pt-[max(0.5rem,env(safe-area-inset-top))] xl:hidden">
+        <header className="app-main-chrome flex shrink-0 items-center gap-2 px-3 py-2 pt-[max(0.5rem,env(safe-area-inset-top))] xl:hidden">
           <Sheet open={mobileMenuOpen} onOpenChange={setMobileMenuOpen}>
             <Button
               type="button"
@@ -439,8 +401,16 @@ export default function MainLayout({ children }: { children: React.ReactNode }) 
                   <span className="truncate">{t('navigation.sidebar_search_placeholder')}</span>
                 </button>
               </div>
-              <nav className="min-h-0 flex-1 space-y-1 overflow-y-auto p-4">
-                <NavLinks />
+              <nav className="min-h-0 flex-1 overflow-y-auto p-4">
+                <SidebarNav
+                  visibleRoutes={visibleRoutes}
+                  variant="default"
+                  iconMap={iconMap}
+                  routeNameMap={routeNameMap}
+                  pendingWebOrdersCount={pendingWebOrdersCount}
+                  routeBadges={webOrderQueueBadges}
+                  onNavigate={() => setMobileMenuOpen(false)}
+                />
               </nav>
               <div className="border-t p-4">
                 <div className="mb-3 flex items-center gap-3">
@@ -480,12 +450,13 @@ export default function MainLayout({ children }: { children: React.ReactNode }) 
           >
             <Search className="h-5 w-5" />
           </Button>
+          <NetworkBadge />
         </header>
 
         {/* Page Content - flex so children (e.g. POS) can fill full height */}
         {/* POS: overflow-hidden so content fits viewport; other pages: overflow-y-auto for scroll */}
         <main
-          className={`flex min-h-0 min-w-0 flex-1 flex-col bg-muted/30 ${
+          className={`flex min-h-0 min-w-0 flex-1 flex-col ${
             isPosPage
               ? 'w-full min-w-0 overflow-hidden overflow-x-hidden pb-4 pl-4 pt-4 !pr-0 xl:pb-6 xl:pl-6 xl:pt-6'
               : 'overflow-y-auto px-4 pb-4 pt-2 xl:px-6 xl:pb-6 xl:pt-3'

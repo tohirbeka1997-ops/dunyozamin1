@@ -25,6 +25,8 @@ import { Save, Eye, EyeOff } from 'lucide-react';
 import { createEmployee, updateEmployee, getEmployeeById } from '@/db/api';
 import type { Profile, UserRole } from '@/types/database';
 import { useToast } from '@/hooks/use-toast';
+import { useAuth } from '@/contexts/AuthContext';
+import { useTranslation } from 'react-i18next';
 
 type PermissionModule = 'products' | 'orders' | 'reports' | 'customers' | 'inventory' | 'settings';
 type PermissionAction = 'view' | 'add' | 'edit' | 'delete' | 'change_price';
@@ -72,7 +74,11 @@ export default function EmployeeFormModal({
   onSuccess,
 }: EmployeeFormModalProps) {
   const { toast } = useToast();
+  const { user, role } = useAuth();
+  const { t } = useTranslation();
   const isEditMode = Boolean(employeeId);
+  const canChangeCredentials =
+    role === 'admin' || (isEditMode && !!user?.id && user.id === employeeId);
 
   const [loading, setLoading] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
@@ -234,19 +240,37 @@ export default function EmployeeFormModal({
 
     if (!isEditMode) {
       if (!formData.username.trim()) {
-        newErrors.username = 'Foydalanuvchi nomi talab qilinadi';
+        newErrors.username = t('employees.username_required');
       } else if (formData.username.length < 3) {
-        newErrors.username = 'Foydalanuvchi nomi kamida 3 ta belgi bo\'lishi kerak';
+        newErrors.username = t('employees.username_min_3');
       }
 
       if (!formData.password) {
-        newErrors.password = 'Parol talab qilinadi';
+        newErrors.password = t('employees.password_required');
       } else if (formData.password.length < 6) {
-        newErrors.password = 'Parol kamida 6 ta belgi bo\'lishi kerak';
+        newErrors.password = t('employees.password_min_6');
       }
 
       if (formData.password !== formData.confirmPassword) {
-        newErrors.confirmPassword = 'Parollar mos kelmaydi';
+        newErrors.confirmPassword = t('employees.passwords_no_match');
+      }
+    } else if (canChangeCredentials) {
+      if (!formData.username.trim()) {
+        newErrors.username = t('employees.username_required');
+      } else if (formData.username.length < 3) {
+        newErrors.username = t('employees.username_min_3');
+      }
+
+      if (formData.password || formData.confirmPassword) {
+        if (!formData.password) {
+          newErrors.password = t('employees.password_required');
+        } else if (formData.password.length < 6) {
+          newErrors.password = t('employees.password_min_6');
+        }
+
+        if (formData.password !== formData.confirmPassword) {
+          newErrors.confirmPassword = t('employees.passwords_no_match');
+        }
       }
     }
 
@@ -278,13 +302,22 @@ export default function EmployeeFormModal({
       setLoading(true);
 
       if (isEditMode && employeeId) {
-        await updateEmployee(employeeId, {
+        const updates: Partial<Profile> & { password?: string } = {
           full_name: formData.full_name,
           phone: formData.phone || null,
           email: formData.email || null,
           role: formData.role as UserRole,
           is_active: formData.is_active,
-        } as Partial<Profile>);
+        };
+
+        if (canChangeCredentials) {
+          updates.username = formData.username.trim();
+          if (formData.password.trim()) {
+            updates.password = formData.password;
+          }
+        }
+
+        await updateEmployee(employeeId, updates);
 
       toast({
         title: 'Muvaffaqiyatli',
@@ -420,6 +453,24 @@ export default function EmployeeFormModal({
                     />
                     {errors.email && <p className="text-sm text-destructive">{errors.email}</p>}
                   </div>
+
+                  {isEditMode && canChangeCredentials && (
+                    <div className="space-y-2">
+                      <Label htmlFor="username_edit">
+                        {t('employees.login_username')} <span className="text-destructive">*</span>
+                      </Label>
+                      <Input
+                        id="username_edit"
+                        value={formData.username}
+                        onChange={(e) => handleChange('username', e.target.value)}
+                        placeholder={t('employees.username')}
+                        disabled={loading}
+                      />
+                      {errors.username && (
+                        <p className="text-sm text-destructive">{errors.username}</p>
+                      )}
+                    </div>
+                  )}
                 </div>
 
                 {!isEditMode && (
@@ -489,6 +540,81 @@ export default function EmployeeFormModal({
                             placeholder="Parolni tasdiqlang"
                             disabled={loading}
                             className="pr-10"
+                          />
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="sm"
+                            className="absolute right-0 top-0 h-full px-3 py-2 hover:bg-transparent"
+                            onClick={() => setShowConfirmPassword(!showConfirmPassword)}
+                          >
+                            {showConfirmPassword ? (
+                              <EyeOff className="h-4 w-4 text-muted-foreground" />
+                            ) : (
+                              <Eye className="h-4 w-4 text-muted-foreground" />
+                            )}
+                          </Button>
+                        </div>
+                        {errors.confirmPassword && (
+                          <p className="text-sm text-destructive">{errors.confirmPassword}</p>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {isEditMode && canChangeCredentials && (
+                  <div className="border-t pt-4 space-y-4">
+                    <div>
+                      <h3 className="text-lg font-semibold">{t('employees.change_password_section')}</h3>
+                      <p className="text-sm text-muted-foreground">{t('employees.change_password_hint')}</p>
+                    </div>
+                    <div className="grid gap-4 xl:grid-cols-2">
+                      <div className="space-y-2">
+                        <Label htmlFor="password_edit">{t('employees.new_password')}</Label>
+                        <div className="relative">
+                          <Input
+                            id="password_edit"
+                            type={showPassword ? 'text' : 'password'}
+                            value={formData.password}
+                            onChange={(e) => handleChange('password', e.target.value)}
+                            placeholder={t('employees.new_password_placeholder')}
+                            disabled={loading}
+                            className="pr-10"
+                            autoComplete="new-password"
+                          />
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="sm"
+                            className="absolute right-0 top-0 h-full px-3 py-2 hover:bg-transparent"
+                            onClick={() => setShowPassword(!showPassword)}
+                          >
+                            {showPassword ? (
+                              <EyeOff className="h-4 w-4 text-muted-foreground" />
+                            ) : (
+                              <Eye className="h-4 w-4 text-muted-foreground" />
+                            )}
+                          </Button>
+                        </div>
+                        {errors.password && (
+                          <p className="text-sm text-destructive">{errors.password}</p>
+                        )}
+                        <p className="text-xs text-muted-foreground">{t('employees.password_min_length')}</p>
+                      </div>
+
+                      <div className="space-y-2">
+                        <Label htmlFor="confirmPassword_edit">{t('employees.confirm_password')}</Label>
+                        <div className="relative">
+                          <Input
+                            id="confirmPassword_edit"
+                            type={showConfirmPassword ? 'text' : 'password'}
+                            value={formData.confirmPassword}
+                            onChange={(e) => handleChange('confirmPassword', e.target.value)}
+                            placeholder={t('employees.confirm_password_placeholder')}
+                            disabled={loading}
+                            className="pr-10"
+                            autoComplete="new-password"
                           />
                           <Button
                             type="button"

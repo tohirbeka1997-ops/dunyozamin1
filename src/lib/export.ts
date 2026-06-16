@@ -37,9 +37,12 @@ export const exportDailySalesToExcel = (
   },
   summary: {
     totalSales: number;
+    totalSalesUsd?: number;
     totalProfit: number;
+    totalProfitUsd?: number;
     totalReturns: number;
     avgOrderValue: number;
+    avgOrderUsd?: number;
   },
   cashiers: Array<{ id: string; username?: string }>
 ): void => {
@@ -55,10 +58,19 @@ export const exportDailySalesToExcel = (
     ['To\'lov turi:', filters.paymentFilter === 'all' ? 'Barcha turlar' : filters.paymentFilter],
     ['Holati:', filters.statusFilter === 'all' ? 'Barcha holatlar' : filters.statusFilter],
     [],
-    ['Jami sotuv:', formatUzs(summary.totalSales)],
-    ['Jami foyda:', formatUzs(summary.totalProfit)],
+    ['Jami sotuv (UZS):', formatUzs(summary.totalSales)],
+    ...(Number(summary.totalSalesUsd || 0) > 0
+      ? [['Jami sotuv (USD):', `${Number(summary.totalSalesUsd).toFixed(2)} USD`]]
+      : []),
+    ['Jami foyda (UZS):', formatUzs(summary.totalProfit)],
+    ...(Number(summary.totalProfitUsd || 0) > 0
+      ? [['Jami foyda (USD):', `${Number(summary.totalProfitUsd).toFixed(2)} USD`]]
+      : []),
     ['Qaytarilganlar:', formatUzs(summary.totalReturns)],
-    ['O\'rtacha buyurtma qiymati:', formatUzs(summary.avgOrderValue)],
+    ['O\'rtacha buyurtma (UZS):', formatUzs(summary.avgOrderValue)],
+    ...(Number(summary.avgOrderUsd || 0) > 0
+      ? [['O\'rtacha buyurtma (USD):', `${Number(summary.avgOrderUsd).toFixed(2)} USD`]]
+      : []),
     [],
   ];
 
@@ -130,9 +142,12 @@ export const exportDailySalesToPDF = (
   },
   summary: {
     totalSales: number;
+    totalSalesUsd?: number;
     totalProfit: number;
+    totalProfitUsd?: number;
     totalReturns: number;
     avgOrderValue: number;
+    avgOrderUsd?: number;
   },
   cashiers: Array<{ id: string; username?: string }>
 ): void => {

@@ -26,6 +26,8 @@ import { FileDown, ArrowLeft } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 import { useNavigate } from 'react-router-dom';
 import { formatMoneyUZS } from '@/lib/format';
+import { aggregateSalesOrders, formatOrderMoney, getOrderSaleCurrency } from '@/lib/currency';
+import { DualCurrencyAmount } from '@/components/common/DualCurrencyAmount';
 import { exportDailySalesToExcel, exportDailySalesToPDF } from '@/lib/export';
 import { formatOrderDateTime, todayYMD } from '@/lib/datetime';
 import { useReportAutoRefresh } from '@/hooks/useReportAutoRefresh';
@@ -188,21 +190,26 @@ export default function DailySalesReport() {
     return <Badge className={config.className}>{config.label}</Badge>;
   };
 
-  const totalSales = orders
-    .filter((o) => o.status === 'completed')
-    .reduce((sum, o) => sum + Number((o as any).revenue ?? o.total_amount ?? 0), 0);
-  
-  const totalProfit = orders
-    .filter((o) => o.status === 'completed')
-    .reduce((sum, o) => sum + calculateProfit(o), 0);
+  const salesAgg = aggregateSalesOrders(orders, { status: 'completed' });
 
-  // Net profit after subtracting profit impact from completed returns in the selected date range
-  const netProfit = totalProfit - returnsProfitImpact;
-  
-  const completedOrders = orders.filter((o) => o.status === 'completed');
-  const avgOrderValue = completedOrders.length > 0 
-    ? totalSales / completedOrders.length 
-    : 0;
+  const profitByCurrency = orders
+    .filter((o) => o.status === 'completed')
+    .reduce(
+      (acc, o) => {
+        const p = calculateProfit(o);
+        if (getOrderSaleCurrency(o) === 'USD') acc.usd += p;
+        else acc.uzs += p;
+        return acc;
+      },
+      { uzs: 0, usd: 0 }
+    );
+
+  const netProfitUzs = profitByCurrency.uzs - returnsProfitImpact;
+  const netProfitUsd = profitByCurrency.usd;
+  const avgUzs =
+    salesAgg.countUzs > 0 ? salesAgg.totalUzs / salesAgg.countUzs : 0;
+  const avgUsd =
+    salesAgg.countUsd > 0 ? salesAgg.totalUsd / salesAgg.countUsd : 0;
 
   const handleExport = async (format: 'excel' | 'pdf') => {
     if (orders.length === 0) {
@@ -237,10 +244,13 @@ export default function DailySalesReport() {
       };
 
       const summary = {
-        totalSales,
-        totalProfit: netProfit,
+        totalSales: salesAgg.totalUzs,
+        totalSalesUsd: salesAgg.totalUsd,
+        totalProfit: netProfitUzs,
+        totalProfitUsd: netProfitUsd,
         totalReturns,
-        avgOrderValue,
+        avgOrderValue: avgUzs,
+        avgOrderUsd: avgUsd,
       };
 
       if (format === 'excel') {
@@ -351,7 +361,9 @@ export default function DailySalesReport() {
             </CardTitle>
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold">{formatMoneyUZS(totalSales)}</div>
+            <div className="text-2xl font-bold">
+              <DualCurrencyAmount uzs={salesAgg.totalUzs} usd={salesAgg.totalUsd} />
+            </div>
           </CardContent>
         </Card>
         <Card>
@@ -361,7 +373,9 @@ export default function DailySalesReport() {
             </CardTitle>
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold text-success">{formatMoneyUZS(netProfit)}</div>
+            <div className="text-2xl font-bold text-success">
+              <DualCurrencyAmount uzs={netProfitUzs} usd={netProfitUsd} />
+            </div>
           </CardContent>
         </Card>
         <Card>
@@ -381,7 +395,9 @@ export default function DailySalesReport() {
             </CardTitle>
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold">{formatMoneyUZS(avgOrderValue)}</div>
+            <div className="text-2xl font-bold">
+              <DualCurrencyAmount uzs={avgUzs} usd={avgUsd} />
+            </div>
           </CardContent>
         </Card>
       </div>
@@ -523,10 +539,10 @@ export default function DailySalesReport() {
                       </TableCell>
                       <TableCell>{getPaymentType(order)}</TableCell>
                       <TableCell className="text-right">
-                        {formatMoneyUZS(order.total_amount)}
+                        {formatOrderMoney(order, order.total_amount)}
                       </TableCell>
                       <TableCell className={`text-right ${profit >= 0 ? 'text-success' : 'text-destructive'}`}>
-                        {formatMoneyUZS(profit)}
+                        {formatOrderMoney(order, profit)}
                       </TableCell>
                       <TableCell>{getStatusBadge(order.status)}</TableCell>
                     </TableRow>

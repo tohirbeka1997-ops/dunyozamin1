@@ -55,14 +55,20 @@ import { cn } from '@/lib/utils';
 import { useTranslation } from 'react-i18next';
 import { useShiftStore } from '@/store/shiftStore';
 import { useInventoryStore } from '@/store/inventoryStore';
+import { formatMoney, getCustomerBalances } from '@/lib/currency';
 import { formatMoneyUZS } from '@/lib/format';
+import { loadRetailUsdPricesForProducts } from '@/lib/productPricing';
+import { clearTierPriceCache } from '@/lib/tierPriceCache';
+import { orderCurrencyFields, toShiftUzsAmount, type PosSaleCurrency } from '@/lib/posSaleCurrency';
+import { fetchUzsPerUsdRate } from '@/lib/fxRate';
+import { productMatchesCategoryFilter } from '@/lib/categoryTree';
+import { productShowInMarketplace } from '@/lib/productMarketplace';
 import { applyPercentUZS, roundUZS } from '@/lib/money';
 import { formatUnit } from '@/utils/formatters';
 import {
   clampQuantityForUnit,
   clampSignedQuantityForUnit,
   formatQuantity,
-  getMaxQuantityForUnit,
   getQuantityMin,
   getQuantityStep,
   isFractionalUnit,
@@ -99,8 +105,12 @@ import {
 } from '@/db/api';
 import { parseScaleEan13 } from '@/lib/barcode';
 import ShiftControl from '@/components/pos/ShiftControl';
+import NetworkBadge from '@/components/common/NetworkBadge';
 import PosDeviceBar from '@/components/pos/PosDeviceBar';
 import { useBarcodeScanner } from '@/hooks/useBarcodeScanner';
+import { usePosTerminalSettings } from '@/hooks/usePosTerminalSettings';
+import { usePaymentSettings, resolvePaymentLabel } from '@/hooks/usePaymentSettings';
+import { applyReceiptSettingsToTemplate, useReceiptSettings } from '@/hooks/useReceiptSettings';
 import type {
   Product,
   Customer,
@@ -136,6 +146,7 @@ import {
   EyeOff,
   AlertTriangle,
   Printer,
+  Loader2,
   Gift,
   ArrowLeftRight,
   ClipboardList,
@@ -143,14 +154,9 @@ import {
   Store,
   FolderTree,
   Star,
+  Users,
 } from 'lucide-react';
 import WaitingOrdersDialog from '@/components/pos/WaitingOrdersDialog';
-
-function productShowInMarketplace(product: Product): boolean {
-  const v = product.show_in_marketplace as boolean | number | undefined | null;
-  if (v === undefined || v === null) return true;
-  return v === true || v === 1;
-}
 import Numpad from '@/components/pos/Numpad';
 import QuickCustomerCreate from '@/components/pos/QuickCustomerCreate';
 import ReceivePaymentModal from '@/components/customers/ReceivePaymentModal';
@@ -160,10 +166,9 @@ import MoneyInput from '@/components/common/MoneyInput';
 import { openPrintWindow } from '@/lib/print';
 import { renderReceiptTemplate } from '@/lib/receipts/renderReceiptTemplate';
 import { getActiveReceiptTemplate, resolveReceiptTemplateStore } from '@/lib/receipts/templateStore';
-import { buildReceiptInputFromPos } from '@/lib/receipts/receiptModel';
 import { formatOrderDateTime } from '@/lib/datetime';
-import { buildReceiptLines, DEFAULT_CHARS_PER_LINE, DEFAULT_CHARS_PER_LINE_58 } from '@/lib/receipts/receiptTextBuilder';
-import { printEscposReceipt } from '@/lib/receipts/escposPrint';
+import { shouldAutoPrintReceipt } from '@/lib/receipts/normalizeReceiptSettings';
+import { printPosCustomerReceiptEscpos } from '@/lib/receipts/printPosCustomerReceipt';
 import { isElectron, getElectronAPI, handleIpcResponse } from '@/utils/electron';
 import { getProductImageDisplayUrl } from '@/lib/productImageUrl';
 import { useNavigate, useLocation } from 'react-router-dom';
@@ -173,8 +178,26 @@ import QRCode from 'qrcode';
 import { highlightMatch } from '@/utils/searchHighlight';
 import { getRecentSearches, addRecentSearch, removeRecentSearch } from '@/utils/recentSearches';
 
-const POS_QUICK_PRODUCT_IDS_KEY = 'pos:quickProductIds';
-const MAX_POS_QUICK_PRODUCTS = 8;
+import {
+  POS_QUICK_PRODUCT_IDS_KEY,
+  MAX_POS_QUICK_PRODUCTS,
+  POS_PROMO_APPLY_DEBOUNCE_MS,
+  registerProductScanIndexes,
+  normalizeSearchTerm,
+  normalizeSku,
+  classifyQuery,
+  getSaleUnitConfig,
+  toBaseQty,
+  getMaxSaleQty,
+  getProbeSaleQtyForUnitPrice,
+  readPosReplacesOrderId,
+  persistPosReplacesOrderId,
+  cartOrderDiscountBase,
+  readPosNavCartDraft,
+  persistPosNavCartDraft,
+  clearPosNavCartDraft,
+  type PosNavCartDraft,
+} from './posTerminalHelpers';
 
 export default function POSTerminal() {
   const { t } = useTranslation();
@@ -202,6 +225,9 @@ export default function POSTerminal() {
   const cartRef = useRef(cart);
   cartRef.current = cart;
   const [cartWithPromos, setCartWithPromos] = useState<CartItem[]>([]);
+  const cartWithPromosRef = useRef<CartItem[]>([]);
+  cartWithPromosRef.current = cartWithPromos;
+  const promoApplyTimerRef = useRef<number | null>(null);
   const [selectedCustomer, setSelectedCustomer] = useState<Customer | null>(null);
   const [customers, setCustomers] = useState<Customer[]>([]);
   const [recentCustomerIds, setRecentCustomerIds] = useState<string[]>([]);
@@ -222,6 +248,10 @@ export default function POSTerminal() {
   const debouncedPromoCode = useDebounce(promoCodeInput.trim(), 350);
   // POS pricing override (quick toggle): force current cart to use master pricing rules
   const [currentTierCode, setCurrentTierCode] = useState<'retail' | 'master' | 'wholesale' | 'marketplace'>('retail');
+  const [saleCurrency, setSaleCurrency] = useState<PosSaleCurrency>('UZS');
+  const [saleFxRate, setSaleFxRate] = useState<number | null>(null);
+  const [saleFxLoading, setSaleFxLoading] = useState(false);
+  const [usdRetailByProductId, setUsdRetailByProductId] = useState<Record<string, number>>({});
   const [priceTiers, setPriceTiers] = useState<Array<{ id: number; code: string; name: string }>>([]);
   const [paymentDialogOpen, setPaymentDialogOpen] = useState(false);
   const [isProcessingPayment, setIsProcessingPayment] = useState(false);
@@ -235,6 +265,43 @@ export default function POSTerminal() {
   const [creditAmount, setCreditAmount] = useState<string>('');
   /** Loyalty points to redeem on current sale (POS); clamped server-side */
   const [loyaltyRedeemPoints, setLoyaltyRedeemPoints] = useState(0);
+  const selectedCustomerRef = useRef<Customer | null>(null);
+  const discountRef = useRef(discount);
+  const promoCodeRef = useRef('');
+  const saleCurrencyRef = useRef<PosSaleCurrency>('UZS');
+  const tierCodeRef = useRef<'retail' | 'master' | 'wholesale' | 'marketplace'>('retail');
+  const navCartDraftRestoredRef = useRef(false);
+  selectedCustomerRef.current = selectedCustomer;
+  discountRef.current = discount;
+  promoCodeRef.current = promoCodeInput;
+  saleCurrencyRef.current = saleCurrency;
+  tierCodeRef.current = currentTierCode;
+
+  const buildNavCartDraft = useCallback((): PosNavCartDraft | null => {
+    const items = cartRef.current;
+    if (!items.length) return null;
+    return {
+      lines: items.map((item) => ({
+        productId: item.product.id,
+        quantity: item.quantity,
+        qty_sale: item.qty_sale,
+        sale_unit: item.sale_unit,
+        ratio_to_base: item.ratio_to_base,
+        unit_price: item.unit_price,
+        price_tier: item.price_tier,
+        price_source: item.price_source,
+        is_price_overridden: item.is_price_overridden,
+        discount_amount: item.discount_amount,
+        subtotal: item.subtotal,
+        total: item.total,
+      })),
+      customerId: selectedCustomerRef.current?.id ?? null,
+      discount: discountRef.current,
+      promoCode: promoCodeRef.current || undefined,
+      saleCurrency: saleCurrencyRef.current,
+      tierCode: tierCodeRef.current,
+    };
+  }, []);
 
   const resetCustomerSelection = useCallback(() => {
     const selectedTier = (selectedCustomer as any)?.pricing_tier;
@@ -257,6 +324,8 @@ export default function POSTerminal() {
   const [importWebOrderDialogOpen, setImportWebOrderDialogOpen] = useState(false);
   const [pendingWebOrderImportId, setPendingWebOrderImportId] = useState<number | null>(null);
   const [importedWebOrderId, setImportedWebOrderId] = useState<number | null>(null);
+  /** Completed POS order loaded for edit (OrderDetail → POS); reversed on checkout via replaces_order_id */
+  const [importedOrderIdForEdit, setImportedOrderIdForEdit] = useState<string | null>(null);
   const [importQuoteDialogOpen, setImportQuoteDialogOpen] = useState(false);
   const [pendingQuoteImportId, setPendingQuoteImportId] = useState<string | null>(null);
   const [importOrderDialogOpen, setImportOrderDialogOpen] = useState(false);
@@ -325,7 +394,7 @@ export default function POSTerminal() {
   const searchSeqRef = useRef(0);
   const perfEnabled = (import.meta as any)?.env?.VITE_POS_PERF === 'true';
   const [companySettings, setCompanySettings] = useState<CompanySettings | null>(null);
-  const [receiptSettings, setReceiptSettings] = useState<ReceiptSettings | null>(null);
+  const receiptSettings = useReceiptSettings();
   const [receiptData, setReceiptData] = useState<{
     orderNumber: string;
     items: CartItem[];
@@ -343,8 +412,10 @@ export default function POSTerminal() {
     loyaltyCardCode?: string;
     loyaltyQrDataUrl?: string;
     loyaltyQrPayload?: string;
+    currency?: import('@/lib/currency').AppCurrency;
   } | null>(null);
   const [lastReceiptData, setLastReceiptData] = useState<typeof receiptData>(null);
+  const [isPrintingReceipt, setIsPrintingReceipt] = useState(false);
   const [printOrder, setPrintOrder] = useState<any | null>(null);
   const [receiptTemplateStore, setReceiptTemplateStore] = useState<ReceiptTemplateStore | null>(null);
   const [recentCartItemId, setRecentCartItemId] = useState<string | null>(null);
@@ -388,6 +459,57 @@ export default function POSTerminal() {
   useEffect(() => {
     setIncludePriorDebtInPayment(true);
   }, [selectedCustomer?.id]);
+
+  useEffect(() => {
+    if (saleCurrency === 'USD') {
+      setIncludePriorDebtInPayment(false);
+      setLoyaltyRedeemPoints(0);
+    }
+  }, [saleCurrency]);
+
+  useEffect(() => {
+    if (saleCurrency !== 'USD') {
+      setSaleFxRate(null);
+      return;
+    }
+    let cancelled = false;
+    setSaleFxLoading(true);
+    void fetchUzsPerUsdRate()
+      .then((rate) => {
+        if (cancelled) return;
+        if (rate != null && rate > 0) {
+          setSaleFxRate(rate);
+        } else {
+          setSaleFxRate(null);
+          toast({
+            title: 'Valyuta kursi topilmadi',
+            description: 'Sozlamalar → Valyuta bo‘limida UZS/USD kursini kiriting.',
+            variant: 'destructive',
+          });
+          setSaleCurrency('UZS');
+        }
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setSaleFxRate(null);
+        toast({
+          title: 'Valyuta kursi yuklanmadi',
+          variant: 'destructive',
+        });
+        setSaleCurrency('UZS');
+      })
+      .finally(() => {
+        if (!cancelled) setSaleFxLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [saleCurrency, toast]);
+
+  useEffect(() => {
+    priceCacheRef.current.clear();
+    clearTierPriceCache();
+  }, [saleCurrency]);
 
   useEffect(
     () => () => {
@@ -477,9 +599,24 @@ export default function POSTerminal() {
     }
   }, []);
 
-  const getCustomerDebtAmount = useCallback((balance?: number | null) => {
-    return Math.max(0, -Number(balance || 0));
-  }, []);
+  const getCustomerDebtInCurrency = useCallback(
+    (customer: Customer | null | undefined, currency: PosSaleCurrency) => {
+      if (!customer) return 0;
+      const b = getCustomerBalances(customer);
+      const bal = currency === 'USD' ? b.usd : b.uzs;
+      return Math.max(0, -bal);
+    },
+    []
+  );
+
+  const getActiveBucketBalance = useCallback(
+    (customer: Customer | null | undefined, currency: PosSaleCurrency) => {
+      if (!customer) return 0;
+      const b = getCustomerBalances(customer);
+      return currency === 'USD' ? b.usd : b.uzs;
+    },
+    []
+  );
 
   const queueCartUndo = useCallback((snapshot: CartItem[], message: string) => {
     if (!snapshot || snapshot.length === 0) return;
@@ -532,24 +669,21 @@ export default function POSTerminal() {
   );
 
   const printReceipt = useCallback(
-    async (data: NonNullable<typeof receiptData>) => {
+    async (data: NonNullable<typeof receiptData>, opts?: { silent?: boolean }) => {
+      if (isPrintingReceipt) return;
+      setIsPrintingReceipt(true);
       try {
-        const canEscpos = isElectron() && (window as any)?.posApi?.print?.receipt;
-        if (canEscpos) {
-          try {
-            const receiptInput = buildReceiptInputFromPos(data, companySettings, receiptSettings);
-            const charsPerLine =
-              receiptSettings?.paper_size === '58mm' ? DEFAULT_CHARS_PER_LINE_58 : DEFAULT_CHARS_PER_LINE;
-            const lines = buildReceiptLines(receiptInput, { charsPerLine });
-            await printEscposReceipt(lines, {
-              charsPerLine,
-              feedLines: 3,
-              cut: true,
+        try {
+          await printPosCustomerReceiptEscpos(data, companySettings, receiptSettings);
+          if (!opts?.silent) {
+            toast({
+              title: 'Chek',
+              description: 'Mijoz cheki printerga yuborildi',
             });
-            return;
-          } catch (escposError) {
-            console.warn('[Print] ESC/POS failed, falling back to HTML print', escposError);
           }
+          return;
+        } catch (escposError) {
+          console.warn('[Print] ESC/POS failed, falling back to HTML print', escposError);
         }
 
         // Build a lightweight order object compatible with ReceiptPrintView (same as Orders printing flow)
@@ -587,10 +721,13 @@ export default function POSTerminal() {
 
         const activeTemplate = getActiveReceiptTemplate(receiptTemplateStore);
         if (activeTemplate) {
-          const htmlContent = renderReceiptTemplate(activeTemplate, order as any, companySettings || undefined, undefined, {
+          const mergedTemplate = receiptSettings
+            ? applyReceiptSettingsToTemplate(activeTemplate, receiptSettings)
+            : activeTemplate;
+          const htmlContent = renderReceiptTemplate(mergedTemplate, order as any, companySettings || undefined, undefined, {
             middleText: receiptSettings?.middle_text?.trim() || undefined,
           });
-          openPrintWindow(htmlContent, `${activeTemplate.paperWidth}mm` as '58mm' | '78mm' | '80mm');
+          openPrintWindow(htmlContent, `${mergedTemplate.paperWidth}mm` as '58mm' | '78mm' | '80mm');
           return;
         }
 
@@ -610,16 +747,29 @@ export default function POSTerminal() {
 
         const htmlContent = el.innerHTML;
         openPrintWindow(htmlContent, receiptSettings?.paper_size || '78mm');
+        if (!opts?.silent) {
+          toast({
+            title: 'Chek',
+            description: 'Chek chop etish oynasi ochildi (printer ulanmagan bo‘lishi mumkin)',
+          });
+        }
       } catch (e: any) {
         toast({
           title: 'Print xatoligi',
           description: e?.message || 'Chekni chop etib bo‘lmadi',
           variant: 'destructive',
         });
+      } finally {
+        setIsPrintingReceipt(false);
       }
     },
-    [companySettings, receiptSettings, receiptTemplateStore, toast]
+    [companySettings, receiptSettings, receiptTemplateStore, toast, isPrintingReceipt]
   );
+
+  const handlePrintLastReceipt = useCallback(() => {
+    if (!lastReceiptData || isPrintingReceipt) return;
+    void printReceipt(lastReceiptData as NonNullable<typeof receiptData>);
+  }, [lastReceiptData, isPrintingReceipt, printReceipt]);
 
   const buildLoyaltyReceiptMeta = useCallback(async (customer: Customer | null) => {
     if (!customer?.id) return { loyaltyCardCode: undefined, loyaltyQrDataUrl: undefined, loyaltyQrPayload: undefined };
@@ -659,6 +809,59 @@ export default function POSTerminal() {
     }
   }, []);
 
+  const mergePromoAppliedCart = useCallback((baseCart: CartItem[], promoApplied: unknown[]) => {
+    const applied = Array.isArray(promoApplied) ? promoApplied : [];
+    let j = 0;
+    const merged = baseCart.map((orig: any) => {
+      if (orig?.is_price_overridden || orig?.price_source === 'manual') return orig;
+      const appliedLine = applied[j++];
+      if (!appliedLine || typeof appliedLine !== 'object') return orig;
+      const pl = appliedLine as Record<string, unknown>;
+      const { product: _ignoredProduct, ...rest } = pl as { product?: unknown };
+      return { ...orig, ...rest, product: orig.product };
+    });
+    const promoEligibleCount = baseCart.filter(
+      (it: any) => !(it?.is_price_overridden || it?.price_source === 'manual')
+    ).length;
+    if (applied.length !== promoEligibleCount) {
+      console.warn('[POS] promotions apply length mismatch', {
+        applied: applied.length,
+        eligible: promoEligibleCount,
+      });
+    }
+    return merged;
+  }, []);
+
+  /** Flush debounced promo IPC before checkout so F9/F10 cannot skip pending promotions. */
+  const resolveCheckoutCart = useCallback(async (): Promise<CartItem[]> => {
+    if (promoApplyTimerRef.current != null) {
+      window.clearTimeout(promoApplyTimerRef.current);
+      promoApplyTimerRef.current = null;
+    }
+    const currentCart = cartRef.current;
+    if (currentCart.length === 0) return [];
+    if (currentCart.some((it) => (Number(it.qty_sale ?? it.quantity ?? 0) || 0) < 0)) {
+      return currentCart;
+    }
+    const code = promoCodeInput.trim() || null;
+    const promoEligibleCart = currentCart.filter(
+      (it: any) => !(it?.is_price_overridden || it?.price_source === 'manual')
+    );
+    try {
+      const promoApplied = await applyPromotionsToCart(
+        promoEligibleCart,
+        selectedCustomer?.id ?? null,
+        code
+      );
+      const merged = mergePromoAppliedCart(currentCart, promoApplied);
+      setCartWithPromos(merged);
+      return merged;
+    } catch {
+      const cached = cartWithPromosRef.current;
+      return cached.length === currentCart.length ? cached : currentCart;
+    }
+  }, [mergePromoAppliedCart, promoCodeInput, selectedCustomer?.id]);
+
   // Apply promotions to cart when cart, customer, or promokod changes
   useEffect(() => {
     if (cart.length === 0) {
@@ -674,34 +877,19 @@ export default function POSTerminal() {
     const promoEligibleCart = cart.filter(
       (it: any) => !(it?.is_price_overridden || it?.price_source === 'manual')
     );
-    applyPromotionsToCart(promoEligibleCart, selectedCustomer?.id ?? null, code)
-      .then((promoApplied) => {
-        const applied = Array.isArray(promoApplied) ? promoApplied : [];
-        /**
-         * CartItem da odatda `product_id` yo‘q — faqat `product.id` bor.
-         * Eski Map(product_id) barcha qatorlarni `undefined` kalitiga bog‘lab,
-         * bitta obyektni bir necha qatorga ulardi (React + miqdor yangilanishi “hammasi birdan”).
-         * Backend `promoEligibleCart` tartibida 1:1 qator qaytaradi — indeks bo‘yicha birlashtiramiz.
-         */
-        let j = 0;
-        const merged = cart.map((orig: any) => {
-          if (orig?.is_price_overridden || orig?.price_source === 'manual') return orig;
-          const appliedLine = applied[j++];
-          if (!appliedLine || typeof appliedLine !== 'object') return orig;
-          const pl = appliedLine as Record<string, unknown>;
-          const { product: _ignoredProduct, ...rest } = pl as { product?: unknown };
-          return { ...orig, ...rest, product: orig.product };
-        });
-        if (applied.length !== promoEligibleCart.length) {
-          console.warn('[POS] promotions apply length mismatch', {
-            applied: applied.length,
-            eligible: promoEligibleCart.length,
-          });
-        }
-        setCartWithPromos(merged);
-      })
-      .catch(() => setCartWithPromos(cart));
-  }, [cart, selectedCustomer?.id, debouncedPromoCode]);
+    const timer = window.setTimeout(() => {
+      applyPromotionsToCart(promoEligibleCart, selectedCustomer?.id ?? null, code)
+        .then((promoApplied) => {
+          setCartWithPromos(mergePromoAppliedCart(cart, promoApplied));
+        })
+        .catch(() => setCartWithPromos(cart));
+    }, POS_PROMO_APPLY_DEBOUNCE_MS);
+    promoApplyTimerRef.current = timer;
+    return () => {
+      window.clearTimeout(timer);
+      if (promoApplyTimerRef.current === timer) promoApplyTimerRef.current = null;
+    };
+  }, [cart, selectedCustomer?.id, debouncedPromoCode, mergePromoAppliedCart]);
 
   // If we came back from CustomerForm (?from=pos), auto-select the newly created customer.
   useEffect(() => {
@@ -793,10 +981,7 @@ export default function POSTerminal() {
       const nextBarcodeIndex = new Map<string, Product>();
       const nextSkuIndex = new Map<string, Product>();
       for (const p of results) {
-        const sku = String(p.sku || '').trim();
-        if (sku) nextSkuIndex.set(sku, p);
-        const barcode = String((p as any).barcode || '').trim();
-        if (barcode) nextBarcodeIndex.set(barcode, p);
+        registerProductScanIndexes(p, nextBarcodeIndex, nextSkuIndex);
       }
       barcodeIndexRef.current = nextBarcodeIndex;
       skuIndexRef.current = nextSkuIndex;
@@ -825,6 +1010,93 @@ export default function POSTerminal() {
 
   useEffect(() => {
     return () => {
+      persistPosNavCartDraft(buildNavCartDraft());
+    };
+  }, [buildNavCartDraft]);
+
+  useEffect(() => {
+    if (navCartDraftRestoredRef.current) return;
+    if (allProducts.length === 0) return;
+    if (cartRef.current.length > 0) return;
+    try {
+      if (
+        sessionStorage.getItem('pos_import_order_id') ||
+        sessionStorage.getItem('pos_import_quote_id')
+      ) {
+        return;
+      }
+    } catch {
+      /* ignore */
+    }
+    const draft = readPosNavCartDraft();
+    if (!draft?.lines?.length) return;
+
+    const byId = new Map(allProducts.map((product) => [product.id, product]));
+    const restored: CartItem[] = [];
+    for (const line of draft.lines) {
+      const product = byId.get(line.productId);
+      if (!product) continue;
+      restored.push({
+        product,
+        quantity: line.quantity,
+        qty_sale: line.qty_sale ?? line.quantity,
+        sale_unit: line.sale_unit,
+        ratio_to_base: line.ratio_to_base,
+        unit_price: line.unit_price,
+        price_tier: line.price_tier,
+        price_source: line.price_source as CartItem['price_source'],
+        is_price_overridden: line.is_price_overridden,
+        discount_amount: line.discount_amount,
+        subtotal: line.subtotal,
+        total: line.total,
+      });
+    }
+    if (!restored.length) {
+      clearPosNavCartDraft();
+      return;
+    }
+
+    navCartDraftRestoredRef.current = true;
+    setCart(restored);
+    if (draft.customerId) {
+      const customer = customers.find((entry) => entry.id === draft.customerId);
+      if (customer) setSelectedCustomer(customer);
+    }
+    if (draft.discount) setDiscount(draft.discount);
+    if (draft.promoCode) setPromoCodeInput(draft.promoCode);
+    if (draft.saleCurrency) setSaleCurrency(draft.saleCurrency as PosSaleCurrency);
+    if (draft.tierCode) {
+      setCurrentTierCode(draft.tierCode as 'retail' | 'master' | 'wholesale' | 'marketplace');
+    }
+    toast({
+      title: t('pos.cart_restored_title', 'Savat tiklandi'),
+      description: t(
+        'pos.cart_restored_desc',
+        'Boshqa sahifaga o‘tib qaytganingizda savat saqlanib qoldi.',
+      ),
+    });
+  }, [allProducts, customers, t, toast]);
+
+  useEffect(() => {
+    if (cart.length === 0) {
+      if (navCartDraftRestoredRef.current || !readPosNavCartDraft()) {
+        clearPosNavCartDraft();
+      }
+      return;
+    }
+    persistPosNavCartDraft(buildNavCartDraft());
+  }, [
+    cart,
+    buildNavCartDraft,
+    selectedCustomer,
+    discount,
+    promoCodeInput,
+    saleCurrency,
+    currentTierCode,
+  ]);
+
+  useEffect(() => {
+    return () => {
       if (recentCartTimerRef.current) {
         window.clearTimeout(recentCartTimerRef.current);
       }
@@ -836,14 +1108,12 @@ export default function POSTerminal() {
     let cancelled = false;
     (async () => {
       try {
-        const [company, receipt, receiptTemplates] = await Promise.all([
+        const [company, receiptTemplates] = await Promise.all([
           getSettingsByCategory('company'),
-          getSettingsByCategory('receipt'),
           getSettingsByCategory('receipt_templates'),
         ]);
         if (cancelled) return;
         setCompanySettings(company as unknown as CompanySettings);
-        setReceiptSettings(receipt as unknown as ReceiptSettings);
         setReceiptTemplateStore(resolveReceiptTemplateStore(receiptTemplates));
       } catch (e) {
         // eslint-disable-next-line no-console
@@ -855,163 +1125,26 @@ export default function POSTerminal() {
     };
   }, []);
 
+  const posTerminalSettings = usePosTerminalSettings();
+  const paymentSettings = usePaymentSettings();
+  const isPaymentEnabled = useCallback(
+    (m: 'cash' | 'card' | 'qr' | 'credit' | 'terminal') => paymentSettings.methods.includes(m),
+    [paymentSettings.methods],
+  );
+  const labelFor = useCallback(
+    (m: 'cash' | 'card' | 'qr' | 'credit' | 'terminal', fallback: string) =>
+      resolvePaymentLabel(paymentSettings, m, fallback),
+    [paymentSettings],
+  );
+
   const quickProducts = useMemo(() => {
     const byId = new Map(allProducts.map((product) => [product.id, product]));
-    return quickProductIds.map((id) => byId.get(id)).filter(Boolean) as Product[];
-  }, [allProducts, quickProductIds]);
-
-  // Keyboard shortcuts
-  useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      // Ignore if typing in an input field (except search)
-      const target = e.target as HTMLElement;
-      const isInput = target.tagName === 'INPUT' || target.tagName === 'TEXTAREA';
-      
-      // F2: Focus search input
-      if (e.key === 'F2') {
-        e.preventDefault();
-        searchInputRef.current?.focus();
-        return;
-      }
-      
-      // F9: Fast-cash or open payment modal
-      if (e.key === 'F9') {
-        e.preventDefault();
-        if (cart.length > 0 && !paymentDialogOpen && !isProcessingPayment) {
-          const canFastCash =
-            currentShift &&
-            !waitingOrdersDialogOpen &&
-            !isDiscountActionDisabled &&
-            !hasReturnLine &&
-            checkoutGrandTotal > 0;
-          if (canFastCash) {
-            void handleCompletePayment('cash', { cashAmountOverride: checkoutGrandTotal });
-          } else {
-            setPaymentDialogOpen(true);
-          }
-        }
-        return;
-      }
-
-      // F8: Qaytarish rejimi (bir chekda almashuv / manfiy qator)
-      if (e.key === 'F8') {
-        e.preventDefault();
-        if (paymentDialogOpen || waitingOrdersDialogOpen) return;
-        setExchangeReturnMode((v) => !v);
-        return;
-      }
-      
-      // F3: Hold order (darhol saqlash, navbat raqami avtomatik)
-      if (e.key === 'F3') {
-        e.preventDefault();
-        if (cart.length > 0) {
-          void handleHoldOrderShortcutRef.current();
-        }
-        return;
-      }
-      
-      // ESC: Close modals or clear search
-      if (e.key === 'Escape') {
-        if (paymentDialogOpen) {
-          setPaymentDialogOpen(false);
-        } else if (waitingOrdersDialogOpen) {
-          setWaitingOrdersDialogOpen(false);
-        } else if (searchTerm) {
-          setSearchTerm('');
-          setSearchResults([]);
-        }
-        return;
-      }
-      
-      // ENTER: Add first search result to cart
-      if (e.key === 'Enter' && target === searchInputRef.current && searchResults.length > 0) {
-        e.preventDefault();
-        requestAddToCart(searchResults[0]);
-        focusSearchInput();
-        return;
-      }
-      
-      // ALT+1 / ALT+5 / ALT+- : selected cart row quick quantity controls
-      if (e.altKey && selectedCartIndex >= 0 && cart[selectedCartIndex]) {
-        const item = cart[selectedCartIndex];
-        const step = getQuantityStep(item.sale_unit || item.product.unit);
-        if (e.key === '1') {
-          e.preventDefault();
-          updateQuantity(item.product.id, (item.qty_sale ?? item.quantity) + step);
-          return;
-        }
-        if (e.key === '5') {
-          e.preventDefault();
-          updateQuantity(item.product.id, (item.qty_sale ?? item.quantity) + step * 5);
-          return;
-        }
-        if (e.key === '-' || e.key === '_') {
-          e.preventDefault();
-          updateQuantity(item.product.id, (item.qty_sale ?? item.quantity) - step);
-          return;
-        }
-      }
-
-      // ALT+1 to ALT+8: Add selected quick products (fallback when no selected cart row quick action)
-      if (e.altKey && e.key >= '1' && e.key <= '8') {
-        e.preventDefault();
-        const index = parseInt(e.key) - 1;
-        if (quickProducts[index]) {
-          requestAddToCart(quickProducts[index]);
-        }
-        return;
-      }
-      
-      // Mahsulot qidiruvida "-", "/", harflar yoziladi — ularni savat miqdori (+/-) yoki strelkalar bilan aralashtirmaslik
-      if (target === searchInputRef.current) return;
-
-      // Boshqa maydonlarda ham matn yozilayotganda savat klaviatura qisqartmalarini ishga tushirmaslik
-      if (isInput) return;
-
-      // UP/DOWN: Navigate cart rows
-      if (e.key === 'ArrowUp') {
-        e.preventDefault();
-        setSelectedCartIndex(prev => Math.max(0, prev - 1));
-        return;
-      }
-      
-      if (e.key === 'ArrowDown') {
-        e.preventDefault();
-        setSelectedCartIndex(prev => Math.min(cart.length - 1, prev + 1));
-        return;
-      }
-      
-      // +/-: Adjust quantity for selected row
-      if ((e.key === '+' || e.key === '=') && selectedCartIndex >= 0 && cart[selectedCartIndex]) {
-        e.preventDefault();
-        const item = cart[selectedCartIndex];
-        const step = getQuantityStep(item.sale_unit || item.product.unit);
-        updateQuantity(item.product.id, item.quantity + step);
-        return;
-      }
-      
-      if ((e.key === '-' || e.key === '_') && selectedCartIndex >= 0 && cart[selectedCartIndex]) {
-        e.preventDefault();
-        const item = cart[selectedCartIndex];
-        const step = getQuantityStep(item.sale_unit || item.product.unit);
-        updateQuantity(item.product.id, item.quantity - step);
-        return;
-      }
-    };
-    
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [
-    cart,
-    searchResults,
-    searchTerm,
-    paymentDialogOpen,
-    waitingOrdersDialogOpen,
-    selectedCartIndex,
-    quickProducts,
-    isProcessingPayment,
-    currentShift,
-  ]);
+    const limit = posTerminalSettings.quick_access_limit;
+    return quickProductIds
+      .slice(0, limit)
+      .map((id) => byId.get(id))
+      .filter(Boolean) as Product[];
+  }, [allProducts, quickProductIds, posTerminalSettings.quick_access_limit]);
 
   useEffect(() => {
     try {
@@ -1159,38 +1292,8 @@ export default function POSTerminal() {
     }
   };
 
-  const normalizeSearchTerm = (value: string) => String(value || '').trim();
-
-  const normalizeSku = (value: string) =>
-    String(value || '')
-      .trim()
-      .toLowerCase()
-      .replace(/[\s\-_]/g, '');
-
-  const normalizeText = (value: string) =>
-    String(value || '').trim().toLowerCase();
-
-  const classifyQuery = (value: string) => {
-    const raw = normalizeSearchTerm(value);
-    const trimmed = raw.trim();
-    const lower = normalizeText(trimmed);
-    const numericOnly = /^[0-9]+$/.test(trimmed);
-    const normalizedSku = normalizeSku(trimmed);
-    const isBarcodeLike = numericOnly && [8, 12, 13, 14].includes(trimmed.length);
-    const isSkuLike =
-      !isBarcodeLike &&
-      normalizedSku.length > 0 &&
-      normalizedSku.length <= 12 &&
-      /^[a-z0-9]+$/i.test(normalizedSku);
-    return {
-      raw: trimmed,
-      lower,
-      normalizedSku,
-      numericOnly,
-      isBarcodeLike,
-      isSkuLike,
-    };
-  };
+  // normalizeSearchTerm / normalizeSku / normalizeText / classifyQuery —
+  // ./posTerminalHelpers dan import qilinadi.
 
   const renderSkuWithHighlight = (sku: string, term: string) => {
     const query = normalizeSearchTerm(term).toLowerCase();
@@ -1211,20 +1314,49 @@ export default function POSTerminal() {
     );
   };
 
+  // --- Qidiruvni tezlashtirish ---
+  // Har mahsulotning normalizatsiyalangan qidiruv maydonlarini BIR MARTA hisoblaymiz
+  // (mahsulotlar ro'yxati o'zgarganda), har tugma bosilganda emas.
+  type PosSearchEntry = {
+    product: Product;
+    skuNormalized: string;
+    barcode: string;
+    nameLower: string;
+    normArticle: string;
+  };
+  const searchIndex = useMemo<PosSearchEntry[]>(
+    () =>
+      allProducts.map((product) => ({
+        product,
+        skuNormalized: normalizeSku(String(product.sku || '')),
+        barcode: String((product as any).barcode || '').trim(),
+        nameLower: String(product.name || '').toLowerCase(),
+        normArticle: String(product.article ?? '')
+          .toLowerCase()
+          .replace(/[\s\-_]/g, ''),
+      })),
+    [allProducts],
+  );
+  // Fuzzy (xato yozuvga chidamli) qidiruv uchun Fuse indeksini ham bir marta quramiz.
+  const productsFuse = useMemo(
+    () =>
+      new Fuse(allProducts, {
+        keys: ['name', 'sku', 'article'],
+        threshold: 0.4,
+        includeScore: true,
+        minMatchCharLength: 2,
+      }),
+    [allProducts],
+  );
+
   const getRankedSearchResults = (term: string, categoryId: string | null) => {
     const query = classifyQuery(term);
     if (!query.raw) return [];
     const tokens = query.lower.split(/\s+/).filter(Boolean);
 
-    const scored = allProducts
-      .filter((p) => (categoryId ? p.category_id === categoryId : true))
-      .map((product) => {
-        const sku = String(product.sku || '');
-        const skuNormalized = normalizeSku(sku);
-        const barcode = String((product as any).barcode || '').trim();
-        const name = String(product.name || '');
-        const nameLower = name.toLowerCase();
-        const normArticle = String(product.article ?? '').toLowerCase().replace(/[\s\-_]/g, '');
+    const scored = searchIndex
+      .filter((e) => productMatchesCategoryFilter(e.product.category_id, categoryId, categories))
+      .map(({ product, skuNormalized, barcode, nameLower, normArticle }) => {
         const normTerm = query.lower.replace(/[\s\-_]/g, '');
 
         let score = 0;
@@ -1291,20 +1423,17 @@ export default function POSTerminal() {
 
     const directResults = scored.slice(0, 20).map((entry) => entry.product);
 
-    // Fuzzy fallback via Fuse.js when direct matching yields few results (handles typos)
+    // Fuzzy fallback via keshlangan Fuse.js (xato yozuvlarni ushlaydi).
+    // Indeks bir marta qurilgan; kategoriya filtri natijaga qo'llanadi.
     if (directResults.length < 3 && query.lower.length >= 2) {
-      const pool = categoryId ? allProducts.filter((p) => p.category_id === categoryId) : allProducts;
-      const fuse = new Fuse(pool, {
-        keys: ['name', 'sku', 'article'],
-        threshold: 0.4,
-        includeScore: true,
-        minMatchCharLength: 2,
-      });
-      const fuzzyHits = fuse.search(query.lower, { limit: 20 });
+      const fuzzyHits = productsFuse.search(query.lower, { limit: 40 });
       const directIds = new Set(directResults.map((p) => p.id));
       const fuzzyExtra = fuzzyHits
-        .filter((r) => !directIds.has(r.item.id))
-        .map((r) => r.item);
+        .map((r) => r.item)
+        .filter((p) => !directIds.has(p.id))
+        .filter((p) =>
+          categoryId ? productMatchesCategoryFilter(p.category_id, categoryId, categories) : true,
+        );
       return [...directResults, ...fuzzyExtra].slice(0, 20);
     }
 
@@ -1319,7 +1448,9 @@ export default function POSTerminal() {
       let results = getRankedSearchResults(normalizedQuery, categoryId);
       if (results.length === 0 && term.trim().length >= 2) {
         const fallback = await searchProductsScreen(term, { warehouse_id: posWarehouseId });
-        results = categoryId ? fallback.filter((p) => p.category_id === categoryId) : fallback;
+        results = categoryId
+          ? fallback.filter((p) => productMatchesCategoryFilter(p.category_id, categoryId, categories))
+          : fallback;
       }
       if (searchSeqRef.current === currentSeq) {
         setSearchResults(results);
@@ -1434,7 +1565,9 @@ export default function POSTerminal() {
           resetSearch();
           return;
         }
-        const indexedSku = indexSku.get(key);
+        const normalizedKey = normalizeSku(key);
+        const indexedSku =
+          indexSku.get(key) || (normalizedKey ? indexSku.get(normalizedKey) : undefined);
         if (indexedSku) {
           void addToCart(indexedSku as any, 1);
           resetSearch();
@@ -1595,14 +1728,13 @@ export default function POSTerminal() {
 
       if (product) {
         perfNote = 'hit';
+        registerProductScanIndexes(product, barcodeIndexRef.current, skuIndexRef.current);
         if (hitBarcodeField) {
           cache.set(`barcode:${matchedKey}`, product);
           barcodeCacheOrderRef.current.push(`barcode:${matchedKey}`);
-          barcodeIndexRef.current.set(matchedKey, product);
         } else {
           cache.set(`sku:${matchedKey}`, product);
           barcodeCacheOrderRef.current.push(`sku:${matchedKey}`);
-          skuIndexRef.current.set(matchedKey, product);
         }
         if (barcodeCacheOrderRef.current.length > 500) {
           const drop = barcodeCacheOrderRef.current.splice(0, 200);
@@ -1704,21 +1836,23 @@ export default function POSTerminal() {
   const fetchTierPrice = useCallback(
     async (product: Product, tierCode: string, unit: string) => {
       if (tierCode === 'retail' || tierCode === 'master') return null;
-      const key = `${product.id}::${tierCode}::${unit}`;
+      const key = `${product.id}::${tierCode}::${unit}::${saleCurrency}`;
       const cached = priceCacheRef.current.get(key);
       if (cached != null) return cached;
       const price = await getProductTierPrice({
         product_id: product.id,
         tier_code: tierCode,
-        currency: 'UZS',
+        currency: saleCurrency,
         unit,
       });
       if (price != null) {
-        priceCacheRef.current.set(key, Number(price || 0) || 0);
+        const n = Number(price || 0) || 0;
+        priceCacheRef.current.set(key, n);
+        priceCacheRef.current.set(`${product.id}::${tierCode}::${unit}`, n);
       }
       return price;
     },
-    []
+    [saleCurrency]
   );
 
   const effectiveCart = cartWithPromos.length === cart.length ? cartWithPromos : cart;
@@ -1735,7 +1869,7 @@ export default function POSTerminal() {
       const baseUnit = (item.product as any)?.base_unit || item.product.unit;
       const quantityStep = getQuantityStep(unit);
       const quantityMin = getQuantityMin(unit);
-      const inputMode = isFractionalUnit(unit) ? 'decimal' : 'numeric';
+      const inputMode: 'decimal' | 'numeric' = isFractionalUnit(unit) ? 'decimal' : 'numeric';
       const displayQuantity =
         editingQuantity[item.product.id] !== undefined
           ? editingQuantity[item.product.id]
@@ -1762,70 +1896,133 @@ export default function POSTerminal() {
     return items;
   }, [effectiveCart, editingQuantity, selectedCartIndex, perfEnabled]);
 
-  // Recalculate cart prices when customer/tier changes
+  // Recalculate cart prices when customer/tier/sale currency changes
   useEffect(() => {
-    setCart((prev) =>
-      prev.map((item) => {
-        const qtySale = Number(item.qty_sale ?? item.quantity ?? 0) || 0;
-        const qtyBase = Number(item.qty_base ?? 0) || 0;
-        const ratioToBase = Number(item.ratio_to_base ?? 1) || 1;
-        const { sale_price: baseUnitPriceRaw } = getSaleUnitConfig(item.product, item.sale_unit);
-        const baseUnitPrice =
-          Number(baseUnitPriceRaw ?? (item.product as any)?.sale_price ?? item.unit_price ?? 0) || 0;
-        if (item.is_price_overridden || item.price_source === 'manual') {
-          const unitPrice = Number(item.unit_price || 0) || 0;
+    if (saleCurrency === 'USD' && (!saleFxRate || saleFxRate <= 0)) return;
+    let cancelled = false;
+    void (async () => {
+      const items = cartRef.current;
+      if (items.length === 0) return;
+      const mapped = await Promise.all(
+        items.map(async (item) => {
+          const qtySale = Number(item.qty_sale ?? item.quantity ?? 0) || 0;
+          const qtyBase = Number(item.qty_base ?? 0) || 0;
+          const ratioToBase = Number(item.ratio_to_base ?? 1) || 1;
+          const saleUnit = item.sale_unit || item.product.unit;
+          const effectiveTier = String(
+            (selectedCustomer as any)?.pricing_tier || currentTierCode || 'retail'
+          );
+          if (item.is_price_overridden || item.price_source === 'manual') {
+            const unitPrice = Number(item.unit_price || 0) || 0;
+            const subtotal = unitPrice * qtySale;
+            const lineDiscount = qtySale < 0 ? 0 : Math.min(item.discount_amount || 0, subtotal);
+            return {
+              ...item,
+              qty_sale: qtySale,
+              qty_base: qtyBase || toBaseQty(qtySale, ratioToBase),
+              unit_price: unitPrice,
+              subtotal,
+              discount_amount: lineDiscount,
+              total: subtotal - lineDiscount,
+            };
+          }
+          if (
+            saleCurrency === 'USD' &&
+            effectiveTier !== 'retail' &&
+            effectiveTier !== 'master'
+          ) {
+            void fetchTierPrice(item.product, effectiveTier, saleUnit);
+          }
+          const { sale_price: uzsUnitPriceRaw } = getSaleUnitConfig(item.product, saleUnit);
+          let baseUnitPrice =
+            Number(uzsUnitPriceRaw ?? (item.product as any)?.sale_price ?? item.unit_price ?? 0) ||
+            0;
+          if (saleCurrency === 'USD') {
+            const fx = Number(saleFxRate || 0);
+            if (effectiveTier === 'master') {
+              const masterPriceRaw = (item.product as any)?.master_price;
+              const masterPrice =
+                masterPriceRaw === null || masterPriceRaw === undefined
+                  ? null
+                  : Number(masterPriceRaw);
+              if (masterPrice !== null && Number.isFinite(masterPrice) && fx > 0) {
+                baseUnitPrice = (masterPrice * ratioToBase) / fx;
+              } else if (fx > 0) {
+                baseUnitPrice = baseUnitPrice / fx;
+              }
+            } else if (effectiveTier === 'retail') {
+              let usd =
+                usdRetailByProductId[item.product.id] ??
+                priceCacheRef.current.get(`${item.product.id}::retail::${saleUnit}::USD`) ??
+                null;
+              if (usd == null || usd <= 0) {
+                if (fx > 0) baseUnitPrice = baseUnitPrice / fx;
+                void getProductTierPrice({
+                  product_id: item.product.id,
+                  tier_code: 'retail',
+                  currency: 'USD',
+                  unit: saleUnit,
+                }).then((fetched) => {
+                  const exact = fetched != null ? Number(fetched) : 0;
+                  if (exact > 0) {
+                    priceCacheRef.current.set(`${item.product.id}::retail::${saleUnit}::USD`, exact);
+                    setUsdRetailByProductId((prev) =>
+                      prev[item.product.id] === exact ? prev : { ...prev, [item.product.id]: exact }
+                    );
+                  }
+                });
+              } else {
+                baseUnitPrice = usd;
+              }
+            } else {
+              const tierKey = `${item.product.id}::${effectiveTier}::${saleUnit}::${saleCurrency}`;
+              const tierCached = priceCacheRef.current.get(tierKey);
+              baseUnitPrice =
+                tierCached != null && tierCached > 0
+                  ? tierCached
+                  : fx > 0
+                    ? baseUnitPrice / fx
+                    : baseUnitPrice;
+            }
+          }
+          const { unitPrice, priceTier } = getLinePricing(
+            item.product,
+            qtyBase || qtySale,
+            selectedCustomer,
+            baseUnitPrice,
+            ratioToBase,
+            saleUnit
+          );
           const subtotal = unitPrice * qtySale;
-          const lineDiscount =
-            qtySale < 0 ? 0 : Math.min(item.discount_amount || 0, subtotal);
+          const lineDiscount = qtySale < 0 ? 0 : Math.min(item.discount_amount || 0, subtotal);
           return {
             ...item,
             qty_sale: qtySale,
             qty_base: qtyBase || toBaseQty(qtySale, ratioToBase),
             unit_price: unitPrice,
+            price_tier: priceTier,
             subtotal,
             discount_amount: lineDiscount,
             total: subtotal - lineDiscount,
           };
-        }
-        const { unitPrice, priceTier } = getLinePricing(
-          item.product,
-          qtyBase || qtySale,
-          selectedCustomer,
-          baseUnitPrice,
-          ratioToBase,
-          item.sale_unit
-        );
-        const subtotal = unitPrice * qtySale;
-        const lineDiscount =
-          qtySale < 0 ? 0 : Math.min(item.discount_amount || 0, subtotal);
-        return {
-          ...item,
-          qty_sale: qtySale,
-          qty_base: qtyBase || toBaseQty(qtySale, ratioToBase),
-          unit_price: unitPrice,
-          price_tier: priceTier,
-          subtotal,
-          discount_amount: lineDiscount,
-          total: subtotal - lineDiscount,
-        };
-      })
-    );
-  }, [selectedCustomer, currentTierCode, getLinePricing]);
+        })
+      );
+      if (!cancelled) setCart(mapped);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    selectedCustomer,
+    currentTierCode,
+    saleCurrency,
+    saleFxRate,
+    getLinePricing,
+    fetchTierPrice,
+    usdRetailByProductId,
+  ]);
 
-  const getProductUnits = (product: Product) => {
-    const baseUnit = (product as any)?.base_unit || product.unit || 'pcs';
-    const units = Array.isArray((product as any)?.product_units)
-      ? (product as any).product_units
-      : [
-          {
-            unit: baseUnit,
-            ratio_to_base: 1,
-            sale_price: Number((product as any)?.sale_price ?? 0) || 0,
-            is_default: true,
-          },
-        ];
-    return { baseUnit, units };
-  };
+  // getProductUnits — ./posTerminalHelpers dan import qilinadi.
 
   const getTierLabel = useCallback(
     (code?: string | null) => {
@@ -1850,58 +2047,8 @@ export default function POSTerminal() {
     ));
   };
 
-  const getSaleUnitConfig = (product: Product, saleUnit?: string) => {
-    const { baseUnit, units } = getProductUnits(product);
-    const normalizeUnit = (value: unknown) => String(value ?? '').trim().toLowerCase();
-    const targetUnit = normalizeUnit(saleUnit);
-    const picked =
-      units.find((u: any) => normalizeUnit(u.unit) === targetUnit) ||
-      units.find((u: any) => u.is_default) ||
-      units[0];
-    if (targetUnit && picked && normalizeUnit(picked.unit) !== targetUnit) {
-      const productUnitTokens = [
-        (product as any)?.unit,
-        (product as any)?.unit_code,
-        (product as any)?.unit_symbol,
-        (product as any)?.unit_name,
-      ]
-        .map((v) => normalizeUnit(v))
-        .filter(Boolean);
-      if (productUnitTokens.includes(targetUnit)) {
-        const fallbackPrice = Number((product as any)?.sale_price ?? 0) || 0;
-        return { baseUnit, saleUnit: saleUnit as string, ratio_to_base: 1, sale_price: fallbackPrice };
-      }
-    }
-    const ratio = Number(picked?.ratio_to_base ?? 1) || 1;
-    const price = Number(picked?.sale_price ?? (product as any)?.sale_price ?? 0) || 0;
-    return { baseUnit, saleUnit: picked?.unit || baseUnit, ratio_to_base: ratio, sale_price: price };
-  };
-
-  const toBaseQty = (qtySale: number, ratioToBase: number) => {
-    const qty = Number(qtySale || 0) || 0;
-    const ratio = Number(ratioToBase || 0) || 1;
-    return Number((qty * ratio).toFixed(6));
-  };
-
-  const getMaxSaleQty = (product: Product, ratioToBase: number, saleUnit?: string) => {
-    const baseAvailable = Number(product.current_stock || 0) || 0;
-    if (!Number.isFinite(ratioToBase) || ratioToBase <= 0) return 0;
-    const rawMax = baseAvailable / ratioToBase;
-    return getMaxQuantityForUnit(rawMax, saleUnit);
-  };
-
-  /** Master minimal bazaviy miqdor uchun to‘g‘ri birlik narxi olish (proba miqdor). */
-  const getProbeSaleQtyForUnitPrice = (product: Product, saleUnit: string, ratioToBase: number) => {
-    const minSale = getQuantityMin(saleUnit);
-    const masterMinBase = Number((product as any)?.master_min_qty);
-    let probe = minSale;
-    if (Number.isFinite(masterMinBase) && masterMinBase > 0) {
-      const ratio = Number(ratioToBase || 1) || 1;
-      const needSale = masterMinBase / ratio;
-      probe = Math.max(probe, needSale);
-    }
-    return clampQuantityForUnit(probe, saleUnit);
-  };
+  // getSaleUnitConfig / toBaseQty / getMaxSaleQty / getProbeSaleQtyForUnitPrice —
+  // ./posTerminalHelpers dan import qilinadi.
 
   const resolveProductForCart = async (product: Product) => {
     const fromAll = allProducts.find((p) => p.id === product.id);
@@ -1964,12 +2111,12 @@ export default function POSTerminal() {
       return;
     }
     const sign = exchangeReturnMode ? -1 : 1;
+    const unit = resolvedUnit;
     const existingItem = cartRef.current.find(
       (item) =>
         item.product.id === product.id &&
         (item.sale_unit || item.product.unit) === unit
     );
-    const unit = resolvedUnit;
     let validQuantity = clampQuantityForUnit(qtySaleRaw, unit) * sign;
     if (validQuantity > 0) {
       const maxAllowed = getMaxSaleQty(product, ratio_to_base, unit);
@@ -1980,6 +2127,22 @@ export default function POSTerminal() {
           description: `Maximum available quantity is ${formatQuantity(maxAllowed, unit)}`,
           variant: 'destructive',
         });
+      }
+      if (
+        posTerminalSettings.show_low_stock_warning &&
+        (product as any)?.track_stock !== false
+      ) {
+        const remainingBase =
+          (Number(product.current_stock || 0) || 0) -
+          toBaseQty(validQuantity, ratio_to_base);
+        const minStock = Number((product as any)?.min_stock_level || 0) || 0;
+        const threshold = minStock > 0 ? minStock : 10;
+        if (remainingBase >= 0 && remainingBase <= threshold) {
+          toast({
+            title: 'Kam zaxira',
+            description: `${product.name}: qoldiq ${formatQuantity(remainingBase, unit)} (minimal ${formatQuantity(threshold, unit)})`,
+          });
+        }
       }
     } else {
       validQuantity = clampSignedQuantityForUnit(validQuantity, unit);
@@ -2003,7 +2166,7 @@ export default function POSTerminal() {
     }
     const qtyBase = toBaseQty(validQuantity, ratio_to_base);
     const effectiveTier = ((selectedCustomer as any)?.pricing_tier || currentTierCode || 'retail') as string;
-    if (effectiveTier !== 'retail' && effectiveTier !== 'master') {
+    if (effectiveTier !== 'retail' && effectiveTier !== 'master' && saleCurrency !== 'USD') {
       const fetched = await fetchTierPrice(product, effectiveTier, resolvedUnit);
       if (fetched == null) {
         toast({
@@ -2013,12 +2176,73 @@ export default function POSTerminal() {
         });
         return;
       }
+    } else if (
+      effectiveTier !== 'retail' &&
+      effectiveTier !== 'master' &&
+      saleCurrency === 'USD'
+    ) {
+      void fetchTierPrice(product, effectiveTier, resolvedUnit);
+    }
+    let unitSalePrice = sale_price;
+    if (saleCurrency === 'USD') {
+      const fx = Number(saleFxRate || 0);
+      if (!Number.isFinite(fx) || fx <= 0) {
+        toast({
+          title: 'Valyuta kursi yo‘q',
+          description: 'USD sotuv uchun kurs yuklanmaguncha kuting yoki UZS rejimiga qayting.',
+          variant: 'destructive',
+        });
+        return;
+      }
+      if (effectiveTier === 'master') {
+        const masterPriceRaw = (product as any)?.master_price;
+        const masterPrice =
+          masterPriceRaw === null || masterPriceRaw === undefined ? null : Number(masterPriceRaw);
+        if (masterPrice !== null && Number.isFinite(masterPrice)) {
+          unitSalePrice = (masterPrice * ratio_to_base) / fx;
+        } else {
+          unitSalePrice = sale_price / fx;
+        }
+      } else if (effectiveTier === 'retail') {
+        const usdCacheKey = `${product.id}::retail::${resolvedUnit}::USD`;
+        let usd =
+          usdRetailByProductId[product.id] ?? priceCacheRef.current.get(usdCacheKey) ?? null;
+        if (usd == null || usd <= 0) {
+          // Fast path: derive from UZS so scans are not blocked on tier-price IPC.
+          unitSalePrice = sale_price / fx;
+          void getProductTierPrice({
+            product_id: product.id,
+            tier_code: 'retail',
+            currency: 'USD',
+            unit: resolvedUnit,
+          }).then((fetched) => {
+            const exact = fetched != null ? Number(fetched) : 0;
+            if (exact > 0) {
+              priceCacheRef.current.set(usdCacheKey, exact);
+              setUsdRetailByProductId((prev) =>
+                prev[product.id] === exact ? prev : { ...prev, [product.id]: exact }
+              );
+            }
+          });
+        } else {
+          unitSalePrice = usd;
+        }
+      } else {
+        const tierKey = `${product.id}::${effectiveTier}::${resolvedUnit}::${saleCurrency}`;
+        const tierCached = priceCacheRef.current.get(tierKey);
+        if (tierCached != null && tierCached > 0) {
+          unitSalePrice = tierCached;
+        } else {
+          unitSalePrice = sale_price / fx;
+          void fetchTierPrice(product, effectiveTier, resolvedUnit);
+        }
+      }
     }
     const { unitPrice, priceTier } = getLinePricing(
       product,
       qtyBase,
       selectedCustomer,
-      sale_price,
+      unitSalePrice,
       ratio_to_base,
       resolvedUnit
     );
@@ -2069,6 +2293,16 @@ export default function POSTerminal() {
   }, []);
 
   const resolveWebOrderCustomerForPos = useCallback(async (order: Record<string, unknown>): Promise<Customer | null> => {
+    const posCustomerId = String(order.pos_customer_id || '').trim();
+    if (posCustomerId) {
+      try {
+        const linked = await getCustomerById(posCustomerId);
+        if (linked) return linked;
+      } catch {
+        /* binding stale — fall through to phone/name match */
+      }
+    }
+
     const name = [order.first_name, order.last_name].map(sanitizeWebOrderNamePart).filter(Boolean).join(' ');
     const phone = String(order.phone || '').trim();
     const address = String(order.delivery_address || '').trim();
@@ -2511,7 +2745,7 @@ export default function POSTerminal() {
         }
 
         const st = String(order.status || '').toLowerCase();
-        if (st === 'voided' || st === 'refunded' || st === 'returned') {
+        if (st === 'voided' || st === 'refunded' || st === 'returned' || st === 'amended') {
           toast({
             variant: 'destructive',
             title: t('common.error'),
@@ -2636,6 +2870,8 @@ export default function POSTerminal() {
 
         setCart(built);
         setImportedWebOrderId(null);
+        setImportedOrderIdForEdit(order.id);
+        persistPosReplacesOrderId(order.id);
         setPromoCodeInput('');
         setLoyaltyRedeemPoints(0);
         setSelectedCartIndex(0);
@@ -2820,6 +3056,8 @@ export default function POSTerminal() {
     if (!id) return;
     setCart([]);
     setImportedWebOrderId(null);
+    setImportedOrderIdForEdit(null);
+    persistPosReplacesOrderId(null);
     setDiscount({ type: 'amount', value: '' });
     resetCustomerSelection();
     setPromoCodeInput('');
@@ -3225,7 +3463,7 @@ export default function POSTerminal() {
     const qtySale = Number(cartItem.qty_sale ?? cartItem.quantity ?? 0) || 0;
     const qtyBase = toBaseQty(qtySale, nextConfig.ratio_to_base);
     const effectiveTier = ((selectedCustomer as any)?.pricing_tier || currentTierCode || 'retail') as string;
-    if (effectiveTier !== 'retail' && effectiveTier !== 'master') {
+    if (effectiveTier !== 'retail' && effectiveTier !== 'master' && saleCurrency !== 'USD') {
       const fetched = await fetchTierPrice(cartItem.product, effectiveTier, nextUnit);
       if (fetched == null) {
         toast({
@@ -3235,6 +3473,8 @@ export default function POSTerminal() {
         });
         return;
       }
+    } else if (effectiveTier !== 'retail' && effectiveTier !== 'master') {
+      void fetchTierPrice(cartItem.product, effectiveTier, nextUnit);
     }
     const { unitPrice, priceTier } = getLinePricing(
       cartItem.product,
@@ -3308,7 +3548,7 @@ export default function POSTerminal() {
     const saleUnit = cartItem.sale_unit || cartItem.product.unit;
     const { sale_price } = getSaleUnitConfig(cartItem.product, saleUnit);
     const effectiveTier = ((selectedCustomer as any)?.pricing_tier || currentTierCode || 'retail') as string;
-    if (effectiveTier !== 'retail' && effectiveTier !== 'master') {
+    if (effectiveTier !== 'retail' && effectiveTier !== 'master' && saleCurrency !== 'USD') {
       const fetched = await fetchTierPrice(cartItem.product, effectiveTier, saleUnit);
       if (fetched == null) {
         toast({
@@ -3318,6 +3558,8 @@ export default function POSTerminal() {
         });
         return;
       }
+    } else if (effectiveTier !== 'retail' && effectiveTier !== 'master') {
+      void fetchTierPrice(cartItem.product, effectiveTier, saleUnit);
     }
     const { unitPrice, priceTier } = getLinePricing(
       cartItem.product,
@@ -3358,8 +3600,10 @@ export default function POSTerminal() {
     });
   };
 
-  // Use unified money formatter
-  const formatCurrency = (value: number): string => formatMoneyUZS(value);
+  const formatCurrency = useCallback(
+    (value: number): string => formatMoney(value, saleCurrency),
+    [saleCurrency]
+  );
 
   const sanitizeDiscountInput = (raw: string) => {
     const normalized = raw.replace(/,/g, '.').replace(/[^\d.]/g, '');
@@ -3374,6 +3618,11 @@ export default function POSTerminal() {
   const hasReturnLine = useMemo(
     () =>
       effectiveCart.some((it) => (Number(it.qty_sale ?? it.quantity ?? 0) || 0) < 0),
+    [effectiveCart]
+  );
+
+  const orderDiscountBase = useMemo(
+    () => cartOrderDiscountBase(effectiveCart),
     [effectiveCart]
   );
 
@@ -3420,10 +3669,14 @@ export default function POSTerminal() {
     return Number.isFinite(parsed) ? parsed : null;
   }, [discount.value]);
 
-  const maxDiscountAmount = hasReturnLine ? 0 : Math.max(0, subtotal - lineDiscountsTotal);
+  const maxDiscountAmount = orderDiscountBase.maxOrderDiscount;
 
   const discountError = useMemo(() => {
-    if (hasReturnLine && discount.type !== 'promo' && discount.value.trim() !== '') {
+    if (
+      !orderDiscountBase.hasSaleLine &&
+      discount.type !== 'promo' &&
+      discount.value.trim() !== ''
+    ) {
       return t('pos.exchange.discount_blocked');
     }
     if (discount.type === 'promo') return '';
@@ -3437,7 +3690,7 @@ export default function POSTerminal() {
       return `Chegirma ${formatCurrency(maxDiscountAmount)} dan oshmasligi kerak`;
     }
     return '';
-  }, [t, discount.value, parsedDiscountValue, discount.type, maxDiscountAmount, hasReturnLine]);
+  }, [t, discount.value, parsedDiscountValue, discount.type, maxDiscountAmount, orderDiscountBase.hasSaleLine]);
 
   const isDiscountActionDisabled =
     discount.type !== 'promo' && discount.value !== '' && discountError !== '';
@@ -3452,6 +3705,14 @@ export default function POSTerminal() {
         : 0;
 
   const handleHoldOrder = useCallback(async () => {
+    if (!posTerminalSettings.enable_hold_order) {
+      toast({
+        title: 'Hold disabled',
+        description: 'Buyurtmani saqlash funksiyasi sozlamalarda o\'chirilgan.',
+        variant: 'destructive',
+      });
+      return;
+    }
     if (!profile || !currentShift) {
       toast({
         title: 'Error',
@@ -3518,19 +3779,21 @@ export default function POSTerminal() {
     resetCustomerSelection,
     toast,
     t,
+    posTerminalSettings.enable_hold_order,
   ]);
   handleHoldOrderShortcutRef.current = handleHoldOrder;
 
   // Memoize totals calculation to prevent recalculation on every render
   const totals = useMemo(() => {
     let globalDiscountAmount = 0;
-    if (!hasReturnLine) {
+    if (orderDiscountBase.hasSaleLine) {
       if (discount.type === 'promo') {
         globalDiscountAmount = 0;
       } else if (discount.type === 'amount') {
         globalDiscountAmount = roundUZS(discountValueNumber);
       } else {
-        const subtotalAfterLineDiscounts = Math.max(0, subtotal - lineDiscountsTotal);
+        // Order discount base is sale lines only (exchange returns excluded).
+        const subtotalAfterLineDiscounts = orderDiscountBase.maxOrderDiscount;
         // Use the shared UZS helper so the percent application rounds the
         // same way everywhere (receipts, totals, accounting). Floating
         // `(x * pct) / 100` could leave 0.5 UZS dust that desyncs the
@@ -3587,12 +3850,86 @@ export default function POSTerminal() {
     selectedCustomer,
     isWalkInCustomer,
     hasReturnLine,
+    orderDiscountBase,
   ]);
 
-  const priorDebtUzs = useMemo(() => {
+  const computeTotalsForCart = useCallback(
+    (items: CartItem[]) => {
+      const cartSubtotal = items.reduce((sum, item) => sum + item.subtotal, 0);
+      const cartLineDiscounts = items.reduce((sum, item) => sum + item.discount_amount, 0);
+      const checkoutDiscountBase = cartOrderDiscountBase(items);
+
+      let globalDiscountAmount = 0;
+      if (checkoutDiscountBase.hasSaleLine) {
+        if (discount.type === 'promo') {
+          globalDiscountAmount = 0;
+        } else if (discount.type === 'amount') {
+          globalDiscountAmount = roundUZS(discountValueNumber);
+        } else {
+          globalDiscountAmount = applyPercentUZS(
+            checkoutDiscountBase.maxOrderDiscount,
+            discountValueNumber
+          );
+        }
+      }
+
+      const totalDiscountAmount = cartLineDiscounts + globalDiscountAmount;
+      const baseAfterStandardDiscounts = cartSubtotal - totalDiscountAmount;
+
+      const { redeemEnabled, redeemUzsPerPt, maxPct, minRedeemPts } = loyaltyCfg;
+      let loyaltyRedeemPointsApplied = 0;
+      let loyaltyDiscountUzs = 0;
+
+      const cartHasReturnLine = items.some(
+        (it) => (Number(it.qty_sale ?? it.quantity ?? 0) || 0) < 0
+      );
+
+      if (
+        !cartHasReturnLine &&
+        baseAfterStandardDiscounts > 0 &&
+        redeemEnabled &&
+        selectedCustomer &&
+        !isWalkInCustomer(selectedCustomer) &&
+        isElectron()
+      ) {
+        const raw = Math.floor(Number(loyaltyRedeemPoints) || 0);
+        const custPts = Math.floor(Number(selectedCustomer.bonus_points) || 0);
+        const maxUzsFromPct = baseAfterStandardDiscounts * (maxPct / 100);
+        const maxPtsFromPct = redeemUzsPerPt > 0 ? Math.floor(maxUzsFromPct / redeemUzsPerPt) : 0;
+        const maxRedeem = Math.min(custPts, maxPtsFromPct);
+        if (raw > 0 && raw >= minRedeemPts) {
+          loyaltyRedeemPointsApplied = Math.min(raw, maxRedeem);
+          loyaltyDiscountUzs = loyaltyRedeemPointsApplied * redeemUzsPerPt;
+        }
+      }
+
+      const total = baseAfterStandardDiscounts - loyaltyDiscountUzs;
+
+      return {
+        subtotal: cartSubtotal,
+        lineDiscountsTotal: cartLineDiscounts,
+        globalDiscountAmount,
+        preLoyaltyDiscountAmount: totalDiscountAmount,
+        loyaltyRedeemPointsApplied,
+        loyaltyDiscountUzs,
+        discountAmount: totalDiscountAmount + loyaltyDiscountUzs,
+        total,
+      };
+    },
+    [
+      discount.type,
+      discountValueNumber,
+      loyaltyCfg,
+      loyaltyRedeemPoints,
+      selectedCustomer,
+      isWalkInCustomer,
+    ]
+  );
+
+  const priorDebtInSaleCurrency = useMemo(() => {
     if (!selectedCustomer || isWalkInCustomer(selectedCustomer)) return 0;
-    return getCustomerDebtAmount(selectedCustomer.balance);
-  }, [selectedCustomer, getCustomerDebtAmount, isWalkInCustomer]);
+    return getCustomerDebtInCurrency(selectedCustomer, saleCurrency);
+  }, [selectedCustomer, saleCurrency, getCustomerDebtInCurrency, isWalkInCustomer]);
 
   const buildOrderItemsSnapshot = useCallback(
     (items: CartItem[], globalDiscountAmount: number): Omit<OrderItem, 'id' | 'order_id'>[] => {
@@ -3630,7 +3967,7 @@ export default function POSTerminal() {
           price_tier: item.price_tier || 'retail',
           base_price: baseUnitPrice,
           usta_price: priceSource === 'usta' ? ustaUnitPrice : null,
-          discount_type: (perUnitDiscount > 0 ? 'fixed' : 'none') as const,
+          discount_type: (perUnitDiscount > 0 ? 'fixed' : 'none') as 'fixed' | 'none',
           discount_value: perUnitDiscount,
           final_unit_price: finalUnitPrice,
           final_total: finalLineTotal,
@@ -3678,7 +4015,25 @@ export default function POSTerminal() {
       return;
     }
 
+    if (saleCurrency === 'USD' && (!saleFxRate || saleFxRate <= 0)) {
+      toast({
+        title: 'Valyuta kursi yo‘q',
+        description: 'USD sotuv uchun kurs kerak (Sozlamalar → Valyuta).',
+        variant: 'destructive',
+      });
+      return;
+    }
+
     const rawLoyaltyPts = Math.floor(Number(loyaltyRedeemPoints) || 0);
+    if (loyaltyCfg.redeemEnabled && rawLoyaltyPts > 0 && saleCurrency === 'USD') {
+      toast({
+        title: 'Ball ishlatish',
+        description: 'USD sotuvda bonus ball ishlatish mumkin emas.',
+        variant: 'destructive',
+      });
+      return;
+    }
+
     if (loyaltyCfg.redeemEnabled && rawLoyaltyPts > 0) {
       if (isWalkInCustomer(selectedCustomer)) {
         toast({
@@ -3719,6 +4074,7 @@ export default function POSTerminal() {
       }
     }
 
+    const checkoutCart = await resolveCheckoutCart();
     const {
       subtotal,
       discountAmount,
@@ -3726,7 +4082,7 @@ export default function POSTerminal() {
       loyaltyRedeemPointsApplied,
       globalDiscountAmount,
       loyaltyDiscountUzs,
-    } = totals;
+    } = computeTotalsForCart(checkoutCart);
 
     // Prepare payment data based on method
     let orderPayments: { method: PaymentMethod; amount: number }[] = [];
@@ -3741,8 +4097,19 @@ export default function POSTerminal() {
       orderPayments = payments.filter((p) => p.method !== 'credit');
     }
 
+    if (saleCurrency === 'USD' && creditAmountValue > 0) {
+      toast({
+        title: 'USD sotuv',
+        description: 'Nasiyaga qoldirish faqat UZS valyutada.',
+        variant: 'destructive',
+      });
+      return;
+    }
+
     const extraDebtDue =
-      total > 0 && includePriorDebtInPayment && priorDebtUzs > 0 ? priorDebtUzs : 0;
+      total > 0 && includePriorDebtInPayment && priorDebtInSaleCurrency > 0
+        ? priorDebtInSaleCurrency
+        : 0;
     const merchandiseCashDue = Math.max(0, total - creditAmountValue);
     const amountDueWithDebt = merchandiseCashDue + extraDebtDue;
 
@@ -3789,16 +4156,40 @@ export default function POSTerminal() {
       paidAmount = cashAmount;
       changeAmount = cashAmount - requiredAmount;
     } else if (paymentMethod === 'card') {
+      if (!isPaymentEnabled('card')) {
+        toast({
+          title: 'Karta o\'chirilgan',
+          description: 'Karta to\'lovi sozlamalarda o\'chirilgan.',
+          variant: 'destructive',
+        });
+        return;
+      }
       const requiredAmount = amountDueWithDebt;
       orderPayments = [{ method: 'card', amount: requiredAmount }];
       paidAmount = requiredAmount;
       changeAmount = 0;
     } else if (paymentMethod === 'qr') {
+      if (!isPaymentEnabled('qr')) {
+        toast({
+          title: 'QR o\'chirilgan',
+          description: 'QR to\'lov sozlamalarda o\'chirilgan.',
+          variant: 'destructive',
+        });
+        return;
+      }
       const requiredAmount = amountDueWithDebt;
       orderPayments = [{ method: 'qr', amount: requiredAmount }];
       paidAmount = requiredAmount;
       changeAmount = 0;
     } else if (paymentMethod === 'mixed') {
+      if (!posTerminalSettings.enable_mixed_payment) {
+        toast({
+          title: 'Mixed payment disabled',
+          description: 'Aralash to\'lov sozlamalarda o\'chirilgan.',
+          variant: 'destructive',
+        });
+        return;
+      }
       if (orderPayments.length === 0) {
         toast({
           title: 'No Payment Methods',
@@ -3832,6 +4223,8 @@ export default function POSTerminal() {
     setIsProcessingPayment(true);
     try {
       const checkoutStart = perfEnabled ? performance.now() : 0;
+      const importedWebOrderIdForSale = importedWebOrderId;
+      const replacesOrderIdForSale = importedOrderIdForEdit ?? readPosReplacesOrderId();
       const order = {
         order_number: '',
         customer_id: selectedCustomer?.id || null,
@@ -3857,10 +4250,11 @@ export default function POSTerminal() {
                 : ('partially_paid' as const),
         notes: null,
         ...(loyaltyRedeemPointsApplied > 0 ? { loyalty_redeem_points: loyaltyRedeemPointsApplied } : {}),
+        ...orderCurrencyFields(saleCurrency, saleFxRate),
+        ...(replacesOrderIdForSale ? { replaces_order_id: replacesOrderIdForSale } : {}),
       };
 
-      const orderItems = buildOrderItemsSnapshot(effectiveCart, globalDiscountAmount + loyaltyDiscountUzs);
-      const importedWebOrderIdForSale = importedWebOrderId;
+      const orderItems = buildOrderItemsSnapshot(checkoutCart, globalDiscountAmount + loyaltyDiscountUzs);
 
       const orderPaymentsData = orderPayments.map((payment) => ({
         payment_number: '',
@@ -3874,12 +4268,36 @@ export default function POSTerminal() {
       const created = (await createOrder(order, orderItems, orderPaymentsData)) as {
         order_number?: string;
         new_balance?: number;
+        offline_queued?: boolean;
       } | null;
       if (perfEnabled) {
         const ms = Math.round(performance.now() - checkoutStart);
         console.debug(`[POS PERF] checkout → ${ms}ms`);
       }
       const orderNumber = created?.order_number || order.order_number || 'ORD';
+
+      if (created?.offline_queued) {
+        toast({
+          title: 'Offline saqlandi',
+          description: `${orderNumber} — internet qaytganida serverga yuboriladi.`,
+          className: 'bg-amber-50 border-amber-200',
+        });
+        setCart([]);
+        setImportedWebOrderId(null);
+        setImportedOrderIdForEdit(null);
+        persistPosReplacesOrderId(null);
+        setExchangeReturnMode(false);
+        setPayments([]);
+        setDiscount({ type: 'amount', value: '' });
+        setPromoCodeInput('');
+        setLoyaltyRedeemPoints(0);
+        resetCustomerSelection();
+        setPaymentDialogOpen(false);
+        setCashReceived(null);
+        setCreditAmount('');
+        setIsProcessingPayment(false);
+        return;
+      }
 
       if (importedWebOrderIdForSale) {
         try {
@@ -3898,12 +4316,12 @@ export default function POSTerminal() {
 
       // Update shift totals (local): kirim / chiqim
       if (currentShift) {
-        if (total > 0) addSale(total);
-        else if (total < 0) addRefund({ amount: Math.abs(total) });
+        if (total > 0) addSale(toShiftUzsAmount(total, saleCurrency, saleFxRate));
+        else if (total < 0) addRefund({ amount: toShiftUzsAmount(Math.abs(total), saleCurrency, saleFxRate) });
       }
 
       const movNow = new Date().toISOString();
-      effectiveCart.forEach((item) => {
+      checkoutCart.forEach((item) => {
         const qb = item.qty_base ?? item.quantity;
         addMovement({
           id: `local-${Date.now()}-${item.product.id}-${Math.random().toString(36).slice(2, 9)}`,
@@ -3968,7 +4386,7 @@ export default function POSTerminal() {
       // Prepare receipt data (flushSync so the hidden Receipt renders immediately before printing)
       const nextReceipt = {
         orderNumber,
-        items: effectiveCart,
+        items: checkoutCart,
         customer: selectedCustomer,
         subtotal,
         discountAmount,
@@ -3980,24 +4398,33 @@ export default function POSTerminal() {
         dateTime: formatOrderDateTime(new Date()),
         cashierName: profile?.full_name || profile?.username,
         customerTotalDebt: selectedCustomer
-          ? getCustomerDebtAmount(
-              created?.new_balance !== undefined
-                ? created.new_balance
-                : (selectedCustomer.balance || 0) - creditAmountValue
+          ? Math.max(
+              0,
+              -(
+                created?.new_balance !== undefined
+                  ? Number(created.new_balance)
+                  : getActiveBucketBalance(selectedCustomer, saleCurrency) - creditAmountValue
+              )
             )
           : 0,
         loyaltyCardCode: loyaltyReceiptMeta.loyaltyCardCode,
         loyaltyQrDataUrl: loyaltyReceiptMeta.loyaltyQrDataUrl,
         loyaltyQrPayload: loyaltyReceiptMeta.loyaltyQrPayload,
+        currency: saleCurrency,
       };
       setLastReceiptData(nextReceipt);
+      if (shouldAutoPrintReceipt(receiptSettings)) {
+        setTimeout(() => {
+          void printReceipt(nextReceipt as NonNullable<typeof receiptData>, { silent: true });
+        }, 80);
+      }
 
       // 3. Record Sale (Log to console)
       const saleRecord = {
         timestamp: new Date().toISOString(),
         orderNumber,
         totalAmount: total,
-        itemsSold: effectiveCart.map(item => ({
+        itemsSold: checkoutCart.map(item => ({
           productName: item.product.name,
           quantity: item.qty_sale ?? item.quantity,
           sale_unit: item.sale_unit || item.product.unit,
@@ -4008,37 +4435,26 @@ export default function POSTerminal() {
         paymentMethod,
         cashier: profile?.full_name || profile?.username,
       };
-      // 4. Update Local Product State (Stock Deduction) - BEFORE clearing cart
-      // Store cart items for stock update (before cart is cleared)
-      const cartItemsForStockUpdate = [...effectiveCart];
-      
-      // Clone the products arrays and update stock
-      const updateProductsWithStockDeduction = (products: Product[]) => {
-        const updatedProducts = products.map(product => {
-          const cartItem = cartItemsForStockUpdate.find(item => item.product.id === product.id);
-          if (cartItem) {
-            const newStock = product.current_stock - (cartItem.qty_base ?? cartItem.quantity);
-            return {
-              ...product,
-              current_stock: Math.max(0, newStock), // Ensure stock doesn't go negative
-            };
-          }
-          return product;
-        });
-        return updatedProducts;
-      };
+      // 4. Update local product stock — tahrir (amend) backendda avval qaytaradi,
+      // shuning uchun optimistik kamaytirish ikki marta hisoblanmasin.
+      if (replacesOrderIdForSale) {
+        void loadAllProducts();
+      } else {
+        const cartItemsForStockUpdate = [...checkoutCart];
+        const updateProductsWithStockDeduction = (products: Product[]) =>
+          products.map((product) => {
+            const cartItem = cartItemsForStockUpdate.find((item) => item.product.id === product.id);
+            if (cartItem) {
+              const newStock = product.current_stock - (cartItem.qty_base ?? cartItem.quantity);
+              return { ...product, current_stock: Math.max(0, newStock) };
+            }
+            return product;
+          });
 
-      // Update allProducts state to reflect stock changes immediately
-      setAllProducts(prevProducts => {
-        const updated = updateProductsWithStockDeduction(prevProducts);
-        return updated;
-      });
-
-      // Also update favoriteProducts if needed
-      setFavoriteProducts(prevFavorites => updateProductsWithStockDeduction(prevFavorites));
-
-      // Update searchResults if user is searching
-      setSearchResults(prevResults => updateProductsWithStockDeduction(prevResults));
+        setAllProducts((prev) => updateProductsWithStockDeduction(prev));
+        setFavoriteProducts((prev) => updateProductsWithStockDeduction(prev));
+        setSearchResults((prev) => updateProductsWithStockDeduction(prev));
+      }
 
       toast({
         title: '✅ Sotuv amalga oshirildi!',
@@ -4049,6 +4465,8 @@ export default function POSTerminal() {
       // 5. Cleanup - Clear cart and reset state (AFTER stock update)
       setCart([]);
       setImportedWebOrderId(null);
+      setImportedOrderIdForEdit(null);
+      persistPosReplacesOrderId(null);
       setExchangeReturnMode(false);
       setPayments([]);
       setDiscount({ type: 'amount', value: '' });
@@ -4063,12 +4481,12 @@ export default function POSTerminal() {
       // Har doim yangilash: qarz yopilganda ham balans eski qolmasin (credit/bonus shart emas)
       void loadCustomers();
 
-      // Reload products from database after a delay to ensure sync (but don't overwrite immediate updates)
-      setTimeout(() => {
-        loadAllProducts();
-      }, 500);
+      if (!replacesOrderIdForSale) {
+        setTimeout(() => {
+          loadAllProducts();
+        }, 500);
+      }
 
-      // Receipt is printed manually from the "Chek" button after the sale is completed.
     } catch (error) {
       console.error('Order completion error:', error);
       
@@ -4092,7 +4510,22 @@ export default function POSTerminal() {
 
   const handleCreditSale = async () => {
     if (isProcessingPayment) return;
-    // Validation
+    if (saleCurrency === 'USD') {
+      toast({
+        title: 'USD sotuv',
+        description: 'Nasiya sotuv faqat UZS valyutada.',
+        variant: 'destructive',
+      });
+      return;
+    }
+    if (!isPaymentEnabled('credit')) {
+      toast({
+        title: 'Qarzga sotuv o\'chirilgan',
+        description: 'Qarzga to\'lov sozlamalarda o\'chirilgan.',
+        variant: 'destructive',
+      });
+      return;
+    }
     if (!profile || !currentShift) {
       toast({
         title: 'Error',
@@ -4186,6 +4619,7 @@ export default function POSTerminal() {
       }
     }
 
+    const checkoutCart = await resolveCheckoutCart();
     const {
       subtotal,
       discountAmount,
@@ -4193,7 +4627,7 @@ export default function POSTerminal() {
       loyaltyRedeemPointsApplied,
       globalDiscountAmount,
       loyaltyDiscountUzs,
-    } = totals;
+    } = computeTotalsForCart(checkoutCart);
 
     if (total <= 0) {
       toast({
@@ -4215,13 +4649,14 @@ export default function POSTerminal() {
       return;
     }
 
-    const priorAmt = includePriorDebtInPayment ? priorDebtUzs : 0;
+    const priorAmt = includePriorDebtInPayment ? priorDebtInSaleCurrency : 0;
     const toPriorRaw = priorAmt > 0 ? Math.min(initialPayment, priorAmt) : 0;
     const toPrior = Number.isFinite(toPriorRaw) ? Math.max(0, toPriorRaw) : 0;
     const safePriorPaymentAmount = Math.round(toPrior);
     const orderCash = Math.max(0, initialPayment - toPrior);
     const merchCredit = Math.max(0, total - orderCash);
-    const projectedBalance = (selectedCustomer.balance || 0) + initialPayment - total;
+    const activeBalBefore = getActiveBucketBalance(selectedCustomer, saleCurrency);
+    const projectedBalance = activeBalBefore + initialPayment - total;
 
     if (selectedCustomer.credit_limit > 0 && projectedBalance < 0) {
       if (Math.abs(projectedBalance) > selectedCustomer.credit_limit) {
@@ -4237,7 +4672,8 @@ export default function POSTerminal() {
     // Process credit sale (full or partial)
     setIsProcessingPayment(true);
     try {
-      const orderItems = buildOrderItemsSnapshot(effectiveCart, globalDiscountAmount + loyaltyDiscountUzs);
+      const replacesOrderIdForSale = importedOrderIdForEdit ?? readPosReplacesOrderId();
+      const orderItems = buildOrderItemsSnapshot(checkoutCart, globalDiscountAmount + loyaltyDiscountUzs);
 
       let result: {
         success: boolean;
@@ -4251,6 +4687,9 @@ export default function POSTerminal() {
         const rp = await receiveCustomerPayment({
           customer_id: selectedCustomer.id,
           amount: safePriorPaymentAmount,
+          currency: saleCurrency,
+          // Credit sale is UZS-only (guarded at the top of handleCreditSale).
+          fx_rate: null,
           operation: 'payment_in',
           payment_method: 'cash',
           notes: 'POS nasiya: oldingi qarzdan',
@@ -4280,10 +4719,12 @@ export default function POSTerminal() {
           credit_amount: merchCredit,
           change_amount: 0,
           status: 'completed' as const,
-          payment_status: (merchCredit > 0.01 ? 'partially_paid' : 'paid') as const,
+          payment_status: (merchCredit > 0.01 ? 'partially_paid' : 'paid') as 'partially_paid' | 'paid',
           notes: null,
           apply_overpay_as_prepaid: applyPrepaid,
           ...(loyaltyRedeemPointsApplied > 0 ? { loyalty_redeem_points: loyaltyRedeemPointsApplied } : {}),
+          ...orderCurrencyFields(saleCurrency, saleFxRate),
+          ...(replacesOrderIdForSale ? { replaces_order_id: replacesOrderIdForSale } : {}),
         };
 
         const orderPaymentsData = [
@@ -4323,6 +4764,8 @@ export default function POSTerminal() {
           total_amount: total,
           notes: undefined,
           ...(loyaltyRedeemPointsApplied > 0 ? { loyalty_redeem_points: loyaltyRedeemPointsApplied } : {}),
+          ...orderCurrencyFields(saleCurrency, saleFxRate),
+          ...(replacesOrderIdForSale ? { replaces_order_id: replacesOrderIdForSale } : {}),
         });
         
         // Invalidate dashboard queries
@@ -4331,6 +4774,10 @@ export default function POSTerminal() {
 
       if (!result.success) {
         throw new Error(result.error || 'Failed to create credit order');
+      }
+
+      if (replacesOrderIdForSale) {
+        void loadAllProducts();
       }
 
       if (importedWebOrderId) {
@@ -4358,7 +4805,8 @@ export default function POSTerminal() {
 
       const loyaltyReceiptMeta = await buildLoyaltyReceiptMeta(selectedCustomer);
       // Prepare receipt data for credit sale (flushSync so it renders before printing)
-      const finalBal = result.new_balance ?? projectedBalance;
+      // Credit sale is UZS-only (guarded above), so balance comes from new_balance.
+      const finalBal = Number(result.new_balance ?? projectedBalance);
       const nextReceipt = {
         orderNumber: orderNumber || 'N/A',
         items: cart,
@@ -4372,12 +4820,18 @@ export default function POSTerminal() {
         priceTierCode: currentTierCode,
         dateTime: formatOrderDateTime(new Date()),
         cashierName: profile?.full_name || profile?.username,
-        customerTotalDebt: getCustomerDebtAmount(finalBal),
+        customerTotalDebt: Math.max(0, -finalBal),
         loyaltyCardCode: loyaltyReceiptMeta.loyaltyCardCode,
         loyaltyQrDataUrl: loyaltyReceiptMeta.loyaltyQrDataUrl,
         loyaltyQrPayload: loyaltyReceiptMeta.loyaltyQrPayload,
+        currency: saleCurrency,
       };
       setLastReceiptData(nextReceipt);
+      if (shouldAutoPrintReceipt(receiptSettings)) {
+        setTimeout(() => {
+          void printReceipt(nextReceipt as NonNullable<typeof receiptData>, { silent: true });
+        }, 80);
+      }
 
       const successMessage =
         initialPayment > 0
@@ -4411,10 +4865,10 @@ export default function POSTerminal() {
 
       // Update customer balance in state immediately
       if (selectedCustomer) {
-        const newBalance = result.new_balance ?? projectedBalance;
         const updatedCustomer = {
           ...selectedCustomer,
-          balance: newBalance,
+          balance: Number(result.new_balance ?? projectedBalance),
+          balance_usd: (selectedCustomer as Customer).balance_usd,
         };
 
         // Keep the customer list in sync, but don't carry the selection into the next sale.
@@ -4428,6 +4882,8 @@ export default function POSTerminal() {
       // Clear cart and reset state so the next sale starts clean.
       setCart([]);
       setImportedWebOrderId(null);
+      setImportedOrderIdForEdit(null);
+      persistPosReplacesOrderId(null);
       setPayments([]);
       setDiscount({ type: 'amount', value: '' });
       setPromoCodeInput('');
@@ -4443,7 +4899,6 @@ export default function POSTerminal() {
       queryClient.invalidateQueries({ queryKey: ['customers'] });
       queryClient.invalidateQueries({ queryKey: ['customer', creditCustomerId] });
 
-      // Receipt is printed manually from the "Chek" button after the credit sale is completed.
     } catch (error) {
       console.error('Credit sale error:', error);
       
@@ -4478,9 +4933,9 @@ export default function POSTerminal() {
   const checkoutGrandTotal = useMemo(() => {
     if (total <= 0) return total;
     const extra =
-      includePriorDebtInPayment && priorDebtUzs > 0 ? priorDebtUzs : 0;
+      includePriorDebtInPayment && priorDebtInSaleCurrency > 0 ? priorDebtInSaleCurrency : 0;
     return total + extra;
-  }, [total, includePriorDebtInPayment, priorDebtUzs]);
+  }, [total, includePriorDebtInPayment, priorDebtInSaleCurrency]);
 
   // Memoize paid amount calculation
   const paidAmount = useMemo(() => {
@@ -4492,18 +4947,180 @@ export default function POSTerminal() {
     return checkoutGrandTotal - paidAmount;
   }, [checkoutGrandTotal, paidAmount]);
 
+  // Keyboard shortcuts (after checkoutGrandTotal / handleCompletePayment to avoid TDZ)
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      const target = e.target as HTMLElement;
+      const isInput = target.tagName === 'INPUT' || target.tagName === 'TEXTAREA';
+
+      if (e.key === 'F2') {
+        e.preventDefault();
+        searchInputRef.current?.focus();
+        return;
+      }
+
+      if (e.key === 'F10') {
+        e.preventDefault();
+        handlePrintLastReceipt();
+        return;
+      }
+
+      if (e.key === 'F9') {
+        e.preventDefault();
+        if (cart.length > 0 && !paymentDialogOpen && !isProcessingPayment) {
+          const canFastCash =
+            currentShift &&
+            !waitingOrdersDialogOpen &&
+            !isDiscountActionDisabled &&
+            !hasReturnLine &&
+            checkoutGrandTotal > 0;
+          if (canFastCash) {
+            void handleCompletePayment('cash', { cashAmountOverride: checkoutGrandTotal });
+          } else {
+            setPaymentDialogOpen(true);
+          }
+        }
+        return;
+      }
+
+      if (e.key === 'F8') {
+        e.preventDefault();
+        if (paymentDialogOpen || waitingOrdersDialogOpen) return;
+        setExchangeReturnMode((v) => !v);
+        return;
+      }
+
+      if (e.key === 'F3') {
+        e.preventDefault();
+        if (cart.length > 0) {
+          void handleHoldOrderShortcutRef.current();
+        }
+        return;
+      }
+
+      if (e.key === 'Escape') {
+        if (paymentDialogOpen) {
+          setPaymentDialogOpen(false);
+        } else if (waitingOrdersDialogOpen) {
+          setWaitingOrdersDialogOpen(false);
+        } else if (searchTerm) {
+          setSearchTerm('');
+          setSearchResults([]);
+        }
+        return;
+      }
+
+      if (e.key === 'Enter' && target === searchInputRef.current && searchResults.length > 0) {
+        e.preventDefault();
+        requestAddToCart(searchResults[0]);
+        focusSearchInput();
+        return;
+      }
+
+      if (e.altKey && selectedCartIndex >= 0 && cart[selectedCartIndex]) {
+        const item = cart[selectedCartIndex];
+        const step = getQuantityStep(item.sale_unit || item.product.unit);
+        if (e.key === '1') {
+          e.preventDefault();
+          updateQuantity(item.product.id, (item.qty_sale ?? item.quantity) + step);
+          return;
+        }
+        if (e.key === '5') {
+          e.preventDefault();
+          updateQuantity(item.product.id, (item.qty_sale ?? item.quantity) + step * 5);
+          return;
+        }
+        if (e.key === '-' || e.key === '_') {
+          e.preventDefault();
+          updateQuantity(item.product.id, (item.qty_sale ?? item.quantity) - step);
+          return;
+        }
+      }
+
+      if (e.altKey && e.key >= '1' && e.key <= '8') {
+        e.preventDefault();
+        const index = parseInt(e.key) - 1;
+        if (quickProducts[index]) {
+          requestAddToCart(quickProducts[index]);
+        }
+        return;
+      }
+
+      if (target === searchInputRef.current) return;
+      if (isInput) return;
+
+      if (e.key === 'ArrowUp') {
+        e.preventDefault();
+        setSelectedCartIndex((prev) => Math.max(0, prev - 1));
+        return;
+      }
+
+      if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        setSelectedCartIndex((prev) => Math.min(cart.length - 1, prev + 1));
+        return;
+      }
+
+      if ((e.key === '+' || e.key === '=') && selectedCartIndex >= 0 && cart[selectedCartIndex]) {
+        e.preventDefault();
+        const item = cart[selectedCartIndex];
+        const step = getQuantityStep(item.sale_unit || item.product.unit);
+        updateQuantity(item.product.id, item.quantity + step);
+        return;
+      }
+
+      if ((e.key === '-' || e.key === '_') && selectedCartIndex >= 0 && cart[selectedCartIndex]) {
+        e.preventDefault();
+        const item = cart[selectedCartIndex];
+        const step = getQuantityStep(item.sale_unit || item.product.unit);
+        updateQuantity(item.product.id, item.quantity - step);
+        return;
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [
+    cart,
+    searchResults,
+    searchTerm,
+    paymentDialogOpen,
+    waitingOrdersDialogOpen,
+    selectedCartIndex,
+    quickProducts,
+    isProcessingPayment,
+    currentShift,
+    handlePrintLastReceipt,
+    checkoutGrandTotal,
+    isDiscountActionDisabled,
+    hasReturnLine,
+    handleCompletePayment,
+  ]);
+
   // Get products to display (search results or all products filtered by category)
   const displayProducts = useMemo(() => {
     if (searchResults.length > 0) return searchResults;
     if (selectedCategory) {
-      return allProducts.filter((p) => p.category_id === selectedCategory);
+      return allProducts.filter((p) =>
+        productMatchesCategoryFilter(p.category_id, selectedCategory, categories)
+      );
     }
     return allProducts;
-  }, [searchResults, allProducts, selectedCategory]);
+  }, [searchResults, allProducts, selectedCategory, categories]);
 
   const MAX_DISPLAY = 300;
   const isTruncated = displayProducts.length > MAX_DISPLAY;
   const visibleProducts = isTruncated ? displayProducts.slice(0, MAX_DISPLAY) : displayProducts;
+  useEffect(() => {
+    let cancelled = false;
+    void loadRetailUsdPricesForProducts(visibleProducts).then((map) => {
+      if (!cancelled) setUsdRetailByProductId(map);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [visibleProducts]);
+
   const quickProductCandidates = useMemo(() => {
     const term = quickProductSearch.trim().toLowerCase();
     const source = term ? allProducts : favoriteProducts;
@@ -4541,6 +5158,16 @@ export default function POSTerminal() {
             </p>
           </div>
           <ShiftControl />
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            className="h-8 gap-1.5 text-xs"
+            onClick={() => navigate('/customers')}
+          >
+            <Users className="h-3.5 w-3.5" />
+            {t('navigation.customers')}
+          </Button>
         </div>
       </div>
     );
@@ -4550,15 +5177,57 @@ export default function POSTerminal() {
     <>
       {/* Split View: flex-1 + min-h-0 — mahsulot va savat viewport bo‘yicha cho‘ziladi */}
       {/* Chap/yuqori/pastki: layout paddingini yutish; o‘ng tomonda padding yo‘q */}
-      <div className="-mb-4 -ml-4 -mt-4 flex min-h-0 w-full min-w-0 max-w-none flex-1 flex-col self-stretch overflow-x-hidden xl:-mb-6 xl:-ml-6 xl:-mt-6">
+      <div className="-mb-4 -ml-4 -mt-4 flex h-full min-h-0 w-full min-w-0 max-w-none flex-1 flex-col self-stretch overflow-x-hidden xl:-mb-6 xl:-ml-6 xl:-mt-6">
         {/* xl: mahsulot | savat+rail — to‘liq kenglik */}
         <div className="flex min-h-0 min-w-0 w-full max-w-none flex-1 flex-col gap-2 pl-2 pt-2 pb-0 pr-0 sm:gap-3 md:gap-4 md:pl-3 md:pt-3 md:pb-0 md:pr-0 xl:flex-row xl:flex-nowrap xl:items-stretch xl:gap-0 xl:pl-3 xl:pt-3 xl:pb-0 xl:!pr-0">
           {/* Left Column - Product Catalog */}
           <div className="flex min-h-0 min-w-0 flex-col overflow-hidden rounded-xl border bg-white xl:w-0 xl:min-w-0 xl:shrink xl:grow-[1.45] xl:basis-0 xl:pr-3">
             {/* Shift Control - Left column only */}
             <div className="flex-shrink-0 border-b bg-white dark:bg-gray-900 p-2 md:p-3">
-              <div className="flex items-center justify-between gap-2">
-                <ShiftControl />
+              <div className="flex items-center justify-between gap-2 flex-wrap">
+                <div className="flex items-center gap-2 flex-wrap">
+                  <ShiftControl />
+                  <NetworkBadge />
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    className="h-8 gap-1.5 text-xs"
+                    onClick={() => navigate('/customers')}
+                  >
+                    <Users className="h-3.5 w-3.5" />
+                    {t('navigation.customers')}
+                  </Button>
+                  <div className="flex flex-col gap-0.5">
+                    <div className="flex items-center gap-1 rounded-md border p-0.5">
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant={saleCurrency === 'UZS' ? 'default' : 'ghost'}
+                        className="h-7 px-2.5 text-xs"
+                        disabled={saleFxLoading}
+                        onClick={() => setSaleCurrency('UZS')}
+                      >
+                        UZS
+                      </Button>
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant={saleCurrency === 'USD' ? 'default' : 'ghost'}
+                        className="h-7 px-2.5 text-xs"
+                        disabled={saleFxLoading}
+                        onClick={() => setSaleCurrency('USD')}
+                      >
+                        USD
+                      </Button>
+                    </div>
+                    {saleCurrency === 'USD' && saleFxRate != null && saleFxRate > 0 && (
+                      <span className="text-[10px] text-muted-foreground tabular-nums px-0.5">
+                        1 USD = {formatMoney(saleFxRate, 'UZS')}
+                      </span>
+                    )}
+                  </div>
+                </div>
                 <PosDeviceBar
                   onWeigh={(weightKg, unit) => {
                     const normalize = (v: unknown) => String(v ?? '').trim().toLowerCase();
@@ -4760,9 +5429,29 @@ export default function POSTerminal() {
                         
                         {/* Column 2: Price (Span 3) */}
                         <div className="col-span-3 text-right">
-                          <p className="font-bold text-blue-600 dark:text-blue-400 text-sm">
-                            {formatCurrency(Number(product.sale_price))}
-                          </p>
+                          {saleCurrency === 'USD' ? (
+                            <>
+                              <p className="font-bold text-blue-600 dark:text-blue-400 text-sm">
+                                {usdRetailByProductId[product.id] != null
+                                  ? formatMoney(usdRetailByProductId[product.id], 'USD')
+                                  : '—'}
+                              </p>
+                              <p className="text-xs text-muted-foreground">
+                                {formatMoney(Number(product.sale_price || 0), 'UZS')}
+                              </p>
+                            </>
+                          ) : (
+                            <>
+                              <p className="font-bold text-blue-600 dark:text-blue-400 text-sm">
+                                {formatCurrency(Number(product.sale_price))}
+                              </p>
+                              {usdRetailByProductId[product.id] != null && (
+                                <p className="text-xs text-muted-foreground">
+                                  {formatMoney(usdRetailByProductId[product.id], 'USD')}
+                                </p>
+                              )}
+                            </>
+                          )}
                         </div>
                         
                         {/* Column 3: Stock (Span 3) */}
@@ -4796,11 +5485,11 @@ export default function POSTerminal() {
           {/* Savat + rail: kichik ekranda bitta karta; xl da ikki bolali wrapper (contents emas) — o‘ng chetga cho‘zilish barqaror */}
           <div
             className={cn(
-              'flex min-h-[min(280px,min(48vh,52dvh))] min-h-0 w-full min-w-0 flex-1 flex-row overflow-hidden rounded-xl border border-border bg-white xl:min-h-0 xl:w-0 xl:min-w-0 xl:shrink xl:basis-0 xl:flex-row xl:items-stretch xl:overflow-visible xl:rounded-none xl:border-0 xl:bg-transparent',
+              'flex min-h-[min(280px,min(48vh,52dvh))] min-h-0 w-full min-w-0 flex-1 flex-row overflow-hidden rounded-xl border border-border bg-white xl:h-full xl:max-h-full xl:min-h-0 xl:w-0 xl:min-w-0 xl:shrink xl:basis-0 xl:flex-row xl:items-stretch xl:overflow-hidden xl:rounded-none xl:border-0 xl:bg-transparent',
               cart.length === 0 ? 'xl:grow-[0.72]' : 'xl:grow-[0.9]'
             )}
           >
-            <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden rounded-xl border border-border bg-white xl:h-full xl:min-w-0 xl:shrink xl:grow xl:basis-0 xl:rounded-xl xl:rounded-r-none xl:border xl:border-r-0 xl:border-border">
+            <div className="flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden rounded-xl border border-border bg-white xl:min-h-0 xl:min-w-0 xl:shrink xl:grow xl:basis-0 xl:rounded-xl xl:rounded-r-none xl:border xl:border-r-0 xl:border-border">
             {/* Top Section - Header: Customer Selection/Search (Fixed) */}
             <div className="flex-shrink-0 border-b bg-white dark:bg-gray-900 p-2 space-y-1 md:p-3 md:space-y-2">
               <div className="space-y-1 md:space-y-2">
@@ -4907,11 +5596,26 @@ export default function POSTerminal() {
                                     )}
                                   </span>
                                   <span className="flex min-w-0 flex-wrap items-center gap-1">
-                                    {Number(customer.balance || 0) < 0 && (
-                                      <span className="rounded bg-destructive/10 px-1.5 py-0.5 text-[10px] text-destructive">
-                                        {formatCurrency(getCustomerDebtAmount(customer.balance))}
-                                      </span>
-                                    )}
+                                    {(() => {
+                                      const b = getCustomerBalances(customer);
+                                      const debtUzs = Math.max(0, -b.uzs);
+                                      const debtUsd = Math.max(0, -b.usd);
+                                      if (debtUzs <= 0 && debtUsd <= 0) return null;
+                                      return (
+                                        <span className="flex flex-wrap gap-1">
+                                          {debtUzs > 0 && (
+                                            <span className="rounded bg-destructive/10 px-1.5 py-0.5 text-[10px] text-destructive">
+                                              {formatMoney(debtUzs, 'UZS')}
+                                            </span>
+                                          )}
+                                          {debtUsd > 0 && (
+                                            <span className="rounded bg-destructive/10 px-1.5 py-0.5 text-[10px] text-destructive">
+                                              {formatMoney(debtUsd, 'USD')}
+                                            </span>
+                                          )}
+                                        </span>
+                                      );
+                                    })()}
                                     {customer.status !== 'active' && (
                                       <span className="rounded bg-amber-100 px-1.5 py-0.5 text-[10px] text-amber-800 dark:bg-amber-900/40 dark:text-amber-200">
                                         Nofaol
@@ -4931,7 +5635,7 @@ export default function POSTerminal() {
                   <div className="flex flex-wrap items-center gap-1.5 pt-1">
                     <span className="text-[10px] text-muted-foreground">Oxirgilar:</span>
                     {recentCustomers.map((customer) => {
-                      const debt = getCustomerDebtAmount(customer.balance);
+                      const debt = getCustomerDebtInCurrency(customer, saleCurrency);
                       const isSelected = selectedCustomer?.id === customer.id;
                       return (
                         <button
@@ -4983,12 +5687,12 @@ export default function POSTerminal() {
                     <span
                       className={cn(
                         'text-xs font-semibold',
-                        priorDebtUzs > 0 ? 'text-destructive' : 'text-emerald-600 dark:text-emerald-400'
+                        priorDebtInSaleCurrency > 0 ? 'text-destructive' : 'text-emerald-600 dark:text-emerald-400'
                       )}
                     >
-                      {formatCurrency(priorDebtUzs)}
+                      {formatCurrency(priorDebtInSaleCurrency)}
                     </span>
-                    {priorDebtUzs > 0 && (
+                    {priorDebtInSaleCurrency > 0 && (
                       <Button
                         variant="ghost"
                         size="sm"
@@ -5113,7 +5817,9 @@ export default function POSTerminal() {
                               </Badge>
                             )}
                             {isBelowCost && showCostPrice && (
-                              <AlertTriangle className="h-3 w-3 text-destructive flex-shrink-0" title="Narx tannarxdan past!" />
+                              <span title="Narx tannarxdan past!" className="inline-flex">
+                                <AlertTriangle className="h-3 w-3 text-destructive flex-shrink-0" />
+                              </span>
                             )}
                           </div>
                           <div className="flex items-center gap-2 mt-0.5 flex-wrap">
@@ -5471,6 +6177,7 @@ export default function POSTerminal() {
                   </div>
                 )}
                 {loyaltyCfg.redeemEnabled &&
+                  saleCurrency !== 'USD' &&
                   isElectron() &&
                   selectedCustomer &&
                   !isWalkInCustomer(selectedCustomer) &&
@@ -5515,10 +6222,12 @@ export default function POSTerminal() {
                     <span>-{formatCurrency(discountAmount)}</span>
                   </div>
                 )}
-                {includePriorDebtInPayment && priorDebtUzs > 0 && total > 0 && (
+                {includePriorDebtInPayment &&
+                  priorDebtInSaleCurrency > 0 &&
+                  total > 0 && (
                   <div className="flex justify-between text-sm text-muted-foreground">
                     <span>Oldingi qarz:</span>
-                    <span className="font-mono">+{formatCurrency(priorDebtUzs)}</span>
+                    <span className="font-mono">+{formatCurrency(priorDebtInSaleCurrency)}</span>
                   </div>
                 )}
                 <div className="flex justify-between text-2xl font-bold pt-2 border-t">
@@ -5725,33 +6434,35 @@ export default function POSTerminal() {
               <ClipboardList className="h-5 w-5" />
             </Button>
 
-            <Button
-              type="button"
-              variant="outline"
-              size="icon"
-              className="h-12 w-12 shrink-0 border-yellow-600 bg-yellow-500 text-white hover:bg-yellow-600 hover:text-white"
-              title={!currentShift ? shiftRequiredReason : t('pos.hold_order')}
-              aria-label={t('pos.hold_order')}
-              disabled={!currentShift}
-              onClick={() => {
-                if (cart.length > 0) {
-                  void handleHoldOrder();
-                  return;
-                }
-                if (heldOrders.length > 0) {
-                  setWaitingOrdersDialogOpen(true);
-                  return;
-                }
-                toast({
-                  title: 'Xatolik',
-                  description:
-                    "Savatcha bo'sh. Buyurtmani saqlash uchun mahsulot qo'shing",
-                  variant: 'destructive',
-                });
-              }}
-            >
-              <Pause className="h-5 w-5" />
-            </Button>
+            {posTerminalSettings.enable_hold_order && (
+              <Button
+                type="button"
+                variant="outline"
+                size="icon"
+                className="h-12 w-12 shrink-0 border-yellow-600 bg-yellow-500 text-white hover:bg-yellow-600 hover:text-white"
+                title={!currentShift ? shiftRequiredReason : t('pos.hold_order')}
+                aria-label={t('pos.hold_order')}
+                disabled={!currentShift}
+                onClick={() => {
+                  if (cart.length > 0) {
+                    void handleHoldOrder();
+                    return;
+                  }
+                  if (heldOrders.length > 0) {
+                    setWaitingOrdersDialogOpen(true);
+                    return;
+                  }
+                  toast({
+                    title: 'Xatolik',
+                    description:
+                      "Savatcha bo'sh. Buyurtmani saqlash uchun mahsulot qo'shing",
+                    variant: 'destructive',
+                  });
+                }}
+              >
+                <Pause className="h-5 w-5" />
+              </Button>
+            )}
             <Button
               type="button"
               variant="outline"
@@ -5776,15 +6487,16 @@ export default function POSTerminal() {
               variant="outline"
               size="icon"
               className="h-12 w-12 shrink-0"
-              disabled={!lastReceiptData}
-              title="Chek"
+              disabled={!lastReceiptData || isPrintingReceipt}
+              title="Chek (F10) — mijoz cheki"
               aria-label="Chekni chop etish"
-              onClick={() => {
-                if (!lastReceiptData) return;
-                void printReceipt(lastReceiptData as any);
-              }}
+              onClick={handlePrintLastReceipt}
             >
-              <Printer className="h-5 w-5" />
+              {isPrintingReceipt ? (
+                <Loader2 className="h-5 w-5 animate-spin" />
+              ) : (
+                <Printer className="h-5 w-5" />
+              )}
             </Button>
             <Button
               type="button"
@@ -5805,6 +6517,8 @@ export default function POSTerminal() {
                 queueCartUndo(cart, 'Savat tozalandi');
                 setCart([]);
                 setImportedWebOrderId(null);
+                setImportedOrderIdForEdit(null);
+                persistPosReplacesOrderId(null);
                 setExchangeReturnMode(false);
                 setDiscount({ type: 'amount', value: '' });
                 setPromoCodeInput('');
@@ -6025,7 +6739,9 @@ export default function POSTerminal() {
           <DialogHeader>
             <DialogTitle>{t('pos.process_payment')}</DialogTitle>
             <DialogDescription>
-              {total > 0 && includePriorDebtInPayment && priorDebtUzs > 0 ? (
+              {total > 0 &&
+              includePriorDebtInPayment &&
+              priorDebtInSaleCurrency > 0 ? (
                 <span className="block space-y-1 text-foreground">
                   <span className="block text-sm">
                     Savat: <span className="font-semibold tabular-nums">{formatCurrency(total)}</span>
@@ -6033,7 +6749,7 @@ export default function POSTerminal() {
                   <span className="block text-sm">
                     + Oldingi qarz:{' '}
                     <span className="font-semibold tabular-nums text-destructive">
-                      {formatCurrency(priorDebtUzs)}
+                      {formatCurrency(priorDebtInSaleCurrency)}
                     </span>
                   </span>
                   <span className="block text-sm border-t mt-2 pt-2">
@@ -6084,18 +6800,38 @@ export default function POSTerminal() {
               </Button>
             </div>
           ) : (
-          <Tabs defaultValue="cash" className="w-full">
-            <TabsList className="grid w-full grid-cols-5">
-              <TabsTrigger value="cash">{t('pos.cash')}</TabsTrigger>
-              <TabsTrigger value="card">{t('pos.card')}</TabsTrigger>
-              <TabsTrigger value="qr">{t('pos.qr_pay')}</TabsTrigger>
-              <TabsTrigger value="mixed">{t('pos.mixed')}</TabsTrigger>
-              <TabsTrigger 
-                value="credit" 
-                disabled={!selectedCustomer || selectedCustomer.id === 'none'}
-              >
-                {t('pos.credit')}
-              </TabsTrigger>
+          <Tabs defaultValue={isPaymentEnabled('cash') ? 'cash' : (isPaymentEnabled('card') ? 'card' : (isPaymentEnabled('qr') ? 'qr' : 'cash'))} className="w-full">
+            <TabsList
+              className={`grid w-full ${(() => {
+                const n =
+                  (isPaymentEnabled('cash') ? 1 : 0) +
+                  (isPaymentEnabled('card') ? 1 : 0) +
+                  (isPaymentEnabled('qr') ? 1 : 0) +
+                  (posTerminalSettings.enable_mixed_payment ? 1 : 0) +
+                  (isPaymentEnabled('credit') ? 1 : 0);
+                return n <= 1 ? 'grid-cols-1' : n === 2 ? 'grid-cols-2' : n === 3 ? 'grid-cols-3' : n === 4 ? 'grid-cols-4' : 'grid-cols-5';
+              })()}`}
+            >
+              {isPaymentEnabled('cash') && (
+                <TabsTrigger value="cash">{labelFor('cash', t('pos.cash'))}</TabsTrigger>
+              )}
+              {isPaymentEnabled('card') && (
+                <TabsTrigger value="card">{labelFor('card', t('pos.card'))}</TabsTrigger>
+              )}
+              {isPaymentEnabled('qr') && (
+                <TabsTrigger value="qr">{labelFor('qr', t('pos.qr_pay'))}</TabsTrigger>
+              )}
+              {posTerminalSettings.enable_mixed_payment && (
+                <TabsTrigger value="mixed">{t('pos.mixed')}</TabsTrigger>
+              )}
+              {isPaymentEnabled('credit') && saleCurrency !== 'USD' && (
+                <TabsTrigger
+                  value="credit"
+                  disabled={!selectedCustomer || selectedCustomer.id === 'none'}
+                >
+                  {labelFor('credit', t('pos.credit'))}
+                </TabsTrigger>
+              )}
             </TabsList>
             <TabsContent value="cash" className="space-y-4">
               <div className="flex gap-2 items-end">
@@ -6147,7 +6883,7 @@ export default function POSTerminal() {
             <TabsContent value="card" className="space-y-4">
               <div className="p-4 bg-muted rounded-lg space-y-2">
                 <p className="text-sm text-muted-foreground">Amount to charge:</p>
-                <p className="text-2xl font-bold">{formatMoneyUZS(checkoutGrandTotal)}</p>
+                <p className="text-2xl font-bold">{formatCurrency(checkoutGrandTotal)}</p>
               </div>
               <Button
                 className="w-full"
@@ -6174,79 +6910,81 @@ export default function POSTerminal() {
                 {isProcessingPayment ? 'Jarayonda...' : t('pos.process_qr_payment')}
               </Button>
             </TabsContent>
-            <TabsContent value="mixed" className="space-y-4">
-              <div className="p-4 bg-muted rounded-lg space-y-2">
-                <div className="flex justify-between">
-                  <span className="text-sm text-muted-foreground">{t('pos.order_total')}:</span>
-                  <span className="font-bold">{formatCurrency(checkoutGrandTotal)}</span>
+            {posTerminalSettings.enable_mixed_payment && (
+              <TabsContent value="mixed" className="space-y-4">
+                <div className="p-4 bg-muted rounded-lg space-y-2">
+                  <div className="flex justify-between">
+                    <span className="text-sm text-muted-foreground">{t('pos.order_total')}:</span>
+                    <span className="font-bold">{formatCurrency(checkoutGrandTotal)}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-sm text-muted-foreground">{t('pos.cash_received')}:</span>
+                    <span className="font-bold">{formatCurrency(paidAmount)}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-sm text-muted-foreground">{t('pos.remaining_to_pay')}:</span>
+                    <span className={`font-bold ${remainingAmount > 0 ? 'text-destructive' : 'text-green-600'}`}>
+                      {formatCurrency(remainingAmount)}
+                    </span>
+                  </div>
                 </div>
-                <div className="flex justify-between">
-                  <span className="text-sm text-muted-foreground">{t('pos.cash_received')}:</span>
-                  <span className="font-bold">{formatCurrency(paidAmount)}</span>
+                <div className="grid grid-cols-2 gap-2">
+                  <Button
+                    variant="outline"
+                    onClick={() => {
+                      const half =
+                        checkoutGrandTotal > 0 ? checkoutGrandTotal / 2 : 0;
+                      const amount = Math.min(remainingAmount, half);
+                      setPayments([...payments, { method: 'cash', amount }]);
+                    }}
+                    disabled={remainingAmount <= 0}
+                  >
+                    <Banknote className="h-4 w-4 mr-2" />
+                    {t('pos.add_cash')}
+                  </Button>
+                  <Button
+                    variant="outline"
+                    onClick={() => {
+                      setPayments([...payments, { method: 'card', amount: remainingAmount }]);
+                    }}
+                    disabled={remainingAmount <= 0}
+                  >
+                    <CreditCard className="h-4 w-4 mr-2" />
+                    {t('pos.add_card')}
+                  </Button>
                 </div>
-                <div className="flex justify-between">
-                  <span className="text-sm text-muted-foreground">{t('pos.remaining_to_pay')}:</span>
-                  <span className={`font-bold ${remainingAmount > 0 ? 'text-destructive' : 'text-green-600'}`}>
-                    {formatCurrency(remainingAmount)}
-                  </span>
-                </div>
-              </div>
-              <div className="grid grid-cols-2 gap-2">
-                <Button
-                  variant="outline"
-                  onClick={() => {
-                    const half =
-                      checkoutGrandTotal > 0 ? checkoutGrandTotal / 2 : 0;
-                    const amount = Math.min(remainingAmount, half);
-                    setPayments([...payments, { method: 'cash', amount }]);
-                  }}
-                  disabled={remainingAmount <= 0}
-                >
-                  <Banknote className="h-4 w-4 mr-2" />
-                  {t('pos.add_cash')}
-                </Button>
-                <Button
-                  variant="outline"
-                  onClick={() => {
-                    setPayments([...payments, { method: 'card', amount: remainingAmount }]);
-                  }}
-                  disabled={remainingAmount <= 0}
-                >
-                  <CreditCard className="h-4 w-4 mr-2" />
-                  {t('pos.add_card')}
-                </Button>
-              </div>
-              {payments.length > 0 && (
-                <div className="space-y-2">
-                  <Label>{t('pos.payment_methods')}:</Label>
-                  {payments.map((payment, index) => (
-                    <div key={index} className="flex justify-between items-center p-2 border rounded">
-                      <span className="capitalize">{payment.method}</span>
-                      <div className="flex items-center gap-2">
-                        <span>{formatCurrency(payment.amount)}</span>
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          onClick={() => {
-                            setPayments(payments.filter((_, i) => i !== index));
-                          }}
-                        >
-                          <Trash2 className="h-4 w-4" />
-                        </Button>
+                {payments.length > 0 && (
+                  <div className="space-y-2">
+                    <Label>{t('pos.payment_methods')}:</Label>
+                    {payments.map((payment, index) => (
+                      <div key={index} className="flex justify-between items-center p-2 border rounded">
+                        <span className="capitalize">{payment.method}</span>
+                        <div className="flex items-center gap-2">
+                          <span>{formatCurrency(payment.amount)}</span>
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => {
+                              setPayments(payments.filter((_, i) => i !== index));
+                            }}
+                          >
+                            <Trash2 className="h-4 w-4" />
+                          </Button>
+                        </div>
                       </div>
-                    </div>
-                  ))}
-                </div>
-              )}
-              <Button
-                className="w-full"
-                onClick={() => handleCompletePayment('mixed')}
-                disabled={remainingAmount > 0 || isDiscountActionDisabled || isProcessingPayment}
-                title={isDiscountActionDisabled ? discountActionDisabledReason : undefined}
-              >
-                {isProcessingPayment ? 'Jarayonda...' : t('pos.complete_payment')}
-              </Button>
-            </TabsContent>
+                    ))}
+                  </div>
+                )}
+                <Button
+                  className="w-full"
+                  onClick={() => handleCompletePayment('mixed')}
+                  disabled={remainingAmount > 0 || isDiscountActionDisabled || isProcessingPayment}
+                  title={isDiscountActionDisabled ? discountActionDisabledReason : undefined}
+                >
+                  {isProcessingPayment ? 'Jarayonda...' : t('pos.complete_payment')}
+                </Button>
+              </TabsContent>
+            )}
             <TabsContent value="credit" className="space-y-4">
               {!selectedCustomer || selectedCustomer.id === 'none' ? (
                 <div className="p-8 bg-muted rounded-lg text-center">
@@ -6259,12 +6997,12 @@ export default function POSTerminal() {
                 const pNum = pRaw === '' ? 0 : Number(pRaw);
                 const payInvalid = pRaw !== '' && (!Number.isFinite(pNum) || pNum < 0);
                 const initialPaymentUi = payInvalid ? 0 : pNum;
-                const priorAmt = includePriorDebtInPayment ? priorDebtUzs : 0;
+                const priorAmt = includePriorDebtInPayment ? priorDebtInSaleCurrency : 0;
                 const toPrior = priorAmt > 0 ? Math.min(initialPaymentUi, priorAmt) : 0;
                 const orderCash = Math.max(0, initialPaymentUi - toPrior);
                 const merchCredit = Math.max(0, total - orderCash);
                 const prepaidExtra = Math.max(0, orderCash - total);
-                const currentBalance = selectedCustomer.balance || 0;
+                const currentBalance = getActiveBucketBalance(selectedCustomer, saleCurrency);
                 const projectedBalance = currentBalance + initialPaymentUi - total;
                 const creditLimitExceeded =
                   selectedCustomer.credit_limit > 0 &&
@@ -6450,6 +7188,19 @@ export default function POSTerminal() {
               >
                 <span>To'lov</span>
                 <kbd className="rounded bg-muted px-2 py-1 font-mono text-xs">F9</kbd>
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                className="h-14 justify-between"
+                disabled={!lastReceiptData || isPrintingReceipt}
+                onClick={() => {
+                  setHotkeyGuideOpen(false);
+                  handlePrintLastReceipt();
+                }}
+              >
+                <span>Mijoz cheki</span>
+                <kbd className="rounded bg-muted px-2 py-1 font-mono text-xs">F10</kbd>
               </Button>
               <Button
                 type="button"
@@ -6883,6 +7634,7 @@ export default function POSTerminal() {
         onOpenChange={setCustomerPaymentOpen}
         customer={selectedCustomer}
         source="pos"
+        defaultCurrency={saleCurrency}
         onSuccess={refreshCustomersAfterCustomerPayment}
       />
 
@@ -6923,6 +7675,7 @@ export default function POSTerminal() {
             showCustomer={receiptSettings?.show_customer ?? true}
             showSku={receiptSettings?.show_sku ?? true}
             paperSize={receiptSettings?.paper_size || '78mm'}
+            currency={receiptData.currency ?? saleCurrency}
           />
         </div>
       )}

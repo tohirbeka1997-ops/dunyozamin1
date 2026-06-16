@@ -22,6 +22,7 @@ import {
 import { ArrowLeft, FileDown } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 import { formatMoneyUZS } from '@/lib/format';
+import { DualCurrencyAmount } from '@/components/common/DualCurrencyAmount';
 import { formatDateTime, todayYMD } from '@/lib/datetime';
 import { useReportAutoRefresh } from '@/hooks/useReportAutoRefresh';
 import { getShiftSummary, getShifts } from '@/db/api';
@@ -35,6 +36,10 @@ type ShiftSummary = {
   status: 'open' | 'closed';
   openingCash: number;
   totalSales: number;
+  totalSalesUzs?: number;
+  total_sales_uzs?: number;
+  totalSalesUsd?: number;
+  total_sales_usd?: number;
   cashSales: number;
   /** Mijozga berilgan qarz (smena buyurtmalari bo‘yicha) */
   creditDebtIssued?: number;
@@ -186,7 +191,10 @@ export default function ShiftClosingsReport() {
           </Button>
           <div>
             <h1 className="page-heading">Smenalar (kassa) hisobotlari</h1>
-            <p className="text-muted-foreground">Har bir kassa ochilishi/yopilishi bo\'yicha tahlil</p>
+            <p className="text-muted-foreground">
+              Har bir kassa ochilishi/yopilishi bo&apos;yicha tahlil. Naqd ustunlar UZS; jami tushum — buyurtma
+              valyutasida (USD buyurtmalar alohida).
+            </p>
           </div>
         </div>
         <div className="flex gap-2">
@@ -252,14 +260,14 @@ export default function ShiftClosingsReport() {
                   <TableHead>Holati</TableHead>
                   <TableHead>Ochildi</TableHead>
                   <TableHead>Yopildi</TableHead>
-                  <TableHead className="text-right">Ochilish naqd</TableHead>
-                  <TableHead className="text-right">Kutilgan naqd</TableHead>
-                  <TableHead className="text-right">Yopilish naqd</TableHead>
-                  <TableHead className="text-right">Farq</TableHead>
+                  <TableHead className="text-right">Ochilish naqd (UZS)</TableHead>
+                  <TableHead className="text-right">Kutilgan naqd (UZS)</TableHead>
+                  <TableHead className="text-right">Yopilish naqd (UZS)</TableHead>
+                  <TableHead className="text-right">Farq (UZS)</TableHead>
                   <TableHead className="text-right">Jami tushum</TableHead>
-                  <TableHead className="text-right">Naqd tushum</TableHead>
-                  <TableHead className="text-right">Mijoz qarzi</TableHead>
-                  <TableHead className="text-right">Qarz toʻlandi</TableHead>
+                  <TableHead className="text-right">Naqd tushum (UZS)</TableHead>
+                  <TableHead className="text-right">Mijoz qarzi (UZS)</TableHead>
+                  <TableHead className="text-right">Qarz toʻlandi (UZS)</TableHead>
                   <TableHead className="text-right">Buyurtmalar</TableHead>
                 </TableRow>
               </TableHeader>
@@ -300,7 +308,16 @@ export default function ShiftClosingsReport() {
                       <TableCell className={`text-right ${diff == null ? '' : diff < 0 ? 'text-destructive' : 'text-success'}`}>
                         {diff == null ? '-' : formatMoneyUZS(diff)}
                       </TableCell>
-                      <TableCell className="text-right">{formatMoneyUZS(Number(summary?.totalSales || 0))}</TableCell>
+                      <TableCell className="text-right">
+                        <DualCurrencyAmount
+                          uzs={
+                            summary?.totalSalesUzs ??
+                            summary?.total_sales_uzs ??
+                            Number(summary?.totalSales || 0)
+                          }
+                          usd={summary?.totalSalesUsd ?? summary?.total_sales_usd ?? 0}
+                        />
+                      </TableCell>
                       <TableCell className="text-right">{formatMoneyUZS(Number(summary?.cashSales || 0))}</TableCell>
                       <TableCell className="text-right tabular-nums">{formatMoneyUZS(creditDebt)}</TableCell>
                       <TableCell className="text-right tabular-nums">{formatMoneyUZS(debtRepaid)}</TableCell>

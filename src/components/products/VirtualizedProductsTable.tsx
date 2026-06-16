@@ -5,6 +5,7 @@ import type { ProductWithCategory } from '@/types/database';
 import { formatMoneyUZS, formatNumberUZ } from '@/lib/format';
 import { formatUnit } from '@/utils/formatters';
 import { getProductImageDisplayUrl } from '@/lib/productImageUrl';
+import { productShowInMarketplace } from '@/lib/productMarketplace';
 import { Eye, Pencil, Trash2, AlertTriangle, Package, RotateCcw } from 'lucide-react';
 
 type Props = {
@@ -147,6 +148,16 @@ export default function VirtualizedProductsTable({
                         <div className="flex items-center gap-2">
                           <Badge variant={active ? 'default' : 'secondary'} className="h-5 text-[10px] px-1.5">
                             {active ? t('common.active') : t('common.inactive')}
+                          </Badge>
+                          <Badge
+                            variant={productShowInMarketplace(product) ? 'default' : 'outline'}
+                            className={`h-5 text-[10px] px-1.5 ${
+                              productShowInMarketplace(product) ? 'bg-emerald-600 hover:bg-emerald-600' : ''
+                            }`}
+                          >
+                            {productShowInMarketplace(product)
+                              ? t('status.marketplace_on')
+                              : t('status.marketplace_off')}
                           </Badge>
                           <span className={`text-[10px] px-1.5 py-0.5 rounded ${stockStatus.color}`}>
                             {stockStatus.label}

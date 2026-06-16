@@ -31,7 +31,7 @@ import { getSuppliers, deleteSupplier } from '@/db/api';
 import type { SupplierWithBalance } from '@/types/database';
 import { Plus, Search, Edit, Trash2, Truck } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
-import { formatMoneyUZS } from '@/lib/format';
+import { formatLedgerMoney } from '@/lib/currency';
 import { formatDate } from '@/lib/datetime';
 import { useSessionSearchParams } from '@/hooks/useSessionSearchParams';
 import { createBackNavigationState } from '@/lib/pageState';
@@ -177,12 +177,8 @@ export default function Suppliers() {
     );
   };
 
-  const formatSupplierBalance = (s: any) => {
-    const cur = String(s?.settlement_currency || 'USD').toUpperCase();
-    const bal = Number(s?.balance || 0);
-    if (cur === 'USD') return `${bal.toFixed(2)} USD`;
-    return formatMoneyUZS(bal);
-  };
+  const formatSupplierBalance = (s: any) =>
+    formatLedgerMoney(Number(s?.balance || 0), s?.settlement_currency);
 
   // Client-side filtering for search (status filtering is done in loadSuppliers)
   // CRITICAL: Ensure suppliers is always an array before filtering

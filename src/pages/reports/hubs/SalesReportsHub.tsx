@@ -2,7 +2,7 @@ import { useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import { ArrowLeft, BarChart3, Package, Users, Tag } from 'lucide-react';
+import { ArrowLeft, BarChart3, Package, Users, Tag, Globe } from 'lucide-react';
 
 type ReportLink = { title: string; description: string; path: string; icon: React.ReactNode };
 
@@ -50,6 +50,12 @@ export default function SalesReportsHub() {
         description: 'Aksiya ishlatilishi va chegirma summasi',
         path: '/reports/sales/promotions',
         icon: <Tag className="h-4 w-4 opacity-90" />,
+      },
+      {
+        title: 'Onlayn savdo',
+        description: 'Mini-app va marketpleys buyurtmalari',
+        path: '/reports/sales/web-online',
+        icon: <Globe className="h-4 w-4 opacity-90" />,
       },
     ],
     []

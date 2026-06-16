@@ -282,7 +282,9 @@ export default function CustomerProfitabilityReport() {
               <DollarSign className="h-6 w-6 shrink-0 text-green-500" />
               Mijoz rentabelligi
             </h1>
-            <p className="text-muted-foreground text-xs">Sotuv, tan narx, chegirma, qaytarish · KPI tanlangan/ filtrlangan qatorlarga nisbatan</p>
+            <p className="text-muted-foreground text-xs">
+              Sotuv, tan narx, chegirma, qaytarish (UZS ekvivalentida) · KPI tanlangan/filtrlangan qatorlarga nisbatan
+            </p>
           </div>
         </div>
         <Button variant="outline" size="sm" className="h-8" onClick={loadData}>
@@ -425,7 +427,7 @@ export default function CustomerProfitabilityReport() {
             k: 'sales',
             icon: DollarSign,
             iconC: 'text-primary',
-            label: 'Jami sotuv',
+            label: 'Jami sotuv (UZS ekv.)',
             val: formatMoneyUZS(summary.totalSales),
             sub: null,
           },
@@ -433,7 +435,7 @@ export default function CustomerProfitabilityReport() {
             k: 'cost',
             icon: TrendingDown,
             iconC: 'text-orange-500',
-            label: 'Tan narx',
+            label: 'Tan narx (UZS)',
             val: formatMoneyUZS(summary.totalCost),
             sub: null,
           },
@@ -441,7 +443,7 @@ export default function CustomerProfitabilityReport() {
             k: 'disc',
             icon: Percent,
             iconC: 'text-yellow-500',
-            label: 'Chegirma',
+            label: 'Chegirma (UZS ekv.)',
             val: formatMoneyUZS(summary.totalDiscounts),
             sub: null,
           },
@@ -449,7 +451,7 @@ export default function CustomerProfitabilityReport() {
             k: 'ret',
             icon: TrendingDown,
             iconC: 'text-destructive',
-            label: 'Qaytarish',
+            label: 'Qaytarish (UZS)',
             val: formatMoneyUZS(summary.totalReturns),
             sub: null,
           },
@@ -550,7 +552,7 @@ export default function CustomerProfitabilityReport() {
                       kind="number"
                       align="right"
                     >
-                      Sotuv
+                      Sotuv (UZS ekv.)
                     </SortableTableHead>
                     <SortableTableHead<ProfitSortKey>
                       className="min-w-[4.25rem] whitespace-nowrap"
@@ -561,7 +563,7 @@ export default function CustomerProfitabilityReport() {
                       kind="number"
                       align="right"
                     >
-                      Tan narx
+                      Tan narx (UZS)
                     </SortableTableHead>
                     <SortableTableHead<ProfitSortKey>
                       className="min-w-[3.5rem] whitespace-nowrap"
@@ -572,7 +574,7 @@ export default function CustomerProfitabilityReport() {
                       kind="number"
                       align="right"
                     >
-                      Cheg.
+                      Cheg. (UZS)
                     </SortableTableHead>
                     <SortableTableHead<ProfitSortKey>
                       className="min-w-[3.5rem] whitespace-nowrap"
@@ -583,7 +585,7 @@ export default function CustomerProfitabilityReport() {
                       kind="number"
                       align="right"
                     >
-                      Qayt.
+                      Qayt. (UZS)
                     </SortableTableHead>
                     <SortableTableHead<ProfitSortKey>
                       className="min-w-[4.5rem] whitespace-nowrap"
@@ -594,7 +596,7 @@ export default function CustomerProfitabilityReport() {
                       kind="number"
                       align="right"
                     >
-                      Net
+                      Net (UZS ekv.)
                     </SortableTableHead>
                     <SortableTableHead<ProfitSortKey>
                       className="min-w-[2.75rem] whitespace-nowrap"

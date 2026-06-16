@@ -22,7 +22,13 @@ import {
 } from '@/db/api';
 import type { SupplierPayment, SupplierWithPOs, SupplierLedgerEntry } from '@/types/database';
 import { ArrowLeft, Edit, Mail, Phone, MapPin, FileText, DollarSign, FileDown, RefreshCcw } from 'lucide-react';
-import { formatMoneyUZS } from '@/lib/format';
+import {
+  formatLedgerMoney,
+  formatPoMoney,
+  getSupplierPaymentSettlementAmount,
+  getSupplierPoSettlementAmount,
+  normalizeCurrency,
+} from '@/lib/currency';
 import { formatDate } from '@/lib/datetime';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import PaySupplierDialog from '@/components/suppliers/PaySupplierDialog';
@@ -57,11 +63,8 @@ export default function SupplierDetail() {
   const { toast } = useToast();
 
   const [supplier, setSupplier] = useState<SupplierWithPOs | null>(null);
-  const settlementCurrency = String((supplier as any)?.settlement_currency || 'USD').toUpperCase();
-  const formatSupplierAmount = (amount: number) => {
-    if (settlementCurrency === 'USD') return `${Number(amount || 0).toFixed(2)} USD`;
-    return formatMoneyUZS(amount || 0);
-  };
+  const settlementCurrency = normalizeCurrency((supplier as any)?.settlement_currency, 'UZS');
+  const formatSupplierAmount = (amount: number) => formatLedgerMoney(amount, settlementCurrency);
   const [loading, setLoading] = useState(true);
   const [ledger, setLedger] = useState<SupplierLedgerEntry[]>([]);
   const [ledgerLoading, setLedgerLoading] = useState(false);
@@ -317,19 +320,26 @@ export default function SupplierDetail() {
   const summary = useMemo(() => {
     const poAll = supplier?.purchase_orders || [];
     const receivedPOs = poAll.filter((po: any) => po.status === 'received' || po.status === 'partially_received');
-    const totalPurchases = receivedPOs.reduce((sum: number, po: any) => sum + (Number(po.total_amount || 0) || 0), 0);
+    const poSettlementAmount = (po: any) => getSupplierPoSettlementAmount(po, settlementCurrency);
+    const paymentSettlementAmount = (p: SupplierPayment) =>
+      getSupplierPaymentSettlementAmount(p, settlementCurrency);
+
+    const totalPurchases = receivedPOs.reduce(
+      (sum: number, po: any) => sum + poSettlementAmount(po),
+      0
+    );
 
     const paidToSupplier = payments
-      .filter((p) => (Number(p.amount || 0) || 0) > 0 && p.payment_method !== 'credit_note')
-      .reduce((sum, p) => sum + (Number(p.amount || 0) || 0), 0);
+      .filter((p) => paymentSettlementAmount(p) > 0 && p.payment_method !== 'credit_note')
+      .reduce((sum, p) => sum + paymentSettlementAmount(p), 0);
 
     const creditNotes = payments
-      .filter((p) => (Number(p.amount || 0) || 0) > 0 && p.payment_method === 'credit_note')
-      .reduce((sum, p) => sum + (Number(p.amount || 0) || 0), 0);
+      .filter((p) => paymentSettlementAmount(p) > 0 && p.payment_method === 'credit_note')
+      .reduce((sum, p) => sum + paymentSettlementAmount(p), 0);
 
     const supplierRefunds = payments
-      .filter((p) => (Number(p.amount || 0) || 0) < 0)
-      .reduce((sum, p) => sum + Math.abs(Number(p.amount || 0) || 0), 0);
+      .filter((p) => paymentSettlementAmount(p) < 0)
+      .reduce((sum, p) => sum + Math.abs(paymentSettlementAmount(p)), 0);
 
     const returnsTotal = returnsAll
       .filter((r) => r.status === 'completed')
@@ -344,7 +354,7 @@ export default function SupplierDetail() {
       returnsCount: returnsAll.filter((r) => r.status === 'completed').length,
       returnsTotal,
     };
-  }, [supplier?.purchase_orders, payments, returnsAll]);
+  }, [supplier?.purchase_orders, payments, returnsAll, settlementCurrency]);
 
   const filteredPurchaseSummary = useMemo(() => {
     const term = String(productSearchTerm || '').trim().toLowerCase();
@@ -692,7 +702,7 @@ export default function SupplierDetail() {
                         </TableCell>
                         <TableCell>{getPOStatusBadge(po.status)}</TableCell>
                         <TableCell className="text-right">
-                          {formatMoneyUZS(po.total_amount)}
+                          {formatPoMoney(po)}
                         </TableCell>
                         <TableCell className="text-right">
                           <Button
@@ -739,7 +749,7 @@ export default function SupplierDetail() {
                 <p className="text-sm text-muted-foreground">Jami summa</p>
                 <p className="text-2xl font-bold">
                   {formatSupplierAmount((supplier.purchase_orders || [])
-                    .reduce((sum, po) => sum + po.total_amount, 0))}
+                    .reduce((sum, po) => sum + getSupplierPoSettlementAmount(po, settlementCurrency), 0))}
                 </p>
               </div>
               <div className="border-t pt-3 space-y-3">

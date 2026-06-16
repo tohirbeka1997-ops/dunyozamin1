@@ -1,5 +1,5 @@
 import type { CompanySettings, OrderWithDetails, ReceiptSettings } from '@/types/database';
-import { formatMoneyUZS } from '@/lib/format';
+import { formatOrderMoney, formatMoneyUZS } from '@/lib/format';
 import { formatReceiptDateTime } from '@/lib/datetime';
 import { formatQuantity } from '@/utils/quantity';
 
@@ -69,6 +69,7 @@ export default function ReceiptPrintView({
     return itemsSum > 0 ? itemsSum : 0;
   };
   const effectiveDiscountAmount = getEffectiveDiscountAmount();
+  const fmt = (amount: number | string | null | undefined) => formatOrderMoney(order, amount);
 
   // Calculate payment breakdown
   const payments = order.payments || [];
@@ -185,8 +186,8 @@ export default function ReceiptPrintView({
                           <div className="text-xs text-muted-foreground">Jami: {formatQuantity(item.quantity, unit)}</div>
                         )}
                       </td>
-                      <td className="text-right py-2 px-2">{formatMoneyUZS(item.unit_price)}</td>
-                      <td className="text-right py-2 px-2 font-medium">{formatMoneyUZS(lineTotal)}</td>
+                      <td className="text-right py-2 px-2">{fmt(item.unit_price)}</td>
+                      <td className="text-right py-2 px-2 font-medium">{fmt(lineTotal)}</td>
                     </tr>
                   );
                 })}
@@ -210,23 +211,23 @@ export default function ReceiptPrintView({
         <div className="mb-6 space-y-2 text-sm">
           <div className="flex justify-between">
             <span>Jami (chegirma oldidan):</span>
-            <span>{formatMoneyUZS(order.subtotal)}</span>
+            <span>{fmt(order.subtotal)}</span>
           </div>
           {effectiveDiscountAmount > 0 && (
             <div className="flex justify-between text-red-600">
               <span>Chegirma:</span>
-              <span>-{formatMoneyUZS(effectiveDiscountAmount)}</span>
+              <span>-{fmt(effectiveDiscountAmount)}</span>
             </div>
           )}
           {order.tax_amount > 0 && (
             <div className="flex justify-between">
               <span>Soliq:</span>
-              <span>{formatMoneyUZS(order.tax_amount)}</span>
+              <span>{fmt(order.tax_amount)}</span>
             </div>
           )}
           <div className="flex justify-between font-bold text-lg border-t-2 border-gray-300 pt-2">
             <span>Jami:</span>
-            <span>{formatMoneyUZS(order.total_amount)}</span>
+            <span>{fmt(order.total_amount)}</span>
           </div>
         </div>
 
@@ -237,7 +238,7 @@ export default function ReceiptPrintView({
               {Object.entries(paymentBreakdown).map(([method, amount]) => (
                 <div key={method} className="flex justify-between">
                   <span>{paymentMethodLabels[method] || method}:</span>
-                  <span>{formatMoneyUZS(amount)}</span>
+                  <span>{fmt(amount)}</span>
                 </div>
               ))}
             </div>
@@ -248,7 +249,7 @@ export default function ReceiptPrintView({
           <div className="mb-6">
             <div className="flex justify-between font-semibold">
               <span>Qaytim:</span>
-              <span>{formatMoneyUZS(order.change_amount)}</span>
+              <span>{fmt(order.change_amount)}</span>
             </div>
           </div>
         )}
@@ -257,7 +258,7 @@ export default function ReceiptPrintView({
           <div className="mb-6">
             <div className="flex justify-between font-semibold text-orange-600">
               <span>Kredit:</span>
-              <span>{formatMoneyUZS(order.credit_amount)}</span>
+              <span>{fmt(order.credit_amount)}</span>
             </div>
           </div>
         )}
@@ -362,10 +363,10 @@ export default function ReceiptPrintView({
                 {showSku && sku && <div className="text-[11px] text-gray-600 font-mono">{sku}</div>}
                 <div className="flex justify-between mt-1">
                   <span className="text-gray-600">
-                    {formatQuantity(remaining, unit)} x {formatMoneyUZS(item.unit_price)}
+                    {formatQuantity(remaining, unit)} x {fmt(item.unit_price)}
                     {returned > 0 ? ` (Jami: ${formatQuantity(qtySale, unit)})` : ''}
                   </span>
-                  <span className="font-semibold">{formatMoneyUZS(lineTotal)}</span>
+                  <span className="font-semibold">{fmt(lineTotal)}</span>
                 </div>
               </div>
             );
@@ -388,23 +389,23 @@ export default function ReceiptPrintView({
       <div className="mb-3 text-xs space-y-1">
         <div className="flex justify-between">
           <span>Jami:</span>
-          <span>{formatMoneyUZS(order.subtotal)}</span>
+          <span>{fmt(order.subtotal)}</span>
         </div>
         {effectiveDiscountAmount > 0 && (
           <div className="flex justify-between text-red-600">
             <span>Chegirma:</span>
-            <span>-{formatMoneyUZS(effectiveDiscountAmount)}</span>
+            <span>-{fmt(effectiveDiscountAmount)}</span>
           </div>
         )}
         {order.tax_amount > 0 && (
           <div className="flex justify-between">
             <span>Soliq:</span>
-            <span>{formatMoneyUZS(order.tax_amount)}</span>
+            <span>{fmt(order.tax_amount)}</span>
           </div>
         )}
         <div className="flex justify-between font-bold border-t border-gray-400 pt-1 mt-1">
           <span>JAMI:</span>
-          <span>{formatMoneyUZS(order.total_amount)}</span>
+          <span>{fmt(order.total_amount)}</span>
         </div>
       </div>
 
@@ -414,7 +415,7 @@ export default function ReceiptPrintView({
           {Object.entries(paymentBreakdown).map(([method, amount]) => (
             <div key={method} className="flex justify-between">
               <span>{paymentMethodLabels[method] || method}:</span>
-              <span>{formatMoneyUZS(amount)}</span>
+              <span>{fmt(amount)}</span>
             </div>
           ))}
         </div>
@@ -424,7 +425,7 @@ export default function ReceiptPrintView({
         <div className="mb-3 text-xs">
           <div className="flex justify-between font-semibold">
             <span>Qaytim:</span>
-            <span>{formatMoneyUZS(order.change_amount)}</span>
+            <span>{fmt(order.change_amount)}</span>
           </div>
         </div>
       )}
@@ -433,7 +434,7 @@ export default function ReceiptPrintView({
         <div className="mb-3 text-xs">
           <div className="flex justify-between font-semibold text-orange-600">
             <span>Kredit:</span>
-            <span>{formatMoneyUZS(order.credit_amount)}</span>
+            <span>{fmt(order.credit_amount)}</span>
           </div>
         </div>
       )}

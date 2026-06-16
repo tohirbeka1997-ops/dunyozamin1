@@ -165,6 +165,10 @@ function dispatchAuthRequired(reason: string) {
   }
 }
 
+function sleepMs(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 async function remoteInvoke(
   baseUrl: string,
   bootstrapSecret: string,
@@ -206,112 +210,143 @@ async function remoteInvoke(
     if (!payloadTenant) {
       const stored = getTenantSlug();
       if (stored) payloadTenant = stored;
+      else if (
+        channel === 'pos:auth:requestPasswordReset' ||
+        channel === 'pos:auth:confirmPasswordReset'
+      ) {
+        const fromHost = extractTenantSlugFromHost();
+        if (fromHost) payloadTenant = fromHost;
+      }
     }
   }
 
   const body: Record<string, unknown> = { channel, args };
   if (payloadTenant) body.tenant = payloadTenant;
 
-  const controller = new AbortController();
-  const t = setTimeout(() => controller.abort(), 120_000);
-  try {
-    const res = await fetch(url, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${bearer}`,
-        // ngrok free: HTML sahifada "Visit Site" chiqadi; RPC fetch uchun ogohlantirishni aylanib o'tish
-        'ngrok-skip-browser-warning': '1',
-      },
-      body: JSON.stringify(body),
-      signal: controller.signal,
-    });
+  const maxAttempts = channel === 'pos:auth:login' ? 1 : 3;
 
-    // HTTP 401 => token is invalid / expired. Clear local state and notify app.
-    if (res.status === 401 && !PUBLIC_CHANNELS.has(channel)) {
-      setSessionToken(null);
-      dispatchAuthRequired('expired_or_invalid');
-    }
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    const controller = new AbortController();
+    const t = setTimeout(() => controller.abort(), 120_000);
+    try {
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${bearer}`,
+          // ngrok free: HTML sahifada "Visit Site" chiqadi; RPC fetch uchun ogohlantirishni aylanib o'tish
+          'ngrok-skip-browser-warning': '1',
+        },
+        body: JSON.stringify(body),
+        signal: controller.signal,
+      });
 
-    const json = (await res.json().catch(() => null)) as Record<string, unknown> | null;
-    if (!json || typeof json !== 'object') {
+      // HTTP 401 => token is invalid / expired. Clear local state and notify app.
+      if (res.status === 401 && !PUBLIC_CHANNELS.has(channel)) {
+        setSessionToken(null);
+        dispatchAuthRequired('expired_or_invalid');
+      }
+
+      if (res.status === 429 && attempt < maxAttempts - 1) {
+        const retryAfterSec = Number.parseInt(String(res.headers.get('Retry-After') || '1'), 10);
+        const waitMs = Math.min(Number.isFinite(retryAfterSec) ? retryAfterSec : 1, 5) * 1000;
+        await sleepMs(waitMs);
+        continue;
+      }
+
+      const json = (await res.json().catch(() => null)) as Record<string, unknown> | null;
+      if (!json || typeof json !== 'object') {
+        return {
+          success: false,
+          error: {
+            code: 'INTERNAL_ERROR',
+            message: `Invalid RPC response (HTTP ${res.status})`,
+            details: { status: res.status },
+          },
+        };
+      }
+      if (json.ok === false && json.error && typeof json.error === 'object') {
+        const e = json.error as { code?: string; message?: string; details?: unknown };
+        if (e.code === 'RATE_LIMITED' && attempt < maxAttempts - 1) {
+          await sleepMs(1000 * (attempt + 1));
+          continue;
+        }
+        if (e.code === 'AUTH_ERROR' && !PUBLIC_CHANNELS.has(channel)) {
+          setSessionToken(null);
+          dispatchAuthRequired('auth_error');
+        }
+        return {
+          success: false,
+          error: {
+            code: String(e.code || 'ERROR'),
+            message: String(e.message || 'RPC error'),
+            details: { ...(typeof e.details === 'object' && e.details ? e.details as object : {}), status: res.status },
+          },
+        };
+      }
+      if (json.ok === true) {
+        // Transparently capture the session token + tenant + scope from the
+        // login flows so the rest of the app (stores, router guards) can
+        // observe them via localStorage without manually threading them.
+        if (channel === 'pos:auth:login') {
+          const data = json.data as
+            | {
+                success?: boolean;
+                token?: string;
+                expiresAt?: string | null;
+                tenant?: { slug?: string } | null;
+                user?: { tenantSlug?: string | null } | null;
+              }
+            | null
+            | undefined;
+          if (data?.success && typeof data.token === 'string' && data.token.length > 0) {
+            setSessionToken(data.token, data.expiresAt ?? null);
+            const slug = data.tenant?.slug || data.user?.tenantSlug || null;
+            setTenantSlug(slug);
+            setAuthScope('tenant');
+          }
+        }
+        if (channel === 'pos:master:login') {
+          const data = json.data as
+            | { success?: boolean; token?: string; expiresAt?: string | null }
+            | null
+            | undefined;
+          if (data?.success && typeof data.token === 'string' && data.token.length > 0) {
+            setSessionToken(data.token, data.expiresAt ?? null);
+            // Master sessions are NOT pinned to a tenant — clear any leftover slug.
+            setTenantSlug(null);
+            setAuthScope('master');
+          }
+        }
+        // On logout, always clear local state regardless of server response shape.
+        if (channel === 'pos:auth:logout') {
+          setSessionToken(null);
+        }
+        return { success: true, data: json.data };
+      }
       return {
         success: false,
-        error: {
-          code: 'INTERNAL_ERROR',
-          message: `Invalid RPC response (HTTP ${res.status})`,
-          details: null,
-        },
+        error: { code: 'INTERNAL_ERROR', message: 'Unexpected RPC payload', details: json },
       };
-    }
-    if (json.ok === false && json.error && typeof json.error === 'object') {
-      const e = json.error as { code?: string; message?: string; details?: unknown };
-      if (e.code === 'AUTH_ERROR' && !PUBLIC_CHANNELS.has(channel)) {
-        setSessionToken(null);
-        dispatchAuthRequired('auth_error');
+    } catch (e: unknown) {
+      if (attempt < maxAttempts - 1) {
+        await sleepMs(500 * (attempt + 1));
+        continue;
       }
+      const msg = e instanceof Error ? e.message : String(e);
       return {
         success: false,
-        error: {
-          code: String(e.code || 'ERROR'),
-          message: String(e.message || 'RPC error'),
-          details: e.details,
-        },
+        error: { code: 'NETWORK_ERROR', message: msg, details: null },
       };
+    } finally {
+      clearTimeout(t);
     }
-    if (json.ok === true) {
-      // Transparently capture the session token + tenant + scope from the
-      // login flows so the rest of the app (stores, router guards) can
-      // observe them via localStorage without manually threading them.
-      if (channel === 'pos:auth:login') {
-        const data = json.data as
-          | {
-              success?: boolean;
-              token?: string;
-              expiresAt?: string | null;
-              tenant?: { slug?: string } | null;
-              user?: { tenantSlug?: string | null } | null;
-            }
-          | null
-          | undefined;
-        if (data?.success && typeof data.token === 'string' && data.token.length > 0) {
-          setSessionToken(data.token, data.expiresAt ?? null);
-          const slug = data.tenant?.slug || data.user?.tenantSlug || null;
-          setTenantSlug(slug);
-          setAuthScope('tenant');
-        }
-      }
-      if (channel === 'pos:master:login') {
-        const data = json.data as
-          | { success?: boolean; token?: string; expiresAt?: string | null }
-          | null
-          | undefined;
-        if (data?.success && typeof data.token === 'string' && data.token.length > 0) {
-          setSessionToken(data.token, data.expiresAt ?? null);
-          // Master sessions are NOT pinned to a tenant — clear any leftover slug.
-          setTenantSlug(null);
-          setAuthScope('master');
-        }
-      }
-      // On logout, always clear local state regardless of server response shape.
-      if (channel === 'pos:auth:logout') {
-        setSessionToken(null);
-      }
-      return { success: true, data: json.data };
-    }
-    return {
-      success: false,
-      error: { code: 'INTERNAL_ERROR', message: 'Unexpected RPC payload', details: json },
-    };
-  } catch (e: unknown) {
-    const msg = e instanceof Error ? e.message : String(e);
-    return {
-      success: false,
-      error: { code: 'NETWORK_ERROR', message: msg, details: null },
-    };
-  } finally {
-    clearTimeout(t);
   }
+
+  return {
+    success: false,
+    error: { code: 'RATE_LIMITED', message: 'Too many requests', details: { status: 429 } },
+  };
 }
 
 function createInvoker(baseUrl: string, secret: string) {
@@ -379,8 +414,9 @@ export function createRemotePosApi(baseUrl: string, secret: string) {
         return primary;
       }
 
-      const msg = String(primary.error?.message || '').toLowerCase();
-      const code = String(primary.error?.code || '').toUpperCase();
+      const primaryError = (primary as { error?: { code?: string; message?: string } }).error;
+      const msg = String(primaryError?.message || '').toLowerCase();
+      const code = String(primaryError?.code || '').toUpperCase();
       const unknownChannel =
         code === 'NOT_FOUND' && (msg.includes('unknown channel') || msg.includes(primaryChannel.toLowerCase()));
 
@@ -438,6 +474,7 @@ export function createRemotePosApi(baseUrl: string, secret: string) {
       get: inv('pos:customers:get'),
       getByLoyaltyQr: inv('pos:customers:getByLoyaltyQr'),
       getLoyaltyCard: inv('pos:customers:getLoyaltyCard'),
+      findByPhone: inv('pos:customers:findByPhone'),
       create: inv('pos:customers:create'),
       update: inv('pos:customers:update'),
       delete: inv('pos:customers:delete'),
@@ -514,6 +551,8 @@ export function createRemotePosApi(baseUrl: string, secret: string) {
       list: inv('pos:returns:list'),
       getOrderDetails: inv('pos:returns:getOrderDetails'),
       update: inv('pos:returns:update'),
+      delete: inv('pos:returns:delete'),
+      complete: inv('pos:returns:complete'),
     },
     purchases: {
       createOrder: inv('pos:purchases:createOrder'),
@@ -558,6 +597,9 @@ export function createRemotePosApi(baseUrl: string, secret: string) {
       getStatus: inv('pos:shifts:getStatus'),
       require: inv('pos:shifts:require'),
       list: inv('pos:shifts:list'),
+      cashIn: inv('pos:shifts:cashIn'),
+      cashOut: inv('pos:shifts:cashOut'),
+      listCashMovements: inv('pos:shifts:listCashMovements'),
     },
     reports: {
       dailySales: inv('pos:reports:dailySales'),
@@ -582,6 +624,9 @@ export function createRemotePosApi(baseUrl: string, secret: string) {
       cashFlow: inv('pos:reports:cashFlow'),
       cashDiscrepancies: inv('pos:reports:cashDiscrepancies'),
       aging: inv('pos:reports:aging'),
+      paymentMethodsSummary: inv('pos:reports:paymentMethodsSummary'),
+      cashierPerformance: inv('pos:reports:cashierPerformance'),
+      customerSalesReport: inv('pos:reports:customerSalesReport'),
       customerAging: inv('pos:reports:customerAging'),
       supplierAging: inv('pos:reports:supplierAging'),
       vipCustomers: inv('pos:reports:vipCustomers'),
@@ -621,6 +666,10 @@ export function createRemotePosApi(baseUrl: string, secret: string) {
       getAll: inv('pos:settings:getAll'),
       delete: inv('pos:settings:delete'),
       resetDatabase: inv('pos:settings:resetDatabase'),
+    },
+    database: {
+      downloadToPc: inv('pos:database:downloadToPc'),
+      uploadToServer: inv('pos:database:uploadToServer'),
     },
     exchangeRates: {
       getLatest: inv('pos:exchangeRates:getLatest'),
@@ -687,6 +736,8 @@ export function createRemotePosApi(baseUrl: string, secret: string) {
       update: invokeWithFallback('pos:webOrders:update', 'pos:webOrdersUpdate'),
       cancel: invokeWithFallback('pos:webOrders:cancel', 'pos:webOrdersCancel'),
       dispatchToCourier: invokeWithFallback('pos:webOrders:dispatchToCourier', 'pos:webOrdersDispatchToCourier'),
+      countsByQueue: invokeWithFallback('pos:webOrders:countsByQueue', 'pos:webOrdersCountsByQueue'),
+      reportSummary: invokeWithFallback('pos:webOrders:reportSummary', 'pos:webOrdersReportSummary'),
     },
     files: {
       selectSavePath: inv('pos:files:selectSavePath'),
@@ -730,6 +781,18 @@ export function installRemotePosApiIfConfigured(): void {
   if (w.posApi) return;
 
   const rawBase = String(import.meta.env.VITE_POS_RPC_URL || '').trim();
+  // SECURITY: `VITE_POS_RPC_SECRET` is a Vite env var, so it is COMPILED INTO
+  // the client JS bundle and is effectively PUBLIC — anyone with the web app
+  // can read it from the shipped assets. Treat it strictly as a low-trust
+  // bootstrap credential, never as a real authorization secret:
+  //   - The RPC server MUST rate-limit + scope what a raw bootstrap token can
+  //     do (it should only mint a real, short-lived session token, not grant
+  //     full data access on its own).
+  //   - Rotate it on exposure (see deploy/scripts/rotate-secrets.sh).
+  // The hosted/public web build intentionally OMITS this secret (see
+  // .github/workflows/deploy-frontend.yml), so installRemotePosApiIfConfigured
+  // is a no-op there. Proper fix (backend, out of scope): terminate RPC auth in
+  // a server-side proxy so no shared secret ever reaches the browser.
   const secret = import.meta.env.VITE_POS_RPC_SECRET;
   if (!rawBase || !secret) return;
 

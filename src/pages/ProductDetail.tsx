@@ -22,6 +22,8 @@ import {
 } from '@/components/ui/table';
 import { getCategories, getProductImages } from '@/db/api';
 import type { Category } from '@/types/database';
+import { productShowInMarketplace, productTracksStock } from '@/lib/productMarketplace';
+import { Store } from 'lucide-react';
 
 interface ProductDetailData {
   id: string;
@@ -39,6 +41,7 @@ interface ProductDetailData {
   category_name: string | null;
   is_active: boolean;
   track_stock: boolean;
+  show_in_marketplace?: boolean;
   current_stock: number;
   stock_available: number;
   available_stock: number;
@@ -253,6 +256,24 @@ export function ProductDetailContent({ productId, onClose }: ProductDetailProps)
                   {categoryName && (
                     <Badge variant="outline">{categoryName}</Badge>
                   )}
+                  {productShowInMarketplace(productDetail) ? (
+                    <Badge
+                      variant="secondary"
+                      className="gap-1 border border-primary/20 bg-primary/10 text-primary"
+                    >
+                      <Store className="h-3 w-3" aria-hidden />
+                      {t('status.marketplace_on')}
+                    </Badge>
+                  ) : (
+                    <Badge variant="outline" className="text-muted-foreground">
+                      {t('status.marketplace_off')}
+                    </Badge>
+                  )}
+                  <Badge variant="outline">
+                    {productTracksStock(productDetail)
+                      ? t('products.detail.track_stock_on', { defaultValue: 'Zaxira kuzatiladi' })
+                      : t('products.detail.track_stock_off', { defaultValue: 'Zaxira kuzatilmaydi' })}
+                  </Badge>
                 </div>
               </div>
 

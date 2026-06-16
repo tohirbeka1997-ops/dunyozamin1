@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useMemo, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Button } from '@/components/ui/button';
 import {
@@ -31,6 +31,12 @@ import {
 } from '@/db/api';
 import type { Category, ProductWithCategory } from '@/types/database';
 import MoneyInput from '@/components/common/MoneyInput';
+import { Switch } from '@/components/ui/switch';
+import { handleIpcResponse, isElectron, requireElectron } from '@/utils/electron';
+import { getProductImageDisplayUrl } from '@/lib/productImageUrl';
+import { optimizeProductImageFile } from '@/lib/optimizeProductImage';
+import { MarketplaceProductPreview } from '@/components/products/MarketplaceProductPreview';
+import { ImagePlus } from 'lucide-react';
 
 interface CreateProductModalProps {
   open: boolean;
@@ -74,6 +80,11 @@ export default function CreateProductModal({
   const [description, setDescription] = useState('');
   const [minStockLevel, setMinStockLevel] = useState('0');
   const [initialStock, setInitialStock] = useState('0');
+  const [showInMarketplace, setShowInMarketplace] = useState(true);
+  const [trackStock, setTrackStock] = useState(true);
+  const [imageUrl, setImageUrl] = useState<string | null>(null);
+  const [imageOptimizing, setImageOptimizing] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   const margin = useMemo(() => {
     const purchase = purchasePrice ?? 0;
@@ -99,6 +110,9 @@ export default function CreateProductModal({
       setDescription('');
       setMinStockLevel('0');
       setInitialStock('0');
+      setShowInMarketplace(true);
+      setTrackStock(true);
+      setImageUrl(null);
       generateSKU().then(setSku).catch(() => setSku(''));
     }
   }, [open]);
@@ -118,6 +132,93 @@ export default function CreateProductModal({
     setDescription('');
     setMinStockLevel('0');
     setInitialStock('0');
+    setShowInMarketplace(true);
+    setTrackStock(true);
+    setImageUrl(null);
+  };
+
+  const extFromFileName = (name: string) => {
+    const match = String(name || '').match(/(\.[a-z0-9]+)$/i);
+    return match ? match[1].toLowerCase() : '.jpg';
+  };
+
+  const uploadImageFile = async (file: File, sourcePath?: string | null): Promise<string | null> => {
+    const api = requireElectron();
+    const tempId = `temp-${Date.now()}`;
+    const optimized = await optimizeProductImageFile(file);
+    const uploadFile = optimized.file;
+
+    if (typeof api?.files?.uploadProductImage === 'function') {
+      const saved = await handleIpcResponse<{ fileUrl?: string }>(
+        api.files.uploadProductImage(uploadFile, tempId, 0),
+      );
+      return saved?.fileUrl || null;
+    }
+
+    if (optimized.skipped && sourcePath && typeof api?.files?.saveProductImage === 'function') {
+      const saved = await handleIpcResponse<{ fileUrl?: string }>(
+        api.files.saveProductImage(sourcePath, tempId, 0),
+      );
+      return saved?.fileUrl || null;
+    }
+
+    if (typeof api?.files?.saveProductImageBuffer === 'function') {
+      const buf = await uploadFile.arrayBuffer();
+      const saved = await handleIpcResponse<{ fileUrl?: string }>(
+        api.files.saveProductImageBuffer(buf, tempId, 0, extFromFileName(uploadFile.name)),
+      );
+      return saved?.fileUrl || null;
+    }
+
+    throw new Error('Rasmni saqlab bo‘lmadi');
+  };
+
+  const handlePickImage = async () => {
+    try {
+      const api = requireElectron();
+      if (isElectron() && typeof api?.files?.selectImageFile === 'function' && !api?._session) {
+        const res = await handleIpcResponse<{ canceled?: boolean; filePaths?: string[] }>(api.files.selectImageFile());
+        if (res?.canceled || !res?.filePaths?.length) return;
+        setImageOptimizing(true);
+        try {
+          const filePath = res.filePaths[0];
+          const fileUrl = await handleIpcResponse<string | null>(api.files.pathToFileUrl(filePath));
+          if (!fileUrl) throw new Error('Fayl topilmadi');
+          const blob = await (await fetch(fileUrl)).blob();
+          const name = filePath.replace(/^.*[/\\]/, '') || 'image.jpg';
+          const file = new File([blob], name, { type: blob.type || 'image/jpeg' });
+          const saved = await uploadImageFile(file, filePath);
+          if (saved) setImageUrl(saved);
+        } finally {
+          setImageOptimizing(false);
+        }
+        return;
+      }
+      fileInputRef.current?.click();
+    } catch (error: any) {
+      toast({
+        title: t('common.error'),
+        description: error?.message || 'Rasm yuklab bo‘lmadi',
+        variant: 'destructive',
+      });
+    }
+  };
+
+  const handleBrowserFile = async (file: File) => {
+    if (!/^image\//.test(file.type || '')) return;
+    setImageOptimizing(true);
+    try {
+      const saved = await uploadImageFile(file);
+      if (saved) setImageUrl(saved);
+    } catch (error: any) {
+      toast({
+        title: t('common.error'),
+        description: error?.message || 'Rasm yuklab bo‘lmadi',
+        variant: 'destructive',
+      });
+    } finally {
+      setImageOptimizing(false);
+    }
   };
 
   const handleClose = (isOpen: boolean) => {
@@ -224,8 +325,10 @@ export default function CreateProductModal({
         master_price: masterPrice,
         master_min_qty: masterMinQty.trim() ? Number(masterMinQty) : null,
         min_stock_level: Number(minStockLevel) || 0,
-        image_url: null as string | null,
+        image_url: imageUrl,
         is_active: true,
+        show_in_marketplace: showInMarketplace,
+        track_stock: trackStock,
         brand: brand.trim() || null,
         article: article.trim() || null,
       };
@@ -454,6 +557,65 @@ export default function CreateProductModal({
               />
               <p className="text-xs text-muted-foreground">{t('productForm.min_stock_help')}</p>
             </div>
+          </div>
+          <div className="space-y-2">
+            <Label>Rasm (onlayn katalog)</Label>
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept="image/*"
+              className="hidden"
+              onChange={(e) => {
+                const f = e.target.files?.[0];
+                if (f) void handleBrowserFile(f);
+                e.target.value = '';
+              }}
+            />
+            <div className="flex items-center gap-3">
+              {imageUrl ? (
+                <img
+                  src={getProductImageDisplayUrl(imageUrl) || imageUrl}
+                  alt=""
+                  className="h-14 w-14 rounded object-cover border"
+                />
+              ) : (
+                <div className="h-14 w-14 rounded border bg-muted flex items-center justify-center">
+                  <ImagePlus className="h-5 w-5 text-muted-foreground" />
+                </div>
+              )}
+              <Button type="button" variant="outline" size="sm" disabled={imageOptimizing} onClick={() => void handlePickImage()}>
+                {imageOptimizing ? 'Optimizatsiya qilinmoqda...' : 'Rasm tanlash'}
+              </Button>
+              {imageUrl ? (
+                <Button type="button" variant="ghost" size="sm" onClick={() => setImageUrl(null)}>
+                  Olib tashlash
+                </Button>
+              ) : null}
+            </div>
+          </div>
+          <div className="flex flex-wrap items-center gap-4">
+            <Switch id="create-mp" checked={showInMarketplace} onCheckedChange={setShowInMarketplace} />
+            <Label htmlFor="create-mp" className="text-sm">
+              {t('productForm.marketplace_catalog')}
+            </Label>
+            <Switch id="create-track" checked={trackStock} onCheckedChange={setTrackStock} />
+            <Label htmlFor="create-track" className="text-sm">
+              Zaxirani kuzatish
+            </Label>
+          </div>
+          <div className="pt-1">
+            <MarketplaceProductPreview
+              name={name}
+              salePrice={Number(salePrice ?? 0) || 0}
+              imageUrl={imageUrl}
+              description={description}
+              isAvailable={
+                !trackStock || Number(initialStock || 0) > 0
+              }
+              showInMarketplace={showInMarketplace}
+              trackStock={trackStock}
+              stockQuantity={Number(initialStock || 0) || 0}
+            />
           </div>
           <DialogFooter className="gap-2 sm:gap-0">
             <Button type="button" variant="outline" onClick={() => handleClose(false)}>

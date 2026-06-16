@@ -10,6 +10,7 @@ export function useProducts(
     categoryId?: string;
     status?: 'active' | 'inactive' | 'all';
     stockStatus?: 'all' | 'low' | 'out';
+    marketplace?: 'all' | 'online' | 'pos_only';
     // NOTE: sort fields must be supported by backend ProductsService.list allowedSortFields.
     sortBy?: 'name' | 'sku' | 'created_at' | 'current_stock' | 'sale_price';
     sortOrder?: 'asc' | 'desc';

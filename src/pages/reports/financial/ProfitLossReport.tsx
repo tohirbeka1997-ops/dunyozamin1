@@ -17,6 +17,7 @@ import { useNavigate } from 'react-router-dom';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend } from 'recharts';
 import { startOfWeek, endOfWeek, startOfMonth, endOfMonth, startOfDay, endOfDay } from 'date-fns';
 import { formatMoneyUZS } from '@/lib/format';
+import { DualCurrencyAmount } from '@/components/common/DualCurrencyAmount';
 import { todayYMD } from '@/lib/datetime';
 import { useReportAutoRefresh } from '@/hooks/useReportAutoRefresh';
 import { exportProfitLoss } from '@/lib/exportManager';
@@ -158,11 +159,17 @@ export default function ProfitLossReport() {
 
   const summary = reportData?.summary || {};
   const grossSales = Number(summary.revenue || 0);
+  const grossSalesUzs = Number(summary.revenue_uzs ?? grossSales);
+  const grossSalesUsd = Number(summary.revenue_usd ?? 0);
   const totalDiscounts = Number(summary.discount || 0);
   const netSales = Number(summary.net_sales || 0);
+  const netSalesUzs = Number(summary.net_sales_uzs ?? netSales);
+  const netSalesUsd = Number(summary.net_sales_usd ?? 0);
   const cogs = Number(summary.cogs || 0);
   const grossProfit = Number(summary.gross_profit || 0);
   const returnsRevenue = Number(summary.returns_revenue || 0);
+  const returnsRevenueUzs = Number(summary.returns_revenue_uzs ?? returnsRevenue);
+  const returnsRevenueUsd = Number(summary.returns_revenue_usd ?? 0);
   const returnsCogs = Number(summary.returns_cogs || 0);
   const totalExpenses = Number(summary.expenses || 0);
   const finalProfit = Number(summary.net_profit || 0);
@@ -344,7 +351,9 @@ export default function ProfitLossReport() {
             <div className="space-y-4">
               <div className="flex justify-between items-center pb-2 border-b">
                 <span className="font-medium">{t('reports.profit_loss_page.statement.gross_sales')}</span>
-                <span className="font-bold">{formatMoneyUZS(grossSales)}</span>
+                <span className="font-bold">
+                  <DualCurrencyAmount uzs={grossSalesUzs} usd={grossSalesUsd} />
+                </span>
               </div>
               <div className="flex justify-between items-center pb-2 border-b">
                 <span className="text-muted-foreground">{t('reports.profit_loss_page.statement.discounts')}</span>
@@ -352,7 +361,9 @@ export default function ProfitLossReport() {
               </div>
               <div className="flex justify-between items-center pb-2 border-b">
                 <span className="font-medium">{t('reports.profit_loss_page.statement.net_sales')}</span>
-                <span className="font-bold">{formatMoneyUZS(netSales)}</span>
+                <span className="font-bold">
+                  <DualCurrencyAmount uzs={netSalesUzs} usd={netSalesUsd} />
+                </span>
               </div>
               <div className="flex justify-between items-center pb-2 border-b">
                 <span className="text-muted-foreground">{t('reports.profit_loss_page.statement.cogs')}</span>
@@ -364,7 +375,15 @@ export default function ProfitLossReport() {
               </div>
               <div className="flex justify-between items-center pb-2 border-b">
                 <span className="text-muted-foreground">{t('reports.profit_loss_page.statement.returns')}</span>
-                <span className="text-destructive">{formatMinusMoney(returnsRevenue)}</span>
+                <span className="text-destructive">
+                  {returnsRevenueUsd > 0 ? (
+                    <span>
+                      -<DualCurrencyAmount uzs={returnsRevenueUzs} usd={returnsRevenueUsd} />
+                    </span>
+                  ) : (
+                    formatMinusMoney(returnsRevenue)
+                  )}
+                </span>
               </div>
               {returnsCogs > 0 && (
                 <div className="flex justify-between items-center pb-2 border-b">
@@ -385,6 +404,11 @@ export default function ProfitLossReport() {
                 </span>
               </div>
             </div>
+            {(grossSalesUsd > 0 || returnsRevenueUsd > 0) && (
+              <p className="mt-4 text-xs text-muted-foreground">
+                COGS, xarajatlar va yakuniy foyda UZS ekvivalentida (USD sotuvlar kurs bo‘yicha).
+              </p>
+            )}
             {reportData?.warnings?.valuation_mismatch ? (
               <div className="mt-4 text-xs text-destructive">
                 FIFO va weighted avg baholashlarida farq aniqlandi. Hisobotni tekshiring.

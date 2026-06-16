@@ -22,6 +22,7 @@ import { useReportAutoRefresh } from '@/hooks/useReportAutoRefresh';
 import { useTableSort } from '@/hooks/useTableSort';
 import { compareScalar } from '@/lib/tableSort';
 import { SortableTableHead } from '@/components/reports/SortableTableHead';
+import { isElectron, requireElectron, handleIpcResponse } from '@/utils/electron';
 
 interface CustomerSalesData {
   customer_id: string;
@@ -65,11 +66,47 @@ export default function CustomerSalesReport() {
   async function loadData() {
     try {
       setLoading(true);
+
+      // PRIMARY: Backend SQL endpoint (aggregates ALL completed orders, no 100-order limit)
+      if (isElectron()) {
+        try {
+          const api = requireElectron();
+          const rows = await handleIpcResponse<Array<{
+            customer_id: string;
+            customer_name: string;
+            customer_phone: string | null;
+            total_purchases: number;
+            order_count: number;
+            average_order_value: number;
+            balance: number;
+          }>>(
+            api.reports?.customerSalesReport?.({
+              date_from: dateFrom,
+              date_to: dateTo,
+            }) || Promise.resolve([])
+          );
+          setCustomerSales(
+            (rows || []).map((r) => ({
+              customer_id: r.customer_id,
+              customer_name: r.customer_name,
+              total_purchases: Number(r.total_purchases) || 0,
+              order_count: Number(r.order_count) || 0,
+              average_order_value: Number(r.average_order_value) || 0,
+              balance: Number(r.balance) || 0,
+            }))
+          );
+          return;
+        } catch (err) {
+          console.warn('[CustomerSalesReport] backend endpoint failed, falling back:', err);
+        }
+      }
+
+      // FALLBACK: client-side aggregation (browser/mock mode), with high limit
       const [ordersData, customersData] = await Promise.all([
-        getOrders(),
+        getOrders(100000),
         getCustomers(),
       ]);
-      
+
       const filtered = ordersData.filter((order) => {
         const orderDate = formatDateYMD(order.created_at);
         return orderDate >= dateFrom && orderDate <= dateTo && order.status === 'completed';
@@ -91,7 +128,7 @@ export default function CustomerSalesReport() {
           (customerId === 'walk-in' || customerId === 'default-customer-001' ? 'Yangi mijoz' : 'Noma\'lum mijoz');
 
         const existing = customerMap.get(customerId);
-        
+
         const amount = Number(order.total_amount);
 
         if (existing) {
@@ -105,7 +142,10 @@ export default function CustomerSalesReport() {
             total_purchases: amount,
             order_count: 1,
             average_order_value: amount,
-            balance: toNumber(customerFromList?.balance),
+            // walk-in / placeholder customers don't carry a balance
+            balance: customerId === 'walk-in' || customerId === 'default-customer-001'
+              ? 0
+              : toNumber(customerFromList?.balance),
           });
         }
       });
@@ -202,7 +242,7 @@ export default function CustomerSalesReport() {
           <CardContent className="pt-6">
             <div className="flex items-center justify-between">
               <div>
-                <p className="text-sm text-muted-foreground">Umumiy tushum</p>
+                <p className="text-sm text-muted-foreground">Umumiy tushum (UZS ekv.)</p>
                 <p className="text-2xl font-bold">{formatMoneyUZS(totalRevenue)}</p>
               </div>
             </div>
@@ -288,7 +328,7 @@ export default function CustomerSalesReport() {
                     kind="number"
                     align="right"
                   >
-                    Umumiy xarid summasi
+                    Umumiy xarid (UZS ekv.)
                   </SortableTableHead>
                   <SortableTableHead<CustomerSalesSortKey>
                     columnKey="order_count"
@@ -308,7 +348,7 @@ export default function CustomerSalesReport() {
                     kind="number"
                     align="right"
                   >
-                    O&apos;rtacha buyurtma qiymati
+                    O&apos;rtacha buyurtma (UZS ekv.)
                   </SortableTableHead>
                   <SortableTableHead<CustomerSalesSortKey>
                     columnKey="balance"

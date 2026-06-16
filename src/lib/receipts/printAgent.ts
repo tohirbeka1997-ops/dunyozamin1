@@ -23,7 +23,7 @@ export type PrintAgentHealth = {
   time?: string;
 };
 
-type AgentResponse<T> = { ok: true; data?: T } | { ok: false; error: { code?: string; message?: string; details?: unknown } };
+type AgentResponse<T> = { ok: boolean; data?: T; error?: { code?: string; message?: string; details?: unknown } };
 
 function readEnv(name: string): string | undefined {
   const metaEnv: Record<string, string | undefined> = (import.meta as any)?.env || {};
@@ -33,6 +33,15 @@ function readEnv(name: string): string | undefined {
 
 export function getPrintAgentConfig(): { baseUrl: string; secret?: string } {
   const baseUrl = (readEnv('VITE_PRINT_AGENT_URL') || DEFAULT_URL).replace(/\/$/, '');
+  // SECURITY: `VITE_PRINT_AGENT_SECRET` is a Vite env var and is therefore
+  // BAKED INTO the client bundle — treat it as PUBLIC, not a real secret. It is
+  // only a Bearer token for the loopback print-agent daemon on the cashier PC
+  // (http://127.0.0.1:9100), so its blast radius is limited to that LAN/PC.
+  // Hardening required outside the frontend: each cashier PC should generate
+  // its OWN agent secret in config.json (do NOT ship one shared secret to all
+  // clients), and the agent must bind to localhost + rate-limit. Long term, the
+  // print agent should be reached via a per-PC config rather than a bundled env
+  // var. Do not place any high-value secret in a VITE_* variable.
   const secret = readEnv('VITE_PRINT_AGENT_SECRET');
   return { baseUrl, secret };
 }

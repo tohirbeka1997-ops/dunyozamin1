@@ -21,11 +21,14 @@ import { Textarea } from '@/components/ui/textarea';
 import { useToast } from '@/hooks/use-toast';
 import { useAuth } from '@/contexts/AuthContext';
 import { createExpense, updateExpense, getProfiles } from '@/db/api';
+import { fetchUzsPerUsdRate } from '@/lib/fxRate';
 import type { ExpenseWithDetails, ExpenseCategory, ExpensePaymentMethod } from '@/types/database';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import MoneyInput from '@/components/common/MoneyInput';
 import { invalidateDashboardQueries } from '@/utils/dashboard';
 import { todayYMD } from '@/lib/datetime';
+import { formatMoney, type AppCurrency } from '@/lib/currency';
+import { isElectron } from '@/utils/electron';
 
 const EXPENSE_CATEGORIES: ExpenseCategory[] = [
   'Ijara',
@@ -74,6 +77,9 @@ export default function ExpenseFormDialog({
   const [note, setNote] = useState<string>('');
   const [employeeId, setEmployeeId] = useState<string | undefined>(undefined);
   const [employees, setEmployees] = useState<Array<{ id: string; name: string }>>([]);
+  const [expenseCurrency, setExpenseCurrency] = useState<AppCurrency>('UZS');
+  const [expenseFxRate, setExpenseFxRate] = useState<number | null>(null);
+  const [expenseFxLoading, setExpenseFxLoading] = useState(false);
   const [errors, setErrors] = useState<Record<string, string>>({});
 
   // Load employees
@@ -107,6 +113,8 @@ export default function ExpenseFormDialog({
         setPaymentMethod(expense.payment_method);
         setNote(expense.note || '');
         setEmployeeId(expense.employee_id && typeof expense.employee_id === 'string' && expense.employee_id.trim() !== '' ? expense.employee_id : undefined);
+        setExpenseCurrency(expense.currency === 'USD' ? 'USD' : 'UZS');
+        setExpenseFxRate(expense.fx_rate != null ? Number(expense.fx_rate) : null);
       } else {
         // Create mode
         const today = todayYMD();
@@ -116,52 +124,58 @@ export default function ExpenseFormDialog({
         setPaymentMethod('cash');
         setNote('');
         setEmployeeId(profile?.id && typeof profile.id === 'string' && profile.id.trim() !== '' ? profile.id : undefined);
+        setExpenseCurrency('UZS');
+        setExpenseFxRate(null);
       }
       setErrors({});
     }
   }, [open, expense, profile]);
 
+  useEffect(() => {
+    if (!open || expenseCurrency !== 'USD') {
+      if (expenseCurrency !== 'USD') setExpenseFxRate(null);
+      return;
+    }
+    if (!isElectron()) return;
+    let cancelled = false;
+    setExpenseFxLoading(true);
+    void fetchUzsPerUsdRate(expenseDate || todayYMD())
+      .then((rate) => {
+        if (cancelled) return;
+        if (rate != null && rate > 0) {
+          setExpenseFxRate(rate);
+        } else {
+          setExpenseFxRate(null);
+          toast({
+            title: 'Valyuta kursi topilmadi',
+            description: 'Sozlamalar → Valyuta bo‘limida 1 USD = UZS kursini kiriting.',
+            variant: 'destructive',
+          });
+          setExpenseCurrency('UZS');
+        }
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setExpenseFxRate(null);
+        setExpenseCurrency('UZS');
+      })
+      .finally(() => {
+        if (!cancelled) setExpenseFxLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [open, expenseCurrency, toast]);
+
+  // React Query v5: onSuccess/onError in useMutation options no longer fire.
+  // Handlers are passed to mutate() in handleSubmit so they still run.
   const createMutation = useMutation({
     mutationFn: createExpense,
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['expenses'] });
-      queryClient.invalidateQueries({ queryKey: ['expenseStats'] });
-      invalidateDashboardQueries(queryClient);
-      toast({
-        title: 'Muvaffaqiyatli',
-        description: 'Xarajat muvaffaqiyatli qo\'shildi',
-      });
-      onSuccess();
-    },
-    onError: (error) => {
-      toast({
-        title: 'Xatolik',
-        description: error instanceof Error ? error.message : 'Xarajatni qo\'shib bo\'lmadi',
-        variant: 'destructive',
-      });
-    },
   });
 
   const updateMutation = useMutation({
     mutationFn: ({ id, updates }: { id: string; updates: Parameters<typeof updateExpense>[1] }) =>
       updateExpense(id, updates),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['expenses'] });
-      queryClient.invalidateQueries({ queryKey: ['expenseStats'] });
-      invalidateDashboardQueries(queryClient);
-      toast({
-        title: 'Muvaffaqiyatli',
-        description: 'Xarajat yangilandi',
-      });
-      onSuccess();
-    },
-    onError: (error) => {
-      toast({
-        title: 'Xatolik',
-        description: error instanceof Error ? error.message : 'Xarajatni yangilab bo\'lmadi',
-        variant: 'destructive',
-      });
-    },
   });
 
   const validate = (): boolean => {
@@ -177,6 +191,10 @@ export default function ExpenseFormDialog({
 
     if (amount === undefined || amount === null || amount <= 0) {
       newErrors.amount = 'Summa 0 dan katta bo\'lishi kerak';
+    }
+
+    if (expenseCurrency === 'USD' && (!expenseFxRate || expenseFxRate <= 0)) {
+      newErrors.amount = 'USD xarajat uchun kurs yuklanmagan';
     }
 
     if (!paymentMethod) {
@@ -200,29 +218,75 @@ export default function ExpenseFormDialog({
 
     if (expense) {
       // Update
-      updateMutation.mutate({
-        id: expense.id,
-        updates: {
+      updateMutation.mutate(
+        {
+          id: expense.id,
+          updates: {
+            expense_date: expenseDate,
+            category,
+            amount: amount,
+            payment_method: paymentMethod,
+            note: note || null,
+            employee_id: employeeId || null,
+            currency: expenseCurrency,
+            fx_rate: expenseCurrency === 'USD' ? expenseFxRate : null,
+          },
+        },
+        {
+          onSuccess: () => {
+            queryClient.invalidateQueries({ queryKey: ['expenses'] });
+            queryClient.invalidateQueries({ queryKey: ['expenseStats'] });
+            invalidateDashboardQueries(queryClient);
+            toast({
+              title: 'Muvaffaqiyatli',
+              description: 'Xarajat yangilandi',
+            });
+            onSuccess();
+          },
+          onError: (error) => {
+            toast({
+              title: 'Xatolik',
+              description: error instanceof Error ? error.message : 'Xarajatni yangilab bo\'lmadi',
+              variant: 'destructive',
+            });
+          },
+        },
+      );
+    } else {
+      // Create
+      createMutation.mutate(
+        {
           expense_date: expenseDate,
           category,
           amount: amount,
           payment_method: paymentMethod,
           note: note || null,
           employee_id: employeeId || null,
+          created_by: profile?.id || null,
+          status: 'approved',
+          currency: expenseCurrency,
+          fx_rate: expenseCurrency === 'USD' ? expenseFxRate : null,
         },
-      });
-    } else {
-      // Create
-      createMutation.mutate({
-        expense_date: expenseDate,
-        category,
-        amount: amount,
-        payment_method: paymentMethod,
-        note: note || null,
-        employee_id: employeeId || null,
-        created_by: profile?.id || null,
-        status: 'approved',
-      });
+        {
+          onSuccess: () => {
+            queryClient.invalidateQueries({ queryKey: ['expenses'] });
+            queryClient.invalidateQueries({ queryKey: ['expenseStats'] });
+            invalidateDashboardQueries(queryClient);
+            toast({
+              title: 'Muvaffaqiyatli',
+              description: 'Xarajat muvaffaqiyatli qo\'shildi',
+            });
+            onSuccess();
+          },
+          onError: (error) => {
+            toast({
+              title: 'Xatolik',
+              description: error instanceof Error ? error.message : 'Xarajatni qo\'shib bo\'lmadi',
+              variant: 'destructive',
+            });
+          },
+        },
+      );
     }
   };
 
@@ -282,10 +346,41 @@ export default function ExpenseFormDialog({
             </div>
           </div>
 
+          <div className="space-y-2">
+            <Label>Valyuta</Label>
+            <div className="flex items-center gap-1 rounded-md border p-0.5 w-fit">
+              <Button
+                type="button"
+                size="sm"
+                variant={expenseCurrency === 'UZS' ? 'default' : 'ghost'}
+                className="h-7 px-2.5 text-xs"
+                disabled={expenseFxLoading}
+                onClick={() => setExpenseCurrency('UZS')}
+              >
+                UZS
+              </Button>
+              <Button
+                type="button"
+                size="sm"
+                variant={expenseCurrency === 'USD' ? 'default' : 'ghost'}
+                className="h-7 px-2.5 text-xs"
+                disabled={expenseFxLoading || !isElectron()}
+                onClick={() => setExpenseCurrency('USD')}
+              >
+                USD
+              </Button>
+            </div>
+            {expenseCurrency === 'USD' && expenseFxRate != null && expenseFxRate > 0 && (
+              <p className="text-xs text-muted-foreground tabular-nums">
+                1 USD = {formatMoney(expenseFxRate, 'UZS')}
+              </p>
+            )}
+          </div>
+
           <div className="grid grid-cols-2 gap-4">
             <MoneyInput
               id="amount"
-              label="Summa (so'm)"
+              label={expenseCurrency === 'USD' ? 'Summa (USD)' : "Summa (so'm)"}
               value={amount ?? null}
               onValueChange={(val) => setAmount(val ?? undefined)}
               placeholder="0"

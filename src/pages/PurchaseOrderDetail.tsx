@@ -34,6 +34,12 @@ import {
 import type { PurchaseOrderWithDetails } from '@/types/database';
 import { ArrowLeft, Edit, Package, X, DollarSign, CheckCircle, Trash2, Plus } from 'lucide-react';
 import { formatMoneyUZS } from '@/lib/format';
+import {
+  formatPoMoney,
+  getPoLedgerCurrency,
+  getPoPaidAmount,
+  getPoRemainingAmount,
+} from '@/lib/currency';
 import { formatDate, formatDateTime } from '@/lib/datetime';
 import PaySupplierDialog from '@/components/suppliers/PaySupplierDialog';
 import { useAuth } from '@/contexts/AuthContext';
@@ -448,6 +454,15 @@ export default function PurchaseOrderDetail() {
                     {formatDateTime(purchaseOrder.created_at)}
                   </p>
                 </div>
+                <div>
+                  <p className="text-sm text-muted-foreground">Hujjat valyutasi</p>
+                  <p className="font-medium">{getPoLedgerCurrency(purchaseOrder)}</p>
+                  {getPoLedgerCurrency(purchaseOrder) === 'USD' && Number((purchaseOrder as any).fx_rate || 0) > 0 && (
+                    <p className="text-xs text-muted-foreground">
+                      Kurs: 1 USD = {formatMoneyUZS((purchaseOrder as any).fx_rate)}
+                    </p>
+                  )}
+                </div>
               </div>
               {purchaseOrder.notes && (
                 <div className="mt-4">
@@ -633,7 +648,7 @@ export default function PurchaseOrderDetail() {
                 <div className="border-t pt-2 flex justify-between">
                   <span className="font-semibold">Total</span>
                   <span className="font-bold text-lg">
-                    {formatMoneyUZS(purchaseOrder.total_amount)}
+                    {formatPoMoney(purchaseOrder)}
                   </span>
                 </div>
                 <div className="flex justify-between text-sm">
@@ -647,12 +662,12 @@ export default function PurchaseOrderDetail() {
                     <div className="border-t pt-2 space-y-2">
                       <div className="flex justify-between text-sm">
                         <span className="text-muted-foreground">To'langan:</span>
-                        <span className="font-medium">{formatMoneyUZS(purchaseOrder.paid_amount ?? 0)}</span>
+                        <span className="font-medium">{formatPoMoney(purchaseOrder, getPoPaidAmount(purchaseOrder))}</span>
                       </div>
                       <div className="flex justify-between text-sm">
                         <span className="text-muted-foreground">Qoldiq:</span>
-                        <span className={`font-medium ${(purchaseOrder.remaining_amount ?? purchaseOrder.total_amount) > 0 ? 'text-destructive' : 'text-success'}`}>
-                          {formatMoneyUZS(purchaseOrder.remaining_amount ?? purchaseOrder.total_amount)}
+                        <span className={`font-medium ${getPoRemainingAmount(purchaseOrder) > 0 ? 'text-destructive' : 'text-success'}`}>
+                          {formatPoMoney(purchaseOrder, getPoRemainingAmount(purchaseOrder))}
                         </span>
                       </div>
                       <div className="flex justify-between text-sm">

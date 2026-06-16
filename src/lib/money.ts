@@ -31,12 +31,14 @@
  * null/undefined/NaN -> "0 so'm"
  */
 export function formatMoneyUZS(
-  amount: number | null | undefined
+  amountInput: number | string | null | undefined
 ): string {
   // Handle null, undefined, or invalid values
-  if (amount === null || amount === undefined) {
+  if (amountInput === null || amountInput === undefined) {
     return '0 so\'m';
   }
+
+  const amount = typeof amountInput === 'string' ? Number(amountInput) : amountInput;
 
   // Handle NaN
   if (isNaN(amount) || !isFinite(amount)) {

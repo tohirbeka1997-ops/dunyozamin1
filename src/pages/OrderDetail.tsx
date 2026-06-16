@@ -16,10 +16,12 @@ import { useAuth } from '@/contexts/AuthContext';
 import { getOrderById, cancelOrder, getSettingsByCategory } from '@/db/api';
 import type { OrderWithDetails } from '@/types/database';
 import { ArrowLeft, Printer, RotateCcw, XCircle, Pencil } from 'lucide-react';
-import { formatMoneyUZS } from '@/lib/format';
+import { formatOrderMoney, getOrderSaleCurrency } from '@/lib/format';
+import { formatMoney } from '@/lib/currency';
 import { printHtml } from '@/lib/print';
 import { renderReceiptTemplate } from '@/lib/receipts/renderReceiptTemplate';
 import { getActiveReceiptTemplate, resolveReceiptTemplateStore } from '@/lib/receipts/templateStore';
+import { applyReceiptSettingsToTemplate } from '@/hooks/useReceiptSettings';
 import { buildReceiptInputFromOrder } from '@/lib/receipts/receiptModel';
 import { buildReceiptLines, DEFAULT_CHARS_PER_LINE, DEFAULT_CHARS_PER_LINE_58 } from '@/lib/receipts/receiptTextBuilder';
 import { printEscposReceipt } from '@/lib/receipts/escposPrint';
@@ -42,7 +44,7 @@ import { navigateBackTo, resolveBackTarget } from '@/lib/pageState';
 
 function canEditOrderInPos(o: { status?: string } | null | undefined) {
   const s = String(o?.status || '').toLowerCase();
-  return s !== 'voided' && s !== 'refunded' && s !== 'returned';
+  return s !== 'voided' && s !== 'refunded' && s !== 'returned' && s !== 'amended';
 }
 
 export default function OrderDetail() {
@@ -180,10 +182,13 @@ export default function OrderDetail() {
       }
 
       if (activeTemplate) {
-        const htmlContent = renderReceiptTemplate(activeTemplate, order, company as any, undefined, {
+        const mergedTemplate = receipt
+          ? applyReceiptSettingsToTemplate(activeTemplate, receipt as any)
+          : activeTemplate;
+        const htmlContent = renderReceiptTemplate(mergedTemplate, order, company as any, undefined, {
           middleText: String((receipt as any)?.middle_text || '').trim() || undefined,
         });
-        printHtml(`Chek - ${order.order_number}`, htmlContent, `${activeTemplate.paperWidth}mm` as '58mm' | '78mm' | '80mm');
+        printHtml(`Chek - ${order.order_number}`, htmlContent, `${mergedTemplate.paperWidth}mm` as '58mm' | '78mm' | '80mm');
       } else {
         const htmlContent = generateOrderReceiptHTML(order, 'thermal', meta);
         printHtml(`Chek - ${order.order_number}`, htmlContent, meta.paperSize ?? '78mm');
@@ -284,7 +289,8 @@ export default function OrderDetail() {
     const cashierName = orderData.cashier?.username || orderData.cashier?.full_name || '-';
     const customerName = orderData.customer?.name || 'Yangi mijoz';
     const effectiveDiscountAmount = getEffectiveDiscountAmount(orderData);
-    
+    const fmt = (amount: number | string | null | undefined) => formatOrderMoney(orderData, amount);
+
     // Calculate payment breakdown
     const payments = orderData.payments || [];
     const paymentBreakdown = payments.reduce((acc, payment) => {
@@ -357,8 +363,8 @@ export default function OrderDetail() {
                     <td class="text-center py-2 px-2">
                       <span>${remaining}</span>
                     </td>
-                    <td class="text-right py-2 px-2">${formatMoneyUZS(item.unit_price)}</td>
-                    <td class="text-right py-2 px-2 font-medium">${formatMoneyUZS(rowTotal)}</td>
+                    <td class="text-right py-2 px-2">${fmt(item.unit_price)}</td>
+                    <td class="text-right py-2 px-2 font-medium">${fmt(rowTotal)}</td>
                   </tr>
                 `;
                 })
@@ -370,13 +376,13 @@ export default function OrderDetail() {
           <div class="mb-6 space-y-2 text-sm">
             <div class="flex justify-between">
               <span>Subtotal:</span>
-              <span>${formatMoneyUZS(orderData.subtotal)}</span>
+              <span>${fmt(orderData.subtotal)}</span>
             </div>
-            ${effectiveDiscountAmount > 0 ? `<div class="flex justify-between text-red-600"><span>Chegirma:</span><span>-${formatMoneyUZS(effectiveDiscountAmount)}</span></div>` : ''}
-            ${orderData.tax_amount > 0 ? `<div class="flex justify-between"><span>Soliq:</span><span>${formatMoneyUZS(orderData.tax_amount)}</span></div>` : ''}
+            ${effectiveDiscountAmount > 0 ? `<div class="flex justify-between text-red-600"><span>Chegirma:</span><span>-${fmt(effectiveDiscountAmount)}</span></div>` : ''}
+            ${orderData.tax_amount > 0 ? `<div class="flex justify-between"><span>Soliq:</span><span>${fmt(orderData.tax_amount)}</span></div>` : ''}
             <div class="flex justify-between font-bold text-lg border-t-2 border-gray-300 pt-2">
               <span>Jami:</span>
-              <span>${formatMoneyUZS(orderData.total_amount)}</span>
+              <span>${fmt(orderData.total_amount)}</span>
             </div>
           </div>
           <div class="mb-6 space-y-2 text-sm">
@@ -384,10 +390,10 @@ export default function OrderDetail() {
             ${Object.entries(paymentBreakdown).map(([method, amount]) => `
               <div class="flex justify-between">
                 <span>${paymentMethodLabels[method] || method}:</span>
-                <span>${formatMoneyUZS(amount)}</span>
+                <span>${fmt(amount)}</span>
               </div>
             `).join('')}
-            ${orderData.change_amount > 0 ? `<div class="flex justify-between font-bold border-t pt-2"><span>Qaytim:</span><span>${formatMoneyUZS(orderData.change_amount)}</span></div>` : ''}
+            ${orderData.change_amount > 0 ? `<div class="flex justify-between font-bold border-t pt-2"><span>Qaytim:</span><span>${fmt(orderData.change_amount)}</span></div>` : ''}
           </div>
           <div class="text-center mt-8 pt-4 border-t border-gray-300">
             ${footerText ? `<p class="text-sm mb-2 whitespace-pre-wrap">${escapeHtml(footerText)}</p>` : ''}
@@ -438,8 +444,8 @@ export default function OrderDetail() {
               </div>
               ${showSku && sku ? `<div class="text-[10px] text-gray-600 font-mono">${escapeHtml(sku)}</div>` : ''}
               <div class="flex justify-between mt-1">
-                <span class="text-gray-600">${remaining} x ${formatMoneyUZS(item.unit_price)}</span>
-                <span class="font-semibold">${formatMoneyUZS(rowTotal)}</span>
+                <span class="text-gray-600">${remaining} x ${fmt(item.unit_price)}</span>
+                <span class="font-semibold">${fmt(rowTotal)}</span>
               </div>
             </div>
           `;
@@ -450,23 +456,23 @@ export default function OrderDetail() {
         <div class="space-y-1 text-right border-t border-dashed py-2 mb-2 text-xs">
           <div class="flex justify-between">
             <span>Subtotal:</span>
-            <span>${formatMoneyUZS(orderData.subtotal)}</span>
+            <span>${fmt(orderData.subtotal)}</span>
           </div>
-          ${effectiveDiscountAmount > 0 ? `<div class="flex justify-between"><span>Chegirma:</span><span>-${formatMoneyUZS(effectiveDiscountAmount)}</span></div>` : ''}
-          ${orderData.tax_amount > 0 ? `<div class="flex justify-between"><span>Soliq:</span><span>${formatMoneyUZS(orderData.tax_amount)}</span></div>` : ''}
+          ${effectiveDiscountAmount > 0 ? `<div class="flex justify-between"><span>Chegirma:</span><span>-${fmt(effectiveDiscountAmount)}</span></div>` : ''}
+          ${orderData.tax_amount > 0 ? `<div class="flex justify-between"><span>Soliq:</span><span>${fmt(orderData.tax_amount)}</span></div>` : ''}
           <div class="flex justify-between font-bold text-sm">
             <span>Jami:</span>
-            <span>${formatMoneyUZS(orderData.total_amount)}</span>
+            <span>${fmt(orderData.total_amount)}</span>
           </div>
         </div>
         <div class="space-y-1 text-right border-t border-dashed py-2 mb-2 text-xs">
           ${Object.entries(paymentBreakdown).map(([method, amount]) => `
             <div class="flex justify-between">
               <span>${paymentMethodLabels[method] || method}:</span>
-              <span>${formatMoneyUZS(amount)}</span>
+              <span>${fmt(amount)}</span>
             </div>
           `).join('')}
-          ${orderData.change_amount > 0 ? `<div class="flex justify-between font-bold"><span>Qaytim:</span><span>${formatMoneyUZS(orderData.change_amount)}</span></div>` : ''}
+          ${orderData.change_amount > 0 ? `<div class="flex justify-between font-bold"><span>Qaytim:</span><span>${fmt(orderData.change_amount)}</span></div>` : ''}
         </div>
         <div class="text-center border-t border-dashed pt-2 text-xs">
           ${footerText ? `<p class="mb-1 whitespace-pre-wrap">${escapeHtml(footerText)}</p>` : ''}
@@ -526,7 +532,7 @@ export default function OrderDetail() {
               </>
             )}
           </Button>
-          {order.status === 'completed' && order.status !== 'voided' && (
+          {order.status === 'completed' && (
             <Button onClick={handleCreateReturn}>
               <RotateCcw className="h-4 w-4 mr-2" />
               Qaytarish yaratish
@@ -600,9 +606,17 @@ export default function OrderDetail() {
               </div>
             </div>
 
-            <div className="flex gap-2">
+            <div className="flex gap-2 flex-wrap items-center">
               {getStatusBadge(order.status)}
               {getPaymentStatusBadge(order.payment_status)}
+              <Badge variant="outline" className="font-mono text-xs">
+                {getOrderSaleCurrency(order)}
+              </Badge>
+              {getOrderSaleCurrency(order) === 'USD' && order.fx_rate != null && Number(order.fx_rate) > 0 && (
+                <span className="text-xs text-muted-foreground tabular-nums">
+                  1 USD = {formatMoney(order.fx_rate, 'UZS')}
+                </span>
+              )}
             </div>
 
             <div className="border-t pt-4">
@@ -663,19 +677,19 @@ export default function OrderDetail() {
                           </span>
                         </TableCell>
                         <TableCell className="text-right">
-                          {formatMoneyUZS(item.unit_price)}
+                          {formatOrderMoney(order, item.unit_price)}
                         </TableCell>
                         <TableCell className="text-right">
                           {item.discount_amount > 0 ? (
                             <span className="text-destructive">
-                              -{formatMoneyUZS(item.discount_amount)}
+                              -{formatOrderMoney(order, item.discount_amount)}
                             </span>
                           ) : (
                             '-'
                           )}
                         </TableCell>
                         <TableCell className="text-right font-medium">
-                          {formatMoneyUZS(displayLineTotal)}
+                          {formatOrderMoney(order, displayLineTotal)}
                         </TableCell>
                       </TableRow>
                     );
@@ -695,12 +709,12 @@ export default function OrderDetail() {
               <div className="space-y-2">
                 <div className="flex justify-between">
                   <span className="text-muted-foreground">Oraliq summa:</span>
-                  <span className="font-medium">{formatMoneyUZS(order.subtotal)}</span>
+                  <span className="font-medium">{formatOrderMoney(order, order.subtotal)}</span>
                 </div>
                 {effectiveDiscountAmount > 0 && (
                   <div className="flex justify-between text-destructive">
                     <span>Chegirma:</span>
-                    <span className="font-medium">-{formatMoneyUZS(effectiveDiscountAmount)}</span>
+                    <span className="font-medium">-{formatOrderMoney(order, effectiveDiscountAmount)}</span>
                   </div>
                 )}
                 {order.discount_percent > 0 && (
@@ -712,21 +726,21 @@ export default function OrderDetail() {
                 {order.tax_amount > 0 && (
                   <div className="flex justify-between">
                     <span className="text-muted-foreground">Soliq:</span>
-                    <span className="font-medium">{formatMoneyUZS(order.tax_amount)}</span>
+                    <span className="font-medium">{formatOrderMoney(order, order.tax_amount)}</span>
                   </div>
                 )}
                 <div className="flex justify-between text-lg font-bold pt-2 border-t">
                   <span>Jami:</span>
-                  <span>{formatMoneyUZS(order.total_amount)}</span>
+                  <span>{formatOrderMoney(order, order.total_amount)}</span>
                 </div>
                 <div className="flex justify-between text-success">
                   <span>To'langan summa:</span>
-                  <span className="font-medium">{formatMoneyUZS(order.paid_amount)}</span>
+                  <span className="font-medium">{formatOrderMoney(order, order.paid_amount)}</span>
                 </div>
                 {order.change_amount > 0 && (
                   <div className="flex justify-between">
                     <span className="text-muted-foreground">Qaytim:</span>
-                    <span className="font-medium">{formatMoneyUZS(order.change_amount)}</span>
+                    <span className="font-medium">{formatOrderMoney(order, order.change_amount)}</span>
                   </div>
                 )}
               </div>
@@ -767,7 +781,7 @@ export default function OrderDetail() {
                           </div>
                         </div>
                         <div className="text-right">
-                          <p className="font-bold">{formatMoneyUZS(payment.amount)}</p>
+                          <p className="font-bold">{formatOrderMoney(order, payment.amount)}</p>
                         </div>
                       </div>
                     );

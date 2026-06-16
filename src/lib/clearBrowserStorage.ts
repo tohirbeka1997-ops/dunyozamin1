@@ -1,13 +1,20 @@
 import type { QueryClient } from '@tanstack/react-query';
+import {
+  snapshotRememberLoginStorage,
+  restoreRememberLoginStorage,
+} from '@/lib/auth/rememberLogin';
 
 /**
  * Clear all browser storage (localStorage, sessionStorage, IndexedDB, caches, React Query cache)
  * Useful for logout, reset, or switching from mock to real data
  */
 export const clearAllBrowserStorage = async (queryClient?: QueryClient): Promise<void> => {
+  const rememberLoginSnapshot = snapshotRememberLoginStorage();
+
   // Clear localStorage
   try {
     localStorage.clear();
+    restoreRememberLoginStorage(rememberLoginSnapshot);
   } catch (error) {
     console.error('Error clearing localStorage:', error);
   }
