@@ -95,7 +95,10 @@ function handleClickCallback(db, params, { serviceId, secretKey }, onPaid) {
   }
 
   if (action === 1) {
-    if (row.status === 'paid' && row.payment_status === 'paid') {
+    if (
+      (row.status === 'paid' || row.status === 'processing') &&
+      row.payment_status === 'paid'
+    ) {
       if (row.payment_provider && String(row.payment_provider) !== PROVIDER) {
         return { error: -9, error_note: 'Order already paid via another provider' };
       }
@@ -116,23 +119,35 @@ function handleClickCallback(db, params, { serviceId, secretKey }, onPaid) {
 
     const transId = String(params.click_trans_id ?? '');
     const now = new Date().toISOString();
-    db.transaction(() => {
-      db.prepare(
-        `
+    // Idempotent at the DB layer. The UPDATE only flips a still-unpaid order
+    // to paid; `changes` tells us whether THIS callback performed the
+    // transition. Click retries / concurrent callbacks observe
+    // `changes === 0` and skip the stock decrement (and the customer
+    // notification), so stock is decremented at most once. IMMEDIATE takes the
+    // write lock at BEGIN so the conditional-update + decrement check-then-act
+    // is atomic against a racing callback.
+    const performed = db
+      .transaction(() => {
+        const res = db
+          .prepare(
+            `
         UPDATE web_orders SET
-          status = 'paid',
+          status = 'processing',
           payment_status = 'paid',
           payment_id = ?,
           payment_provider = 'click',
           updated_at = ?
-        WHERE id = ?
+        WHERE id = ? AND payment_status != 'paid'
       `
-      ).run(transId, now, orderId);
+          )
+          .run(transId, now, orderId);
+        if (res.changes === 0) return false;
+        decrementStockForPaidWebOrder(db, orderId);
+        return true;
+      })
+      .immediate();
 
-      decrementStockForPaidWebOrder(db, orderId);
-    })();
-
-    if (typeof onPaid === 'function') void onPaid(orderId);
+    if (performed && typeof onPaid === 'function') void onPaid(orderId);
 
     return {
       error: 0,

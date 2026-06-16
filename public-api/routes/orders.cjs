@@ -8,6 +8,14 @@ const { notifyAdminsNewOrder, notifyOrderCreated, notifyOrderStatusChanged } = r
 const { hasShowInMarketplaceColumn } = require('../lib/productVisibility.cjs');
 const { normalizeDeliveryMethod } = require('../lib/webOrderStatusFlow.cjs');
 const { idempotency } = require('../lib/idempotency.cjs');
+const { reserveWebOrderStock, handleWebOrderCancelled } = require('../lib/stockDecrement.cjs');
+const { getPromoDiscount } = require('../lib/marketplacePromo.cjs');
+const { getPointValueSums, redeemPointsForOrder, getBalance } = require('../lib/marketplaceLoyalty.cjs');
+const {
+  persistMarketplaceCheckoutContact,
+  linkMarketplaceCustomerToPos,
+  formatPhoneUz,
+} = require('../lib/marketplacePosCustomer.cjs');
 
 function parseIntParam(v, fallback, min, max) {
   const n = Number.parseInt(String(v ?? ''), 10);
@@ -34,16 +42,14 @@ function hasColumn(db, tableName, columnName) {
 }
 
 function normalizePhone(raw) {
-  const v = raw != null ? String(raw).trim() : '';
-  if (!v) return null;
-  const compact = v.replace(/[\s()-]/g, '');
-  if (!/^\+?\d{9,15}$/.test(compact)) {
+  const formatted = formatPhoneUz(raw);
+  if (!formatted) {
     const err = new Error('invalid_phone');
     err.code = 'INVALID_PHONE';
     err.status = 400;
     throw err;
   }
-  return compact;
+  return formatted;
 }
 
 function normalizeLocation(raw) {
@@ -106,12 +112,21 @@ function parseCreateBody(body) {
   const note = body.note != null ? String(body.note).trim() : '';
   const phone = normalizePhone(body.phone);
   const location = normalizeLocation(body.location);
+  // Optional promo / loyalty redemption. Validated and applied server-side in
+  // createOrder (see applyDiscounts) — the discount is deducted from the total
+  // and loyalty points are actually spent, not just echoed into the note.
+  const promoCode = body.promo_code != null
+    ? String(body.promo_code).trim().toUpperCase().slice(0, 32)
+    : '';
+  const pointsToRedeem = Math.max(0, Math.floor(Number(body.points_to_redeem) || 0));
   return {
     items,
     payment_method: pm,
     delivery_method: deliveryMethod,
     delivery_address: addr || (deliveryMethod === 'pickup' ? "O'zi olib ketish" : ''),
     note: composeNote(note, phone, location),
+    promo_code: promoCode,
+    points_to_redeem: pointsToRedeem,
     phone,
     location,
   };
@@ -185,7 +200,34 @@ function createOrder(db, customerId, data) {
       });
     }
 
-    const totalAmount = lines.reduce((s, l) => s + l.line_total, 0);
+    const subtotal = lines.reduce((s, l) => s + l.line_total, 0);
+
+    // --- Discounts: promo code + loyalty point redemption ------------------
+    // Applied INSIDE the IMMEDIATE transaction so the balance read/deduct is
+    // serialized against concurrent orders (no double-spend).
+    const promo = getPromoDiscount(db, data.promo_code, subtotal);
+    const promoDiscount = Math.max(0, Math.min(subtotal, promo.discount || 0));
+    const afterPromo = subtotal - promoDiscount;
+
+    let pointsToRedeem = 0;
+    let pointsDiscount = 0;
+    const pointValue = getPointValueSums();
+    const requestedPoints = Math.max(0, Math.floor(Number(data.points_to_redeem) || 0));
+    if (pointValue > 0 && requestedPoints > 0 && afterPromo > 0) {
+      const balance = getBalance(db, customerId);
+      const maxByMoney = Math.floor(afterPromo / pointValue);
+      pointsToRedeem = Math.max(0, Math.min(requestedPoints, balance, maxByMoney));
+      pointsDiscount = pointsToRedeem * pointValue;
+    }
+
+    const discountAmount = promoDiscount + pointsDiscount;
+    const totalAmount = Math.max(0, subtotal - discountAmount);
+
+    const noteParts = [];
+    if (data.note) noteParts.push(String(data.note));
+    if (promoDiscount > 0) noteParts.push(`Promokod: ${promo.code} (-${promoDiscount})`);
+    if (pointsToRedeem > 0) noteParts.push(`Bonus ball: ${pointsToRedeem} (-${pointsDiscount})`);
+    const finalNote = noteParts.join('\n').trim() || null;
 
     const orderNumber = allocateOrderNumber(db);
     const now = new Date().toISOString();
@@ -213,10 +255,22 @@ function createOrder(db, customerId, data) {
       payStatus,
       totalAmount,
       data.delivery_address,
-      data.note,
+      finalNote,
       now,
       now,
     ];
+    if (hasColumn(db, 'web_orders', 'discount_amount')) {
+      columns.push('discount_amount');
+      values.push(discountAmount);
+    }
+    if (hasColumn(db, 'web_orders', 'promo_code')) {
+      columns.push('promo_code');
+      values.push(promoDiscount > 0 ? promo.code : null);
+    }
+    if (hasColumn(db, 'web_orders', 'points_redeemed')) {
+      columns.push('points_redeemed');
+      values.push(pointsToRedeem);
+    }
     if (hasColumn(db, 'web_orders', 'payment_expires_at')) {
       columns.push('payment_expires_at');
       values.push(payExpiresAt);
@@ -224,6 +278,11 @@ function createOrder(db, customerId, data) {
     if (hasColumn(db, 'web_orders', 'delivery_method')) {
       columns.push('delivery_method');
       values.push(data.delivery_method);
+    }
+    if (hasColumn(db, 'web_orders', 'sales_channel')) {
+      const { normalizeSalesChannel } = require('../lib/webOrderQueues.cjs');
+      columns.push('sales_channel');
+      values.push(normalizeSalesChannel(data.sales_channel || data.channel));
     }
 
     const placeholders = columns.map(() => '?').join(', ');
@@ -240,6 +299,14 @@ function createOrder(db, customerId, data) {
     for (const l of lines) {
       insItem.run(orderId, l.product_id, l.quantity, l.price_at_order);
     }
+
+    // Spend the loyalty points now that we have the order id. Same balance we
+    // read above (write lock held), so this redeems exactly pointsToRedeem.
+    if (pointsToRedeem > 0) {
+      redeemPointsForOrder(db, { customerId, orderId, points: pointsToRedeem });
+    }
+
+    reserveWebOrderStock(db, orderId);
 
     const returnUrl = String(process.env.PAYME_RETURN_URL || process.env.PUBLIC_APP_RETURN_URL || '').trim();
     let paymentUrl = null;
@@ -266,6 +333,10 @@ function createOrder(db, customerId, data) {
       status,
       delivery_method: data.delivery_method,
       payment_status: payStatus,
+      subtotal,
+      discount_amount: discountAmount,
+      promo_code: promoDiscount > 0 ? promo.code : null,
+      points_redeemed: pointsToRedeem,
       total_amount: totalAmount,
       payment_url: paymentUrl,
     };
@@ -374,6 +445,17 @@ function mountOrdersRoutes(dbGetter) {
         const customerId = req.customerId;
         const data = parseCreateBody(req.body);
         const db = dbGetter();
+        // Phone was only saved async via PUT /v1/me after checkout — link to POS
+        // failed when admin moved order to processing before that completed.
+        try {
+          persistMarketplaceCheckoutContact(db, customerId, {
+            phone: data.phone,
+            delivery_address: data.delivery_address,
+          });
+          linkMarketplaceCustomerToPos(db, customerId);
+        } catch (linkErr) {
+          console.warn('[orders] marketplace customer link:', linkErr.message || String(linkErr));
+        }
         const result = createOrder(db, customerId, data);
         if (result?.order_id != null) {
           notifyCreatedAsync(result.order_id);
@@ -558,13 +640,16 @@ function mountOrdersRoutes(dbGetter) {
       // expired-payment sweeper and any in-flight provider callbacks see
       // the order as terminally failed rather than still-pending.
       const now = new Date().toISOString();
-      db.prepare(
-        `
+      db.transaction(() => {
+        db.prepare(
+          `
         UPDATE web_orders
         SET status = 'cancelled', payment_status = 'failed', updated_at = ?
         WHERE id = ?
-      `
-      ).run(now, id);
+      `,
+        ).run(now, id);
+        handleWebOrderCancelled(db, id);
+      })();
       notifyStatusAsync(id, 'cancelled');
 
       res.json({ ok: true, id, status: 'cancelled' });

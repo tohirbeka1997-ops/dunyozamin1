@@ -1,23 +1,14 @@
 'use strict';
 
-const path = require('path');
 const fs = require('fs');
 const Database = require('better-sqlite3');
+const { resolvePosDbPath } = require('../../electron/lib/resolvePosDbPath.cjs');
 
 let dbInstance = null;
 
-/**
- * PUBLIC_API_DB_PATH — to'g'ridan-to'g'ri pos.db ga yo'l
- * yoki POS_DATA_DIR/pos.db (POS server bilan bir xil qoida)
- */
+/** Same rules as POS server + migrate-pos-db (see resolvePosDbPath.cjs). */
 function resolveDbPath() {
-  const explicit = process.env.PUBLIC_API_DB_PATH && String(process.env.PUBLIC_API_DB_PATH).trim();
-  if (explicit) return path.resolve(explicit);
-
-  const dataDir = process.env.POS_DATA_DIR && String(process.env.POS_DATA_DIR).trim();
-  if (dataDir) return path.join(path.resolve(dataDir), 'pos.db');
-
-  return path.join(process.cwd(), 'pos.db');
+  return resolvePosDbPath();
 }
 
 function openDatabase() {

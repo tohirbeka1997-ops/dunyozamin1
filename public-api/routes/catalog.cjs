@@ -3,6 +3,8 @@
 const express = require('express');
 const { hasShowInMarketplaceColumn, hasProductsColumn } = require('../lib/productVisibility.cjs');
 const { hasCategoryColumn } = require('../lib/categoryCatalog.cjs');
+const { resolveCatalogImageUrl } = require('../lib/productImageUrl.cjs');
+const { getCategorySubtreeIds } = require('../lib/categoryTree.cjs');
 const { rankProductForQuery, expandQueryTokens, normalizeText } = require('../lib/searchRank.cjs');
 
 /**
@@ -90,6 +92,64 @@ function boolCol(v) {
   return v === 1 || v === true;
 }
 
+/** Products in categories hidden from marketplace are excluded from catalog browse. */
+function marketplaceVisibleCategorySql(db) {
+  if (!hasCategoryColumn(db, 'show_in_marketplace')) return null;
+  return `(
+    p.category_id IS NULL
+    OR EXISTS (
+      SELECT 1 FROM categories c
+      WHERE c.id = p.category_id
+        AND c.is_active = 1
+        AND COALESCE(c.show_in_marketplace, 1) = 1
+    )
+  )`;
+}
+
+/** @param {import('express').Request} req */
+function rowToCatalogItem(row, req, voCol) {
+  const track = boolCol(row.track_stock);
+  const qty = Number(row.stock_qty) || 0;
+  const priceUzs = Math.round(Number(row.sale_price) || 0);
+  let isAvailable = true;
+  let stockQuantity = Math.floor(qty);
+  if (track) {
+    isAvailable = stockQuantity > 0;
+  } else {
+    stockQuantity = null;
+  }
+  return {
+    id: row.id,
+    sku: row.sku,
+    name: row.name,
+    description: row.description,
+    sale_price: Number(row.sale_price) || 0,
+    price_uzs: priceUzs,
+    category_id: row.category_id,
+    track_stock: track,
+    stock_quantity: stockQuantity,
+    is_available: isAvailable,
+    image_url: resolveCatalogImageUrl(row.image_url, req),
+    options: voCol ? parseVariantOptions(row.variant_options) : [],
+  };
+}
+
+/** @param {import('better-sqlite3').Database} db @param {string} categoryId */
+function isCategoryVisibleInMarketplace(db, categoryId) {
+  if (!categoryId) return true;
+  if (!hasCategoryColumn(db, 'show_in_marketplace')) return true;
+  const row = db
+    .prepare(
+      `SELECT is_active, show_in_marketplace FROM categories WHERE id = ? LIMIT 1`,
+    )
+    .get(categoryId);
+  if (!row) return false;
+  if (row.is_active !== 1 && row.is_active !== true) return false;
+  return row.show_in_marketplace === undefined || row.show_in_marketplace === null
+    ? true
+    : row.show_in_marketplace === 1 || row.show_in_marketplace === true;
+}
+
 function parseEnvNumber(name, fallback, min = -Infinity, max = Infinity) {
   const raw = process.env[name];
   const n = Number.parseFloat(String(raw ?? ''));
@@ -112,8 +172,8 @@ function stockSubquery() {
   `;
 }
 
-/** @param {import('better-sqlite3').Database} db */
-function listProducts(db, query) {
+/** @param {import('better-sqlite3').Database} db @param {import('express').Request} req */
+function listProducts(db, query, req) {
   const page = parseIntParam(query.page, 1, 1, 10_000);
   const limit = parseIntParam(query.limit, 20, 1, 100);
   const offset = (page - 1) * limit;
@@ -127,11 +187,21 @@ function listProducts(db, query) {
   if (hasShowInMarketplaceColumn(db)) {
     conditions.push('p.show_in_marketplace = 1');
   }
+  const catVisSql = marketplaceVisibleCategorySql(db);
+  if (catVisSql) {
+    conditions.push(catVisSql);
+  }
   const params = [];
 
   if (categoryId) {
-    conditions.push('p.category_id = ?');
-    params.push(categoryId);
+    const subtreeIds = getCategorySubtreeIds(db, categoryId);
+    if (subtreeIds.length === 1) {
+      conditions.push('p.category_id = ?');
+      params.push(subtreeIds[0]);
+    } else {
+      conditions.push(`p.category_id IN (${subtreeIds.map(() => '?').join(', ')})`);
+      params.push(...subtreeIds);
+    }
   }
 
   const whereClause = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
@@ -202,32 +272,7 @@ function listProducts(db, query) {
     const searchPrefilterTruncated = prefiltered.length >= prefilterLimit;
     rows = scored.slice(offset, offset + limit).map((it) => it.row);
     return {
-      data: rows.map((row) => {
-        const track = boolCol(row.track_stock);
-        const qty = Number(row.stock_qty) || 0;
-        const priceUzs = Math.round(Number(row.sale_price) || 0);
-        let isAvailable = true;
-        let stockQuantity = Math.floor(qty);
-        if (track) {
-          isAvailable = stockQuantity > 0;
-        } else {
-          stockQuantity = null;
-        }
-        return {
-          id: row.id,
-          sku: row.sku,
-          name: row.name,
-          description: row.description,
-          sale_price: Number(row.sale_price) || 0,
-          price_uzs: priceUzs,
-          category_id: row.category_id,
-          track_stock: track,
-          stock_quantity: stockQuantity,
-          is_available: isAvailable,
-          image_url: row.image_url || null,
-          options: voCol ? parseVariantOptions(row.variant_options) : [],
-        };
-      }),
+      data: rows.map((row) => rowToCatalogItem(row, req, voCol)),
       meta: {
         page,
         limit,
@@ -253,32 +298,7 @@ function listProducts(db, query) {
     rows = db.prepare(sql).all(...params, limit, offset);
   }
 
-  const items = rows.map((row) => {
-    const track = boolCol(row.track_stock);
-    const qty = Number(row.stock_qty) || 0;
-    const priceUzs = Math.round(Number(row.sale_price) || 0);
-    let isAvailable = true;
-    let stockQuantity = Math.floor(qty);
-    if (track) {
-      isAvailable = stockQuantity > 0;
-    } else {
-      stockQuantity = null;
-    }
-    return {
-      id: row.id,
-      sku: row.sku,
-      name: row.name,
-      description: row.description,
-      sale_price: Number(row.sale_price) || 0,
-      price_uzs: priceUzs,
-      category_id: row.category_id,
-      track_stock: track,
-      stock_quantity: stockQuantity,
-      is_available: isAvailable,
-      image_url: row.image_url || null,
-      options: voCol ? parseVariantOptions(row.variant_options) : [],
-    };
-  });
+  const items = rows.map((row) => rowToCatalogItem(row, req, voCol));
 
   return {
     data: items,
@@ -291,8 +311,8 @@ function listProducts(db, query) {
   };
 }
 
-/** @param {import('better-sqlite3').Database} db */
-function getProductById(db, id) {
+/** @param {import('better-sqlite3').Database} db @param {import('express').Request} req */
+function getProductById(db, id, req) {
   const mpVis = hasShowInMarketplaceColumn(db);
   const voCol = hasProductsColumn(db, 'variant_options');
   const voSelect = voCol ? ', p.variant_options' : '';
@@ -319,6 +339,7 @@ function getProductById(db, id) {
     .get(id);
 
   if (!row) return null;
+  if (!isCategoryVisibleInMarketplace(db, row.category_id)) return null;
 
   let images = [];
   try {
@@ -349,10 +370,15 @@ function getProductById(db, id) {
 
   const imageList = images.map((im) => ({
     id: im.id,
-    url: im.url,
+    url: resolveCatalogImageUrl(im.url, req),
     sort_order: im.sort_order,
     is_primary: boolCol(im.is_primary),
   }));
+
+  const primaryImage =
+    resolveCatalogImageUrl(row.image_url, req) ||
+    imageList.find((im) => im.url)?.url ||
+    null;
 
   return {
     id: row.id,
@@ -365,7 +391,7 @@ function getProductById(db, id) {
     track_stock: track,
     stock_quantity: stockQuantity,
     is_available: isAvailable,
-    image_url: row.image_url || null,
+    image_url: primaryImage,
     images: imageList,
     options: voCol ? parseVariantOptions(row.variant_options) : [],
   };
@@ -392,8 +418,8 @@ function listCategories(db) {
     .all();
 }
 
-/** @param {import('better-sqlite3').Database} db */
-function listTrendingProducts(db, query) {
+/** @param {import('better-sqlite3').Database} db @param {import('express').Request} req */
+function listTrendingProducts(db, query, req) {
   const limit = parseIntParam(query.limit, 8, 1, 24);
   const days = parseIntParam(query.days, 30, 1, 120);
   const fromIso = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
@@ -412,6 +438,8 @@ function listTrendingProducts(db, query) {
   const costCol = hasProductsColumn(db, 'cost_price');
   const voSelect = voCol ? ', p.variant_options' : '';
   const mpWhere = mpVis ? 'AND p.show_in_marketplace = 1' : '';
+  const catVisSql = marketplaceVisibleCategorySql(db);
+  const catWhere = catVisSql ? `AND ${catVisSql}` : '';
   const sql = `
     WITH web_sales AS (
       SELECT
@@ -466,6 +494,7 @@ function listTrendingProducts(db, query) {
     LEFT JOIN (${stockSubquery()}) sb ON sb.product_id = p.id
     WHERE p.is_active = 1
       ${mpWhere}
+      ${catWhere}
     LIMIT 200
   `;
   const rows = db.prepare(sql).all(recentFromIso, fromIso, recentFromIso, fromIso);
@@ -502,7 +531,7 @@ function listTrendingProducts(db, query) {
       track_stock: track,
       stock_quantity: stockQuantity,
       is_available: isAvailable,
-      image_url: row.image_url || null,
+      image_url: resolveCatalogImageUrl(row.image_url, req),
       sold_qty: soldQty,
       sold_recent_qty: soldRecentQty,
       options: voCol ? parseVariantOptions(row.variant_options) : [],
@@ -531,14 +560,94 @@ function listTrendingProducts(db, query) {
   };
 }
 
+/**
+ * Read the active promo banners. Optional schedule windows are honored
+ * (NULL means "no bound"). Soft-fails to an empty array if the table
+ * is missing — older DBs without the migration just see the legacy
+ * hard-coded slides on the client.
+ */
+function listActivePromoBanners(db) {
+  try {
+    const now = new Date().toISOString();
+    return db
+      .prepare(
+        `SELECT id, emoji, title, subtitle, cta_text, cta_link, theme, sort_order
+           FROM marketplace_promo_banners
+           WHERE is_active = 1
+             AND (starts_at IS NULL OR starts_at <= ?)
+             AND (ends_at IS NULL OR ends_at >= ?)
+           ORDER BY sort_order ASC, id ASC`,
+      )
+      .all(now, now);
+  } catch (e) {
+    if (!String(e.message || '').includes('no such')) {
+      console.error('[catalog] listActivePromoBanners', e);
+    }
+    return [];
+  }
+}
+
+/**
+ * Return today's pinned daily-deal product (if any) joined with the
+ * full product row. Returns null when no override is set, in which case
+ * the mini-app falls back to its deterministic trending pick.
+ */
+function getTodaysDailyDeal(db, req) {
+  try {
+    const today = new Date().toISOString().slice(0, 10);
+    const row = db
+      .prepare(
+        `SELECT d.product_id, d.badge_text
+           FROM marketplace_daily_deals d
+           WHERE d.featured_date = ?`,
+      )
+      .get(today);
+    if (!row) return null;
+    const product = getProductById(db, row.product_id, req);
+    if (!product) return null;
+    return {
+      featured_date: today,
+      badge_text: row.badge_text || null,
+      product,
+    };
+  } catch (e) {
+    if (!String(e.message || '').includes('no such')) {
+      console.error('[catalog] getTodaysDailyDeal', e);
+    }
+    return null;
+  }
+}
+
 function mountCatalogRoutes(dbGetter) {
   router.get('/products', (req, res) => {
     try {
       const db = dbGetter();
-      const result = listProducts(db, req.query);
+      const result = listProducts(db, req.query, req);
       res.json(result);
     } catch (e) {
       console.error('[catalog] GET /products', e);
+      res.status(500).json({ error: 'internal_error' });
+    }
+  });
+
+  router.get('/promo-banners', (_req, res) => {
+    try {
+      const db = dbGetter();
+      const data = listActivePromoBanners(db);
+      res.json({ data });
+    } catch (e) {
+      console.error('[catalog] GET /promo-banners', e);
+      res.status(500).json({ error: 'internal_error' });
+    }
+  });
+
+  router.get('/products/daily-deal', (req, res) => {
+    try {
+      const db = dbGetter();
+      const data = getTodaysDailyDeal(db, req);
+      res.json({ data });
+    } catch (e) {
+      console.error('[catalog] GET /products/daily-deal', e);
       res.status(500).json({ error: 'internal_error' });
     }
   });
@@ -560,7 +669,7 @@ function mountCatalogRoutes(dbGetter) {
           return;
         }
       }
-      const result = listTrendingProducts(db, req.query);
+      const result = listTrendingProducts(db, req.query, req);
       if (ttlMs > 0) {
         // Evict oldest entry when the cache is full. Map preserves
         // insertion order so the first key is the oldest. Without this
@@ -583,7 +692,7 @@ function mountCatalogRoutes(dbGetter) {
       if (msg.includes('no such table')) {
         try {
           const db = dbGetter();
-          const fallback = listProducts(db, { ...req.query, page: 1, sort: 'name' });
+          const fallback = listProducts(db, { ...req.query, page: 1, sort: 'name' }, req);
           res.json({ data: fallback.data, meta: { limit: fallback.meta.limit, fallback: true } });
           return;
         } catch {
@@ -598,7 +707,7 @@ function mountCatalogRoutes(dbGetter) {
   router.get('/products/:id', (req, res) => {
     try {
       const db = dbGetter();
-      const product = getProductById(db, req.params.id);
+      const product = getProductById(db, req.params.id, req);
       if (!product) {
         res.status(404).json({ error: 'not_found' });
         return;
@@ -610,10 +719,77 @@ function mountCatalogRoutes(dbGetter) {
     }
   });
 
+  // Aggregated review/rating snapshot for a product. We sample ratings
+  // from delivered orders that contained this product. Cheap to compute
+  // and good enough for the "★ 4.7 (12 ta sharh)" line on the detail page.
+  router.get('/products/:id/reviews', (req, res) => {
+    try {
+      const productId = String(req.params.id || '').trim();
+      if (!productId) {
+        res.status(400).json({ error: 'invalid_id' });
+        return;
+      }
+      const db = dbGetter();
+      const limit = Math.max(1, Math.min(20, Number.parseInt(String(req.query.limit || '5'), 10) || 5));
+
+      let summary = { count: 0, avg: null, distribution: { 1: 0, 2: 0, 3: 0, 4: 0, 5: 0 } };
+      let recent = [];
+      try {
+        const rows = db
+          .prepare(
+            `SELECT wo.rating, wo.feedback, wo.created_at, mc.first_name
+             FROM web_order_items wi
+             JOIN web_orders wo ON wo.id = wi.order_id
+             LEFT JOIN marketplace_customers mc ON mc.id = wo.customer_id
+             WHERE wi.product_id = ?
+               AND wo.rating IS NOT NULL
+               AND wo.status = 'delivered'
+             ORDER BY wo.created_at DESC`,
+          )
+          .all(productId);
+
+        if (rows.length > 0) {
+          let sum = 0;
+          const dist = { 1: 0, 2: 0, 3: 0, 4: 0, 5: 0 };
+          for (const r of rows) {
+            const n = Math.max(1, Math.min(5, Math.round(Number(r.rating) || 0)));
+            sum += n;
+            dist[n] = (dist[n] || 0) + 1;
+          }
+          summary = {
+            count: rows.length,
+            avg: Math.round((sum / rows.length) * 10) / 10,
+            distribution: dist,
+          };
+          recent = rows
+            .filter((r) => r.feedback && String(r.feedback).trim())
+            .slice(0, limit)
+            .map((r) => ({
+              rating: Math.max(1, Math.min(5, Math.round(Number(r.rating) || 0))),
+              feedback: String(r.feedback || '').trim(),
+              created_at: r.created_at,
+              author: r.first_name ? String(r.first_name).slice(0, 24) : null,
+            }));
+        }
+      } catch (e) {
+        // Tables/columns might be missing on older DBs — leave empty
+        if (!String(e.message || '').includes('no such')) throw e;
+      }
+
+      res.json({ ok: true, summary, recent });
+    } catch (e) {
+      console.error('[catalog] GET /products/:id/reviews', e);
+      res.status(500).json({ error: 'internal_error' });
+    }
+  });
+
   router.get('/categories', (req, res) => {
     try {
       const db = dbGetter();
-      const rows = listCategories(db);
+      const rows = listCategories(db).map((row) => ({
+        ...row,
+        image_url: row.image_url ? resolveCatalogImageUrl(row.image_url, req) : row.image_url,
+      }));
       res.json({ data: rows });
     } catch (e) {
       console.error('[catalog] GET /categories', e);

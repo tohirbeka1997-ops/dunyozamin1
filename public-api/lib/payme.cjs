@@ -1,7 +1,16 @@
 'use strict';
 
+const crypto = require('crypto');
 const { sumsToTiyin } = require('./paymentLinks.cjs');
-const { decrementStockForPaidWebOrder } = require('./stockDecrement.cjs');
+const { decrementStockForPaidWebOrder, handleWebOrderCancelled } = require('./stockDecrement.cjs');
+
+/** Constant-time string comparison to avoid auth timing side-channels. */
+function timingSafeStrEqual(a, b) {
+  const aa = Buffer.from(String(a == null ? '' : a), 'utf8');
+  const bb = Buffer.from(String(b == null ? '' : b), 'utf8');
+  if (aa.length !== bb.length || aa.length === 0) return false;
+  return crypto.timingSafeEqual(aa, bb);
+}
 
 /**
  * Paycom Merchant API — Basic Auth: base64(merchant_id:api_key)
@@ -19,7 +28,11 @@ function verifyPaycomBasicAuth(req, merchantId, apiKey) {
   if (idx < 0) return false;
   const id = decoded.slice(0, idx);
   const key = decoded.slice(idx + 1);
-  return id === String(merchantId) && key === String(apiKey);
+  // Constant-time compare on both fields (non-short-circuit) to avoid leaking
+  // which of merchant_id / api_key matched via response timing.
+  const idOk = timingSafeStrEqual(id, String(merchantId));
+  const keyOk = timingSafeStrEqual(key, String(apiKey));
+  return idOk && keyOk;
 }
 
 function jsonRpcResult(id, result) {
@@ -142,7 +155,10 @@ function handlePaycomRpc(db, req, body, { merchantId, apiKey }) {
       return { body: jsonRpcError(id, E_INVALID_AMOUNT, 'Invalid amount') };
     }
 
-    if (row.status === 'paid' && row.payment_status === 'paid') {
+    if (
+      (row.status === 'paid' || row.status === 'processing') &&
+      row.payment_status === 'paid'
+    ) {
       if (row.payment_provider && String(row.payment_provider) !== PROVIDER) {
         return { body: jsonRpcError(id, E_UNABLE_TO_PERFORM, 'Order already paid via another provider') };
       }
@@ -164,21 +180,33 @@ function handlePaycomRpc(db, req, body, { merchantId, apiKey }) {
     }
 
     const now = new Date().toISOString();
-    db.transaction(() => {
-      db.prepare(
-        `
+    // Idempotent at the DB layer. The UPDATE only flips a still-unpaid order
+    // to paid; `changes` tells us whether THIS callback performed the
+    // transition. Provider retries / concurrent callbacks observe
+    // `changes === 0` and skip the stock decrement (and the customer
+    // notification), so stock is decremented at most once. IMMEDIATE takes the
+    // write lock at BEGIN so the conditional-update + decrement check-then-act
+    // is atomic against a racing callback.
+    const performed = db
+      .transaction(() => {
+        const res = db
+          .prepare(
+            `
         UPDATE web_orders SET
-          status = 'paid',
+          status = 'processing',
           payment_status = 'paid',
           payment_id = ?,
           payment_provider = 'payme',
           updated_at = ?
-        WHERE id = ?
+        WHERE id = ? AND payment_status != 'paid'
       `
-      ).run(transId, now, orderId);
-
-      decrementStockForPaidWebOrder(db, orderId);
-    })();
+          )
+          .run(transId, now, orderId);
+        if (res.changes === 0) return false;
+        decrementStockForPaidWebOrder(db, orderId);
+        return true;
+      })
+      .immediate();
 
     return {
       body: jsonRpcResult(id, {
@@ -186,7 +214,7 @@ function handlePaycomRpc(db, req, body, { merchantId, apiKey }) {
         perform_time: Date.now(),
         state: 2,
       }),
-      notifyOrderId: orderId,
+      ...(performed ? { notifyOrderId: orderId } : {}),
     };
   }
 
@@ -198,11 +226,14 @@ function handlePaycomRpc(db, req, body, { merchantId, apiKey }) {
     if (!row) return { body: jsonRpcError(id, E_ORDER_NOT_FOUND, 'Order not found') };
     const now = new Date().toISOString();
     if (row.status === 'new' && row.payment_status === 'pending') {
-      db.prepare(
-        `
+      db.transaction(() => {
+        db.prepare(
+          `
         UPDATE web_orders SET status = 'cancelled', payment_status = 'failed', updated_at = ? WHERE id = ?
-      `
-      ).run(now, orderId);
+      `,
+        ).run(now, orderId);
+        handleWebOrderCancelled(db, orderId);
+      })();
     }
     return {
       body: jsonRpcResult(id, {

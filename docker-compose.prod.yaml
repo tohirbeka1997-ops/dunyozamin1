@@ -20,12 +20,14 @@ name: pos
 
 services:
   pos-server:
-    # Override the default locally-built image with the one published by CI.
-    # POS_IMAGE defaults to the "latest" tag on GHCR for this repo; pin to
-    # a SHA for zero-surprise deploys.
-    image: ${POS_IMAGE:-ghcr.io/OWNER/REPO:latest}
-    # NOTE: we intentionally do NOT `reset` the `build:` block from the base
-    # file — that requires compose 2.24+. Instead, always use
-    #   docker compose ... pull && docker compose ... up -d
-    # which bypasses the build step (pull_policy below is the belt-and-braces).
+    # CRITICAL: public-api (systemd) and pos-server MUST share one SQLite file.
+    # The base compose uses a Docker named volume (`pos-data`) which diverges from
+    # host POS_DATA_DIR=/var/lib/pos — mini-app orders land in host DB while admin
+    # RPC reads the isolated volume (empty web_orders). Bind-mount host data dir.
+    volumes:
+      - ${POS_HOST_DATA_DIR:-/var/lib/pos}:/var/lib/pos
+
+    # Optional GHCR image override — set POS_IMAGE in .env for CI/CD pulls.
+    # When unset, the base docker-compose.yaml `pos-server:latest` build tag is used.
+    image: ${POS_IMAGE:-pos-server:latest}
     pull_policy: always

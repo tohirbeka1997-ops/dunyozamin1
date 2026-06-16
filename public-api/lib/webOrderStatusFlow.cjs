@@ -3,9 +3,9 @@
 const STATUS_LABELS = {
   new: 'Yangi',
   paid: 'Kassaga tushdi',
-  processing: "Qabul qilindi",
+  processing: 'Tayyorlanmoqda',
   ready: 'Buyurtma tayyor',
-  out_for_delivery: "Kuryer yo'lda",
+  out_for_delivery: 'Yetkazilmoqda',
   delivered: 'Yetkazildi',
   cancelled: 'Bekor qilindi',
 };

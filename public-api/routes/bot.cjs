@@ -6,12 +6,27 @@ const crypto = require('crypto');
 const { ensureLoyaltySchema, getBalance, listLedger } = require('../lib/marketplaceLoyalty.cjs');
 const { sendTelegramText } = require('../lib/telegramNotify.cjs');
 const { allowedNextStatuses, isValidTransition, normalizeDeliveryMethod } = require('../lib/webOrderStatusFlow.cjs');
+const {
+  fulfillWebOrderStock,
+  handleWebOrderCancelled,
+  markCashPaymentOnDelivered,
+  isOrderStockFulfilled,
+} = require('../lib/webOrderStock.cjs');
+const {
+  ensurePosCustomerForMarketplace,
+  formatPhoneUz,
+} = require('../lib/marketplacePosCustomer.cjs');
 
 // Uzbekistan is on UTC+05:00 year-round (no DST). SQLite's `datetime()` does
 // not understand IANA zones, so we use this offset for date bucketing in
 // reports. Mirror the Electron-side `UZBEKISTAN_TZ_SQLITE_OFFSET` constant —
 // update both if the deployment ever moves.
 const UZBEKISTAN_TZ_SQLITE_OFFSET = '+5 hours';
+
+// A weak/short shared secret is brute-forceable; refuse to operate the bot
+// surface unless the operator configured a secret of at least this length.
+// This is a server-only secret (process.env, never a VITE_*/client value).
+const MIN_BOT_INTERNAL_SECRET_LEN = 16;
 
 function parseInternalSecret() {
   return String(process.env.TELEGRAM_BOT_INTERNAL_SECRET || '').trim();
@@ -26,11 +41,15 @@ function timingSafeStringEqual(a, b) {
 
 function verifyInternalSecret(req, res, next) {
   const expected = parseInternalSecret();
-  if (!expected) {
+  // Reject when the secret is unset OR too short to be safe. Either way the
+  // bot surface is treated as misconfigured (503) rather than open.
+  if (!expected || expected.length < MIN_BOT_INTERNAL_SECRET_LEN) {
     res.status(503).json({ error: 'bot_internal_secret_missing' });
     return;
   }
   const got = String(req.headers['x-telegram-bot-secret'] || '').trim();
+  // Constant-time comparison (crypto.timingSafeEqual) to avoid leaking how
+  // many leading bytes of a guess were correct.
   if (!got || !timingSafeStringEqual(got, expected)) {
     res.status(401).json({ error: 'unauthorized' });
     return;
@@ -153,11 +172,13 @@ function getActiveCourier(db, actorTelegramId, username = '') {
     `,
     )
     .get(actorTelegramId, actorTelegramId, normalizedUsername, normalizedUsername);
-  if (row && actorTelegramId != null && row.telegram_id == null) {
-    db.prepare(`UPDATE marketplace_couriers SET telegram_id = ?, updated_at = ? WHERE id = ?`)
-      .run(actorTelegramId, new Date().toISOString(), row.id);
-    return { ...row, telegram_id: actorTelegramId };
-  }
+  // SECURITY: do NOT auto-bind the caller's telegram_id onto a username-only
+  // courier row. Previously any caller holding the shared bot secret could
+  // claim an unbound courier account (and lock the real owner out) simply by
+  // passing actor_telegram_id + a known username. Binding a telegram_id to a
+  // courier must be done explicitly by an admin (see POST /admin/couriers,
+  // which is gated by an HMAC admin signature). We still authorize the caller
+  // against the matched (existing) courier record, but never mutate it here.
   return row || null;
 }
 
@@ -230,15 +251,13 @@ function requireAdminPayload(req, res, action, payloadHash) {
 }
 
 function normalizePhone(raw) {
-  if (raw == null) return null;
-  const compact = String(raw).trim().replace(/[\s()-]/g, '');
-  if (!compact) return null;
-  if (!/^\+?\d{9,15}$/.test(compact)) {
+  const formatted = formatPhoneUz(raw);
+  if (!formatted) {
     const err = new Error('invalid_phone');
     err.code = 'invalid_phone';
     throw err;
   }
-  return compact;
+  return formatted;
 }
 
 function hasColumn(db, tableName, columnName) {
@@ -328,72 +347,6 @@ function ensureRegistrationSchema(db) {
     CREATE INDEX IF NOT EXISTS idx_marketplace_customer_bindings_pos
       ON marketplace_customer_bindings(pos_customer_id);
   `);
-}
-
-function generateCustomerCode(db) {
-  const last = db
-    .prepare(`SELECT code FROM customers WHERE code LIKE 'CUST-%' ORDER BY code DESC LIMIT 1`)
-    .get();
-  if (!last?.code) return 'CUST-0001';
-  const n = Number.parseInt(String(last.code).replace('CUST-', ''), 10) || 0;
-  return `CUST-${String(n + 1).padStart(4, '0')}`;
-}
-
-function ensurePosCustomerForMarketplace(db, profile) {
-  const firstName = normalizeName(profile.first_name, 'first_name');
-  const lastName = normalizeName(profile.last_name, 'last_name', { optional: true });
-  const phone = normalizePhone(profile.phone);
-  if (!phone) {
-    const err = new Error('invalid_phone');
-    err.code = 'invalid_phone';
-    throw err;
-  }
-  const fullName = `${firstName} ${lastName}`.trim();
-
-  const existingByPhone = db
-    .prepare(`SELECT id FROM customers WHERE phone = ? ORDER BY created_at ASC LIMIT 1`)
-    .get(phone);
-  if (existingByPhone?.id) {
-    db.prepare(
-      `
-      UPDATE customers
-      SET name = COALESCE(NULLIF(?, ''), name),
-          updated_at = datetime('now')
-      WHERE id = ?
-    `,
-    ).run(fullName, existingByPhone.id);
-    return existingByPhone.id;
-  }
-
-  const cols = db.prepare(`PRAGMA table_info(customers)`).all().map((c) => String(c.name));
-  const hasBonus = cols.includes('bonus_points');
-  const hasPricingTier = cols.includes('pricing_tier');
-  const hasAllowDebt = cols.includes('allow_debt');
-  const id = randomUUID();
-  const code = generateCustomerCode(db);
-  const now = new Date().toISOString();
-
-  const columns = [
-    'id', 'code', 'name', 'phone', 'type', 'status', 'created_at', 'updated_at',
-  ];
-  const values = [
-    id, code, fullName, phone, 'individual', 'active', now, now,
-  ];
-  if (hasAllowDebt) {
-    columns.push('allow_debt');
-    values.push(0);
-  }
-  if (hasPricingTier) {
-    columns.push('pricing_tier');
-    values.push('retail');
-  }
-  if (hasBonus) {
-    columns.push('bonus_points');
-    values.push(0);
-  }
-  const placeholders = columns.map(() => '?').join(', ');
-  db.prepare(`INSERT INTO customers (${columns.join(', ')}) VALUES (${placeholders})`).run(...values);
-  return id;
 }
 
 function upsertRegistration(db, telegramId, payload) {
@@ -692,7 +645,7 @@ function mountBotRoutes(dbGetter) {
         `,
         )
         .get(tgId);
-      const registered = !!(row?.first_name && row?.last_name && row?.phone && row?.loyalty_card_code);
+      const registered = !!(row?.first_name && row?.phone && row?.loyalty_card_code);
       res.json({ ok: true, registered, profile: row || null });
     } catch (e) {
       res.status(500).json({ error: 'internal_error', reason: e.message || String(e) });
@@ -872,9 +825,13 @@ function mountBotRoutes(dbGetter) {
       // payment-provider reconciliation see the order as terminally failed
       // rather than still-pending. Without this update, expired-pending
       // sweeps and provider callbacks could still touch the row.
-      db.prepare(
-        `UPDATE web_orders SET status = 'cancelled', payment_status = 'failed', updated_at = ? WHERE id = ?`
-      ).run(new Date().toISOString(), orderId);
+      const now = new Date().toISOString();
+      db.transaction(() => {
+        db.prepare(
+          `UPDATE web_orders SET status = 'cancelled', payment_status = 'failed', updated_at = ? WHERE id = ?`,
+        ).run(now, orderId);
+        handleWebOrderCancelled(db, orderId);
+      })();
       writeAudit(db, 'order_cancel_by_customer', tgId, tgId, {
         order_id: orderId,
         order_number: row.order_number,
@@ -1178,7 +1135,8 @@ function mountBotRoutes(dbGetter) {
       const row = db
         .prepare(
           `
-          SELECT wo.id, wo.status, wo.order_number, ${deliverySelect}, mc.telegram_id
+          SELECT wo.id, wo.status, wo.order_number, wo.payment_method, wo.payment_status, wo.customer_id,
+                 ${deliverySelect}, mc.telegram_id
           FROM web_orders wo
           LEFT JOIN marketplace_customers mc ON mc.id = wo.customer_id
           WHERE wo.id = ?
@@ -1204,11 +1162,46 @@ function mountBotRoutes(dbGetter) {
         });
         return;
       }
-      db.prepare(`UPDATE web_orders SET status = ?, updated_at = ? WHERE id = ?`).run(
-        nextStatus,
-        new Date().toISOString(),
-        orderId,
-      );
+      const now = new Date().toISOString();
+      db.transaction(() => {
+        if (nextStatus === 'cancelled') {
+          const currentPaymentStatus = String(row.payment_status || 'pending');
+          let nextPaymentStatus = currentPaymentStatus;
+          if (currentPaymentStatus === 'paid') nextPaymentStatus = 'refunded';
+          else if (currentPaymentStatus === 'pending') nextPaymentStatus = 'failed';
+          db.prepare(
+            `UPDATE web_orders SET status = 'cancelled', payment_status = ?, updated_at = ? WHERE id = ?`,
+          ).run(nextPaymentStatus, now, orderId);
+          handleWebOrderCancelled(db, orderId);
+        } else {
+          db.prepare(`UPDATE web_orders SET status = ?, updated_at = ? WHERE id = ?`).run(
+            nextStatus,
+            now,
+            orderId,
+          );
+          if (nextStatus === 'processing' && !isOrderStockFulfilled(db, orderId)) {
+            fulfillWebOrderStock(db, orderId, {
+              reason: `Order accepted ${row.order_number}`,
+            });
+          }
+          if (nextStatus === 'processing' && row.customer_id) {
+            try {
+              const { linkMarketplaceCustomerToPos } = require('../lib/marketplacePosCustomer.cjs');
+              linkMarketplaceCustomerToPos(db, row.customer_id);
+            } catch {
+              /* best-effort */
+            }
+          }
+          if (nextStatus === 'delivered') {
+            markCashPaymentOnDelivered(db, orderId);
+            if (!isOrderStockFulfilled(db, orderId)) {
+              fulfillWebOrderStock(db, orderId, {
+                reason: `Delivered ${row.order_number}`,
+              });
+            }
+          }
+        }
+      })();
       writeAudit(db, 'admin_order_status_update', actorTelegramId, row.telegram_id || null, {
         order_id: orderId,
         from: current,
@@ -1758,4 +1751,11 @@ function mountBotRoutes(dbGetter) {
   return router;
 }
 
-module.exports = { mountBotRoutes };
+module.exports = {
+  mountBotRoutes,
+  // Exported for unit tests / reuse. These are pure helpers with no per-call
+  // state; they do not change the routing contract.
+  verifyInternalSecret,
+  getActiveCourier,
+  MIN_BOT_INTERNAL_SECRET_LEN,
+};

@@ -11,9 +11,9 @@ const {
 
 test('statusLabel returns localized labels', () => {
   assert.equal(statusLabel('new'), 'Yangi');
-  assert.equal(statusLabel('processing'), "Qabul qilindi");
+  assert.equal(statusLabel('processing'), 'Tayyorlanmoqda');
   assert.equal(statusLabel('READY'), 'Buyurtma tayyor');
-  assert.equal(statusLabel('out_for_delivery'), "Kuryer yo'lda");
+  assert.equal(statusLabel('out_for_delivery'), 'Yetkazilmoqda');
   assert.equal(statusLabel('delivered'), 'Yetkazildi');
 });
 

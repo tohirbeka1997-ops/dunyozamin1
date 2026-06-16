@@ -6,7 +6,7 @@
   "main": "server.cjs",
   "scripts": {
     "start": "node server.cjs",
-    "test": "node --test *.test.cjs"
+    "test": "node --test *.test.cjs lib/*.test.cjs"
   },
   "engines": {
     "node": ">=18"
@@ -17,6 +17,7 @@
     "dotenv": "^16.6.1",
     "express": "^4.21.2",
     "express-rate-limit": "^7.5.0",
+    "helmet": "^8.2.0",
     "jsonwebtoken": "^9.0.2"
   }
 }

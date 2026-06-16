@@ -105,6 +105,77 @@ const MENU = {
   help: 'ℹ️ Yordam',
 };
 
+// ─────────────────────────────────────────────────────────────
+// Brend: ranglar #0A3625 (to'q yashil) + #CCDA47 (sariq-yashil)
+// ─────────────────────────────────────────────────────────────
+const BRAND = {
+  name: 'DunyoZamin',
+  tagline: 'Onlayn doʻkoningiz',
+  primary: '#0A3625',
+  accent: '#CCDA47',
+  qr: { dark: '#0A3625', light: '#FFFFFF' },
+  divider:     '━━━━━━━━━━━━━━━━━━━━━',
+  softDivider: '┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄',
+  dotDivider:  '· · · · · · · · · · · · · · · · ·',
+  bullet: '🌿',
+  spark: '✨',
+  leaf: '🍃',
+  star: '⭐',
+};
+
+function esc(s) {
+  return String(s == null ? '' : s)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+}
+
+function brandHeader(title, subtitle) {
+  const head = `${BRAND.bullet} <b>${esc(title)}</b>`;
+  const sub = subtitle ? `\n<i>${esc(subtitle)}</i>` : '';
+  return `${head}${sub}\n${BRAND.divider}`;
+}
+
+function brandFooter() {
+  return `${BRAND.softDivider}\n${BRAND.spark} <i>${esc(BRAND.name)}</i>`;
+}
+
+async function safeReplyHTML(ctx, text, extra) {
+  try {
+    await ctx.reply(text, { parse_mode: 'HTML', disable_web_page_preview: true, ...(extra || {}) });
+  } catch (e) {
+    console.error('[telegram:bot] reply(html) failed:', e?.message || String(e));
+    try {
+      await ctx.reply(String(text || '').replace(/<[^>]+>/g, ''), extra);
+    } catch {}
+  }
+}
+
+function fmtMoney(value) {
+  const n = Number(value || 0);
+  return `${n.toLocaleString('uz-UZ')} soʻm`;
+}
+
+function fmtDate(value) {
+  if (!value) return '';
+  return String(value).replace('T', ' ').slice(0, 16);
+}
+
+const STATUS_BADGE = {
+  new: '🆕 Yangi',
+  paid: '💳 Toʻlangan',
+  processing: '🧺 Yigʻilmoqda',
+  ready: '✅ Tayyor',
+  out_for_delivery: '🚚 Yoʻlda',
+  delivered: '📬 Yetkazildi',
+  cancelled: '❌ Bekor qilingan',
+  open: '📂 Ochiq',
+};
+function statusBadge(s) {
+  const key = String(s || '').toLowerCase();
+  return STATUS_BADGE[key] || `• ${s || '—'}`;
+}
+
 function adminIds() {
   return new Set(
     String(process.env.TELEGRAM_ADMIN_IDS || '')
@@ -220,26 +291,39 @@ function buildCatalogUrlWithQuery(queryText) {
 
 function formatSearchResultsMessage(queryText, rows) {
   if (!rows.length) {
-    return `🔎 "${queryText}" bo‘yicha mahsulot topilmadi.\nBoshqa kalit so‘z bilan urinib ko‘ring.`;
+    return (
+      `🔎 <b>Qidiruv:</b> <i>"${esc(queryText)}"</i>\n` +
+      `${BRAND.divider}\n` +
+      `❌ <b>Mahsulot topilmadi.</b>\n` +
+      `<i>Boshqa kalit soʻz bilan urinib koʻring.</i>`
+    );
   }
   const lines = rows.map((r, i) => {
-    const price = Number(r.price_uzs || 0).toLocaleString('uz-UZ');
-    const stock = r.is_available ? '✅ mavjud' : '⛔ yo‘q';
-    const sku = r.sku ? ` | SKU: ${r.sku}` : '';
-    return `${i + 1}. ${r.name}\n   ${price} so'm | ${stock}${sku}`;
+    const price = fmtMoney(r.price_uzs);
+    const stock = r.is_available ? '🟢 <b>mavjud</b>' : '🔴 <b>yoʻq</b>';
+    const sku = r.sku ? `   🏷 SKU: <code>${esc(r.sku)}</code>\n` : '';
+    return `<b>${i + 1}.</b> ${esc(r.name)}\n` +
+      `   💰 <b>${esc(price)}</b>  ·  ${stock}\n` +
+      sku;
   });
-  return `🔎 "${queryText}" bo‘yicha topildi (${rows.length}):\n\n${lines.join('\n\n')}`;
+  return (
+    `🔎 <b>Qidiruv:</b> <i>"${esc(queryText)}"</i>\n` +
+    `${BRAND.divider}\n` +
+    `${BRAND.spark} Topildi: <b>${rows.length}</b> ta\n` +
+    `${BRAND.softDivider}\n` +
+    lines.join(`${BRAND.softDivider}\n`).trimEnd()
+  );
 }
 
 async function runCatalogSearch(ctx, queryText) {
   const q = String(queryText || '').trim();
   if (q.length < 2) {
-    await safeReply(ctx, "Qidiruv so‘zi kamida 2 ta belgi bo‘lsin.");
+    await safeReply(ctx, "Qidiruv soʻzi kamida 2 ta belgi boʻlsin.");
     return;
   }
   const payload = await callPublicApi(`/v1/products?limit=8&sort=name&q=${encodeURIComponent(q)}`);
   const rows = Array.isArray(payload?.data) ? payload.data : [];
-  await safeReply(
+  await safeReplyHTML(
     ctx,
     formatSearchResultsMessage(q, rows),
     Markup.inlineKeyboard([
@@ -326,14 +410,17 @@ async function callBotAdminReport({ actorTelegramId, reportType }) {
 
 function formatOrdersMessage(rows) {
   if (!rows.length) {
-    return "Hozircha onlayn buyurtmalar yo'q.";
+    return `📦 <b>Soʻnggi buyurtmalar</b>\n${BRAND.divider}\n<i>Hozircha onlayn buyurtmalar yoʻq.</i>`;
   }
   const lines = rows.map((r, i) => {
-    const sum = Number(r.total_amount) || 0;
-    const d = r.created_at ? String(r.created_at).replace('T', ' ').slice(0, 16) : '';
-    return `${i + 1}. ${r.order_number} — ${r.status} (${r.payment_status || 'pending'}) — ${sum.toLocaleString('uz-UZ')} so'm\n   ${d}`;
+    const sum = fmtMoney(r.total_amount);
+    const d = fmtDate(r.created_at);
+    const pay = r.payment_status || 'pending';
+    return `<b>${i + 1}.</b> <code>${esc(r.order_number)}</code>\n` +
+      `   ${esc(statusBadge(r.status))} · 💳 ${esc(pay)}\n` +
+      `   💰 <b>${esc(sum)}</b>${d ? `\n   🕘 ${esc(d)}` : ''}`;
   });
-  return "So'nggi buyurtmalar:\n\n" + lines.join('\n\n');
+  return `📦 <b>Soʻnggi buyurtmalar</b>\n${BRAND.divider}\n` + lines.join(`\n${BRAND.softDivider}\n`);
 }
 
 function buildOrdersActionsKeyboard(rows) {
@@ -370,21 +457,28 @@ function buildPagedOrdersKeyboard(source, page, totalPages) {
 }
 
 function formatPagedOrdersMessage(source, pagePayload) {
-  const src = source === 'pos' ? 'POS' : 'Onlayn';
+  const src = source === 'pos' ? '🧾 POS' : '🛒 Onlayn';
   const meta = pagePayload?.meta || {};
   const rows = Array.isArray(pagePayload?.rows) ? pagePayload.rows : [];
   const page = Number(meta.page || 1);
   const totalPages = Number(meta.total_pages || 1);
   const total = Number(meta.total || rows.length || 0);
+  const head =
+    `📄 <b>${esc(src)} buyurtmalar</b>\n` +
+    `${BRAND.divider}\n` +
+    `📑 Sahifa: <b>${page}/${totalPages}</b>  ·  📊 Jami: <b>${total}</b>`;
   if (!rows.length) {
-    return `📄 ${src} buyurtmalar\nSahifa: ${page}/${totalPages}\nJami: ${total}\n\nBuyurtmalar topilmadi.`;
+    return `${head}\n${BRAND.softDivider}\n<i>Buyurtmalar topilmadi.</i>`;
   }
   const lines = rows.map((r, i) => {
-    const sum = Number(r.total_amount) || 0;
-    const d = r.created_at ? String(r.created_at).replace('T', ' ').slice(0, 16) : '';
-    return `${i + 1}. ${r.order_number} — ${r.status} (${r.payment_status || 'pending'}) — ${sum.toLocaleString('uz-UZ')} so'm\n   ${d}`;
+    const sum = fmtMoney(r.total_amount);
+    const d = fmtDate(r.created_at);
+    const pay = r.payment_status || 'pending';
+    return `<b>${i + 1}.</b> <code>${esc(r.order_number)}</code>\n` +
+      `   ${esc(statusBadge(r.status))} · 💳 ${esc(pay)}\n` +
+      `   💰 <b>${esc(sum)}</b>${d ? `\n   🕘 ${esc(d)}` : ''}`;
   });
-  return `📄 ${src} buyurtmalar\nSahifa: ${page}/${totalPages}\nJami: ${total}\n\n${lines.join('\n\n')}`;
+  return `${head}\n${BRAND.softDivider}\n${lines.join(`\n${BRAND.softDivider}\n`)}`;
 }
 
 function noteValue(note, label) {
@@ -410,35 +504,44 @@ function mapUrlFromText(...parts) {
 }
 
 function formatCourierOrderBrief(order) {
-  const sum = Number(order.total_amount || 0).toLocaleString('uz-UZ');
+  const sum = fmtMoney(order.total_amount);
   const customer = [order.first_name, order.last_name].filter(Boolean).join(' ') || 'Mijoz';
   const extraPhone = noteValue(order.note, "Qo'shimcha telefon");
   const mapUrl = mapUrlFromText(noteValue(order.note, 'Xarita'), noteValue(order.note, 'Lokatsiya'), order.delivery_address, order.note);
+  const payInfo = [order.payment_method, order.payment_status].filter(Boolean).join(' / ') || '—';
   const lines = [
-    `#${order.id} ${order.order_number}`,
-    `Mijoz: ${customer}`,
+    `📦 <b>#${esc(order.id)}</b>  <code>${esc(order.order_number || '')}</code>`,
+    `   ${esc(statusBadge(order.status))}`,
+    `${BRAND.softDivider}`,
+    `👤 Mijoz: <b>${esc(customer)}</b>`,
   ];
-  if (order.phone) lines.push(`Tel: ${order.phone}`);
-  if (extraPhone) lines.push(`Qo'shimcha: ${extraPhone}`);
-  if (order.delivery_address) lines.push(`Manzil: ${order.delivery_address}`);
-  if (mapUrl) lines.push(`Xarita: ${mapUrl}`);
-  lines.push(`To'lov: ${[order.payment_method, order.payment_status].filter(Boolean).join(' / ') || '-'}`);
-  lines.push(`Summa: ${sum} so'm`);
+  if (order.phone) lines.push(`📱 Tel: <code>${esc(order.phone)}</code>`);
+  if (extraPhone) lines.push(`📞 Qoʻshimcha: <code>${esc(extraPhone)}</code>`);
+  if (order.delivery_address) lines.push(`📍 Manzil: <i>${esc(order.delivery_address)}</i>`);
+  if (mapUrl) lines.push(`🗺 <a href="${esc(mapUrl)}">Xaritada ochish</a>`);
+  lines.push(`💳 Toʻlov: ${esc(payInfo)}`);
+  lines.push(`💰 Summa: <b>${esc(sum)}</b>`);
   return lines.join('\n');
 }
 
 function formatCourierOrderDetail(payload) {
   const order = payload?.order || {};
   const items = Array.isArray(payload?.items) ? payload.items : [];
-  const lines = ['🚚 Kuryer buyurtmasi', '', formatCourierOrderBrief(order), '', 'Mahsulotlar:'];
+  const lines = [
+    `🚚 <b>Kuryer buyurtmasi</b>`,
+    `${BRAND.divider}`,
+    formatCourierOrderBrief(order),
+    `${BRAND.softDivider}`,
+    `🛒 <b>Mahsulotlar:</b>`,
+  ];
   if (items.length) {
     for (const item of items) {
       const qty = Number(item.quantity || 0) || 0;
       const price = Number(item.price_at_order || 0) || 0;
-      lines.push(`- ${item.product_name || item.product_id} x${qty} = ${(qty * price).toLocaleString('uz-UZ')} so'm`);
+      lines.push(`  • ${esc(item.product_name || item.product_id)} <code>x${qty}</code> = <b>${esc(fmtMoney(qty * price))}</b>`);
     }
   } else {
-    lines.push('- Mahsulotlar topilmadi');
+    lines.push(`  <i>Mahsulotlar topilmadi</i>`);
   }
   return lines.join('\n');
 }
@@ -456,15 +559,19 @@ function courierOrderKeyboard(order) {
 }
 
 function formatCouriersMessage(rows) {
-  if (!rows.length) return "Kuryerlar ro'yxati bo'sh.";
+  if (!rows.length) {
+    return `🚚 <b>Kuryerlar</b>\n${BRAND.divider}\n<i>Roʻyxat boʻsh.</i>`;
+  }
   const lines = rows.map((c, i) => {
     const name = c.display_name || c.username || c.telegram_id || `#${c.id}`;
-    const username = c.username ? `@${c.username}` : '-';
-    const tg = c.telegram_id || '-';
-    const active = Number(c.active) ? 'aktiv' : 'noaktiv';
-    return `${i + 1}. ${name}\n   Username: ${username} | ID: ${tg} | ${active}`;
+    const username = c.username ? `@${c.username}` : '—';
+    const tg = c.telegram_id || '—';
+    const active = Number(c.active) ? '🟢 <b>aktiv</b>' : '⚪ <i>noaktiv</i>';
+    return `<b>${i + 1}.</b> ${esc(name)}\n` +
+      `   👤 ${esc(username)}  ·  🆔 <code>${esc(tg)}</code>\n` +
+      `   ${active}`;
   });
-  return `Kuryerlar:\n\n${lines.join('\n\n')}`;
+  return `🚚 <b>Kuryerlar</b>\n${BRAND.divider}\n${lines.join(`\n${BRAND.softDivider}\n`)}`;
 }
 
 function couriersKeyboard(rows) {
@@ -485,57 +592,59 @@ function couriersKeyboard(rows) {
 
 async function sendAdminPanel(ctx) {
   if (!isAdminUser(ctx)) {
-    await safeReply(ctx, 'Bu bo‘lim faqat admin uchun.');
+    await safeReply(ctx, 'Bu boʻlim faqat admin uchun.');
     return;
   }
-  await safeReply(
+  await safeReplyHTML(
     ctx,
-    '🛠 Admin panel\nBuyurtmalar, kuryerlar va bugungi holatni boshqaring.',
+    `🛠 <b>Admin panel</b>\n${BRAND.divider}\n` +
+      `${BRAND.bullet} Buyurtmalar, kuryerlar va bugungi holatni boshqaring.\n` +
+      `${BRAND.spark} <i>Quyidagi tugmalardan tanlang:</i>`,
     adminPanelKeyboard(),
   );
 }
 
 async function sendAdminSummary(ctx) {
   if (!isAdminUser(ctx)) {
-    await safeReply(ctx, 'Bu bo‘lim faqat admin uchun.');
+    await safeReply(ctx, 'Bu boʻlim faqat admin uchun.');
     return;
   }
   const actorTelegramId = ctx.from?.id;
   const out = await callBotAdminSummary(actorTelegramId);
-  await safeReply(ctx, formatAdminSummary(out), adminPanelKeyboard());
+  await safeReplyHTML(ctx, formatAdminSummary(out), adminPanelKeyboard());
 }
 
 async function sendAdminOrders(ctx, status = 'new') {
   if (!isAdminUser(ctx)) {
-    await safeReply(ctx, 'Bu bo‘lim faqat admin uchun.');
+    await safeReply(ctx, 'Bu boʻlim faqat admin uchun.');
     return;
   }
   const safeStatus = String(status || 'new').toLowerCase();
   const actorTelegramId = ctx.from?.id;
   const out = await callBotAdminOrders({ actorTelegramId, status: safeStatus });
   const rows = Array.isArray(out?.rows) ? out.rows : [];
-  await safeReply(ctx, formatAdminOrders(out?.status || safeStatus, rows), adminOrdersKeyboard(rows, out?.status || safeStatus));
+  await safeReplyHTML(ctx, formatAdminOrders(out?.status || safeStatus, rows), adminOrdersKeyboard(rows, out?.status || safeStatus));
 }
 
 async function sendAdminReport(ctx, reportType) {
   if (!isAdminUser(ctx)) {
-    await safeReply(ctx, 'Bu bo‘lim faqat admin uchun.');
+    await safeReply(ctx, 'Bu boʻlim faqat admin uchun.');
     return;
   }
   const actorTelegramId = ctx.from?.id;
   const out = await callBotAdminReport({ actorTelegramId, reportType });
-  await safeReply(ctx, formatAdminReport(out), adminReportsKeyboard());
+  await safeReplyHTML(ctx, formatAdminReport(out), adminReportsKeyboard());
 }
 
 async function sendAdminCouriers(ctx) {
   if (!isAdminUser(ctx)) {
-    await safeReply(ctx, 'Bu bo‘lim faqat admin uchun.');
+    await safeReply(ctx, 'Bu boʻlim faqat admin uchun.');
     return;
   }
   const actorTelegramId = ctx.from?.id;
   const out = await callBotAdminCouriersList(actorTelegramId);
   const rows = Array.isArray(out?.rows) ? out.rows : [];
-  await safeReply(ctx, formatCouriersMessage(rows), couriersKeyboard(rows));
+  await safeReplyHTML(ctx, formatCouriersMessage(rows), couriersKeyboard(rows));
 }
 
 function parseCourierInput(text) {
@@ -552,15 +661,17 @@ function parseCourierInput(text) {
 
 async function sendCourierPanel(ctx) {
   if (!(await isCourierUserAsync(ctx))) {
-    await safeReply(ctx, "Bu bo'lim faqat kuryerlar uchun.");
+    await safeReply(ctx, "Bu boʻlim faqat kuryerlar uchun.");
     return;
   }
-  await safeReply(
+  await safeReplyHTML(
     ctx,
-    '🚚 Kuryer panel\nTayyor buyurtmalarni oling yoki yo‘ldagi buyurtmalarni ko‘ring.',
+    `🚚 <b>Kuryer panel</b>\n${BRAND.divider}\n` +
+      `${BRAND.bullet} Tayyor buyurtmalarni oling yoki yoʻldagi buyurtmalarni koʻring.\n` +
+      `${BRAND.spark} <i>Tugmani tanlang:</i>`,
     Markup.inlineKeyboard([
       [Markup.button.callback('📦 Tayyor buyurtmalar', 'courier_ready')],
-      [Markup.button.callback("🚚 Yo'ldagi buyurtmalar", 'courier_active')],
+      [Markup.button.callback("🚚 Yoʻldagi buyurtmalar", 'courier_active')],
     ]),
   );
 }
@@ -577,11 +688,11 @@ async function sendCourierOrders(ctx, status = 'ready') {
   );
   const rows = Array.isArray(out?.rows) ? out.rows : [];
   if (!rows.length) {
-    await safeReply(ctx, status === 'ready' ? "Tayyor buyurtmalar yo'q." : "Yo'ldagi buyurtmalar yo'q.");
+    await safeReply(ctx, status === 'ready' ? "Tayyor buyurtmalar yoʻq." : "Yoʻldagi buyurtmalar yoʻq.");
     return;
   }
   for (const order of rows.slice(0, 10)) {
-    await safeReply(ctx, formatCourierOrderBrief(order), courierOrderKeyboard(order));
+    await safeReplyHTML(ctx, formatCourierOrderBrief(order), courierOrderKeyboard(order));
   }
 }
 
@@ -603,7 +714,7 @@ async function updateCourierOrderStatus(ctx, orderId, status) {
     `/courier/orders/${orderId}?actor_telegram_id=${tgId}&actor_username=${encodeURIComponent(ctx.from?.username || '')}`,
   );
   await ctx.answerCbQuery(status === 'delivered' ? 'Yetkazildi' : 'Qabul qilindi');
-  await safeReply(ctx, formatCourierOrderDetail(detail), courierOrderKeyboard(detail?.order || { id: orderId, status: out.status }));
+  await safeReplyHTML(ctx, formatCourierOrderDetail(detail), courierOrderKeyboard(detail?.order || { id: orderId, status: out.status }));
 }
 
 function buildAdminStatusKeyboard(orderId, currentStatus, allowedNext) {
@@ -626,9 +737,9 @@ function adminPanelKeyboard() {
   return Markup.inlineKeyboard([
     [Markup.button.callback('📊 Bugungi holat', 'admin_summary')],
     [Markup.button.callback('📈 Hisobotlar', 'admin_reports')],
-    [Markup.button.callback('🆕 Yangi', 'admin_orders:new'), Markup.button.callback('💳 To‘langan', 'admin_orders:paid')],
-    [Markup.button.callback("🧺 Yig'ilmoqda", 'admin_orders:processing'), Markup.button.callback('✅ Tayyor', 'admin_orders:ready')],
-    [Markup.button.callback("🚚 Yo'ldagi", 'admin_orders:out_for_delivery'), Markup.button.callback('📂 Ochiq hammasi', 'admin_orders:open')],
+    [Markup.button.callback('🆕 Yangi', 'admin_orders:new'), Markup.button.callback('💳 Toʻlangan', 'admin_orders:paid')],
+    [Markup.button.callback("🧺 Yigʻilmoqda", 'admin_orders:processing'), Markup.button.callback('✅ Tayyor', 'admin_orders:ready')],
+    [Markup.button.callback("🚚 Yoʻldagi", 'admin_orders:out_for_delivery'), Markup.button.callback('📂 Ochiq hammasi', 'admin_orders:open')],
     [Markup.button.callback('🚚 Kuryerlar', 'admin_couriers')],
   ]);
 }
@@ -667,93 +778,127 @@ function formatAdminSummary(data) {
   const rows = Array.isArray(today.by_status) ? today.by_status : [];
   const statusText = rows.length
     ? rows
-        .map((r) => `• ${r.status}: ${Number(r.count || 0)} ta — ${Number(r.amount || 0).toLocaleString('uz-UZ')} so'm`)
+        .map((r) => `   ${esc(statusBadge(r.status))} — <b>${Number(r.count || 0)}</b> ta · <b>${esc(fmtMoney(r.amount))}</b>`)
         .join('\n')
-    : '• Bugun buyurtma yo‘q';
+    : `   <i>Bugun buyurtma yoʻq</i>`;
   return (
-    `📊 Admin panel — bugungi holat\n\n` +
-    `Sana: ${data?.date || '-'}\n` +
-    `Bugun: ${Number(today.count || 0)} ta — ${Number(today.amount || 0).toLocaleString('uz-UZ')} so'm\n` +
-    `Ochiq buyurtmalar: ${Number(open.count || 0)} ta — ${Number(open.amount || 0).toLocaleString('uz-UZ')} so'm\n` +
-    `Telegram mijozlar: ${Number(customers.telegram_count || 0)} ta\n\n` +
-    `Holatlar:\n${statusText}`
+    `📊 <b>Admin panel — bugungi holat</b>\n` +
+    `${BRAND.divider}\n` +
+    `📅 Sana: <b>${esc(data?.date || '—')}</b>\n` +
+    `${BRAND.softDivider}\n` +
+    `📈 Bugun: <b>${Number(today.count || 0)}</b> ta · <b>${esc(fmtMoney(today.amount))}</b>\n` +
+    `📂 Ochiq buyurtmalar: <b>${Number(open.count || 0)}</b> ta · <b>${esc(fmtMoney(open.amount))}</b>\n` +
+    `👥 Telegram mijozlar: <b>${Number(customers.telegram_count || 0)}</b> ta\n` +
+    `${BRAND.softDivider}\n` +
+    `${BRAND.spark} <b>Holatlar:</b>\n${statusText}`
   );
 }
 
 function formatAdminReport(data) {
   const type = String(data?.report_type || '');
-  const date = data?.date || '-';
+  const date = data?.date || '—';
   if (type === 'today_sales') {
     const pos = data?.pos || {};
     const web = data?.web || {};
     const payments = Array.isArray(data?.payments) ? data.payments : [];
     const paymentLines = payments.length
       ? payments
-          .map((p) => `• ${p.payment_status || '-'}: ${Number(p.count || 0)} ta — ${Number(p.amount || 0).toLocaleString('uz-UZ')} so'm`)
+          .map((p) => `   • <b>${esc(p.payment_status || '—')}</b>: ${Number(p.count || 0)} ta · <b>${esc(fmtMoney(p.amount))}</b>`)
           .join('\n')
-      : '• To‘lov holatlari yo‘q';
+      : `   <i>Toʻlov holatlari yoʻq</i>`;
     return (
-      `💰 Bugungi sotuv\nSana: ${date}\n\n` +
-      `POS: ${Number(pos.count || 0)} ta — ${Number(pos.amount || 0).toLocaleString('uz-UZ')} so'm\n` +
-      `Tushum: ${Number(pos.paid_amount || 0).toLocaleString('uz-UZ')} so'm\n` +
-      `Qarzga: ${Number(pos.credit_amount || 0).toLocaleString('uz-UZ')} so'm\n` +
-      `Onlayn to‘langan/yakunlangan: ${Number(web.count || 0)} ta — ${Number(web.amount || 0).toLocaleString('uz-UZ')} so'm\n` +
-      `(Onlayn qator POS tushumiga qo‘shilmagan, alohida ko‘rsatildi.)\n\n` +
-      `To‘lovlar:\n${paymentLines}`
+      `💰 <b>Bugungi sotuv</b>\n` +
+      `${BRAND.divider}\n` +
+      `📅 Sana: <b>${esc(date)}</b>\n` +
+      `${BRAND.softDivider}\n` +
+      `🧾 <b>POS:</b> ${Number(pos.count || 0)} ta · <b>${esc(fmtMoney(pos.amount))}</b>\n` +
+      `   🟢 Tushum: <b>${esc(fmtMoney(pos.paid_amount))}</b>\n` +
+      `   🔴 Qarzga: <b>${esc(fmtMoney(pos.credit_amount))}</b>\n` +
+      `${BRAND.softDivider}\n` +
+      `🛒 <b>Onlayn (toʻlangan / yakunlangan):</b>\n   ${Number(web.count || 0)} ta · <b>${esc(fmtMoney(web.amount))}</b>\n` +
+      `<i>(Onlayn POS tushumiga qoʻshilmagan, alohida koʻrsatildi.)</i>\n` +
+      `${BRAND.softDivider}\n` +
+      `${BRAND.spark} <b>Toʻlovlar:</b>\n${paymentLines}`
     );
   }
 
   if (type === 'out_stock' || type === 'low_stock') {
     const rows = Array.isArray(data?.rows) ? data.rows : [];
     const title = type === 'out_stock' ? '⛔ Tugagan mahsulotlar' : '⚠️ Kam qolgan mahsulotlar';
-    if (!rows.length) return `${title}\n\nMahsulot topilmadi.`;
+    if (!rows.length) {
+      return `<b>${esc(title)}</b>\n${BRAND.divider}\n<i>Mahsulot topilmadi.</i>`;
+    }
     return (
-      `${title}\nSana: ${date}\n\n` +
+      `<b>${esc(title)}</b>\n${BRAND.divider}\n📅 Sana: <b>${esc(date)}</b>\n${BRAND.softDivider}\n` +
       rows
         .slice(0, 20)
         .map((r, i) => {
           const stock = Number(r.current_stock || 0).toLocaleString('uz-UZ');
           const min = Number(r.min_stock_level || 0).toLocaleString('uz-UZ');
-          return `${i + 1}. ${r.name || r.id}\n   SKU: ${r.sku || '-'} | Qoldiq: ${stock} | Min: ${min}`;
+          return `<b>${i + 1}.</b> ${esc(r.name || r.id)}\n` +
+            `   🏷 SKU: <code>${esc(r.sku || '—')}</code>\n` +
+            `   📦 Qoldiq: <b>${stock}</b>  ·  Min: <b>${min}</b>`;
         })
-        .join('\n\n')
+        .join(`\n${BRAND.softDivider}\n`)
     );
   }
 
   if (type === 'top_products') {
     const rows = Array.isArray(data?.rows) ? data.rows : [];
-    if (!rows.length) return `🔥 Eng ko‘p sotilganlar\n\nBugun sotuv topilmadi.`;
+    if (!rows.length) {
+      return `🔥 <b>Eng koʻp sotilganlar</b>\n${BRAND.divider}\n<i>Bugun sotuv topilmadi.</i>`;
+    }
     return (
-      `🔥 Eng ko‘p sotilganlar\nSana: ${date}\nPOS sotuvlari + hali POSga o‘tmagan to‘langan onlayn buyurtmalar\n\n` +
+      `🔥 <b>Eng koʻp sotilganlar</b>\n${BRAND.divider}\n` +
+      `📅 Sana: <b>${esc(date)}</b>\n` +
+      `<i>POS sotuvlari + hali POSga oʻtmagan toʻlangan onlayn buyurtmalar</i>\n` +
+      `${BRAND.softDivider}\n` +
       rows
-        .map((r, i) => `${i + 1}. ${r.product_name || r.product_id}\n   Miqdor: ${Number(r.sold_qty || 0).toLocaleString('uz-UZ')} | Summa: ${Number(r.amount || 0).toLocaleString('uz-UZ')} so'm`)
-        .join('\n\n')
+        .map((r, i) => {
+          const qty = Number(r.sold_qty || 0).toLocaleString('uz-UZ');
+          return `<b>${i + 1}.</b> ${esc(r.product_name || r.product_id)}\n` +
+            `   📊 Miqdor: <b>${qty}</b>  ·  💰 <b>${esc(fmtMoney(r.amount))}</b>`;
+        })
+        .join(`\n${BRAND.softDivider}\n`)
     );
   }
 
   const rows = Array.isArray(data?.rows) ? data.rows : [];
-  if (!rows.length) return `💳 Nasiya / qarz sotuvlar\n\nBugun qarzga sotuv topilmadi.`;
+  if (!rows.length) {
+    return `💳 <b>Nasiya / qarz sotuvlar</b>\n${BRAND.divider}\n<i>Bugun qarzga sotuv topilmadi.</i>`;
+  }
   return (
-    `💳 Nasiya / qarz sotuvlar\nSana: ${date}\nJami qarz: ${Number(data?.total_credit || 0).toLocaleString('uz-UZ')} so'm\n\n` +
+    `💳 <b>Nasiya / qarz sotuvlar</b>\n${BRAND.divider}\n` +
+    `📅 Sana: <b>${esc(date)}</b>  ·  🔴 Jami qarz: <b>${esc(fmtMoney(data?.total_credit))}</b>\n` +
+    `${BRAND.softDivider}\n` +
     rows
-      .map((r, i) => `${i + 1}. ${r.order_number || r.id}\n   ${r.customer_name || 'Mijoz'} | ${Number(r.credit_amount || 0).toLocaleString('uz-UZ')} so'm | ${String(r.created_at || '').slice(0, 16)}`)
-      .join('\n\n')
+      .map((r, i) => {
+        return `<b>${i + 1}.</b> <code>${esc(r.order_number || r.id)}</code>\n` +
+          `   👤 ${esc(r.customer_name || 'Mijoz')}\n` +
+          `   💰 <b>${esc(fmtMoney(r.credit_amount))}</b>  ·  🕘 ${esc(fmtDate(r.created_at))}`;
+      })
+      .join(`\n${BRAND.softDivider}\n`)
   );
 }
 
 function formatAdminOrders(status, rows) {
   const label = {
     new: 'Yangi',
-    paid: 'To‘langan',
-    processing: "Yig'ilmoqda",
+    paid: 'Toʻlangan',
+    processing: "Yigʻilmoqda",
     ready: 'Tayyor',
-    out_for_delivery: "Yo'ldagi",
+    out_for_delivery: "Yoʻldagi",
     delivered: 'Yetkazilgan',
     cancelled: 'Bekor qilingan',
     open: 'Ochiq buyurtmalar',
   }[status] || status;
-  if (!rows.length) return `📦 ${label}\n\nBuyurtma topilmadi.`;
-  return `📦 ${label}\n\n${rows.map((o, i) => `${i + 1}. ${formatCourierOrderBrief(o)}`).join('\n\n')}`;
+  if (!rows.length) {
+    return `📦 <b>${esc(label)}</b>\n${BRAND.divider}\n<i>Buyurtma topilmadi.</i>`;
+  }
+  return (
+    `📦 <b>${esc(label)}</b>  ·  <i>${rows.length} ta</i>\n${BRAND.divider}\n` +
+    rows.map((o, i) => `<b>${i + 1}.</b>\n${formatCourierOrderBrief(o)}`).join(`\n${BRAND.softDivider}\n`)
+  );
 }
 
 function formatCardMessage(profile) {
@@ -770,49 +915,60 @@ function formatCardMessage(profile) {
   const nextGoal = Number(loyalty.next_goal_points || 0);
   const toNext = Number(loyalty.points_to_next_goal || 0);
   const fullName = [c.first_name, c.last_name].filter(Boolean).join(' ') || 'Mijoz';
-  const phone = c.phone || "Telefon qo'shilmagan";
-  const addr = c.address || "Manzil qo'shilmagan";
+  const phone = c.phone || "qoʻshilmagan";
+  const addr = c.address || "qoʻshilmagan";
   const posBalance = Number(pos.balance || 0);
   const accountStatus =
     posBalance < 0
-      ? `Qarz: ${Math.abs(posBalance).toLocaleString('uz-UZ')} so'm`
+      ? `🔴 Qarz: <b>${fmtMoney(Math.abs(posBalance))}</b>`
       : posBalance > 0
-        ? `Haq: ${posBalance.toLocaleString('uz-UZ')} so'm`
-        : "Hisob: 0 so'm";
+        ? `🟢 Haq: <b>${fmtMoney(posBalance)}</b>`
+        : `⚪ Hisob: <b>${fmtMoney(0)}</b>`;
   const loyaltyCardCode = String(binding.loyalty_card_code || '').trim();
   const ledgerRows = Array.isArray(loyalty.ledger) ? loyalty.ledger.slice(0, 5) : [];
+
   const formatOrderLine = (r, i) => {
-    const sum = Number(r.total_amount) || 0;
-    const d = r.created_at ? String(r.created_at).replace('T', ' ').slice(0, 16) : '';
-    return `${i + 1}. ${r.order_number} — ${r.status} (${r.payment_status || 'pending'}) — ${sum.toLocaleString('uz-UZ')} so'm ${d}`;
+    const sum = fmtMoney(r.total_amount);
+    const d = fmtDate(r.created_at);
+    const pay = r.payment_status || 'pending';
+    return `  ${i + 1}. <code>${esc(r.order_number)}</code> · ${esc(statusBadge(r.status))} · 💳 ${esc(pay)}\n` +
+      `      💰 <b>${esc(sum)}</b>${d ? ` · 🕘 ${esc(d)}` : ''}`;
   };
+
   const webOrdersText = webOrders.length
-    ? '\n\nOnlayn buyurtmalar:\n' + webOrders.slice(0, 12).map((r, i) => formatOrderLine(r, i)).join('\n')
-    : '\n\nOnlayn buyurtmalar: yo‘q';
+    ? `\n\n🛒 <b>Onlayn buyurtmalar</b> <i>(${webOrdersTotal})</i>\n${BRAND.softDivider}\n` +
+      webOrders.slice(0, 12).map((r, i) => formatOrderLine(r, i)).join('\n\n')
+    : `\n\n🛒 <b>Onlayn buyurtmalar:</b> <i>yoʻq</i>`;
   const posOrdersText = posOrders.length
-    ? '\n\nPOS buyurtmalar:\n' + posOrders.slice(0, 12).map((r, i) => formatOrderLine(r, i)).join('\n')
-    : '\n\nPOS buyurtmalar: yo‘q';
+    ? `\n\n🧾 <b>POS buyurtmalar</b> <i>(${posOrdersTotal})</i>\n${BRAND.softDivider}\n` +
+      posOrders.slice(0, 12).map((r, i) => formatOrderLine(r, i)).join('\n\n')
+    : `\n\n🧾 <b>POS buyurtmalar:</b> <i>yoʻq</i>`;
   const ledgerText = ledgerRows.length
-    ? '\n\nOxirgi bonus harakatlar:\n' +
+    ? `\n\n${BRAND.spark} <b>Oxirgi bonus harakatlar</b>\n${BRAND.softDivider}\n` +
       ledgerRows
         .map((r) => {
-          const sign = Number(r.points_delta) > 0 ? '+' : '';
-          const dt = r.created_at ? String(r.created_at).replace('T', ' ').slice(0, 16) : '';
-          return `• ${sign}${Number(r.points_delta)} (${r.type}) ${dt}`;
+          const v = Number(r.points_delta);
+          const sign = v > 0 ? `🟢 +${v}` : `🔴 ${v}`;
+          const dt = fmtDate(r.created_at);
+          return `  ${sign}  · <i>${esc(r.type)}</i>${dt ? ` · ${esc(dt)}` : ''}`;
         })
         .join('\n')
     : '';
+
   return (
-    `🎁 Nakopitel karta\n\n` +
-    `Ism: ${fullName}\n` +
-    `Telefon: ${phone}\n` +
-    `Manzil: ${addr}\n` +
-    `Karta kodi: ${loyaltyCardCode || "yo'q"}\n` +
+    `🎁 <b>Nakopitel karta</b>\n` +
+    `${BRAND.divider}\n` +
+    `👤 Ism: <b>${esc(fullName)}</b>\n` +
+    `📱 Telefon: <code>${esc(phone)}</code>\n` +
+    `📍 Manzil: <i>${esc(addr)}</i>\n` +
+    `🪪 Karta kodi: <code>${esc(loyaltyCardCode || 'yoʻq')}</code>\n` +
+    `${BRAND.softDivider}\n` +
     `${accountStatus}\n` +
-    `Onlayn buyurtmalar soni: ${webOrdersTotal}\n` +
-    `POS buyurtmalar soni: ${posOrdersTotal}\n` +
-    `Ball balans: ${points}\n` +
-    `Keyingi maqsad: ${nextGoal} (yana ${toNext} ball)` +
+    `🛒 Onlayn buyurtmalar: <b>${webOrdersTotal}</b>\n` +
+    `🧾 POS buyurtmalar:    <b>${posOrdersTotal}</b>\n` +
+    `${BRAND.softDivider}\n` +
+    `${BRAND.star} Ball balans: <b>${points}</b>\n` +
+    `🎯 Keyingi maqsad: <b>${nextGoal}</b> <i>(yana ${toNext} ball)</i>` +
     webOrdersText +
     posOrdersText +
     ledgerText
@@ -869,9 +1025,10 @@ async function startRegistrationFlow(ctx) {
   const tgId = ctx.from?.id;
   if (tgId == null) return;
   registrationState.set(tgId, { step: 'phone' });
-  await safeReply(
+  await safeReplyHTML(
     ctx,
-    "Ro'yxatdan o'tish uchun telefon raqamingizni yuboring:",
+    `${BRAND.bullet} <b>Roʻyxatdan oʻtish</b>\n${BRAND.softDivider}\n` +
+      `Telefon raqamingizni yuboring (pastdagi <b>📱 Telefonni yuborish</b> tugmasi orqali):`,
     registrationContactKeyboard(),
   );
 }
@@ -881,16 +1038,23 @@ async function sendLoyaltyQrCard(ctx, payload) {
     const text = String(payload?.qr_payload || '').trim();
     if (!text) return;
     const customerName = [payload.first_name, payload.last_name].filter(Boolean).join(' ') || 'Mijoz';
-    const qrBuffer = await QRCode.toBuffer(text, { width: 700, margin: 2 });
+    const qrBuffer = await QRCode.toBuffer(text, {
+      width: 720,
+      margin: 2,
+      color: { dark: BRAND.qr.dark, light: BRAND.qr.light },
+      errorCorrectionLevel: 'H',
+    });
+    const caption =
+      `${BRAND.bullet} <b>Nakopitel karta ochildi</b>\n` +
+      `${BRAND.divider}\n` +
+      `🪪 Karta kodi: <code>${esc(payload.loyalty_card_code)}</code>\n` +
+      `👤 Mijoz: <b>${esc(customerName)}</b>\n` +
+      `📱 Telefon: <code>${esc(payload.phone)}</code>\n` +
+      `${BRAND.softDivider}\n` +
+      `${BRAND.spark} <i>QRni kassada koʻrsating — ball yigʻiladi</i>`;
     await ctx.replyWithPhoto(
       { source: qrBuffer },
-      {
-        caption:
-          `🎁 Nakopitel karta ochildi\n` +
-          `Karta kodi: ${payload.loyalty_card_code}\n` +
-          `Mijoz: ${customerName}\n` +
-          `Telefon: ${payload.phone}`,
-      },
+      { caption, parse_mode: 'HTML' },
     );
   } catch (e) {
     await safeReply(ctx, `Karta QR yuborib bo'lmadi (${e.message})`);
@@ -935,9 +1099,9 @@ async function sendRecentOrders(ctx, limit = 10) {
   if (tooFrequent(ctx)) return;
   try {
     const out = await callBotApi(`/orders/recent/${tgId}?limit=${limit}`);
-    await safeReply(ctx, formatOrdersMessage(out.rows || []), buildOrdersActionsKeyboard(out.rows || []) || undefined);
+    await safeReplyHTML(ctx, formatOrdersMessage(out.rows || []), buildOrdersActionsKeyboard(out.rows || []) || undefined);
   } catch (e) {
-    await safeReply(ctx, `Buyurtmalarni olib bo'lmadi. Keyinroq urinib ko'ring.\n(${e.message})`);
+    await safeReply(ctx, `Buyurtmalarni olib boʻlmadi. Keyinroq urinib koʻring.\n(${e.message})`);
   }
 }
 
@@ -947,7 +1111,7 @@ async function sendCard(ctx) {
   if (tooFrequent(ctx)) return;
   try {
     const out = await callBotApi(`/profile/${tgId}`);
-    await safeReply(ctx, formatCardMessage(out), Markup.keyboard([
+    await safeReplyHTML(ctx, formatCardMessage(out), Markup.keyboard([
       [Markup.button.contactRequest('📱 Telefonni ulashish')],
       [Markup.button.locationRequest('📍 Lokatsiyani yuborish')],
       [MENU.shop, MENU.orders],
@@ -974,9 +1138,9 @@ async function sendOrdersPage(ctx, source = 'web', page = 1) {
     const out = await callBotApi(`/orders/list/${tgId}?source=${source === 'pos' ? 'pos' : 'web'}&page=${page}&limit=8`);
     const text = formatPagedOrdersMessage(source, out);
     const keyboard = buildPagedOrdersKeyboard(source, out?.meta?.page || page, out?.meta?.total_pages || 1);
-    await safeReply(ctx, text, keyboard);
+    await safeReplyHTML(ctx, text, keyboard);
   } catch (e) {
-    await safeReply(ctx, `Buyurtmalarni olib bo'lmadi.\n(${e.message})`);
+    await safeReply(ctx, `Buyurtmalarni olib boʻlmadi.\n(${e.message})`);
   }
 }
 
@@ -984,16 +1148,27 @@ bot.start(async (ctx) => {
   const name = ctx.from?.first_name || '';
   const registered = await ensureRegisteredOrStart(ctx);
   if (!registered) {
-    await ctx.reply(
-      `Assalomu alaykum${name ? ', ' + name : ''}!\n\nDavom etish uchun ro'yxatdan o'ting.`,
-      Markup.inlineKeyboard([[Markup.button.callback("✅ Ro'yxatdan o'tish", 'register_start')]]),
+    await safeReplyHTML(
+      ctx,
+      `${BRAND.bullet} <b>Assalomu alaykum${name ? ', ' + esc(name) : ''}!</b>\n` +
+        `${BRAND.divider}\n` +
+        `${BRAND.leaf} <b>${esc(BRAND.name)}</b> — ${esc(BRAND.tagline)}\n\n` +
+        `Davom etish uchun roʻyxatdan oʻting:`,
+      Markup.inlineKeyboard([[Markup.button.callback("🌿 Roʻyxatdan oʻtish", 'register_start')]]),
     );
     return;
   }
   resetRegistrationState(ctx.from?.id);
   const showCourier = await isCourierUserAsync(ctx);
-  await ctx.reply(
-    `Assalomu alaykum${name ? ', ' + name : ''}!\n\nDunyoZamin onlayn do'koniga xush kelibsiz.\n\nBot versiya: ${BOT_RUNTIME_VERSION}`,
+  const greetingText =
+    `${BRAND.bullet} <b>Assalomu alaykum${name ? ', ' + esc(name) : ''}!</b>\n` +
+    `${BRAND.divider}\n` +
+    `${BRAND.leaf} <b>${esc(BRAND.name)}</b> onlayn doʻkoniga xush kelibsiz!\n` +
+    `${BRAND.spark} <i>Yangi mahsulotlar, qulay yetkazib berish va bonus ball.</i>\n\n` +
+    `<code>v${esc(BOT_RUNTIME_VERSION)}</code>`;
+  await safeReplyHTML(
+    ctx,
+    greetingText,
     showCourier || isAdminUser(ctx) ? Markup.keyboard([
       [MENU.shop, MENU.search],
       [MENU.orders, MENU.card],
@@ -1003,13 +1178,19 @@ bot.start(async (ctx) => {
       [MENU.help],
     ]).resize() : mainMenuKeyboard(ctx),
   );
-  await ctx.reply(
-    "Quyidagi tugmalardan foydalaning:",
+  await safeReplyHTML(
+    ctx,
+    `${BRAND.spark} <b>Tezkor amallar</b>\n${BRAND.softDivider}\nKerakli boʻlimni tanlang:`,
     Markup.inlineKeyboard([
-      [Markup.button.webApp("🛍 Do'kon", webAppUrl)],
-      [Markup.button.callback('📦 Buyurtmalarim', 'orders_recent')],
-      [Markup.button.callback('🎁 Kartam', 'my_card')],
-      [Markup.button.callback('📞 Bog\'lanish', 'contact_info')],
+      [Markup.button.webApp("🛍  Doʻkonni ochish", webAppUrl)],
+      [
+        Markup.button.callback('📦 Buyurtmalarim', 'orders_recent'),
+        Markup.button.callback('🎁 Kartam', 'my_card'),
+      ],
+      [
+        Markup.button.callback('🔎 Qidiruv', 'search_start'),
+        Markup.button.callback('📞 Bogʻlanish', 'contact_info'),
+      ],
     ]),
   );
 });
@@ -1029,9 +1210,11 @@ bot.action('search_start', async (ctx) => {
   if (!(await ensureRegisteredOrStart(ctx, { forceStart: true }))) return;
   const tgId = ctx.from?.id;
   if (tgId != null) searchState.set(tgId, { step: 'query' });
-  await safeReply(
+  await safeReplyHTML(
     ctx,
-    "Qidiruv so‘zini yuboring (masalan: kabel, avtod, sku123).\nBekor qilish: /cancel_search",
+    `🔎 <b>Mahsulot qidiruv</b>\n${BRAND.softDivider}\n` +
+      `Qidiruv soʻzini yuboring (masalan: <i>kabel, avtod, sku123</i>).\n` +
+      `${BRAND.spark} Bekor qilish: <code>/cancel_search</code>`,
     Markup.removeKeyboard(),
   );
 });
@@ -1100,7 +1283,11 @@ bot.action('admin_summary', async (ctx) => {
 
 bot.action('admin_reports', async (ctx) => {
   await ctx.answerCbQuery();
-  await safeReply(ctx, '📈 Hisobotlar\nKerakli hisobotni tanlang:', adminReportsKeyboard());
+  await safeReplyHTML(
+    ctx,
+    `📈 <b>Hisobotlar</b>\n${BRAND.divider}\n${BRAND.bullet} Kerakli hisobotni tanlang:`,
+    adminReportsKeyboard(),
+  );
 });
 
 bot.action(/^admin_report:(today_sales|out_stock|low_stock|top_products|credit_sales)$/, async (ctx) => {
@@ -1134,9 +1321,9 @@ bot.action(/^admin_order:(\d+)$/, async (ctx) => {
     const detail = await callBotApi(`/admin/orders/${orderId}?actor_telegram_id=${tgId}`);
     const order = detail?.order || {};
     await ctx.answerCbQuery(`#${orderId}`);
-    await safeReply(
+    await safeReplyHTML(
       ctx,
-      `🛠 Admin boshqaruv\n\n${formatCourierOrderBrief(order)}`,
+      `🛠 <b>Admin boshqaruv</b>\n${BRAND.divider}\n${formatCourierOrderBrief(order)}`,
       buildAdminStatusKeyboard(orderId, order.status, detail?.allowed_next),
     );
   } catch (e) {
@@ -1236,21 +1423,25 @@ bot.action(/^oas:(\d+):(new|paid|processing|ready|out_for_delivery|delivered|can
       cancelled: 'Bekor',
     }[String(order.status || status).toLowerCase()] || String(order.status || status);
     const editedText =
-      `🛠 Admin boshqaruv\n` +
-      `ID: #${orderId}\n` +
-      `Buyurtma: ${order.order_number || '-'}\n` +
-      `Holat: ${statusLabel}`;
+      `🛠 <b>Admin boshqaruv</b>\n` +
+      `${BRAND.divider}\n` +
+      `🆔 ID: <code>#${orderId}</code>\n` +
+      `📦 Buyurtma: <code>${esc(order.order_number || '—')}</code>\n` +
+      `${BRAND.softDivider}\n` +
+      `Holat: <b>${esc(statusLabel)}</b>`;
     await ctx.answerCbQuery(`Status: ${status}`);
     try {
       const replyMarkup =
         keyboard && keyboard.reply_markup ? keyboard.reply_markup : undefined;
       await ctx.editMessageText(editedText, {
+        parse_mode: 'HTML',
         reply_markup: replyMarkup,
       });
     } catch {
-      await safeReply(
+      await safeReplyHTML(
         ctx,
-        `✅ #${orderId} holati: ${order.status || status}\nBuyurtma: ${order.order_number || '-'}`,
+        `✅ <b>#${orderId}</b> holati: <b>${esc(order.status || status)}</b>\n` +
+          `📦 Buyurtma: <code>${esc(order.order_number || '—')}</code>`,
         keyboard,
       );
     }
@@ -1262,13 +1453,18 @@ bot.action(/^oas:(\d+):(new|paid|processing|ready|out_for_delivery|delivered|can
 
 bot.action('contact_info', async (ctx) => {
   await ctx.answerCbQuery();
-  await ctx.reply(contactText);
+  await safeReplyHTML(
+    ctx,
+    `📞 <b>Bogʻlanish</b>\n${BRAND.softDivider}\n${esc(contactText)}`,
+  );
 });
 
 bot.hears(MENU.shop, async (ctx) => {
   if (!(await ensureRegisteredOrStart(ctx, { forceStart: true }))) return;
-  await ctx.reply(
-    "Mini App'ni ochish uchun tugmani bosing:",
+  await safeReplyHTML(
+    ctx,
+    `${BRAND.bullet} <b>Doʻkonni ochish</b>\n${BRAND.softDivider}\n` +
+      `<i>Mini App tugmasini bosing va xaridingizni boshlang:</i>`,
     Markup.inlineKeyboard([[Markup.button.webApp(MENU.shop, webAppUrl)]]),
   );
 });
@@ -1277,9 +1473,11 @@ bot.hears(MENU.search, async (ctx) => {
   if (!(await ensureRegisteredOrStart(ctx, { forceStart: true }))) return;
   const tgId = ctx.from?.id;
   if (tgId != null) searchState.set(tgId, { step: 'query' });
-  await safeReply(
+  await safeReplyHTML(
     ctx,
-    "Qidiruv so‘zini yuboring (masalan: kabel, avtod, sku123).\nBekor qilish: /cancel_search",
+    `🔎 <b>Mahsulot qidiruv</b>\n${BRAND.softDivider}\n` +
+      `Qidiruv soʻzini yuboring (masalan: <i>kabel, avtod, sku123</i>).\n` +
+      `${BRAND.spark} Bekor qilish: <code>/cancel_search</code>`,
     Markup.removeKeyboard(),
   );
 });
@@ -1296,7 +1494,10 @@ bot.hears(MENU.card, async (ctx) => {
 });
 
 bot.hears(MENU.contact, async (ctx) => {
-  await safeReply(ctx, contactText);
+  await safeReplyHTML(
+    ctx,
+    `📞 <b>Bogʻlanish</b>\n${BRAND.softDivider}\n${esc(contactText)}`,
+  );
 });
 
 bot.hears(MENU.courier, async (ctx) => {
@@ -1316,16 +1517,19 @@ bot.command('admin', async (ctx) => {
 });
 
 bot.hears(MENU.help, async (ctx) => {
-  await ctx.reply(
-    "Yordam:\n" +
-      `- ${MENU.shop}: onlayn do'konni ochadi\n` +
-      `- ${MENU.search}: mahsulot qidiradi\n` +
-      `- ${MENU.orders}: so'nggi buyurtmalaringiz\n` +
-      `- ${MENU.card}: nakopitel karta va ball\n` +
-      `- ${MENU.contact}: aloqa ma'lumotlari\n\n` +
-      `- ${MENU.courier}: kuryer panel\n\n` +
-      `- ${MENU.admin}: admin panel\n\n` +
-      "Qo'shimcha: /start, /search, /orders, /card, /courier, /admin",
+  await safeReplyHTML(
+    ctx,
+    `ℹ️ <b>Yordam</b>\n${BRAND.divider}\n` +
+      `${BRAND.bullet} <b>${esc(MENU.shop)}</b> — onlayn doʻkonni ochadi\n` +
+      `${BRAND.bullet} <b>${esc(MENU.search)}</b> — mahsulot qidiradi\n` +
+      `${BRAND.bullet} <b>${esc(MENU.orders)}</b> — soʻnggi buyurtmalaringiz\n` +
+      `${BRAND.bullet} <b>${esc(MENU.card)}</b> — nakopitel karta va ball\n` +
+      `${BRAND.bullet} <b>${esc(MENU.contact)}</b> — aloqa maʼlumotlari\n` +
+      `${BRAND.bullet} <b>${esc(MENU.courier)}</b> — kuryer panel\n` +
+      `${BRAND.bullet} <b>${esc(MENU.admin)}</b> — admin panel\n` +
+      `${BRAND.softDivider}\n` +
+      `${BRAND.spark} <b>Buyruqlar:</b>\n` +
+      `<code>/start  /search  /orders  /card  /courier  /admin  /help</code>`,
   );
 });
 
@@ -1341,9 +1545,23 @@ bot.command('card', async (ctx) => {
 });
 
 bot.command('help', async (ctx) => {
-  await safeReply(
+  await safeReplyHTML(
     ctx,
-    `Buyruqlar:\n/start\n/search <matn>\n/orders\n/card\n/courier\n/admin\n/help\n/cancel_edit\n/cancel_register\n/cancel_search\n/cancel_admin\n\nWeb App: ${webAppUrl}`,
+    `ℹ️ <b>Buyruqlar</b>\n${BRAND.divider}\n` +
+      `<code>/start</code>\n` +
+      `<code>/search</code> &lt;matn&gt;\n` +
+      `<code>/orders</code>\n` +
+      `<code>/card</code>\n` +
+      `<code>/courier</code>\n` +
+      `<code>/admin</code>\n` +
+      `<code>/help</code>\n` +
+      `${BRAND.softDivider}\n` +
+      `<code>/cancel_edit</code>\n` +
+      `<code>/cancel_register</code>\n` +
+      `<code>/cancel_search</code>\n` +
+      `<code>/cancel_admin</code>\n` +
+      `${BRAND.softDivider}\n` +
+      `🌐 <b>Web App:</b> <a href="${esc(webAppUrl)}">${esc(webAppUrl)}</a>`,
     mainMenuKeyboard(ctx),
   );
 });
@@ -1412,9 +1630,11 @@ bot.on('contact', async (ctx) => {
         }),
       });
       resetRegistrationState(tgId);
-      await safeReply(
+      await safeReplyHTML(
         ctx,
-        `✅ Ro'yxatdan o'tdingiz!\nXush kelibsiz, ${out?.data?.first_name || ''}.`,
+        `✅ <b>Roʻyxatdan oʻtdingiz!</b>\n${BRAND.softDivider}\n` +
+          `${BRAND.bullet} Xush kelibsiz, <b>${esc(out?.data?.first_name || '')}</b>.\n` +
+          `${BRAND.spark} <i>Endi xaridlardan bonus ball yigʻa olasiz.</i>`,
         mainMenuKeyboard(ctx),
       );
       await sendLoyaltyQrCard(ctx, out?.data || {});
