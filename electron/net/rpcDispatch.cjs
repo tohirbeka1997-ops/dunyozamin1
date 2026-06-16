@@ -28,6 +28,8 @@ try {
 function createRpcDispatcher({ services, db, sessions }) {
   if (!services) throw new Error('services is required');
   if (!db) throw new Error('db is required');
+  const serviceRuntime = require('../lib/serviceRuntime.cjs');
+  serviceRuntime.init(services, db);
 
   // ------------------------------------------------------------------
   // Role matrix — which roles may invoke a given channel prefix / channel.
@@ -130,6 +132,11 @@ function createRpcDispatcher({ services, db, sessions }) {
     // aylantirmaslik kerak (masalan getSummary uchun).
     const a =
       Array.isArray(args) ? args : args === undefined || args === null ? [] : [args];
+    const services = serviceRuntime.getServices();
+    const db = serviceRuntime.getDb();
+    if (!services || !db) {
+      throw createError(ERROR_CODES.INTERNAL_ERROR, 'Database is not available');
+    }
     const authContext = meta?.authContext || null;
     const adminBypass = !!meta?.adminBypass;
     const requestIp = meta?.ip || null;
@@ -1092,8 +1099,14 @@ function createRpcDispatcher({ services, db, sessions }) {
         });
         try {
           dbModule.open();
+          serviceRuntime.rebindAfterDbReplace();
+          console.log('[database:upload] services rebound to fresh DB connection');
         } catch (reopenErr) {
-          console.error('[database:upload] reopen after replace failed:', reopenErr?.message || reopenErr);
+          console.error('[database:upload] reopen/rebind after replace failed:', reopenErr?.message || reopenErr);
+          throw createError(
+            ERROR_CODES.INTERNAL_ERROR,
+            'Database replaced but reopen failed — restart pos-server',
+          );
         }
         return {
           ok: true,
@@ -1101,9 +1114,9 @@ function createRpcDispatcher({ services, db, sessions }) {
           size: upload.totalSize,
           backupPath: result.backupPath,
           targetPath: result.targetPath,
-          restartRequired: true,
+          restartRequired: false,
           message:
-            'Baza muvaffaqiyatli almashtirildi. pos-server va public-api xizmatlarini qayta ishga tushiring.',
+            'Baza muvaffaqiyatli almashtirildi. Xizmatlar yangi bazaga ulandi.',
         };
       }
 

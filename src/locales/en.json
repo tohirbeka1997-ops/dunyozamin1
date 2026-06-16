@@ -1225,7 +1225,8 @@
       "resetDialogTitle": "Reset marketplace tuning",
       "resetDialogDescription": "All marketplace tuning values will be reverted to defaults. Click \"Save Changes\" afterwards to persist them.",
       "resetDialogCancel": "Cancel",
-      "resetDialogConfirm": "Reset"
+      "resetDialogConfirm": "Reset",
+      "delivery": "Couriers"
     }
   },
   "dashboard": {

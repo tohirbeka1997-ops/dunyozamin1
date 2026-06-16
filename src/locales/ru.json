@@ -1225,7 +1225,8 @@
       "resetDialogTitle": "Сброс тюнинга marketplace",
       "resetDialogDescription": "Все параметры тюнинга marketplace будут сброшены к значениям по умолчанию. После этого нажмите \"Save Changes\" для сохранения.",
       "resetDialogCancel": "Отмена",
-      "resetDialogConfirm": "Сбросить"
+      "resetDialogConfirm": "Сбросить",
+      "delivery": "Курьеры"
     }
   },
   "dashboard": {

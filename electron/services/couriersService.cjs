@@ -22,7 +22,21 @@ function normalizeTelegramId(raw) {
 
 class CouriersService {
   constructor(db) {
-    this.db = db;
+    this._db = db;
+  }
+
+  get db() {
+    const openModule = require('../db/open.cjs');
+    try {
+      if (this._db && openModule.isOpen()) {
+        this._db.prepare('SELECT 1').get();
+        return this._db;
+      }
+    } catch {
+      // Stale handle after pos.db replace — fall through to getDb().
+    }
+    this._db = openModule.getDb();
+    return this._db;
   }
 
   ensureSchema() {

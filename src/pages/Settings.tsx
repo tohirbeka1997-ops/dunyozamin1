@@ -420,8 +420,13 @@ export default function Settings() {
   useEffect(() => {
     loadAllSettings();
     loadPosNetConfig();
-    loadCouriers();
   }, []);
+
+  useEffect(() => {
+    if (profile?.role === 'admin') {
+      loadCouriers();
+    }
+  }, [profile?.role]);
 
   useEffect(() => {
     if (batchCfg.enabled && inventorySettings.cost_calculation === 'average_cost') {
@@ -935,9 +940,14 @@ export default function Settings() {
       setCouriers(Array.isArray(rows) ? rows : []);
     } catch (error) {
       console.error('Error loading couriers:', error);
+      const raw = error instanceof Error ? error.message : 'Kuryerlar yuklanmadi';
+      const description =
+        /database connection is not open|database is not available/i.test(raw)
+          ? 'Server bazasi hozir mavjud emas. pos-server ni qayta ishga tushiring yoki biroz kutib qayta urinib ko\'ring.'
+          : raw;
       toast({
         title: t('settings.offline.toastErrTitle'),
-        description: error instanceof Error ? error.message : 'Kuryerlar yuklanmadi',
+        description,
         variant: 'destructive',
       });
     } finally {
@@ -1108,7 +1118,7 @@ export default function Settings() {
       </div>
 
       <Tabs value={activeTab} onValueChange={handleTabChange} className="space-y-6">
-        <TabsList className={`grid w-full grid-cols-4 ${profile?.role === 'admin' ? 'xl:grid-cols-12' : 'xl:grid-cols-9'}`}>
+        <TabsList className={`flex w-full flex-wrap gap-1 overflow-x-auto ${profile?.role === 'admin' ? 'xl:flex-nowrap' : ''}`}>
           <TabsTrigger value="company" className="gap-2">
             <Building2 className="h-4 w-4" />
             <span className="hidden xl:inline">{t('settings.tabs.company')}</span>
@@ -1152,15 +1162,15 @@ export default function Settings() {
             <span className="hidden xl:inline">{t('settings.tabs.local')}</span>
           </TabsTrigger>
           {profile?.role === 'admin' && (
-            <TabsTrigger value="marketplace" className="gap-2">
-              <SlidersHorizontal className="h-4 w-4" />
-              <span className="hidden xl:inline">{t('settings.marketplace.tab')}</span>
+            <TabsTrigger value="marketplace" className="gap-2 shrink-0">
+              <SlidersHorizontal className="h-4 w-4 shrink-0" />
+              <span className="hidden xl:inline truncate max-w-[9rem]">{t('settings.marketplace.tab')}</span>
             </TabsTrigger>
           )}
           {profile?.role === 'admin' && (
-            <TabsTrigger value="couriers" className="gap-2">
-              <Truck className="h-4 w-4" />
-              <span className="hidden xl:inline">Kuryerlar</span>
+            <TabsTrigger value="couriers" className="gap-2 shrink-0">
+              <Truck className="h-4 w-4 shrink-0" />
+              <span className="hidden xl:inline truncate max-w-[9rem]">{t('settings.marketplace.delivery')}</span>
             </TabsTrigger>
           )}
           {canManageDatabase && (
@@ -3176,7 +3186,7 @@ export default function Settings() {
               <CardHeader>
                 <CardTitle className="flex items-center gap-2">
                   <Truck className="h-5 w-5" />
-                  Kuryerlar
+                  {t('settings.marketplace.delivery')}
                 </CardTitle>
                 <CardDescription>
                   Telegram bot kuryer paneliga kira oladigan foydalanuvchilarni boshqaring.

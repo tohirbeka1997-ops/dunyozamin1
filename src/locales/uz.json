@@ -1231,7 +1231,8 @@
       "resetDialogTitle": "Marketplace tuning reset",
       "resetDialogDescription": "Barcha marketplace tuning qiymatlari default holatga qaytariladi. Saqlash uchun keyin \"Save Changes\" ni bosing.",
       "resetDialogCancel": "Bekor qilish",
-      "resetDialogConfirm": "Reset qilish"
+      "resetDialogConfirm": "Reset qilish",
+      "delivery": "Kuryerlar"
     }
   },
   "dashboard": {
