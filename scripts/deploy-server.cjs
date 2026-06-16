@@ -150,7 +150,7 @@ function buildRemoteScript({
     '',
     'if [ "$INSTALL_ROOT" = "1" ]; then',
     '  if [ -f package-lock.json ]; then',
-    '    npm ci --omit=dev --ignore-scripts',
+    '    npm ci --omit=dev --ignore-scripts || npm install --omit=dev --ignore-scripts --no-audit --no-fund',
     '  else',
     '    npm install --omit=dev --ignore-scripts --no-audit --no-fund',
     '  fi',
@@ -158,7 +158,7 @@ function buildRemoteScript({
     '',
     'if [ "$INSTALL_PUBLIC_API" = "1" ]; then',
     '  if [ -f public-api/package-lock.json ]; then',
-    '    npm ci --omit=dev --ignore-scripts --prefix public-api',
+    '    npm ci --omit=dev --ignore-scripts --prefix public-api || npm install --omit=dev --ignore-scripts --prefix public-api --no-audit --no-fund',
     '  else',
     '    npm install --omit=dev --ignore-scripts --prefix public-api --no-audit --no-fund',
     '  fi',
@@ -255,7 +255,7 @@ function main() {
     .split(/[,\s]+/)
     .map((s) => s.trim())
     .filter(Boolean);
-  const stepTimeoutMs = Math.max(30, Number(env.DEPLOY_STEP_TIMEOUT_SEC || 900)) * 1000;
+  const stepTimeoutMs = Math.max(30, Number(env.DEPLOY_STEP_TIMEOUT_SEC || 1800)) * 1000;
 
   if (!server) {
     console.error('[deploy:server] DEPLOY_SERVER yo‘q (deploy/deploy.env yoki .env ga yozing)');
@@ -289,6 +289,10 @@ function main() {
   if (!skipChecks) {
     console.log('[deploy:server] local precheck: npm run test:public-api');
     execSync('npm run test:public-api', { stdio: 'inherit', cwd: ROOT, env: { ...process.env, ...env } });
+    if (process.env.DEPLOY_RUN_POS_SMOKE === '1') {
+      console.log('[deploy:server] local precheck: npm run test:pos-smoke (DEPLOY_RUN_POS_SMOKE=1)');
+      execSync('npm run test:pos-smoke', { stdio: 'inherit', cwd: ROOT, env: { ...process.env, ...env } });
+    }
   } else {
     console.log('[deploy:server] SKIP_DEPLOY_CHECKS=1');
   }
@@ -325,15 +329,23 @@ function main() {
     try {
       runStep('remote-mkdir', 'ssh', [...sshArgsNonInteractive, server, `mkdir -p "${appPath}"`], {
         cwd: ROOT,
-        timeoutMs: 60_000,
+        timeoutMs: stepTimeoutMs,
       });
 
       const excludes = [
         '--exclude=.git',
         '--exclude=node_modules',
+        '--exclude=public-api/node_modules',
+        '--exclude=sales-mobile/node_modules',
+        '--exclude=admin-panel/node_modules',
+        '--exclude=mini-app/node_modules',
         '--exclude=dist',
         '--exclude=.pos-data-dev',
         '--exclude=release',
+        '--exclude=release-build',
+        '--exclude=.expo',
+        '--exclude=sales-mobile/.expo',
+        '--exclude=agent-transcripts',
         '--exclude=.env',
         '--exclude=.env.*',
         '--exclude=deploy/deploy.env',

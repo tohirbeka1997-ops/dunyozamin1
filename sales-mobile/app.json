@@ -1,0 +1,38 @@
+{
+  "expo": {
+    "name": "DZ Sotuvchi",
+    "slug": "dunyozamin-sales",
+    "version": "0.1.0",
+    "orientation": "portrait",
+    "scheme": "dzsales",
+    "userInterfaceStyle": "automatic",
+    "newArchEnabled": true,
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.dunyozamin.sales"
+    },
+    "android": {
+      "adaptiveIcon": {
+        "backgroundColor": "#166534"
+      },
+      "package": "com.dunyozamin.sales"
+    },
+    "web": {
+      "bundler": "metro"
+    },
+    "plugins": [
+      "expo-router",
+      "expo-secure-store",
+      "expo-asset",
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "Allow $(PRODUCT_NAME) to access your camera to scan product barcodes."
+        }
+      ]
+    ],
+    "experiments": {
+      "typedRoutes": true
+    }
+  }
+}

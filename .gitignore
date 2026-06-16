@@ -61,3 +61,13 @@ load-test/*.local.env
 # rclone credentials — kept per-host only, never in repo
 deploy/backup/rclone.conf
 deploy/monitoring/pos-metrics-token
+
+# Build artifacts & junk — never commit
+release.zip
+*.prn
+=170
+package — копия.json
+tmp-query.js
+tmp-audit-returns.cjs
+tmp-*.cjs
+test_pos.db*

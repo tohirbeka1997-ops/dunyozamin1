@@ -143,7 +143,7 @@ function main() {
   ).replace(/\/$/, '');
   const API_SECRET =
     env.DEPLOY_API_SECRET || env.API_SECRET || env.VITE_POS_RPC_SECRET || '';
-  const REMOTE_PATH = (env.REMOTE_PATH || '/var/www/pos').replace(/\/+$/, '') || '/var/www/pos';
+  const REMOTE_PATH = (env.REMOTE_PATH || '/opt/pos/dist').replace(/\/+$/, '') || '/opt/pos/dist';
   const SKIP_BUILD = String(env.SKIP_BUILD || '0') === '1';
   const NO_RESTART_NGINX = String(env.NO_RESTART_NGINX || '0') === '1';
   const { parts: sshExtra, identityPath } = buildSshExtra(env);

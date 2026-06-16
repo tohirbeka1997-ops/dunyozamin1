@@ -7,12 +7,27 @@ This checklist is for prepare-only verification before running any real deploy c
 Run these from the repository root:
 
 ```bash
+# To‘liq mahalliy preflight (tavsiya)
+npm run deploy:preflight
+
+# Yoki qo‘lda:
 npm run test:public-api
 npm run test:barcode
 npm run electron:build
+npm run test:pos-smoke
+npm run db:integrity
 npm run mini-app:build
 npm run build
 ```
+
+Agar `npm run build` xotira (OOM) bersa:
+
+```bash
+set NODE_OPTIONS=--max-old-space-size=8192
+npm run build
+```
+
+Yoki preflight: `set PREFLIGHT_SKIP_BUILD=1` va buildni alohida server/CI da bajaring.
 
 For changed CommonJS files, also run syntax checks:
 
@@ -21,6 +36,8 @@ node --check public-api/routes/catalog.cjs
 node --check scripts/deploy-server.cjs
 node --check scripts/deploy-web.cjs
 node --check scripts/deploy-mini-app.cjs
+node --check scripts/deploy-staff-web.cjs
+node --check scripts/deploy-full.cjs
 ```
 
 ## Required Server Environment
@@ -44,7 +61,7 @@ Configure these values on the server or in `deploy/deploy.env` as appropriate. D
 - `POS_CORS_ORIGINS`
 - `POS_TRUST_PROXY`
 
-### Public API / Mini App
+### Public API / Mini App / Staff
 
 - `PUBLIC_API_DB_PATH` or `POS_DATA_DIR`
 - `PUBLIC_API_CORS_ORIGINS`
@@ -52,6 +69,9 @@ Configure these values on the server or in `deploy/deploy.env` as appropriate. D
 - `JWT_SECRET`
 - `TELEGRAM_BOT_TOKEN`
 - `TELEGRAM_BOT_INTERNAL_SECRET`
+- `STAFF_BOT_TOKEN`
+- `STAFF_WEB_APP_URL` (HTTPS)
+- `STAFF_JWT_SECRET`
 - `PUBLIC_API_TRENDING_CACHE_MS`
 - `RATE_LIMIT_WINDOW_MS`
 - `RATE_LIMIT_MAX`

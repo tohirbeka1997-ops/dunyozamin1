@@ -20,6 +20,9 @@ deploy/
 
 ## Tezkor deploy (Quick Start)
 
+**To'liq production:** `deploy/FULL-PRODUCTION-DEPLOY-UZ.md`  
+**Baza zaxirasi (bulut + Windows PC):** `deploy/OFFSITE-BACKUP-UZ.md`
+
 ### 1. Backend server'ni ishga tushirish (serverda)
 
 Docker variant (tavsiya etiladi):

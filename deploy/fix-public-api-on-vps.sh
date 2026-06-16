@@ -6,7 +6,13 @@ set -euo pipefail
 POS_ROOT="${POS_ROOT:-/opt/pos}"
 API_DIR="$POS_ROOT/public-api"
 DB_DIR="${POS_DATA_DIR:-/var/lib/pos}"
-DB_FILE="$DB_DIR/pos.db"
+# Align with public-api/lib/db.cjs (resolvePosDbPath) — multi-tenant uses tenant DB.
+if [[ "${POS_MULTI_TENANT:-0}" == "1" ]] || [[ -f "$DB_DIR/master.db" ]]; then
+  TENANT_SLUG="${POS_TENANT_SLUG:-default}"
+  DB_FILE="$DB_DIR/tenants/$TENANT_SLUG/pos.db"
+else
+  DB_FILE="$DB_DIR/pos.db"
+fi
 
 echo "[fix-public-api] POS_ROOT=$POS_ROOT API_DIR=$API_DIR DB=$DB_FILE"
 
