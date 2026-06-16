@@ -1,4 +1,4 @@
-import { getTg } from './telegram';
+import { cloudStorage, getTg } from './telegram';
 
 /**
  * localStorage key for favorites is namespaced by the active Telegram
@@ -52,16 +52,51 @@ export function isFavorite(productId: string): boolean {
   return loadFavorites().includes(productId);
 }
 
+const CLOUD_KEY = 'dz_favorites_v1';
+
 export function toggleFavorite(productId: string): boolean {
   const current = loadFavorites();
   const next = current.includes(productId)
     ? current.filter((id) => id !== productId)
     : [...current, productId];
-  localStorage.setItem(getStorageKey(), JSON.stringify(normalize(next)));
+  const normalized = normalize(next);
+  const json = JSON.stringify(normalized);
+  localStorage.setItem(getStorageKey(), json);
+  // Best-effort sync to Telegram CloudStorage so favorites follow the
+  // user across devices. Fire-and-forget; failure is silent.
+  void cloudStorage.setItem(CLOUD_KEY, json);
   window.dispatchEvent(new Event('favorites:change'));
   return next.includes(productId);
 }
 
 export function favoritesCount(): number {
   return loadFavorites().length;
+}
+
+/**
+ * Pull favorites from Telegram CloudStorage and merge with the local list.
+ * Should be called once on app boot, after authentication. Local additions
+ * always win on conflict (CloudStorage acts as a backup, not source of truth).
+ */
+export async function hydrateFavoritesFromCloud(): Promise<void> {
+  const remoteRaw = await cloudStorage.getItem(CLOUD_KEY);
+  if (!remoteRaw) return;
+  let remote: string[] = [];
+  try {
+    const parsed = JSON.parse(remoteRaw) as unknown;
+    if (Array.isArray(parsed)) {
+      remote = parsed.map((x) => String(x));
+    }
+  } catch {
+    return;
+  }
+  if (!remote.length) return;
+  const local = loadFavorites();
+  const merged = normalize([...local, ...remote]);
+  if (merged.length !== local.length) {
+    localStorage.setItem(getStorageKey(), JSON.stringify(merged));
+    // Push merged set back so all devices converge.
+    void cloudStorage.setItem(CLOUD_KEY, JSON.stringify(merged));
+    window.dispatchEvent(new Event('favorites:change'));
+  }
 }

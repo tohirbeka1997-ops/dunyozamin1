@@ -1,10 +1,12 @@
-import { getTg } from './telegram';
+import { getTg, haptic } from './telegram';
 
 export type CartLine = {
   product_id: string;
   name: string;
   price_uzs: number;
   quantity: number;
+  /** Optional per-item note ("issiqroq", "yumshoqroq", etc.) */
+  note?: string;
 };
 
 /**
@@ -70,6 +72,7 @@ export function addToCart(line: Omit<CartLine, 'quantity'> & { quantity?: number
     cur.push({ product_id: line.product_id, name: line.name, price_uzs: line.price_uzs, quantity: qty });
   }
   saveCart(cur);
+  haptic.impact('light');
   return cur;
 }
 
@@ -79,9 +82,21 @@ export function setQuantity(productId: string, quantity: number): CartLine[] {
   if (i < 0) return cur;
   if (quantity <= 0) {
     cur.splice(i, 1);
+    haptic.impact('medium');
   } else {
     cur[i] = { ...cur[i], quantity };
+    haptic.selection();
   }
+  saveCart(cur);
+  return cur;
+}
+
+export function setLineNote(productId: string, note: string): CartLine[] {
+  const cur = loadCart();
+  const i = cur.findIndex((x) => x.product_id === productId);
+  if (i < 0) return cur;
+  const trimmed = note.trim().slice(0, 200);
+  cur[i] = { ...cur[i], note: trimmed || undefined };
   saveCart(cur);
   return cur;
 }

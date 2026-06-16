@@ -2,8 +2,8 @@ import { useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { addToCart, loadCart } from '../lib/cart';
 import { isFavorite, toggleFavorite } from '../lib/favorites';
+import { LazyImg } from './LazyImg';
 
-/** Marketplace (Uzum uslubi) — ikki ustunli grid uchun karta */
 export type ProductCardProps = {
   id: string;
   name: string;
@@ -29,8 +29,8 @@ export function ProductCard({
   stock_quantity,
   onQuickAdd,
 }: ProductCardProps) {
-  const [imgFailed, setImgFailed] = useState(false);
   const [favorite, setFavorite] = useState(() => isFavorite(id));
+  const [bumping, setBumping] = useState(false);
 
   useEffect(() => {
     setFavorite(isFavorite(id));
@@ -53,92 +53,117 @@ export function ProductCard({
   const stockLimit = track_stock ? Math.max(0, Number(stock_quantity ?? 0)) : null;
   const cartQty = useMemo(() => loadCart().find((x) => x.product_id === id)?.quantity || 0, [id]);
   const canAdd = is_available && (stockLimit == null || cartQty < stockLimit);
-  const stockLabel =
-    !is_available
-      ? 'Tugagan'
-      : stockLimit == null
-        ? null
-        : stockLimit <= 3
-          ? `Kam qoldi: ${stockLimit}`
-          : `Ombor: ${stockLimit}`;
+
+  // Pick a leak hue based on id-hash for visual variety
+  const leakHue = useMemo(() => {
+    let h = 0;
+    for (let i = 0; i < id.length; i++) h = (h * 31 + id.charCodeAt(i)) >>> 0;
+    return h % 3;
+  }, [id]);
+  const leakClass = ['dz-leak-teal', 'dz-leak-cream', 'dz-leak-accent'][leakHue];
+
+  const handleAdd = () => {
+    addToCart({ product_id: id, name, price_uzs, quantity: 1 });
+    onQuickAdd?.();
+    setBumping(true);
+    setTimeout(() => setBumping(false), 220);
+  };
 
   return (
-    <article className="group relative flex flex-col overflow-hidden rounded-3xl border border-[var(--dz-border-strong)] bg-[var(--dz-surface)] shadow-[var(--dz-card-shadow-soft)] transition hover:-translate-y-0.5 hover:shadow-[var(--dz-card-shadow)]">
+    <article className="dz-card group flex flex-col">
       <Link to={`/product/${encodeURIComponent(id)}`} className="block">
-        <div className="relative aspect-square w-full bg-[color-mix(in_srgb,var(--dz-surface)_88%,#94a3b8_12%)]">
-          {image_url && !imgFailed ? (
-            <img
-              src={image_url}
-              alt=""
-              className="h-full w-full object-cover transition duration-200 group-hover:scale-[1.02]"
-              loading="lazy"
-              onError={() => setImgFailed(true)}
-            />
-          ) : (
-            <div className="flex h-full items-center justify-center text-4xl text-[#dadce0]">🛒</div>
-          )}
+        {/* Image area with soft leak */}
+        <div className="relative aspect-square w-full overflow-hidden bg-[var(--brand-cream-50)]">
+          {/* Color leak */}
+          <span
+            className={`dz-leak ${leakClass} dz-leak-md`}
+            style={{ top: '-30%', right: '-20%', opacity: 0.32 }}
+          />
+          <span
+            className="dz-leak dz-leak-cream dz-leak-sm"
+            style={{ bottom: '-20%', left: '-10%', opacity: 0.5 }}
+          />
+
+          <LazyImg
+            src={image_url}
+            alt={name}
+            className="absolute inset-0"
+            imgClassName={`transition duration-300 group-hover:scale-[1.03] ${
+              !is_available ? 'opacity-60 grayscale' : ''
+            }`}
+            fallback={<span className="text-4xl text-[color-mix(in_srgb,var(--brand-primary)_18%,transparent)]">🛒</span>}
+          />
+
+          {/* Favorite — minimal */}
           <button
             type="button"
-            aria-label={favorite ? 'Sevimlidan olib tashlash' : 'Sevimliga qo‘shish'}
+            aria-label={favorite ? 'Sevimlidan olib tashlash' : 'Sevimliga qoʻshish'}
             onClick={(e) => {
               e.preventDefault();
               e.stopPropagation();
               setFavorite(toggleFavorite(id));
             }}
-            className="absolute right-2 top-2 inline-flex h-7 w-7 items-center justify-center rounded-full border border-white/40 bg-black/35 text-sm text-white backdrop-blur-sm transition hover:bg-black/45"
+            className={`absolute right-2 top-2 inline-flex h-7 w-7 items-center justify-center rounded-full text-[13px] transition ${
+              favorite
+                ? 'bg-[var(--brand-teal)] text-white shadow-[var(--dz-glow-teal)]'
+                : 'bg-white/80 text-[var(--brand-primary)] backdrop-blur-md hover:bg-white'
+            }`}
           >
             {favorite ? '♥' : '♡'}
           </button>
-          {stockLabel ? (
-            <span
-              className={`absolute left-2 top-2 rounded-md px-2 py-0.5 text-[10px] font-semibold ${
-                !is_available
-                  ? 'bg-black/65 uppercase tracking-wide text-white'
-                  : stockLimit != null && stockLimit <= 3
-                    ? 'bg-amber-100/95 text-amber-900'
-                    : 'bg-[var(--dz-surface)]/90 text-[var(--dz-muted)]'
-              }`}
-            >
-              {stockLabel}
+
+          {/* Out of stock — minimal pill at bottom */}
+          {!is_available ? (
+            <span className="absolute bottom-2 left-2 rounded-full bg-white/85 px-2 py-0.5 text-[9.5px] font-bold uppercase tracking-wider text-[var(--brand-primary)] backdrop-blur-md">
+              Tugagan
+            </span>
+          ) : stockLimit != null && stockLimit <= 3 ? (
+            <span className="absolute bottom-2 left-2 rounded-full bg-[var(--brand-accent)]/95 px-2 py-0.5 text-[9.5px] font-bold text-[var(--brand-primary)] backdrop-blur-md">
+              Kam · {stockLimit}
             </span>
           ) : null}
         </div>
-        <div className="flex min-h-0 flex-1 flex-col p-3">
-          <div className="line-clamp-2 min-h-[2.5rem] text-[13px] font-semibold leading-snug text-[var(--dz-text)]">
+
+        {/* Body — minimal padding & text */}
+        <div className="flex min-h-0 flex-1 flex-col px-2.5 pt-2 pb-1.5">
+          <div className="line-clamp-2 min-h-[2.25rem] text-[12.5px] font-semibold leading-snug text-[var(--dz-text)]">
             {name}
           </div>
           {optLine ? (
-            <p className="mt-0.5 line-clamp-1 text-[10px] font-medium leading-snug text-[var(--dz-muted)]">
+            <p className="mt-0.5 line-clamp-1 text-[10px] font-medium leading-snug text-[var(--dz-soft)]">
               {optLine}
             </p>
+          ) : desc ? (
+            <p className="mt-0.5 line-clamp-1 text-[10px] leading-snug text-[var(--dz-soft)]">{desc}</p>
           ) : null}
-          {desc ? (
-            <p className="mt-1 line-clamp-2 text-[11px] leading-snug text-[var(--dz-muted)]">{desc}</p>
-          ) : null}
-          <div className="mt-auto pt-2">
-            <span className="text-[15px] font-bold tabular-nums text-[var(--dz-accent)]">
+          <div className="mt-1.5 flex items-baseline gap-1">
+            <span className="text-[14.5px] font-extrabold tabular-nums text-[var(--brand-primary)]">
               {price_uzs.toLocaleString('uz-UZ')}
             </span>
-            <span className="ml-0.5 text-[12px] font-medium text-[var(--dz-muted)]">so&apos;m</span>
-            {cartQty > 0 ? (
-              <p className="mt-1 text-[10px] font-semibold text-[var(--dz-link)]">
-                Savatda: {cartQty}
-              </p>
-            ) : null}
+            <span className="text-[10px] font-semibold text-[var(--dz-soft)]">soʻm</span>
           </div>
         </div>
       </Link>
-      <div className="p-3 pt-0">
+
+      {/* CTA — minimal, no shadow */}
+      <div className="px-2.5 pb-2.5">
         <button
           type="button"
           disabled={!canAdd}
-          onClick={() => {
-            addToCart({ product_id: id, name, price_uzs, quantity: 1 });
-            onQuickAdd?.();
-          }}
-          className="w-full rounded-xl bg-[var(--dz-accent)] px-3 py-2 text-xs font-semibold text-[var(--dz-accent-text)] transition active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-50"
+          onClick={handleAdd}
+          className={`flex w-full items-center justify-center gap-1 rounded-xl py-2 text-[11.5px] font-bold transition active:scale-[0.97] disabled:cursor-not-allowed disabled:opacity-45 ${
+            cartQty > 0
+              ? 'bg-[var(--brand-accent)] text-[var(--brand-primary)]'
+              : 'bg-[var(--brand-primary)] text-white hover:bg-[var(--brand-primary-600)]'
+          } ${bumping ? 'animate-pulse' : ''}`}
         >
-          {canAdd ? "Savatga qo'shish" : stockLimit === 0 ? 'Tugagan' : 'Maksimal miqdor'}
+          {!canAdd
+            ? stockLimit === 0
+              ? 'Tugagan'
+              : 'Maks.'
+            : cartQty > 0
+              ? `✓ ${cartQty} ta · yana`
+              : '＋ Savatga'}
         </button>
       </div>
     </article>

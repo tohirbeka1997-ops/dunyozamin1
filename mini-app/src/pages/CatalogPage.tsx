@@ -1,11 +1,14 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import { apiUrl, readJsonSafe } from '../lib/api';
+import { resolveProductImageUrl } from '../lib/productImageUrl';
 import { Skeleton } from '../components/Skeleton';
 import { ProductCard } from '../components/ProductCard';
 import { useDebounce } from '../hooks/useDebounce';
 import { loadFavorites } from '../lib/favorites';
 import { loadRecentSearches, saveRecentSearch } from '../lib/recentSearches';
+import { usePullToRefresh } from '../hooks/usePullToRefresh';
+import { PullIndicator } from '../components/PullIndicator';
 
 /**
  * Pagination size for the catalog list. Matches the public API's
@@ -64,6 +67,9 @@ export function CatalogPage({ onCartChange }: { onCartChange?: () => void }) {
   // React state updates are batched and the observer can fire multiple
   // times before the next render.
   const inFlightRef = useRef(false);
+  // Bumped by pull-to-refresh to force a re-fetch even when filters
+  // haven't changed (effect dep below).
+  const [refreshKey, setRefreshKey] = useState(0);
 
   useEffect(() => {
     setSearchInput(qFromUrl);
@@ -140,7 +146,14 @@ export function CatalogPage({ onCartChange }: { onCartChange?: () => void }) {
     setProducts([]);
     setFallbackProducts([]);
     setHasMore(false);
-  }, [category, sort, debouncedQ]);
+  }, [category, sort, debouncedQ, refreshKey]);
+
+  const pull = usePullToRefresh(async () => {
+    setRefreshKey((k) => k + 1);
+    // Wait one frame so the user sees the spinner finish animating
+    // before the cards swap in.
+    await new Promise((r) => setTimeout(r, 350));
+  });
 
   useEffect(() => {
     let ok = true;
@@ -274,42 +287,88 @@ export function CatalogPage({ onCartChange }: { onCartChange?: () => void }) {
     setSp(new URLSearchParams(), { replace: true });
   };
 
+  const sortLabels: Record<SortMode, string> = {
+    name: 'Nomi',
+    price_asc: 'Arzondan',
+    price_desc: 'Qimmatdan',
+  };
+
   return (
-    <div className="space-y-3.5">
-      <div>
-        <h1 className="text-lg font-bold tracking-tight">Katalog</h1>
-        <p className="mt-0.5 text-xs text-[var(--dz-soft)]">Kategoriya va saralash</p>
-      </div>
+    <div className="space-y-3 dz-animate-in">
+      <PullIndicator status={pull.status} distance={pull.distance} threshold={pull.threshold} />
+      {/* HERO — gradient + leaks, contains title, search and sort */}
+      <section className="dz-card-flat relative overflow-hidden p-3.5 -mx-1">
+        <div className="absolute inset-0 dz-cream-bg" />
+        <span className="dz-leak dz-leak-teal dz-leak-md" style={{ top: '-40%', right: '-15%', opacity: 0.22 }} />
+        <span className="dz-leak dz-leak-accent dz-leak-sm" style={{ bottom: '-30%', left: '-10%', opacity: 0.25 }} />
+        <span className="dz-leak dz-leak-cream dz-leak-md" style={{ top: '20%', left: '40%', opacity: 0.5 }} />
+
+        <div className="relative space-y-2.5">
+          <div className="flex items-center justify-between gap-2">
+            <div>
+              <h1 className="text-[18px] font-extrabold tracking-tight text-[var(--brand-primary)]">
+                Katalog
+              </h1>
+              <p className="text-[10.5px] font-medium text-[var(--brand-primary)]/65">
+                Mahsulotlar va kategoriyalar
+              </p>
+            </div>
+            <span className="dz-chip-teal dz-chip">
+              {visibleProducts.length} ta
+            </span>
+          </div>
+
+          {/* Search + inline sort */}
+          <div className="flex items-stretch gap-1.5">
+            <div className="relative flex-1">
+              <span className="pointer-events-none absolute left-3.5 top-1/2 -translate-y-1/2 text-[14px] text-[var(--brand-teal)]" aria-hidden>
+                🔎
+              </span>
+              <input
+                type="search"
+                value={searchInput}
+                onChange={(e) => setSearchInput(e.target.value)}
+                placeholder="Qidirish…"
+                enterKeyHint="search"
+                autoComplete="off"
+                className="w-full rounded-xl border-0 bg-white py-2.5 pl-10 pr-3 text-[13px] font-medium text-[var(--dz-text)] placeholder:text-[var(--dz-soft)] focus:outline-none focus:ring-2 focus:ring-[var(--brand-teal)]/30"
+              />
+            </div>
+            <div className="relative">
+              <select
+                value={sort}
+                onChange={(e) => setSort(e.target.value as typeof sort)}
+                aria-label="Saralash"
+                className="h-full appearance-none rounded-xl border-0 bg-white py-2.5 pl-3 pr-7 text-[12px] font-bold text-[var(--brand-primary)] focus:outline-none focus:ring-2 focus:ring-[var(--brand-teal)]/30"
+              >
+                <option value="name">↕ {sortLabels.name}</option>
+                <option value="price_asc">↑ {sortLabels.price_asc}</option>
+                <option value="price_desc">↓ {sortLabels.price_desc}</option>
+              </select>
+              <span className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 text-[10px] text-[var(--brand-primary)]/50" aria-hidden>
+                ▾
+              </span>
+            </div>
+          </div>
+        </div>
+      </section>
 
       {err ? (
         <div className="rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-900">{err}</div>
       ) : null}
 
-      <div className="relative">
-        <span className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-base opacity-45" aria-hidden>
-          🔍
-        </span>
-        <input
-          type="search"
-          value={searchInput}
-          onChange={(e) => setSearchInput(e.target.value)}
-          placeholder="Nomi, SKU yoki shtrix-kod bo‘yicha qidiring"
-          enterKeyHint="search"
-          autoComplete="off"
-          className="w-full rounded-xl border bg-[var(--dz-surface)] py-2.5 pl-10 pr-3 text-sm text-[var(--dz-text)] shadow-[var(--dz-card-shadow-soft)] placeholder:text-[var(--dz-soft)]"
-        />
-      </div>
-
       {!searchInput.trim() && recentSearches.length > 0 ? (
         <div className="space-y-1">
-          <p className="text-xs font-medium uppercase tracking-wide text-[var(--dz-soft)]">Oxirgi qidiruvlar</p>
+          <p className="text-[10px] font-bold uppercase tracking-wide text-[var(--dz-soft)]">
+            Oxirgi qidiruvlar
+          </p>
           <div className="flex flex-wrap gap-1.5">
             {recentSearches.map((q) => (
               <button
                 key={q}
                 type="button"
                 onClick={() => setSearchInput(q)}
-                className="rounded-full border bg-[var(--dz-surface)] px-2.5 py-1 text-[11px] font-medium text-[var(--dz-muted)]"
+                className="rounded-full bg-white px-2.5 py-0.5 text-[11px] font-semibold text-[var(--brand-primary)] transition hover:bg-[var(--brand-cream-100)]"
               >
                 {q}
               </button>
@@ -318,96 +377,85 @@ export function CatalogPage({ onCartChange }: { onCartChange?: () => void }) {
         </div>
       ) : null}
 
-      <div className="flex flex-wrap gap-2">
-        <Link
-          to={catalogHref()}
-          className={`rounded-full px-3 py-1.5 text-xs font-medium shadow-sm transition ${
-            !category
-              ? 'bg-[var(--tg-theme-button-color,#2481cc)] text-[var(--tg-theme-button-text-color,#fff)]'
-              : 'border bg-[var(--dz-surface)] text-[var(--dz-muted)] hover:border-[var(--dz-border-strong)]'
-          }`}
-        >
-          Hammasi
-        </Link>
-        {loading
-          ? [1, 2, 3, 4].map((i) => <Skeleton key={i} className="h-8 w-20 rounded-full" />)
-          : cats.map((c) => (
-              <Link
-                key={c.id}
-                to={catalogHref(c.id)}
-                className={`rounded-full px-3 py-1.5 text-xs font-medium shadow-sm transition ${
-                  category === c.id
-                    ? 'bg-[var(--tg-theme-button-color,#2481cc)] text-[var(--tg-theme-button-text-color,#fff)]'
-                    : 'border bg-[var(--dz-surface)] text-[var(--dz-muted)] hover:border-[var(--dz-border-strong)]'
-                }`}
-              >
-                <span className="inline-flex max-w-[150px] items-center gap-1 truncate">
-                  {c.image_url ? (
-                    <img src={c.image_url} alt="" className="h-5 w-5 shrink-0 rounded-full object-cover" />
-                  ) : c.icon ? (
-                    <span className="shrink-0 text-base leading-none" aria-hidden>
-                      {c.icon}
-                    </span>
-                  ) : null}
-                  <span className="truncate">{c.name}</span>
-                </span>
-              </Link>
-            ))}
-      </div>
-
-      <label className="block">
-        <span className="mb-1.5 block text-xs font-medium uppercase tracking-wide text-[var(--dz-soft)]">
-          Saralash
-        </span>
-        <select
-          value={sort}
-          onChange={(e) => setSort(e.target.value as typeof sort)}
-          className="w-full rounded-xl border bg-[var(--dz-surface)] px-3 py-2 text-sm font-medium text-[var(--dz-text)] shadow-[var(--dz-card-shadow-soft)]"
-        >
-          <option value="name">Nomi bo&apos;yicha</option>
-          <option value="price_asc">Narx: arzondan</option>
-          <option value="price_desc">Narx: qimmatdan</option>
-        </select>
-      </label>
-
-      <div className="space-y-1">
-        <p className="text-xs font-medium uppercase tracking-wide text-[var(--dz-soft)]">Tezkor filtrlar</p>
-        <div className="flex flex-wrap gap-2">
-          {[
-            { key: 'all', label: 'Hammasi' },
-            { key: 'in_stock', label: '✅ Mavjud' },
-            { key: 'favorites', label: '♥ Sevimlilar' },
-            { key: 'budget', label: "💸 200k gacha" },
-          ].map((f) => (
-            <button
-              key={f.key}
-              type="button"
-              onClick={() => setQuickFilter(f.key as QuickFilter)}
-              className={`rounded-full px-2.5 py-1 text-[11px] font-semibold transition ${
-                quickFilter === f.key
-                  ? 'bg-[var(--tg-theme-button-color,#2481cc)] text-[var(--tg-theme-button-text-color,#fff)]'
-                  : 'border bg-[var(--dz-surface)] text-[var(--dz-muted)]'
-              }`}
-            >
-              {f.label}
-            </button>
-          ))}
+      {/* Categories — only render row when there are categories or while loading */}
+      {loading || cats.length > 0 ? (
+        <div className="dz-scroll-x -mx-1 flex gap-1.5 px-1 pb-1">
+          <Link
+            to={catalogHref()}
+            className={`flex-shrink-0 rounded-full px-3 py-1.5 text-[12px] font-bold transition active:scale-95 ${
+              !category
+                ? 'dz-brand-bg text-white'
+                : 'bg-white text-[var(--brand-primary)] hover:bg-[var(--brand-cream-100)]'
+            }`}
+          >
+            Hammasi
+          </Link>
+          {loading
+            ? [1, 2, 3, 4].map((i) => <Skeleton key={i} className="h-7 w-20 flex-shrink-0 rounded-full" />)
+            : cats.map((c) => (
+                <Link
+                  key={c.id}
+                  to={catalogHref(c.id)}
+                  className={`flex-shrink-0 rounded-full px-3 py-1.5 text-[12px] font-bold transition active:scale-95 ${
+                    category === c.id
+                      ? 'dz-brand-bg text-white'
+                      : 'bg-white text-[var(--brand-primary)] hover:bg-[var(--brand-cream-100)]'
+                  }`}
+                >
+                  <span className="inline-flex max-w-[150px] items-center gap-1.5 truncate">
+                    {c.image_url ? (
+                      <img
+                        src={resolveProductImageUrl(c.image_url) || ''}
+                        alt=""
+                        className="h-4 w-4 shrink-0 rounded-full object-cover"
+                      />
+                    ) : c.icon ? (
+                      <span className="shrink-0 text-[13px] leading-none" aria-hidden>
+                        {c.icon}
+                      </span>
+                    ) : null}
+                    <span className="truncate">{c.name}</span>
+                  </span>
+                </Link>
+              ))}
         </div>
+      ) : null}
+
+      {/* Quick filters — single horizontal scroll row */}
+      <div className="dz-scroll-x -mx-1 flex gap-1.5 px-1 pb-1">
+        {[
+          { key: 'all' as const, label: 'Hammasi' },
+          { key: 'in_stock' as const, label: '✓ Mavjud' },
+          { key: 'favorites' as const, label: '♥ Sevimli' },
+          { key: 'budget' as const, label: '💸 200k gacha' },
+        ].map((f) => (
+          <button
+            key={f.key}
+            type="button"
+            onClick={() => setQuickFilter(f.key)}
+            className={`flex-shrink-0 rounded-full px-3 py-1 text-[11px] font-bold transition active:scale-95 ${
+              quickFilter === f.key
+                ? 'bg-[var(--brand-accent)] text-[var(--brand-primary)]'
+                : 'bg-white text-[var(--brand-primary)] hover:bg-[var(--brand-cream-100)]'
+            }`}
+          >
+            {f.label}
+          </button>
+        ))}
       </div>
 
       {hasAnyFilter ? (
-        <div className="rounded-xl border bg-[var(--dz-surface)]/90 px-2.5 py-1.5">
-          <div className="flex items-center justify-between gap-2">
-            <p className="text-xs font-medium text-[var(--dz-soft)]">Aktiv filtrlar</p>
-            <button
-              type="button"
-              onClick={clearAllFilters}
-              className="text-xs font-semibold text-[var(--dz-link)]"
-            >
-              Hammasini tozalash
-            </button>
-          </div>
-          <p className="mt-1 text-xs text-[var(--dz-muted)]">{activeFilters.join(' · ')}</p>
+        <div className="flex items-center gap-2 rounded-xl bg-[var(--brand-teal-50)] px-2.5 py-1.5">
+          <p className="min-w-0 flex-1 truncate text-[11px] font-semibold text-[var(--brand-teal-600)]">
+            {activeFilters.join(' · ')}
+          </p>
+          <button
+            type="button"
+            onClick={clearAllFilters}
+            className="flex-shrink-0 rounded-full bg-white px-2 py-0.5 text-[10.5px] font-bold text-[var(--brand-teal-600)] transition active:scale-95"
+          >
+            ✕ Tozalash
+          </button>
         </div>
       ) : null}
 
@@ -424,56 +472,64 @@ export function CatalogPage({ onCartChange }: { onCartChange?: () => void }) {
           ))}
         </div>
       ) : visibleProducts.length === 0 ? (
-        <div className="rounded-2xl border border-dashed bg-[var(--dz-surface)]/90 px-4 py-8 text-center">
-          <p className="text-sm text-[var(--dz-soft)]">
-            {debouncedQ
-              ? 'Qidiruv bo‘yicha mahsulot topilmadi. Boshqa so‘z yoki filtrni sinab ko‘ring.'
-              : quickFilter !== 'all'
-                ? 'Tezkor filtr bo‘yicha mahsulot topilmadi.'
-                : 'Bu filtr bo‘yicha mahsulot topilmadi.'}
-          </p>
-          <div className="mt-4 flex flex-wrap items-center justify-center gap-2">
-            <button
-              type="button"
-              onClick={clearAllFilters}
-              className="rounded-full bg-[var(--tg-theme-button-color,#2481cc)] px-3 py-1.5 text-xs font-semibold text-[var(--tg-theme-button-text-color,#fff)]"
-            >
-              Filtrlarni tozalash
-            </button>
-            {cats.slice(0, 4).map((c) => (
-              <Link
-                key={c.id}
-                to={catalogHref(c.id)}
-                className="rounded-full border bg-[var(--dz-surface)] px-3 py-1.5 text-xs font-medium text-[var(--dz-muted)]"
-              >
-                {c.name}
-              </Link>
-            ))}
-          </div>
-          {fallbackProducts.length > 0 ? (
-            <div className="mt-5 text-left">
-              <p className="mb-2 text-xs font-medium uppercase tracking-wide text-[var(--dz-soft)]">
-                Tavsiya mahsulotlar
-              </p>
-              <div className="grid grid-cols-2 gap-2.5 sm:gap-3">
-                {fallbackProducts.slice(0, 4).map((p) => (
-                  <ProductCard
-                    key={`fb-${p.id}`}
-                    id={p.id}
-                    name={p.name}
-                    price_uzs={p.price_uzs}
-                    image_url={p.image_url}
-                    is_available={p.is_available}
-                    description={p.description}
-                    options={p.options}
-                    track_stock={p.track_stock}
-                    stock_quantity={p.stock_quantity}
-                    onQuickAdd={onCartChange}
-                  />
-                ))}
-              </div>
+        <div className="dz-card-flat dz-cream-bg relative px-4 py-8 text-center">
+          <span className="dz-leak dz-leak-teal dz-leak-md" style={{ top: '-30%', right: '-20%', opacity: 0.22 }} />
+          <span className="dz-leak dz-leak-accent dz-leak-sm" style={{ bottom: '-25%', left: '-15%', opacity: 0.22 }} />
+          <div className="relative">
+            <div className="mx-auto mb-2 flex h-12 w-12 items-center justify-center rounded-2xl dz-teal-bg text-xl text-white">
+              🔎
             </div>
-          ) : null}
+            <p className="text-[13px] font-semibold text-[var(--brand-primary)]">
+              {debouncedQ
+                ? 'Qidiruv boʻyicha mahsulot topilmadi.'
+                : quickFilter !== 'all'
+                  ? 'Tezkor filtr boʻyicha mahsulot topilmadi.'
+                  : 'Bu filtr boʻyicha mahsulot topilmadi.'}
+            </p>
+            <p className="mt-0.5 text-[11.5px] text-[var(--brand-primary)]/65">Boshqa soʻz yoki kategoriyani sinab koʻring.</p>
+            <div className="mt-4 flex flex-wrap items-center justify-center gap-2">
+              <button
+                type="button"
+                onClick={clearAllFilters}
+                className="rounded-full bg-[var(--brand-primary)] px-3.5 py-1.5 text-[12px] font-bold text-white active:scale-95"
+              >
+                Filtrlarni tozalash
+              </button>
+              {cats.slice(0, 4).map((c) => (
+                <Link
+                  key={c.id}
+                  to={catalogHref(c.id)}
+                  className="rounded-full bg-white px-3 py-1.5 text-[11.5px] font-semibold text-[var(--brand-primary)] active:scale-95"
+                >
+                  {c.name}
+                </Link>
+              ))}
+            </div>
+            {fallbackProducts.length > 0 ? (
+              <div className="mt-5 text-left">
+                <p className="mb-2 text-[11px] font-bold uppercase tracking-wide text-[var(--brand-primary)]/70">
+                  Tavsiya mahsulotlar
+                </p>
+                <div className="grid grid-cols-2 gap-2.5 sm:gap-3">
+                  {fallbackProducts.slice(0, 4).map((p) => (
+                    <ProductCard
+                      key={`fb-${p.id}`}
+                      id={p.id}
+                      name={p.name}
+                      price_uzs={p.price_uzs}
+                      image_url={p.image_url}
+                      is_available={p.is_available}
+                      description={p.description}
+                      options={p.options}
+                      track_stock={p.track_stock}
+                      stock_quantity={p.stock_quantity}
+                      onQuickAdd={onCartChange}
+                    />
+                  ))}
+                </div>
+              </div>
+            ) : null}
+          </div>
         </div>
       ) : (
         <>

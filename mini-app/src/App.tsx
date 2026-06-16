@@ -13,7 +13,13 @@ import { HomePage } from './pages/HomePage';
 import { OrdersPage } from './pages/OrdersPage';
 import { ProfilePage } from './pages/ProfilePage';
 import { ProductPage } from './pages/ProductPage';
-import { favoritesCount } from './lib/favorites';
+import { HelpPage } from './pages/HelpPage';
+import { OnboardingTour } from './components/OnboardingTour';
+import { favoritesCount, hydrateFavoritesFromCloud } from './lib/favorites';
+import { hydrateRecentSearchesFromCloud } from './lib/recentSearches';
+import { hydrateRecentlyViewedFromCloud } from './lib/recentlyViewed';
+import { hydrateAddressesFromCloud } from './lib/addresses';
+import { hydrateLangFromCloud } from './lib/i18n';
 
 export default function App() {
   const loc = useLocation();
@@ -28,6 +34,14 @@ export default function App() {
     const tg = getTg();
     const u = tg?.initDataUnsafe?.user;
     if (u?.first_name) setUserName(u.first_name);
+    // Pull favorites + recent searches from Telegram CloudStorage so the
+    // user's data follows them across devices. Fire-and-forget: failure
+    // just keeps the local copy.
+    void hydrateFavoritesFromCloud().catch(() => undefined);
+    void hydrateRecentSearchesFromCloud().catch(() => undefined);
+    void hydrateRecentlyViewedFromCloud().catch(() => undefined);
+    void hydrateAddressesFromCloud().catch(() => undefined);
+    void hydrateLangFromCloud().catch(() => undefined);
     const initData = tg?.initData || '';
     if (!initData) {
       setAuthReady(true);
@@ -65,19 +79,28 @@ export default function App() {
 
   return (
     <div className="relative mx-auto flex min-h-dvh max-w-lg flex-col overflow-hidden bg-transparent">
-      <div className="tg-decor pointer-events-none absolute -left-24 -top-24 h-56 w-56 rounded-full bg-[#91a5ff]/30 blur-3xl" />
-      <div className="tg-decor pointer-events-none absolute -right-20 top-24 h-48 w-48 rounded-full bg-[#d59bff]/25 blur-3xl" />
-      <header className="dz-glass sticky top-0 z-10 border-b border-white/30 px-3 pb-1.5 pt-[max(0.3rem,env(safe-area-inset-top))]">
+      <div className="tg-decor pointer-events-none absolute -left-24 -top-24 h-56 w-56 rounded-full bg-[#00a19b]/20 blur-3xl" />
+      <div className="tg-decor pointer-events-none absolute -right-24 top-32 h-52 w-52 rounded-full bg-[#e4ddd3]/55 blur-3xl" />
+      <div className="tg-decor pointer-events-none absolute bottom-32 -left-20 h-40 w-40 rounded-full bg-[#ccda47]/18 blur-3xl" />
+      <header className="dz-glass sticky top-0 z-10 px-3 pb-2 pt-[max(0.4rem,env(safe-area-inset-top))]">
         <div className="flex items-center justify-between gap-3">
-          <div>
-            <Link to="/" className="block text-[15px] font-bold tracking-tight text-[var(--dz-text)]">
-              DunyoZamin
-            </Link>
-            <p className="text-[10px] text-[var(--dz-soft)]">Onlayn do&apos;kon</p>
-          </div>
+          <Link to="/" className="flex items-center gap-2">
+            <span className="dz-brand-bg flex h-8 w-8 items-center justify-center rounded-xl text-[12px] font-black text-white">
+              DZ
+            </span>
+            <div className="leading-tight">
+              <span className="block text-[14px] font-bold tracking-tight text-[var(--brand-primary)]">
+                DunyoZamin
+              </span>
+              <span className="block text-[9.5px] font-medium text-[var(--dz-soft)]">
+                Onlayn doʻkoningiz
+              </span>
+            </div>
+          </Link>
           {userName ? (
-            <div className="rounded-full border border-white/40 bg-gradient-to-br from-white/90 to-white/65 px-2.5 py-0.5 text-right text-[11px] font-medium text-[var(--dz-muted)] shadow-[var(--dz-card-shadow-soft)]">
-              {userName}
+            <div className="dz-chip-teal dz-chip max-w-[10rem] truncate">
+              <span aria-hidden>👋</span>
+              <span className="truncate">{userName}</span>
             </div>
           ) : null}
         </div>
@@ -105,11 +128,15 @@ export default function App() {
             <Route path="/checkout" element={<CheckoutPage onCartChange={bumpCart} />} />
             <Route path="/orders" element={<OrdersPage />} />
             <Route path="/profile" element={<ProfilePage />} />
+            <Route path="/help" element={<HelpPage />} />
           </Routes>
         ) : null}
       </main>
 
       {authReady && !isCheckout ? <BottomNav cartCount={cartN} favoritesCount={favN} /> : null}
+
+      {/* First-time onboarding overlay — auto-shows once per device */}
+      {authReady ? <OnboardingTour /> : null}
     </div>
   );
 }

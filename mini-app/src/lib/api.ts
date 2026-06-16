@@ -82,7 +82,7 @@ async function refreshTokens(): Promise<StoredTokens | null> {
   return inFlightRefresh;
 }
 
-function buildRequest(path: string, opts: RequestInit, accessToken: string | null): RequestInit {
+function buildRequest(opts: RequestInit, accessToken: string | null): RequestInit {
   const headers = new Headers(opts.headers);
   if (accessToken) headers.set('Authorization', `Bearer ${accessToken}`);
   if (
@@ -97,7 +97,7 @@ function buildRequest(path: string, opts: RequestInit, accessToken: string | nul
 
 export async function apiFetch(path: string, opts: RequestInit = {}): Promise<Response> {
   const initial = loadTokens();
-  let response = await fetch(apiUrl(path), buildRequest(path, opts, initial?.access_token || null));
+  let response = await fetch(apiUrl(path), buildRequest(opts, initial?.access_token || null));
 
   if (response.status !== 401 || !initial?.refresh_token) {
     return response;
@@ -115,7 +115,7 @@ export async function apiFetch(path: string, opts: RequestInit = {}): Promise<Re
 
   // Body streams can only be read once; rebuild the request from the same
   // opts and send with the new access token.
-  response = await fetch(apiUrl(path), buildRequest(path, opts, refreshed.access_token));
+  response = await fetch(apiUrl(path), buildRequest(opts, refreshed.access_token));
   return response;
 }
 

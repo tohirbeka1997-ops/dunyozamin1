@@ -1,9 +1,9 @@
 import { useEffect, useState } from 'react';
-import { Link } from 'react-router-dom';
 import { ProductCard } from '../components/ProductCard';
 import { Skeleton } from '../components/Skeleton';
 import { apiUrl } from '../lib/api';
 import { loadFavorites } from '../lib/favorites';
+import { EmptyState } from '../components/EmptyState';
 
 type Product = {
   id: string;
@@ -52,10 +52,13 @@ export function FavoritesPage({ onCartChange }: { onCartChange?: () => void }) {
   }, []);
 
   return (
-    <div className="space-y-5">
-      <div>
-        <h1 className="text-xl font-bold tracking-tight">Sevimlilar</h1>
-        <p className="mt-0.5 text-sm text-[var(--dz-soft)]">Saqlangan mahsulotlar ro&apos;yxati</p>
+    <div className="space-y-4 dz-animate-in">
+      <div className="flex items-end justify-between gap-2">
+        <div>
+          <h1 className="text-xl font-extrabold tracking-tight text-[var(--brand-primary)]">♥ Sevimlilar</h1>
+          <p className="mt-0.5 text-[12px] font-medium text-[var(--dz-soft)]">Saqlangan mahsulotlar roʻyxati</p>
+        </div>
+        {rows && rows.length ? <span className="dz-chip-accent dz-chip">{rows.length} ta</span> : null}
       </div>
 
       {err ? (
@@ -65,7 +68,7 @@ export function FavoritesPage({ onCartChange }: { onCartChange?: () => void }) {
       {!rows ? (
         <div className="grid grid-cols-2 gap-2.5 sm:gap-3">
           {[1, 2, 3, 4].map((i) => (
-            <div key={i} className="overflow-hidden rounded-2xl border bg-[var(--dz-surface)] shadow-[var(--dz-card-shadow-soft)]">
+            <div key={i} className="overflow-hidden rounded-3xl border border-[color-mix(in_srgb,var(--brand-primary)_8%,transparent)] bg-[var(--dz-surface)] shadow-[var(--dz-card-shadow-soft)]">
               <Skeleton className="aspect-square w-full rounded-none" />
               <div className="space-y-2 p-3">
                 <Skeleton className="h-4 w-full" />
@@ -92,19 +95,13 @@ export function FavoritesPage({ onCartChange }: { onCartChange?: () => void }) {
           ))}
         </div>
       ) : (
-        <div className="rounded-2xl border border-dashed bg-[var(--dz-surface)] px-6 py-10 text-center shadow-[var(--dz-card-shadow-soft)]">
-          <p className="text-3xl" aria-hidden>
-            ❤
-          </p>
-          <p className="mt-3 text-sm font-medium text-[var(--dz-muted)]">Sevimlilar bo&apos;sh</p>
-          <p className="mt-1 text-xs text-[var(--dz-soft)]">Mahsulot sahifasida yurak tugmasi bilan saqlang</p>
-          <Link
-            to="/catalog"
-            className="mt-5 inline-flex rounded-xl bg-[var(--dz-accent)] px-5 py-2.5 text-sm font-semibold text-[var(--dz-accent-text)]"
-          >
-            Katalogga o&apos;tish
-          </Link>
-        </div>
+        <EmptyState
+          icon="♥"
+          title="Sevimlilar boʻsh"
+          description="Mahsulot sahifasida yurak tugmasi bilan saqlang — keyin tezda topib qaytasiz"
+          tone="accent"
+          cta={{ to: '/catalog', label: '🧺 Katalogga oʻtish' }}
+        />
       )}
     </div>
   );

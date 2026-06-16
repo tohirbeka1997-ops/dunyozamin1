@@ -2,19 +2,64 @@
 @tailwind components;
 @tailwind utilities;
 
+/* ==========================================================================
+   DunyoZamin — Brand palette
+   Primary: #10894D (vivid emerald — bright but trustworthy)
+   Accent:  #CCDA47 (lime / yellow-green)
+   Cream:   #E4DDD3 (warm sand)
+   Teal:    #00A19B (calm aqua)
+   ========================================================================== */
 :root {
-  --dz-bg: var(--tg-theme-bg-color, #f4f6ff);
+  /* Primary scale — switched from a near-black forest (#0A3625) to a
+     vivid emerald in 2026-05. Each step is ~12-15% lightness apart so
+     the brand-bg gradient (primary → 600 → 500) reads as a luminous
+     ramp rather than a flat plate. */
+  --brand-primary: #10894d;
+  --brand-primary-700: #0b6a3b;
+  --brand-primary-600: #14a063;
+  --brand-primary-500: #1cbe78;
+  --brand-primary-400: #34d796;
+  --brand-primary-100: #d4f1e1;
+  --brand-primary-50: #ecfaf2;
+
+  --brand-accent: #ccda47;
+  --brand-accent-600: #b3c235;
+  --brand-accent-500: #c4d440;
+  --brand-accent-200: #e8edaa;
+  --brand-accent-100: #f1f4cf;
+  --brand-accent-50: #fafbe6;
+
+  --brand-cream: #e4ddd3;
+  --brand-cream-200: #ede7df;
+  --brand-cream-100: #f3efe9;
+  --brand-cream-50: #faf7f3;
+
+  --brand-teal: #00a19b;
+  --brand-teal-600: #008a85;
+  --brand-teal-500: #14b3ad;
+  --brand-teal-200: #9be0dc;
+  --brand-teal-100: #cceeed;
+  --brand-teal-50: #e6f6f5;
+
+  --dz-bg: var(--tg-theme-bg-color, #faf7f3);
   --dz-surface: var(--tg-theme-secondary-bg-color, #ffffff);
-  --dz-text: var(--tg-theme-text-color, #111827);
+  --dz-text: var(--tg-theme-text-color, #0e1f17);
   --dz-muted: color-mix(in srgb, var(--dz-text) 62%, transparent);
   --dz-soft: color-mix(in srgb, var(--dz-text) 42%, transparent);
-  --dz-border: color-mix(in srgb, var(--dz-text) 12%, transparent);
-  --dz-border-strong: color-mix(in srgb, var(--dz-text) 20%, transparent);
-  --dz-accent: var(--tg-theme-button-color, #5b6cff);
-  --dz-accent-text: var(--tg-theme-button-text-color, #fff);
-  --dz-link: var(--tg-theme-link-color, #5968ff);
-  --dz-card-shadow: 0 14px 30px rgba(66, 71, 125, 0.15);
-  --dz-card-shadow-soft: 0 6px 18px rgba(43, 58, 106, 0.1);
+  --dz-border: color-mix(in srgb, var(--dz-text) 8%, transparent);
+  --dz-border-strong: color-mix(in srgb, var(--dz-text) 14%, transparent);
+  --dz-accent: var(--tg-theme-button-color, var(--brand-primary));
+  --dz-accent-text: var(--tg-theme-button-text-color, #ffffff);
+  --dz-link: var(--tg-theme-link-color, var(--brand-teal));
+
+  /* Minimal, airy shadows — almost imperceptible, just enough lift.
+     Tinted with the new emerald (16, 137, 77) so depth feels on-brand. */
+  --dz-card-shadow: 0 10px 28px -16px rgba(16, 137, 77, 0.18);
+  --dz-card-shadow-soft: 0 4px 14px -8px rgba(16, 137, 77, 0.08);
+  --dz-card-shadow-hover: 0 14px 32px -14px rgba(16, 137, 77, 0.22);
+
+  --dz-glow-accent: 0 8px 24px -10px rgba(204, 218, 71, 0.45);
+  --dz-glow-teal: 0 8px 24px -10px rgba(0, 161, 155, 0.35);
 }
 
 body {
@@ -22,6 +67,7 @@ body {
   min-height: 100dvh;
   -webkit-tap-highlight-color: transparent;
   font-family:
+    'Inter',
     system-ui,
     -apple-system,
     'Segoe UI',
@@ -31,10 +77,17 @@ body {
     sans-serif;
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
+  /* Soft multi-color gradient with brand tints. The radials are sized to
+     viewport units and `background-attachment: fixed` keeps them anchored
+     while the page scrolls — gives a subtle "atmosphere" effect without
+     re-rendering the gradient on every scroll. */
   background:
-    radial-gradient(80% 55% at 10% 0%, #dbe6ff 0%, transparent 68%),
-    radial-gradient(70% 45% at 95% 15%, #e9dcff 0%, transparent 72%),
-    linear-gradient(180deg, #f6f8ff 0%, var(--dz-bg) 38%, #eff3ff 100%);
+    radial-gradient(60vmax 45vmax at 0% -10%, rgba(0, 161, 155, 0.22) 0%, transparent 55%),
+    radial-gradient(55vmax 40vmax at 105% 5%, rgba(228, 221, 211, 0.85) 0%, transparent 60%),
+    radial-gradient(70vmax 55vmax at 100% 95%, rgba(204, 218, 71, 0.20) 0%, transparent 55%),
+    radial-gradient(50vmax 50vmax at -10% 100%, rgba(16, 137, 77, 0.14) 0%, transparent 55%),
+    linear-gradient(160deg, #f7f1e9 0%, #faf7f3 35%, #f3efe9 70%, #ede7df 100%);
+  background-attachment: fixed;
   color: var(--dz-text);
 }
 
@@ -47,12 +100,160 @@ body {
 }
 
 .dz-glass {
-  background: color-mix(in srgb, var(--dz-surface) 74%, #ffffff 26%);
-  backdrop-filter: blur(14px);
+  background: color-mix(in srgb, var(--dz-surface) 75%, #ffffff 25%);
+  backdrop-filter: blur(18px) saturate(140%);
+  -webkit-backdrop-filter: blur(18px) saturate(140%);
 }
 
-body[data-tg='1'] {
-  background: var(--dz-bg);
+.dz-brand-bg {
+  background: linear-gradient(135deg, var(--brand-primary) 0%, var(--brand-primary-600) 55%, var(--brand-primary-500) 100%);
+}
+
+.dz-accent-bg {
+  background: linear-gradient(135deg, var(--brand-accent) 0%, var(--brand-accent-500) 100%);
+}
+
+.dz-cream-bg {
+  background: linear-gradient(135deg, var(--brand-cream-100) 0%, var(--brand-cream) 100%);
+}
+
+.dz-teal-bg {
+  background: linear-gradient(135deg, var(--brand-teal) 0%, var(--brand-teal-600) 100%);
+}
+
+.dz-brand-text {
+  color: var(--brand-primary);
+}
+
+.dz-teal-text {
+  color: var(--brand-teal);
+}
+
+.dz-accent-text {
+  color: var(--brand-accent-600);
+}
+
+/* ============= LEAK / BLUR utilities =============
+   Soft blurred color "leaks" to add atmosphere to minimal cards.
+   Use as inset pseudo decorations or absolutely positioned blobs. */
+.dz-card {
+  position: relative;
+  overflow: hidden;
+  background: var(--dz-surface);
+  border-radius: 20px;
+  box-shadow: var(--dz-card-shadow-soft);
+  transition: box-shadow 220ms ease, transform 220ms ease;
+}
+.dz-card:hover {
+  box-shadow: var(--dz-card-shadow-hover);
+}
+
+.dz-card-flat {
+  position: relative;
+  overflow: hidden;
+  background: var(--dz-surface);
+  border-radius: 20px;
+}
+
+.dz-leak {
+  position: absolute;
+  border-radius: 9999px;
+  filter: blur(28px);
+  opacity: 0.55;
+  pointer-events: none;
+  z-index: 0;
+}
+.dz-leak-teal {
+  background: var(--brand-teal);
+}
+.dz-leak-cream {
+  background: var(--brand-cream);
+  opacity: 0.7;
+}
+.dz-leak-accent {
+  background: var(--brand-accent);
+}
+.dz-leak-primary {
+  background: var(--brand-primary);
+  opacity: 0.18;
+}
+
+/* Convenient sizes */
+.dz-leak-xs { width: 56px; height: 56px; }
+.dz-leak-sm { width: 88px; height: 88px; }
+.dz-leak-md { width: 140px; height: 140px; }
+.dz-leak-lg { width: 200px; height: 200px; }
+
+.dz-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.35rem 0.7rem;
+  border-radius: 999px;
+  font-size: 11.5px;
+  font-weight: 600;
+  background: var(--brand-cream-100);
+  color: var(--brand-primary);
+}
+
+.dz-chip-accent {
+  background: var(--brand-accent-100);
+  color: var(--brand-primary);
+}
+
+.dz-chip-teal {
+  background: var(--brand-teal-50);
+  color: var(--brand-teal-600);
+}
+
+.dz-btn-primary {
+  background: var(--brand-primary);
+  color: #fff;
+  font-weight: 600;
+  border-radius: 14px;
+  padding: 0.7rem 1rem;
+  transition: transform 120ms ease, box-shadow 200ms ease, background 200ms ease;
+  box-shadow: 0 10px 24px -10px rgba(16, 137, 77, 0.55);
+}
+.dz-btn-primary:hover {
+  background: var(--brand-primary-600);
+}
+.dz-btn-primary:active {
+  transform: scale(0.98);
+}
+.dz-btn-primary:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  box-shadow: none;
+}
+
+.dz-btn-accent {
+  background: var(--brand-accent);
+  color: var(--brand-primary);
+  font-weight: 700;
+  border-radius: 14px;
+  padding: 0.7rem 1rem;
+  transition: transform 120ms ease, box-shadow 200ms ease, background 200ms ease;
+  box-shadow: var(--dz-glow-accent);
+}
+.dz-btn-accent:hover {
+  background: var(--brand-accent-500);
+}
+.dz-btn-accent:active {
+  transform: scale(0.98);
+}
+
+.dz-btn-ghost {
+  background: var(--brand-primary-50);
+  color: var(--brand-primary);
+  font-weight: 600;
+  border-radius: 14px;
+  padding: 0.7rem 1rem;
+  transition: background 160ms ease, transform 120ms ease;
+  border: 1px solid color-mix(in srgb, var(--brand-primary) 8%, transparent);
+}
+.dz-btn-ghost:hover {
+  background: var(--brand-primary-100);
 }
 
 body[data-tg='1'] .tg-decor {
@@ -63,24 +264,100 @@ body[data-tg='1'] .dz-glass {
   background: color-mix(in srgb, var(--dz-surface) 92%, transparent);
 }
 
+/* Telegram LIGHT — same brand-tinted radials as the web, slightly softer
+   so it blends with TG's chrome instead of fighting it. */
 body[data-tg='1'][data-tg-theme='light'] {
-  --dz-bg: #eef2fb;
+  --dz-bg: #f3efe8;
   --dz-surface: #ffffff;
-  --dz-text: #13233b;
-  --dz-muted: rgba(19, 35, 59, 0.74);
-  --dz-soft: rgba(19, 35, 59, 0.56);
-  --dz-border: rgba(19, 35, 59, 0.14);
-  --dz-border-strong: rgba(19, 35, 59, 0.22);
+  --dz-text: #0e1f17;
+  --dz-muted: rgba(14, 31, 23, 0.66);
+  --dz-soft: rgba(14, 31, 23, 0.46);
+  --dz-border: rgba(14, 31, 23, 0.08);
+  --dz-border-strong: rgba(14, 31, 23, 0.14);
+  --dz-accent: var(--brand-primary);
+  --dz-accent-text: #ffffff;
+  --dz-link: var(--brand-teal);
+  background:
+    radial-gradient(55vmax 40vmax at 0% -10%, rgba(0, 161, 155, 0.18) 0%, transparent 55%),
+    radial-gradient(50vmax 35vmax at 105% 5%, rgba(228, 221, 211, 0.75) 0%, transparent 60%),
+    radial-gradient(65vmax 50vmax at 100% 100%, rgba(204, 218, 71, 0.16) 0%, transparent 55%),
+    linear-gradient(160deg, #f5f0e8 0%, #faf7f3 50%, #ede7df 100%);
+  background-attachment: fixed;
 }
 
+/* Telegram DARK — same composition with dark forest-green base + low-key
+   teal/accent embers so dark mode also feels alive instead of flat black. */
 body[data-tg='1'][data-tg-theme='dark'] {
-  --dz-bg: #0f1726;
-  --dz-surface: #1b2638;
-  --dz-text: #e7eefb;
-  --dz-muted: rgba(231, 238, 251, 0.82);
-  --dz-soft: rgba(231, 238, 251, 0.62);
-  --dz-border: rgba(231, 238, 251, 0.2);
-  --dz-border-strong: rgba(231, 238, 251, 0.3);
-  --dz-card-shadow: 0 12px 26px rgba(2, 8, 20, 0.5);
-  --dz-card-shadow-soft: 0 6px 16px rgba(2, 8, 20, 0.38);
+  --dz-bg: #0c1612;
+  --dz-surface: #14201a;
+  --dz-text: #e9f2ec;
+  --dz-muted: rgba(233, 242, 236, 0.78);
+  --dz-soft: rgba(233, 242, 236, 0.55);
+  --dz-border: rgba(233, 242, 236, 0.18);
+  --dz-border-strong: rgba(233, 242, 236, 0.28);
+  --dz-accent: var(--brand-accent);
+  --dz-accent-text: var(--brand-primary);
+  --dz-link: var(--brand-accent);
+  --dz-card-shadow: 0 14px 30px -14px rgba(0, 0, 0, 0.55);
+  --dz-card-shadow-soft: 0 8px 18px -10px rgba(0, 0, 0, 0.45);
+  background:
+    radial-gradient(55vmax 40vmax at 0% -10%, rgba(0, 161, 155, 0.18) 0%, transparent 55%),
+    radial-gradient(50vmax 35vmax at 105% 5%, rgba(204, 218, 71, 0.10) 0%, transparent 60%),
+    radial-gradient(70vmax 55vmax at 100% 110%, rgba(16, 137, 77, 0.45) 0%, transparent 60%),
+    linear-gradient(160deg, #0a1410 0%, #0c1612 50%, #0e1c16 100%);
+  background-attachment: fixed;
+}
+
+/* Smooth scrolling for horizontal lists */
+.dz-scroll-x {
+  overflow-x: auto;
+  scroll-snap-type: x mandatory;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+.dz-scroll-x::-webkit-scrollbar {
+  display: none;
+}
+.dz-scroll-x > * {
+  scroll-snap-align: start;
+}
+
+@keyframes dz-fade-in {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.dz-animate-in {
+  animation: dz-fade-in 240ms ease-out;
+}
+
+@keyframes dz-spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+.dz-spinner {
+  animation: dz-spin 0.8s linear infinite;
+}
+
+@keyframes dz-pulse-soft {
+  0%, 100% { opacity: 0.55; }
+  50%      { opacity: 1; }
+}
+.dz-pulse {
+  animation: dz-pulse-soft 1.6s ease-in-out infinite;
+}
+
+/* Skeleton shimmer used by image placeholders */
+@keyframes dz-shimmer {
+  0%   { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
+}
+.dz-shimmer {
+  background: linear-gradient(
+    90deg,
+    var(--brand-cream-100) 0%,
+    var(--brand-cream-200) 50%,
+    var(--brand-cream-100) 100%
+  );
+  background-size: 200% 100%;
+  animation: dz-shimmer 1.6s ease-in-out infinite;
 }

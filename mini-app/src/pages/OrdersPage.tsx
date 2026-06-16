@@ -2,9 +2,13 @@ import { useCallback, useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useSearchParams } from 'react-router-dom';
 import { apiFetch, loadTokens } from '../lib/api';
-import { orderStatusUi } from '../lib/orderStatus';
+import { canCancel, orderStatusUi } from '../lib/orderStatus';
 import { Skeleton } from '../components/Skeleton';
-import { getTg } from '../lib/telegram';
+import { getTg, haptic, tgConfirm } from '../lib/telegram';
+import { usePullToRefresh } from '../hooks/usePullToRefresh';
+import { PullIndicator } from '../components/PullIndicator';
+import { EmptyState } from '../components/EmptyState';
+import { OrderTimeline } from '../components/OrderTimeline';
 
 type OrderRow = {
   id: number;
@@ -27,7 +31,30 @@ export function OrdersPage() {
   const [err, setErr] = useState<string | null>(null);
   const [reorderBusyId, setReorderBusyId] = useState<number | null>(null);
   const [ratingBusyId, setRatingBusyId] = useState<number | null>(null);
+  const [cancelBusyId, setCancelBusyId] = useState<number | null>(null);
   const [draftRatings, setDraftRatings] = useState<Record<number, { rating: number; feedback: string }>>({});
+
+  async function cancelOrder(id: number) {
+    const ok = await tgConfirm('Buyurtmani bekor qilmoqchimisiz? Buni qaytarib boʻlmaydi.');
+    if (!ok) return;
+    setCancelBusyId(id);
+    try {
+      const r = await apiFetch(`/v1/orders/${id}/cancel`, { method: 'POST' });
+      if (!r.ok) {
+        const j = (await r.json().catch(() => ({}))) as { error?: string; message?: string };
+        haptic.notify('error');
+        setErr(j.message || j.error || 'Bekor qilib boʻlmadi');
+        return;
+      }
+      haptic.notify('success');
+      await loadOrders().catch(() => undefined);
+    } catch (e) {
+      haptic.notify('error');
+      setErr(e instanceof Error ? e.message : 'Xato');
+    } finally {
+      setCancelBusyId(null);
+    }
+  }
 
   const loadOrders = useCallback(async () => {
     if (!loadTokens()) {
@@ -61,6 +88,14 @@ export function OrdersPage() {
       ok = false;
     };
   }, [loadOrders, done, pending]);
+
+  const pull = usePullToRefresh(async () => {
+    try {
+      await loadOrders();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : 'Xato');
+    }
+  });
 
   if (err) {
     return (
@@ -166,90 +201,128 @@ export function OrdersPage() {
   }
 
   return (
-    <div className="space-y-5">
-      <div>
-        <h1 className="text-xl font-bold tracking-tight">Buyurtmalar</h1>
-        <p className="mt-0.5 text-sm text-[var(--dz-soft)]">So&apos;nggi buyurtmalar</p>
+    <div className="space-y-4 dz-animate-in">
+      <PullIndicator status={pull.status} distance={pull.distance} threshold={pull.threshold} />
+      <div className="flex items-end justify-between gap-2">
+        <div>
+          <h1 className="text-xl font-extrabold tracking-tight text-[var(--brand-primary)]">📦 Buyurtmalar</h1>
+          <p className="mt-0.5 text-[12px] font-medium text-[var(--dz-soft)]">Soʻnggi buyurtmalaringiz</p>
+        </div>
+        <button
+          type="button"
+          onClick={() => {
+            void loadOrders().catch((e) => setErr(e instanceof Error ? e.message : 'Xato'));
+          }}
+          className="rounded-full bg-[var(--brand-primary-50)] px-3 py-1.5 text-[12px] font-bold text-[var(--brand-primary)] transition active:scale-95 hover:bg-[var(--brand-primary-100)]"
+        >
+          ↻ Yangilash
+        </button>
       </div>
 
-      <button
-        type="button"
-        onClick={() => {
-          void loadOrders().catch((e) => setErr(e instanceof Error ? e.message : 'Xato'));
-        }}
-        className="w-full rounded-xl border border-[var(--dz-border-strong)] bg-[var(--dz-surface)] px-3 py-2 text-sm font-semibold text-[var(--dz-text)] transition hover:border-[var(--dz-link)]"
-      >
-        Yangilash
-      </button>
-
       {done ? (
-        <div className="rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-900 shadow-sm">
-          <span className="font-semibold">Qabul qilindi:</span> {done}
+        <div className="rounded-2xl border border-[color-mix(in_srgb,var(--brand-primary)_20%,transparent)] bg-[var(--brand-primary-50)] px-4 py-3 text-[13px] text-[var(--brand-primary)] shadow-[var(--dz-card-shadow-soft)]">
+          <span className="font-bold">✅ Qabul qilindi:</span> {done}
         </div>
       ) : null}
       {pending ? (
-        <div className="rounded-2xl border border-sky-200 bg-sky-50 px-4 py-3 text-sm text-sky-950 shadow-sm">
-          <span className="font-semibold">To&apos;lov kutilmoqda:</span> {pending}. To&apos;lovni yakunlang,
-          keyin ro&apos;yxatni yangilang.
+        <div className="rounded-2xl border border-[color-mix(in_srgb,var(--brand-accent)_45%,transparent)] bg-[var(--brand-accent-100)] px-4 py-3 text-[13px] text-[var(--brand-primary)] shadow-[var(--dz-card-shadow-soft)]">
+          <span className="font-bold">⏳ Toʻlov kutilmoqda:</span> {pending}.
+          <span className="mt-1 block text-[12px] text-[var(--dz-muted)]">
+            Toʻlovni yakunlang, keyin roʻyxatni yangilang.
+          </span>
         </div>
       ) : null}
 
       {!rows.length ? (
-        <p className="rounded-2xl border border-dashed bg-[var(--dz-surface)]/90 px-4 py-10 text-center text-sm text-[var(--dz-soft)]">
-          Hozircha buyurtmalar yo&apos;q.
-        </p>
+        <EmptyState
+          icon="📦"
+          title="Hozircha buyurtmalar yoʻq"
+          description="Birinchi xaridingizni amalga oshiring va bonus ball yigʻishni boshlang"
+          tone="teal"
+          cta={{ to: '/catalog', label: '🧺 Xarid qilishni boshlash' }}
+        />
       ) : (
-        <ul className="space-y-3">
-          {rows.map((o) => {
+        <ul className="space-y-2.5">
+          {rows.map((o, idx) => {
             const st = orderStatusUi(o.status);
+            const leakChoices = ['dz-leak-teal', 'dz-leak-cream', 'dz-leak-accent'];
+            const leakClass = leakChoices[idx % leakChoices.length];
+            const lower = String(o.status || '').toLowerCase();
+            const showTimeline = lower !== 'cancelled';
             return (
-              <li
-                key={o.id}
-                className="rounded-2xl border bg-[var(--dz-surface)] p-4 shadow-[var(--dz-card-shadow-soft)]"
-              >
-                <div className="flex flex-wrap items-start justify-between gap-2">
-                  <span className="font-mono text-sm font-bold text-[var(--dz-text)]">{o.order_number}</span>
-                  <span className={`rounded-full px-2.5 py-0.5 text-xs font-semibold ${st.className}`}>
+              <li key={o.id} className="dz-card relative p-3.5">
+                <span
+                  className={`dz-leak ${leakClass} dz-leak-sm`}
+                  style={{ top: '-40%', right: '-20%', opacity: 0.22 }}
+                />
+                <div className="relative flex flex-wrap items-start justify-between gap-2">
+                  <span className="rounded-lg bg-[var(--brand-cream-100)] px-2 py-0.5 font-mono text-[11.5px] font-bold text-[var(--brand-primary)]">
+                    {o.order_number}
+                  </span>
+                  <span className={`rounded-full px-2.5 py-0.5 text-[10.5px] font-bold ${st.className}`}>
                     {st.label}
                   </span>
                 </div>
-                <div className="mt-2 text-lg font-bold tabular-nums">
-                  {Number(o.total_amount ?? 0).toLocaleString('uz-UZ')} so&apos;m
+                <div className="relative mt-1.5 flex items-baseline gap-1">
+                  <span className="text-[18px] font-black tabular-nums text-[var(--brand-primary)]">
+                    {Number(o.total_amount ?? 0).toLocaleString('uz-UZ')}
+                  </span>
+                  <span className="text-[11px] font-semibold text-[var(--dz-soft)]">soʻm</span>
                 </div>
-                <div className="mt-1 text-xs text-[var(--dz-soft)]">
-                  {o.created_at ? String(o.created_at).replace('T', ' ').slice(0, 16) : ''}
-                  {o.delivery_method ? ` · ${o.delivery_method === 'pickup' ? "O'zi olib ketish" : 'Kuryer'}` : ''}
+                <div className="relative mt-1 flex flex-wrap items-center gap-2 text-[10.5px] font-medium text-[var(--dz-soft)]">
+                  {o.created_at ? <span>🕘 {String(o.created_at).replace('T', ' ').slice(0, 16)}</span> : null}
+                  {o.delivery_method ? (
+                    <span className="dz-chip-teal dz-chip">
+                      {o.delivery_method === 'pickup' ? '🏪 Pickup' : '🚚 Kuryer'}
+                    </span>
+                  ) : null}
                 </div>
+                {showTimeline ? (
+                  <div className="relative mt-3">
+                    <OrderTimeline status={o.status} deliveryMethod={o.delivery_method} />
+                  </div>
+                ) : (
+                  <div className="relative mt-3">
+                    <OrderTimeline status="cancelled" deliveryMethod={o.delivery_method} />
+                  </div>
+                )}
                 {String(o.status || '').toLowerCase() === 'delivered' ? (
-                  <div className="mt-3 rounded-xl border bg-[var(--dz-bg)] p-3">
+                  <div className="mt-3 rounded-2xl border border-[color-mix(in_srgb,var(--brand-accent)_45%,transparent)] bg-[var(--brand-accent-50)] p-3">
                     {o.rating ? (
-                      <div className="text-sm">
-                        <span className="font-semibold">Bahoyingiz:</span> {o.rating} / 5
-                        {o.feedback ? <p className="mt-1 text-[var(--dz-soft)]">{o.feedback}</p> : null}
+                      <div className="text-[13px]">
+                        <p className="font-bold text-[var(--brand-primary)]">
+                          ⭐ Bahoyingiz: {o.rating} / 5
+                        </p>
+                        {o.feedback ? (
+                          <p className="mt-1 text-[12px] text-[var(--dz-muted)]">{o.feedback}</p>
+                        ) : null}
                       </div>
                     ) : (
                       <div className="space-y-2">
-                        <p className="text-sm font-semibold text-[var(--dz-text)]">Xizmatni baholang</p>
-                        <div className="flex gap-1">
-                          {[1, 2, 3, 4, 5].map((n) => (
-                            <button
-                              key={n}
-                              type="button"
-                              onClick={() =>
-                                setDraftRatings((cur) => ({
-                                  ...cur,
-                                  [o.id]: { rating: n, feedback: cur[o.id]?.feedback || '' },
-                                }))
-                              }
-                              className={`h-9 w-9 rounded-full border text-sm font-bold ${
-                                (draftRatings[o.id]?.rating || 0) >= n
-                                  ? 'border-amber-400 bg-amber-100 text-amber-900'
-                                  : 'bg-[var(--dz-surface)] text-[var(--dz-soft)]'
-                              }`}
-                            >
-                              {n}
-                            </button>
-                          ))}
+                        <p className="text-[13px] font-bold text-[var(--brand-primary)]">⭐ Xizmatni baholang</p>
+                        <div className="flex gap-1.5">
+                          {[1, 2, 3, 4, 5].map((n) => {
+                            const isActive = (draftRatings[o.id]?.rating || 0) >= n;
+                            return (
+                              <button
+                                key={n}
+                                type="button"
+                                onClick={() =>
+                                  setDraftRatings((cur) => ({
+                                    ...cur,
+                                    [o.id]: { rating: n, feedback: cur[o.id]?.feedback || '' },
+                                  }))
+                                }
+                                className={`h-10 w-10 rounded-xl text-[16px] font-bold transition active:scale-95 ${
+                                  isActive
+                                    ? 'bg-[var(--brand-accent)] text-[var(--brand-primary)] shadow-[var(--dz-glow-accent)]'
+                                    : 'bg-white text-[var(--dz-soft)]'
+                                }`}
+                              >
+                                ★
+                              </button>
+                            );
+                          })}
                         </div>
                         <textarea
                           value={draftRatings[o.id]?.feedback || ''}
@@ -260,14 +333,14 @@ export function OrdersPage() {
                             }))
                           }
                           rows={2}
-                          className="w-full rounded-xl border bg-[var(--dz-surface)] px-3 py-2 text-sm text-[var(--dz-text)]"
+                          className="w-full rounded-xl border border-[color-mix(in_srgb,var(--brand-primary)_12%,transparent)] bg-white px-3 py-2 text-[13px] text-[var(--dz-text)] focus:border-[var(--brand-primary)] focus:outline-none"
                           placeholder="Izoh (ixtiyoriy)"
                         />
                         <button
                           type="button"
                           disabled={ratingBusyId === o.id}
                           onClick={() => void submitRating(o.id)}
-                          className="w-full rounded-xl bg-[var(--dz-accent)] px-3 py-2 text-sm font-semibold text-[var(--dz-accent-text)] disabled:opacity-60"
+                          className="dz-btn-primary w-full disabled:opacity-60"
                         >
                           {ratingBusyId === o.id ? 'Yuborilmoqda…' : 'Bahoni yuborish'}
                         </button>
@@ -275,15 +348,25 @@ export function OrdersPage() {
                     )}
                   </div>
                 ) : null}
-                <div className="mt-3">
+                <div className="relative mt-2.5 flex gap-2">
                   <button
                     type="button"
                     disabled={reorderBusyId === o.id}
                     onClick={() => void reorder(o.id)}
-                    className="w-full rounded-xl border border-[var(--dz-border-strong)] bg-[var(--dz-bg)] px-3 py-2 text-sm font-semibold text-[var(--dz-text)] transition hover:border-[var(--dz-link)] disabled:cursor-not-allowed disabled:opacity-60"
+                    className="flex-1 rounded-xl bg-[var(--brand-cream-100)] px-3 py-2 text-[12px] font-bold text-[var(--brand-primary)] transition active:scale-[0.98] hover:bg-[var(--brand-cream-200)] disabled:cursor-not-allowed disabled:opacity-60"
                   >
-                    {reorderBusyId === o.id ? 'Qayta yaratilmoqda…' : 'Yana buyurtma berish'}
+                    {reorderBusyId === o.id ? 'Qayta yaratilmoqda…' : '↻ Yana buyurtma'}
                   </button>
+                  {canCancel(o.status) ? (
+                    <button
+                      type="button"
+                      disabled={cancelBusyId === o.id}
+                      onClick={() => void cancelOrder(o.id)}
+                      className="rounded-xl bg-red-50 px-3 py-2 text-[12px] font-bold text-red-700 transition active:scale-[0.98] hover:bg-red-100 disabled:cursor-not-allowed disabled:opacity-60"
+                    >
+                      {cancelBusyId === o.id ? '…' : '✖ Bekor qilish'}
+                    </button>
+                  ) : null}
                 </div>
               </li>
             );
