@@ -1,7 +1,13 @@
 export type UserRole = 'admin' | 'manager' | 'cashier';
 
-export type OrderStatus = 'hold' | 'completed' | 'returned';
-export type PaymentStatus = 'pending' | 'partial' | 'paid' | 'on_credit' | 'partially_paid';
+export type OrderStatus = 'hold' | 'completed' | 'returned' | 'pending' | 'voided' | 'cancelled' | 'amended';
+export type PaymentStatus =
+  | 'pending'
+  | 'partial'
+  | 'paid'
+  | 'on_credit'
+  | 'partially_paid'
+  | 'unpaid';
 export type PaymentMethod =
   | 'cash'
   | 'card'
@@ -97,6 +103,8 @@ export interface SupplierLedgerEntry {
 
 /** Customer account ledger (SQLite `customer_ledger`) */
 export interface CustomerLedgerEntry {
+  currency?: 'UZS' | 'USD';
+  balance_after_usd?: number | null;
   id: string;
   customer_id: string;
   type: string;
@@ -157,12 +165,23 @@ export interface Product {
   is_active: boolean;
   /** Telegram / public-api katalogida ko‘rsatish (migration 067) */
   show_in_marketplace?: boolean;
+  /** Zaxirani kuzatish — onlayn katalogda mavjudlik (migration) */
+  track_stock?: boolean;
   /** Rang, o‘lcham… (migration 068) */
   variant_options?: ProductVariantOption[];
   /** Manufacturer / brand name (migration 061) */
   brand?: string | null;
   /** Short vendor article code shared across product variants (migration 061) */
   article?: string | null;
+  /**
+   * Optional stock projections returned by some inventory queries/views.
+   * These mirror `current_stock` minus reservations and valuation and are not
+   * always present, hence optional.
+   */
+  stock_quantity?: number;
+  stock_available?: number;
+  available_stock?: number;
+  stock_value?: number;
   created_at: string;
   updated_at: string;
 }
@@ -177,6 +196,8 @@ export interface ProductUnit {
 export interface Customer {
   id: string;
   name: string;
+  /** Some receipt/printing paths reference full_name; alias of name. */
+  full_name?: string;
   phone: string | null;
   email: string | null;
   address: string | null;
@@ -188,6 +209,8 @@ export interface Customer {
   credit_limit: number;
   allow_debt: boolean;
   balance: number;
+  /** USD bucket: negative = debt, positive = prepaid (same sign as balance). */
+  balance_usd?: number;
   total_sales: number;
   total_orders: number;
   last_order_date: string | null;
@@ -202,6 +225,17 @@ export interface CustomerWithStats extends Customer {
   order_count?: number;
   avg_order_value?: number;
   total_returns?: number;
+}
+
+export interface Warehouse {
+  id: string;
+  name: string;
+  code?: string | null;
+  address?: string | null;
+  is_active?: boolean;
+  is_default?: boolean;
+  created_at?: string;
+  updated_at?: string;
 }
 
 export interface Shift {
@@ -238,10 +272,22 @@ export interface Order {
   paid_amount: number;
   credit_amount: number;
   change_amount: number;
+  /** Sale document currency (POS); amounts on the order are in this currency. */
+  currency?: 'UZS' | 'USD';
+  /** UZS per 1 USD snapshot when currency is USD */
+  fx_rate?: number | null;
+  total_usd?: number | null;
   status: OrderStatus;
   payment_status: PaymentStatus;
   notes: string | null;
   created_at: string;
+  updated_at?: string;
+  /** pos register sale origin or marketplace channel label on unified list rows */
+  sales_channel?: string | null;
+  /** 'pos' = orders table; 'web' = web_orders table */
+  order_source?: 'pos' | 'web' | string | null;
+  /** Numeric web_orders.id when order_source is web */
+  web_order_id?: number | null;
 }
 
 export interface OrderItem {
@@ -284,6 +330,8 @@ export interface CustomerPayment {
   payment_number: string;
   customer_id: string;
   amount: number;
+  currency?: 'UZS' | 'USD';
+  fx_rate?: number | null;
   payment_method: 'cash' | 'card' | 'qr';
   operation?: 'payment_in' | 'payment_out';
   old_balance?: number;
@@ -336,6 +384,7 @@ export interface SalesReturnItem {
     name: string;
     sku: string;
     barcode: string | null;
+    unit?: string;
   };
 }
 
@@ -434,6 +483,11 @@ export interface ProductWithCategory extends Product {
 
 export interface OrderItemWithProduct extends OrderItem {
   product?: ProductWithCategory;
+  /** Returns aggregates surfaced by order-detail queries. */
+  returned_quantity?: number;
+  remaining_quantity?: number;
+  /** Line total convenience field (some queries expose it directly). */
+  line_total?: number;
 }
 
 export interface OrderWithDetails extends Order {
@@ -475,6 +529,10 @@ export interface Expense {
   category: ExpenseCategory;
   amount: number;
   payment_method: ExpensePaymentMethod;
+  /** Document currency; amount is stored in this currency. */
+  currency?: 'UZS' | 'USD';
+  /** UZS per 1 USD when currency is USD */
+  fx_rate?: number | null;
   note: string | null;
   employee_id: string | null;
   created_by: string | null;
