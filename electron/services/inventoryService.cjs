@@ -45,6 +45,46 @@ class InventoryService {
     return formatYmdInTimeZone(date);
   }
 
+  /**
+   * Read "allow negative stock" toggle.
+   * Accepts both legacy key (`allow_negative_stock`, boolean '1'/'0') and the
+   * Settings UI key (`inventory.allow_negative_stock`, string enum:
+   * 'block' | 'allow_with_warning' | 'allow_without_warning').
+   * Returns:
+   *   { canGoNegative: boolean, mode: 'block' | 'allow_with_warning' | 'allow_without_warning' }
+   */
+  _readNegativeStockSetting() {
+    let raw = null;
+    try {
+      const row = this.db
+        .prepare(`SELECT value FROM settings WHERE key = 'inventory.allow_negative_stock'`)
+        .get();
+      if (row && row.value != null) raw = String(row.value);
+    } catch (_e) {
+      raw = null;
+    }
+    if (raw == null) {
+      try {
+        const row = this.db
+          .prepare(`SELECT value FROM settings WHERE key = 'allow_negative_stock'`)
+          .get();
+        if (row && row.value != null) raw = String(row.value);
+      } catch (_e) {
+        raw = null;
+      }
+    }
+    const v = String(raw ?? '').trim().toLowerCase();
+    if (v === 'allow_with_warning') return { canGoNegative: true, mode: 'allow_with_warning' };
+    if (v === 'allow_without_warning') return { canGoNegative: true, mode: 'allow_without_warning' };
+    if (v === 'block') return { canGoNegative: false, mode: 'block' };
+    if (v === '1' || v === 'true' || v === 'yes') return { canGoNegative: true, mode: 'allow_with_warning' };
+    return { canGoNegative: false, mode: 'block' };
+  }
+
+  isNegativeStockAllowed() {
+    return this._readNegativeStockSetting().canGoNegative;
+  }
+
   /** Hisobot kunlari: DB vaqti UTC-kabi saqlangan bo‘lsa, Tashkent kalendar kuni bo‘yicha filtr. */
   _tzDateExpr(columnExpr) {
     return `date(datetime(replace(replace(${columnExpr}, 'T', ' '), 'Z', ''), '${UZBEKISTAN_TZ_SQLITE_OFFSET}'))`;
@@ -346,11 +386,7 @@ class InventoryService {
     const beforeQuantity = Number(this.getCurrentStock(productId, warehouseId)) || 0;
     const afterQuantity = beforeQuantity + quantityChange;
 
-    // Check if negative stock is allowed
-    const allowNegativeStock = this.db.prepare(`
-      SELECT value FROM settings WHERE key = 'allow_negative_stock'
-    `).get();
-    const canGoNegative = allowNegativeStock?.value === '1';
+    const canGoNegative = this.isNegativeStockAllowed();
 
     // Validate stock availability for negative changes (sales, adjustments that decrease stock)
     if (quantityChange < 0 && !canGoNegative) {
@@ -686,6 +722,10 @@ class InventoryService {
         category_name: category?.name || null,
         is_active: product.is_active === 1,
         track_stock: product.track_stock === 1,
+        show_in_marketplace:
+          product.show_in_marketplace === undefined || product.show_in_marketplace === null
+            ? true
+            : product.show_in_marketplace === 1 || product.show_in_marketplace === true,
         // CRITICAL: Use real-time stock from inventory_movements
         current_stock: currentStock,
         stock_available: currentStock,
@@ -835,6 +875,8 @@ class InventoryService {
     if (!Number.isFinite(d) || d <= 0) {
       throw createError(ERROR_CODES.VALIDATION_ERROR, 'days must be a positive number');
     }
+    // Schema safety
+    if (!this._hasTable('products')) return [];
     const sinceExpr = `-${Math.floor(d)} day`;
     const viewExists = this._viewExists('v_product_stock');
     const hasWarehouseFilter = Boolean(warehouseId);
@@ -916,6 +958,8 @@ class InventoryService {
     if (!Number.isFinite(d) || d <= 0) {
       throw createError(ERROR_CODES.VALIDATION_ERROR, 'days must be a positive number');
     }
+    // Schema safety
+    if (!this._hasTable('products')) return [];
     const sinceExpr = `-${Math.floor(d)} day`;
     const viewExists = this._viewExists('v_product_stock');
     const hasWarehouseFilter = Boolean(warehouseId);
@@ -1007,6 +1051,7 @@ class InventoryService {
    * Global scope (across all warehouses).
    */
   getReorderSuggestions() {
+    if (!this._hasTable('products')) return [];
     const viewExists = this._viewExists('v_product_stock');
 
     const query = `
@@ -1125,8 +1170,7 @@ class InventoryService {
       return { ok: false, reason: 'Required tables missing' };
     }
 
-    const allowNegativeRow = this.db.prepare(`SELECT value FROM settings WHERE key = 'allow_negative_stock'`).get();
-    const allowNegative = allowNegativeRow?.value === '1';
+    const allowNegative = this.isNegativeStockAllowed();
 
     const movementRows = this.db
       .prepare(

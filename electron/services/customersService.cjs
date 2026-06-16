@@ -10,6 +10,16 @@ const {
   UZBEKISTAN_TZ_SQLITE_OFFSET,
 } = require('../lib/timezone.cjs');
 const { getCurrentUserId } = require('../lib/currentUser.cjs');
+const {
+  hasCustomerBalanceUsd,
+  hasCustomerPaymentCurrency,
+  hasCustomerLedgerCurrency,
+  normalizeCustomerCurrency,
+  readCustomerBalances,
+  readBalanceInCurrency,
+  applyCustomerBalanceDelta,
+} = require('../lib/customerBalance.cjs');
+const { normalizePhoneUz, formatPhoneUz } = require('../lib/phoneNormalize.cjs');
 
 /**
  * Customers Service
@@ -34,6 +44,203 @@ class CustomersService {
     } catch {
       return false;
     }
+  }
+
+  _resolvePhoneFields(phone) {
+    const raw = phone != null ? String(phone).trim() : '';
+    if (!raw) {
+      return { phone: null, phone_normalized: null };
+    }
+    const phone_normalized = normalizePhoneUz(raw);
+    const formatted = formatPhoneUz(raw);
+    return {
+      phone: formatted || raw,
+      phone_normalized,
+    };
+  }
+
+  _throwDuplicatePhone(existing) {
+    const err = createError(
+      ERROR_CODES.DUPLICATE_PHONE,
+      "Bu telefon raqami allaqachon ro'yxatdan o'tgan",
+    );
+    err.details = {
+      existing_id: existing.id,
+      existing_name: existing.name,
+      existing_code: existing.code,
+    };
+    throw err;
+  }
+
+  _assertUniquePhoneNormalized(phoneNormalized, excludeId = null) {
+    if (!phoneNormalized || !this._hasCol('phone_normalized')) return;
+    let row;
+    if (excludeId) {
+      row = this.db
+        .prepare(
+          `SELECT id, name, code FROM customers WHERE phone_normalized = ? AND id != ? LIMIT 1`,
+        )
+        .get(phoneNormalized, excludeId);
+    } else {
+      row = this.db
+        .prepare(
+          `SELECT id, name, code FROM customers WHERE phone_normalized = ? LIMIT 1`,
+        )
+        .get(phoneNormalized);
+    }
+    if (row?.id) {
+      this._throwDuplicatePhone(row);
+    }
+  }
+
+  _phoneLookupOrderBy() {
+    return `ORDER BY datetime(replace(replace(COALESCE(created_at, ''), 'T', ' '), 'Z', '')) ASC, id ASC`;
+  }
+
+  _phoneStorageCandidates(norm) {
+    const candidates = [];
+    const push = (v) => {
+      if (v == null || v === '') return;
+      const s = String(v);
+      if (!candidates.includes(s)) candidates.push(s);
+    };
+    push(formatPhoneUz(norm));
+    push(`+${norm}`);
+    push(norm);
+    if (norm.length === 12 && norm.startsWith('998')) {
+      push(norm.slice(3));
+      push(`8${norm.slice(3)}`);
+    }
+    return candidates;
+  }
+
+  _backfillPhoneNormalized(row, norm) {
+    if (!row?.id || !norm || !this._hasCol('phone_normalized')) return row;
+    if (row.phone_normalized && String(row.phone_normalized).trim() !== '') return row;
+    this.db
+      .prepare(`UPDATE customers SET phone_normalized = ? WHERE id = ?`)
+      .run(norm, row.id);
+    row.phone_normalized = norm;
+    return row;
+  }
+
+  findByNormalizedPhone(phoneNormalized) {
+    const norm =
+      phoneNormalized != null && String(phoneNormalized).trim() !== ''
+        ? String(phoneNormalized).trim()
+        : null;
+    if (!norm) return null;
+
+    const orderBy = this._phoneLookupOrderBy();
+
+    if (this._hasCol('phone_normalized')) {
+      const byNorm = this.db
+        .prepare(`SELECT * FROM customers WHERE phone_normalized = ? ${orderBy} LIMIT 1`)
+        .get(norm);
+      if (byNorm) return byNorm;
+    }
+
+    const candidates = this._phoneStorageCandidates(norm);
+    if (candidates.length) {
+      const placeholders = candidates.map(() => '?').join(', ');
+      const byRaw = this.db
+        .prepare(
+          `SELECT * FROM customers WHERE phone IN (${placeholders}) ${orderBy} LIMIT 1`,
+        )
+        .get(...candidates);
+      if (byRaw) return this._backfillPhoneNormalized(byRaw, norm);
+    }
+
+    const legacyFilter = this._hasCol('phone_normalized')
+      ? `AND (phone_normalized IS NULL OR TRIM(COALESCE(phone_normalized, '')) = '')`
+      : '';
+    const legacyRows = this.db
+      .prepare(
+        `
+        SELECT * FROM customers
+        WHERE phone IS NOT NULL AND TRIM(phone) != ''
+        ${legacyFilter}
+        ${orderBy}
+      `,
+      )
+      .all();
+    for (const row of legacyRows) {
+      if (normalizePhoneUz(row.phone) === norm) {
+        return this._backfillPhoneNormalized(row, norm);
+      }
+    }
+
+    return null;
+  }
+
+  findByPhone(rawPhone) {
+    const { phone_normalized } = this._resolvePhoneFields(rawPhone);
+    if (!phone_normalized) return null;
+    return this.findByNormalizedPhone(phone_normalized);
+  }
+
+  findOrCreateByPhone(data = {}) {
+    const name = data.name?.trim() || 'Onlayn mijoz';
+    const { phone, phone_normalized } = this._resolvePhoneFields(data.phone);
+
+    if (phone_normalized) {
+      const existing = this.findByNormalizedPhone(phone_normalized);
+      if (existing) {
+        const updates = {};
+        if (name && name !== existing.name) updates.name = name;
+        if (phone && phone !== existing.phone) updates.phone = phone;
+        if (Object.keys(updates).length) {
+          return this.update(existing.id, updates);
+        }
+        return existing;
+      }
+    }
+
+    return this.create({
+      ...data,
+      name,
+      phone,
+      phone_normalized,
+      _skipDuplicateCheck: true,
+    });
+  }
+
+  _insertCustomerRecord(id, code, data, resolvedPhone, now) {
+    const row = {
+      id,
+      code: code.trim().toUpperCase(),
+      name: data.name.trim(),
+      phone: resolvedPhone.phone,
+      email: data.email?.trim() || null,
+      address: data.address?.trim() || null,
+      type: data.type || 'individual',
+      company_name: data.company_name?.trim() || null,
+      tax_number: data.tax_number?.trim() || null,
+      credit_limit: data.credit_limit || 0,
+      allow_debt: data.allow_debt ? 1 : 0,
+      allow_credit: data.allow_credit ? 1 : 0,
+      balance: data.balance || 0,
+      status: data.status || 'active',
+      notes: data.notes?.trim() || null,
+      created_at: now,
+      updated_at: now,
+    };
+    if (this._hasCol('pricing_tier')) {
+      row.pricing_tier = data.pricing_tier === 'master' ? 'master' : 'retail';
+    }
+    if (this._hasCol('bonus_points')) {
+      row.bonus_points = Number(data.bonus_points) || 0;
+    }
+    if (this._hasCol('phone_normalized')) {
+      row.phone_normalized = resolvedPhone.phone_normalized;
+    }
+    const cols = Object.keys(row);
+    const vals = Object.values(row);
+    this.db
+      .prepare(
+        `INSERT INTO customers (${cols.join(', ')}) VALUES (${cols.map(() => '?').join(', ')})`,
+      )
+      .run(...vals);
   }
 
   _tzDateExpr(columnExpr) {
@@ -135,9 +342,18 @@ class CustomersService {
     const params = [];
 
     if (filters.search) {
-      query += ' AND (name LIKE ? OR phone LIKE ? OR email LIKE ?)';
-      const searchTerm = `%${filters.search}%`;
-      params.push(searchTerm, searchTerm, searchTerm);
+      const trimmed = String(filters.search).trim();
+      const searchTerm = `%${trimmed}%`;
+      let clause =
+        '(name LIKE ? COLLATE NOCASE OR phone LIKE ? OR email LIKE ? COLLATE NOCASE OR id LIKE ?)';
+      params.push(searchTerm, searchTerm, searchTerm, searchTerm);
+      const digits = trimmed.replace(/\D/g, '');
+      if (digits.length >= 3) {
+        clause +=
+          " OR replace(replace(replace(replace(replace(phone, ' ', ''), '-', ''), '+', ''), '(', ''), ')', '') LIKE ?";
+        params.push(`%${digits}%`);
+      }
+      query += ` AND (${clause})`;
     }
 
     if (filters.status && filters.status !== 'all') {
@@ -166,6 +382,118 @@ class CustomersService {
     return this.db.prepare(query).all(params);
   }
 
+  _hasTable(name) {
+    try {
+      const row = this.db
+        .prepare(`SELECT name FROM sqlite_master WHERE type='table' AND name=?`)
+        .get(name);
+      return !!row?.name;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * Count POS + linked web orders and UZS-equivalent sales from source tables.
+   */
+  computeOrderStats(customerId) {
+    const KNOWN_DEFAULT = 'default-customer-001';
+    if (!customerId || customerId === KNOWN_DEFAULT) {
+      return { order_count: 0, total_sales_uzs: 0 };
+    }
+
+    const hasOrderCurrency = this._hasTableColumn('orders', 'currency');
+    const hasOrderFx = this._hasTableColumn('orders', 'fx_rate');
+    const salesExpr = hasOrderCurrency && hasOrderFx
+      ? `CASE WHEN UPPER(TRIM(COALESCE(o.currency, 'UZS'))) = 'USD'
+            THEN COALESCE(o.total_amount, 0) * COALESCE(o.fx_rate, 0)
+            ELSE COALESCE(o.total_amount, 0) END`
+      : 'COALESCE(o.total_amount, 0)';
+
+    const posRow = this.db
+      .prepare(
+        `
+      SELECT COUNT(*) AS cnt, COALESCE(SUM(${salesExpr}), 0) AS sales_uzs
+      FROM orders o
+      WHERE o.customer_id = ?
+        AND o.status NOT IN ('voided', 'cancelled', 'draft', 'hold', 'pending', 'on_hold', 'amended', 'refunded', 'returned')
+    `,
+      )
+      .get(customerId);
+
+    let webCnt = 0;
+    let webSales = 0;
+    if (this._hasTable('web_orders') && this._hasTable('marketplace_customer_bindings')) {
+      const mcIds = this.db
+        .prepare(
+          `SELECT marketplace_customer_id FROM marketplace_customer_bindings WHERE pos_customer_id = ?`,
+        )
+        .all(customerId)
+        .map((r) => Number(r.marketplace_customer_id))
+        .filter((n) => Number.isFinite(n));
+      if (mcIds.length > 0) {
+        const ph = mcIds.map(() => '?').join(',');
+        const webRow = this.db
+          .prepare(
+            `
+          SELECT COUNT(*) AS cnt, COALESCE(SUM(COALESCE(total_amount, 0)), 0) AS sales_uzs
+          FROM web_orders
+          WHERE customer_id IN (${ph})
+            AND status NOT IN ('cancelled', 'rejected')
+        `,
+          )
+          .get(...mcIds);
+        webCnt = Number(webRow?.cnt || 0);
+        webSales = Number(webRow?.sales_uzs || 0);
+      }
+    }
+
+    return {
+      order_count: Number(posRow?.cnt || 0) + webCnt,
+      total_sales_uzs: Number(posRow?.sales_uzs || 0) + webSales,
+    };
+  }
+
+  _hasTableColumn(table, column) {
+    try {
+      const cols = this.db.prepare(`PRAGMA table_info(${table})`).all() || [];
+      return cols.some((c) => c.name === column);
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * Repair customers.total_orders / total_sales when counters drift from orders table.
+   */
+  reconcileOrderStats(customerId, { write = true } = {}) {
+    const stats = this.computeOrderStats(customerId);
+    if (!write) return stats;
+
+    const stored = this.db
+      .prepare(`SELECT total_orders, total_sales FROM customers WHERE id = ?`)
+      .get(customerId);
+    if (!stored) return stats;
+
+    const storedOrders = Number(stored.total_orders || 0);
+    const storedSales = Number(stored.total_sales || 0);
+    const driftOrders = storedOrders !== stats.order_count;
+    const driftSales = Math.abs(storedSales - stats.total_sales_uzs) > 0.5;
+    if (!driftOrders && !driftSales) return stats;
+
+    const now = nowSqlInTimeZone();
+    this.db
+      .prepare(
+        `
+      UPDATE customers
+      SET total_orders = ?, total_sales = ?, updated_at = ?
+      WHERE id = ?
+    `,
+      )
+      .run(stats.order_count, stats.total_sales_uzs, now, customerId);
+    return stats;
+  }
+
   /**
    * Get customer by ID
    */
@@ -178,6 +506,14 @@ class CustomersService {
     
     if (!customer) {
       throw createError(ERROR_CODES.NOT_FOUND, `Customer with id ${id} not found`);
+    }
+
+    try {
+      const stats = this.reconcileOrderStats(id, { write: true });
+      customer.total_orders = stats.order_count;
+      customer.total_sales = stats.total_sales_uzs;
+    } catch (reconcileErr) {
+      console.warn('[CustomersService.getById] reconcileOrderStats failed:', reconcileErr.message);
     }
 
     return customer;
@@ -249,6 +585,20 @@ class CustomersService {
       throw createError(ERROR_CODES.VALIDATION_ERROR, 'Customer name is required');
     }
 
+    const resolvedPhone = data._skipDuplicateCheck
+      ? {
+          phone: data.phone ?? null,
+          phone_normalized: data.phone_normalized ?? null,
+        }
+      : this._resolvePhoneFields(data.phone);
+
+    if (!data._skipDuplicateCheck && resolvedPhone.phone_normalized) {
+      const existing = this.findByNormalizedPhone(resolvedPhone.phone_normalized);
+      if (existing) {
+        this._throwDuplicatePhone(existing);
+      }
+    }
+
     const id = data.id || randomUUID();
     const now = nowSqlInTimeZone();
 
@@ -266,125 +616,25 @@ class CustomersService {
     }
 
     try {
-      const hasPricingTier = this._hasCol('pricing_tier');
-      const hasBonus = this._hasCol('bonus_points');
-      const bonusPoints = Number(data.bonus_points) || 0;
-
-      if (hasPricingTier && hasBonus) {
-        this.db.prepare(`
-          INSERT INTO customers (
-            id, code, name, phone, email, address, type, company_name, tax_number,
-            pricing_tier,
-            credit_limit, allow_debt, allow_credit, balance, status, notes, bonus_points, created_at, updated_at
-          )
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        `).run(
-          id,
-          code.trim().toUpperCase(),
-          data.name.trim(),
-          data.phone?.trim() || null,
-          data.email?.trim() || null,
-          data.address?.trim() || null,
-          data.type || 'individual',
-          data.company_name?.trim() || null,
-          data.tax_number?.trim() || null,
-          data.pricing_tier === 'master' ? 'master' : 'retail',
-          data.credit_limit || 0,
-          data.allow_debt ? 1 : 0,
-          data.allow_credit ? 1 : 0,
-          data.balance || 0,
-          data.status || 'active',
-          data.notes?.trim() || null,
-          bonusPoints,
-          now,
-          now
-        );
-      } else if (hasPricingTier) {
-        this.db.prepare(`
-          INSERT INTO customers (
-            id, code, name, phone, email, address, type, company_name, tax_number,
-            pricing_tier,
-            credit_limit, allow_debt, allow_credit, balance, status, notes, created_at, updated_at
-          )
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        `).run(
-          id,
-          code.trim().toUpperCase(),
-          data.name.trim(),
-          data.phone?.trim() || null,
-          data.email?.trim() || null,
-          data.address?.trim() || null,
-          data.type || 'individual',
-          data.company_name?.trim() || null,
-          data.tax_number?.trim() || null,
-          data.pricing_tier === 'master' ? 'master' : 'retail',
-          data.credit_limit || 0,
-          data.allow_debt ? 1 : 0,
-          data.allow_credit ? 1 : 0,
-          data.balance || 0,
-          data.status || 'active',
-          data.notes?.trim() || null,
-          now,
-          now
-        );
-      } else if (hasBonus) {
-        this.db.prepare(`
-          INSERT INTO customers (
-            id, code, name, phone, email, address, type, company_name, tax_number,
-            credit_limit, allow_debt, allow_credit, balance, status, notes, bonus_points, created_at, updated_at
-          )
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        `).run(
-          id,
-          code.trim().toUpperCase(),
-          data.name.trim(),
-          data.phone?.trim() || null,
-          data.email?.trim() || null,
-          data.address?.trim() || null,
-          data.type || 'individual',
-          data.company_name?.trim() || null,
-          data.tax_number?.trim() || null,
-          data.credit_limit || 0,
-          data.allow_debt ? 1 : 0,
-          data.allow_credit ? 1 : 0,
-          data.balance || 0,
-          data.status || 'active',
-          data.notes?.trim() || null,
-          bonusPoints,
-          now,
-          now
-        );
-      } else {
-        this.db.prepare(`
-          INSERT INTO customers (
-            id, code, name, phone, email, address, type, company_name, tax_number,
-            credit_limit, allow_debt, allow_credit, balance, status, notes, created_at, updated_at
-          )
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        `).run(
-          id,
-          code.trim().toUpperCase(),
-          data.name.trim(),
-          data.phone?.trim() || null,
-          data.email?.trim() || null,
-          data.address?.trim() || null,
-          data.type || 'individual',
-          data.company_name?.trim() || null,
-          data.tax_number?.trim() || null,
-          data.credit_limit || 0,
-          data.allow_debt ? 1 : 0,
-          data.allow_credit ? 1 : 0,
-          data.balance || 0,
-          data.status || 'active',
-          data.notes?.trim() || null,
-          now,
-          now
-        );
-      }
-
+      this._insertCustomerRecord(id, code, data, resolvedPhone, now);
       return this.getById(id);
     } catch (error) {
       if (error.code === 'SQLITE_CONSTRAINT_UNIQUE') {
+        if (
+          String(error.message || '').includes('phone_normalized') ||
+          String(error.message || '').includes('idx_customers_phone_normalized_unique')
+        ) {
+          const existing = resolvedPhone.phone_normalized
+            ? this.findByNormalizedPhone(resolvedPhone.phone_normalized)
+            : null;
+          if (existing) {
+            this._throwDuplicatePhone(existing);
+          }
+          throw createError(
+            ERROR_CODES.DUPLICATE_PHONE,
+            "Bu telefon raqami allaqachon ro'yxatdan o'tgan",
+          );
+        }
         throw createError(ERROR_CODES.VALIDATION_ERROR, 'Customer code must be unique');
       }
       throw error;
@@ -413,8 +663,14 @@ class CustomersService {
     }
 
     if (data.phone !== undefined) {
+      const resolvedPhone = this._resolvePhoneFields(data.phone);
+      this._assertUniquePhoneNormalized(resolvedPhone.phone_normalized, id);
       updates.push('phone = ?');
-      params.push(data.phone?.trim() || null);
+      params.push(resolvedPhone.phone);
+      if (this._hasCol('phone_normalized')) {
+        updates.push('phone_normalized = ?');
+        params.push(resolvedPhone.phone_normalized);
+      }
     }
 
     if (data.email !== undefined) {
@@ -500,6 +756,15 @@ class CustomersService {
       return this.getById(id);
     } catch (error) {
       if (error.code === 'SQLITE_CONSTRAINT_UNIQUE') {
+        if (
+          String(error.message || '').includes('phone_normalized') ||
+          String(error.message || '').includes('idx_customers_phone_normalized_unique')
+        ) {
+          throw createError(
+            ERROR_CODES.DUPLICATE_PHONE,
+            "Bu telefon raqami allaqachon ro'yxatdan o'tgan",
+          );
+        }
         throw createError(ERROR_CODES.VALIDATION_ERROR, 'Customer code must be unique');
       }
       throw error;
@@ -541,36 +806,29 @@ class CustomersService {
    * @param {number} amount - Amount to add/subtract
    * @param {string} type - 'debt' (add debt, decrease balance) or 'payment' (reduce debt, increase balance)
    */
-  updateBalance(customerId, amount, type) {
+  updateBalance(customerId, amount, type, currency = 'UZS') {
     if (!customerId) {
       throw createError(ERROR_CODES.VALIDATION_ERROR, 'Customer ID is required');
     }
 
-    const customer = this.getById(customerId);
+    this.getById(customerId);
     const amountValue = Number(amount) || 0;
-    const currentBalance = Number(customer.balance) || 0;
+    const cur = normalizeCustomerCurrency(currency);
+    const balances = readCustomerBalances(this.db, customerId);
+    const currentBalance = cur === 'USD' ? balances.usd : balances.uzs;
     let newBalance;
 
     if (type === 'debt' || type === 'credit') {
-      // Add debt: decrease balance (make it more negative)
-      // Example: current = 0, debt = 5000 => new = -5000
-      // Example: current = -2000, debt = 3000 => new = -5000
       newBalance = currentBalance - amountValue;
     } else if (type === 'payment') {
-      // Payment: increase balance toward 0 (add to negative balance)
-      // Example: current = -5000, payment = 3000 => new = -2000
-      // Example: current = -5000, payment = 5000 => new = 0
-      // Clamp to 0 to prevent overpayment creating positive balance
       newBalance = Math.min(0, currentBalance + amountValue);
     } else {
       throw createError(ERROR_CODES.VALIDATION_ERROR, 'Invalid balance update type. Use "payment", "debt", or "credit"');
     }
 
-    this.db.prepare('UPDATE customers SET balance = ?, updated_at = ? WHERE id = ?').run(
-      newBalance,
-      nowSqlInTimeZone(),
-      customerId
-    );
+    const delta = newBalance - currentBalance;
+    const now = nowSqlInTimeZone();
+    applyCustomerBalanceDelta(this.db, customerId, delta, cur, now);
 
     return this.getById(customerId);
   }
@@ -611,7 +869,9 @@ class CustomersService {
     orderId = null,
     source = null,
     operation = 'payment_in',
-    shiftId = null
+    shiftId = null,
+    currency = 'UZS',
+    fxRate = null
   ) {
     if (customerId && typeof customerId === 'object' && !Array.isArray(customerId)) {
       const p = customerId;
@@ -624,7 +884,9 @@ class CustomersService {
         p.order_id ?? p.orderId ?? null,
         p.source ?? null,
         p.operation || 'payment_in',
-        p.shift_id ?? p.shiftId ?? null
+        p.shift_id ?? p.shiftId ?? null,
+        p.currency ?? 'UZS',
+        p.fx_rate ?? p.fxRate ?? null
       );
     }
 
@@ -653,12 +915,22 @@ class CustomersService {
     const resolvedReceivedBy = this._resolveReceivedByForPayment(receivedBy);
     const normalizedOrderId = this._normalizeOrderIdForPayment(orderId);
     const normalizedShiftId = this._normalizeShiftIdForPayment(shiftId);
+    const payCurrency = normalizeCustomerCurrency(currency);
+    const payFx =
+      payCurrency === 'USD' ? Number(fxRate ?? 0) : null;
+    if (payCurrency === 'USD' && (!Number.isFinite(payFx) || payFx <= 0)) {
+      throw createError(
+        ERROR_CODES.VALIDATION_ERROR,
+        'fx_rate is required for USD customer payments (UZS per 1 USD)'
+      );
+    }
 
     // Use transaction for atomicity and consistency
     return this.db.transaction(() => {
       // Read current customer balance
       const customer = this.getById(normalizedCustomerId);
-      const oldBalance = Number(customer.balance) || 0;
+      const balancesBefore = readCustomerBalances(this.db, normalizedCustomerId);
+      const oldBalance = readBalanceInCurrency(this.db, normalizedCustomerId, payCurrency);
       
       // Calculate signed amount based on operation type
       // CRITICAL: amount is always positive from UI, backend applies the sign
@@ -705,11 +977,20 @@ class CustomersService {
       // This ensures: balance = balance + signedAmount
       // payment_in: balance = balance + amount (positive)
       // payment_out: balance = balance - amount (negative)
-      const updateResult = this.db.prepare('UPDATE customers SET balance = balance + ?, updated_at = ? WHERE id = ?').run(
-        signedAmount, // Signed amount: +amount for payment_in, -amount for payment_out
-        now,
-        normalizedCustomerId
-      );
+      let updateResult;
+      if (hasCustomerBalanceUsd(this.db)) {
+        const uzsDelta = payCurrency === 'UZS' ? signedAmount : 0;
+        const usdDelta = payCurrency === 'USD' ? signedAmount : 0;
+        updateResult = this.db
+          .prepare(
+            `UPDATE customers SET balance = balance + ?, balance_usd = balance_usd + ?, updated_at = ? WHERE id = ?`
+          )
+          .run(uzsDelta, usdDelta, now, normalizedCustomerId);
+      } else {
+        updateResult = this.db
+          .prepare('UPDATE customers SET balance = balance + ?, updated_at = ? WHERE id = ?')
+          .run(signedAmount, now, normalizedCustomerId);
+      }
 
       if (updateResult.changes !== 1) {
         throw new Error(`CRITICAL: Failed to update customer balance. Expected 1 row updated, got ${updateResult.changes}`);
@@ -729,8 +1010,11 @@ class CustomersService {
         
         if (tableExists) {
           // Check if method column exists
-          const tableInfo = this.db.prepare("PRAGMA table_info(customer_ledger)").all();
-          const hasMethodColumn = tableInfo.some(col => col.name === 'method');
+          const tableInfo = this.db.prepare('PRAGMA table_info(customer_ledger)').all();
+          const hasMethodColumn = tableInfo.some((col) => col.name === 'method');
+          const hasLedgerCur = hasCustomerLedgerCurrency(this.db);
+          const hasLedgerBalUsd = tableInfo.some((col) => col.name === 'balance_after_usd');
+          const balancesAfter = readCustomerBalances(this.db, normalizedCustomerId);
           
           const ledgerId = randomUUID();
           // Ledger type matches operation type
@@ -738,46 +1022,44 @@ class CustomersService {
             ? (notes || `Pul qabul qilindi: ${paymentMethod}`)
             : (notes || `Pul berildi: ${paymentMethod}`);
           
-          if (hasMethodColumn) {
-            // Schema with method column
-            this.db.prepare(`
-              INSERT INTO customer_ledger (
-                id, customer_id, type, ref_id, ref_no, amount, balance_after, note, method, created_at, created_by
-              )
-              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            `).run(
-              ledgerId,
-              normalizedCustomerId,
-              operation, // 'payment_in' or 'payment_out'
-              paymentId,
-              paymentNumber,
-              signedAmount, // CRITICAL: Signed amount (positive for payment_in, negative for payment_out)
-              newBalance,
-              ledgerNote,
-              paymentMethod,
-              now,
-              resolvedReceivedBy
-            );
-          } else {
-            // Schema without method column (backward compatibility)
-            this.db.prepare(`
-              INSERT INTO customer_ledger (
-                id, customer_id, type, ref_id, ref_no, amount, balance_after, note, created_at, created_by
-              )
-              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            `).run(
-              ledgerId,
-              normalizedCustomerId,
-              operation, // 'payment_in' or 'payment_out'
-              paymentId,
-              paymentNumber,
-              signedAmount, // CRITICAL: Signed amount (positive for payment_in, negative for payment_out)
-              newBalance,
-              ledgerNote || `Method: ${paymentMethod}`, // Include method in note if column doesn't exist
-              now,
-              resolvedReceivedBy
-            );
+          const ledgerCols = [
+            'id',
+            'customer_id',
+            'type',
+            'ref_id',
+            'ref_no',
+            'amount',
+            'balance_after',
+            'note',
+          ];
+          const ledgerVals = [
+            ledgerId,
+            normalizedCustomerId,
+            operation,
+            paymentId,
+            paymentNumber,
+            signedAmount,
+            newBalance,
+            ledgerNote,
+          ];
+          if (hasLedgerCur) {
+            ledgerCols.push('currency');
+            ledgerVals.push(payCurrency);
           }
+          if (hasLedgerBalUsd) {
+            ledgerCols.push('balance_after_usd');
+            ledgerVals.push(balancesAfter.usd);
+          }
+          if (hasMethodColumn) {
+            ledgerCols.push('method');
+            ledgerVals.push(paymentMethod);
+          }
+          ledgerCols.push('created_at', 'created_by');
+          ledgerVals.push(now, resolvedReceivedBy);
+          const ph = ledgerCols.map(() => '?').join(', ');
+          this.db
+            .prepare(`INSERT INTO customer_ledger (${ledgerCols.join(', ')}) VALUES (${ph})`)
+            .run(...ledgerVals);
           console.log('✅ Ledger entry inserted for payment:', { customerId: normalizedCustomerId, operation, signedAmount, newBalance });
         } else {
           console.warn('⚠️ customer_ledger table does not exist. Run migration 020_create_customer_ledger.sql');
@@ -837,18 +1119,24 @@ class CustomersService {
         .run(...vals);
 
       // Return standardized response with all required fields
+      const finalBalances = readCustomerBalances(this.db, normalizedCustomerId);
       return {
         success: true,
         customer_id: normalizedCustomerId,
+        currency: payCurrency,
         old_balance: oldBalance,
-        requested_amount: requestedAmount, // Always positive (amount from UI)
-        applied_amount: requestedAmount, // Always positive (amount from UI)
-        signed_amount: signedAmount, // Signed amount (positive for payment_in, negative for payment_out)
         new_balance: newBalance,
+        old_balance_uzs: balancesBefore.uzs,
+        new_balance_uzs: finalBalances.uzs,
+        old_balance_usd: balancesBefore.usd,
+        new_balance_usd: finalBalances.usd,
+        requested_amount: requestedAmount,
+        applied_amount: requestedAmount,
+        signed_amount: signedAmount,
         payment_id: paymentId,
         payment_number: paymentNumber,
         created_at: now,
-        operation: operation // Include operation type in response
+        operation,
       };
     })();
   }
@@ -1140,6 +1428,7 @@ class CustomersService {
       }
 
       // Build CSV content
+      const hasBalanceUsd = hasCustomerBalanceUsd(this.db);
       const headers = [
         'id',
         'name',
@@ -1147,9 +1436,10 @@ class CustomersService {
         'type',
         'status',
         'balance',
+        ...(hasBalanceUsd ? ['balance_usd'] : []),
         'total_sales',
         'last_order_date',
-        'created_at'
+        'created_at',
       ];
 
       // CSV escape function
@@ -1176,6 +1466,7 @@ class CustomersService {
           escapeCsv(customer.type),
           escapeCsv(customer.status),
           escapeCsv(customer.balance || 0),
+          ...(hasBalanceUsd ? [escapeCsv(customer.balance_usd ?? 0)] : []),
           escapeCsv(customer.total_sales || 0),
           escapeCsv(customer.last_order_date || ''),
           escapeCsv(customer.created_at || '')

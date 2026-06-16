@@ -22,7 +22,7 @@ function registerOrdersHandlers(services) {
   ipcMain.removeHandler('pos:orders:list');
   ipcMain.handle('pos:orders:list', wrapHandler(async (_event, filters) => {
     console.log('📋 pos:orders:list called (real handler) with filters:', filters);
-    const f = filters || {};
+    const f = { ...(filters || {}), include_web_orders: true };
     const withDetails = f.with_details !== false; // default true
 
     const orders = sales.list(f);
@@ -30,9 +30,10 @@ function registerOrdersHandlers(services) {
 
     if (!withDetails) return orders;
 
-    // Enrich each order with items/payments so Orders UI can render correctly
     const detailed = orders
-      .map((o) => sales._getOrderWithDetails(o.id))
+      .map((o) => (typeof sales.enrichOrderForList === 'function'
+        ? sales.enrichOrderForList(o)
+        : sales._getOrderWithDetails(o.id)))
       .filter(Boolean);
     return detailed;
   }));

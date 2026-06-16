@@ -24,6 +24,7 @@
  *
  * @param {{
  *   rpc?: Limit,        // Overall /rpc per-IP budget. Default: 600/min
+ *   authRpc?: Limit,    // Authenticated session / admin secret budget. Default: 3000/min
  *   login?: Limit,      // pos:auth:login per-IP budget. Default: 10/15min
  *   gcIntervalMs?: number,
  *   now?: () => number,  // injectable for tests
@@ -35,6 +36,11 @@ function createRateLimiter(opts = {}) {
     max: 600,
     ...(opts.rpc || {}),
   };
+  const authRpcLimit = {
+    windowMs: 60_000,
+    max: 3000,
+    ...(opts.authRpc || {}),
+  };
   const loginLimit = {
     windowMs: 15 * 60_000,
     max: 10,
@@ -44,6 +50,7 @@ function createRateLimiter(opts = {}) {
 
   // Key → { count, resetAt }
   const rpcBuckets = new Map();
+  const authRpcBuckets = new Map();
   const loginBuckets = new Map();
 
   function _hit(map, key, limit) {
@@ -68,7 +75,7 @@ function createRateLimiter(opts = {}) {
 
   function gcOnce() {
     const t = now();
-    for (const [m] of [[rpcBuckets], [loginBuckets]]) {
+    for (const m of [rpcBuckets, authRpcBuckets, loginBuckets]) {
       for (const [k, v] of m.entries()) {
         if (v.resetAt <= t) m.delete(k);
       }
@@ -95,6 +102,15 @@ function createRateLimiter(opts = {}) {
       return _hit(rpcBuckets, key, rpcLimit);
     },
     /**
+     * Higher budget for valid session tokens / admin secret callers so many
+     * browser tabs or CLIENT terminals behind one nginx IP do not share the
+     * tight anonymous per-IP bucket.
+     * @param {string} key - e.g. `sess:<token-prefix>` or `admin:<ip>`
+     */
+    checkAuthRpc(key) {
+      return _hit(authRpcBuckets, key, authRpcLimit);
+    },
+    /**
      * Additional check for pos:auth:login — stricter, separate bucket so a
      * legit cashier terminal doing many reads doesn't exhaust login attempts.
      * Call this ONLY when channel === 'pos:auth:login'.
@@ -110,14 +126,17 @@ function createRateLimiter(opts = {}) {
     stats() {
       return {
         rpcBuckets: rpcBuckets.size,
+        authRpcBuckets: authRpcBuckets.size,
         loginBuckets: loginBuckets.size,
         rpcLimit,
+        authRpcLimit,
         loginLimit,
       };
     },
     /** Clear all buckets — used by tests. */
     reset() {
       rpcBuckets.clear();
+      authRpcBuckets.clear();
       loginBuckets.clear();
     },
     start,

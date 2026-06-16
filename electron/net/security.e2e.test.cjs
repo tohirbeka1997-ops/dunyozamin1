@@ -26,6 +26,7 @@ function makeMockDb() {
   const users = new Map([
     ['u-admin', { id: 'u-admin', username: 'admin', role: 'admin', password_hash: 'x', is_active: 1, email: null, full_name: 'Admin' }],
     ['u-cash',  { id: 'u-cash',  username: 'cash',  role: 'cashier', password_hash: 'x', is_active: 1, email: null, full_name: 'Cashier' }],
+    ['u-sales', { id: 'u-sales', username: 'sales', role: 'sales', password_hash: 'x', is_active: 1, email: null, full_name: 'Sales' }],
   ]);
   function matchAndRun(sql, args) {
     if (/INSERT INTO sessions/i.test(sql)) {
@@ -78,6 +79,7 @@ function makeMockServices() {
   const users = [
     { id: 'u-admin', username: 'admin', role: 'admin', is_active: 1 },
     { id: 'u-cash',  username: 'cash',  role: 'cashier', is_active: 1 },
+    { id: 'u-sales', username: 'sales', role: 'sales', is_active: 1 },
   ];
   return {
     auth: {
@@ -141,7 +143,8 @@ function readAuditRows(p) {
     corsOrigins: ['*'],
     // Tight budgets so tests don't need to wait real time.
     rateLimit: {
-      rpc:   { windowMs: 10_000, max: 5  }, // 5 rpc / 10s
+      rpc:   { windowMs: 10_000, max: 5  }, // 5 rpc / 10s (anonymous IP)
+      authRpc: { windowMs: 10_000, max: 5 }, // same budget for session/admin in tests
       login: { windowMs: 10_000, max: 2  }, // 2 login / 10s
     },
     auditLogPath: auditPath,
@@ -235,6 +238,44 @@ function readAuditRows(p) {
       assert.ok(denied.length >= 1, 'audit recorded auth.denied for admin-only channel');
       assert.strictEqual(denied[0].reason, 'admin_only_channel');
       console.log('  ✓ admin-only denial produces auth.denied in audit log');
+    }
+
+    // ---- 5. role matrix: `sales` role (audit #2) ---------------------------
+    {
+      server.limiter.reset();
+      const login = await rpc(base, secret, 'pos:auth:login', ['sales', 'goodpw']);
+      assert.strictEqual(login.json?.data?.success, true, 'sales login should succeed');
+      const token = login.json.data.token;
+      assert.ok(token, 'sales session token issued');
+
+      // Allowed channels: role check must PASS. The mock has no products/webOrders
+      // service so dispatch fails with INTERNAL_ERROR — the point is it is NOT
+      // PERMISSION_DENIED (i.e. the sales role was permitted to reach dispatch).
+      const okProducts = await rpc(base, token, 'pos:products:list', [{}]);
+      assert.notStrictEqual(okProducts.json?.error?.code, 'PERMISSION_DENIED', 'sales may read products');
+      const okWeb = await rpc(base, token, 'pos:webOrders:list', [{}]);
+      assert.notStrictEqual(okWeb.json?.error?.code, 'PERMISSION_DENIED', 'sales may manage web orders');
+
+      // Denied: admin-only channels must be PERMISSION_DENIED for sales.
+      const noUsers = await rpc(base, token, 'pos:users:list', [{}]);
+      assert.strictEqual(noUsers.json?.error?.code, 'PERMISSION_DENIED', 'sales denied users:list');
+      const noBackup = await rpc(base, token, 'pos:database:backup', ['manual']);
+      assert.strictEqual(noBackup.json?.error?.code, 'PERMISSION_DENIED', 'sales denied db backup');
+      console.log('  ✓ sales role allowed its channels and denied admin channels');
+    }
+
+    // ---- 6. role enforced via session, NOT the shared secret (audit #1) -----
+    {
+      server.limiter.reset();
+      const sess = await rpc(base, secret, 'pos:auth:login', ['cash', 'goodpw']);
+      const token = sess.json.data.token;
+      // A cashier SESSION must be role-checked: users:list is admin-only.
+      const denied = await rpc(base, token, 'pos:users:list', [{}]);
+      assert.strictEqual(denied.json?.error?.code, 'PERMISSION_DENIED', 'cashier session denied users:list');
+      // The shared secret (transport/admin bypass) still works for bootstrap/scripts.
+      const allowed = await rpc(base, secret, 'pos:users:list', [{}]);
+      assert.strictEqual(allowed.json?.ok, true, 'shared secret retains admin bypass for users:list');
+      console.log('  ✓ ROLE_RULES enforced against session role, secret retains bypass');
     }
 
     console.log('\nOK — security E2E passed');

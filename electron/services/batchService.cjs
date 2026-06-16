@@ -221,16 +221,44 @@ class BatchService {
    * One-time cutover snapshot: stores settings and creates opening batches based on current stock.
    * Idempotent per (product_id, warehouse_id, opened_at) so re-running is safe.
    */
-  runCutoverSnapshot({ cutoverAt, warehouseId, costMode = 'last_received_po_cost', updatedBy = null } = {}) {
+  runCutoverSnapshot({ cutoverAt, warehouseId, costMode = 'last_received_po_cost', updatedBy = null, force = false } = {}) {
     this._requireBatchTables();
     if (!cutoverAt) throw createError(ERROR_CODES.VALIDATION_ERROR, 'cutoverAt is required');
-    const wh = this._resolveWarehouseId(warehouseId);
 
     // normalize: accept ISO too
     const cutoverAtSql = String(cutoverAt).replace('T', ' ').replace('Z', '').substring(0, 19);
 
+    // Guard against duplicate opening batches when toggling off then on without reset.
+    // If a previous cutover already exists, just re-enable the flag and return early.
+    const existingCutover = this._getSettingValue('inventory.batch_cutover_at');
+    if (existingCutover && !force) {
+      this._upsertSetting({
+        key: 'inventory.batch_mode_enabled',
+        value: true,
+        type: 'boolean',
+        category: 'inventory',
+        description: 'Enable inventory batch mode (FIFO costing)',
+        isPublic: 1,
+        updatedBy,
+      });
+      return {
+        ok: true,
+        resumed: true,
+        settings: {
+          batch_mode_enabled: true,
+          batch_cutover_at: existingCutover,
+          batch_opening_cost_mode: this._getSettingValue('inventory.batch_opening_cost_mode') || 'last_received_po_cost',
+        },
+        warehouse_id: warehouseId || null,
+        opened_at: existingCutover,
+        created: 0,
+        skipped: 0,
+        batches: [],
+        message: 'Existing cutover preserved. Use force=true to override.',
+      };
+    }
+
     return this.db.transaction(() => {
-      // 1) Persist settings (category: inventory)
       this._upsertSetting({
         key: 'inventory.batch_mode_enabled',
         value: true,
@@ -259,23 +287,86 @@ class BatchService {
         updatedBy,
       });
 
-      // 2) Create opening batches
-      const result = this.createOpeningBatchesForWarehouse({
-        warehouseId: wh,
-        openedAt: cutoverAtSql,
-        costMode,
-      });
+      // If forced reset, clear unconsumed opening batches for the affected warehouses
+      // to avoid double-counting when a fresh cutover is issued.
+      if (force) {
+        this._purgeUnconsumedOpeningBatches(warehouseId || null);
+      }
+
+      // Create opening batches: when warehouseId is omitted, iterate over all warehouses
+      // so multi-warehouse setups are not silently broken.
+      const targetWarehouses = warehouseId
+        ? [this._resolveWarehouseId(warehouseId)]
+        : this._listAllWarehouseIds();
+
+      let totalCreated = 0;
+      let totalSkipped = 0;
+      const allBatches = [];
+      for (const wh of targetWarehouses) {
+        const r = this.createOpeningBatchesForWarehouse({
+          warehouseId: wh,
+          openedAt: cutoverAtSql,
+          costMode,
+        });
+        totalCreated += Number(r?.created || 0);
+        totalSkipped += Number(r?.skipped || 0);
+        if (Array.isArray(r?.batches)) allBatches.push(...r.batches);
+      }
 
       return {
         ok: true,
+        resumed: false,
         settings: {
           batch_mode_enabled: true,
           batch_cutover_at: cutoverAtSql,
           batch_opening_cost_mode: String(costMode),
         },
-        ...result,
+        warehouses: targetWarehouses,
+        opened_at: cutoverAtSql,
+        created: totalCreated,
+        skipped: totalSkipped,
+        batches: allBatches,
       };
     })();
+  }
+
+  /**
+   * Internal helper used by runCutoverSnapshot when force=true.
+   * Removes opening batches that have NEVER been allocated (so it's safe to wipe).
+   * Allocated opening batches are kept for audit trail integrity.
+   */
+  _purgeUnconsumedOpeningBatches(warehouseId = null) {
+    this._requireBatchTables();
+    const params = [];
+    let where = "WHERE source_type = 'opening'";
+    if (warehouseId) {
+      where += ' AND warehouse_id = ?';
+      params.push(warehouseId);
+    }
+    where +=
+      ' AND id NOT IN (SELECT DISTINCT batch_id FROM inventory_batch_allocations WHERE batch_id IS NOT NULL)';
+    const sql = `DELETE FROM inventory_batches ${where}`;
+    try {
+      const info = this.db.prepare(sql).run(...params);
+      return { deleted: info.changes || 0 };
+    } catch (_e) {
+      return { deleted: 0 };
+    }
+  }
+
+  _listAllWarehouseIds() {
+    if (!this._hasTable('warehouses')) return [this._resolveWarehouseId(null)];
+    try {
+      const cols = this.db.prepare(`PRAGMA table_info(warehouses)`).all() || [];
+      const colNames = new Set(cols.map((c) => c.name));
+      const where = colNames.has('is_active') ? 'WHERE COALESCE(is_active, 1) = 1' : '';
+      const orderCol = colNames.has('created_at') ? 'created_at' : 'id';
+      const rows = this.db.prepare(`SELECT id FROM warehouses ${where} ORDER BY ${orderCol} ASC`).all();
+      const ids = rows.map((r) => r.id).filter(Boolean);
+      return ids.length > 0 ? ids : [this._resolveWarehouseId(null)];
+    } catch (_e) {
+      return [this._resolveWarehouseId(null)];
+    }
   }
 
   createOpeningBatchesForWarehouse({ warehouseId, openedAt, costMode = 'last_received_po_cost' } = {}) {

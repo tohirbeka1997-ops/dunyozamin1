@@ -544,6 +544,150 @@ function runMigrations(db) {
             );
           }
           db.exec(sql);
+        } else if (file === '078_expenses_shift_id.sql') {
+          if (hasTable(db, 'expenses')) {
+            if (!hasColumn(db, 'expenses', 'shift_id')) {
+              safeAddColumn(db, 'expenses', 'shift_id', 'TEXT');
+              console.log('    ✓ Added expenses.shift_id');
+            }
+            db.exec(
+              'CREATE INDEX IF NOT EXISTS idx_expenses_shift ON expenses(shift_id);'
+            );
+          }
+          db.exec(sql);
+        } else if (file === '090_customer_phone_normalized.sql') {
+          const { normalizePhoneUz } = require('../lib/phoneNormalize.cjs');
+          if (hasTable(db, 'customers')) {
+            if (!hasColumn(db, 'customers', 'phone_normalized')) {
+              safeAddColumn(db, 'customers', 'phone_normalized', 'TEXT');
+              console.log('    ✓ Added customers.phone_normalized');
+            }
+
+            const rows = db
+              .prepare(
+                `SELECT id, phone FROM customers WHERE phone IS NOT NULL AND TRIM(phone) != ''`,
+              )
+              .all();
+            const upd = db.prepare(`UPDATE customers SET phone_normalized = ? WHERE id = ?`);
+            for (const row of rows) {
+              const norm = normalizePhoneUz(row.phone);
+              if (norm) upd.run(norm, row.id);
+            }
+
+            const dupes = db
+              .prepare(
+                `
+                SELECT phone_normalized, COUNT(*) AS cnt
+                FROM customers
+                WHERE phone_normalized IS NOT NULL AND phone_normalized != ''
+                GROUP BY phone_normalized
+                HAVING cnt > 1
+              `,
+              )
+              .all();
+            for (const d of dupes) {
+              const group = db
+                .prepare(
+                  `
+                  SELECT id FROM customers
+                  WHERE phone_normalized = ?
+                  ORDER BY datetime(replace(replace(COALESCE(created_at, ''), 'T', ' '), 'Z', '')) ASC, id ASC
+                `,
+                )
+                .all(d.phone_normalized);
+              const keepId = group[0]?.id;
+              for (const row of group.slice(1)) {
+                db.prepare(`UPDATE customers SET phone_normalized = NULL WHERE id = ?`).run(row.id);
+                console.log(
+                  `    ⚠ duplicate phone_normalized ${d.phone_normalized}: cleared on ${row.id}, canonical ${keepId}`,
+                );
+              }
+            }
+
+            db.exec(
+              'CREATE INDEX IF NOT EXISTS idx_customers_phone_normalized ON customers(phone_normalized);',
+            );
+            try {
+              db.exec(`
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_customers_phone_normalized_unique
+                ON customers(phone_normalized)
+                WHERE phone_normalized IS NOT NULL AND phone_normalized != ''
+              `);
+            } catch (idxErr) {
+              if (!String(idxErr.message || '').includes('UNIQUE')) {
+                throw idxErr;
+              }
+              console.warn(
+                '    ⚠ Could not create unique index on phone_normalized — duplicates remain; merge script needed',
+              );
+            }
+          }
+          db.exec(sql);
+        } else if (file === '091_customer_phone_renormalize.sql') {
+          // Re-run phone normalization after the normalizePhoneUz fix that now
+          // accepts all UZ operator prefixes (88/77/33/55/20 + landlines), not
+          // just 9x. Rows the old normalizer dropped (phone present but
+          // phone_normalized NULL/stale) are recomputed, then duplicates are
+          // re-resolved and indexes ensured. Idempotent.
+          const { normalizePhoneUz } = require('../lib/phoneNormalize.cjs');
+          if (hasTable(db, 'customers') && hasColumn(db, 'customers', 'phone_normalized')) {
+            const rows = db
+              .prepare(
+                `SELECT id, phone, phone_normalized FROM customers WHERE phone IS NOT NULL AND TRIM(phone) != ''`,
+              )
+              .all();
+            const upd = db.prepare(`UPDATE customers SET phone_normalized = ? WHERE id = ?`);
+            let recomputed = 0;
+            for (const row of rows) {
+              const norm = normalizePhoneUz(row.phone);
+              if (norm && norm !== row.phone_normalized) {
+                upd.run(norm, row.id);
+                recomputed++;
+              }
+            }
+            if (recomputed) console.log(`    ✓ Re-normalized ${recomputed} customer phone(s)`);
+
+            // Re-resolve duplicates: keep oldest, clear phone_normalized on newer.
+            const dupes = db
+              .prepare(
+                `SELECT phone_normalized, COUNT(*) AS cnt FROM customers
+                 WHERE phone_normalized IS NOT NULL AND phone_normalized != ''
+                 GROUP BY phone_normalized HAVING cnt > 1`,
+              )
+              .all();
+            for (const d of dupes) {
+              const group = db
+                .prepare(
+                  `SELECT id FROM customers WHERE phone_normalized = ?
+                   ORDER BY datetime(replace(replace(COALESCE(created_at, ''), 'T', ' '), 'Z', '')) ASC, id ASC`,
+                )
+                .all(d.phone_normalized);
+              const keepId = group[0]?.id;
+              for (const row of group.slice(1)) {
+                db.prepare(`UPDATE customers SET phone_normalized = NULL WHERE id = ?`).run(row.id);
+                console.log(
+                  `    ⚠ duplicate phone_normalized ${d.phone_normalized}: cleared on ${row.id}, canonical ${keepId}`,
+                );
+              }
+            }
+
+            db.exec(
+              'CREATE INDEX IF NOT EXISTS idx_customers_phone_normalized ON customers(phone_normalized);',
+            );
+            try {
+              db.exec(`
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_customers_phone_normalized_unique
+                ON customers(phone_normalized)
+                WHERE phone_normalized IS NOT NULL AND phone_normalized != ''
+              `);
+            } catch (idxErr) {
+              if (!String(idxErr.message || '').includes('UNIQUE')) throw idxErr;
+              console.warn(
+                '    ⚠ Could not create unique index on phone_normalized — duplicates remain; merge script needed',
+              );
+            }
+          }
+          db.exec(sql);
         } else {
           // Execute migration SQL normally
           // SQL files should use IF NOT EXISTS for tables/indexes

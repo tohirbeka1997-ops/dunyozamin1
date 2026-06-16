@@ -56,6 +56,91 @@ class SupplierService {
     return normalized;
   }
 
+  _computePoPaymentStatus(paidAmount, totalAmount) {
+    const paid = Number(paidAmount) || 0;
+    const total = Number(totalAmount) || 0;
+    if (paid <= 0) return 'UNPAID';
+    if (paid >= total) return 'PAID';
+    return 'PARTIALLY_PAID';
+  }
+
+  /** PO invoice currency drives cached paid fields (not supplier settlement). */
+  _refreshPurchaseOrderPaymentCache(purchaseOrderId) {
+    if (!purchaseOrderId) return;
+    try {
+      if (!this._hasPurchaseOrderCol('paid_amount') || !this._hasPurchaseOrderCol('payment_status')) return;
+
+      const po = this.db
+        .prepare(`SELECT currency, total_amount, total_usd, fx_rate FROM purchase_orders WHERE id = ?`)
+        .get(purchaseOrderId);
+      if (!po) return;
+
+      const poCur =
+        this._hasPurchaseOrderCol('currency') && String(po.currency || 'UZS').toUpperCase() === 'USD'
+          ? 'USD'
+          : 'UZS';
+      const hasPaidAmountUsd = this._hasPurchaseOrderCol('paid_amount_usd');
+      const hasTotalUsd = this._hasPurchaseOrderCol('total_usd');
+      const hasAmountUsd = this._hasSupplierPaymentCol('amount_usd');
+
+      if (poCur === 'USD' && hasPaidAmountUsd && hasTotalUsd && hasAmountUsd) {
+        const totalAmountUsd = Number(po.total_usd ?? 0);
+        const sumRow = this.db
+          .prepare(
+            `
+            SELECT
+              COALESCE(SUM(COALESCE(amount_usd, 0)), 0) AS paid_amount_usd,
+              COALESCE(SUM(amount), 0) AS paid_amount_uzs
+            FROM supplier_payments
+            WHERE purchase_order_id = ?
+          `
+          )
+          .get(purchaseOrderId);
+        let paidAmountUsd = Number(sumRow?.paid_amount_usd ?? 0);
+        if (paidAmountUsd <= 0) {
+          const paidUzs = Number(sumRow?.paid_amount_uzs ?? 0);
+          const fx = Number(po.fx_rate ?? 0);
+          if (paidUzs > 0 && fx > 0) paidAmountUsd = paidUzs / fx;
+        }
+        const status = this._computePoPaymentStatus(paidAmountUsd, totalAmountUsd);
+        this.db
+          .prepare(
+            `
+            UPDATE purchase_orders
+            SET paid_amount_usd = ?, payment_status = ?, updated_at = datetime('now')
+            WHERE id = ?
+          `
+          )
+          .run(paidAmountUsd, status, purchaseOrderId);
+        return;
+      }
+
+      const totalAmount = Number(po.total_amount ?? 0);
+      const sumRow = this.db
+        .prepare(
+          `
+          SELECT COALESCE(SUM(amount), 0) AS paid_amount
+          FROM supplier_payments
+          WHERE purchase_order_id = ?
+        `
+        )
+        .get(purchaseOrderId);
+      const paidAmount = Number(sumRow?.paid_amount ?? 0);
+      const status = this._computePoPaymentStatus(paidAmount, totalAmount);
+      this.db
+        .prepare(
+          `
+          UPDATE purchase_orders
+          SET paid_amount = ?, payment_status = ?, updated_at = datetime('now')
+          WHERE id = ?
+        `
+        )
+        .run(paidAmount, status, purchaseOrderId);
+    } catch {
+      // cached fields are optional; PurchaseService.get also computes from supplier_payments
+    }
+  }
+
   /**
    * List suppliers with filters
    */
@@ -68,7 +153,7 @@ class SupplierService {
     const hasAmountUsd = this._hasSupplierPaymentCol('amount_usd');
 
     const debtExpr = hasSettlementCurrency && hasTotalUsd
-      ? `CASE WHEN COALESCE(s.settlement_currency, 'USD') = 'USD'
+      ? `CASE WHEN COALESCE(s.settlement_currency, 'UZS') = 'USD'
           THEN COALESCE((
             SELECT SUM(COALESCE(po.total_usd, 0))
             FROM purchase_orders po
@@ -90,7 +175,7 @@ class SupplierService {
         ), 0)`;
 
     const paidExpr = hasSettlementCurrency && hasAmountUsd
-      ? `CASE WHEN COALESCE(s.settlement_currency, 'USD') = 'USD'
+      ? `CASE WHEN COALESCE(s.settlement_currency, 'UZS') = 'USD'
           THEN COALESCE((
             SELECT SUM(COALESCE(sp.amount_usd, 0))
             FROM supplier_payments sp
@@ -158,7 +243,7 @@ class SupplierService {
     const hasAmountUsd = this._hasSupplierPaymentCol('amount_usd');
 
     const debtExpr = hasSettlementCurrency && hasTotalUsd
-      ? `CASE WHEN COALESCE(s.settlement_currency, 'USD') = 'USD'
+      ? `CASE WHEN COALESCE(s.settlement_currency, 'UZS') = 'USD'
           THEN COALESCE((
             SELECT SUM(COALESCE(po.total_usd, 0))
             FROM purchase_orders po
@@ -180,7 +265,7 @@ class SupplierService {
         ), 0)`;
 
     const paidExpr = hasSettlementCurrency && hasAmountUsd
-      ? `CASE WHEN COALESCE(s.settlement_currency, 'USD') = 'USD'
+      ? `CASE WHEN COALESCE(s.settlement_currency, 'UZS') = 'USD'
           THEN COALESCE((
             SELECT SUM(COALESCE(sp.amount_usd, 0))
             FROM supplier_payments sp
@@ -309,7 +394,7 @@ class SupplierService {
           data.address?.trim() || null,
           data.note?.trim() || null,
           this._normalizeStatus(data.status, 'active'),
-          String(data.settlement_currency || 'USD').toUpperCase() === 'USD' ? 'USD' : 'UZS',
+          String(data.settlement_currency || 'UZS').toUpperCase() === 'USD' ? 'USD' : 'UZS',
           now,
           now
         );
@@ -397,7 +482,7 @@ class SupplierService {
 
     if (data.settlement_currency !== undefined && this._hasSupplierCol('settlement_currency')) {
       updates.push('settlement_currency = ?');
-      params.push(String(data.settlement_currency || 'USD').toUpperCase() === 'USD' ? 'USD' : 'UZS');
+      params.push(String(data.settlement_currency || 'UZS').toUpperCase() === 'USD' ? 'USD' : 'UZS');
     }
 
     if (updates.length === 0) {
@@ -478,7 +563,7 @@ class SupplierService {
 
     const supplier = this.get(supplierId);
     const settlementCurrency =
-      String(supplier?.settlement_currency || 'USD').toUpperCase() === 'USD' ? 'USD' : 'UZS';
+      String(supplier?.settlement_currency || 'UZS').toUpperCase() === 'USD' ? 'USD' : 'UZS';
     const hasPoTotalUsd = this._hasPurchaseOrderCol('total_usd');
     const hasPayAmountUsd = this._hasSupplierPaymentCol('amount_usd');
     const poAmountCol = settlementCurrency === 'USD' && hasPoTotalUsd ? 'total_usd' : 'total_amount';
@@ -589,24 +674,54 @@ class SupplierService {
     // For USD suppliers, we store amount_usd/currency='USD' (MVP: no UZS conversion).
     const supplier = this.get(data.supplier_id);
     const settlementCurrency =
-      String(supplier?.settlement_currency || 'USD').toUpperCase() === 'USD' ? 'USD' : 'UZS';
+      String(supplier?.settlement_currency || 'UZS').toUpperCase() === 'USD' ? 'USD' : 'UZS';
     const paymentCurrency = String(data.currency || settlementCurrency || 'UZS').toUpperCase() === 'USD' ? 'USD' : 'UZS';
     const inputAmount =
       paymentCurrency === 'USD'
         ? Number(data.amount_usd ?? data.amount)
         : Number(data.amount);
     const amountUsdInput = Number(data.amount_usd);
-    const normalizedAmountUsd =
+    let normalizedAmountUsd =
       Number.isFinite(amountUsdInput) && amountUsdInput !== 0
         ? amountUsdInput
         : paymentCurrency === 'USD'
           ? inputAmount
           : null;
 
-    if (inputAmount === null || inputAmount === undefined || Number(inputAmount) === 0) {
+    // Cross-currency safety: UZS payment to USD-settlement supplier must land in amount_usd.
+    if (settlementCurrency === 'USD' && paymentCurrency === 'UZS') {
+      const usdFromPayload = Number(data.amount_usd);
+      if (Number.isFinite(usdFromPayload) && usdFromPayload > 0) {
+        normalizedAmountUsd = usdFromPayload;
+      } else if (!normalizedAmountUsd || Number(normalizedAmountUsd) === 0) {
+        const rate = Number(data.fx_rate ?? data.exchange_rate ?? 0);
+        if (rate > 0) {
+          normalizedAmountUsd = Number(inputAmount) / rate;
+        }
+      }
+    }
+
+    // USD payment to UZS-settlement supplier must land in amount (UZS).
+    if (settlementCurrency === 'UZS' && paymentCurrency === 'USD') {
+      const uzsFromPayload = Number(data.amount);
+      if (!Number.isFinite(uzsFromPayload) || uzsFromPayload <= 0) {
+        const rate = Number(data.fx_rate ?? data.exchange_rate ?? 0);
+        if (rate > 0 && Number.isFinite(normalizedAmountUsd) && Number(normalizedAmountUsd) > 0) {
+          // overwrite inputAmount used below via local adjustment
+          data.amount = Number(normalizedAmountUsd) * rate;
+        }
+      }
+    }
+
+    const inputAmountFinal =
+      settlementCurrency === 'UZS' && paymentCurrency === 'USD'
+        ? Number(data.amount ?? inputAmount)
+        : inputAmount;
+
+    if (inputAmountFinal === null || inputAmountFinal === undefined || Number(inputAmountFinal) === 0) {
       throw createError(ERROR_CODES.VALIDATION_ERROR, 'Payment amount must be non-zero');
     }
-    if (data.purchase_order_id && Number(inputAmount) < 0) {
+    if (data.purchase_order_id && Number(inputAmountFinal) < 0) {
       throw createError(
         ERROR_CODES.VALIDATION_ERROR,
         'Negative amounts are not allowed for purchase order payments'
@@ -620,6 +735,15 @@ class SupplierService {
     const now = new Date().toISOString();
 
     try {
+      const linkedPoLedger =
+        data.purchase_order_id && this._hasPurchaseOrderCol('currency')
+          ? this.db
+              .prepare(`SELECT currency, fx_rate FROM purchase_orders WHERE id = ?`)
+              .get(data.purchase_order_id)
+          : null;
+      const poCur =
+        linkedPoLedger && String(linkedPoLedger.currency || 'UZS').toUpperCase() === 'USD' ? 'USD' : null;
+
       // Some schemas use "notes" (plural). Older/other code paths may use "note" (singular).
       // Detect columns at runtime for compatibility.
       const cols = this.db.prepare(`PRAGMA table_info(supplier_payments)`).all().map(c => c.name);
@@ -644,7 +768,7 @@ class SupplierService {
         paymentNumber,
         data.supplier_id,
         data.purchase_order_id || null,
-        settlementCurrency === 'USD' ? 0 : inputAmount,
+        settlementCurrency === 'USD' ? 0 : inputAmountFinal,
         data.payment_method || 'cash',
         data.paid_at || now,
       ];
@@ -653,13 +777,29 @@ class SupplierService {
         insertCols.push('currency');
         values.push(paymentCurrency);
       }
-      if (hasAmountUsd && settlementCurrency === 'USD') {
+
+      let storedAmountUsd = null;
+      if (hasAmountUsd) {
+        if (settlementCurrency === 'USD') {
+          storedAmountUsd =
+            normalizedAmountUsd !== null && Number.isFinite(Number(normalizedAmountUsd))
+              ? Number(normalizedAmountUsd)
+              : 0;
+        } else if (poCur === 'USD') {
+          const usdFromPayload = Number(data.amount_usd);
+          if (Number.isFinite(usdFromPayload) && usdFromPayload !== 0) {
+            storedAmountUsd = usdFromPayload;
+          } else if (paymentCurrency === 'USD') {
+            storedAmountUsd = inputAmountFinal;
+          } else {
+            const fx = Number(data.fx_rate ?? data.exchange_rate ?? linkedPoLedger?.fx_rate ?? 0);
+            if (fx > 0) storedAmountUsd = inputAmountFinal / fx;
+          }
+        }
+      }
+      if (hasAmountUsd && storedAmountUsd !== null) {
         insertCols.push('amount_usd');
-        values.push(
-          normalizedAmountUsd !== null && Number.isFinite(Number(normalizedAmountUsd))
-            ? Number(normalizedAmountUsd)
-            : 0
-        );
+        values.push(storedAmountUsd);
       }
 
       if (hasReferenceNumber) {
@@ -684,72 +824,7 @@ class SupplierService {
       // If payment is linked to a purchase order, update cached payment fields on purchase_orders (if columns exist).
       // UI expects payment_status values: UNPAID / PARTIALLY_PAID / PAID.
       if (data.purchase_order_id) {
-        try {
-          const poCols = this.db.prepare(`PRAGMA table_info(purchase_orders)`).all().map(c => c.name);
-          if (poCols.includes('paid_amount') && poCols.includes('payment_status')) {
-            if (settlementCurrency === 'USD') {
-              const hasPaidAmountUsd = poCols.includes('paid_amount_usd');
-              const hasTotalUsd = poCols.includes('total_usd');
-              if (hasPaidAmountUsd && hasTotalUsd) {
-                const totalRow = this.db
-                  .prepare(`SELECT total_usd FROM purchase_orders WHERE id = ?`)
-                  .get(data.purchase_order_id);
-                const totalAmountUsd = Number(totalRow?.total_usd ?? 0);
-                const sumRow = this.db
-                  .prepare(
-                    `
-                    SELECT COALESCE(SUM(amount_usd), 0) AS paid_amount_usd
-                    FROM supplier_payments
-                    WHERE purchase_order_id = ?
-                  `
-                  )
-                  .get(data.purchase_order_id);
-                const paidAmountUsd = Number(sumRow?.paid_amount_usd ?? 0);
-                const status =
-                  paidAmountUsd <= 0 ? 'UNPAID' : paidAmountUsd >= totalAmountUsd ? 'PAID' : 'PARTIALLY_PAID';
-
-                this.db
-                  .prepare(
-                    `
-                    UPDATE purchase_orders
-                    SET paid_amount_usd = ?, payment_status = ?, updated_at = datetime('now')
-                    WHERE id = ?
-                  `
-                  )
-                  .run(paidAmountUsd, status, data.purchase_order_id);
-              }
-            } else {
-              const totalRow = this.db
-                .prepare(`SELECT total_amount FROM purchase_orders WHERE id = ?`)
-                .get(data.purchase_order_id);
-              const totalAmount = Number(totalRow?.total_amount ?? 0);
-              const sumRow = this.db
-                .prepare(
-                  `
-                  SELECT COALESCE(SUM(amount), 0) AS paid_amount
-                  FROM supplier_payments
-                  WHERE purchase_order_id = ?
-                `
-                )
-                .get(data.purchase_order_id);
-              const paidAmount = Number(sumRow?.paid_amount ?? 0);
-              const status =
-                paidAmount <= 0 ? 'UNPAID' : paidAmount >= totalAmount ? 'PAID' : 'PARTIALLY_PAID';
-
-              this.db
-                .prepare(
-                  `
-                  UPDATE purchase_orders
-                  SET paid_amount = ?, payment_status = ?, updated_at = datetime('now')
-                  WHERE id = ?
-                `
-                )
-                .run(paidAmount, status, data.purchase_order_id);
-            }
-          }
-        } catch {
-          // ignore: cached fields are optional; PurchaseService.get/list also computes from supplier_payments
-        }
+        this._refreshPurchaseOrderPaymentCache(data.purchase_order_id);
       }
 
       return this.db.prepare('SELECT * FROM supplier_payments WHERE id = ?').get(id);
@@ -772,56 +847,11 @@ class SupplierService {
     }
 
     const poId = payment.purchase_order_id;
-    const paymentCurrency = String(payment.currency || 'UZS').toUpperCase();
 
     this.db.prepare('DELETE FROM supplier_payments WHERE id = ?').run(paymentId);
 
-    // If linked to PO, update cached payment fields when available (UZS only).
     if (poId) {
-      try {
-        const poCols = this.db.prepare(`PRAGMA table_info(purchase_orders)`).all().map(c => c.name);
-        if (poCols.includes('paid_amount') && poCols.includes('payment_status')) {
-          if (paymentCurrency === 'USD') {
-            const hasPaidAmountUsd = poCols.includes('paid_amount_usd');
-            const hasTotalUsd = poCols.includes('total_usd');
-            if (hasPaidAmountUsd && hasTotalUsd) {
-              const totalRow = this.db.prepare(`SELECT total_usd FROM purchase_orders WHERE id = ?`).get(poId);
-              const totalAmountUsd = Number(totalRow?.total_usd ?? 0);
-              const sumRow = this.db.prepare(`
-                SELECT COALESCE(SUM(amount_usd), 0) AS paid_amount_usd
-                FROM supplier_payments
-                WHERE purchase_order_id = ?
-              `).get(poId);
-              const paidAmountUsd = Number(sumRow?.paid_amount_usd ?? 0);
-              const status =
-                paidAmountUsd <= 0 ? 'UNPAID' : paidAmountUsd >= totalAmountUsd ? 'PAID' : 'PARTIALLY_PAID';
-              this.db.prepare(`
-                UPDATE purchase_orders
-                SET paid_amount_usd = ?, payment_status = ?, updated_at = datetime('now')
-                WHERE id = ?
-              `).run(paidAmountUsd, status, poId);
-            }
-          } else {
-            const totalRow = this.db.prepare(`SELECT total_amount FROM purchase_orders WHERE id = ?`).get(poId);
-            const totalAmount = Number(totalRow?.total_amount ?? 0);
-            const sumRow = this.db.prepare(`
-              SELECT COALESCE(SUM(amount), 0) AS paid_amount
-              FROM supplier_payments
-              WHERE purchase_order_id = ?
-            `).get(poId);
-            const paidAmount = Number(sumRow?.paid_amount ?? 0);
-            const status =
-              paidAmount <= 0 ? 'UNPAID' : paidAmount >= totalAmount ? 'PAID' : 'PARTIALLY_PAID';
-            this.db.prepare(`
-              UPDATE purchase_orders
-              SET paid_amount = ?, payment_status = ?, updated_at = datetime('now')
-              WHERE id = ?
-            `).run(paidAmount, status, poId);
-          }
-        }
-      } catch {
-        // ignore cached field errors
-      }
+      this._refreshPurchaseOrderPaymentCache(poId);
     }
 
     return { success: true };

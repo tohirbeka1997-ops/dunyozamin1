@@ -36,6 +36,9 @@ function createRpcDispatcher({ services, db, sessions }) {
   //   manager  : everything except admin-only channels
   //   cashier  : sales, returns, shifts, customers, pricing/promotions read,
   //              products (read), dashboard, health
+  //   sales    : web orders management, read-only catalog/inventory/products,
+  //              customer read + receivePayment, sales completion (POS sell),
+  //              shifts. NO admin channels (users, db backup/reset, purchases).
   //
   // Legacy desktop/Electron clients bypass this (no meta).
   // Shared-secret callers also bypass (adminBypass=true).
@@ -43,8 +46,8 @@ function createRpcDispatcher({ services, db, sessions }) {
   const ROLE_RULES = {
     admin: () => true,
     manager: (ch) =>
-      ch !== 'pos:settings:resetDatabase' &&
-      !ch.startsWith('pos:database:'),
+      ch === 'pos:database:export' ||
+      (ch !== 'pos:settings:resetDatabase' && !ch.startsWith('pos:database:')),
     cashier: (ch) =>
       // explicit allow list — safest for POS floor operators
       ch === 'pos:health' ||
@@ -53,7 +56,7 @@ function createRpcDispatcher({ services, db, sessions }) {
       ch === 'pos:auth:logout' ||
       ch === 'pos:auth:me' ||
       ch === 'pos:auth:setSessionUser' ||
-      ch.startsWith('pos:products:') && !ch.includes(':create') && !ch.includes(':update') && !ch.includes(':delete') ||
+      ch.startsWith('pos:products:') && !ch.includes(':create') && !ch.includes(':update') && !ch.includes(':delete') && !ch.includes(':bulkAdjustPrices') && !ch.includes(':undoBulkPriceUpdate') ||
       ch.startsWith('pos:categories:') && ch.endsWith(':list') ||
       ch.startsWith('pos:warehouses:') && ch.endsWith(':list') ||
       ch.startsWith('pos:customers:') ||
@@ -63,6 +66,9 @@ function createRpcDispatcher({ services, db, sessions }) {
       ch.startsWith('pos:inventory:getCurrentStock') ||
       ch.startsWith('pos:sales:') ||
       ch.startsWith('pos:returns:') ||
+      ch === 'pos:orders:getByCustomer' ||
+      ch === 'pos:orders:get' ||
+      ch === 'pos:orders:getByNumber' ||
       ch.startsWith('pos:shifts:') ||
       ch === 'pos:shift:getSummary' ||
       ch.startsWith('pos:reports:dailySales') ||
@@ -70,6 +76,42 @@ function createRpcDispatcher({ services, db, sessions }) {
       ch === 'pos:reports:topProducts' ||
       ch.startsWith('pos:dashboard:') ||
       ch === 'pos:debug:tableCounts',
+    sales: (ch) =>
+      // explicit allow list — web/field sales operators (migration 085 seeds
+      // the `sales` role). Conservative: read-mostly + sell + web orders.
+      ch === 'pos:health' ||
+      ch === 'pos:appConfig:get' ||
+      ch === 'pos:auth:login' ||
+      ch === 'pos:auth:logout' ||
+      ch === 'pos:auth:me' ||
+      ch === 'pos:auth:setSessionUser' ||
+      // read-only catalog / products
+      ch.startsWith('pos:products:') && !ch.includes(':create') && !ch.includes(':update') && !ch.includes(':delete') && !ch.includes(':bulkAdjustPrices') && !ch.includes(':undoBulkPriceUpdate') ||
+      ch.startsWith('pos:categories:') && ch.endsWith(':list') ||
+      ch.startsWith('pos:warehouses:') && ch.endsWith(':list') ||
+      // read-only inventory
+      ch.startsWith('pos:inventory:getBalances') ||
+      ch.startsWith('pos:inventory:getCurrentStock') ||
+      // pricing + promotions (read / cart apply)
+      ch.startsWith('pos:pricing:get') ||
+      ch.startsWith('pos:promotions:') && (ch.endsWith(':list') || ch.endsWith(':applyToCart')) ||
+      // customers: read-only + receive payment (NO create/update/delete/adjust)
+      ch === 'pos:customers:receivePayment' ||
+      ch === 'pos:customers:findByPhone' ||
+      ch.startsWith('pos:customers:') && (ch.includes(':get') || ch.endsWith(':list') || ch.endsWith(':exportCsv')) ||
+      // sales completion (POS sell)
+      ch.startsWith('pos:sales:') ||
+      // customer card: read-only order history + detail
+      ch === 'pos:orders:getByCustomer' ||
+      ch === 'pos:orders:get' ||
+      ch === 'pos:orders:getByNumber' ||
+      // shifts
+      ch.startsWith('pos:shifts:') ||
+      ch === 'pos:shift:getSummary' ||
+      // web orders management (Telegram / marketplace) + courier dispatch read
+      ch === 'pos:webOrdersList' ||
+      ch.startsWith('pos:webOrders:') ||
+      ch === 'pos:couriers:list',
   };
 
   function checkRoleAccess(channel, role) {
@@ -178,6 +220,16 @@ function createRpcDispatcher({ services, db, sessions }) {
         });
       case 'pos:products:delete':
         return services.products.delete(a[0], { event: _event });
+      case 'pos:products:bulkAdjustPrices':
+        return services.products.bulkAdjustPrices(a[0] || {}, {
+          actorUserId: authContext?.userId || a[1] || null,
+        });
+      case 'pos:products:undoBulkPriceUpdate':
+        return services.products.undoBulkPriceUpdate(a[0] ?? null, {
+          actorUserId: authContext?.userId || a[1] || null,
+        });
+      case 'pos:products:getLastBulkPriceBatch':
+        return services.products.getLastBulkPriceBatch();
       case 'pos:products:exportScaleRongtaTxt': {
         const opts = a[0] || {};
         const department = Number.isFinite(Number(opts?.department)) ? Number(opts.department) : 7;
@@ -388,6 +440,8 @@ function createRpcDispatcher({ services, db, sessions }) {
         return services.customers.getByLoyaltyQr(a[0]);
       case 'pos:customers:getLoyaltyCard':
         return services.customers.getLoyaltyCardByCustomerId(a[0]);
+      case 'pos:customers:findByPhone':
+        return services.customers.findByPhone(a[0]);
       case 'pos:customers:create':
         return services.customers.create(a[0] || {});
       case 'pos:customers:update':
@@ -496,6 +550,7 @@ function createRpcDispatcher({ services, db, sessions }) {
         console.log('[RPC] pos:sales:completePOSOrder', {
           order_uuid: a?.[0]?.order_uuid,
           device_id: a?.[0]?.device_id,
+          replaces_order_id: a?.[0]?.replaces_order_id ?? null,
           items_count: Array.isArray(a?.[1]) ? a[1].length : 0,
           payments_count: Array.isArray(a?.[2]) ? a[2].length : 0,
         });
@@ -509,15 +564,27 @@ function createRpcDispatcher({ services, db, sessions }) {
 
       // Returns
       case 'pos:returns:create':
-        return services.returns.create(a[0] || {});
+        return services.returns.createReturn(a[0] || {});
       case 'pos:returns:get':
-        return services.returns.get(a[0]);
+        return services.returns.getById(a[0]);
       case 'pos:returns:list':
         return services.returns.list(a[0] || {});
-      case 'pos:returns:getOrderDetails':
-        return services.returns.getOrderDetails(a[0] || {});
-      case 'pos:returns:update':
-        return services.returns.update(a[0] || {});
+      case 'pos:returns:getOrderDetails': {
+        const p = a[0] || {};
+        const orderId = p && typeof p === 'object' && 'orderId' in p ? p.orderId : p;
+        return services.returns.getOrderDetails(orderId);
+      }
+      case 'pos:returns:update': {
+        const p = a[0] || {};
+        if (p && typeof p === 'object' && 'returnId' in p) {
+          return services.returns.updateReturn(p.returnId, p.data ?? p);
+        }
+        return services.returns.updateReturn(a[0], a[1] || {});
+      }
+      case 'pos:returns:delete':
+        return services.returns.deleteReturn(a[0]);
+      case 'pos:returns:complete':
+        return services.returns.completeReturn(a[0]);
 
       // Purchases
       case 'pos:purchases:list':
@@ -608,6 +675,15 @@ function createRpcDispatcher({ services, db, sessions }) {
             shiftIdStr,
           );
         }
+      case 'pos:shifts:cashIn':
+        return services.shifts.cashIn(a[0] || {});
+      case 'pos:shifts:cashOut':
+        return services.shifts.cashOut(a[0] || {});
+      case 'pos:shifts:listCashMovements':
+        return services.shifts.listShiftCashMovements(a[0]?.shiftId || a[0]?.shift_id, {
+          type: a[0]?.type,
+          limit: a[0]?.limit,
+        });
 
       // Reports
       case 'pos:reports:dailySales': {
@@ -676,6 +752,12 @@ function createRpcDispatcher({ services, db, sessions }) {
         return services.reports.getCashDiscrepancies(a[0] || {});
       case 'pos:reports:aging':
         return services.reports.getAging(a[0] || {});
+      case 'pos:reports:paymentMethodsSummary':
+        return services.reports.getPaymentMethodsSummary(a[0] || {});
+      case 'pos:reports:cashierPerformance':
+        return services.reports.getCashierPerformance(a[0] || {});
+      case 'pos:reports:customerSalesReport':
+        return services.reports.getCustomerSalesReport(a[0] || {});
 
       // Dashboard
       case 'pos:dashboard:getStats':
@@ -819,6 +901,8 @@ function createRpcDispatcher({ services, db, sessions }) {
         return { hasPermission, roles };
       }
       case 'pos:auth:requestPasswordReset':
+        // Web admin shows the code on-screen (no email/SMS). Return it over RPC
+        // so api.dunyozamin.com/forgot-password can display it to the operator.
         return services.auth.requestPasswordReset(a[0]);
       case 'pos:auth:confirmPasswordReset':
         return services.auth.confirmPasswordReset(a[0] || {});
@@ -830,10 +914,13 @@ function createRpcDispatcher({ services, db, sessions }) {
           if (!ordersService) {
             throw createError(ERROR_CODES.INTERNAL_ERROR, 'Orders service not available');
           }
-          const filters = a[0] || {};
+          const filters = { ...(a[0] || {}), include_web_orders: true };
           const withDetails = filters.with_details !== false;
           const orders = ordersService.list(filters);
           if (!withDetails) return orders;
+          if (typeof ordersService.enrichOrderForList === 'function') {
+            return orders.map((o) => ordersService.enrichOrderForList(o)).filter(Boolean);
+          }
           if (typeof ordersService._getOrderWithDetails !== 'function') return orders;
           return orders.map((o) => ordersService._getOrderWithDetails(o.id)).filter(Boolean);
         }
@@ -904,6 +991,120 @@ function createRpcDispatcher({ services, db, sessions }) {
           throw createError(ERROR_CODES.NOT_FOUND, 'Backup service not available');
         }
         return services.backup.backupOnce(a[0] || 'manual');
+      }
+
+      // Export snapshot bytes for desktop download (admin/manager).
+      case 'pos:database:export': {
+        const role = String(authContext?.role || '').toLowerCase();
+        if (!adminBypass && role !== 'admin' && role !== 'manager') {
+          throw createError(ERROR_CODES.PERMISSION_DENIED, 'Admin or manager only');
+        }
+        if (!services.backup || typeof services.backup.backupOnce !== 'function') {
+          throw createError(ERROR_CODES.NOT_FOUND, 'Backup service not available');
+        }
+        const fs = require('fs');
+        const path = require('path');
+        const result = await services.backup.backupOnce(a[0] || 'export');
+        if (!result?.ok || !result?.path) {
+          throw createError(ERROR_CODES.INTERNAL_ERROR, result?.error || 'Backup failed');
+        }
+        const data = await fs.promises.readFile(result.path);
+        return {
+          ok: true,
+          fileName: path.basename(result.path),
+          size: data.length,
+          data,
+        };
+      }
+
+      // Chunked DB upload → replace server pos.db (admin only, destructive).
+      case 'pos:database:uploadBegin': {
+        if (!adminBypass && String(authContext?.role || '').toLowerCase() !== 'admin') {
+          throw createError(ERROR_CODES.PERMISSION_DENIED, 'Admin only');
+        }
+        if (process.env.POS_MULTI_TENANT === '1') {
+          throw createError(
+            ERROR_CODES.NOT_FOUND,
+            'Database upload is not supported in multi-tenant mode',
+          );
+        }
+        const payload = a[0] || {};
+        const {
+          MAX_UPLOAD_BYTES,
+          DEFAULT_CHUNK_SIZE,
+        } = require('../lib/databaseReplace.cjs');
+        const { getUploadStore } = require('../lib/databaseUploadStore.cjs');
+        const uploadId = getUploadStore().begin({
+          fileName: payload.fileName,
+          totalSize: payload.totalSize,
+          maxBytes: MAX_UPLOAD_BYTES,
+        });
+        return { uploadId, chunkSize: DEFAULT_CHUNK_SIZE, maxBytes: MAX_UPLOAD_BYTES };
+      }
+
+      case 'pos:database:uploadChunk': {
+        if (!adminBypass && String(authContext?.role || '').toLowerCase() !== 'admin') {
+          throw createError(ERROR_CODES.PERMISSION_DENIED, 'Admin only');
+        }
+        const payload = a[0] || {};
+        const uploadId = String(payload.uploadId || '').trim();
+        const index = Number(payload.index);
+        const dataB64 = String(payload.data || '');
+        if (!uploadId || !Number.isInteger(index) || !dataB64) {
+          throw createError(ERROR_CODES.VALIDATION_ERROR, 'Invalid upload chunk');
+        }
+        let chunkBuf;
+        try {
+          chunkBuf = Buffer.from(dataB64, 'base64');
+        } catch {
+          throw createError(ERROR_CODES.VALIDATION_ERROR, 'Invalid chunk encoding');
+        }
+        const { getUploadStore } = require('../lib/databaseUploadStore.cjs');
+        return getUploadStore().writeChunk(uploadId, index, chunkBuf);
+      }
+
+      case 'pos:database:uploadFinalize':
+      case 'pos:database:replaceFromUpload': {
+        if (!adminBypass && String(authContext?.role || '').toLowerCase() !== 'admin') {
+          throw createError(ERROR_CODES.PERMISSION_DENIED, 'Admin only');
+        }
+        if (process.env.POS_MULTI_TENANT === '1') {
+          throw createError(
+            ERROR_CODES.NOT_FOUND,
+            'Database upload is not supported in multi-tenant mode',
+          );
+        }
+        const payload = a[0] || {};
+        const uploadId = String(payload.uploadId || '').trim();
+        if (!uploadId) {
+          throw createError(ERROR_CODES.VALIDATION_ERROR, 'uploadId is required');
+        }
+        const { getUploadStore } = require('../lib/databaseUploadStore.cjs');
+        const { replaceDatabaseFile } = require('../lib/databaseReplace.cjs');
+        const { resolvePosDbPath } = require('../lib/resolvePosDbPath.cjs');
+        const upload = getUploadStore().finalize(uploadId);
+        const targetPath = resolvePosDbPath();
+        const dbModule = require('../db/open.cjs');
+        const result = replaceDatabaseFile({
+          uploadPath: upload.filePath,
+          targetPath,
+          closeDb: () => dbModule.close(),
+        });
+        try {
+          dbModule.open();
+        } catch (reopenErr) {
+          console.error('[database:upload] reopen after replace failed:', reopenErr?.message || reopenErr);
+        }
+        return {
+          ok: true,
+          fileName: upload.fileName,
+          size: upload.totalSize,
+          backupPath: result.backupPath,
+          targetPath: result.targetPath,
+          restartRequired: true,
+          message:
+            'Baza muvaffaqiyatli almashtirildi. pos-server va public-api xizmatlarini qayta ishga tushiring.',
+        };
       }
 
       // ======================================================================
@@ -1051,6 +1252,7 @@ function createRpcDispatcher({ services, db, sessions }) {
           warehouseId: p.warehouseId,
           costMode: p.costMode || 'last_received_po_cost',
           updatedBy: p.updatedBy || null,
+          force: !!p.force,
         });
       }
 
@@ -1120,6 +1322,16 @@ function createRpcDispatcher({ services, db, sessions }) {
           throw createError(ERROR_CODES.NOT_FOUND, 'Web orders service unavailable');
         }
         return services.webOrders.dispatchToCourier(a[0]);
+      case 'pos:webOrders:countsByQueue':
+        if (!services.webOrders || typeof services.webOrders.countsByQueue !== 'function') {
+          return { incoming: 0, preparing: 0, ready: 0, delivering: 0, delivered: 0 };
+        }
+        return services.webOrders.countsByQueue();
+      case 'pos:webOrders:reportSummary':
+        if (!services.webOrders || typeof services.webOrders.reportSummary !== 'function') {
+          return { by_status: [], by_channel: [], totals: { orders: 0, amount: 0 } };
+        }
+        return services.webOrders.reportSummary(a[0] || {});
 
       case 'pos:couriers:list':
         if (!services.couriers || typeof services.couriers.list !== 'function') {
@@ -1136,6 +1348,45 @@ function createRpcDispatcher({ services, db, sessions }) {
           throw createError(ERROR_CODES.NOT_FOUND, 'Couriers service unavailable');
         }
         return services.couriers.setActive(a[0], !!a[1]);
+
+      // ======================================================================
+      // Marketplace content (promo banners + daily deal)
+      // ======================================================================
+      case 'pos:marketplaceContent:listBanners':
+        if (!services.marketplaceContent) {
+          throw createError(ERROR_CODES.NOT_FOUND, 'Marketplace content service unavailable');
+        }
+        return services.marketplaceContent.listBanners(a[0] || {});
+      case 'pos:marketplaceContent:saveBanner':
+        if (!services.marketplaceContent) {
+          throw createError(ERROR_CODES.NOT_FOUND, 'Marketplace content service unavailable');
+        }
+        return services.marketplaceContent.saveBanner(a[0] || {});
+      case 'pos:marketplaceContent:deleteBanner':
+        if (!services.marketplaceContent) {
+          throw createError(ERROR_CODES.NOT_FOUND, 'Marketplace content service unavailable');
+        }
+        return services.marketplaceContent.deleteBanner(a[0]);
+      case 'pos:marketplaceContent:reorderBanners':
+        if (!services.marketplaceContent) {
+          throw createError(ERROR_CODES.NOT_FOUND, 'Marketplace content service unavailable');
+        }
+        return services.marketplaceContent.reorderBanners(a[0] || []);
+      case 'pos:marketplaceContent:getDailyDeal':
+        if (!services.marketplaceContent) {
+          throw createError(ERROR_CODES.NOT_FOUND, 'Marketplace content service unavailable');
+        }
+        return services.marketplaceContent.getDailyDeal(a[0] || null);
+      case 'pos:marketplaceContent:setDailyDeal':
+        if (!services.marketplaceContent) {
+          throw createError(ERROR_CODES.NOT_FOUND, 'Marketplace content service unavailable');
+        }
+        return services.marketplaceContent.setDailyDeal(a[0] || {});
+      case 'pos:marketplaceContent:dailyDealHistory':
+        if (!services.marketplaceContent) {
+          throw createError(ERROR_CODES.NOT_FOUND, 'Marketplace content service unavailable');
+        }
+        return services.marketplaceContent.listDailyDealHistory(a[0]);
 
       // ======================================================================
       // Suppliers — extra
@@ -1216,10 +1467,65 @@ function createRpcDispatcher({ services, db, sessions }) {
         return services.reports.getInventoryValuationReport(a[0] || {});
       case 'pos:reports:inventoryValuationSummary':
         return services.reports.getInventoryValuationSummary(a[0] || {});
-      case 'pos:reports:customerAging':
-        return services.reports.getCustomerAging();
-      case 'pos:reports:supplierAging':
-        return services.reports.getSupplierAging();
+      case 'pos:reports:customerAging': {
+        // Use the FIFO-correct getAging() implementation and reshape to
+        // the legacy AgingRow[] schema expected by the frontend.
+        // Old getCustomerAging() used a "scaling" trick that distorted buckets
+        // when a customer's saldo was adjusted manually.
+        const opts = a[0] || {};
+        const rep = services.reports.getAging({ as_of_date: opts.as_of_date || null });
+        const rows = [];
+        for (const c of rep?.customers || []) {
+          const base = {
+            id: c.customer_id,
+            name: c.customer_name,
+            phone: c.customer_phone || null,
+          };
+          const uzsTotal = Number(c.total_uzs ?? c.total ?? 0) || 0;
+          if (uzsTotal > 0) {
+            rows.push({
+              ...base,
+              id: `${c.customer_id}::UZS`,
+              ledger_currency: 'UZS',
+              total_debt: uzsTotal,
+              current: Number(c._0_7_uzs ?? c._0_7 ?? 0) || 0,
+              days_8_30: Number(c._8_30_uzs ?? c._8_30 ?? 0) || 0,
+              days_31_60: Number(c._31_60_uzs ?? c._31_60 ?? 0) || 0,
+              days_60_plus: Number(c._60_plus_uzs ?? c._60_plus ?? 0) || 0,
+            });
+          }
+          const usdTotal = Number(c.total_usd || 0) || 0;
+          if (usdTotal > 0) {
+            rows.push({
+              ...base,
+              id: `${c.customer_id}::USD`,
+              ledger_currency: 'USD',
+              total_debt: usdTotal,
+              current: Number(c._0_7_usd || 0) || 0,
+              days_8_30: Number(c._8_30_usd || 0) || 0,
+              days_31_60: Number(c._31_60_usd || 0) || 0,
+              days_60_plus: Number(c._60_plus_usd || 0) || 0,
+            });
+          }
+        }
+        return rows;
+      }
+      case 'pos:reports:supplierAging': {
+        // Suppliers also benefit from the FIFO version (consistent buckets).
+        const opts = a[0] || {};
+        const rep = services.reports.getAging({ as_of_date: opts.as_of_date || null });
+        return (rep?.suppliers || []).map((s) => ({
+          id: s.supplier_id,
+          name: s.supplier_name,
+          phone: s.supplier_phone || null,
+          settlement_currency: s.settlement_currency || 'UZS',
+          total_debt: Number(s.total || 0) || 0,
+          current: Number(s._0_7 || 0) || 0,
+          days_8_30: Number(s._8_30 || 0) || 0,
+          days_31_60: Number(s._31_60 || 0) || 0,
+          days_60_plus: Number(s._60_plus || 0) || 0,
+        }));
+      }
       case 'pos:reports:vipCustomers':
         return services.reports.getVIPCustomers(a[0] || {});
       case 'pos:reports:loyaltyPointsSummary':

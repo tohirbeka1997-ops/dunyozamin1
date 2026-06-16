@@ -8,6 +8,35 @@ const { randomUUID } = require('crypto');
 class ExpensesService {
   constructor(db) {
     this.db = db;
+    this._expenseColCache = null;
+  }
+
+  _hasExpenseCol(name) {
+    if (!this._expenseColCache) {
+      try {
+        this._expenseColCache = new Set(
+          this.db.prepare('PRAGMA table_info(expenses)').all().map((c) => c.name)
+        );
+      } catch {
+        this._expenseColCache = new Set();
+      }
+    }
+    return this._expenseColCache.has(name);
+  }
+
+  _resolveExpenseCurrency(data) {
+    const hasCurrency = this._hasExpenseCol('currency');
+    if (!hasCurrency) return { currency: 'UZS', fx_rate: null };
+    const currency =
+      String(data.currency || 'UZS').trim().toUpperCase() === 'USD' ? 'USD' : 'UZS';
+    const fx = currency === 'USD' ? Number(data.fx_rate ?? data.exchange_rate ?? 0) : null;
+    if (currency === 'USD' && (!Number.isFinite(fx) || fx <= 0)) {
+      throw createError(
+        ERROR_CODES.VALIDATION_ERROR,
+        'fx_rate is required for USD expenses (UZS per 1 USD)'
+      );
+    }
+    return { currency, fx_rate: currency === 'USD' ? fx : null };
   }
 
   /**
@@ -215,13 +244,50 @@ class ExpensesService {
     const expenseNumber = `EXP-${Date.now()}`;
     const now = new Date().toISOString();
 
-    this.db.prepare(`
-      INSERT INTO expenses (
-        id, expense_number, category_id, amount, payment_method, expense_date,
-        description, receipt_url, vendor, status, notes, created_by, created_at, updated_at
-      )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(
+    // Smena bilan bog'lash (kassa hisobotida xarajatlarni ko'rsatish uchun).
+    // Auto-detect: agar shift_id berilmagan, foydalanuvchining ochiq smenasini topamiz.
+    let resolvedShiftId = data.shift_id || null;
+    if (!resolvedShiftId && data.created_by) {
+      try {
+        const openShift = this.db
+          .prepare(
+            `SELECT id FROM shifts
+             WHERE (user_id = ? OR cashier_id = ?)
+               AND status = 'open'
+               AND closed_at IS NULL
+             ORDER BY opened_at DESC
+             LIMIT 1`
+          )
+          .get(data.created_by, data.created_by);
+        if (openShift?.id) {
+          resolvedShiftId = openShift.id;
+        }
+      } catch {
+        /* shifts jadvali yoki user_id ustuni yo'q bo'lishi mumkin — e'tiborsiz */
+      }
+    }
+
+    // shift_id ustuni eski bazalarda bo'lmasligi mumkin — schema-aware INSERT
+    let hasShiftIdCol = false;
+    try {
+      const cols = this.db.prepare('PRAGMA table_info(expenses)').all();
+      hasShiftIdCol = cols.some((c) => c.name === 'shift_id');
+    } catch {
+      hasShiftIdCol = false;
+    }
+
+    const { currency, fx_rate } = this._resolveExpenseCurrency(data);
+    const hasCurrency = this._hasExpenseCol('currency');
+    const hasFxRate = this._hasExpenseCol('fx_rate');
+
+    const baseCols = [
+      'id', 'expense_number', 'category_id', 'amount', 'payment_method', 'expense_date',
+      'description', 'receipt_url', 'vendor', 'status', 'notes', 'created_by',
+      'created_at', 'updated_at',
+      ...(hasCurrency ? ['currency'] : []),
+      ...(hasFxRate ? ['fx_rate'] : []),
+    ];
+    const baseVals = [
       id,
       expenseNumber,
       data.category_id,
@@ -235,8 +301,17 @@ class ExpensesService {
       data.notes || null,
       data.created_by || null,
       now,
-      now
-    );
+      now,
+      ...(hasCurrency ? [currency] : []),
+      ...(hasFxRate ? [fx_rate] : []),
+    ];
+    const cols = hasShiftIdCol ? [...baseCols, 'shift_id'] : baseCols;
+    const vals = hasShiftIdCol ? [...baseVals, resolvedShiftId] : baseVals;
+    const placeholders = cols.map(() => '?').join(', ');
+
+    this.db
+      .prepare(`INSERT INTO expenses (${cols.join(', ')}) VALUES (${placeholders})`)
+      .run(...vals);
 
     return this.db.prepare(`
       SELECT e.*, ec.name as category_name
@@ -298,6 +373,22 @@ class ExpensesService {
     if (data.notes !== undefined) {
       updates.push('notes = ?');
       params.push(data.notes || null);
+    }
+
+    if (data.currency !== undefined || data.fx_rate !== undefined) {
+      const merged = {
+        currency: data.currency !== undefined ? data.currency : existing.currency,
+        fx_rate: data.fx_rate !== undefined ? data.fx_rate : existing.fx_rate,
+      };
+      const { currency, fx_rate } = this._resolveExpenseCurrency(merged);
+      if (this._hasExpenseCol('currency')) {
+        updates.push('currency = ?');
+        params.push(currency);
+      }
+      if (this._hasExpenseCol('fx_rate')) {
+        updates.push('fx_rate = ?');
+        params.push(fx_rate);
+      }
     }
 
     if (updates.length === 0) {

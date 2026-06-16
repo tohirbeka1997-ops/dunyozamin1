@@ -108,9 +108,10 @@ function registerInventoryHandlers(services) {
     const p = payload || {};
     return batches.runCutoverSnapshot({
       cutoverAt: p.cutoverAt,
-      warehouseId: p.warehouseId,
+      warehouseId: p.warehouseId, // null/undefined = all warehouses
       costMode: p.costMode || 'last_received_po_cost',
       updatedBy: p.updatedBy || null,
+      force: !!p.force,
     });
   }));
   

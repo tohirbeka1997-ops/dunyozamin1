@@ -223,6 +223,33 @@ function registerReportsHandlers(services) {
     })
   );
 
+  console.log('Registering pos:reports:paymentMethodsSummary handler...');
+  ipcMain.removeHandler('pos:reports:paymentMethodsSummary');
+  ipcMain.handle(
+    'pos:reports:paymentMethodsSummary',
+    wrapHandler(async (_event, filters) => {
+      return reports.getPaymentMethodsSummary(filters || {});
+    })
+  );
+
+  console.log('Registering pos:reports:cashierPerformance handler...');
+  ipcMain.removeHandler('pos:reports:cashierPerformance');
+  ipcMain.handle(
+    'pos:reports:cashierPerformance',
+    wrapHandler(async (_event, filters) => {
+      return reports.getCashierPerformance(filters || {});
+    })
+  );
+
+  console.log('Registering pos:reports:customerSalesReport handler...');
+  ipcMain.removeHandler('pos:reports:customerSalesReport');
+  ipcMain.handle(
+    'pos:reports:customerSalesReport',
+    wrapHandler(async (_event, filters) => {
+      return reports.getCustomerSalesReport(filters || {});
+    })
+  );
+
   console.log('Registering pos:reports:getLatestPurchaseCosts handler...');
   ipcMain.removeHandler('pos:reports:getLatestPurchaseCosts');
   ipcMain.handle(

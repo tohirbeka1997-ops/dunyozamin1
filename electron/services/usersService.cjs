@@ -1,7 +1,7 @@
 const { ERROR_CODES, createError } = require('../lib/errors.cjs');
 const { randomUUID } = require('crypto');
-const crypto = require('crypto');
 const { UZBEKISTAN_TZ_SQLITE_OFFSET } = require('../lib/timezone.cjs');
+const { hashPassword } = require('../lib/password.cjs');
 
 /**
  * Users Service
@@ -17,10 +17,21 @@ class UsersService {
     this.db = db;
   }
 
+  _hasTable(name) {
+    try {
+      const row = this.db
+        .prepare(`SELECT 1 AS x FROM sqlite_master WHERE type='table' AND name=?`)
+        .get(String(name));
+      return !!row;
+    } catch {
+      return false;
+    }
+  }
+
   _hashPassword(password) {
     if (!password || !String(password).trim()) return null;
-    // Keep consistent with AuthService/login (SHA-256)
-    return crypto.createHash('sha256').update(String(password).trim()).digest('hex');
+    // scrypt KDF; verification stays backward compatible with legacy SHA-256.
+    return hashPassword(String(password).trim());
   }
 
   _ensureRoleExists(code) {
@@ -212,6 +223,17 @@ class UsersService {
       updates.push('phone = ?');
       params.push(data.phone ? String(data.phone).trim() : null);
     }
+    if (data.username !== undefined) {
+      const username = String(data.username || '').trim();
+      if (!username) {
+        throw createError(ERROR_CODES.VALIDATION_ERROR, 'Username is required');
+      }
+      if (username.length < 3) {
+        throw createError(ERROR_CODES.VALIDATION_ERROR, 'Username must be at least 3 characters');
+      }
+      updates.push('username = ?');
+      params.push(username);
+    }
     if (data.is_active !== undefined) {
       updates.push('is_active = ?');
       params.push(data.is_active ? 1 : 0);
@@ -242,6 +264,9 @@ class UsersService {
 
       return this.get(id);
     } catch (error) {
+      if (error?.code === 'SQLITE_CONSTRAINT_UNIQUE') {
+        throw createError(ERROR_CODES.VALIDATION_ERROR, 'Username already exists');
+      }
       throw createError(ERROR_CODES.DB_ERROR, `Failed to update user: ${error.message || error}`);
     }
   }
@@ -266,6 +291,8 @@ class UsersService {
   }
 
   listLoginSessions(filters = {}) {
+    if (!this._hasTable('sessions') || !this._hasTable('users')) return [];
+
     const employeeId = filters.employee_id || filters.employeeId || null;
     const dateFrom = filters.date_from || filters.dateFrom || null;
     const dateTo = filters.date_to || filters.dateTo || null;
@@ -288,14 +315,18 @@ class UsersService {
     // Without a date range (e.g. employee detail), cap to avoid unbounded loads.
     const limitSql = dateFrom && dateTo ? '' : ' LIMIT 500';
 
-    const roleSubq = `(
-      SELECT r.code
-      FROM user_roles ur
-      INNER JOIN roles r ON r.id = ur.role_id
-      WHERE ur.user_id = u.id AND r.is_active = 1
-      ORDER BY ur.assigned_at DESC
-      LIMIT 1
-    )`;
+    // Role subquery only when RBAC tables exist; otherwise NULL placeholder.
+    const hasRoles = this._hasTable('user_roles') && this._hasTable('roles');
+    const roleSubq = hasRoles
+      ? `(
+          SELECT r.code
+          FROM user_roles ur
+          INNER JOIN roles r ON r.id = ur.role_id
+          WHERE ur.user_id = u.id AND r.is_active = 1
+          ORDER BY ur.assigned_at DESC
+          LIMIT 1
+        )`
+      : `NULL`;
 
     const rows =
       this.db
@@ -327,27 +358,43 @@ class UsersService {
         )
         .all(...params) || [];
 
-    return rows.map((r) => ({
-      id: r.id,
-      employee_id: r.user_id,
-      login_time: r.created_at,
-      logout_time: null,
-      duration: null,
-      ip_address: r.ip_address,
-      created_at: r.created_at,
-      employee: {
-        id: r.u_id,
-        username: r.username,
-        full_name: r.full_name,
-        email: r.email,
-        phone: r.phone,
-        role: r.role || 'cashier',
-        is_active: r.is_active === 1,
-        last_login: r.last_login,
-        created_at: r.u_created_at,
-        updated_at: r.updated_at,
-      },
-    }));
+    // The `sessions` table is deleted on explicit logout, so we cannot recover the
+    // exact logout time from history. However, when a session has already passed its
+    // `expires_at`, we treat that timestamp as the auto-logout time and compute the
+    // approximate duration in seconds; otherwise the session is still considered
+    // active and `logout_time`/`duration` remain `null`.
+    const nowMs = Date.now();
+    return rows.map((r) => {
+      const expMs = r.expires_at ? Date.parse(r.expires_at) : NaN;
+      const loginMs = r.created_at ? Date.parse(r.created_at) : NaN;
+      const expired = Number.isFinite(expMs) && expMs <= nowMs;
+      const logoutTime = expired ? r.expires_at : null;
+      const duration =
+        expired && Number.isFinite(loginMs) && expMs > loginMs
+          ? Math.round((expMs - loginMs) / 1000)
+          : null;
+      return {
+        id: r.id,
+        employee_id: r.user_id,
+        login_time: r.created_at,
+        logout_time: logoutTime,
+        duration,
+        ip_address: r.ip_address,
+        created_at: r.created_at,
+        employee: {
+          id: r.u_id,
+          username: r.username,
+          full_name: r.full_name,
+          email: r.email,
+          phone: r.phone,
+          role: r.role || 'cashier',
+          is_active: r.is_active === 1,
+          last_login: r.last_login,
+          created_at: r.u_created_at,
+          updated_at: r.updated_at,
+        },
+      };
+    });
   }
 }
 

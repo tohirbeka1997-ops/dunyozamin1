@@ -136,6 +136,34 @@ function registerProductsHandlers(services) {
     }
   }));
 
+  console.log('Registering pos:products:bulkAdjustPrices handler...');
+  ipcMain.removeHandler('pos:products:bulkAdjustPrices');
+  ipcMain.handle('pos:products:bulkAdjustPrices', wrapHandler(async (event, payload, actorUserId) => {
+    const actor = actorUserId != null && String(actorUserId).trim() ? String(actorUserId).trim() : getCurrentUserId();
+    const result = products.bulkAdjustPrices(payload || {}, { actorUserId: actor });
+    if (event && event.sender) {
+      event.sender.send('cache:invalidate', { type: 'products' });
+    }
+    return result;
+  }));
+
+  console.log('Registering pos:products:undoBulkPriceUpdate handler...');
+  ipcMain.removeHandler('pos:products:undoBulkPriceUpdate');
+  ipcMain.handle('pos:products:undoBulkPriceUpdate', wrapHandler(async (event, batchId, actorUserId) => {
+    const actor = actorUserId != null && String(actorUserId).trim() ? String(actorUserId).trim() : getCurrentUserId();
+    const result = products.undoBulkPriceUpdate(batchId ?? null, { actorUserId: actor });
+    if (event && event.sender) {
+      event.sender.send('cache:invalidate', { type: 'products' });
+    }
+    return result;
+  }));
+
+  console.log('Registering pos:products:getLastBulkPriceBatch handler...');
+  ipcMain.removeHandler('pos:products:getLastBulkPriceBatch');
+  ipcMain.handle('pos:products:getLastBulkPriceBatch', wrapHandler(async (_event) => {
+    return products.getLastBulkPriceBatch();
+  }));
+
   console.log('Registering pos:products:delete handler...');
   ipcMain.removeHandler('pos:products:delete');
   ipcMain.handle('pos:products:delete', wrapHandler(async (event, id, actorUserId) => {

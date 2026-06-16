@@ -18,6 +18,30 @@ const { createError, ERROR_CODES } = require('./errors.cjs');
 function getCurrentUserRole(db) {
   const userId = getCurrentUserId();
   if (!userId) return null;
+
+  // Primary source of truth: canonical RBAC via user_roles -> roles (matches
+  // AuthService.login). Most installs have NO `users.role` column.
+  try {
+    const row = db
+      .prepare(
+        `
+        SELECT r.code AS code
+        FROM user_roles ur
+        INNER JOIN roles r ON ur.role_id = r.id
+        INNER JOIN users u ON u.id = ur.user_id
+        WHERE ur.user_id = ? AND r.is_active = 1 AND u.is_active = 1
+        ORDER BY ur.assigned_at DESC
+        LIMIT 1
+      `,
+      )
+      .get(userId);
+    if (row?.code) return String(row.code).toLowerCase();
+  } catch {
+    // user_roles/roles may be missing on some schemas — fall through.
+  }
+
+  // Legacy fallback: single-tenant DBs bootstrapped with a `users.role` column
+  // (e.g. multi-tenant master-admin seeding).
   try {
     const row = db.prepare('SELECT role FROM users WHERE id = ? AND is_active = 1').get(userId);
     return row?.role ? String(row.role).toLowerCase() : null;

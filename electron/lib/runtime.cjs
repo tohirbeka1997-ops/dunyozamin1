@@ -28,8 +28,24 @@ const SERVER_MODE_FLAG =
   process.env.POS_SERVER_MODE === 'true' ||
   !!process.env.POS_SERVER_MODE_FORCED;
 
+function hasBootstrappedElectronApp() {
+  if (!process.versions?.electron) return false;
+  try {
+    const electron = require('electron');
+    return !!(electron && electron.app && typeof electron.app.getPath === 'function');
+  } catch {
+    return false;
+  }
+}
+
 function isServerMode() {
-  return SERVER_MODE_FLAG;
+  if (!SERVER_MODE_FLAG) return false;
+  // Desktop Electron: after main.cjs clears .env server paths, use real app paths.
+  // Smoke tests still set POS_DATA_DIR to a temp dir before requiring db modules.
+  if (hasBootstrappedElectronApp() && !String(process.env.POS_DATA_DIR || '').trim()) {
+    return false;
+  }
+  return true;
 }
 
 let cachedUserData = null;

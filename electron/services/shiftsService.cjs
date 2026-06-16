@@ -1,4 +1,13 @@
 const { ERROR_CODES, createError } = require('../lib/errors.cjs');
+const { expenseAmountUzsSql } = require('../lib/expenseAmount.cjs');
+const {
+  orderAmountUzsSql,
+  orderFieldUzsSql,
+  orderSalesSplitExpressions,
+  paymentAmountUzsSql,
+  paymentSalesSplitExpressions,
+  returnRefundUzsSql,
+} = require('../lib/orderAmount.cjs');
 const { randomUUID } = require('crypto');
 
 /**
@@ -30,35 +39,45 @@ class ShiftsService {
   }
 
   /**
-   * Kassadan chiqgan naqd qaytarishlar (summasi):
-   * - sales_returns: refund_amount, faqat naqd/kassa (cash/naqd yoki bo'sh/default)
-   * - cash_movements: movement_type = refund (almashuvda mijozga naqd qaytim)
+   * Kassadan chiqgan naqd qaytarishlar (batafsil breakdown):
+   * - strictCash: refund_method aniq 'cash' / 'naqd' bo‘lganlar
+   * - legacyUnknown: refund_method NULL/bo‘sh — eski/import qilingan ma‘lumotlarda
+   *   default sifatida naqd deb sanaladi (back-compat)
+   * - fromMovements: cash_movements jadvalidagi movement_type='refund' (almashuv qaytimi)
+   * - total: strictCash + legacyUnknown + fromMovements
    */
-  _getCashDrawerRefundsOut(shiftId) {
-    if (!shiftId) return 0;
+  _getCashRefundsBreakdown(shiftId) {
+    const empty = { strictCash: 0, legacyUnknown: 0, fromMovements: 0, total: 0 };
+    if (!shiftId) return empty;
     const sid = String(shiftId).trim();
-    if (!sid) return 0;
+    if (!sid) return empty;
 
-    let fromReturns = 0;
+    let strictCash = 0;
+    let legacyUnknown = 0;
     try {
       const row = this.db
         .prepare(
           `
-        SELECT COALESCE(SUM(COALESCE(refund_amount, total_amount, 0)), 0) AS s
+        SELECT
+          COALESCE(SUM(CASE
+            WHEN LOWER(TRIM(COALESCE(refund_method, ''))) IN ('cash', 'naqd')
+              THEN COALESCE(refund_amount, total_amount, 0)
+            ELSE 0
+          END), 0) AS strict_cash,
+          COALESCE(SUM(CASE
+            WHEN refund_method IS NULL OR TRIM(COALESCE(refund_method, '')) = ''
+              THEN COALESCE(refund_amount, total_amount, 0)
+            ELSE 0
+          END), 0) AS legacy_unknown
         FROM sales_returns
-        WHERE shift_id = ?
-          AND status = 'completed'
-          AND (
-            refund_method IS NULL
-            OR TRIM(refund_method) = ''
-            OR LOWER(TRIM(refund_method)) IN ('cash', 'naqd')
-          )
+        WHERE shift_id = ? AND status = 'completed'
       `
         )
         .get(sid);
-      fromReturns = Number(row?.s || 0) || 0;
+      strictCash = Number(row?.strict_cash || 0) || 0;
+      legacyUnknown = Number(row?.legacy_unknown || 0) || 0;
     } catch (e) {
-      console.warn('[SHIFT] _getCashDrawerRefundsOut sales_returns:', e.message);
+      console.warn('[SHIFT] _getCashRefundsBreakdown sales_returns:', e.message);
     }
 
     let fromMovements = 0;
@@ -75,10 +94,160 @@ class ShiftsService {
         .get(sid);
       fromMovements = Number(row?.s || 0) || 0;
     } catch (e) {
-      /* jadval yo'q */
+      /* cash_movements jadvali yo'q bo'lishi mumkin */
     }
 
-    return fromReturns + fromMovements;
+    return {
+      strictCash,
+      legacyUnknown,
+      fromMovements,
+      total: strictCash + legacyUnknown + fromMovements,
+    };
+  }
+
+  /**
+   * Backwards-compatible umumiy raqam (oldingi API).
+   * Yangi kod _getCashRefundsBreakdown() ni ishlatishi tavsiya etiladi.
+   */
+  _getCashDrawerRefundsOut(shiftId) {
+    return this._getCashRefundsBreakdown(shiftId).total;
+  }
+
+  /**
+   * Smena ichida qilingan naqd xarajatlar (kassadan chiqim).
+   * - sourceExpenses: `expenses` jadvali (rasmiy xarajatlar tizimi orqali)
+   * - sourceMovements: `cash_movements.movement_type='withdrawal'` (yopiq
+   *   inkassatsiya / qo‘l bilan chiqim)
+   * `expenses.shift_id` ustuni eski bazalarda bo‘lmasligi mumkin — soft-fail.
+   */
+  _getCashOutflowBreakdown(shiftId) {
+    const empty = {
+      cashExpenses: 0,
+      cashWithdrawals: 0,
+      total: 0,
+    };
+    if (!shiftId) return empty;
+    const sid = String(shiftId).trim();
+    if (!sid) return empty;
+
+    let cashExpenses = 0;
+    try {
+      const cols = this.db.prepare('PRAGMA table_info(expenses)').all();
+      const hasShift = cols.some((c) => c.name === 'shift_id');
+      if (hasShift) {
+        const amtExpr = expenseAmountUzsSql(this.db, 'expenses');
+        const row = this.db
+          .prepare(
+            `
+          SELECT COALESCE(SUM(${amtExpr}), 0) AS s
+          FROM expenses
+          WHERE shift_id = ?
+            AND LOWER(TRIM(COALESCE(payment_method, ''))) IN ('cash', 'naqd')
+            AND LOWER(TRIM(COALESCE(status, 'approved'))) IN ('approved', 'paid')
+        `
+          )
+          .get(sid);
+        cashExpenses = Number(row?.s || 0) || 0;
+      }
+    } catch (e) {
+      console.warn('[SHIFT] _getCashOutflowBreakdown expenses:', e.message);
+    }
+
+    let cashWithdrawals = 0;
+    try {
+      const row = this.db
+        .prepare(
+          `
+        SELECT COALESCE(SUM(amount), 0) AS s
+        FROM cash_movements
+        WHERE shift_id = ?
+          AND LOWER(TRIM(COALESCE(movement_type, ''))) = 'withdrawal'
+      `
+        )
+        .get(sid);
+      cashWithdrawals = Number(row?.s || 0) || 0;
+    } catch (e) {
+      /* cash_movements jadvali yo'q bo'lishi mumkin */
+    }
+
+    return {
+      cashExpenses,
+      cashWithdrawals,
+      total: cashExpenses + cashWithdrawals,
+    };
+  }
+
+  /**
+   * Smena ichida kassaga naqd kirim (deposit) — qo‘l bilan to‘ldirish.
+   */
+  _getCashDepositsTotal(shiftId) {
+    if (!shiftId) return 0;
+    const sid = String(shiftId).trim();
+    if (!sid) return 0;
+    try {
+      const row = this.db
+        .prepare(
+          `
+        SELECT COALESCE(SUM(amount), 0) AS s
+        FROM cash_movements
+        WHERE shift_id = ?
+          AND LOWER(TRIM(COALESCE(movement_type, ''))) = 'deposit'
+      `
+        )
+        .get(sid);
+      return Number(row?.s || 0) || 0;
+    } catch {
+      return 0;
+    }
+  }
+
+  /**
+   * To‘lovlar usullari bo‘yicha taqsimot (kassir terminal/karta ko‘chirmasi bilan
+   * solishtirishi uchun). `refund_cash` qatorlarini chiqarib tashlaymiz — ular
+   * sotuv emas, kassadan qaytarish.
+   */
+  _getPaymentsByMethod(shiftId) {
+    const empty = { cash: 0, card: 0, qr: 0, click: 0, payme: 0, transfer: 0, credit: 0, other: 0 };
+    if (!shiftId) return empty;
+    const sid = String(shiftId).trim();
+    if (!sid) return empty;
+
+    try {
+      const payUzs = paymentAmountUzsSql(this.db, 'p', 'o');
+      const rows = this.db
+        .prepare(
+          `
+        SELECT
+          LOWER(TRIM(COALESCE(p.payment_method, ''))) AS method,
+          COALESCE(SUM(${payUzs}), 0) AS s
+        FROM payments p
+        INNER JOIN orders o ON p.order_id = o.id
+        WHERE o.shift_id = ? AND ${WHERE_ORDER_DONE_ALIAS_O}
+          AND LOWER(TRIM(COALESCE(p.payment_method, ''))) <> 'refund_cash'
+        GROUP BY LOWER(TRIM(COALESCE(p.payment_method, '')))
+      `
+        )
+        .all(sid);
+
+      const out = { ...empty };
+      for (const r of rows) {
+        const amt = Number(r?.s || 0) || 0;
+        const m = String(r?.method || '').trim();
+        if (m === 'cash' || m === 'naqd') out.cash += amt;
+        else if (m === 'card' || m === 'plastik' || m === 'plastic') out.card += amt;
+        else if (m === 'qr' || m === 'qr_code') out.qr += amt;
+        else if (m === 'click') out.click += amt;
+        else if (m === 'payme') out.payme += amt;
+        else if (m === 'transfer' || m === 'bank' || m === 'bank_transfer' || m === "o'tkazma" || m === 'otkazma') {
+          out.transfer += amt;
+        } else if (m === 'credit' || m === 'nasiya' || m === 'qarz') out.credit += amt;
+        else out.other += amt;
+      }
+      return out;
+    } catch (e) {
+      console.warn('[SHIFT] _getPaymentsByMethod:', e.message);
+      return empty;
+    }
   }
 
   /**
@@ -300,14 +469,15 @@ class ShiftsService {
 
       // 2. Calculate Expected Total from PAYMENTS (not orders.total_amount)
       // This ensures we count actual payments, not just order totals
+      const payUzs = paymentAmountUzsSql(this.db, 'p', 'o');
       const paymentsData = this.db.prepare(`
         SELECT 
           COALESCE(SUM(CASE
             WHEN LOWER(TRIM(COALESCE(p.payment_method, ''))) = 'refund_cash' THEN 0
-            ELSE p.amount
+            ELSE ${payUzs}
           END), 0) as total_payments,
           COALESCE(SUM(CASE
-            WHEN LOWER(TRIM(COALESCE(p.payment_method, ''))) IN ('cash', 'naqd') THEN p.amount
+            WHEN LOWER(TRIM(COALESCE(p.payment_method, ''))) IN ('cash', 'naqd') THEN ${payUzs}
             ELSE 0
           END), 0) as cash_payments
         FROM payments p
@@ -316,28 +486,29 @@ class ShiftsService {
       `).get(shiftId);
 
       // Also get order count and total for reference
+      const orderUzs = orderAmountUzsSql(this.db, 'orders');
       const ordersData = this.db.prepare(`
         SELECT 
           COUNT(*) as order_count,
-          COALESCE(SUM(total_amount), 0) as order_total,
+          COALESCE(SUM(${orderUzs}), 0) as order_total,
           COALESCE(SUM(COALESCE(paid_amount, 0)), 0) as paid_sum
         FROM orders 
         WHERE shift_id = ? AND ${WHERE_ORDER_DONE_STATUS_COL}
       `).get(shiftId);
 
-      const systemTotal = Math.max(
-        Number(paymentsData.total_payments || 0) || 0,
-        Number(ordersData?.paid_sum || 0) || 0,
-        Number(ordersData?.order_total || 0) || 0
-      );
+      // systemTotal = mijoz to‘lagan barcha pul (nasiyasiz). closeShift returnida saqlanadi.
+      const systemTotal = Number(paymentsData.total_payments || 0) || 0;
       const cashTotal = paymentsData.cash_payments || 0;
       const cashRefundsOut = this._getCashDrawerRefundsOut(shiftId);
       const custRoll = this._getCustomerPaymentsShiftRollup(shiftId);
+      const cashOutflow = this._getCashOutflowBreakdown(shiftId);
+      const cashDeposits = this._getCashDepositsTotal(shiftId);
 
       let creditDebtIssuedClose = 0;
       try {
+        const creditUzs = orderFieldUzsSql(this.db, 'o', 'credit_amount');
         const debtRow = this.db.prepare(`
-          SELECT COALESCE(SUM(COALESCE(o.credit_amount, 0)), 0) AS s
+          SELECT COALESCE(SUM(${creditUzs}), 0) AS s
           FROM orders o
           WHERE o.shift_id = ? AND ${WHERE_ORDER_DONE_ALIAS_O}
         `).get(shiftId);
@@ -346,9 +517,15 @@ class ShiftsService {
         /* ignore */
       }
 
-      // Kutilayotgan naqd = ochilish + buyurtma naqdi + mijoz balansiga naqd (qarz / oldindan) − naqd qaytarishlar
+      // Kutilayotgan naqd = ochilish + buyurtma naqdi + mijoz balansiga naqd (qarz / oldindan)
+      //                   + qo'lda kirim − naqd qaytarishlar − naqd xarajatlar − qo'lda chiqim
       const expectedCash =
-        (shift.opening_cash || 0) + cashTotal + custRoll.customerDrawerCashNet - cashRefundsOut;
+        (shift.opening_cash || 0)
+        + cashTotal
+        + custRoll.customerDrawerCashNet
+        + cashDeposits
+        - cashRefundsOut
+        - cashOutflow.total;
 
       // Calculate difference = closing_cash - expected_cash
       const difference = closingCash - expectedCash;
@@ -361,6 +538,9 @@ class ShiftsService {
         debt_repaid_total: custRoll.debtRepaidTotal,
         debt_repaid_cash: custRoll.debtRepaidCash,
         cash_refunds_out: cashRefundsOut,
+        cash_expenses: cashOutflow.cashExpenses,
+        cash_withdrawals: cashOutflow.cashWithdrawals,
+        cash_deposits: cashDeposits,
         credit_debt_issued: creditDebtIssuedClose,
         order_count: ordersData.order_count || 0,
         order_total: ordersData.order_total || 0,
@@ -421,15 +601,18 @@ class ShiftsService {
         cashPayments: cashTotal
       });
 
-      return { 
-        success: true, 
-        shiftId, 
-        closingCash, 
-        expectedCash, 
+      return {
+        success: true,
+        shiftId,
+        closingCash,
+        expectedCash,
         cashDifference: difference,
         totalPayments: systemTotal,
         cashPayments: cashTotal,
         cashRefundsOut,
+        cashExpenses: cashOutflow.cashExpenses,
+        cashWithdrawals: cashOutflow.cashWithdrawals,
+        cashDeposits,
         creditDebtIssued: creditDebtIssuedClose,
         customerDrawerCashNet: custRoll.customerDrawerCashNet,
         debtRepaidTotal: custRoll.debtRepaidTotal,
@@ -496,16 +679,25 @@ class ShiftsService {
     // Totals from PAYMENTS (same as closeShift). Order count MUST come from `orders`
     // alone — nasiya / to‘lovsiz yakunlangan buyurtmalar payments qatorida bo‘lmasligi
     // mumkin; INNER JOIN ularni "0 buyurtma" qilib tashlaydi.
+    const payUzs = paymentAmountUzsSql(this.db, 'p', 'o');
     const paymentsData = this.db.prepare(`
       SELECT 
         COALESCE(SUM(CASE
           WHEN LOWER(TRIM(COALESCE(p.payment_method, ''))) = 'refund_cash' THEN 0
-          ELSE p.amount
+          ELSE ${payUzs}
         END), 0) as total_payments,
         COALESCE(SUM(CASE
-          WHEN LOWER(TRIM(COALESCE(p.payment_method, ''))) IN ('cash', 'naqd') THEN p.amount
+          WHEN LOWER(TRIM(COALESCE(p.payment_method, ''))) IN ('cash', 'naqd') THEN ${payUzs}
           ELSE 0
         END), 0) as cash_payments
+      FROM payments p
+      INNER JOIN orders o ON p.order_id = o.id
+      WHERE o.shift_id = ? AND ${WHERE_ORDER_DONE_ALIAS_O}
+    `).get(bindId);
+
+    const paySplit = paymentSalesSplitExpressions(this.db, 'p', 'o');
+    const paySplitRow = this.db.prepare(`
+      SELECT ${paySplit.uzsSum} AS total_sales_uzs, ${paySplit.usdSum} AS total_sales_usd
       FROM payments p
       INNER JOIN orders o ON p.order_id = o.id
       WHERE o.shift_id = ? AND ${WHERE_ORDER_DONE_ALIAS_O}
@@ -532,26 +724,42 @@ class ShiftsService {
       )
       .get(bindId);
 
+    const orderMerchUzs = orderAmountUzsSql(this.db, 'orders');
     const orderMerchRow = this.db
       .prepare(
         `
-      SELECT COALESCE(SUM(COALESCE(total_amount, 0)), 0) AS s
+      SELECT COALESCE(SUM(${orderMerchUzs}), 0) AS s
       FROM orders
       WHERE shift_id = ? AND ${WHERE_ORDER_DONE_STATUS_COL}
     `
       )
       .get(bindId);
 
-    /** Kassadan chiqqan naqd qaytarishlar (kutilayotgan naqd formulasi uchun) */
-    const cashRefundsOut = this._getCashDrawerRefundsOut(bindId);
+    const salesSplit = orderSalesSplitExpressions(this.db, 'o');
+    const salesSplitRow = this.db
+      .prepare(
+        `
+      SELECT ${salesSplit.uzsSum} AS sales_gross_uzs, ${salesSplit.usdSum} AS sales_gross_usd
+      FROM orders o
+      WHERE o.shift_id = ? AND ${WHERE_ORDER_DONE_ALIAS_O}
+    `
+      )
+      .get(bindId);
 
-    /** Barcha yakunlangan qaytarishlar summasi (ma'lumot uchun) */
+    /** Kassadan chiqqan naqd qaytarishlar — batafsil breakdown */
+    const refundsBreakdown = this._getCashRefundsBreakdown(bindId);
+    const cashRefundsOut = refundsBreakdown.total;
+
+    /** Barcha yakunlangan qaytarishlar (jami summasi, har xil usullar bilan) */
     let totalReturnsGross = 0;
     try {
+      const refundAmt = 'COALESCE(sr.refund_amount, sr.total_amount, 0)';
+      const refundUzs = returnRefundUzsSql(this.db, 'sr', 'o', refundAmt);
       const grossRow = this.db.prepare(`
-        SELECT COALESCE(SUM(COALESCE(total_amount, refund_amount, 0)), 0) AS g
-        FROM sales_returns
-        WHERE shift_id = ? AND status = 'completed'
+        SELECT COALESCE(SUM(${refundUzs}), 0) AS g
+        FROM sales_returns sr
+        LEFT JOIN orders o ON o.id = sr.order_id
+        WHERE sr.shift_id = ? AND sr.status = 'completed'
       `).get(bindId);
       totalReturnsGross = Number(grossRow?.g || 0) || 0;
     } catch (error) {
@@ -561,8 +769,9 @@ class ShiftsService {
     /** Smena ichida mijozga yozilgan qarz (buyurtmadagi nasiya qismi — kassaga tushmaydi) */
     let creditDebtIssued = 0;
     try {
+      const creditUzs = orderFieldUzsSql(this.db, 'o', 'credit_amount');
       const debtRow = this.db.prepare(`
-        SELECT COALESCE(SUM(COALESCE(o.credit_amount, 0)), 0) AS s
+        SELECT COALESCE(SUM(${creditUzs}), 0) AS s
         FROM orders o
         WHERE o.shift_id = ? AND ${WHERE_ORDER_DONE_ALIAS_O}
       `).get(bindId);
@@ -574,13 +783,49 @@ class ShiftsService {
     const fromPayments = Number(paymentsData.total_payments || 0) || 0;
     const fromOrdersPaid = Number(orderPaidRow?.s || 0) || 0;
     const fromOrdersMerch = Number(orderMerchRow?.s || 0) || 0;
-    /** To‘liq nasiya sotuvlarida paid/tolovlar 0 bo‘lishi mumkin — jami savdo uchun total_amount ham hisobga olinadi */
-    const totalSales = Math.max(fromPayments, fromOrdersPaid, fromOrdersMerch);
+
+    /**
+     * Real "kelgan pul" (mijoz to‘lagan barcha to‘lovlar) — nasiyasiz.
+     * Eski Math.max() formulasi nasiya bilan tovar summasini aralashtirib
+     * "Jami savdo" maydonini chalg‘ituvchi qilardi. Endi sof to‘lovlar.
+     */
+    const totalPaymentsReceived = fromPayments;
+
+    /**
+     * Tovar summasi (jami sotuv): naqd + karta + ... + nasiya.
+     * Nasiya sotuvlarida payments=0 bo‘lishi mumkin, shuning uchun bir nechta
+     * manbadan ishonchlisini olamiz (eski Math.max mantig‘i — endi alohida maydon).
+     */
+    const salesGross = Math.max(
+      totalPaymentsReceived + creditDebtIssued,
+      fromOrdersPaid + creditDebtIssued,
+      fromOrdersMerch
+    );
+
     const cashSales = Number(paymentsData.cash_payments || 0) || 0;
     const orderCount = Number(orderCountRow?.order_count || 0) || 0;
     const openingCash = shift.opening_cash || 0;
     const custRoll = this._getCustomerPaymentsShiftRollup(bindId);
-    const expectedCash = openingCash + cashSales + custRoll.customerDrawerCashNet - cashRefundsOut;
+    const paymentsByMethod = this._getPaymentsByMethod(bindId);
+    const cashOutflow = this._getCashOutflowBreakdown(bindId);
+    const cashDeposits = this._getCashDepositsTotal(bindId);
+    /**
+     * Kutilayotgan naqd =
+     *   ochilish naqd
+     *   + naqd savdo
+     *   + mijoz balansiga naqd (qarz to'lash / oldindan to'lov)
+     *   + qo'lda kirim (deposit)
+     *   − naqd qaytarishlar
+     *   − naqd xarajatlar
+     *   − qo'lda chiqim (withdrawal / inkassatsiya)
+     */
+    const expectedCash =
+      openingCash
+      + cashSales
+      + custRoll.customerDrawerCashNet
+      + cashDeposits
+      - cashRefundsOut
+      - cashOutflow.total;
 
     // CRITICAL: Return camelCase keys (not snake_case)
     // This ensures frontend can access fields correctly
@@ -590,14 +835,33 @@ class ShiftsService {
       closedAt: shift.closed_at || null,
       status: shift.status || 'open',
       openingCash: openingCash ?? 0,
-      totalSales: totalSales ?? 0,
+      /**
+       * Mijozdan kelgan barcha to‘lovlar (naqd + karta + QR + ...). Nasiya YO‘Q.
+       * UI da "Jami savdo (to‘lovlar)" sifatida ko‘rsatiladi.
+       */
+      totalSales: totalPaymentsReceived,
+      totalSalesUzs: Number(paySplitRow?.total_sales_uzs || 0) || 0,
+      totalSalesUsd: Number(paySplitRow?.total_sales_usd || 0) || 0,
+      /**
+       * Tovar summasi (jami sotilgan tovarlar narxi, nasiya bilan).
+       * UI da "Tovar summasi" sifatida ko‘rsatiladi.
+       */
+      salesGross,
+      salesGrossUzs: Number(salesSplitRow?.sales_gross_uzs || 0) || 0,
+      salesGrossUsd: Number(salesSplitRow?.sales_gross_usd || 0) || 0,
       cashSales: cashSales ?? 0,
+      /**
+       * To‘lov usullari bo‘yicha taqsimot (karta/QR ko‘chirmasi bilan solishtirish uchun)
+       */
+      paymentsByMethod,
       orders: orderCount ?? 0, // Use 'orders' not 'orderCount' for consistency
-      /** Shunday qaytarishlar kutilayotgan naqd dan ayiriladi (naqd/kassa) */
+      /** Kutilayotgan naqd dan ayiriladigan jami naqd qaytarish */
       totalRefunds: cashRefundsOut ?? 0,
       /** Barcha usullar bo'yicha qaytarish yig'indisi (ixtiyoriy taqqoslash) */
       totalReturnsGross: totalReturnsGross ?? 0,
       cashRefundsOut: cashRefundsOut ?? 0,
+      /** Qaytarishlar batafsil: aniq naqd / usuli noma'lum / almashuv */
+      refundsBreakdown,
       /** Mijozga berilgan qarz (nasiya) — naqd kassa bilan aralashmasligi uchun alohida */
       creditDebtIssued: creditDebtIssued ?? 0,
       /** Mijoz qarzini toʻlash (jami) va shundan naqd — buyurtmadan tashqari balans toʻlovlari */
@@ -605,17 +869,26 @@ class ShiftsService {
       debtRepaidCash: custRoll.debtRepaidCash ?? 0,
       /** Mijoz hisobidan kassaga naqd (tarmoq: +kirim, mijozga naqd chiqarilsa −) */
       customerDrawerCashNet: custRoll.customerDrawerCashNet ?? 0,
+      /** Smena ichida kassadan qilingan naqd xarajatlar (expenses + withdrawals) */
+      cashExpenses: cashOutflow.cashExpenses ?? 0,
+      cashWithdrawals: cashOutflow.cashWithdrawals ?? 0,
+      cashOutflowTotal: cashOutflow.total ?? 0,
+      /** Smena ichida kassaga qo'l bilan qilingan naqd kirim */
+      cashDeposits: cashDeposits ?? 0,
       expectedCash: expectedCash ?? openingCash ?? 0
     };
 
     console.log('[SHIFT] getShiftSummary returning:', summary);
     console.log('[SHIFT] getShiftSummary raw data:', {
       shiftId: bindId,
-      totalSales,
+      totalPaymentsReceived,
+      salesGross,
       fromOrdersMerch,
       cashSales,
+      paymentsByMethod,
       orderCount,
       cashRefundsOut,
+      refundsBreakdown,
       totalReturnsGross,
       creditDebtIssued,
       debtRepaidTotal: custRoll.debtRepaidTotal,
@@ -626,6 +899,123 @@ class ShiftsService {
     });
 
     return summary;
+  }
+
+  /**
+   * Kassaga qo'l bilan naqd kirim/chiqim qilish (`cash_movements` jadvali).
+   * @param {Object} data
+   * @param {string} data.shiftId - faol smena ID (majburiy)
+   * @param {'deposit'|'withdrawal'} data.type - 'deposit' (kirim) yoki 'withdrawal' (chiqim)
+   * @param {number} data.amount - musbat miqdor (so'm)
+   * @param {string} [data.reason] - sabab (ixtiyoriy)
+   * @param {string} [data.createdBy] - foydalanuvchi ID
+   */
+  recordCashMovement(data) {
+    const shiftId = String(data?.shiftId || data?.shift_id || '').trim();
+    if (!shiftId) {
+      throw createError(ERROR_CODES.VALIDATION_ERROR, 'shiftId majburiy');
+    }
+    const type = String(data?.type || '').trim().toLowerCase();
+    if (!['deposit', 'withdrawal'].includes(type)) {
+      throw createError(
+        ERROR_CODES.VALIDATION_ERROR,
+        "type 'deposit' yoki 'withdrawal' bo'lishi kerak"
+      );
+    }
+    const amount = Number(data?.amount || 0);
+    if (!Number.isFinite(amount) || amount <= 0) {
+      throw createError(ERROR_CODES.VALIDATION_ERROR, 'amount 0 dan katta bo‘lishi kerak');
+    }
+
+    // Smena haqiqatdan ham ochiqligini tekshiramiz — yopiq smenaga yozish noto'g'ri.
+    const shift = this.db
+      .prepare('SELECT id, status, closed_at FROM shifts WHERE id = ?')
+      .get(shiftId);
+    if (!shift) {
+      throw createError(ERROR_CODES.NOT_FOUND, `Smena topilmadi: ${shiftId}`);
+    }
+    if (shift.status !== 'open' || shift.closed_at) {
+      throw createError(
+        ERROR_CODES.VALIDATION_ERROR,
+        'Yopiq smenaga naqd kirim/chiqim qo‘shib bo‘lmaydi'
+      );
+    }
+
+    const id = randomUUID();
+    const movementNumber = `CASH-${type === 'deposit' ? 'IN' : 'OUT'}-${Date.now()}-${id.substring(0, 6)}`;
+    const now = new Date().toISOString();
+    const reason = (data?.reason || data?.notes || '').toString().trim() || null;
+    let createdBy = data?.createdBy || data?.created_by || null;
+    if (createdBy) {
+      const uid = String(createdBy).trim();
+      const userRow = this.db.prepare('SELECT id FROM users WHERE id = ?').get(uid);
+      createdBy = userRow ? uid : null;
+    }
+
+    this.db
+      .prepare(
+        `
+      INSERT INTO cash_movements (
+        id, movement_number, shift_id, movement_type, amount,
+        reason, reference_type, reference_id, created_by, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `
+      )
+      .run(id, movementNumber, shiftId, type, amount, reason, 'shift', shiftId, createdBy, now);
+
+    console.log('[SHIFT] cash movement recorded:', {
+      id,
+      movementNumber,
+      shiftId,
+      type,
+      amount,
+      reason,
+    });
+
+    return this.db.prepare('SELECT * FROM cash_movements WHERE id = ?').get(id);
+  }
+
+  /** Convenience: kassaga naqd kirim. */
+  cashIn(payload) {
+    return this.recordCashMovement({ ...payload, type: 'deposit' });
+  }
+
+  /** Convenience: kassadan naqd chiqim. */
+  cashOut(payload) {
+    return this.recordCashMovement({ ...payload, type: 'withdrawal' });
+  }
+
+  /**
+   * Smena bo'yicha qo'l bilan qilingan naqd harakatlarini ro'yxatlash.
+   * @param {string} shiftId
+   * @param {Object} [filters]
+   * @param {'deposit'|'withdrawal'|'all'} [filters.type='manual']  'manual' = deposit+withdrawal
+   * @param {number} [filters.limit=100]
+   */
+  listShiftCashMovements(shiftId, filters = {}) {
+    const sid = String(shiftId || '').trim();
+    if (!sid) return [];
+    const typeFilter = String(filters.type || 'manual').toLowerCase();
+    const limit = Number(filters.limit) > 0 ? Number(filters.limit) : 100;
+
+    let where = 'shift_id = ?';
+    const params = [sid];
+    if (typeFilter === 'manual') {
+      where += " AND LOWER(TRIM(COALESCE(movement_type, ''))) IN ('deposit', 'withdrawal')";
+    } else if (typeFilter === 'deposit' || typeFilter === 'withdrawal') {
+      where += ` AND LOWER(TRIM(COALESCE(movement_type, ''))) = '${typeFilter}'`;
+    }
+
+    try {
+      return this.db
+        .prepare(
+          `SELECT * FROM cash_movements WHERE ${where} ORDER BY created_at DESC LIMIT ?`
+        )
+        .all(...params, limit);
+    } catch (e) {
+      console.warn('[SHIFT] listShiftCashMovements:', e.message);
+      return [];
+    }
   }
 
   /**

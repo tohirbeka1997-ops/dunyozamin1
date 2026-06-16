@@ -22,7 +22,16 @@ function registerAppConfigHandlers(app) {
     'pos:appConfig:get',
     wrapHandler(async () => {
       const cfg = readConfig(app);
-      return { ...cfg, configPath: getConfigPath(app) };
+      let localDbPath = null;
+      if (cfg.mode !== 'client') {
+        try {
+          const { getDbPath } = require('../db/dbPath.cjs');
+          localDbPath = getDbPath(app);
+        } catch {
+          // DB not opened yet (early startup) — path omitted
+        }
+      }
+      return { ...cfg, configPath: getConfigPath(app), localDbPath };
     })
   );
 

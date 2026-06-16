@@ -4,6 +4,8 @@ const {
   nowSqlInTimeZone,
   UZBEKISTAN_TZ_SQLITE_OFFSET,
 } = require('../lib/timezone.cjs');
+const { expenseAmountUzsSql } = require('../lib/expenseAmount.cjs');
+const { orderAmountUzsSql, orderSalesSplitExpressions } = require('../lib/orderAmount.cjs');
 
 /**
  * Dashboard Service
@@ -46,11 +48,12 @@ class DashboardService {
 
     // Today's sales
     const orderDateExpr = this._tzDateExpr('created_at');
+    const todayAmtUzs = orderAmountUzsSql(this.db, 'orders');
     let salesQuery = `
       SELECT 
         COUNT(*) as today_orders,
-        COALESCE(SUM(total_amount), 0) as today_sales,
-        COALESCE(SUM(CASE WHEN payment_status = 'paid' THEN total_amount ELSE 0 END), 0) as today_revenue
+        COALESCE(SUM(${todayAmtUzs}), 0) as today_sales,
+        COALESCE(SUM(CASE WHEN payment_status = 'paid' THEN ${todayAmtUzs} ELSE 0 END), 0) as today_revenue
       FROM orders
       WHERE ${orderDateExpr} = DATE(?)
         AND status = 'completed'
@@ -80,8 +83,9 @@ class DashboardService {
     const activeCustomers = this.db.prepare(activeCustomersQuery).get(nowSqlInTimeZone());
 
     // Total revenue (all time paid orders)
+    const revAmtUzs = orderAmountUzsSql(this.db, 'orders');
     const totalRevenueQuery = `
-      SELECT COALESCE(SUM(total_amount), 0) as total_revenue
+      SELECT COALESCE(SUM(${revAmtUzs}), 0) as total_revenue
       FROM orders
       WHERE status = 'completed'
         AND payment_status = 'paid'
@@ -128,13 +132,17 @@ class DashboardService {
     const salesParams = [dateFrom, dateTo];
     const salesWarehouseWhere = warehouseId ? ` AND o.warehouse_id = ?` : '';
     if (warehouseId) salesParams.push(warehouseId);
+    const salesAmtUzs = orderAmountUzsSql(this.db, 'o');
+    const salesSplit = orderSalesSplitExpressions(this.db, 'o');
     const salesRow = this.db
       .prepare(
         `
         SELECT
           COUNT(*) AS total_orders,
-          COALESCE(SUM(o.total_amount), 0) AS total_sales,
-          COALESCE(AVG(o.total_amount), 0) AS average_order_value
+          COALESCE(SUM(${salesAmtUzs}), 0) AS total_sales,
+          ${salesSplit.uzsSum} AS total_sales_uzs,
+          ${salesSplit.usdSum} AS total_sales_usd,
+          COALESCE(AVG(${salesAmtUzs}), 0) AS average_order_value
         FROM orders o
         WHERE o.status = 'completed'
           AND ${orderDateExpr} BETWEEN date(?) AND date(?)
@@ -184,7 +192,7 @@ class DashboardService {
       ? this.db
           .prepare(
             `
-            SELECT COALESCE(SUM(e.amount), 0) AS total_expenses
+            SELECT COALESCE(SUM(${expenseAmountUzsSql(this.db, 'e')}), 0) AS total_expenses
             FROM expenses e
             WHERE COALESCE(LOWER(e.status), 'approved') = 'approved'
               AND ${expenseDateExpr} BETWEEN date(?) AND date(?)
@@ -200,17 +208,34 @@ class DashboardService {
       : this._hasTable('sale_returns')
         ? 'sale_returns'
         : null;
+    const _retCols = returnsTable
+      ? (() => {
+          try {
+            return new Set(
+              (this.db.prepare(`PRAGMA table_info(${returnsTable})`).all() || []).map((c) => c.name)
+            );
+          } catch {
+            return new Set();
+          }
+        })()
+      : new Set();
+    const _retHasRefundAmount = _retCols.has('refund_amount');
+    const _retHasWarehouseId = _retCols.has('warehouse_id');
+
     const returnDateExpr = this._tzDateExpr('r.created_at');
     const returnParams = [dateFrom, dateTo];
-    const returnWarehouseWhere = warehouseId ? ` AND r.warehouse_id = ?` : '';
-    if (warehouseId) returnParams.push(warehouseId);
+    const returnWarehouseWhere = warehouseId && _retHasWarehouseId ? ` AND r.warehouse_id = ?` : '';
+    if (warehouseId && _retHasWarehouseId) returnParams.push(warehouseId);
+    const _amountExpr = _retHasRefundAmount
+      ? `COALESCE(r.refund_amount, r.total_amount, 0)`
+      : `COALESCE(r.total_amount, 0)`;
     const returnsRow = returnsTable
       ? this.db
           .prepare(
             `
             SELECT
               COUNT(*) AS returns_count,
-              COALESCE(SUM(COALESCE(r.refund_amount, r.total_amount, 0)), 0) AS returns_amount
+              COALESCE(SUM(${_amountExpr}), 0) AS returns_amount
             FROM ${returnsTable} r
             WHERE COALESCE(LOWER(status), 'completed') = 'completed'
               AND ${returnDateExpr} BETWEEN date(?) AND date(?)
@@ -221,29 +246,99 @@ class DashboardService {
       : { returns_count: 0, returns_amount: 0 };
 
     const returnItemsTable = returnsTable === 'sale_returns' ? 'sale_return_items' : 'return_items';
+    // Detect whether return-items has qty_base (added in migration 041) and order_item_id link
+    const _retItemsHasQtyBase = returnsTable && this._hasTable(returnItemsTable)
+      ? (() => {
+          try {
+            return !!this.db
+              .prepare(`SELECT 1 AS ok FROM pragma_table_info(?) WHERE name = 'qty_base' LIMIT 1`)
+              .get(returnItemsTable)?.ok;
+          } catch {
+            return false;
+          }
+        })()
+      : false;
+    const _retItemsHasOrderItemId = returnsTable && this._hasTable(returnItemsTable)
+      ? (() => {
+          try {
+            return !!this.db
+              .prepare(`SELECT 1 AS ok FROM pragma_table_info(?) WHERE name = 'order_item_id' LIMIT 1`)
+              .get(returnItemsTable)?.ok;
+          } catch {
+            return false;
+          }
+        })()
+      : false;
+    const _retItemsHasProductId = returnsTable && this._hasTable(returnItemsTable)
+      ? (() => {
+          try {
+            return !!this.db
+              .prepare(`SELECT 1 AS ok FROM pragma_table_info(?) WHERE name = 'product_id' LIMIT 1`)
+              .get(returnItemsTable)?.ok;
+          } catch {
+            return false;
+          }
+        })()
+      : false;
+
     const returnCogsParams = [dateFrom, dateTo];
     if (warehouseId) returnCogsParams.push(warehouseId);
+    const _retQtyExpr = _retItemsHasQtyBase
+      ? `COALESCE(ri.qty_base, ri.quantity, 0)`
+      : `COALESCE(ri.quantity, 0)`;
+    // Strategy:
+    //  - If item has both order_item_id AND product_id: prefer oi.cost_price, fallback to pr.purchase_price (via ri.product_id)
+    //  - If only product_id: use pr.purchase_price directly
+    //  - If only order_item_id: prefer oi.cost_price, fallback to product via order_items.product_id
+    let _retCogsSql;
+    if (_retItemsHasOrderItemId && _retItemsHasProductId) {
+      _retCogsSql = `
+        SELECT COALESCE(SUM(${_retQtyExpr} *
+          CASE
+            WHEN COALESCE(oi.cost_price, 0) > 0 THEN oi.cost_price
+            ELSE COALESCE(pr.purchase_price, 0)
+          END
+        ), 0) AS returns_cogs
+        FROM ${returnItemsTable} ri
+        INNER JOIN ${returnsTable} r ON r.id = ri.return_id
+        LEFT JOIN order_items oi ON oi.id = ri.order_item_id
+        LEFT JOIN products pr ON pr.id = ri.product_id
+        WHERE COALESCE(LOWER(r.status), 'completed') = 'completed'
+          AND ${returnDateExpr} BETWEEN date(?) AND date(?)
+          ${returnWarehouseWhere}
+      `;
+    } else if (_retItemsHasProductId) {
+      _retCogsSql = `
+        SELECT COALESCE(SUM(${_retQtyExpr} * COALESCE(pr.purchase_price, 0)), 0) AS returns_cogs
+        FROM ${returnItemsTable} ri
+        INNER JOIN ${returnsTable} r ON r.id = ri.return_id
+        LEFT JOIN products pr ON pr.id = ri.product_id
+        WHERE COALESCE(LOWER(r.status), 'completed') = 'completed'
+          AND ${returnDateExpr} BETWEEN date(?) AND date(?)
+          ${returnWarehouseWhere}
+      `;
+    } else if (_retItemsHasOrderItemId) {
+      _retCogsSql = `
+        SELECT COALESCE(SUM(${_retQtyExpr} *
+          CASE
+            WHEN COALESCE(oi.cost_price, 0) > 0 THEN oi.cost_price
+            ELSE COALESCE(pr.purchase_price, 0)
+          END
+        ), 0) AS returns_cogs
+        FROM ${returnItemsTable} ri
+        INNER JOIN ${returnsTable} r ON r.id = ri.return_id
+        INNER JOIN order_items oi ON oi.id = ri.order_item_id
+        LEFT JOIN products pr ON pr.id = oi.product_id
+        WHERE COALESCE(LOWER(r.status), 'completed') = 'completed'
+          AND ${returnDateExpr} BETWEEN date(?) AND date(?)
+          ${returnWarehouseWhere}
+      `;
+    } else {
+      _retCogsSql = null;
+    }
     const returnsCogsRow =
-      returnsTable && this._hasTable(returnItemsTable)
-        ? this.db
-            .prepare(
-              `
-              SELECT COALESCE(SUM(COALESCE(ri.qty_base, ri.quantity) *
-                CASE
-                  WHEN COALESCE(oi.cost_price, 0) > 0 THEN oi.cost_price
-                  ELSE COALESCE(pr.purchase_price, 0)
-                END
-              ), 0) AS returns_cogs
-              FROM ${returnItemsTable} ri
-              INNER JOIN ${returnsTable} r ON r.id = ri.return_id
-              LEFT JOIN order_items oi ON oi.id = ri.order_item_id
-              LEFT JOIN products pr ON pr.id = ri.product_id
-              WHERE COALESCE(LOWER(r.status), 'completed') = 'completed'
-                AND ${returnDateExpr} BETWEEN date(?) AND date(?)
-                ${returnWarehouseWhere}
-            `
-            )
-            .get(...returnCogsParams)
+      returnsTable && this._hasTable(returnItemsTable) && _retCogsSql
+        ? this.db.prepare(_retCogsSql).get(...returnCogsParams)
         : { returns_cogs: 0 };
 
     // Low stock count (optional)
@@ -339,6 +434,8 @@ class DashboardService {
       period: { date_from: dateFrom, date_to: dateTo },
       warehouse_id: warehouseId || null,
       total_sales: totalSales,
+      total_sales_uzs: Number(salesRow?.total_sales_uzs ?? totalSales) || 0,
+      total_sales_usd: Number(salesRow?.total_sales_usd || 0) || 0,
       total_orders: Number(salesRow?.total_orders || 0) || 0,
       average_order_value: Number(salesRow?.average_order_value || 0) || 0,
       total_cogs: totalCogs,

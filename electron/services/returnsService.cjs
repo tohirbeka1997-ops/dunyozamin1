@@ -1,5 +1,12 @@
 const { ERROR_CODES, createError } = require('../lib/errors.cjs');
 const { randomUUID } = require('crypto');
+const {
+  hasCustomerBalanceUsd,
+  hasCustomerLedgerCurrency,
+  normalizeCustomerCurrency,
+  readCustomerBalances,
+  readBalanceInCurrency,
+} = require('../lib/customerBalance.cjs');
 
 /**
  * Returns Service
@@ -60,6 +67,60 @@ class ReturnsService {
     return this._getSalesReturnCols().has(name);
   }
 
+  /**
+   * Yagona manba: yakunlangan qaytarishlar bo'yicha shu order_item uchun qaytarilgan miqdor.
+   * `order_items.returned_quantity` maydoni eski/ nomuvofiq bo'lishi mumkin — create/getOrderDetails bilan mos.
+   */
+  _sumCompletedReturnedQtyForOrderItem(orderItemId) {
+    const row = this.db
+      .prepare(
+        `
+        SELECT COALESCE(SUM(ri.quantity), 0) AS total
+        FROM return_items ri
+        INNER JOIN sales_returns sr ON sr.id = ri.return_id
+        WHERE ri.order_item_id = ?
+          AND LOWER(TRIM(COALESCE(sr.status, ''))) = 'completed'
+      `,
+      )
+      .get(orderItemId);
+    return Number(row?.total || 0);
+  }
+
+  /**
+   * Barcha draft qaytarishlar bo'yicha shu order_item uchun band qilingan miqdor (boshqa draftlar bilan to'qnashmaslik).
+   * @param {string|null} excludeReturnId - joriy qaytarishni yig'indidan chiqarish (completeReturn validatsiyasi).
+   */
+  _sumDraftReturnedQtyForOrderItem(orderItemId, excludeReturnId = null) {
+    if (!orderItemId) return 0;
+    if (excludeReturnId) {
+      const row = this.db
+        .prepare(
+          `
+        SELECT COALESCE(SUM(ri.quantity), 0) AS total
+        FROM return_items ri
+        INNER JOIN sales_returns sr ON sr.id = ri.return_id
+        WHERE ri.order_item_id = ?
+          AND LOWER(TRIM(COALESCE(sr.status, ''))) = 'draft'
+          AND sr.id != ?
+      `,
+        )
+        .get(orderItemId, excludeReturnId);
+      return Number(row?.total || 0);
+    }
+    const row = this.db
+      .prepare(
+        `
+        SELECT COALESCE(SUM(ri.quantity), 0) AS total
+        FROM return_items ri
+        INNER JOIN sales_returns sr ON sr.id = ri.return_id
+        WHERE ri.order_item_id = ?
+          AND LOWER(TRIM(COALESCE(sr.status, ''))) = 'draft'
+      `,
+      )
+      .get(orderItemId);
+    return Number(row?.total || 0);
+  }
+
   _normalizeRefundMethod(method) {
     return method === 'customer_account' ? 'customer_account' : method === 'credit' ? 'credit' : method || 'cash';
   }
@@ -74,14 +135,29 @@ class ReturnsService {
     if (!customer) return null;
 
     const amount = Number(refundAmount || 0);
-    const oldBalance = Number(customer.balance || 0);
+    const cur = normalizeCustomerCurrency(meta.currency);
+    const curLabel = cur === 'USD' ? 'USD' : "so'm";
+    const oldBalance = readBalanceInCurrency(this.db, customerId, cur);
     const newBalance = oldBalance + amount;
+    const now = meta.createdAt || new Date().toISOString().replace('T', ' ').substring(0, 19);
 
-    this.db.prepare(`
-      UPDATE customers
-      SET balance = ?
-      WHERE id = ?
-    `).run(newBalance, customerId);
+    if (hasCustomerBalanceUsd(this.db)) {
+      const uzsDelta = cur === 'UZS' ? amount : 0;
+      const usdDelta = cur === 'USD' ? amount : 0;
+      this.db
+        .prepare(
+          `UPDATE customers SET balance = balance + ?, balance_usd = balance_usd + ?, updated_at = ? WHERE id = ?`
+        )
+        .run(uzsDelta, usdDelta, now, customerId);
+    } else {
+      this.db.prepare(`UPDATE customers SET balance = balance + ?, updated_at = ? WHERE id = ?`).run(
+        amount,
+        now,
+        customerId
+      );
+    }
+
+    const balancesAfter = readCustomerBalances(this.db, customerId);
 
     try {
       const tableExists = this.db.prepare(`
@@ -92,55 +168,63 @@ class ReturnsService {
       if (tableExists) {
         const tableInfo = this.db.prepare(`PRAGMA table_info(customer_ledger)`).all();
         const hasMethodColumn = tableInfo.some((col) => col.name === 'method');
+        const hasLedgerCur = hasCustomerLedgerCurrency(this.db);
+        const hasLedgerBalUsd = tableInfo.some((col) => col.name === 'balance_after_usd');
         const ledgerId = randomUUID();
         const ledgerNote =
           meta.note ||
-          `Qaytarish hisobga yozildi: ${meta.returnNumber || meta.returnId || ''} (${amount} so'm)`;
+          `Qaytarish hisobga yozildi: ${meta.returnNumber || meta.returnId || ''} (${amount} ${curLabel})`;
 
-        if (hasMethodColumn) {
-          this.db.prepare(`
-            INSERT INTO customer_ledger (
-              id, customer_id, type, ref_id, ref_no, amount, balance_after, note, method, created_at, created_by
-            )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-          `).run(
-            ledgerId,
-            customerId,
-            'refund',
-            meta.returnId || null,
-            meta.returnNumber || null,
-            amount,
-            newBalance,
-            ledgerNote,
-            meta.method || 'customer_account',
-            meta.createdAt || new Date().toISOString(),
-            meta.createdBy || null
-          );
-        } else {
-          this.db.prepare(`
-            INSERT INTO customer_ledger (
-              id, customer_id, type, ref_id, ref_no, amount, balance_after, note, created_at, created_by
-            )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-          `).run(
-            ledgerId,
-            customerId,
-            'refund',
-            meta.returnId || null,
-            meta.returnNumber || null,
-            amount,
-            newBalance,
-            ledgerNote,
-            meta.createdAt || new Date().toISOString(),
-            meta.createdBy || null
-          );
+        const ledgerCols = [
+          'id',
+          'customer_id',
+          'type',
+          'ref_id',
+          'ref_no',
+          'amount',
+          'balance_after',
+          'note',
+        ];
+        const ledgerVals = [
+          ledgerId,
+          customerId,
+          'refund',
+          meta.returnId || null,
+          meta.returnNumber || null,
+          amount,
+          newBalance,
+          ledgerNote,
+        ];
+        if (hasLedgerCur) {
+          ledgerCols.push('currency');
+          ledgerVals.push(cur);
         }
+        if (hasLedgerBalUsd) {
+          ledgerCols.push('balance_after_usd');
+          ledgerVals.push(balancesAfter.usd);
+        }
+        if (hasMethodColumn) {
+          ledgerCols.push('method');
+          ledgerVals.push(meta.method || 'customer_account');
+        }
+        ledgerCols.push('created_at', 'created_by');
+        ledgerVals.push(meta.createdAt || now, meta.createdBy || null);
+        const ph = ledgerCols.map(() => '?').join(', ');
+        this.db
+          .prepare(`INSERT INTO customer_ledger (${ledgerCols.join(', ')}) VALUES (${ph})`)
+          .run(...ledgerVals);
       }
     } catch (ledgerError) {
       console.error('❌ Failed to insert ledger entry for refund (non-critical):', ledgerError.message);
     }
 
-    return { customer, oldBalance, newBalance };
+    return {
+      customer,
+      currency: cur,
+      oldBalance,
+      newBalance,
+      balancesAfter,
+    };
   }
 
   _revertCustomerRefund(customerId, returnId, fallbackAmount = 0) {
@@ -174,13 +258,38 @@ class ReturnsService {
     }
     if (!(reverseAmount > 0)) return 0;
 
-    const oldBalance = Number(customer.balance || 0);
-    const newBalance = oldBalance - reverseAmount;
-    this.db.prepare(`
-      UPDATE customers
-      SET balance = ?
-      WHERE id = ?
-    `).run(newBalance, customerId);
+    let refundCur = 'UZS';
+    try {
+      const tableExists = this.db.prepare(`
+        SELECT name FROM sqlite_master WHERE type='table' AND name='customer_ledger'
+      `).get();
+      if (tableExists && hasCustomerLedgerCurrency(this.db)) {
+        const row = this.db
+          .prepare(
+            `SELECT currency FROM customer_ledger WHERE ref_id = ? AND type = 'refund' LIMIT 1`
+          )
+          .get(returnId);
+        if (row?.currency) refundCur = normalizeCustomerCurrency(row.currency);
+      }
+    } catch {
+      /* keep UZS */
+    }
+
+    const cur = normalizeCustomerCurrency(refundCur);
+    const now = new Date().toISOString().replace('T', ' ').substring(0, 19);
+    if (hasCustomerBalanceUsd(this.db)) {
+      const uzsRev = cur === 'UZS' ? reverseAmount : 0;
+      const usdRev = cur === 'USD' ? reverseAmount : 0;
+      this.db
+        .prepare(
+          `UPDATE customers SET balance = balance - ?, balance_usd = balance_usd - ?, updated_at = ? WHERE id = ?`
+        )
+        .run(uzsRev, usdRev, now, customerId);
+    } else {
+      this.db
+        .prepare(`UPDATE customers SET balance = balance - ?, updated_at = ? WHERE id = ?`)
+        .run(reverseAmount, now, customerId);
+    }
     return reverseAmount;
   }
 
@@ -198,8 +307,9 @@ class ReturnsService {
     // SINGLE WAREHOUSE SYSTEM: use the seeded warehouse from migration 013_ensure_seed_data.sql
     const SAFE_WAREHOUSE_ID = 'main-warehouse-001';
     
-    // Detailed Debugging: Log incoming payload
-    console.log('🔄 Processing Return Payload:', JSON.stringify(data, null, 2));
+    if (process.env.DEBUG_RETURNS === '1') {
+      console.log('[RETURNS] createReturn payload keys:', data ? Object.keys(data) : []);
+    }
     data.refund_method = this._normalizeRefundMethod(data.refund_method);
     
     // Validation
@@ -217,6 +327,10 @@ class ReturnsService {
 
     try {
       return this.db.transaction(() => {
+        const asDraft = !!(
+          data &&
+          (data.save_as_draft === true || String(data.status || '').toLowerCase() === 'draft')
+        );
         // --------------------------------------------------------------------
         // FK SAFETY (bulletproof):
         // Some DBs enforce FKs on user_id / warehouse_id / shift_id in returns tables.
@@ -224,8 +338,14 @@ class ReturnsService {
         // SQLite will throw SQLITE_CONSTRAINT_FOREIGNKEY at the return INSERT.
         // We proactively resolve valid IDs from the DB.
         // --------------------------------------------------------------------
-        const resolveSafeUserId = () => {
-          // Prefer seeded admin id, then admin username, then any user.
+        const resolveSafeUserId = (preferredId = null) => {
+          // 1) Honor the actual logged-in user from the payload when it exists in DB.
+          //    This preserves audit trail (who created the return).
+          if (preferredId) {
+            const preferred = this.db.prepare('SELECT id FROM users WHERE id = ?').get(String(preferredId));
+            if (preferred?.id) return String(preferred.id);
+          }
+          // 2) Fall back to seeded admin id, then admin username, then any user.
           const byId = this.db.prepare('SELECT id FROM users WHERE id = ?').get(SAFE_ADMIN_ID);
           if (byId?.id) return String(byId.id);
           const byUsername = this.db.prepare("SELECT id FROM users WHERE username = 'admin@pos.com' LIMIT 1").get();
@@ -324,23 +444,29 @@ class ReturnsService {
             throw error;
           }
 
-          // CRITICAL: Validate return quantity doesn't exceed available quantity
-          const currentReturnedQty = Number(orderItem.returned_quantity || 0);
+          // CRITICAL: Validate return quantity — completed return_items yig'indisi (getOrderDetails bilan bir xil)
+          const committedReturnedQty = this._sumCompletedReturnedQtyForOrderItem(item.order_item_id);
+          const draftOtherQty = this._sumDraftReturnedQtyForOrderItem(item.order_item_id, null);
+          const legacyReturned = Number(orderItem.returned_quantity || 0);
           const originalQty = Number(orderItem.qty_sale ?? orderItem.quantity ?? 0);
-          const availableQty = originalQty - currentReturnedQty;
+          const availableQty = originalQty - committedReturnedQty - draftOtherQty;
           const returnQty = Number(item.quantity || 0);
 
-          console.log(`[RETURNS] Step 2.${i + 1}: Return quantity validation:`, {
-            order_item_id: item.order_item_id,
-            original_quantity: originalQty,
-            current_returned_quantity: currentReturnedQty,
-            available_quantity: availableQty,
-            requested_return_quantity: returnQty,
-          });
+          if (process.env.DEBUG_RETURNS === '1') {
+            console.log(`[RETURNS] Step 2.${i + 1} qty check`, {
+              order_item_id: item.order_item_id,
+              originalQty,
+              committedReturnedQty,
+              draftOtherQty,
+              legacy_order_item_returned_qty: legacyReturned,
+              availableQty,
+              returnQty,
+            });
+          }
 
           if (returnQty > availableQty) {
             const error = createError(ERROR_CODES.VALIDATION_ERROR,
-              `Cannot return ${returnQty} items. Only ${availableQty} available (original: ${originalQty}, already returned: ${currentReturnedQty})`);
+              `Cannot return ${returnQty} items. Only ${availableQty} available (original: ${originalQty}, completed returns: ${committedReturnedQty}, draft holds: ${draftOtherQty})`);
             console.error(`❌ Step 2.${i + 1} FAILED:`, error);
             throw error; // This will rollback the entire transaction
           }
@@ -401,7 +527,7 @@ class ReturnsService {
             discountType: orderItem.discount_type ?? null,
             discountValue: orderItem.discount_value ?? null,
             priceSource: orderItem.price_source ?? null,
-            currentReturnedQty,
+            committedReturnedQty,
             originalQty,
             availableQty,
           });
@@ -410,9 +536,10 @@ class ReturnsService {
         console.log(`✅ Step 2: All ${validatedItems.length} items validated successfully. Total amount: ${totalAmount}`);
 
         // Step 3: Determine cashier_id/user_id safely (must exist if FK is enforced)
-        // IMPORTANT: Always use a user id that is guaranteed to exist.
-        // Orders may contain legacy cashier_id/user_id values that don't exist anymore after wipes/migrations.
-        const safeUserId = resolveSafeUserId();
+        // IMPORTANT: Prefer the actual user from the payload, fall back to safe ID only if missing/invalid.
+        // This preserves the audit trail (who actually pressed the "Create return" button).
+        const preferredUserId = data.cashier_id || data.user_id || order.cashier_id || null;
+        const safeUserId = resolveSafeUserId(preferredUserId);
         const cashierId = safeUserId;
         const userId = safeUserId;
         
@@ -445,8 +572,11 @@ class ReturnsService {
 
         // Step 4: Insert Return Record (ONLY after all validations pass)
         const returnId = randomUUID();
-        const returnNumber = `RET-${Date.now()}`;
-        const now = new Date().toISOString().replace('T', ' ').replace('Z', '').substring(0, 19);
+        // Use UUID short-suffix to avoid Date.now() collision under burst load.
+        const returnNumber = `RET-${Date.now()}-${returnId.slice(0, 6)}`;
+        const now = data.created_at
+          ? String(data.created_at).replace('T', ' ').replace('Z', '').substring(0, 19)
+          : new Date().toISOString().replace('T', ' ').replace('Z', '').substring(0, 19);
         // Clean cutover rule: only enforce batch returns if the ORIGINAL SALE (order.created_at)
         // is on/after cutover. Pre-cutover sales have no allocations and should still be returnable.
         const orderCreatedAtSql = String(order.created_at || '').replace('T', ' ').replace('Z', '').substring(0, 19);
@@ -500,7 +630,7 @@ class ReturnsService {
             totalAmount,
             data.refund_method || 'cash',
             ...(hasReturnMode ? ['order'] : []),
-            'completed',
+            asDraft ? 'draft' : 'completed',
             data.notes || null,
             now,
           ];
@@ -541,7 +671,7 @@ class ReturnsService {
             saleUnit,
             lineTotal,
             netUnitPrice,
-            currentReturnedQty,
+            committedReturnedQty,
             basePrice,
             ustaPrice,
             discountType,
@@ -611,23 +741,78 @@ class ReturnsService {
               .run(...vals);
             console.log(`✅ Step 5.${i + 1}: Return item inserted - ${returnItemId}`);
 
-            // CRITICAL: Update order_items.returned_quantity
-            const newReturnedQty = currentReturnedQty + returnQty;
-            this.db.prepare(`
+            if (!asDraft) {
+              // CRITICAL: Update order_items.returned_quantity (return_items completed yig'indisi bilan sinxron)
+              const newReturnedQty = committedReturnedQty + returnQty;
+              this.db.prepare(`
               UPDATE order_items 
               SET returned_quantity = ?
               WHERE id = ? AND order_id = ?
             `).run(newReturnedQty, item.order_item_id, data.order_id);
-            
-            console.log(`✅ Step 5.${i + 1}: Updated order_items.returned_quantity: ${currentReturnedQty} -> ${newReturnedQty}`);
+
+              if (process.env.DEBUG_RETURNS === '1') {
+                console.log(
+                  `[RETURNS] Step 5.${i + 1} order_items.returned_quantity: ${committedReturnedQty} -> ${newReturnedQty}`,
+                );
+              }
+
+              // Batch mode: return must go back to the SAME batches that were used for this order_item.
+              if (batchActive && this.batchService && product.track_stock) {
+                this.batchService.allocateReturnForReturnItem(
+                  returnItemId,
+                  item.order_item_id,
+                  orderItem.product_id,
+                  warehouseId,
+                  returnQtyBase
+                );
+              }
+
+              // Step 6: Update Inventory
+              if (product.track_stock) {
+                console.log(`📈 Step 6.${i + 1}: Updating inventory for product_id=${orderItem.product_id}, quantity=${returnQty}`);
+
+                try {
+                  if (!this.inventoryService) {
+                    throw createError(ERROR_CODES.VALIDATION_ERROR, 'InventoryService is not available. Cannot update stock.');
+                  }
+
+                  // SINGLE SOURCE OF TRUTH: inventory_movements
+                  // Use InventoryService._updateBalance so both inventory_movements and legacy stock_balances/stock_moves stay consistent
+                  const stockUpdate = this.inventoryService._updateBalance(
+                    orderItem.product_id,
+                    warehouseId,
+                    returnQtyBase,
+                    'return',
+                    'return',
+                    returnId,
+                    `Return for order ${order.order_number}`,
+                    userId || SAFE_ADMIN_ID
+                  );
+
+                  console.log(`✅ Step 6.${i + 1}: Inventory updated via InventoryService: ${stockUpdate.beforeQuantity} -> ${stockUpdate.afterQuantity}`);
+                } catch (step6Error) {
+                  console.error(`❌ Step 6.${i + 1} FAILED (Update Inventory):`, {
+                    message: step6Error.message,
+                    code: step6Error.code,
+                    stack: step6Error.stack,
+                    product_id: orderItem.product_id,
+                    warehouse_id: warehouseId,
+                    quantity: returnQty
+                  });
+                  throw step6Error;
+                }
+              } else {
+                console.log(`⚠️ Step 6.${i + 1}: Product ${product.name} does not track stock, skipping inventory update`);
+              }
+            }
 
             returnItems.push({
               id: returnItemId,
               order_item_id: item.order_item_id,
               product_id: orderItem.product_id,
-              quantity: returnQty, // Use validated returnQty
+              quantity: returnQty,
               unit_price: netUnitPrice,
-              line_total: lineTotal
+              line_total: lineTotal,
             });
           } catch (step5Error) {
             console.error(`❌ Step 5.${i + 1} FAILED (Insert Return Item):`, {
@@ -637,58 +822,9 @@ class ReturnsService {
               returnItemId,
               return_id: returnId,
               order_item_id: item.order_item_id,
-              product_id: orderItem.product_id
+              product_id: orderItem.product_id,
             });
             throw step5Error;
-          }
-
-          // Batch mode: return must go back to the SAME batches that were used for this order_item.
-          if (batchActive && this.batchService && product.track_stock) {
-            this.batchService.allocateReturnForReturnItem(
-              returnItemId,
-              item.order_item_id,
-              orderItem.product_id,
-              warehouseId,
-              returnQtyBase
-            );
-          }
-
-          // Step 6: Update Inventory
-          if (product.track_stock) {
-            console.log(`📈 Step 6.${i + 1}: Updating inventory for product_id=${orderItem.product_id}, quantity=${returnQty}`);
-            
-            try {
-              if (!this.inventoryService) {
-                throw createError(ERROR_CODES.VALIDATION_ERROR, 'InventoryService is not available. Cannot update stock.');
-              }
-
-              // SINGLE SOURCE OF TRUTH: inventory_movements
-              // Use InventoryService._updateBalance so both inventory_movements and legacy stock_balances/stock_moves stay consistent
-              const stockUpdate = this.inventoryService._updateBalance(
-                orderItem.product_id,
-                warehouseId,
-                returnQtyBase,
-                'return',
-                'return',
-                returnId,
-                `Return for order ${order.order_number}`,
-                userId || SAFE_ADMIN_ID
-              );
-              
-              console.log(`✅ Step 6.${i + 1}: Inventory updated via InventoryService: ${stockUpdate.beforeQuantity} -> ${stockUpdate.afterQuantity}`);
-            } catch (step6Error) {
-              console.error(`❌ Step 6.${i + 1} FAILED (Update Inventory):`, {
-                message: step6Error.message,
-                code: step6Error.code,
-                stack: step6Error.stack,
-                product_id: orderItem.product_id,
-                warehouse_id: warehouseId,
-                quantity: returnQty
-              });
-              throw step6Error;
-            }
-          } else {
-            console.log(`⚠️ Step 6.${i + 1}: Product ${product.name} does not track stock, skipping inventory update`);
           }
         }
 
@@ -733,17 +869,18 @@ class ReturnsService {
           refundAmount > 0 &&
           (this._isCustomerAccountRefund(data.refund_method) || orderHadUnpaidCredit);
 
-        if (shouldAdjustBalance) {
+        if (!asDraft && shouldAdjustBalance) {
           try {
             const balanceResult = this._applyCustomerRefund(customerId, refundAmount, {
               returnId,
               returnNumber,
+              currency: order.currency,
               method: data.refund_method || 'customer_account',
               createdAt: now,
               createdBy: cashierId || userId || null,
               note:
                 orderHadUnpaidCredit && !this._isCustomerAccountRefund(data.refund_method)
-                  ? `Qaytarish — qarz kamaytirildi: ${returnNumber} (${refundAmount} so'm, ${data.refund_method || 'cash'})`
+                  ? `Qaytarish — qarz kamaytirildi: ${returnNumber} (${refundAmount}, ${data.refund_method || 'cash'})`
                   : undefined,
             });
             if (balanceResult) {
@@ -756,7 +893,9 @@ class ReturnsService {
           }
         }
 
-        console.log(`✅ Return transaction completed successfully: ${returnNumber} (${returnId})`);
+        console.log(
+          `✅ Return ${asDraft ? 'saved as draft' : 'transaction completed successfully'}: ${returnNumber} (${returnId})`,
+        );
         console.log(`📊 Return Summary: Total=${totalAmount}, Refund=${refundAmount}, Items=${returnItems.length}`);
 
         return {
@@ -769,7 +908,7 @@ class ReturnsService {
           refund_amount: refundAmount,
           refund_method: data.refund_method || 'cash',
           return_mode: 'order',
-          status: 'completed',
+          status: asDraft ? 'draft' : 'completed',
           notes: data.notes || null,
           items: returnItems,
           created_at: now
@@ -784,7 +923,14 @@ class ReturnsService {
         stack: error.stack,
         fullError: error
       });
-      console.error('❌ Return Payload that failed:', JSON.stringify(data, null, 2));
+      console.error('❌ Return Payload summary:', {
+        order_id: data?.order_id,
+        mode: data?.mode,
+        items_len: Array.isArray(data?.items) ? data.items.length : 0,
+      });
+      if (process.env.DEBUG_RETURNS === '1') {
+        console.error('❌ Return Payload (full):', JSON.stringify(data, null, 2));
+      }
       throw error;
     }
   }
@@ -796,7 +942,9 @@ class ReturnsService {
     const SAFE_ADMIN_ID = 'default-admin-001';
     const SAFE_WAREHOUSE_ID = 'main-warehouse-001';
 
-    console.log('🔄 Processing Manual Return Payload:', JSON.stringify(data, null, 2));
+    if (process.env.DEBUG_RETURNS === '1') {
+      console.log('[RETURNS] createManualReturn payload keys:', data ? Object.keys(data) : []);
+    }
 
     if (!data.items || !Array.isArray(data.items) || data.items.length === 0) {
       throw createError(ERROR_CODES.VALIDATION_ERROR, 'Return items are required');
@@ -807,12 +955,23 @@ class ReturnsService {
     }
 
     const refundMethod = this._normalizeRefundMethod(data.refund_method);
-    if (this._isCustomerAccountRefund(refundMethod) && !data.customer_id) {
+
+    const asDraft = !!(
+      data &&
+      (data.save_as_draft === true || String(data.status || '').toLowerCase() === 'draft')
+    );
+
+    if (!asDraft && this._isCustomerAccountRefund(refundMethod) && !data.customer_id) {
       throw createError(ERROR_CODES.VALIDATION_ERROR, 'Customer is required for customer account refunds');
     }
 
     return this.db.transaction(() => {
-      const resolveSafeUserId = () => {
+      const resolveSafeUserId = (preferredId = null) => {
+        // Honor actual logged-in user when provided and valid.
+        if (preferredId) {
+          const preferred = this.db.prepare('SELECT id FROM users WHERE id = ?').get(String(preferredId));
+          if (preferred?.id) return String(preferred.id);
+        }
         const byId = this.db.prepare('SELECT id FROM users WHERE id = ?').get(SAFE_ADMIN_ID);
         if (byId?.id) return String(byId.id);
         const byUsername = this.db.prepare("SELECT id FROM users WHERE username = 'admin@pos.com' LIMIT 1").get();
@@ -834,12 +993,12 @@ class ReturnsService {
         throw createError(ERROR_CODES.VALIDATION_ERROR, 'No warehouses exist in DB. Cannot create return.');
       };
 
-      const cashierId = resolveSafeUserId();
+      const cashierId = resolveSafeUserId(data.cashier_id || data.user_id || null);
       const userId = cashierId;
       const warehouseId = resolveSafeWarehouseId(data.warehouse_id || null);
       const now = new Date().toISOString().replace('T', ' ').replace('Z', '').substring(0, 19);
       const returnId = randomUUID();
-      const returnNumber = `RET-${Date.now()}`;
+      const returnNumber = `RET-${Date.now()}-${returnId.slice(0, 6)}`;
 
       let customerId = data.customer_id || null;
       if (customerId) {
@@ -874,6 +1033,16 @@ class ReturnsService {
           throw createError(ERROR_CODES.VALIDATION_ERROR, `Item ${i + 1}: Line total is invalid`);
         }
 
+        const expectedLine = Math.round(unitPrice * returnQty);
+        const roundedLine = Math.round(lineTotal);
+        if (Math.abs(roundedLine - expectedLine) > 1) {
+          throw createError(
+            ERROR_CODES.VALIDATION_ERROR,
+            `Item ${i + 1}: line_total (${roundedLine}) does not match unit_price × quantity (${expectedLine})`,
+          );
+        }
+        const lineTotalNorm = expectedLine;
+
         const product = this.db.prepare('SELECT * FROM products WHERE id = ?').get(productId);
         if (!product) {
           throw createError(ERROR_CODES.NOT_FOUND, `Product ${productId} not found`);
@@ -885,19 +1054,19 @@ class ReturnsService {
           qtySale,
           qtyBase,
           unitPrice,
-          lineTotal,
+          lineTotal: lineTotalNorm,
           saleUnit: item.sale_unit || product.unit || null,
           basePrice: item.base_price ?? product.sale_price ?? null,
           ustaPrice: item.usta_price ?? product.master_price ?? null,
           discountType: item.discount_type ?? null,
           discountValue: Number(item.discount_value ?? 0) || 0,
           finalUnitPrice: item.final_unit_price ?? unitPrice,
-          finalTotal: item.final_total ?? lineTotal,
+          finalTotal: item.final_total ?? lineTotalNorm,
           priceSource: item.price_source ?? 'manual',
           productName: item.product_name || product.name,
         });
 
-        totalAmount += lineTotal;
+        totalAmount += lineTotalNorm;
       }
 
       const hasReturnMode = this._hasSalesReturnCol('return_mode');
@@ -933,7 +1102,7 @@ class ReturnsService {
         totalAmount,
         refundMethod,
         ...(hasReturnMode ? ['manual'] : []),
-        'completed',
+        asDraft ? 'draft' : 'completed',
         data.notes || null,
         now,
       ];
@@ -1001,7 +1170,7 @@ class ReturnsService {
         const placeholders = cols.map(() => '?').join(', ');
         this.db.prepare(`INSERT INTO return_items (${cols.join(', ')}) VALUES (${placeholders})`).run(...vals);
 
-        if (item.product.track_stock) {
+        if (!asDraft && item.product.track_stock) {
           this.inventoryService._updateBalance(
             item.product.id,
             warehouseId,
@@ -1035,14 +1204,18 @@ class ReturnsService {
         });
       }
 
-      if (customerId) {
+      // Manual return + customer balance:
+      // Only adjust balance for credit/customer_account refunds. Cash/card manual returns
+      // should NOT increment customer balance (would be double benefit: cash + credit).
+      if (!asDraft && customerId && this._isCustomerAccountRefund(refundMethod)) {
         this._applyCustomerRefund(customerId, totalAmount, {
           returnId,
           returnNumber,
+          currency: 'UZS',
           method: refundMethod,
           createdAt: now,
           createdBy: cashierId || userId || null,
-          note: `Ordersiz qaytarish: ${returnNumber} (${totalAmount} so'm)`,
+          note: `Ordersiz qaytarish (qarz hisobiga): ${returnNumber} (${totalAmount} so'm)`,
         });
       }
 
@@ -1057,12 +1230,279 @@ class ReturnsService {
         refund_amount: totalAmount,
         refund_method: refundMethod,
         return_mode: 'manual',
-        status: 'completed',
+        status: asDraft ? 'draft' : 'completed',
         notes: data.notes || null,
         items: returnItems,
         created_at: now,
       };
     })();
+  }
+
+  /**
+   * Draft qaytarishni yakunlash: qayta validatsiya, zaxira/batch/order_items/mijoz, status = completed.
+   */
+  completeReturn(returnId) {
+    const SAFE_ADMIN_ID = 'default-admin-001';
+    const SAFE_WAREHOUSE_ID = 'main-warehouse-001';
+
+    if (!returnId) {
+      throw createError(ERROR_CODES.VALIDATION_ERROR, 'Return ID is required');
+    }
+
+    try {
+      return this.db.transaction(() => {
+        const sr = this.db.prepare('SELECT * FROM sales_returns WHERE id = ?').get(returnId);
+        if (!sr) {
+          throw createError(ERROR_CODES.NOT_FOUND, `Return ${returnId} not found`);
+        }
+        const st = String(sr.status || '').toLowerCase().trim();
+        if (st !== 'draft') {
+          throw createError(ERROR_CODES.VALIDATION_ERROR, 'Only draft returns can be completed');
+        }
+
+        const returnItems =
+          this.db.prepare('SELECT * FROM return_items WHERE return_id = ? ORDER BY created_at ASC').all(returnId) || [];
+        if (!returnItems.length) {
+          throw createError(ERROR_CODES.VALIDATION_ERROR, 'Return has no items');
+        }
+
+        const refundMethod = this._normalizeRefundMethod(sr.refund_method);
+        const isManual = !sr.order_id || String(sr.return_mode || '').toLowerCase() === 'manual';
+        const now = new Date().toISOString().replace('T', ' ').replace('Z', '').substring(0, 19);
+
+        const resolveSafeUserId = (preferredId = null) => {
+          if (preferredId) {
+            const preferred = this.db.prepare('SELECT id FROM users WHERE id = ?').get(String(preferredId));
+            if (preferred?.id) return String(preferred.id);
+          }
+          const byId = this.db.prepare('SELECT id FROM users WHERE id = ?').get(SAFE_ADMIN_ID);
+          if (byId?.id) return String(byId.id);
+          const byUsername = this.db.prepare("SELECT id FROM users WHERE username = 'admin@pos.com' LIMIT 1").get();
+          if (byUsername?.id) return String(byUsername.id);
+          const anyUser = this.db.prepare('SELECT id FROM users ORDER BY created_at ASC LIMIT 1').get();
+          if (anyUser?.id) return String(anyUser.id);
+          throw createError(ERROR_CODES.VALIDATION_ERROR, 'No users exist in DB. Cannot complete return.');
+        };
+
+        const resolveSafeWarehouseId = (preferredId = null) => {
+          if (preferredId) {
+            const preferred = this.db.prepare('SELECT id FROM warehouses WHERE id = ?').get(String(preferredId));
+            if (preferred?.id) return String(preferred.id);
+          }
+          const byId = this.db.prepare('SELECT id FROM warehouses WHERE id = ?').get(SAFE_WAREHOUSE_ID);
+          if (byId?.id) return String(byId.id);
+          const anyWh = this.db.prepare('SELECT id FROM warehouses ORDER BY created_at ASC LIMIT 1').get();
+          if (anyWh?.id) return String(anyWh.id);
+          throw createError(ERROR_CODES.VALIDATION_ERROR, 'No warehouses exist in DB. Cannot complete return.');
+        };
+
+        const userId = resolveSafeUserId(sr.cashier_id || sr.user_id || null);
+
+        if (isManual) {
+          if (this._isCustomerAccountRefund(refundMethod) && !sr.customer_id) {
+            throw createError(ERROR_CODES.VALIDATION_ERROR, 'Customer is required to complete this return');
+          }
+
+          const warehouseId = resolveSafeWarehouseId(sr.warehouse_id || null);
+
+          for (let i = 0; i < returnItems.length; i += 1) {
+            const ri = returnItems[i];
+            const returnQty = Number(ri.quantity || 0);
+            const unitPrice = Number(ri.unit_price || 0);
+            const lineTotal = Number(ri.line_total || 0);
+            if (!Number.isFinite(returnQty) || returnQty <= 0) {
+              throw createError(ERROR_CODES.VALIDATION_ERROR, `Item ${i + 1}: invalid quantity`);
+            }
+            const expectedLine = Math.round(unitPrice * returnQty);
+            const roundedLine = Math.round(lineTotal);
+            if (Math.abs(roundedLine - expectedLine) > 1) {
+              throw createError(
+                ERROR_CODES.VALIDATION_ERROR,
+                `Item ${i + 1}: line_total does not match unit_price × quantity`,
+              );
+            }
+            const product = this.db.prepare('SELECT * FROM products WHERE id = ?').get(ri.product_id);
+            if (!product) {
+              throw createError(ERROR_CODES.NOT_FOUND, `Product ${ri.product_id} not found`);
+            }
+            const qtyBase = Number(ri.qty_base ?? ri.qty_sale ?? ri.quantity ?? 0) || 0;
+            if (product.track_stock && qtyBase > 0) {
+              if (!this.inventoryService) {
+                throw createError(ERROR_CODES.VALIDATION_ERROR, 'InventoryService is not available. Cannot complete return.');
+              }
+              this.inventoryService._updateBalance(
+                ri.product_id,
+                warehouseId,
+                qtyBase,
+                'return',
+                'return',
+                returnId,
+                `Manual return ${sr.return_number || returnId}`,
+                userId,
+              );
+            }
+          }
+
+          const refundAmount = Number(sr.refund_amount || sr.total_amount || 0);
+          if (sr.customer_id && this._isCustomerAccountRefund(refundMethod) && refundAmount > 0) {
+            this._applyCustomerRefund(sr.customer_id, refundAmount, {
+              returnId,
+              returnNumber: sr.return_number || null,
+              currency: 'UZS',
+              method: refundMethod,
+              createdAt: now,
+              createdBy: userId,
+              note: `Ordersiz qaytarish (qarz hisobiga): ${sr.return_number || ''} (${refundAmount} so'm)`,
+            });
+          }
+
+          this.db.prepare(`UPDATE sales_returns SET status = 'completed' WHERE id = ?`).run(returnId);
+          return this.getById(returnId);
+        }
+
+        const order = this.db.prepare('SELECT * FROM orders WHERE id = ?').get(sr.order_id);
+        if (!order) {
+          throw createError(ERROR_CODES.NOT_FOUND, `Order ${sr.order_id} not found`);
+        }
+
+        const warehouseId = resolveSafeWarehouseId(order.warehouse_id || sr.warehouse_id || null);
+        const orderCreatedAtSql = String(order.created_at || '').replace('T', ' ').replace('Z', '').substring(0, 19);
+        const batchActive =
+          !!this.batchService?.shouldEnforceAt?.(now) && !!this.batchService?.shouldEnforceAt?.(orderCreatedAtSql);
+
+        for (let i = 0; i < returnItems.length; i += 1) {
+          const ri = returnItems[i];
+          if (!ri.order_item_id) {
+            throw createError(
+              ERROR_CODES.VALIDATION_ERROR,
+              `Return line ${i + 1} is missing order_item_id for an order-based return`,
+            );
+          }
+          const orderItem = this.db
+            .prepare('SELECT * FROM order_items WHERE id = ? AND order_id = ?')
+            .get(ri.order_item_id, sr.order_id);
+          if (!orderItem) {
+            throw createError(ERROR_CODES.NOT_FOUND, `Order item ${ri.order_item_id} not found on order ${sr.order_id}`);
+          }
+
+          const returnQty = Number(ri.quantity || 0);
+          if (!Number.isFinite(returnQty) || returnQty <= 0) {
+            throw createError(ERROR_CODES.VALIDATION_ERROR, `Line ${i + 1}: invalid quantity`);
+          }
+
+          const committedReturnedQty = this._sumCompletedReturnedQtyForOrderItem(ri.order_item_id);
+          const draftOtherQty = this._sumDraftReturnedQtyForOrderItem(ri.order_item_id, returnId);
+          const originalQty = Number(orderItem.qty_sale ?? orderItem.quantity ?? 0);
+          const availableQty = originalQty - committedReturnedQty - draftOtherQty;
+
+          if (returnQty > availableQty) {
+            throw createError(
+              ERROR_CODES.VALIDATION_ERROR,
+              `Cannot complete return: quantity ${returnQty} exceeds available ${availableQty} for order line ${ri.order_item_id}`,
+            );
+          }
+
+          const product = this.db.prepare('SELECT * FROM products WHERE id = ?').get(orderItem.product_id);
+          if (!product) {
+            throw createError(ERROR_CODES.NOT_FOUND, `Product ${orderItem.product_id} not found`);
+          }
+        }
+
+        for (const ri of returnItems) {
+          const orderItem = this.db
+            .prepare('SELECT * FROM order_items WHERE id = ? AND order_id = ?')
+            .get(ri.order_item_id, sr.order_id);
+          const returnQty = Number(ri.quantity || 0);
+          const committedReturnedQty = this._sumCompletedReturnedQtyForOrderItem(ri.order_item_id);
+          const newReturnedQty = committedReturnedQty + returnQty;
+          this.db
+            .prepare(`UPDATE order_items SET returned_quantity = ? WHERE id = ? AND order_id = ?`)
+            .run(newReturnedQty, ri.order_item_id, sr.order_id);
+
+          const product = this.db.prepare('SELECT * FROM products WHERE id = ?').get(orderItem.product_id);
+          const soldQty = Number(orderItem.qty_sale ?? orderItem.quantity ?? 0);
+          const qtyBaseSold = Number(orderItem.qty_base ?? soldQty) || 0;
+          const ratioToBase = soldQty > 0 ? qtyBaseSold / soldQty : 1;
+          const storedBase = Number(ri.qty_base ?? ri.qty_sale ?? 0);
+          const returnQtyBase = storedBase > 0 ? storedBase : returnQty * ratioToBase;
+
+          if (batchActive && this.batchService && product.track_stock) {
+            this.batchService.allocateReturnForReturnItem(
+              ri.id,
+              ri.order_item_id,
+              orderItem.product_id,
+              warehouseId,
+              returnQtyBase,
+            );
+          }
+
+          if (product.track_stock) {
+            if (!this.inventoryService) {
+              throw createError(ERROR_CODES.VALIDATION_ERROR, 'InventoryService is not available. Cannot complete return.');
+            }
+            this.inventoryService._updateBalance(
+              orderItem.product_id,
+              warehouseId,
+              returnQtyBase,
+              'return',
+              'return',
+              returnId,
+              `Return for order ${order.order_number || sr.order_id}`,
+              userId || SAFE_ADMIN_ID,
+            );
+          }
+        }
+
+        const refundAmount = Number(sr.refund_amount || sr.total_amount || 0);
+        let customerId = sr.customer_id || order.customer_id || null;
+        if (customerId) {
+          try {
+            const ok = this.db.prepare('SELECT id FROM customers WHERE id = ?').get(String(customerId));
+            if (!ok?.id) customerId = null;
+          } catch {
+            customerId = null;
+          }
+        }
+
+        const creditOnOrder = Number(order.credit_amount || 0);
+        const paidOnOrder = Number(order.paid_amount || 0);
+        const totalOnOrder = Number(order.total_amount || 0);
+        const ps = String(order.payment_status || '').toLowerCase();
+        const outstandingOnOrder = Math.max(0, totalOnOrder - paidOnOrder);
+        const orderHadUnpaidCredit =
+          creditOnOrder > 0.009 || ps === 'on_credit' || outstandingOnOrder > 0.02;
+        const shouldAdjustBalance =
+          customerId &&
+          String(customerId) !== 'default-customer-001' &&
+          refundAmount > 0 &&
+          (this._isCustomerAccountRefund(refundMethod) || orderHadUnpaidCredit);
+
+        if (shouldAdjustBalance) {
+          try {
+            this._applyCustomerRefund(customerId, refundAmount, {
+              returnId,
+              returnNumber: sr.return_number || null,
+              currency: order.currency,
+              method: refundMethod || 'customer_account',
+              createdAt: now,
+              createdBy: userId || null,
+              note:
+                orderHadUnpaidCredit && !this._isCustomerAccountRefund(refundMethod)
+                  ? `Qaytarish — qarz kamaytirildi: ${sr.return_number || ''} (${refundAmount}, ${refundMethod || 'cash'})`
+                  : undefined,
+            });
+          } catch (customerError) {
+            console.warn('⚠️ Failed to update customer balance on completeReturn (non-critical):', customerError.message);
+          }
+        }
+
+        this.db.prepare(`UPDATE sales_returns SET status = 'completed' WHERE id = ?`).run(returnId);
+        return this.getById(returnId);
+      })();
+    } catch (error) {
+      console.error('[RETURNS] completeReturn FAILED:', { message: error.message, code: error.code, returnId });
+      throw error;
+    }
   }
 
   /**
@@ -1090,9 +1530,7 @@ class ReturnsService {
       total_amount: order.total_amount,
     });
     
-    // STEP 2: Get order items with returned quantities calculated from return_items
-    // CRITICAL: Join with return_items to calculate returned_quantity per order_item
-    // Only count returns with status='completed'
+    // STEP 2: Get order items — qaytarilgan miqdor: completed + draft (band qilingan)
     const orderItemsQuery = `
       SELECT 
         oi.id AS order_item_id,
@@ -1112,12 +1550,12 @@ class ReturnsService {
         oi.final_total,
         oi.price_source,
         oi.line_total,
-        oi.returned_quantity AS order_item_returned_qty, -- Legacy field (may be outdated)
-        COALESCE(SUM(CASE WHEN sr.status = 'completed' THEN ri.quantity ELSE 0 END), 0) AS returned_quantity,
-        (oi.quantity - COALESCE(SUM(CASE WHEN sr.status = 'completed' THEN ri.quantity ELSE 0 END), 0)) AS remaining_quantity
+        oi.returned_quantity AS order_item_returned_qty,
+        COALESCE(SUM(CASE WHEN LOWER(TRIM(COALESCE(sr.status, ''))) IN ('completed', 'draft') THEN ri.quantity ELSE 0 END), 0) AS returned_quantity,
+        (oi.quantity - COALESCE(SUM(CASE WHEN LOWER(TRIM(COALESCE(sr.status, ''))) IN ('completed', 'draft') THEN ri.quantity ELSE 0 END), 0)) AS remaining_quantity
       FROM order_items oi
       LEFT JOIN return_items ri ON ri.order_item_id = oi.id
-      LEFT JOIN sales_returns sr ON sr.id = ri.return_id AND sr.status = 'completed'
+      LEFT JOIN sales_returns sr ON sr.id = ri.return_id
       WHERE oi.order_id = ?
       GROUP BY
         oi.id,
@@ -1271,6 +1709,8 @@ class ReturnsService {
         sr.created_at,
         o.order_number as original_order_number,
         o.created_at as order_created_at,
+        o.currency as order_currency,
+        o.fx_rate as order_fx_rate,
         c.name as customer_name
       FROM sales_returns sr
       LEFT JOIN orders o ON sr.order_id = o.id
@@ -1583,9 +2023,11 @@ class ReturnsService {
           throw createError(ERROR_CODES.NOT_FOUND, `Return ${returnId} not found`);
         }
         
-        if (returnRecord.status === 'completed') {
+        if (String(returnRecord.status || '').toLowerCase().trim() === 'completed') {
           throw createError(ERROR_CODES.VALIDATION_ERROR, 'Cannot edit completed returns');
         }
+
+        const isDraftReturn = String(returnRecord.status || '').toLowerCase().trim() === 'draft';
         
         console.log('[RETURNS] Step 1: Return found:', {
           id: returnRecord.id,
@@ -1602,77 +2044,148 @@ class ReturnsService {
         let totalAmount = 0;
         const itemUpdates = [];
         const inventoryDeltas = [];
-        
+        const isManualReturn = String(returnRecord.return_mode || 'order') === 'manual';
+
         for (const itemUpdate of data.items) {
-          const existingItem = existingItems.find(ei => ei.id === itemUpdate.return_item_id);
+          const existingItem = existingItems.find((ei) => ei.id === itemUpdate.return_item_id);
           if (!existingItem) {
             throw createError(ERROR_CODES.NOT_FOUND, `Return item ${itemUpdate.return_item_id} not found`);
           }
-          
+
           const newQuantity = Number(itemUpdate.quantity);
           if (!Number.isFinite(newQuantity) || newQuantity <= 0) {
-            throw createError(ERROR_CODES.VALIDATION_ERROR, `Quantity must be greater than 0 for item ${itemUpdate.return_item_id}`);
+            throw createError(
+              ERROR_CODES.VALIDATION_ERROR,
+              `Quantity must be greater than 0 for item ${itemUpdate.return_item_id}`,
+            );
           }
-          
-          // Get original sold quantity and already returned quantity (excluding current return)
-          const orderItem = this.db.prepare('SELECT quantity FROM order_items WHERE id = ?').get(existingItem.order_item_id);
-          if (!orderItem) {
-            throw createError(ERROR_CODES.NOT_FOUND, `Order item ${existingItem.order_item_id} not found`);
+
+          const manualLine = isManualReturn || !existingItem.order_item_id;
+          let maxAllowed = Number.POSITIVE_INFINITY;
+
+          if (!manualLine) {
+            const orderItem = this.db
+              .prepare('SELECT quantity, qty_sale, qty_base FROM order_items WHERE id = ?')
+              .get(existingItem.order_item_id);
+            if (!orderItem) {
+              throw createError(ERROR_CODES.NOT_FOUND, `Order item ${existingItem.order_item_id} not found`);
+            }
+
+            const originalSoldQty = Number(orderItem.qty_sale ?? orderItem.quantity ?? 0);
+            const committedElsewhere = this._sumCompletedReturnedQtyForOrderItem(existingItem.order_item_id);
+            const draftHoldOther = this._sumDraftReturnedQtyForOrderItem(existingItem.order_item_id, returnId);
+            maxAllowed = originalSoldQty - committedElsewhere - draftHoldOther;
+
+            if (newQuantity > maxAllowed) {
+              throw createError(
+                ERROR_CODES.VALIDATION_ERROR,
+                `Quantity ${newQuantity} exceeds maximum allowed ${maxAllowed} for order_item ${existingItem.order_item_id} (sold: ${originalSoldQty}, completed elsewhere: ${committedElsewhere}, draft holds elsewhere: ${draftHoldOther})`,
+              );
+            }
           }
-          
-          const originalSoldQty = Number(orderItem.quantity || 0);
-          // CRITICAL: Count ALL returns (not just completed) when calculating already_returned_quantity
-          const alreadyReturnedQty = this.db.prepare(`
-            SELECT COALESCE(SUM(ri.quantity), 0) as total
-            FROM return_items ri
-            INNER JOIN sales_returns sr ON sr.id = ri.return_id
-            WHERE ri.order_item_id = ? AND sr.id != ?
-          `).get(existingItem.order_item_id, returnId);
-          
-          const alreadyReturned = Number(alreadyReturnedQty?.total || 0);
-          const maxAllowed = originalSoldQty - alreadyReturned;
-          
-          if (newQuantity > maxAllowed) {
-            throw createError(ERROR_CODES.VALIDATION_ERROR, 
-              `Quantity ${newQuantity} exceeds maximum allowed ${maxAllowed} for order_item ${existingItem.order_item_id} (sold: ${originalSoldQty}, already returned: ${alreadyReturned})`);
-          }
-          
+
           const oldQuantity = Number(existingItem.quantity || 0);
-          const deltaQuantity = newQuantity - oldQuantity;
-          const lineTotal = newQuantity * existingItem.unit_price;
+          const deltaSale = newQuantity - oldQuantity;
+          const unitPrice = Number(existingItem.unit_price || 0);
+          const lineTotal = newQuantity * unitPrice;
           totalAmount += lineTotal;
-          
+
+          const oldBase = Number(existingItem.qty_base ?? existingItem.qty_sale ?? oldQuantity) || 0;
+          const ratio = oldQuantity > 0 ? oldBase / oldQuantity : 1;
+          const newQtyBase = Number((newQuantity * ratio).toFixed(6));
+          const deltaBase = newQtyBase - oldBase;
+
           itemUpdates.push({
             return_item_id: existingItem.id,
             order_item_id: existingItem.order_item_id,
             product_id: existingItem.product_id,
             newQuantity,
             oldQuantity,
-            deltaQuantity,
+            deltaSale,
+            deltaBase,
+            newQtyBase,
             lineTotal,
             unit_price: existingItem.unit_price,
+            manualLine,
           });
-          
-          // Track inventory delta (positive = more returned, negative = less returned)
-          if (deltaQuantity !== 0) {
+
+          if (!isDraftReturn && Math.abs(deltaBase) > 1e-9) {
             inventoryDeltas.push({
               product_id: existingItem.product_id,
-              deltaQuantity,
+              deltaBase,
               order_item_id: existingItem.order_item_id,
             });
           }
-          
-          console.log(`[RETURNS] Step 3: Item ${existingItem.id} - old: ${oldQuantity}, new: ${newQuantity}, delta: ${deltaQuantity}, maxAllowed: ${maxAllowed}`);
+
+          if (process.env.DEBUG_RETURNS === '1') {
+            console.log(
+              `[RETURNS] Step 3: Item ${existingItem.id} old=${oldQuantity} new=${newQuantity} deltaSale=${deltaSale} deltaBase=${deltaBase} maxAllowed=${maxAllowed === Number.POSITIVE_INFINITY ? 'n/a' : maxAllowed}`,
+            );
+          }
         }
-        
-        // Step 4: Update return items
+
+        // Step 4: Update return_items (quantity, line_total; qty_sale / qty_base when present)
         console.log('[RETURNS] Step 4: Updating return items');
+        const hasQtySaleCol = this._hasReturnItemCol('qty_sale');
+        const hasQtyBaseCol = this._hasReturnItemCol('qty_base');
         for (const update of itemUpdates) {
-          this.db.prepare(`
-            UPDATE return_items 
+          if (hasQtySaleCol && hasQtyBaseCol) {
+            this.db
+              .prepare(
+                `
+            UPDATE return_items
+            SET quantity = ?, line_total = ?, qty_sale = ?, qty_base = ?
+            WHERE id = ?
+          `,
+              )
+              .run(update.newQuantity, update.lineTotal, update.newQuantity, update.newQtyBase, update.return_item_id);
+          } else if (hasQtySaleCol) {
+            this.db
+              .prepare(
+                `
+            UPDATE return_items
+            SET quantity = ?, line_total = ?, qty_sale = ?
+            WHERE id = ?
+          `,
+              )
+              .run(update.newQuantity, update.lineTotal, update.newQuantity, update.return_item_id);
+          } else if (hasQtyBaseCol) {
+            this.db
+              .prepare(
+                `
+            UPDATE return_items
+            SET quantity = ?, line_total = ?, qty_base = ?
+            WHERE id = ?
+          `,
+              )
+              .run(update.newQuantity, update.lineTotal, update.newQtyBase, update.return_item_id);
+          } else {
+            this.db
+              .prepare(
+                `
+            UPDATE return_items
             SET quantity = ?, line_total = ?
             WHERE id = ?
-          `).run(update.newQuantity, update.lineTotal, update.return_item_id);
+          `,
+              )
+              .run(update.newQuantity, update.lineTotal, update.return_item_id);
+          }
+        }
+
+        // Step 4b: order_items.returned_quantity (faqat yakunlangan qaytarishlar; draft tahririda emas)
+        if (!isDraftReturn) {
+          for (const update of itemUpdates) {
+            if (update.manualLine || !update.order_item_id || update.deltaSale === 0) continue;
+            this.db
+              .prepare(
+                `
+            UPDATE order_items
+            SET returned_quantity = COALESCE(returned_quantity, 0) + ?
+            WHERE id = ?
+          `,
+              )
+              .run(update.deltaSale, update.order_item_id);
+          }
         }
         
         // Step 5: Update return totals
@@ -1689,39 +2202,46 @@ class ReturnsService {
           returnId
         );
         
-        // Step 6: Adjust inventory for deltas
-        console.log('[RETURNS] Step 6: Adjusting inventory for deltas');
-        for (const delta of inventoryDeltas) {
-          const product = this.db.prepare('SELECT track_stock FROM products WHERE id = ?').get(delta.product_id);
-          if (product && product.track_stock) {
-            if (!this.inventoryService) {
-              throw createError(ERROR_CODES.VALIDATION_ERROR, 'InventoryService is not available. Cannot update stock.');
-            }
-
-            const inventoryWarehouseId = (() => {
-              const preferred = returnRecord.warehouse_id || null;
-              if (preferred) {
-                const wh = this.db.prepare('SELECT id FROM warehouses WHERE id = ?').get(String(preferred));
-                if (wh?.id) return String(wh.id);
+        // Step 6: Adjust inventory for deltas (draft tahririda zaxira o'zgarmaydi — completeReturn qo'llaydi)
+        if (!isDraftReturn) {
+          console.log('[RETURNS] Step 6: Adjusting inventory for deltas');
+          const actorId = String(returnRecord.cashier_id || returnRecord.user_id || SAFE_ADMIN_ID);
+          for (const delta of inventoryDeltas) {
+            const product = this.db.prepare('SELECT track_stock FROM products WHERE id = ?').get(delta.product_id);
+            if (product && product.track_stock) {
+              if (!this.inventoryService) {
+                throw createError(ERROR_CODES.VALIDATION_ERROR, 'InventoryService is not available. Cannot update stock.');
               }
-              const byId = this.db.prepare('SELECT id FROM warehouses WHERE id = ?').get(SAFE_WAREHOUSE_ID);
-              if (byId?.id) return String(byId.id);
-              const anyWh = this.db.prepare('SELECT id FROM warehouses ORDER BY created_at ASC LIMIT 1').get();
-              if (anyWh?.id) return String(anyWh.id);
-              throw createError(ERROR_CODES.VALIDATION_ERROR, 'No warehouses exist in DB. Cannot update return inventory.');
-            })();
-            const stockUpdate = this.inventoryService._updateBalance(
+
+              const inventoryWarehouseId = (() => {
+                const preferred = returnRecord.warehouse_id || null;
+                if (preferred) {
+                  const wh = this.db.prepare('SELECT id FROM warehouses WHERE id = ?').get(String(preferred));
+                  if (wh?.id) return String(wh.id);
+                }
+                const byId = this.db.prepare('SELECT id FROM warehouses WHERE id = ?').get(SAFE_WAREHOUSE_ID);
+                if (byId?.id) return String(byId.id);
+                const anyWh = this.db.prepare('SELECT id FROM warehouses ORDER BY created_at ASC LIMIT 1').get();
+                if (anyWh?.id) return String(anyWh.id);
+                throw createError(ERROR_CODES.VALIDATION_ERROR, 'No warehouses exist in DB. Cannot update return inventory.');
+              })();
+              const stockUpdate = this.inventoryService._updateBalance(
                 delta.product_id,
                 inventoryWarehouseId,
-                delta.deltaQuantity,
-              'return_update',
+                delta.deltaBase,
+                'return_update',
                 'return',
                 returnId,
-                `Return quantity updated for order_item ${delta.order_item_id}`,
-              SAFE_ADMIN_ID
-            );
+                `Return quantity updated for order_item ${delta.order_item_id || 'manual'}`,
+                actorId,
+              );
 
-            console.log(`[RETURNS] Step 6: Inventory adjusted via InventoryService for product ${delta.product_id}: ${stockUpdate.beforeQuantity} -> ${stockUpdate.afterQuantity}`);
+              if (process.env.DEBUG_RETURNS === '1') {
+                console.log(
+                  `[RETURNS] Step 6: Inventory adjusted for product ${delta.product_id}: ${stockUpdate.beforeQuantity} -> ${stockUpdate.afterQuantity} (deltaBase=${delta.deltaBase})`,
+                );
+              }
+            }
           }
         }
         
@@ -1755,6 +2275,53 @@ class ReturnsService {
       }
 
       const returnItems = this.db.prepare('SELECT * FROM return_items WHERE return_id = ?').all(returnId) || [];
+      const wasCompleted = String(returnRecord.status || '').toLowerCase() === 'completed';
+
+      // Batch allocations cleanup (FIFO consistency) — faqat yakunlangan qaytarishda bo'lgan allokatsiyalar
+      if (wasCompleted) {
+      try {
+        const hasBatchTables =
+          this.db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='inventory_batch_allocations'").get() &&
+          this.db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='inventory_batches'").get();
+        if (hasBatchTables && returnItems.length > 0) {
+          const placeholders = returnItems.map(() => '?').join(', ');
+          const allocs = this.db.prepare(`
+            SELECT batch_id, quantity
+            FROM inventory_batch_allocations
+            WHERE direction = 'in'
+              AND reference_type = 'return_item'
+              AND reference_id IN (${placeholders})
+          `).all(returnItems.map((ri) => ri.id));
+          if (allocs.length > 0) {
+            const byBatch = new Map();
+            for (const a of allocs) {
+              byBatch.set(String(a.batch_id), Number(byBatch.get(a.batch_id) || 0) + Number(a.quantity || 0));
+            }
+            for (const [batchId, qty] of byBatch.entries()) {
+              if (qty > 0) {
+                this.db.prepare(`
+                  UPDATE inventory_batches
+                  SET remaining_qty = MAX(0, COALESCE(remaining_qty, 0) - ?),
+                      status = CASE WHEN COALESCE(remaining_qty, 0) - ? <= 0 THEN 'closed' ELSE status END
+                  WHERE id = ?
+                `).run(qty, qty, batchId);
+              }
+            }
+            this.db.prepare(`
+              DELETE FROM inventory_batch_allocations
+              WHERE direction = 'in'
+                AND reference_type = 'return_item'
+                AND reference_id IN (${placeholders})
+            `).run(returnItems.map((ri) => ri.id));
+            console.log(`[RETURNS] deleteReturn: rolled back ${allocs.length} batch allocations for return ${returnId}`);
+          }
+        }
+      } catch (batchErr) {
+        // Don't block deletion if batch tables don't exist or schema is older.
+        console.warn('[RETURNS] deleteReturn: batch rollback skipped:', batchErr.message);
+      }
+      }
+
       const safeWarehouseId = (() => {
         const preferred = returnRecord.warehouse_id;
         if (preferred) {
@@ -1768,39 +2335,41 @@ class ReturnsService {
         throw createError(ERROR_CODES.VALIDATION_ERROR, 'No warehouses exist in DB. Cannot rollback return.');
       })();
 
-      for (const item of returnItems) {
-        const qtyBase = Number(item.qty_base ?? item.quantity ?? 0) || 0;
-        const qtySale = Number(item.quantity || 0) || 0;
-        if (qtyBase > 0) {
-          const product = this.db.prepare('SELECT track_stock FROM products WHERE id = ?').get(item.product_id);
-          if (product?.track_stock) {
-            if (!this.inventoryService) {
-              throw createError(ERROR_CODES.VALIDATION_ERROR, 'InventoryService is not available. Cannot rollback stock.');
+      if (wasCompleted) {
+        for (const item of returnItems) {
+          const qtyBase = Number(item.qty_base ?? item.quantity ?? 0) || 0;
+          const qtySale = Number(item.quantity || 0) || 0;
+          if (qtyBase > 0) {
+            const product = this.db.prepare('SELECT track_stock FROM products WHERE id = ?').get(item.product_id);
+            if (product?.track_stock) {
+              if (!this.inventoryService) {
+                throw createError(ERROR_CODES.VALIDATION_ERROR, 'InventoryService is not available. Cannot rollback stock.');
+              }
+              this.inventoryService._updateBalance(
+                item.product_id,
+                safeWarehouseId,
+                -qtyBase,
+                'return_delete',
+                'return',
+                returnId,
+                `Rollback return ${returnRecord.return_number || returnId}`,
+                returnRecord.user_id || returnRecord.cashier_id || 'default-admin-001'
+              );
             }
-            this.inventoryService._updateBalance(
-              item.product_id,
-              safeWarehouseId,
-              -qtyBase,
-              'return_delete',
-              'return',
-              returnId,
-              `Rollback return ${returnRecord.return_number || returnId}`,
-              returnRecord.user_id || returnRecord.cashier_id || 'default-admin-001'
-            );
+          }
+
+          if (item.order_item_id) {
+            const orderItem = this.db.prepare('SELECT returned_quantity FROM order_items WHERE id = ?').get(item.order_item_id);
+            if (orderItem) {
+              const currentReturned = Number(orderItem.returned_quantity || 0);
+              const nextReturned = Math.max(0, currentReturned - qtySale);
+              this.db.prepare('UPDATE order_items SET returned_quantity = ? WHERE id = ?').run(nextReturned, item.order_item_id);
+            }
           }
         }
 
-        if (item.order_item_id) {
-          const orderItem = this.db.prepare('SELECT returned_quantity FROM order_items WHERE id = ?').get(item.order_item_id);
-          if (orderItem) {
-            const currentReturned = Number(orderItem.returned_quantity || 0);
-            const nextReturned = Math.max(0, currentReturned - qtySale);
-            this.db.prepare('UPDATE order_items SET returned_quantity = ? WHERE id = ?').run(nextReturned, item.order_item_id);
-          }
-        }
+        this._revertCustomerRefund(returnRecord.customer_id, returnId, Number(returnRecord.refund_amount || 0));
       }
-
-      this._revertCustomerRefund(returnRecord.customer_id, returnId, Number(returnRecord.refund_amount || 0));
       this.db.prepare('DELETE FROM return_items WHERE return_id = ?').run(returnId);
       this.db.prepare('DELETE FROM sales_returns WHERE id = ?').run(returnId);
       return { success: true };
@@ -1834,6 +2403,8 @@ class ReturnsService {
         sr.created_at,
         o.order_number as original_order_number,
         o.created_at as order_created_at,
+        o.currency as order_currency,
+        o.fx_rate as order_fx_rate,
         c.name as customer_name,
         COALESCE(u.username, p.username) as cashier_username,
         COALESCE(u.full_name, p.full_name) as cashier_full_name

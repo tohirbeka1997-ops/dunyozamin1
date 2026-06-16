@@ -43,6 +43,12 @@ function registerCustomersHandlers(services) {
     return customers.getLoyaltyCardByCustomerId(customerId);
   }));
 
+  console.log('Registering pos:customers:findByPhone handler...');
+  ipcMain.removeHandler('pos:customers:findByPhone');
+  ipcMain.handle('pos:customers:findByPhone', wrapHandler(async (_event, phone) => {
+    return customers.findByPhone(phone);
+  }));
+
   console.log('Registering pos:customers:create handler...');
   ipcMain.removeHandler('pos:customers:create');
   ipcMain.handle('pos:customers:create', wrapHandler(async (_event, data) => {
@@ -96,7 +102,9 @@ function registerCustomersHandlers(services) {
       order_id || null,
       source || null,
       operation,
-      shift_id || null
+      shift_id || null,
+      payload?.currency ?? 'UZS',
+      payload?.fx_rate ?? payload?.fxRate ?? null
     );
   }));
 

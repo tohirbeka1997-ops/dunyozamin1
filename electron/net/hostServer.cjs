@@ -220,7 +220,10 @@ function startHostServer({
     } catch { /* never fail the response because of metrics */ }
   }
 
-  const imageDir = path.join(process.env.POS_DATA_DIR || process.cwd(), 'product-images');
+  const { getUserDataDir } = require('../lib/runtime.cjs');
+  const imageDir = process.env.POS_DATA_DIR
+    ? path.join(path.resolve(String(process.env.POS_DATA_DIR).trim()), 'product-images')
+    : path.join(getUserDataDir(), 'product-images');
   const maxUploadBytes = Math.max(
     1_000_000,
     Number.parseInt(String(process.env.POS_PRODUCT_IMAGE_MAX_BYTES || '8000000'), 10) || 8_000_000,
@@ -372,15 +375,33 @@ function startHostServer({
       if (method === 'POST' && url === '/rpc') {
         routeRef.value = 'rpc';
 
-        // ---- Global per-IP rate limit (denies loopback bypass intentionally
-        // — rate limiting local RPC is a nice safety net against runaway
-        // scripts on the same host). Loopback volumes are never close to the
-        // default 600/min so this is effectively free in normal operation.
         const ip = clientIp(req, { trustProxy });
-        const gate = limiter.checkRpc(ip);
+        const token = parseAuth(req);
+
+        // Resolve auth early so authenticated sessions use a per-session budget
+        // instead of sharing the tight anonymous per-IP bucket (critical when
+        // POS_TRUST_PROXY is off and every caller appears as 127.0.0.1).
+        let adminBypass = false;
+        let authContext = null;
+        if (token) {
+          if (token === secret) {
+            adminBypass = true;
+          } else {
+            authContext = sessions.verify(token);
+          }
+        }
+
+        const rateKey = adminBypass
+          ? `admin:${ip}`
+          : authContext
+            ? `sess:${String(token).slice(0, 32)}`
+            : ip;
+        const gate = adminBypass || authContext
+          ? limiter.checkAuthRpc(rateKey)
+          : limiter.checkRpc(ip);
         if (!gate.allowed) {
-          try { metrics.rateLimitBlockedTotal.inc({ kind: 'rpc' }); } catch { /* ignore */ }
-          audit.rateLimitBlocked({ key: ip, kind: 'rpc', ip });
+          try { metrics.rateLimitBlockedTotal.inc({ kind: adminBypass || authContext ? 'auth_rpc' : 'rpc' }); } catch { /* ignore */ }
+          audit.rateLimitBlocked({ key: rateKey, kind: adminBypass || authContext ? 'auth_rpc' : 'rpc', ip });
           res.setHeader('Retry-After', Math.ceil(gate.retryAfterMs / 1000));
           return json(
             res,
@@ -390,28 +411,17 @@ function startHostServer({
           );
         }
 
-        const token = parseAuth(req);
         if (!token) {
           return json(res, 401, { ok: false, error: { code: 'AUTH_ERROR', message: 'Unauthorized' } }, c);
         }
 
-        // Resolve auth context:
-        //  - `adminBypass`   = shared POS_HOST_SECRET (no user context)
-        //  - `authContext`   = session-based (userId, username, role)
-        let adminBypass = false;
-        let authContext = null;
-        if (token === secret) {
-          adminBypass = true;
-        } else {
-          authContext = sessions.verify(token);
-          if (!authContext) {
-            return json(
-              res,
-              401,
-              { ok: false, error: { code: 'AUTH_ERROR', message: 'Invalid or expired session' } },
-              c,
-            );
-          }
+        if (!adminBypass && !authContext) {
+          return json(
+            res,
+            401,
+            { ok: false, error: { code: 'AUTH_ERROR', message: 'Invalid or expired session' } },
+            c,
+          );
         }
 
         const payload = await readJson(req);

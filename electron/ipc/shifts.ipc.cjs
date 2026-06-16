@@ -92,6 +92,32 @@ function registerShiftsHandlers(services) {
   // Back-compat / typo: ba’zi chaqiruvlarda `shifts` o‘rniga `shift` (birlik) ishlatilgan.
   ipcMain.removeHandler('pos:shift:getSummary');
   ipcMain.handle('pos:shift:getSummary', getSummaryHandler);
+
+  ipcMain.removeHandler('pos:shifts:cashIn');
+  ipcMain.handle('pos:shifts:cashIn', wrapHandler(async (_event, payload) => {
+    return shifts.cashIn(payload || {});
+  }));
+
+  ipcMain.removeHandler('pos:shifts:cashOut');
+  ipcMain.handle('pos:shifts:cashOut', wrapHandler(async (_event, payload) => {
+    return shifts.cashOut(payload || {});
+  }));
+
+  ipcMain.removeHandler('pos:shifts:listCashMovements');
+  ipcMain.handle('pos:shifts:listCashMovements', wrapHandler(async (_event, payload) => {
+    let p = payload;
+    while (Array.isArray(p) && p.length === 1) {
+      p = p[0];
+    }
+    const shiftId =
+      (typeof p === 'string' && String(p).trim()) ||
+      (p && typeof p === 'object' ? String(p.shiftId ?? p.shift_id ?? '').trim() : '');
+    if (!shiftId) {
+      throw createError(ERROR_CODES.VALIDATION_ERROR, 'shiftId kerak');
+    }
+    const filters = p && typeof p === 'object' && !Array.isArray(p) ? p : {};
+    return shifts.listShiftCashMovements(shiftId, filters);
+  }));
 }
 
 module.exports = { registerShiftsHandlers };

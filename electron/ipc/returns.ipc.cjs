@@ -75,6 +75,11 @@ function registerReturnsHandlers(services) {
   ipcMain.handle('pos:returns:delete', wrapHandler(async (_event, id) => {
     return returns.deleteReturn(id);
   }));
+
+  ipcMain.removeHandler('pos:returns:complete');
+  ipcMain.handle('pos:returns:complete', wrapHandler(async (_event, id) => {
+    return returns.completeReturn(id);
+  }));
 }
 
 module.exports = { registerReturnsHandlers };

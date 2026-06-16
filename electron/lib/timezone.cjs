@@ -37,6 +37,42 @@ function formatYmdInTimeZone(input = new Date(), timeZone = UZBEKISTAN_TIMEZONE)
   return `${parts.year}-${parts.month}-${parts.day}`;
 }
 
+/**
+ * Parse a DB timestamp to epoch ms for sorting/comparison.
+ * Matches frontend `parseDbDate` — SQLite `YYYY-MM-DD HH:mm:ss` is UTC (no Z suffix).
+ */
+function parseDbTimestamp(input) {
+  if (!input) return 0;
+  if (input instanceof Date) {
+    const t = input.getTime();
+    return Number.isFinite(t) ? t : 0;
+  }
+  if (typeof input === 'number') {
+    return Number.isFinite(input) ? input : 0;
+  }
+
+  const s = String(input).trim();
+  if (!s) return 0;
+
+  if (s.includes('T') && (s.endsWith('Z') || /[+-]\d{2}:\d{2}$/.test(s))) {
+    const t = new Date(s).getTime();
+    return Number.isFinite(t) ? t : 0;
+  }
+
+  const sqliteDateTime = /^(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2})(:\d{2})?(\.\d+)?$/;
+  const m = s.match(sqliteDateTime);
+  if (m) {
+    const datePart = m[1];
+    const timePart = `${m[2]}${m[3] ?? ':00'}`;
+    const msPart = m[4] ?? '';
+    const t = new Date(`${datePart}T${timePart}${msPart}Z`).getTime();
+    return Number.isFinite(t) ? t : 0;
+  }
+
+  const t = new Date(s).getTime();
+  return Number.isFinite(t) ? t : 0;
+}
+
 function nowSqlInTimeZone(timeZone = UZBEKISTAN_TIMEZONE) {
   const d = new Date();
   const parts = new Intl.DateTimeFormat('en-GB', {
@@ -63,5 +99,6 @@ module.exports = {
   UZBEKISTAN_TZ_ISO_OFFSET,
   formatYmdInTimeZone,
   nowSqlInTimeZone,
+  parseDbTimestamp,
 };
 

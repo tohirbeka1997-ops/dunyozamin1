@@ -280,16 +280,55 @@ function registerFilesHandlers() {
 
       const ext = path.extname(src).toLowerCase() || '.png';
       const safeExt = ['.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp'].includes(ext) ? ext : '.png';
-      const userData = app.getPath('userData');
-      const imagesDir = path.join(userData, 'product-images');
-      await fs.promises.mkdir(imagesDir, { recursive: true });
+      const { getProductImagesDir } = require('../lib/productImagesDir.cjs');
+      const imagesDir = getProductImagesDir();
       const destFileName = typeof index === 'number' && index >= 0
         ? `${id}-${index}${safeExt}`
         : `${id}${safeExt}`;
       const destPath = path.join(imagesDir, destFileName);
       await fs.promises.copyFile(src, destPath);
-      const displayUrl = `product-image://${destFileName}`;
-      return { path: destPath, fileUrl: displayUrl };
+      const publicPath = `/product-images/${destFileName}`;
+      return { path: destPath, fileUrl: publicPath, legacyUrl: `product-image://${destFileName}` };
+    })
+  );
+
+  // Save pre-compressed product image bytes from renderer (canvas resize before upload)
+  ipcMain.removeHandler('pos:files:saveProductImageBuffer');
+  ipcMain.handle(
+    'pos:files:saveProductImageBuffer',
+    wrapHandler(async (_event, buffer, productIdOrTempId, index, extHint) => {
+      const id = typeof productIdOrTempId === 'string' && productIdOrTempId.trim()
+        ? productIdOrTempId.trim()
+        : `temp-${Date.now()}`;
+
+      let payload;
+      if (Buffer.isBuffer(buffer)) {
+        payload = buffer;
+      } else if (buffer instanceof ArrayBuffer) {
+        payload = Buffer.from(buffer);
+      } else if (buffer && typeof buffer === 'object' && buffer.type === 'Buffer' && Array.isArray(buffer.data)) {
+        payload = Buffer.from(buffer.data);
+      } else {
+        throw createError(ERROR_CODES.VALIDATION_ERROR, 'buffer is required');
+      }
+
+      if (!payload.length) {
+        throw createError(ERROR_CODES.VALIDATION_ERROR, 'Empty image data');
+      }
+
+      const extRaw = typeof extHint === 'string' ? extHint.trim().toLowerCase() : '';
+      const safeExt = ['.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp'].includes(extRaw)
+        ? (extRaw === '.jpeg' ? '.jpg' : extRaw)
+        : '.jpg';
+      const { getProductImagesDir } = require('../lib/productImagesDir.cjs');
+      const imagesDir = getProductImagesDir();
+      const destFileName = typeof index === 'number' && index >= 0
+        ? `${id}-${index}${safeExt}`
+        : `${id}${safeExt}`;
+      const destPath = path.join(imagesDir, destFileName);
+      await fs.promises.writeFile(destPath, payload);
+      const publicPath = `/product-images/${destFileName}`;
+      return { path: destPath, fileUrl: publicPath, legacyUrl: `product-image://${destFileName}` };
     })
   );
 

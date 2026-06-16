@@ -1,0 +1,11 @@
+-- Smena ↔ xarajatlar bog'lanishi.
+--
+-- Eski sxemada `expenses` jadvalida shift_id yo‘q edi va smena yopish
+-- hisobotida (kutilayotgan naqd) kassadan qilingan naqd xarajatlar hisobga
+-- olinmasdi → kassir har doim "kam chiqdi" deb topilardi.
+--
+-- Bu fayl faqat marker — haqiqiy qo‘shish migrate.cjs ichida (idempotent,
+-- duplicate column xatoliksiz) `safeAddColumn` orqali bajariladi.
+--
+-- Indeks: shift_id bo‘yicha tezkor agregatsiya uchun.
+SELECT 1;

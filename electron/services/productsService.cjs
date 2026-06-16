@@ -1,4 +1,5 @@
 const { ERROR_CODES, createError } = require('../lib/errors.cjs');
+const { getCategorySubtreeIds } = require('../lib/categoryTree.cjs');
 const { randomUUID } = require('crypto');
 
 /**
@@ -10,10 +11,243 @@ const { randomUUID } = require('crypto');
  * - All methods are synchronous (better-sqlite3).
  */
 class ProductsService {
-  constructor(db, cacheService = null) {
+  constructor(db, cacheService = null, pricingService = null) {
     this.db = db;
     this.cacheService = cacheService;
+    this.pricingService = pricingService;
+    this.salesService = null;
     this._productsColumns = null;
+    this._orderItemsColumns = null;
+    this._priceHistoryColumns = null;
+  }
+
+  /** Late-bound to avoid circular init (sales needs products; products refreshes hold orders). */
+  bindSalesService(salesService) {
+    this.salesService = salesService;
+  }
+
+  _getOrderItemsColumns() {
+    if (this._orderItemsColumns) return this._orderItemsColumns;
+    try {
+      const cols = this.db.prepare('PRAGMA table_info(order_items)').all() || [];
+      this._orderItemsColumns = new Set(cols.map((c) => c.name));
+    } catch {
+      this._orderItemsColumns = new Set();
+    }
+    return this._orderItemsColumns;
+  }
+
+  _hasOrderItemCol(name) {
+    return this._getOrderItemsColumns().has(name);
+  }
+
+  _priceFieldsChanged(data) {
+    if (!data || typeof data !== 'object') return false;
+    return (
+      data.sale_price !== undefined ||
+      data.master_price !== undefined ||
+      data.product_units !== undefined
+    );
+  }
+
+  /**
+   * Keep product_prices (POS complete) in sync with product_units / products.sale_price.
+   * Migration 050 only backfills once (INSERT OR IGNORE); updates must refresh retail/master rows.
+   */
+  _syncProductPricesCatalog(productId) {
+    if (!this._hasTable('product_prices') || !this._hasTable('price_tiers')) return;
+    const product = this.db.prepare('SELECT * FROM products WHERE id = ?').get(productId);
+    if (!product) return;
+
+    const retailTier = this.db.prepare(`SELECT id FROM price_tiers WHERE code = 'retail' LIMIT 1`).get();
+    const masterTier = this.db.prepare(`SELECT id FROM price_tiers WHERE code = 'master' LIMIT 1`).get();
+    const retailId = retailTier?.id;
+    const masterId = masterTier?.id;
+
+    const units = this._hasTable('product_units')
+      ? this.db
+          .prepare(
+            `SELECT unit, ratio_to_base, sale_price, is_default FROM product_units WHERE product_id = ? ORDER BY is_default DESC`,
+          )
+          .all(productId)
+      : [];
+
+    const fallbackUnit = this._normalizeUnitCode(product.base_unit ?? product.unit ?? 'pcs');
+    const unitRows =
+      units.length > 0
+        ? units
+        : [
+            {
+              unit: fallbackUnit,
+              ratio_to_base: 1,
+              sale_price: Number(product.sale_price ?? 0) || 0,
+              is_default: 1,
+            },
+          ];
+
+    const defaultRow = unitRows.find((u) => u.is_default === 1) || unitRows[0];
+    const defaultSale = Number(defaultRow?.sale_price ?? product.sale_price ?? 0) || 0;
+
+    if (this._hasCol('sale_price') && defaultSale !== Number(product.sale_price ?? 0)) {
+      const now = new Date().toISOString();
+      this.db
+        .prepare(`UPDATE products SET sale_price = ?, updated_at = ? WHERE id = ?`)
+        .run(defaultSale, now, productId);
+    }
+
+    const now = new Date().toISOString().replace('T', ' ').replace('Z', '').substring(0, 19);
+    const upsert = this.db.prepare(`
+      INSERT INTO product_prices (product_id, tier_id, unit, currency, price, updated_at)
+      VALUES (?, ?, ?, 'UZS', ?, ?)
+      ON CONFLICT(product_id, tier_id, currency, unit)
+      DO UPDATE SET price = excluded.price, updated_at = excluded.updated_at
+    `);
+
+    for (const u of unitRows) {
+      const unit = this._normalizeUnitCode(u.unit ?? fallbackUnit);
+      const ratio = Number(u.ratio_to_base ?? 1) || 1;
+      const retailPrice = Number(u.sale_price ?? 0) || 0;
+      if (retailId != null) {
+        upsert.run(productId, retailId, unit, retailPrice, now);
+      }
+      const masterBase = product.master_price;
+      if (masterId != null && masterBase != null && Number(masterBase) > 0) {
+        const masterPrice = (Number(masterBase) || 0) * ratio;
+        upsert.run(productId, masterId, unit, masterPrice, now);
+      }
+    }
+
+    if (this.cacheService?.invalidatePricesForProduct) {
+      this.cacheService.invalidatePricesForProduct(productId);
+    }
+  }
+
+  _resolveCatalogUnitPrice(product, { saleUnit = null, tierCode = 'retail' } = {}) {
+    const unitForPrice = this._normalizeUnitCode(
+      saleUnit ?? product.base_unit ?? product.unit ?? 'pcs',
+    );
+    const tier = tierCode === 'master' ? 'master' : 'retail';
+    if (this.pricingService?.getPriceForProduct) {
+      try {
+        const p = this.pricingService.getPriceForProduct({
+          product_id: product.id,
+          tier_code: tier,
+          currency: 'UZS',
+          unit: unitForPrice,
+        });
+        if (p != null && Number(p) > 0) return Number(p);
+      } catch {
+        /* fallback below */
+      }
+    }
+    if (this._hasTable('product_units')) {
+      const byUnit = this.db
+        .prepare(`SELECT sale_price FROM product_units WHERE product_id = ? AND unit = ?`)
+        .get(product.id, unitForPrice);
+      if (byUnit?.sale_price != null && Number(byUnit.sale_price) > 0) {
+        return Number(byUnit.sale_price);
+      }
+      const def = this.db
+        .prepare(`SELECT sale_price FROM product_units WHERE product_id = ? AND is_default = 1`)
+        .get(product.id);
+      if (def?.sale_price != null && Number(def.sale_price) > 0) {
+        return Number(def.sale_price);
+      }
+    }
+    if (tier === 'master') {
+      return Number(product.master_price ?? product.sale_price ?? 0) || 0;
+    }
+    return Number(product.sale_price ?? 0) || 0;
+  }
+
+  /**
+   * Qoralama (hold) buyurtmalardagi qatorlarni katalog narxi bilan yangilash (qo‘lda narx bundan mustasno).
+   */
+  _refreshHoldOrderItemsForProduct(productId) {
+    if (!this._hasTable('orders') || !this._hasTable('order_items')) return;
+    const product = this.db.prepare('SELECT * FROM products WHERE id = ?').get(productId);
+    if (!product) return;
+
+    const hasPriceSource = this._hasOrderItemCol('price_source');
+    const hasSaleUnit = this._hasOrderItemCol('sale_unit');
+    const hasPriceTier = this._hasOrderItemCol('price_tier');
+    const hasFinalUnitPrice = this._hasOrderItemCol('final_unit_price');
+    const hasFinalTotal = this._hasOrderItemCol('final_total');
+    const hasBasePrice = this._hasOrderItemCol('base_price');
+    const hasUstaPrice = this._hasOrderItemCol('usta_price');
+
+    const rows = this.db
+      .prepare(
+        `
+        SELECT oi.*, o.id AS order_id
+        FROM order_items oi
+        INNER JOIN orders o ON o.id = oi.order_id
+        WHERE oi.product_id = ? AND o.status = 'hold'
+      `,
+      )
+      .all(productId);
+
+    const touchedOrders = new Set();
+    for (const item of rows) {
+      if (hasPriceSource && String(item.price_source || '').toLowerCase() === 'manual') {
+        continue;
+      }
+      const tierCode = hasPriceTier && item.price_tier === 'master' ? 'master' : 'retail';
+      const saleUnit = hasSaleUnit ? item.sale_unit : null;
+      const unitPrice = this._resolveCatalogUnitPrice(product, { saleUnit, tierCode });
+      const qtySale = Number(item.qty_sale ?? item.quantity ?? 0) || 0;
+      const discountAmount = Number(item.discount_amount ?? 0) || 0;
+      const lineTotal = unitPrice * qtySale - discountAmount;
+      const finalUnitPrice = qtySale > 0 ? lineTotal / qtySale : unitPrice;
+
+      const sets = ['unit_price = ?', 'line_total = ?'];
+      const params = [unitPrice, lineTotal];
+      if (hasFinalUnitPrice) {
+        sets.push('final_unit_price = ?');
+        params.push(finalUnitPrice);
+      }
+      if (hasFinalTotal) {
+        sets.push('final_total = ?');
+        params.push(lineTotal);
+      }
+      if (hasBasePrice) {
+        sets.push('base_price = ?');
+        params.push(unitPrice);
+      }
+      if (hasUstaPrice && tierCode === 'master') {
+        sets.push('usta_price = ?');
+        params.push(unitPrice);
+      }
+      params.push(item.id);
+      this.db.prepare(`UPDATE order_items SET ${sets.join(', ')} WHERE id = ?`).run(...params);
+      touchedOrders.add(item.order_id);
+    }
+
+    if (this.salesService?._recalculateOrderTotals) {
+      for (const orderId of touchedOrders) {
+        this.salesService._recalculateOrderTotals(orderId);
+      }
+    }
+  }
+
+  _afterCatalogPriceChange(productId) {
+    this._syncProductPricesCatalog(productId);
+    this._refreshHoldOrderItemsForProduct(productId);
+  }
+
+  _categoryFilterClause(filters) {
+    if (!filters.category_id) return { clause: '', params: [] };
+    const includeSubtree = filters.include_subcategories !== false;
+    const ids = includeSubtree
+      ? getCategorySubtreeIds(this.db, filters.category_id)
+      : [String(filters.category_id)];
+    if (ids.length === 1) {
+      return { clause: ` AND p.category_id = ?`, params: [ids[0]] };
+    }
+    return {
+      clause: ` AND p.category_id IN (${ids.map(() => '?').join(', ')})`,
+      params: ids,
+    };
   }
 
   _normalizeUnitCode(code) {
@@ -114,7 +348,39 @@ class ProductsService {
     }
   }
 
-  _appendPriceHistoryRow({ productId, priceType, oldPrice, newPrice, changedBy, reason, unit }) {
+  /**
+   * Read inventory.default_min_stock from settings (Settings → Ombor UI).
+   * Used as the default min_stock_level when callers don't supply one.
+   */
+  _readDefaultMinStock() {
+    try {
+      const row = this.db
+        .prepare("SELECT value FROM settings WHERE key = 'inventory.default_min_stock'")
+        .get();
+      const n = Number(row?.value);
+      if (Number.isFinite(n) && n >= 0) return Math.floor(n);
+    } catch (_e) {
+      // ignore
+    }
+    return 0;
+  }
+
+  _getPriceHistoryColumns() {
+    if (this._priceHistoryColumns) return this._priceHistoryColumns;
+    try {
+      const cols = this.db.prepare('PRAGMA table_info(price_history)').all() || [];
+      this._priceHistoryColumns = new Set(cols.map((c) => c.name));
+    } catch {
+      this._priceHistoryColumns = new Set();
+    }
+    return this._priceHistoryColumns;
+  }
+
+  _priceHistoryHasBatchId() {
+    return this._getPriceHistoryColumns().has('batch_id');
+  }
+
+  _appendPriceHistoryRow({ productId, priceType, oldPrice, newPrice, changedBy, reason, unit, batchId }) {
     if (!this._hasTable('price_history')) return;
     let oldP = Number(oldPrice);
     let newP = Number(newPrice);
@@ -123,22 +389,17 @@ class ProductsService {
     if (Math.abs(oldP - newP) < 1e-6) return;
     const rid = randomUUID();
     const now = new Date().toISOString();
+    const cols = ['id', 'product_id', 'price_type', 'old_price', 'new_price', 'changed_by', 'changed_at', 'reason', 'unit'];
+    const vals = [rid, productId, priceType, oldP, newP, changedBy || null, now, reason || null, unit || null];
+    if (batchId && this._priceHistoryHasBatchId()) {
+      cols.push('batch_id');
+      vals.push(batchId);
+    }
     this.db
       .prepare(
-        `INSERT INTO price_history (id, product_id, price_type, old_price, new_price, changed_by, changed_at, reason, unit)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        `INSERT INTO price_history (${cols.join(', ')}) VALUES (${cols.map(() => '?').join(', ')})`
       )
-      .run(
-        rid,
-        productId,
-        priceType,
-        oldP,
-        newP,
-        changedBy || null,
-        now,
-        reason || null,
-        unit || null
-      );
+      .run(...vals);
   }
 
   _recordInitialPriceHistory(productId, row, changedBy) {
@@ -197,20 +458,35 @@ class ProductsService {
     }
   }
 
-  _recordPriceHistoryAfterUpdate(productId, beforeRow, afterRow, changedBy) {
+  _recordPriceHistoryAfterUpdate(productId, beforeRow, afterRow, changedBy, opts = {}) {
     if (!this._hasTable('price_history') || !beforeRow || !afterRow) return;
     const uid = changedBy || null;
+    const batchId = opts.batchId || null;
+    const reasonOverride = opts.reasonOverride != null ? opts.reasonOverride : null;
     const n = (v) => (Number.isFinite(Number(v)) ? Number(v) : 0) || 0;
-    if (this._hasCol('purchase_price') && n(beforeRow.purchase_price) !== n(afterRow.purchase_price)) {
-      this._appendPriceHistoryRow({
-        productId,
-        priceType: 'purchase',
-        oldPrice: n(beforeRow.purchase_price),
-        newPrice: n(afterRow.purchase_price),
-        changedBy: uid,
-        reason: null,
-        unit: null,
-      });
+    if (this._hasCol('purchase_price')) {
+      // Tannarx uchun ASL (omborda saqlangan) ustun qiymatini solishtiramiz.
+      // `getById()` (before/afterRow) qabul qilingan PO tannarxi bilan ustini
+      // yopadi, shu sabab faqat shu qiymatlarga tayansak — qabul qilingan PO si
+      // bor mahsulotda haqiqiy o'zgarish "o'zgarmagan" ko'rinib, price_history
+      // yozilmay qoladi. Mavjud bo'lsa chaqiruvchi bergan RAW qiymatlardan
+      // foydalanamiz, aks holda before/afterRow ga qaytamiz.
+      const rawBefore =
+        opts.rawPurchaseBefore != null ? n(opts.rawPurchaseBefore) : n(beforeRow.purchase_price);
+      const rawAfter =
+        opts.rawPurchaseAfter != null ? n(opts.rawPurchaseAfter) : n(afterRow.purchase_price);
+      if (rawBefore !== rawAfter) {
+        this._appendPriceHistoryRow({
+          productId,
+          priceType: 'purchase',
+          oldPrice: rawBefore,
+          newPrice: rawAfter,
+          changedBy: uid,
+          reason: reasonOverride,
+          unit: null,
+          batchId,
+        });
+      }
     }
     if (this._hasCol('sale_price') && n(beforeRow.sale_price) !== n(afterRow.sale_price)) {
       this._appendPriceHistoryRow({
@@ -219,8 +495,9 @@ class ProductsService {
         oldPrice: n(beforeRow.sale_price),
         newPrice: n(afterRow.sale_price),
         changedBy: uid,
-        reason: null,
+        reason: reasonOverride,
         unit: null,
+        batchId,
       });
     }
     if (this._hasCol('master_price') && n(beforeRow.master_price ?? 0) !== n(afterRow.master_price ?? 0)) {
@@ -230,8 +507,9 @@ class ProductsService {
         oldPrice: n(beforeRow.master_price),
         newPrice: n(afterRow.master_price),
         changedBy: uid,
-        reason: null,
+        reason: reasonOverride,
         unit: null,
+        batchId,
       });
     }
     if (this._hasTable('product_units')) {
@@ -258,8 +536,9 @@ class ProductsService {
           oldPrice: o,
           newPrice: nv,
           changedBy: uid,
-          reason: "O'lchov bo'yicha sotuv",
+          reason: reasonOverride != null ? reasonOverride : "O'lchov bo'yicha sotuv",
           unit: u,
+          batchId,
         });
       }
     }
@@ -438,6 +717,26 @@ class ProductsService {
     return stored;
   }
 
+  /**
+   * RAW (omborda saqlangan) `products.purchase_price` qiymatini o'qiydi —
+   * `getById()` dagi qabul qilingan PO tannarxi bilan ustini yopish (display
+   * override) ni chetlab o'tadi. Ommaviy tannarx yangilash va price_history
+   * yozuvi ASL ustun qiymati bilan ishlashi uchun kerak.
+   * Mahsulot topilmasa `null` qaytaradi.
+   */
+  _rawStoredPurchasePrice(productId) {
+    if (!this._hasCol('purchase_price') || !productId) return null;
+    try {
+      const row = this.db
+        .prepare('SELECT purchase_price FROM products WHERE id = ?')
+        .get(productId);
+      if (!row) return null;
+      return Number(row.purchase_price) || 0;
+    } catch (_e) {
+      return null;
+    }
+  }
+
   _requireNonEmptyString(value, fieldName) {
     if (typeof value !== 'string' || !value.trim()) {
       throw createError(ERROR_CODES.VALIDATION_ERROR, `${fieldName} is required`);
@@ -546,10 +845,9 @@ class ProductsService {
       }
     }
 
-    if (filters.category_id) {
-      query += ` AND p.category_id = ?`;
-      params.push(filters.category_id);
-    }
+    const catFilter = this._categoryFilterClause(filters);
+    query += catFilter.clause;
+    params.push(...catFilter.params);
 
     if (filters.status === 'active') {
       query += ` AND p.is_active = 1`;
@@ -560,6 +858,14 @@ class ProductsService {
     if (filters.track_stock !== undefined) {
       query += ` AND p.track_stock = ?`;
       params.push(filters.track_stock ? 1 : 0);
+    }
+
+    if (this._hasCol('show_in_marketplace')) {
+      if (filters.marketplace === 'online') {
+        query += ` AND COALESCE(p.show_in_marketplace, 1) = 1`;
+      } else if (filters.marketplace === 'pos_only') {
+        query += ` AND COALESCE(p.show_in_marketplace, 1) = 0`;
+      }
     }
 
     if (filters.stock_filter && wantsStockJoin) {
@@ -814,10 +1120,9 @@ class ProductsService {
       }
     }
 
-    if (filters.category_id) {
-      query += ` AND p.category_id = ?`;
-      params.push(filters.category_id);
-    }
+    const catFilter = this._categoryFilterClause(filters);
+    query += catFilter.clause;
+    params.push(...catFilter.params);
 
     if (filters.status === 'active') {
       query += ` AND p.is_active = 1`;
@@ -828,6 +1133,14 @@ class ProductsService {
     if (filters.track_stock !== undefined) {
       query += ` AND p.track_stock = ?`;
       params.push(filters.track_stock ? 1 : 0);
+    }
+
+    if (this._hasCol('show_in_marketplace')) {
+      if (filters.marketplace === 'online') {
+        query += ` AND COALESCE(p.show_in_marketplace, 1) = 1`;
+      } else if (filters.marketplace === 'pos_only') {
+        query += ` AND COALESCE(p.show_in_marketplace, 1) = 0`;
+      }
     }
 
     if (filters.stock_filter && wantsStockJoin) {
@@ -902,15 +1215,9 @@ class ProductsService {
   /**
    * Get product by SKU
    */
-  getBySku(sku) {
-    const s = this._requireNonEmptyString(sku, 'SKU');
-    if (this.cacheService) {
-      const cached = this.cacheService.getProductBySku(s);
-      if (cached) return cached;
-    }
-    let row;
+  _queryProductRowBySku(sku) {
     try {
-      row = this.db
+      return this.db
         .prepare(
           `
           SELECT
@@ -926,10 +1233,28 @@ class ProductsService {
           LIMIT 1
         `
         )
-        .get(s);
+        .get(sku);
     } catch (_e) {
-      // Fallback for older schemas without joins
-      row = this.db.prepare(`SELECT * FROM products WHERE sku = ?`).get(s);
+      return this.db.prepare(`SELECT * FROM products WHERE sku = ?`).get(sku);
+    }
+  }
+
+  getBySku(sku) {
+    const s = this._requireNonEmptyString(sku, 'SKU');
+    if (this.cacheService) {
+      const cached = this.cacheService.getProductBySku(s);
+      if (cached) return cached;
+    }
+    const candidates = [s];
+    const trimmedLeadingZeros = s.replace(/^0+/, '') || '0';
+    if (trimmedLeadingZeros !== s) candidates.push(trimmedLeadingZeros);
+    const skuNormalized = s.toLowerCase().replace(/[\s\-_]/g, '');
+    if (skuNormalized && skuNormalized !== s) candidates.push(skuNormalized);
+
+    let row = null;
+    for (const candidate of candidates) {
+      row = this._queryProductRowBySku(candidate);
+      if (row) break;
     }
     if (!row) {
       throw createError(ERROR_CODES.NOT_FOUND, `Product with sku ${s} not found`);
@@ -1112,7 +1437,10 @@ class ProductsService {
     const barcode = data.barcode ? String(data.barcode).trim() : null;
     const purchasePrice = this._assertNonNegative(data.purchase_price ?? 0, 'purchase_price');
     const salePrice = this._assertNonNegative(data.sale_price ?? 0, 'sale_price');
-    const minStockLevel = this._assertNonNegative(data.min_stock_level ?? 0, 'min_stock_level');
+    const minStockLevel = this._assertNonNegative(
+      data.min_stock_level ?? this._readDefaultMinStock(),
+      'min_stock_level'
+    );
     const currentStock = this._toFiniteNumber(data.current_stock ?? 0, 0);
     if (currentStock < 0) {
       throw createError(ERROR_CODES.VALIDATION_ERROR, 'current_stock must be >= 0');
@@ -1192,6 +1520,7 @@ class ProductsService {
       this.cacheService.invalidateProduct(id);
       this.cacheService.invalidatePricesForProduct(id);
     }
+    this._afterCatalogPriceChange(id);
     const created = this.getById(id);
     try {
       this._recordInitialPriceHistory(id, created, meta?.actorUserId);
@@ -1220,6 +1549,11 @@ class ProductsService {
     }
 
     const existing = this.getById(id);
+    // ASL (PO override'siz) tannarxni UPDATE dan OLDIN olamiz — price_history
+    // solishtiruvi `getById` ning PO display override'iga aldanmasligi uchun.
+    const rawPurchaseBefore = this._hasCol('purchase_price')
+      ? this._rawStoredPurchasePrice(id)
+      : null;
 
     const updates = [];
     const params = [];
@@ -1325,19 +1659,345 @@ class ProductsService {
       this.cacheService.invalidateProduct(id);
       this.cacheService.invalidatePricesForProduct(id);
     }
+    if (this._priceFieldsChanged(data)) {
+      this._afterCatalogPriceChange(id);
+    }
     const after = this.getById(id);
-    try {
-      this._recordPriceHistoryAfterUpdate(id, existing, after, meta?.actorUserId);
-    } catch (err) {
-      // Best-effort: see note in `create` above. Log so a broken
-      // price_history table doesn't go unnoticed.
-      console.warn(
-        '[productsService] _recordPriceHistoryAfterUpdate failed for product',
-        id,
-        err?.message || err,
-      );
+    if (!meta?.skipPriceHistory) {
+      try {
+        this._recordPriceHistoryAfterUpdate(id, existing, after, meta?.actorUserId, {
+          batchId: meta?.batchId,
+          reasonOverride: meta?.priceChangeReason,
+          rawPurchaseBefore,
+          rawPurchaseAfter: this._hasCol('purchase_price')
+            ? this._rawStoredPurchasePrice(id)
+            : null,
+        });
+      } catch (err) {
+        // Best-effort: see note in `create` above. Log so a broken
+        // price_history table doesn't go unnoticed.
+        console.warn(
+          '[productsService] _recordPriceHistoryAfterUpdate failed for product',
+          id,
+          err?.message || err,
+        );
+      }
     }
     return after;
+  }
+
+  /**
+   * Ommaviy narx yangilash (bulk price update) — bitta narx maydonini
+   * (sotuv / tannarx / yirik optom) tanlangan mahsulotlarga qo'llaydi.
+   *
+   * Har bir mahsulot uchun mavjud `update()` chaqiriladi — shu orqali
+   * `product_prices` va `product_units` sinxron qoladi va o'zgarish
+   * `price_history` ga (bitta `batch_id` bilan) yoziladi. `batch_id`
+   * keyinchalik `undoBulkPriceUpdate()` orqali aniq oxirgi amalni
+   * qaytarishga imkon beradi.
+   *
+   * payload:
+   *  - product_ids: string[]              (majburiy)
+   *  - field: 'sale' | 'purchase' | 'master' (default: 'sale')
+   *  - mode: 'percent' | 'amount' | 'set' | 'round'
+   *  - percent / amount / exact_price / round_to (mode'ga qarab)
+   *  - reason?: string
+   */
+  bulkAdjustPrices(payload, meta = {}) {
+    if (!payload || typeof payload !== 'object') {
+      throw createError(ERROR_CODES.VALIDATION_ERROR, 'Bulk price payload is required');
+    }
+
+    const FIELD_MAP = {
+      sale: { col: 'sale_price', type: 'sale' },
+      purchase: { col: 'purchase_price', type: 'purchase' },
+      master: { col: 'master_price', type: 'master' },
+    };
+    const field = String(payload.field || 'sale');
+    const map = FIELD_MAP[field];
+    if (!map) {
+      throw createError(ERROR_CODES.VALIDATION_ERROR, `Invalid price field: ${field}`);
+    }
+    if (!this._hasCol(map.col)) {
+      throw createError(ERROR_CODES.VALIDATION_ERROR, `Price column ${map.col} not available`);
+    }
+
+    const ids = Array.isArray(payload.product_ids)
+      ? [...new Set(payload.product_ids.filter(Boolean).map(String))]
+      : [];
+    if (ids.length === 0) {
+      throw createError(ERROR_CODES.VALIDATION_ERROR, 'No products selected for bulk update');
+    }
+    const MAX_BULK_PRODUCT_IDS = 5000;
+    if (ids.length > MAX_BULK_PRODUCT_IDS) {
+      throw createError(
+        ERROR_CODES.VALIDATION_ERROR,
+        `Too many products selected for bulk update (max ${MAX_BULK_PRODUCT_IDS})`
+      );
+    }
+
+    const mode = String(payload.mode || '');
+    const validModes = new Set(['percent', 'amount', 'set', 'round']);
+    if (!validModes.has(mode)) {
+      throw createError(ERROR_CODES.VALIDATION_ERROR, `Invalid bulk price mode: ${mode}`);
+    }
+
+    const opts = {
+      mode,
+      percent: Number(payload.percent),
+      amount: Number(payload.amount),
+      exactPrice: Number(payload.exact_price),
+      roundTo: Number(payload.round_to),
+    };
+    if (mode === 'percent' && !Number.isFinite(opts.percent)) {
+      throw createError(ERROR_CODES.VALIDATION_ERROR, 'percent is required');
+    }
+    if (mode === 'amount' && !Number.isFinite(opts.amount)) {
+      throw createError(ERROR_CODES.VALIDATION_ERROR, 'amount is required');
+    }
+    if (mode === 'set' && (!Number.isFinite(opts.exactPrice) || opts.exactPrice < 0)) {
+      throw createError(ERROR_CODES.VALIDATION_ERROR, 'exact_price must be >= 0');
+    }
+    if (mode === 'round' && (!Number.isFinite(opts.roundTo) || opts.roundTo <= 0)) {
+      throw createError(ERROR_CODES.VALIDATION_ERROR, 'round_to must be > 0');
+    }
+
+    const batchId = randomUUID();
+    const reason =
+      typeof payload.reason === 'string' && payload.reason.trim()
+        ? payload.reason.trim()
+        : 'Ommaviy narx yangilash';
+    const changes = [];
+
+    const apply = () => {
+      for (const id of ids) {
+        let product;
+        try {
+          product = this.getById(id);
+        } catch {
+          continue;
+        }
+        // Tannarx uchun ASL omborda saqlangan ustun qiymatini o'qiymiz —
+        // `product.purchase_price` (getById) qabul qilingan PO tannarxi bilan
+        // ustini yopgan bo'lishi mumkin, bu esa hisoblash/undo'ni buzadi.
+        const oldPrice =
+          field === 'purchase'
+            ? this._rawStoredPurchasePrice(id) ?? 0
+            : Number(product[map.col] ?? 0) || 0;
+        // Yirik optom narxi hali belgilanmagan bo'lsa, faqat "set" rejimida
+        // o'rnatamiz (foiz/summa hech narsadan hisoblanmaydi).
+        if (
+          field === 'master' &&
+          mode !== 'set' &&
+          (product.master_price == null || Number(product.master_price) <= 0)
+        ) {
+          continue;
+        }
+        const newPrice = this._computeBulkNewPrice(oldPrice, opts);
+        if (!Number.isFinite(newPrice) || newPrice < 0) continue;
+        if (Math.abs(newPrice - oldPrice) < 1e-6) continue;
+        const updateMeta = { actorUserId: meta.actorUserId, batchId, priceChangeReason: reason };
+        if (field === 'sale') {
+          this._applySalePriceToProduct(id, newPrice, updateMeta);
+        } else {
+          this.update(id, { [map.col]: newPrice }, updateMeta);
+        }
+        changes.push({
+          product_id: id,
+          name: product.name,
+          sku: product.sku,
+          old_price: oldPrice,
+          new_price: newPrice,
+        });
+      }
+    };
+
+    if (typeof this.db.transaction === 'function') {
+      this.db.transaction(apply)();
+    } else {
+      apply();
+    }
+
+    return {
+      batch_id: batchId,
+      field,
+      price_type: map.type,
+      mode,
+      requested: ids.length,
+      count: changes.length,
+      changes,
+    };
+  }
+
+  /**
+   * Sotuv narxini barqaror o'zgartirish.
+   *
+   * `products.sale_price` `product_units` (default birlik) dan sinxronlanadi
+   * (`_syncProductPricesCatalog`). Shu sabab faqat `sale_price` ustunini
+   * yangilash yetarli emas — default birlik narxini ham yangilash kerak,
+   * aks holda sinxron eski qiymatga qaytarib qo'yadi.
+   */
+  _applySalePriceToProduct(productId, newSale, meta = {}) {
+    const p = this.getById(productId);
+    const list = Array.isArray(p.product_units) ? p.product_units : [];
+    if (list.length > 0) {
+      let di = list.findIndex((u) => u.is_default);
+      if (di < 0) di = 0;
+      const units = list.map((u, i) => ({
+        unit: u.unit,
+        ratio_to_base: u.ratio_to_base,
+        sale_price: i === di ? newSale : u.sale_price,
+        is_default: i === di,
+      }));
+      return this.update(productId, { sale_price: newSale, product_units: units }, meta);
+    }
+    return this.update(productId, { sale_price: newSale }, meta);
+  }
+
+  _computeBulkNewPrice(oldPrice, opts) {
+    const old = Number(oldPrice) || 0;
+    let np;
+    switch (opts.mode) {
+      case 'percent':
+        np = old * (1 + Number(opts.percent) / 100);
+        break;
+      case 'amount':
+        np = old + Number(opts.amount);
+        break;
+      case 'set':
+        np = Number(opts.exactPrice);
+        break;
+      case 'round': {
+        const step = Number(opts.roundTo) > 0 ? Number(opts.roundTo) : 1000;
+        np = Math.round(old / step) * step;
+        break;
+      }
+      default:
+        np = old;
+    }
+    if (!Number.isFinite(np)) return old;
+    np = Math.round(np);
+    return np < 0 ? 0 : np;
+  }
+
+  /**
+   * Oxirgi ommaviy narx amalining qisqa ma'lumoti (undo tugmasini yoqish uchun).
+   * Faqat ommaviy amallar (batch_id bor) hisobga olinadi.
+   */
+  getLastBulkPriceBatch() {
+    if (!this._hasTable('price_history') || !this._priceHistoryHasBatchId()) return null;
+    const row = this.db
+      .prepare(
+        `SELECT batch_id, MAX(changed_at) AS changed_at, reason, COUNT(*) AS cnt
+         FROM price_history
+         WHERE batch_id IS NOT NULL
+         GROUP BY batch_id
+         ORDER BY MAX(changed_at) DESC
+         LIMIT 1`
+      )
+      .get();
+    if (!row || !row.batch_id) return null;
+    return {
+      batch_id: row.batch_id,
+      changed_at: row.changed_at,
+      reason: row.reason || null,
+      count: Number(row.cnt || 0) || 0,
+    };
+  }
+
+  /**
+   * Ommaviy narx amalini orqaga qaytarish (undo).
+   * - batchId berilsa — o'sha amal, aks holda eng oxirgi ommaviy amal.
+   * - Har bir mahsulot narxi `old_price` ga qaytariladi (yana `update()` orqali,
+   *   product_prices/units sinxron qolishi uchun), so'ng shu batch'ning
+   *   price_history yozuvlari o'chiriladi (takroriy undo'ni oldini olish uchun).
+   */
+  undoBulkPriceUpdate(batchId, meta = {}) {
+    if (!this._hasTable('price_history') || !this._priceHistoryHasBatchId()) {
+      throw createError(ERROR_CODES.VALIDATION_ERROR, 'Undo is not supported on this database');
+    }
+    let bid = batchId && String(batchId).trim() ? String(batchId).trim() : null;
+    if (!bid) {
+      const last = this.getLastBulkPriceBatch();
+      bid = last?.batch_id || null;
+    }
+    if (!bid) {
+      throw createError(ERROR_CODES.NOT_FOUND, 'No bulk price operation to undo');
+    }
+
+    const rows = this.db
+      .prepare(
+        `SELECT product_id, price_type, old_price, new_price, changed_at
+         FROM price_history
+         WHERE batch_id = ?
+         ORDER BY changed_at ASC`
+      )
+      .all(bid);
+    if (!rows || rows.length === 0) {
+      throw createError(ERROR_CODES.NOT_FOUND, 'Bulk price operation not found');
+    }
+
+    const FIELD_BY_TYPE = {
+      sale: 'sale_price',
+      purchase: 'purchase_price',
+      master: 'master_price',
+    };
+
+    let reverted = 0;
+    let skipped = 0;
+    const revert = () => {
+      const seen = new Set();
+      for (const r of rows) {
+        const col = FIELD_BY_TYPE[r.price_type];
+        if (!col) continue;
+        // Bitta batch ichida bir mahsulot+tur uchun faqat birinchi (eng erta)
+        // old_price asl qiymat hisoblanadi.
+        const key = `${r.product_id}|${r.price_type}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        try {
+          // Ommaviy amaldan KEYIN qo'lda tahrirlangan bo'lsa undo q'la
+          // yangi qiymatni bosib ketmasligi kerak. Mahsulotning shu narx
+          // turi bo'yicha JORIY qiymati hali ommaviy amal o'rnatgan
+          // `new_price` ga teng bo'lsagina qaytaramiz.
+          // Tannarx uchun ASL ustun qiymatini o'qiymiz (PO override'siz).
+          let current;
+          if (r.price_type === 'purchase') {
+            current = this._rawStoredPurchasePrice(r.product_id);
+            if (current == null) continue; // mahsulot o'chirilgan
+          } else {
+            const p = this.getById(r.product_id);
+            current = Number(p[col] ?? 0) || 0;
+          }
+          if (Math.abs(Number(current) - (Number(r.new_price) || 0)) > 1e-6) {
+            skipped += 1;
+            continue;
+          }
+          const oldPrice = Number(r.old_price) || 0;
+          const undoMeta = { actorUserId: meta.actorUserId, skipPriceHistory: true };
+          if (r.price_type === 'sale') {
+            this._applySalePriceToProduct(r.product_id, oldPrice, undoMeta);
+          } else {
+            this.update(r.product_id, { [col]: oldPrice }, undoMeta);
+          }
+          reverted += 1;
+        } catch {
+          // Mahsulot o'chirilgan bo'lishi mumkin — o'tkazib yuboramiz.
+        }
+      }
+      // Idempotentlik uchun butun batch'ning price_history yozuvlarini
+      // o'chiramiz (o'tkazib yuborilganlar ham). O'tkazib yuborilganlar
+      // soni `skipped` orqali chaqiruvchiga bildiriladi.
+      this.db.prepare('DELETE FROM price_history WHERE batch_id = ?').run(bid);
+    };
+
+    if (typeof this.db.transaction === 'function') {
+      this.db.transaction(revert)();
+    } else {
+      revert();
+    }
+
+    return { batch_id: bid, reverted, skipped };
   }
 
   /**

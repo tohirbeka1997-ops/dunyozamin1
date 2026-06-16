@@ -1,6 +1,7 @@
 const { ERROR_CODES, createError } = require('../lib/errors.cjs');
 const { randomUUID } = require('crypto');
 const crypto = require('crypto');
+const { hashPassword, verifyPassword, needsUpgrade } = require('../lib/password.cjs');
 
 /**
  * Auth Service
@@ -54,20 +55,22 @@ class AuthService {
       };
     }
 
-    const passwordHash = crypto.createHash('sha256').update(trimmedPassword).digest('hex');
-
-    // Constant-time compare to neutralise timing oracles. Both buffers are
-    // hex digests of identical length so this is safe.
-    let passwordOk = false;
-    try {
-      const a = Buffer.from(passwordHash, 'hex');
-      const b = Buffer.from(String(user.password_hash), 'hex');
-      passwordOk = a.length === b.length && a.length > 0 && crypto.timingSafeEqual(a, b);
-    } catch {
-      passwordOk = false;
-    }
+    // Verify against scrypt or legacy SHA-256 hashes (timing-safe internally).
+    const passwordOk = verifyPassword(trimmedPassword, user.password_hash);
     if (!passwordOk) {
       return { success: false, error: 'Invalid credentials' };
+    }
+
+    // Transparently upgrade legacy SHA-256 hashes to scrypt after a successful
+    // login. Best-effort: never block login if the rehash write fails.
+    if (needsUpgrade(user.password_hash)) {
+      try {
+        this.db
+          .prepare('UPDATE users SET password_hash = ?, updated_at = ? WHERE id = ?')
+          .run(hashPassword(trimmedPassword), new Date().toISOString(), user.id);
+      } catch (rehashError) {
+        console.error('[auth] Failed to upgrade password hash:', rehashError.message);
+      }
     }
 
     // Get role from user_roles table (many-to-many relationship)
@@ -138,18 +141,24 @@ class AuthService {
    * @param {string} identifier - Username or phone number
    * @returns {Object} { ok: true, data: { token_id, code, expires_at } }
    */
-  requestPasswordReset(identifier) {
+  requestPasswordReset(identifier, options = {}) {
+    // Desktop IPC and web RPC both show the code on-screen (no email/SMS).
+    // Pass includeCode:false only when a caller must persist a token without
+    // revealing the code (rare; not used by pos:auth:requestPasswordReset RPC).
+    const includeCode = options.includeCode !== false;
     if (!identifier || !identifier.trim()) {
-      throw createError(ERROR_CODES.VALIDATION_ERROR, 'Username or phone number is required');
+      throw createError(ERROR_CODES.VALIDATION_ERROR, 'Username, email, or phone number is required');
     }
 
-    // Find user by username or phone
+    const trimmed = identifier.trim().toLowerCase();
+
+    // Match login lookup: username, email, or phone (case-insensitive for username/email).
     const user = this.db.prepare(`
       SELECT id, username, phone, is_active 
       FROM users 
-      WHERE username = ? OR phone = ? 
+      WHERE LOWER(username) = ? OR LOWER(COALESCE(email, '')) = ? OR phone = ?
       LIMIT 1
-    `).get(identifier.trim(), identifier.trim());
+    `).get(trimmed, trimmed, identifier.trim());
 
     if (!user) {
       throw createError(ERROR_CODES.NOT_FOUND, 'User not found');
@@ -160,7 +169,7 @@ class AuthService {
     }
 
     // Generate 6-digit code
-    const code = String(Math.floor(100000 + Math.random() * 900000));
+    const code = String(crypto.randomInt(100000, 1000000));
 
     // Generate salt (16 random bytes as hex)
     const salt = crypto.randomBytes(16).toString('hex');
@@ -184,13 +193,16 @@ class AuthService {
       ) VALUES (?, ?, ?, ?, ?, ?)
     `).run(tokenId, user.id, tokenHash, salt, expiresAt, now);
 
-    // Return token_id, code (only time code is returned), and expires_at
+    // Return token_id and expires_at. The code is included ONLY for trusted
+    // local transports; over the network it is withheld so the reset cannot be
+    // completed by whoever merely requested it.
     return {
       ok: true,
       data: {
         token_id: tokenId,
-        code: code, // Only returned here, never logged
+        ...(includeCode ? { code } : {}),
         expires_at: expiresAt,
+        code_delivered: includeCode,
       },
     };
   }
@@ -216,8 +228,8 @@ class AuthService {
       throw createError(ERROR_CODES.VALIDATION_ERROR, 'New password is required');
     }
 
-    // Validate password length
-    if (new_password.length < 6) {
+    // Validate password length (against the trimmed value we actually store)
+    if (String(new_password).trim().length < 6) {
       throw createError(
         ERROR_CODES.VALIDATION_ERROR,
         'Password must be at least 6 characters long'
@@ -257,9 +269,8 @@ class AuthService {
         throw createError(ERROR_CODES.TOKEN_INVALID, 'Invalid reset code');
       }
 
-      // Hash new password using SHA-256 (for consistency with current system)
-      // Note: Ideally should use bcrypt, but using SHA-256 to match existing auth
-      const passwordHash = crypto.createHash('sha256').update(new_password).digest('hex');
+      // Hash new password with scrypt (trim to match login, which trims input).
+      const passwordHash = hashPassword(String(new_password).trim());
 
       // Update user password
       this.db.prepare('UPDATE users SET password_hash = ?, updated_at = ? WHERE id = ?').run(

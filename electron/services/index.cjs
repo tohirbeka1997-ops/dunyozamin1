@@ -126,6 +126,7 @@ const CacheService = requireService('./cacheService.cjs', 'CacheService');
 const PromotionService = requireService('./promotionService.cjs', 'PromotionService');
 const WebOrdersService = requireService('./webOrdersService.cjs', 'WebOrdersService');
 const CouriersService = requireService('./couriersService.cjs', 'CouriersService');
+const MarketplaceContentService = requireService('./marketplaceContentService.cjs', 'MarketplaceContentService');
 
 /**
  * Initialize all services with database instance
@@ -144,11 +145,17 @@ function createServices(db) {
   const promotionService = new PromotionService(db);
   const salesService = new SalesService(db, inventoryService, batchService, costService, pricingService, promotionService);
   const returnsService = new ReturnsService(db, inventoryService, batchService);
+  // refundOrder() delegates to the canonical returns path so stock ledger,
+  // customer balance/ledger, and shift linkage stay consistent (audit #5).
+  salesService.returnsService = returnsService;
   const purchaseService = new PurchaseService(db, inventoryService, batchService, cacheService);
+
+  const productsService = new ProductsService(db, cacheService, pricingService);
+  productsService.bindSalesService(salesService);
 
   const services = {
     categories: new CategoriesService(db),
-    products: new ProductsService(db, cacheService),
+    products: productsService,
     warehouses: new WarehousesService(db),
     customers: new CustomersService(db),
     suppliers: new SupplierService(db),
@@ -176,6 +183,7 @@ function createServices(db) {
   services.quotes = new QuotesService(db, salesService);
   services.webOrders = new WebOrdersService(db);
   services.couriers = new CouriersService(db);
+  services.marketplaceContent = new MarketplaceContentService(db);
   return services;
 }
 
@@ -207,6 +215,7 @@ module.exports = {
   CacheService,
   PromotionService,
   WebOrdersService,
+  MarketplaceContentService,
   createServices,
 };
 

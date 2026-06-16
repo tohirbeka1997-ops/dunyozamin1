@@ -28,7 +28,20 @@ function throwRemoteError(errLike, fallbackMessage = 'Remote error') {
   throw new Error(typeof errLike === 'string' ? errLike : fallbackMessage);
 }
 
-async function postJson(url, payload, { secret, timeoutMs = 15000 } = {}) {
+/** Read-only pricing lookups: on 429 return null instead of throwing (POS scan bursts). */
+const SOFT_RATE_LIMIT_CHANNELS = new Set([
+  'pos:pricing:getPrice',
+  'pos:pricing:getTiers',
+]);
+
+function isRateLimited(status, json) {
+  return (
+    status === 429 ||
+    (json && typeof json === 'object' && json.ok === false && json.error?.code === 'RATE_LIMITED')
+  );
+}
+
+async function postJson(url, payload, { bearer, timeoutMs = 15000 } = {}) {
   const controller = new AbortController();
   const t = setTimeout(() => controller.abort(), timeoutMs);
   try {
@@ -36,7 +49,7 @@ async function postJson(url, payload, { secret, timeoutMs = 15000 } = {}) {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        Authorization: `Bearer ${secret || ''}`,
+        Authorization: `Bearer ${bearer || ''}`,
       },
       body: JSON.stringify(payload),
       signal: controller.signal,
@@ -47,6 +60,22 @@ async function postJson(url, payload, { secret, timeoutMs = 15000 } = {}) {
     clearTimeout(t);
   }
 }
+
+/**
+ * Bootstrap channels are the only ones a CLIENT terminal may call with the
+ * shared host secret (transport auth). `pos:auth:login` needs the secret to
+ * mint a session; the rest are public/pre-login. EVERY other channel is sent
+ * with the logged-in user's session token so the HOST enforces ROLE_RULES
+ * against that user's role instead of granting blanket admin via the secret
+ * (audit #1).
+ */
+const BOOTSTRAP_CHANNELS = new Set([
+  'pos:auth:login',
+  'pos:auth:requestPasswordReset',
+  'pos:auth:confirmPasswordReset',
+  'pos:health',
+  'pos:appConfig:get',
+]);
 
 /**
  * CLIENT mode: forward all `pos:*` invoke channels to HOST via HTTP RPC.
@@ -61,48 +90,70 @@ function registerClientForwarders({ hostUrl, secret }) {
 
   const rpcUrl = `${base}/rpc`;
 
-  for (const channel of POS_CHANNELS) {
-    // Keep local-only channels local (they are not included in POS_CHANNELS by design)
-    ipcMain.removeHandler(channel);
-    ipcMain.handle(channel, async (_event, ...args) => {
-      const { status, json } = await postJson(rpcUrl, { channel, args }, {
-        secret,
-        timeoutMs: defaultClientRpcTimeoutMs(),
+  // The session token of the user currently logged in ON THIS TERMINAL. It is
+  // captured from the `pos:auth:login` response and used as the Bearer for all
+  // non-bootstrap forwarded calls, so the HOST applies that user's role (NOT
+  // the shared-secret admin bypass).
+  let sessionToken = null;
+
+  async function callRpc(channel, args = []) {
+    const isBootstrap = BOOTSTRAP_CHANNELS.has(channel);
+    const bearer = isBootstrap ? secret : (sessionToken || secret);
+
+    const { status, json } = await postJson(rpcUrl, { channel, args }, {
+      bearer,
+      timeoutMs: defaultClientRpcTimeoutMs(),
+    });
+
+    if (status === 401) {
+      if (!isBootstrap) sessionToken = null;
+      throwRemoteError({
+        code: ERROR_CODES.AUTH_ERROR,
+        message: 'Unauthorized (check secret / session)',
+        details: null,
       });
+    }
 
-      if (status === 401) {
-        throwRemoteError({
-          code: ERROR_CODES.AUTH_ERROR,
-          message: 'Unauthorized (check secret / session)',
-          details: null,
-        });
-      }
+    if (isRateLimited(status, json) && SOFT_RATE_LIMIT_CHANNELS.has(channel)) {
+      return null;
+    }
 
-      if (!json || typeof json !== 'object') {
-        throwRemoteError({
-          code: ERROR_CODES.INTERNAL_ERROR,
-          message: 'Invalid response from host',
-          details: { status },
-        });
-      }
-
-      if (json.ok === true) {
-        return json.data;
-      }
-
-      if (json.ok === false && json.error) {
-        throwRemoteError(json.error, 'Host returned an error');
-      }
-
+    if (!json || typeof json !== 'object') {
       throwRemoteError({
         code: ERROR_CODES.INTERNAL_ERROR,
-        message: 'Unexpected response from host',
-        details: json,
+        message: 'Invalid response from host',
+        details: { status },
       });
+    }
+
+    if (json.ok === true) {
+      if (channel === 'pos:auth:login' && json.data && json.data.token) {
+        sessionToken = json.data.token;
+      } else if (channel === 'pos:auth:logout') {
+        sessionToken = null;
+      }
+      return json.data;
+    }
+
+    if (json.ok === false && json.error) {
+      throwRemoteError(json.error, 'Host returned an error');
+    }
+
+    throwRemoteError({
+      code: ERROR_CODES.INTERNAL_ERROR,
+      message: 'Unexpected response from host',
+      details: json,
     });
   }
 
+  for (const channel of POS_CHANNELS) {
+    // Keep local-only channels local (they are not included in POS_CHANNELS by design)
+    ipcMain.removeHandler(channel);
+    ipcMain.handle(channel, async (_event, ...args) => callRpc(channel, args));
+  }
+
   console.log(`[POSNET] CLIENT forwarders registered (${POS_CHANNELS.length} channels) -> ${base}`);
+  return { callRpc };
 }
 
 module.exports = { registerClientForwarders };

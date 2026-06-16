@@ -21,6 +21,10 @@ module.exports = {
     'pos:products:create',
     'pos:products:update',
     'pos:products:delete',
+    // Ommaviy narx yangilash (bulk price update + undo)
+    'pos:products:bulkAdjustPrices',
+    'pos:products:undoBulkPriceUpdate',
+    'pos:products:getLastBulkPriceBatch',
     // Scale exports (forwardable in CLIENT mode; file save stays local via pos:files:*)
     'pos:products:exportScaleRongtaTxt',
     'pos:products:exportScaleSharqTxt',
@@ -61,6 +65,7 @@ module.exports = {
     'pos:customers:get',
     'pos:customers:getByLoyaltyQr',
     'pos:customers:getLoyaltyCard',
+    'pos:customers:findByPhone',
     'pos:customers:create',
     'pos:customers:update',
     'pos:customers:delete',
@@ -120,6 +125,8 @@ module.exports = {
     'pos:returns:list',
     'pos:returns:getOrderDetails',
     'pos:returns:update',
+    'pos:returns:delete',
+    'pos:returns:complete',
 
     // Purchases
     'pos:purchases:list',
@@ -155,6 +162,9 @@ module.exports = {
     'pos:shifts:list',
     'pos:shifts:getSummary',
     'pos:shift:getSummary',
+    'pos:shifts:cashIn',
+    'pos:shifts:cashOut',
+    'pos:shifts:listCashMovements',
 
     // Reports
     'pos:reports:dailySales',
@@ -179,6 +189,9 @@ module.exports = {
     'pos:reports:cashFlow',
     'pos:reports:cashDiscrepancies',
     'pos:reports:aging',
+    'pos:reports:paymentMethodsSummary',
+    'pos:reports:cashierPerformance',
+    'pos:reports:customerSalesReport',
     'pos:reports:customerAging',
     'pos:reports:supplierAging',
     'pos:reports:vipCustomers',
@@ -236,6 +249,8 @@ module.exports = {
     // Orders
     'pos:orders:list',
     'pos:orders:get',
+    'pos:orders:getByCustomer',
+    'pos:orders:getByNumber',
 
     // Onlayn buyurtmalar (marketplace / Telegram)
     'pos:webOrders:list',
@@ -244,6 +259,8 @@ module.exports = {
     'pos:webOrders:update',
     'pos:webOrders:cancel',
     'pos:webOrders:dispatchToCourier',
+    'pos:webOrders:countsByQueue',
+    'pos:webOrders:reportSummary',
 
     // Telegram couriers
     'pos:couriers:list',
@@ -261,6 +278,11 @@ module.exports = {
     // System / Debug
     'pos:health',
     'pos:debug:tableCounts',
+    'pos:database:export',
+    'pos:database:uploadBegin',
+    'pos:database:uploadChunk',
+    'pos:database:uploadFinalize',
+    'pos:database:replaceFromUpload',
     'pos:database:wipeDataOnly',
     'pos:database:wipeAllData',
   ],

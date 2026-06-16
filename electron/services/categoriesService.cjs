@@ -1,5 +1,6 @@
 const { ERROR_CODES, createError } = require('../lib/errors.cjs');
 const { randomUUID } = require('crypto');
+const { rollupProductCounts } = require('../lib/categoryTree.cjs');
 
 /**
  * Categories Service
@@ -101,7 +102,8 @@ class CategoriesService {
       console.log(`📦 Sample category: ${sample.name} has ${sample.products_count} products`);
     }
     
-    return categories.map((r) => this._normalizeCategory(r));
+    const normalized = categories.map((r) => this._normalizeCategory(r));
+    return rollupProductCounts(normalized);
   }
 
   /**

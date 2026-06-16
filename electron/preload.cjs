@@ -88,6 +88,11 @@ contextBridge.exposeInMainWorld('posApi', {
     create: (data, actorUserId) => invoke('pos:products:create', data, actorUserId ?? null),
     update: (id, data, actorUserId) => invoke('pos:products:update', id, data, actorUserId ?? null),
     delete: (id, actorUserId) => invoke('pos:products:delete', id, actorUserId ?? null),
+    bulkAdjustPrices: (payload, actorUserId) =>
+      invoke('pos:products:bulkAdjustPrices', payload, actorUserId ?? null),
+    undoBulkPriceUpdate: (batchId, actorUserId) =>
+      invoke('pos:products:undoBulkPriceUpdate', batchId ?? null, actorUserId ?? null),
+    getLastBulkPriceBatch: () => invoke('pos:products:getLastBulkPriceBatch'),
     exportScaleRongtaTxt: (opts) => invoke('pos:products:exportScaleRongtaTxt', opts),
     exportScaleSharqTxt: (opts) => invoke('pos:products:exportScaleSharqTxt', opts),
     exportScaleCsv3: (opts) => invoke('pos:products:exportScaleCsv3', opts),
@@ -123,6 +128,7 @@ contextBridge.exposeInMainWorld('posApi', {
     get: (id) => invoke('pos:customers:get', id),
     getByLoyaltyQr: (payload) => invoke('pos:customers:getByLoyaltyQr', payload),
     getLoyaltyCard: (customerId) => invoke('pos:customers:getLoyaltyCard', customerId),
+    findByPhone: (phone) => invoke('pos:customers:findByPhone', phone),
     create: (data) => invoke('pos:customers:create', data),
     update: (id, data) => invoke('pos:customers:update', id, data),
     delete: (id) => invoke('pos:customers:delete', id),
@@ -217,6 +223,7 @@ contextBridge.exposeInMainWorld('posApi', {
     getOrderDetails: (orderId) => invoke('pos:returns:getOrderDetails', orderId),
     update: (returnId, payload) => invoke('pos:returns:update', returnId, payload),
     delete: (id) => invoke('pos:returns:delete', id),
+    complete: (id) => invoke('pos:returns:complete', id),
   },
 
   // Purchases
@@ -268,6 +275,9 @@ contextBridge.exposeInMainWorld('posApi', {
     getStatus: (userId, warehouseId) => invoke('pos:shifts:getStatus', userId, warehouseId),
     require: (userId, warehouseId) => invoke('pos:shifts:require', userId, warehouseId),
     list: (filters) => invoke('pos:shifts:list', filters),
+    cashIn: (payload) => invoke('pos:shifts:cashIn', payload),
+    cashOut: (payload) => invoke('pos:shifts:cashOut', payload),
+    listCashMovements: (payload) => invoke('pos:shifts:listCashMovements', payload),
   },
 
   // Reports
@@ -296,6 +306,9 @@ contextBridge.exposeInMainWorld('posApi', {
     // Financial Reports
     cashFlow: (filters) => invoke('pos:reports:cashFlow', filters),
     cashDiscrepancies: (filters) => invoke('pos:reports:cashDiscrepancies', filters),
+    paymentMethodsSummary: (filters) => invoke('pos:reports:paymentMethodsSummary', filters),
+    cashierPerformance: (filters) => invoke('pos:reports:cashierPerformance', filters),
+    customerSalesReport: (filters) => invoke('pos:reports:customerSalesReport', filters),
     aging: (filters) => invoke('pos:reports:aging', filters),
     customerAging: () => invoke('pos:reports:customerAging'),
     supplierAging: () => invoke('pos:reports:supplierAging'),
@@ -353,6 +366,18 @@ contextBridge.exposeInMainWorld('posApi', {
     resetDatabase: (payload) => invoke('pos:settings:resetDatabase', payload),
   },
 
+  // Database backup / export / upload
+  database: {
+    downloadToPc: () => invoke('pos:database:downloadToPc'),
+    uploadToServer: (payload) => invoke('pos:database:uploadToServer', payload),
+    onUploadProgress: (callback) => {
+      if (typeof callback !== 'function') return () => {};
+      const listener = (_event, data) => callback(data);
+      ipcRenderer.on('pos:database:uploadProgress', listener);
+      return () => ipcRenderer.removeListener('pos:database:uploadProgress', listener);
+    },
+  },
+
   // Exchange Rates
   exchangeRates: {
     getLatest: (filters) => invoke('pos:exchangeRates:getLatest', filters),
@@ -405,6 +430,8 @@ contextBridge.exposeInMainWorld('posApi', {
 
   webOrders: {
     list: (filters) => invoke('pos:webOrders:list', filters),
+    countsByQueue: () => invoke('pos:webOrders:countsByQueue'),
+    reportSummary: (filters) => invoke('pos:webOrders:reportSummary', filters),
     get: (id) => invoke('pos:webOrders:get', id),
     updateStatus: (id, status) => invoke('pos:webOrders:updateStatus', id, status),
     update: (id, payload) => invoke('pos:webOrders:update', id, payload),
@@ -418,6 +445,16 @@ contextBridge.exposeInMainWorld('posApi', {
     setActive: (id, active) => invoke('pos:couriers:setActive', id, active),
   },
 
+  marketplaceContent: {
+    listBanners: (opts) => invoke('pos:marketplaceContent:listBanners', opts),
+    saveBanner: (payload) => invoke('pos:marketplaceContent:saveBanner', payload),
+    deleteBanner: (id) => invoke('pos:marketplaceContent:deleteBanner', id),
+    reorderBanners: (items) => invoke('pos:marketplaceContent:reorderBanners', items),
+    getDailyDeal: (dateISO) => invoke('pos:marketplaceContent:getDailyDeal', dateISO),
+    setDailyDeal: (payload) => invoke('pos:marketplaceContent:setDailyDeal', payload),
+    dailyDealHistory: (limit) => invoke('pos:marketplaceContent:dailyDealHistory', limit),
+  },
+
   // Files (export/backups/import)
   files: {
     selectSavePath: (defaultName) => invoke('pos:files:selectSavePath', defaultName),
@@ -429,6 +466,8 @@ contextBridge.exposeInMainWorld('posApi', {
     selectImageFile: () => invoke('pos:files:selectImageFile'),
     saveProductImage: (sourcePath, productIdOrTempId, index) =>
       invoke('pos:files:saveProductImage', sourcePath, productIdOrTempId, index),
+    saveProductImageBuffer: (buffer, productIdOrTempId, index, extHint) =>
+      invoke('pos:files:saveProductImageBuffer', buffer, productIdOrTempId, index, extHint),
     pathToFileUrl: (filePath) => invoke('pos:files:pathToFileUrl', filePath),
   },
 

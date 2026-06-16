@@ -13,6 +13,15 @@ function registerWebOrdersHandlers(services) {
   ipcMain.removeHandler('pos:webOrders:list');
   ipcMain.handle('pos:webOrders:list', wrapHandler(async (_event, filters) => svc.list(filters || {})));
 
+  ipcMain.removeHandler('pos:webOrders:countsByQueue');
+  ipcMain.handle('pos:webOrders:countsByQueue', wrapHandler(async () => svc.countsByQueue()));
+
+  ipcMain.removeHandler('pos:webOrders:reportSummary');
+  ipcMain.handle(
+    'pos:webOrders:reportSummary',
+    wrapHandler(async (_event, filters) => svc.reportSummary(filters || {})),
+  );
+
   ipcMain.removeHandler('pos:webOrders:get');
   ipcMain.handle('pos:webOrders:get', wrapHandler(async (_event, id) => svc.get(id)));
 

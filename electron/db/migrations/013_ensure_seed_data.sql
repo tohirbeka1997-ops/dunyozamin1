@@ -20,32 +20,39 @@ VALUES ('default-customer-001', 'Yuruvchi mijoz', '998000000000');
 
 -- 3. ADMIN (Email ko'rinishida)
 -- Frontend email talab qilgani uchun username ni email qilamiz.
--- Password: '12345' (SHA-256 hash)
--- Hash computed: echo -n '12345' | sha256sum
 -- Note: Users table doesn't have a 'role' column - roles are managed via user_roles table
+--
+-- SECURITY (audit #3): We seed a default admin row ONLY when it does not yet
+-- exist (INSERT OR IGNORE is guarded by the primary key, i.e. effectively
+-- "INSERT ... WHERE NOT EXISTS this id"). The seed password is the well-known
+-- bootstrap value '12345' (SHA-256) for first-run access only; operators MUST
+-- change it after first login.
+--
+-- We deliberately DO NOT run an unconditional UPDATE that re-sets
+-- password_hash on every migrate. The previous version reset the hash back to
+-- the default on EVERY app start, silently clobbering any operator-changed
+-- password and leaving the default credentials permanently valid. Removing it
+-- keeps migrations idempotent (re-runs are no-ops) while never overwriting or
+-- deleting an existing admin account or its password.
 
--- Step 1: Insert user if doesn't exist (preserves created_at)
+-- Step 1: Insert default admin only if this id doesn't already exist.
+-- (preserves created_at AND any password the operator later set)
 INSERT OR IGNORE INTO users (id, username, full_name, email, password_hash, is_active, created_at, updated_at) 
 VALUES (
   'default-admin-001', 
   'admin@pos.com', 
   'Administrator',
   'admin@pos.com',
-  '5994471abb01112afcc18159f6cc74b4f511b99806da59b3caf5a9c173cacfc5', -- SHA-256('12345')
+  '5994471abb01112afcc18159f6cc74b4f511b99806da59b3caf5a9c173cacfc5', -- SHA-256('12345') — change after first login
   1,
   datetime('now'),
   datetime('now')
 );
 
--- Step 2: ALWAYS update password_hash (ensures it's set even if user already existed)
--- This is critical because INSERT OR IGNORE won't update existing rows
-UPDATE users 
-SET password_hash = '5994471abb01112afcc18159f6cc74b4f511b99806da59b3caf5a9c173cacfc5',
-    updated_at = datetime('now'),
-    is_active = 1,
-    email = COALESCE(email, 'admin@pos.com'),
-    full_name = COALESCE(full_name, 'Administrator')
-WHERE id = 'default-admin-001';
+-- Step 2 (REMOVED, audit #3): the unconditional
+--   UPDATE users SET password_hash = '<sha256 of 12345>' WHERE id = 'default-admin-001';
+-- was deleted. It reset the admin password to the factory default on every
+-- migrate run, defeating any operator password change.
 
 -- Assign admin role to admin user (CRITICAL for RBAC)
 -- Step 1: Ensure admin role exists in roles table

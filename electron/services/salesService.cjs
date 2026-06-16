@@ -1,7 +1,15 @@
 const { ERROR_CODES, createError } = require('../lib/errors.cjs');
 const { randomUUID } = require('crypto');
 const { readConfig } = require('../config/appConfig.cjs');
-const { UZBEKISTAN_TZ_SQLITE_OFFSET } = require('../lib/timezone.cjs');
+const { UZBEKISTAN_TZ_SQLITE_OFFSET, parseDbTimestamp } = require('../lib/timezone.cjs');
+const {
+  hasCustomerBalanceUsd,
+  hasCustomerLedgerCurrency,
+  normalizeCustomerCurrency,
+  readCustomerBalances,
+  readBalanceInCurrency,
+  orderSalesStatUzs,
+} = require('../lib/customerBalance.cjs');
 
 /**
  * Sales Service (POS Terminal)
@@ -34,6 +42,59 @@ class SalesService {
     }
   }
 
+  _normalizeUnitCode(unit) {
+    return String(unit || 'pcs').trim().toLowerCase() || 'pcs';
+  }
+
+  /**
+   * Resolve line unit price from product_prices / product_units (same rules as completePOSOrder).
+   */
+  _resolveCatalogUnitPrice(product, { saleUnit = null, tierCode = 'retail', explicitUnitPrice = null, manualOverride = false } = {}) {
+    if (manualOverride && explicitUnitPrice != null && Number(explicitUnitPrice) >= 0) {
+      return Number(explicitUnitPrice) || 0;
+    }
+    const unitForPrice = this._normalizeUnitCode(
+      saleUnit ?? product.base_unit ?? product.unit ?? 'pcs',
+    );
+    const tier = tierCode === 'master' ? 'master' : 'retail';
+    if (this.pricingService?.getPriceForProduct) {
+      try {
+        const p = this.pricingService.getPriceForProduct({
+          product_id: product.id,
+          tier_code: tier,
+          currency: 'UZS',
+          unit: unitForPrice,
+        });
+        if (p != null && Number(p) > 0) return Number(p);
+      } catch {
+        /* fallback */
+      }
+    }
+    if (explicitUnitPrice != null && Number(explicitUnitPrice) > 0) {
+      return Number(explicitUnitPrice);
+    }
+    try {
+      const byUnit = this.db
+        .prepare(`SELECT sale_price FROM product_units WHERE product_id = ? AND unit = ?`)
+        .get(product.id, unitForPrice);
+      if (byUnit?.sale_price != null && Number(byUnit.sale_price) > 0) {
+        return Number(byUnit.sale_price);
+      }
+      const def = this.db
+        .prepare(`SELECT sale_price FROM product_units WHERE product_id = ? AND is_default = 1`)
+        .get(product.id);
+      if (def?.sale_price != null && Number(def.sale_price) > 0) {
+        return Number(def.sale_price);
+      }
+    } catch {
+      /* product_units may be missing */
+    }
+    if (tier === 'master') {
+      return Number(product.master_price ?? product.sale_price ?? 0) || 0;
+    }
+    return Number(product.sale_price ?? 0) || 0;
+  }
+
   _getOrderColumns() {
     if (this._orderColumns) return this._orderColumns;
     const cols = this.db.prepare(`PRAGMA table_info(orders)`).all() || [];
@@ -47,6 +108,48 @@ class SalesService {
     } catch {
       return false;
     }
+  }
+
+  _hasTable(tableName) {
+    try {
+      return !!this.db
+        .prepare(`SELECT name FROM sqlite_master WHERE type='table' AND name=?`)
+        .get(tableName);
+    } catch {
+      return false;
+    }
+  }
+
+  _hasTableColumn(tableName, columnName) {
+    try {
+      return this.db
+        .prepare(`PRAGMA table_info(${tableName})`)
+        .all()
+        .some((c) => c.name === columnName);
+    } catch {
+      return false;
+    }
+  }
+
+  _hasWebOrdersTable() {
+    return this._hasTable('web_orders');
+  }
+
+  _resolveSalesChannel(orderData = {}) {
+    const raw = String(orderData.sales_channel || orderData.channel || 'pos').trim().toLowerCase();
+    if (raw === 'staff_mobile' || raw === 'mobile' || raw === 'staff') return 'staff_mobile';
+    return 'pos';
+  }
+
+  _webStatusesForPosFilter(posStatus) {
+    const s = String(posStatus || '').toLowerCase();
+    if (!s || s === 'all') return null;
+    if (s === 'completed') return ['delivered'];
+    if (s === 'cancelled' || s === 'voided' || s === 'returned') return ['cancelled'];
+    if (s === 'pending' || s === 'hold') {
+      return ['new', 'paid', 'processing', 'ready', 'out_for_delivery'];
+    }
+    return [];
   }
 
   _hasCustomersCol(name) {
@@ -408,6 +511,8 @@ class SalesService {
     const hasOrderUuid = this._hasOrderCol('order_uuid');
     const hasDeviceId = this._hasOrderCol('device_id');
     const hasPriceTierId = this._hasOrderCol('price_tier_id');
+    const hasSalesChannel = this._hasOrderCol('sales_channel');
+    const salesChannel = this._resolveSalesChannel(data);
     const orderUuid = hasOrderUuid ? (data.order_uuid || randomUUID()) : null;
     const deviceId = hasDeviceId ? (data.device_id || this._getDeviceId()) : null;
 
@@ -434,6 +539,7 @@ class SalesService {
       ...(hasOrderUuid ? ['order_uuid'] : []),
       ...(hasDeviceId ? ['device_id'] : []),
       ...(hasPriceTierId ? ['price_tier_id'] : []),
+      ...(hasSalesChannel ? ['sales_channel'] : []),
     ];
     const orderVals = [
       id,
@@ -452,6 +558,7 @@ class SalesService {
       ...(hasOrderUuid ? [orderUuid] : []),
       ...(hasDeviceId ? [deviceId] : []),
       ...(hasPriceTierId ? [data.price_tier_id ?? null] : []),
+      ...(hasSalesChannel ? [salesChannel] : []),
     ];
 
     this.db
@@ -518,8 +625,16 @@ class SalesService {
     }
 
     const itemId = randomUUID();
-    const unitPrice = itemData.unit_price || product.sale_price;
     const priceTier = itemData.price_tier === 'master' ? 'master' : 'retail';
+    const manualOverride =
+      itemData.price_source === 'manual' ||
+      itemData.manual_price === true;
+    const unitPrice = this._resolveCatalogUnitPrice(product, {
+      saleUnit,
+      tierCode: priceTier,
+      explicitUnitPrice: itemData.unit_price,
+      manualOverride,
+    });
     const discountAmount = itemData.discount_amount || 0;
     const lineTotal = (unitPrice * qtySale) - discountAmount;
     const basePrice = itemData.base_price ?? unitPrice;
@@ -1078,37 +1193,27 @@ class SalesService {
     const MAIN_WAREHOUSE_ID = 'main-warehouse-001'; // SINGLE WAREHOUSE SYSTEM
     const KNOWN_DEFAULT_CUSTOMER = 'default-customer-001'; // Walk-in customer
 
-    /** Klient yuborgan haqiqiy kassir — user_id keyin default-admin ga majbur qilinadi; smena qidiruvi shu ID bo‘yicha ham bo‘lishi kerak */
-    const cashierIdBeforeForce = orderData.cashier_id || orderData.user_id || null;
-    
-    // FORCE Real Admin ID: Always use 'default-admin-001' for user_id
-    // This ensures FK constraint is satisfied (user exists in users table)
-    let userId = orderData.user_id || orderData.cashier_id;
-    
-    // Verify the user exists in users table (not profiles)
-    if (userId && userId !== KNOWN_DEFAULT_USER) {
+    // Authenticated cashier from session — validate FK against users, fallback only when missing/invalid
+    let userId = orderData.user_id || orderData.cashier_id || null;
+    if (userId) {
       const userExists = this.db.prepare('SELECT id FROM users WHERE id = ?').get(userId);
       if (!userExists) {
-        console.warn('⚠️ Provided user_id does not exist in users table, using default:', userId);
+        console.warn('⚠️ Provided cashier_id does not exist in users table:', userId);
         userId = null;
       }
     }
-    
-    // Force to known default if not valid
-    if (!userId || userId !== KNOWN_DEFAULT_USER) {
-      // Verify default user exists
+    if (!userId) {
       const defaultUser = this.db.prepare('SELECT id FROM users WHERE id = ?').get(KNOWN_DEFAULT_USER);
       if (defaultUser) {
         userId = KNOWN_DEFAULT_USER;
-        console.log('👤 FORCED to known default user:', userId);
+        console.log('👤 No valid cashier provided; using default user:', userId);
       } else {
-        // Last resort: use the ID anyway (migration should have created it)
-        userId = KNOWN_DEFAULT_USER;
-        console.warn('⚠️ Using default user ID (not verified in DB):', userId);
+        throw createError(
+          ERROR_CODES.VALIDATION_ERROR,
+          'Cashier user ID is required and default user was not found in users table'
+        );
       }
     }
-    
-    // Update orderData with FORCED user_id
     orderData.user_id = userId;
     orderData.cashier_id = userId;
 
@@ -1148,8 +1253,8 @@ class SalesService {
           tryUserIds.push(uid);
         }
       };
-      pushUid(cashierIdBeforeForce);
       pushUid(orderData.user_id);
+      pushUid(orderData.cashier_id);
 
       let activeShift = null;
       for (const uid of tryUserIds) {
@@ -1240,7 +1345,11 @@ class SalesService {
           order_uuid: orderData.order_uuid,
           existing_order_id: existing.id,
         });
-        return this._getOrderWithDetails(existing.id);
+        const existingOrder = this._getOrderWithDetails(existing.id);
+        return {
+          order_id: existing.id,
+          order_number: existingOrder?.order_number || null,
+        };
       }
     }
 
@@ -1313,11 +1422,12 @@ class SalesService {
 
     const totalPaidIntake = intakePayments.reduce((sum, p) => sum + Number(p.amount || 0), 0);
     const totalPayout = payoutPayments.reduce((sum, p) => sum + Number(p.amount || 0), 0);
+    const prepaidApplied = Math.max(0, Number(orderData.prepaid_applied || 0) || 0);
 
     const orderTotalSigned = Number(orderData.total_amount || 0);
     let creditAmount = 0;
     if (orderTotalSigned > 0) {
-      creditAmount = Math.max(0, orderTotalSigned - totalPaidIntake);
+      creditAmount = Math.max(0, orderTotalSigned - totalPaidIntake - prepaidApplied);
     }
 
     const payEps = 0.02;
@@ -1329,7 +1439,13 @@ class SalesService {
           'refund_cash faqat jami manfiy (mijozga qaytim) bo‘lganda'
         );
       }
-      if (totalPaidIntake === 0 && creditAmount === 0) {
+      if (prepaidApplied > orderTotalSigned + payEps) {
+        throw createError(
+          ERROR_CODES.VALIDATION_ERROR,
+          'Oldindan to‘lov miqdori savat jamiidan oshmasligi kerak'
+        );
+      }
+      if (totalPaidIntake === 0 && creditAmount === 0 && prepaidApplied <= payEps) {
         throw createError(
           ERROR_CODES.VALIDATION_ERROR,
           'Order must have at least one payment with amount > 0, or be a credit sale (creditAmount > 0)'
@@ -1415,8 +1531,12 @@ class SalesService {
         shift_id: orderData.shift_id,
         total_amount: orderData.total_amount,
         items_count: itemsData.length,
-        payments_count: paymentsData.length
+        payments_count: paymentsData.length,
+        replaces_order_id: orderData.replaces_order_id || orderData.amend_order_id || orderData.replace_order_id || null,
       });
+
+    const replacesOrderId =
+      orderData.replaces_order_id || orderData.amend_order_id || orderData.replace_order_id || null;
 
     return this.db.transaction(() => {
       // Generate orderId ONCE and use it consistently throughout
@@ -1427,9 +1547,37 @@ class SalesService {
       const now = new Date().toISOString().replace('T', ' ').replace('Z', '').substring(0, 19);
       const batchActive = !!this.batchService?.isBatchModeActive?.(now);
 
+      const ledgerEventAt = replacesOrderId ? this._bumpSqliteDatetime(now, 1) : now;
+
+      if (replacesOrderId) {
+        this._reverseOrderForAmend(replacesOrderId, {
+          userId: orderData.user_id,
+          now,
+        });
+      }
+
       // Create order with 'hold' status initially
       // CRITICAL: Use FORCED values to ensure FK constraints are satisfied
       const hasPriceTierId = this._hasOrderCol('price_tier_id');
+      const hasOrderCurrency = this._hasOrderCol('currency');
+      const hasOrderFxRate = this._hasOrderCol('fx_rate');
+      const hasOrderTotalUsd = this._hasOrderCol('total_usd');
+      const hasSalesChannel = this._hasOrderCol('sales_channel');
+      const salesChannel = this._resolveSalesChannel(orderData);
+      const saleCurrency =
+        hasOrderCurrency && String(orderData.currency || 'UZS').toUpperCase() === 'USD' ? 'USD' : 'UZS';
+      const saleFxRate =
+        saleCurrency === 'USD' ? Number(orderData.fx_rate ?? orderData.exchange_rate ?? 0) : null;
+      if (saleCurrency === 'USD' && hasOrderCurrency) {
+        if (!Number.isFinite(saleFxRate) || saleFxRate <= 0) {
+          throw createError(
+            ERROR_CODES.VALIDATION_ERROR,
+            'fx_rate is required for USD sales (UZS per 1 USD)'
+          );
+        }
+      }
+      const totalUsdSnapshot =
+        saleCurrency === 'USD' && hasOrderTotalUsd ? Number(orderData.total_amount || 0) : null;
       const orderCols = [
         'id',
         'order_number',
@@ -1454,6 +1602,10 @@ class SalesService {
         ...(hasOrderUuid ? ['order_uuid'] : []),
         ...(hasDeviceId ? ['device_id'] : []),
         ...(hasPriceTierId ? ['price_tier_id'] : []),
+        ...(hasOrderCurrency ? ['currency'] : []),
+        ...(hasOrderFxRate ? ['fx_rate'] : []),
+        ...(hasOrderTotalUsd ? ['total_usd'] : []),
+        ...(hasSalesChannel ? ['sales_channel'] : []),
       ];
       const orderVals = [
         orderId,
@@ -1479,6 +1631,10 @@ class SalesService {
         ...(hasOrderUuid ? [orderData.order_uuid || null] : []),
         ...(hasDeviceId ? [orderData.device_id || null] : []),
         ...(hasPriceTierId ? [orderData.price_tier_id || null] : []),
+        ...(hasOrderCurrency ? [saleCurrency] : []),
+        ...(hasOrderFxRate ? [saleCurrency === 'USD' ? saleFxRate : null] : []),
+        ...(hasOrderTotalUsd ? [totalUsdSnapshot] : []),
+        ...(hasSalesChannel ? [salesChannel] : []),
       ];
       this.db
         .prepare(`INSERT INTO orders (${orderCols.join(', ')}) VALUES (${orderCols.map(() => '?').join(', ')})`)
@@ -1515,11 +1671,7 @@ class SalesService {
           
           const available = stockResult?.total || 0;
           
-          // Check if negative stock is allowed
-          const allowNegativeStock = this.db.prepare(`
-            SELECT value FROM settings WHERE key = 'allow_negative_stock'
-          `).get();
-          const canGoNegative = allowNegativeStock?.value === '1';
+          const canGoNegative = this.inventoryService?.isNegativeStockAllowed?.() ?? false;
           
           if (!canGoNegative && qtyBase > available) {
             throw createError(ERROR_CODES.INSUFFICIENT_STOCK, 
@@ -2101,12 +2253,22 @@ class SalesService {
 
       // Update customer stats and balance for ALL sales (credit or fully paid)
       if (orderData.customer_id && orderData.customer_id !== KNOWN_DEFAULT_CUSTOMER) {
-        const customerBefore = this.db.prepare('SELECT balance FROM customers WHERE id = ?').get(orderData.customer_id);
-        const currentBalance = Number(customerBefore?.balance) || 0;
+        const hasFinCurrency = this._hasOrderCol('currency');
+        const hasFinFxRate = this._hasOrderCol('fx_rate');
+        const finCols = ['total_amount'];
+        if (hasFinCurrency) finCols.unshift('currency');
+        if (hasFinFxRate) {
+          const curIdx = finCols.indexOf('currency');
+          if (curIdx >= 0) finCols.splice(curIdx + 1, 0, 'fx_rate');
+          else finCols.unshift('fx_rate');
+        }
+        const orderFin = this.db
+          .prepare(`SELECT ${finCols.join(', ')} FROM orders WHERE id = ?`)
+          .get(orderId);
+        const saleCurrency = normalizeCustomerCurrency(hasFinCurrency ? orderFin?.currency : 'UZS');
+        const currentBalance = readBalanceInCurrency(this.db, orderData.customer_id, saleCurrency);
+        const curLabel = saleCurrency === 'USD' ? 'USD' : "so'm";
         // Almashuv: jami manfiy (mijozga naqd qaytim).
-        // Old (buggy): balance ga faqat min(qaytim, qarz) qo'shilardi — ortiqcha faqat kassadan chiqardi,
-        // mijoz haqdori (balance > 0) aks etmasdi (masalan qarz 100k, qaytim 150k → 50k yo'qolardi).
-        // Yangi: jami qaytim summasi balansga qo'shiladi: qarzni yopadi va ortiqchani haqdor qilib qoldiradi.
         let refundDebtReduction = 0;
         let refundMagForBalance = 0;
         if (orderTotalAfterRecalc < -payEps) {
@@ -2117,16 +2279,20 @@ class SalesService {
         }
         const balanceCreditIn =
           Number(debtPaidFromOverpay || 0) + Number(refundMagForBalance || 0);
-        const newBalance = currentBalance - finalCreditAmount + balanceCreditIn;
+        const prepaidConsumed = Math.max(0, Number(orderData.prepaid_applied || 0) || 0);
+        const balanceDelta = -finalCreditAmount + balanceCreditIn - prepaidConsumed;
+        const salesStatUzs = orderSalesStatUzs(orderFin);
 
         console.log('💰 Updating customer stats:', {
           customer_id: orderData.customer_id,
+          sale_currency: saleCurrency,
           current_balance: currentBalance,
           creditAmount: finalCreditAmount,
+          prepaid_consumed: prepaidConsumed,
           debtPaidFromOverpay,
           refundDebtReduction,
           refundMagForBalance,
-          new_balance: newBalance,
+          balance_delta: balanceDelta,
           order_total: order.total_amount,
           client_declared_total: clientDeclaredTotal,
           merchandise_total_for_overpay: merchandiseTotalForOverpay,
@@ -2134,22 +2300,41 @@ class SalesService {
           is_credit_sale: finalCreditAmount > 0,
         });
 
-        this.db.prepare(`
-          UPDATE customers 
-          SET total_sales = total_sales + ?,
-              total_orders = total_orders + 1,
-              last_order_date = ?,
-              balance = balance - ? + ?,
-              updated_at = ?
-          WHERE id = ?
-        `).run(
-          order.total_amount,
-          now,
-          finalCreditAmount,
-          balanceCreditIn,
-          now,
-          orderData.customer_id
-        );
+        if (hasCustomerBalanceUsd(this.db)) {
+          const uzsDelta = saleCurrency === 'UZS' ? balanceDelta : 0;
+          const usdDelta = saleCurrency === 'USD' ? balanceDelta : 0;
+          this.db
+            .prepare(
+              `
+            UPDATE customers 
+            SET total_sales = total_sales + ?,
+                total_orders = total_orders + 1,
+                last_order_date = ?,
+                balance = balance + ?,
+                balance_usd = balance_usd + ?,
+                updated_at = ?
+            WHERE id = ?
+          `
+            )
+            .run(salesStatUzs, now, uzsDelta, usdDelta, now, orderData.customer_id);
+        } else {
+          this.db
+            .prepare(
+              `
+            UPDATE customers 
+            SET total_sales = total_sales + ?,
+                total_orders = total_orders + 1,
+                last_order_date = ?,
+                balance = balance + ?,
+                updated_at = ?
+            WHERE id = ?
+          `
+            )
+            .run(salesStatUzs, now, balanceDelta, now, orderData.customer_id);
+        }
+
+        const balancesAfter = readCustomerBalances(this.db, orderData.customer_id);
+        const newBalance = readBalanceInCurrency(this.db, orderData.customer_id, saleCurrency);
 
         // Insert ledger entries for sale and, when applicable, the part of cash that closes prior debt.
         try {
@@ -2161,6 +2346,8 @@ class SalesService {
           if (tableExists) {
             const ledgerCols = this.db.prepare(`PRAGMA table_info(customer_ledger)`).all().map((c) => c.name);
             const hasLedgerMethod = ledgerCols.includes('method');
+            const hasLedgerCur = hasCustomerLedgerCurrency(this.db);
+            const hasLedgerBalUsd = ledgerCols.includes('balance_after_usd');
             const insertLedger = (entry) => {
               const cols = [
                 'id',
@@ -2182,12 +2369,20 @@ class SalesService {
                 entry.balance_after,
                 entry.note,
               ];
+              if (hasLedgerCur) {
+                cols.push('currency');
+                values.push(saleCurrency);
+              }
+              if (hasLedgerBalUsd) {
+                cols.push('balance_after_usd');
+                values.push(balancesAfter.usd);
+              }
               if (hasLedgerMethod) {
                 cols.push('method');
                 values.push(entry.method || null);
               }
               cols.push('created_at', 'created_by');
-              values.push(now, orderData.cashier_id || orderData.user_id || null);
+              values.push(ledgerEventAt, orderData.cashier_id || orderData.user_id || null);
               const placeholders = cols.map(() => '?').join(', ');
               this.db
                 .prepare(`INSERT INTO customer_ledger (${cols.join(', ')}) VALUES (${placeholders})`)
@@ -2207,14 +2402,14 @@ class SalesService {
               refundMagForBalance > refundDebtReduction ? refundMagForBalance - refundDebtReduction : 0;
             const ledgerNote =
               finalCreditAmount > 0
-                ? `Sotuv: ${order.order_number} (Qarz: ${finalCreditAmount} so'm)`
+                ? `Sotuv: ${order.order_number} (Qarz: ${finalCreditAmount} ${curLabel})`
                 : refundMagForBalance > 0
                   ? ledgerSurplus > 0 && refundDebtReduction > 0
-                    ? `POS almashuv / qaytim: ${order.order_number} (jami ${refundMagForBalance} so'm — qarz ${refundDebtReduction}; haqdor ${ledgerSurplus})`
-                    : `POS almashuv / qaytim: ${order.order_number} (${refundMagForBalance} so'm)`
+                    ? `POS almashuv / qaytim: ${order.order_number} (jami ${refundMagForBalance} ${curLabel} — qarz ${refundDebtReduction}; haqdor ${ledgerSurplus})`
+                    : `POS almashuv / qaytim: ${order.order_number} (${refundMagForBalance} ${curLabel})`
                   : debtPaidFromOverpay > 0
-                    ? `Sotuv: ${order.order_number} (To'liq to'langan: ${order.total_amount} so'm)`
-                    : `Sotuv: ${order.order_number} (To'liq to'langan: ${order.total_amount} so'm)`;
+                    ? `Sotuv: ${order.order_number} (To'liq to'langan: ${order.total_amount} ${curLabel})`
+                    : `Sotuv: ${order.order_number} (To'liq to'langan: ${order.total_amount} ${curLabel})`;
             const saleBalanceAfter = debtPaidFromOverpay > 0 ? newBalance - debtPaidFromOverpay : newBalance;
 
             insertLedger({
@@ -2238,7 +2433,7 @@ class SalesService {
                 type: 'payment_in',
                 amount: debtPaidFromOverpay,
                 balance_after: newBalance,
-                note: `Qarz yopildi: ${order.order_number} (to'lovdan hisobga o'tkazildi: ${debtPaidFromOverpay} so'm)`,
+                note: `Qarz yopildi: ${order.order_number} (to'lovdan hisobga o'tkazildi: ${debtPaidFromOverpay} ${curLabel})`,
                 method: validPayments.find((p) => Number(p.amount) > 0)?.payment_method || null,
               });
               console.log('✅ Ledger entry inserted for prior debt payment:', {
@@ -2306,154 +2501,207 @@ class SalesService {
     })();
   }
 
-  async refundOrder(orderId, refundItems, userId = 'default-admin-001') {
-    console.log('🛑 HARD RESET REFUND LOGIC STARTED');
-    console.log('Input Items Type:', typeof refundItems);
-    console.log('Input Items Value:', refundItems);
+  /**
+   * Reverse stock + customer ledger for a completed order before POS re-sale (order amend).
+   * Delegates to ReturnsService.createReturn (full remaining qty) so inventory_movements
+   * and customer_ledger stay consistent — avoids double stock decrement / double debt.
+   */
+  _bumpSqliteDatetime(sqliteNow, deltaSeconds = 1) {
+    const raw = String(sqliteNow || '').trim();
+    if (!raw) return raw;
+    const d = new Date(raw.replace(' ', 'T'));
+    if (Number.isNaN(d.getTime())) return raw;
+    d.setSeconds(d.getSeconds() + deltaSeconds);
+    return d.toISOString().replace('T', ' ').substring(0, 19);
+  }
 
-    const MAIN_WAREHOUSE_ID = 'main-warehouse-001'; // SINGLE WAREHOUSE SYSTEM
+  _reverseOrderForAmend(replacesOrderId, { userId, now }) {
+    if (!this.returnsService || typeof this.returnsService.createReturn !== 'function') {
+      throw createError(
+        ERROR_CODES.INTERNAL_ERROR,
+        'ReturnsService is not wired into SalesService; cannot amend order',
+      );
+    }
+
+    const KNOWN_DEFAULT_CUSTOMER = 'default-customer-001';
+    const order = this.db.prepare('SELECT * FROM orders WHERE id = ?').get(replacesOrderId);
+    if (!order) {
+      throw createError(ERROR_CODES.NOT_FOUND, `Order ${replacesOrderId} not found`);
+    }
+
+    const status = String(order.status || '').toLowerCase().trim();
+    if (status === 'amended' || status === 'voided' || status === 'refunded' || status === 'returned') {
+      throw createError(
+        ERROR_CODES.VALIDATION_ERROR,
+        `Order ${replacesOrderId} cannot be amended (status: ${status})`,
+      );
+    }
+    if (status !== 'completed') {
+      throw createError(
+        ERROR_CODES.VALIDATION_ERROR,
+        `Only completed orders can be amended (status: ${status})`,
+      );
+    }
+
+    const rows = this.db.prepare('SELECT * FROM order_items WHERE order_id = ?').all(replacesOrderId);
+    const lineItems = [];
+    for (const r of rows) {
+      const sold = Number(r.qty_sale ?? r.quantity ?? 0);
+      let already = Number(r.returned_quantity || 0);
+      if (typeof this.returnsService._sumCompletedReturnedQtyForOrderItem === 'function') {
+        already = Math.max(already, this.returnsService._sumCompletedReturnedQtyForOrderItem(r.id));
+      }
+      const remaining = sold - already;
+      if (remaining > 0) {
+        lineItems.push({ order_item_id: r.id, quantity: remaining });
+      }
+    }
+
+    if (lineItems.length === 0) {
+      throw createError(
+        ERROR_CODES.VALIDATION_ERROR,
+        'Order has no remaining items to amend (already fully returned)',
+      );
+    }
+
+    const creditOnOrder = Number(order.credit_amount || 0);
+    const paidOnOrder = Number(order.paid_amount || 0);
+    const totalOnOrder = Number(order.total_amount || 0);
+    const ps = String(order.payment_status || '').toLowerCase();
+    const outstandingOnOrder = Math.max(0, totalOnOrder - paidOnOrder);
+    const orderHadUnpaidCredit =
+      creditOnOrder > 0.009 || ps === 'on_credit' || outstandingOnOrder > 0.02;
+    const refundMethod = orderHadUnpaidCredit ? 'customer_account' : 'cash';
+
+    this.returnsService.createReturn({
+      order_id: replacesOrderId,
+      items: lineItems,
+      return_reason: 'POS buyurtma tahriri (avvalgi sotuv bekor)',
+      refund_method: refundMethod,
+      user_id: userId,
+      cashier_id: userId,
+      created_at: now,
+    });
+
+    if (
+      order.customer_id &&
+      String(order.customer_id) !== KNOWN_DEFAULT_CUSTOMER
+    ) {
+      const salesStatUzs = orderSalesStatUzs(order);
+      this.db
+        .prepare(
+          `
+        UPDATE customers
+        SET total_sales = COALESCE(total_sales, 0) - ?,
+            total_orders = COALESCE(total_orders, 0) - 1,
+            updated_at = ?
+        WHERE id = ?
+      `,
+        )
+        .run(salesStatUzs, now, order.customer_id);
+    }
+
+    this.db
+      .prepare(`UPDATE orders SET status = 'amended', updated_at = ? WHERE id = ?`)
+      .run(now, replacesOrderId);
+
+    console.log('[SALE] Order amend reversal completed:', {
+      replaces_order_id: replacesOrderId,
+      items_reversed: lineItems.length,
+      refund_method: refundMethod,
+    });
+  }
+
+  async refundOrder(orderId, refundItems, userId = 'default-admin-001') {
+    // AUDIT #5 + #15: route refunds through the canonical returns path so that
+    // stock movements (inventory_movements + stock_moves via
+    // InventoryService._updateBalance), customer balance/USD ledger, and shift
+    // linkage stay consistent — instead of poking stock_balances directly and
+    // skipping the ledger (which is what this method used to do, duplicating
+    // returnsService incorrectly). Also rejects double-refunds.
+    if (!this.returnsService || typeof this.returnsService.createReturn !== 'function') {
+      throw createError(
+        ERROR_CODES.INTERNAL_ERROR,
+        'ReturnsService is not wired into SalesService; cannot process refund',
+      );
+    }
 
     return this.db.transaction(() => {
-      // 1. Validate Order
+      // 1. Validate order
       const order = this.db.prepare('SELECT * FROM orders WHERE id = ?').get(orderId);
-      if (!order) throw new Error('Order not found');
+      if (!order) throw createError(ERROR_CODES.NOT_FOUND, 'Order not found');
 
-      // 2. FORCE FIX: Handle Invalid Input
-      // The frontend is sending the string "Qaytarish", which crashes the app.
-      // If input is NOT an array, we IGNORE it and fetch items from the database.
-      let itemsToProcess = refundItems;
-      
-      if (!Array.isArray(refundItems) || typeof refundItems === 'string') {
-        console.log('⚠️ Input is not an array (Frontend Bug). Fetching items from DB...');
-        itemsToProcess = this.db.prepare(`
-          SELECT product_id, quantity, unit_price as price 
-          FROM order_items 
-          WHERE order_id = ?
-        `).all(orderId);
-      }
-
-      console.log('✅ Resolved Items for Refund:', itemsToProcess);
-
-      if (!itemsToProcess || itemsToProcess.length === 0) {
-        throw new Error('No items found to refund.');
-      }
-
-      // 3. Update Order Status (Safe Update)
-      // CRITICAL: Use 'refunded' to match frontend expectations
-      const statusUpdateResult = this.db.prepare("UPDATE orders SET status = 'refunded' WHERE id = ?").run(orderId);
-      console.log(`✅ Order status updated to 'refunded': Changed ${statusUpdateResult.changes} rows`);
-
-      // 4. Create Return Record
-      // CRITICAL FIX: Use sales_returns table (NOT returns)
-      const returnId = require('crypto').randomUUID();
-      const returnNumber = `RET-${Date.now()}`;
-      const totalAmount = itemsToProcess.reduce((sum, item) => sum + (item.price * item.quantity), 0);
-      const now = new Date().toISOString().replace('T', ' ').replace('Z', '').substring(0, 19);
-      
-      // Use same structure as ReturnsService.createReturn
-      this.db.prepare(`
-        INSERT INTO sales_returns (
-          id, return_number, order_id, customer_id, cashier_id, user_id, warehouse_id,
-          return_reason, total_amount, refund_amount, refund_method, status, created_at
-        )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `).run(
-        returnId,
-        returnNumber,
-        orderId,
-        order.customer_id || null,
-        userId, // cashier_id
-        userId, // user_id
-        MAIN_WAREHOUSE_ID, // warehouse_id (SINGLE WAREHOUSE SYSTEM)
-        'Refund via refundOrder method', // return_reason
-        totalAmount, // total_amount
-        totalAmount, // refund_amount
-        'cash', // refund_method
-        'completed', // status
-        now // created_at
-      );
-      
-      console.log(`✅ Return record created in sales_returns: ${returnNumber} (${returnId})`);
-
-      // 5. RESTOCK INVENTORY & Record Items
-      // CRITICAL FIX: Use return_items table with correct columns (matching 000_init.sql)
-      const insertItemStmt = this.db.prepare(`
-        INSERT INTO return_items (
-          id, return_id, order_item_id, product_id, product_name, quantity, unit_price, line_total, created_at
-        )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `);
-
-      // CRITICAL FIX: Use stock_balances table (not "inventory")
-      const updateStockStmt = this.db.prepare(`
-        UPDATE stock_balances 
-        SET quantity = quantity + ? 
-        WHERE product_id = ? AND warehouse_id = ?
-      `);
-
-      for (const item of itemsToProcess) {
-        // Handle potential ID mismatch (product_id vs id)
-        const pId = item.product_id || item.id;
-        const itemPrice = item.price || item.unit_price || 0;
-        const itemQuantity = item.quantity || 0;
-        
-        console.log(`\n🔍 Processing Refund Item:`);
-        console.log(`   Product ID: ${pId}`);
-        console.log(`   Quantity: ${itemQuantity}`);
-        console.log(`   Price: ${itemPrice}`);
-        console.log(`   Warehouse ID: ${MAIN_WAREHOUSE_ID}`);
-        
-        // Insert return item record
-        // CRITICAL: Get order_item_id and product_name from order_items
-        const orderItem = this.db.prepare(`
-          SELECT id, product_name 
-          FROM order_items 
-          WHERE order_id = ? AND product_id = ? 
-          LIMIT 1
-        `).get(orderId, pId);
-        
-        const orderItemId = orderItem?.id || null;
-        const productName = orderItem?.product_name || 'Noma\'lum mahsulot';
-        const lineTotal = itemPrice * itemQuantity;
-        
-        insertItemStmt.run(
-          require('crypto').randomUUID(), // id
-          returnId, // return_id
-          orderItemId, // order_item_id (can be null if not found)
-          pId, // product_id
-          productName, // product_name
-          itemQuantity, // quantity
-          itemPrice, // unit_price
-          lineTotal, // line_total
-          now // created_at
+      // 2. Idempotency / status guard (audit #15): never refund the same order
+      // twice (would double-restock and double-reverse the customer balance).
+      const status = String(order.status || '').toLowerCase().trim();
+      if (status === 'refunded' || status === 'cancelled') {
+        throw createError(
+          ERROR_CODES.VALIDATION_ERROR,
+          `Order ${orderId} is already ${status}; refund rejected`,
         );
-        
-        console.log(`✅ Return item inserted: product=${productName}, qty=${itemQuantity}`);
-        
-        // Update inventory (stock_balances)
-        console.log(`📈 Attempting to restock inventory for product ${pId}...`);
-          const info = updateStockStmt.run(itemQuantity, pId, MAIN_WAREHOUSE_ID);
-        console.log(`🔍 Inventory Update Result for ${pId}: Changed ${info.changes} rows`);
-        
-        // Fallback if stock_balances row doesn't exist
-        if (info.changes === 0) {
-          console.log(`⚠️ No stock_balances row found for product ${pId} in warehouse ${MAIN_WAREHOUSE_ID}. Creating new row...`);
-          try {
-            this.db.prepare(`
-              INSERT INTO stock_balances (id, product_id, warehouse_id, quantity)
-              VALUES (?, ?, ?, ?)
-            `).run(require('crypto').randomUUID(), pId, MAIN_WAREHOUSE_ID, itemQuantity);
-            console.log(`✅ Created new stock_balances record: product=${pId}, warehouse=${MAIN_WAREHOUSE_ID}, quantity=${itemQuantity}`);
-          } catch (insertError) {
-            console.error(`❌ ERROR creating stock_balances record:`, insertError);
-            throw insertError;
+      }
+
+      // 3. Resolve refund lines -> [{ order_item_id, quantity }].
+      // The frontend historically sent a non-array (e.g. the string
+      // "Qaytarish"); in that case fall back to a full refund of all
+      // not-yet-returned order lines.
+      const lineItems = [];
+      if (Array.isArray(refundItems) && refundItems.length > 0) {
+        for (const it of refundItems) {
+          if (!it || typeof it !== 'object') continue;
+          const qty = Number(it.quantity ?? it.qty_sale ?? 0);
+          if (!(qty > 0)) continue;
+          let orderItemId = it.order_item_id || it.orderItemId || it.id || null;
+          // Verify the id is actually an order_items.id for this order.
+          const valid = orderItemId
+            ? this.db
+                .prepare('SELECT id FROM order_items WHERE id = ? AND order_id = ?')
+                .get(orderItemId, orderId)
+            : null;
+          if (!valid) {
+            const pid = it.product_id || it.id;
+            const oi = pid
+              ? this.db
+                  .prepare('SELECT id FROM order_items WHERE order_id = ? AND product_id = ? LIMIT 1')
+                  .get(orderId, pid)
+              : null;
+            orderItemId = oi?.id || null;
           }
-        } else {
-          console.log(`✅ Successfully restocked: product ${pId} increased by ${itemQuantity} in warehouse ${MAIN_WAREHOUSE_ID}`);
+          if (orderItemId) lineItems.push({ order_item_id: orderItemId, quantity: qty });
         }
       }
 
-      return { success: true, returnId };
+      if (lineItems.length === 0) {
+        const rows = this.db.prepare('SELECT * FROM order_items WHERE order_id = ?').all(orderId);
+        for (const r of rows) {
+          const sold = Number(r.qty_sale ?? r.quantity ?? 0);
+          const already = Number(r.returned_quantity || 0);
+          const remaining = sold - already;
+          if (remaining > 0) lineItems.push({ order_item_id: r.id, quantity: remaining });
+        }
+      }
+
+      if (lineItems.length === 0) {
+        throw createError(ERROR_CODES.VALIDATION_ERROR, 'No items found to refund.');
+      }
+
+      // 4. Delegate to the canonical returns flow (single, completed return).
+      // This validates quantities, restocks via the inventory ledger, reverses
+      // the customer balance/ledger when the order carried debt, and links the
+      // order's shift — all atomically inside this transaction.
+      const result = this.returnsService.createReturn({
+        order_id: orderId,
+        items: lineItems,
+        return_reason: 'Refund via refundOrder',
+        refund_method: 'cash',
+        cashier_id: userId,
+        user_id: userId,
+      });
+
+      // 5. Preserve the original contract: refundOrder marks the order refunded.
+      this.db.prepare("UPDATE orders SET status = 'refunded' WHERE id = ?").run(orderId);
+
+      return { success: true, returnId: result.id };
     })();
   }
 
@@ -2534,14 +2782,18 @@ class SalesService {
   }
 
   /**
-   * List orders with filters
+   * List POS register orders (orders table only).
    */
-  list(filters = {}) {
-    console.log('📋 SalesService.list called with filters:', filters);
-    
+  _listPosOrders(filters = {}) {
+    const salesChannelCol = this._hasOrderCol('sales_channel')
+      ? "COALESCE(o.sales_channel, 'pos')"
+      : "'pos'";
+
     let query = `
       SELECT 
         o.*,
+        ${salesChannelCol} AS sales_channel,
+        'pos' AS order_source,
         COALESCE(c.name, 'Yangi mijoz') AS customer_name,
         c.phone AS customer_phone,
         u.username as cashier_name,
@@ -2555,7 +2807,6 @@ class SalesService {
     `;
     const params = [];
 
-    // Date filters using Tashkent business day semantics (UTC+5), consistent with reports.
     const orderDateExpr = `date(datetime(replace(replace(o.created_at, 'T', ' '), 'Z', ''), '${UZBEKISTAN_TZ_SQLITE_OFFSET}'))`;
     if (filters.date_from) {
       const fromYmd = String(filters.date_from).substring(0, 10);
@@ -2590,7 +2841,6 @@ class SalesService {
     }
 
     if (filters.payment_method) {
-      // Use EXISTS to avoid changing the GROUP_CONCAT join semantics
       query += ` AND EXISTS (
         SELECT 1 FROM payments p2
         WHERE p2.order_id = o.id AND p2.payment_method = ?
@@ -2609,10 +2859,21 @@ class SalesService {
       params.push(filters.warehouse_id);
     }
 
-    // Note: No store_id filter - orders table doesn't have store_id column
+    if (filters.sales_channel) {
+      const ch = String(filters.sales_channel).trim().toLowerCase();
+      if (ch === 'pos' || ch === 'staff_mobile') {
+        if (this._hasOrderCol('sales_channel')) {
+          query += ' AND o.sales_channel = ?';
+          params.push(ch);
+        } else if (ch === 'staff_mobile') {
+          query += ' AND 1=0';
+        }
+      } else {
+        query += ' AND 1=0';
+      }
+    }
 
     query += ' GROUP BY o.id';
-    // Sorting (whitelist)
     const sortByRaw = String(filters.sort_by || '').trim();
     const sortOrder = String(filters.sort_order || 'DESC').toUpperCase() === 'ASC' ? 'ASC' : 'DESC';
     const sortBy = (() => {
@@ -2636,62 +2897,341 @@ class SalesService {
         params.push(filters.offset);
       }
     } else {
-      // Default limit to prevent huge result sets
       query += ' LIMIT 1000';
     }
 
-    const orders = this.db.prepare(query).all(params);
-    console.log(`✅ SalesService.list returned ${orders.length} orders`);
-    
-    // STEP 4: Verify orders include required fields (id and order_number)
-    if (orders.length > 0) {
-      const firstOrder = orders[0];
-      console.log('[SALES] First order structure:', {
-        has_id: !!firstOrder.id,
-        has_order_number: !!firstOrder.order_number,
-        id: firstOrder.id,
-        order_number: firstOrder.order_number,
-        all_keys: Object.keys(firstOrder),
-      });
-      
-      // Warn if critical fields are missing
-      if (!firstOrder.id) {
-        console.warn('[SALES] ⚠️ Orders list missing id field!');
-      }
-      if (!firstOrder.order_number) {
-        console.warn('[SALES] ⚠️ Orders list missing order_number field!');
+    return this.db.prepare(query).all(params);
+  }
+
+  _listWebOrdersForUnified(filters = {}, fetchSize = 50) {
+    if (!this._hasWebOrdersTable()) return [];
+
+    const channelFilter = filters.sales_channel
+      ? String(filters.sales_channel).trim().toLowerCase()
+      : '';
+    if (channelFilter === 'pos' || channelFilter === 'staff_mobile') return [];
+    if (filters.customer_id || filters.warehouse_id || filters.cashier_id) return [];
+
+    let where = '1=1';
+    const params = [];
+
+    const orderDateExpr = `date(datetime(replace(replace(wo.created_at, 'T', ' '), 'Z', ''), '${UZBEKISTAN_TZ_SQLITE_OFFSET}'))`;
+    if (filters.date_from) {
+      where += ` AND ${orderDateExpr} >= date(?)`;
+      params.push(String(filters.date_from).substring(0, 10));
+    }
+    if (filters.date_to) {
+      where += ` AND ${orderDateExpr} <= date(?)`;
+      params.push(String(filters.date_to).substring(0, 10));
+    }
+    if (filters.payment_status) {
+      where += ' AND wo.payment_status = ?';
+      params.push(filters.payment_status);
+    }
+    if (filters.payment_method) {
+      where += ' AND wo.payment_method = ?';
+      params.push(filters.payment_method);
+    }
+    if (filters.status) {
+      const webStatuses = this._webStatusesForPosFilter(filters.status);
+      if (Array.isArray(webStatuses) && webStatuses.length === 0) return [];
+      if (webStatuses) {
+        where += ` AND wo.status IN (${webStatuses.map(() => '?').join(', ')})`;
+        params.push(...webStatuses);
       }
     }
-    
-    return orders;
+    if (filters.search) {
+      const term = `%${String(filters.search).trim()}%`;
+      where += ` AND (wo.order_number LIKE ? OR COALESCE(mc.first_name, '') LIKE ? OR COALESCE(mc.last_name, '') LIKE ? OR COALESCE(mc.phone, '') LIKE ?)`;
+      params.push(term, term, term, term);
+    }
+    if (channelFilter) {
+      if (this._hasTableColumn('web_orders', 'sales_channel')) {
+        where += ' AND wo.sales_channel = ?';
+        params.push(channelFilter);
+      }
+    }
+
+    const salesChannelCol = this._hasTableColumn('web_orders', 'sales_channel')
+      ? 'wo.sales_channel'
+      : "'telegram'";
+    const discountCol = this._hasTableColumn('web_orders', 'discount_amount')
+      ? 'COALESCE(wo.discount_amount, 0)'
+      : '0';
+
+    const rows = this.db
+      .prepare(
+        `
+      SELECT
+        ('web:' || wo.id) AS id,
+        wo.id AS web_order_id,
+        wo.order_number,
+        wo.customer_id,
+        wo.total_amount,
+        wo.status,
+        wo.payment_status,
+        wo.payment_method,
+        wo.created_at,
+        wo.updated_at,
+        ${salesChannelCol} AS sales_channel,
+        'web' AS order_source,
+        TRIM(COALESCE(mc.first_name, '') || ' ' || COALESCE(mc.last_name, '')) AS customer_name,
+        mc.phone AS customer_phone,
+        'Onlayn' AS cashier_name,
+        wo.payment_method AS payment_methods,
+        ${discountCol} AS discount_amount,
+        0 AS subtotal,
+        0 AS paid_amount,
+        0 AS credit_amount,
+        0 AS change_amount
+      FROM web_orders wo
+      LEFT JOIN marketplace_customers mc ON mc.id = wo.customer_id
+      WHERE ${where}
+      ORDER BY datetime(wo.created_at) DESC
+      LIMIT ?
+    `,
+      )
+      .all(...params, fetchSize);
+
+    return rows.map((row) => ({
+      ...row,
+      customer_name: String(row.customer_name || '').trim() || row.customer_phone || 'Onlayn mijoz',
+    }));
+  }
+
+  _listUnifiedOrders(filters = {}) {
+    const limit = Number.isFinite(Number(filters.limit)) ? Number(filters.limit) : 50;
+    const offset = Number.isFinite(Number(filters.offset)) ? Number(filters.offset) : 0;
+    const fetchSize = Math.min(5000, limit + offset);
+
+    const posRows = this._listPosOrders({ ...filters, limit: fetchSize, offset: 0 });
+    const webRows = this._listWebOrdersForUnified(filters, fetchSize);
+
+    const sortByRaw = String(filters.sort_by || 'created_at').trim();
+    const sortOrder = String(filters.sort_order || 'DESC').toUpperCase() === 'ASC' ? 1 : -1;
+    const merged = [...posRows, ...webRows].sort((a, b) => {
+      let cmp = 0;
+      if (sortByRaw === 'total_amount') {
+        cmp = Number(a.total_amount || 0) - Number(b.total_amount || 0);
+      } else if (sortByRaw === 'order_number') {
+        cmp = String(a.order_number || '').localeCompare(String(b.order_number || ''));
+      } else {
+        cmp = parseDbTimestamp(a.created_at) - parseDbTimestamp(b.created_at);
+      }
+      return cmp * sortOrder;
+    });
+
+    return merged.slice(offset, offset + limit);
+  }
+
+  _getWebOrderWithDetails(webOrderId) {
+    if (!this._hasWebOrdersTable()) return null;
+    const wid = Number.parseInt(String(webOrderId), 10);
+    if (!Number.isFinite(wid)) return null;
+
+    const wo = this.db
+      .prepare(
+        `
+      SELECT wo.*, mc.first_name, mc.last_name, mc.phone
+      FROM web_orders wo
+      LEFT JOIN marketplace_customers mc ON mc.id = wo.customer_id
+      WHERE wo.id = ?
+    `,
+      )
+      .get(wid);
+    if (!wo) return null;
+
+    const items = this.db
+      .prepare(
+        `
+      SELECT wi.id, wi.product_id, wi.quantity, wi.price_at_order AS unit_price,
+             p.name AS product_name, p.sku AS product_sku,
+             (wi.quantity * wi.price_at_order) AS line_total
+      FROM web_order_items wi
+      LEFT JOIN products p ON p.id = wi.product_id
+      WHERE wi.order_id = ?
+      ORDER BY wi.id ASC
+    `,
+      )
+      .all(wid);
+
+    const customerName = [wo.first_name, wo.last_name].filter(Boolean).join(' ').trim();
+    const payments = wo.payment_method
+      ? [
+          {
+            id: `web-pay-${wid}`,
+            order_id: `web:${wid}`,
+            payment_method: wo.payment_method,
+            amount: Number(wo.total_amount || 0),
+            payment_number: `WEB-${wid}`,
+          },
+        ]
+      : [];
+
+    return {
+      id: `web:${wid}`,
+      web_order_id: wid,
+      order_source: 'web',
+      order_number: wo.order_number,
+      customer_id: wo.customer_id != null ? String(wo.customer_id) : null,
+      cashier_id: '',
+      shift_id: null,
+      subtotal: Number(wo.total_amount || 0),
+      discount_amount: Number(wo.discount_amount || 0),
+      discount_percent: 0,
+      tax_amount: 0,
+      total_amount: Number(wo.total_amount || 0),
+      paid_amount: wo.payment_status === 'paid' ? Number(wo.total_amount || 0) : 0,
+      credit_amount: 0,
+      change_amount: 0,
+      status: wo.status,
+      payment_status: wo.payment_status,
+      notes: wo.note || null,
+      created_at: wo.created_at,
+      updated_at: wo.updated_at,
+      sales_channel: wo.sales_channel || 'telegram',
+      customer_name: customerName || wo.phone || 'Onlayn mijoz',
+      customer_phone: wo.phone || null,
+      cashier_name: 'Onlayn',
+      payment_methods: wo.payment_method || '',
+      items,
+      payments,
+      customer: customerName || wo.phone
+        ? { id: wo.customer_id, name: customerName || wo.phone, phone: wo.phone || null }
+        : undefined,
+    };
+  }
+
+  enrichOrderForList(row) {
+    if (!row) return null;
+    if (row.order_source === 'web' || String(row.id || '').startsWith('web:')) {
+      const wid = row.web_order_id ?? Number.parseInt(String(row.id).replace(/^web:/, ''), 10);
+      return this._getWebOrderWithDetails(wid) || row;
+    }
+    return this._getOrderWithDetails(row.id);
   }
 
   /**
-   * Get orders by customer ID
+   * List orders with filters. Set include_web_orders=true to merge marketplace web_orders.
+   */
+  list(filters = {}) {
+    console.log('📋 SalesService.list called with filters:', filters);
+
+    const includeWeb = filters.include_web_orders === true;
+    const orders = includeWeb ? this._listUnifiedOrders(filters) : this._listPosOrders(filters);
+    console.log(`✅ SalesService.list returned ${orders.length} orders (unified=${includeWeb})`);
+    return orders;
+  }
+
+  _listWebOrdersForPosCustomer(posCustomerId) {
+    if (!this._hasWebOrdersTable()) return [];
+    const bindingTable = this.db
+      .prepare(`SELECT name FROM sqlite_master WHERE type='table' AND name='marketplace_customer_bindings'`)
+      .get();
+    if (!bindingTable?.name) return [];
+
+    const mcIds = this.db
+      .prepare(`SELECT marketplace_customer_id FROM marketplace_customer_bindings WHERE pos_customer_id = ?`)
+      .all(posCustomerId)
+      .map((r) => Number(r.marketplace_customer_id))
+      .filter((n) => Number.isFinite(n));
+    if (!mcIds.length) return [];
+
+    const ph = mcIds.map(() => '?').join(',');
+    const rows = this.db
+      .prepare(
+        `SELECT id FROM web_orders WHERE customer_id IN (${ph}) ORDER BY created_at DESC LIMIT 500`,
+      )
+      .all(...mcIds);
+    return rows.map((r) => this._getWebOrderWithDetails(r.id)).filter(Boolean);
+  }
+
+  _ledgerLinkedPosOrderIds(customerId) {
+    try {
+      const tableExists = this.db
+        .prepare(`SELECT name FROM sqlite_master WHERE type='table' AND name='customer_ledger'`)
+        .get();
+      if (!tableExists?.name) return [];
+      const rows = this.db
+        .prepare(
+          `
+        SELECT DISTINCT ref_id AS order_id
+        FROM customer_ledger
+        WHERE customer_id = ?
+          AND ref_id IS NOT NULL
+          AND type IN ('sale', 'refund', 'payment_in')
+      `,
+        )
+        .all(customerId);
+      return rows.map((r) => String(r.order_id || '').trim()).filter(Boolean);
+    } catch {
+      return [];
+    }
+  }
+
+  _mapPosOrderRow(order) {
+    const items = this.db.prepare('SELECT * FROM order_items WHERE order_id = ?').all(order.id);
+    const payments = this.db.prepare('SELECT * FROM payments WHERE order_id = ?').all(order.id);
+    const customer = order.customer_id
+      ? this.db.prepare('SELECT * FROM customers WHERE id = ?').get(order.customer_id)
+      : null;
+    return {
+      ...order,
+      order_source: 'pos',
+      items,
+      payments,
+      customer,
+    };
+  }
+
+  /**
+   * Get orders by customer ID (POS + linked web orders + ledger-linked orphans).
    */
   getByCustomer(customerId) {
     if (!customerId) {
       throw createError(ERROR_CODES.VALIDATION_ERROR, 'Customer ID is required');
     }
 
-    const orders = this.db.prepare(`
-      SELECT * FROM orders 
-      WHERE customer_id = ? 
-      ORDER BY created_at DESC
-    `).all(customerId);
+    const byId = new Map();
 
-    return orders.map(order => {
-      const items = this.db.prepare('SELECT * FROM order_items WHERE order_id = ?').all(order.id);
-      const payments = this.db.prepare('SELECT * FROM payments WHERE order_id = ?').all(order.id);
-      const customer = this.db.prepare('SELECT * FROM customers WHERE id = ?').get(order.customer_id);
-      
-      return {
-        ...order,
-        items,
-        payments,
-        customer,
-      };
-    });
+    const posOrders = this.db
+      .prepare(`SELECT * FROM orders WHERE customer_id = ? ORDER BY created_at DESC`)
+      .all(customerId);
+    for (const order of posOrders) {
+      byId.set(String(order.id), this._mapPosOrderRow(order));
+    }
+
+    const ledgerIds = this._ledgerLinkedPosOrderIds(customerId);
+    const repairNow = new Date().toISOString().replace('T', ' ').substring(0, 19);
+    for (const orderId of ledgerIds) {
+      if (byId.has(orderId)) continue;
+      const order = this.db.prepare('SELECT * FROM orders WHERE id = ?').get(orderId);
+      if (!order) continue;
+      if (String(order.customer_id || '') !== String(customerId)) {
+        try {
+          this.db
+            .prepare(`UPDATE orders SET customer_id = ?, updated_at = ? WHERE id = ?`)
+            .run(customerId, repairNow, order.id);
+          order.customer_id = customerId;
+        } catch (repairErr) {
+          console.warn(
+            '[SalesService.getByCustomer] customer_id repair failed for order',
+            order.id,
+            repairErr.message,
+          );
+        }
+      }
+      byId.set(orderId, this._mapPosOrderRow(order));
+    }
+
+    for (const webOrder of this._listWebOrdersForPosCustomer(customerId)) {
+      const key = String(webOrder.id);
+      if (!byId.has(key)) byId.set(key, webOrder);
+    }
+
+    return Array.from(byId.values()).sort(
+      (a, b) => parseDbTimestamp(b.created_at) - parseDbTimestamp(a.created_at),
+    );
   }
 
   /**

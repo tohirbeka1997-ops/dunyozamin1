@@ -43,7 +43,8 @@ class SupplierReturnsService {
 
     const now = new Date().toISOString().replace('T', ' ').replace('Z', '').substring(0, 19);
     const returnId = randomUUID();
-    const returnNumber = `SRET-${Date.now()}`;
+    // UUID short-suffix avoids Date.now() collision under burst load.
+    const returnNumber = `SRET-${Date.now()}-${returnId.slice(0, 6)}`;
     const returnDate = payload.return_date
       ? String(payload.return_date).split('T')[0].split(' ')[0]
       : now.split(' ')[0];
@@ -172,7 +173,7 @@ class SupplierReturnsService {
         const hasCurrency = cols.includes('currency');
         const hasAmountUsd = cols.includes('amount_usd');
         const settlementCurrency =
-          String(supplier?.settlement_currency || 'USD').toUpperCase() === 'USD' ? 'USD' : 'UZS';
+          String(supplier?.settlement_currency || 'UZS').toUpperCase() === 'USD' ? 'USD' : 'UZS';
 
         const paymentId = randomUUID();
         const paymentNumber = `SCN-${Date.now()}`; // Supplier Credit Note

@@ -147,15 +147,13 @@ function parseCsvEnv(name) {
 // dispatcher } bag for the host server.
 async function bootstrapMultiTenant({ dataDir }) {
   const crypto = require('crypto');
-  const { randomUUID, createHash } = crypto;
+  const { randomUUID } = crypto;
   const { createTenantRegistry } = require('./db/tenantRegistry.cjs');
   const { runMigrations } = require('./db/migrate.cjs');
   const { createTenantServicesCache } = require('./services/tenantServices.cjs');
   const { createMasterSessionStore } = require('./net/masterSessions.cjs');
   const { createMultiTenantDispatcher } = require('./net/mtDispatch.cjs');
-
-  const hashPassword = (plain) => createHash('sha256').update(String(plain)).digest('hex');
-  const verifyPassword = (plain, hash) => hashPassword(plain) === hash;
+  const { hashPassword, verifyPassword } = require('./lib/password.cjs');
 
   // Pragmas: keep tenant DBs aligned with single-tenant open.cjs settings.
   function applyPragmas(db) {
@@ -287,11 +285,15 @@ async function main() {
   //  - trustProxy: enable only when nginx/cloudflare terminates TLS for us.
   //  - rateLimit:  override defaults via POS_RATE_LIMIT_* env vars.
   //  - auditLogPath: /var/lib/pos/logs/audit.log by default (under POS_DATA_DIR).
-  const trustProxy = parseBoolEnv('POS_TRUST_PROXY', false);
+  const trustProxy = parseBoolEnv('POS_TRUST_PROXY', parseBoolEnv('POS_SERVER_MODE', false));
   const rateLimit = {
     rpc: {
       windowMs: parseIntEnv('POS_RATE_LIMIT_RPC_WINDOW_MS', 60_000),
-      max: parseIntEnv('POS_RATE_LIMIT_RPC_MAX', 600),
+      max: parseIntEnv('POS_RATE_LIMIT_RPC_MAX', 1200),
+    },
+    authRpc: {
+      windowMs: parseIntEnv('POS_RATE_LIMIT_AUTH_RPC_WINDOW_MS', 60_000),
+      max: parseIntEnv('POS_RATE_LIMIT_AUTH_RPC_MAX', 3000),
     },
     login: {
       windowMs: parseIntEnv('POS_RATE_LIMIT_LOGIN_WINDOW_MS', 15 * 60_000),
@@ -308,6 +310,7 @@ async function main() {
   console.log(
     `[server] security: trustProxy=${trustProxy} ` +
     `rpcLimit=${rateLimit.rpc.max}/${rateLimit.rpc.windowMs}ms ` +
+    `authRpcLimit=${rateLimit.authRpc.max}/${rateLimit.authRpc.windowMs}ms ` +
     `loginLimit=${rateLimit.login.max}/${rateLimit.login.windowMs}ms ` +
     `audit=${auditEnabled ? auditLogPath : 'OFF'}`,
   );

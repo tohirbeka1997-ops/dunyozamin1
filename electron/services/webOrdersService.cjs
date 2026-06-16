@@ -14,6 +14,22 @@ const {
   isValidTransition,
   normalizeDeliveryMethod,
 } = require('../../public-api/lib/webOrderStatusFlow.cjs');
+const {
+  WEB_ORDER_QUEUES,
+  resolveQueueStatuses,
+  normalizeSalesChannel,
+  VALID_SALES_CHANNELS,
+} = require('../../public-api/lib/webOrderQueues.cjs');
+const {
+  fulfillWebOrderStock,
+  handleWebOrderCancelled,
+  markCashPaymentOnDelivered,
+  isOrderStockFulfilled,
+} = require('../../public-api/lib/webOrderStock.cjs');
+const {
+  syncPosCustomerFromMarketplace,
+  recordWebOrderCustomerSale,
+} = require('../../public-api/lib/marketplacePosCustomer.cjs');
 
 const VALID_STATUSES = new Set(['new', 'paid', 'processing', 'ready', 'out_for_delivery', 'delivered', 'cancelled']);
 
@@ -36,6 +52,31 @@ class WebOrdersService {
     }
   }
 
+  _hasMarketplaceBindingsTable() {
+    try {
+      const r = this.db
+        .prepare(`SELECT name FROM sqlite_master WHERE type='table' AND name='marketplace_customer_bindings'`)
+        .get();
+      return !!r;
+    } catch {
+      return false;
+    }
+  }
+
+  _marketplaceCustomerJoinSelect(alias = 'mc') {
+    if (!this._hasMarketplaceBindingsTable()) {
+      return 'NULL AS pos_customer_id';
+    }
+    return 'b.pos_customer_id AS pos_customer_id';
+  }
+
+  _marketplaceCustomerJoinClause(woAlias = 'wo', mcAlias = 'mc') {
+    if (!this._hasMarketplaceBindingsTable()) {
+      return '';
+    }
+    return `LEFT JOIN marketplace_customer_bindings b ON b.marketplace_customer_id = ${woAlias}.customer_id`;
+  }
+
   _hasColumn(tableName, columnName) {
     try {
       return this.db.prepare(`PRAGMA table_info(${tableName})`).all().some((c) => c.name === columnName);
@@ -44,37 +85,76 @@ class WebOrdersService {
     }
   }
 
-  list(filters = {}) {
-    if (!this._hasWebOrdersTable()) {
-      return { data: [], meta: { page: 1, limit: 50, total: 0, total_pages: 0 } };
-    }
-    const status = filters.status ? String(filters.status).trim() : '';
-    const deliveryMethod = filters.delivery_method ? normalizeDeliveryMethod(filters.delivery_method) : '';
-    const page = Math.max(1, Number.parseInt(String(filters.page || '1'), 10) || 1);
-    const limit = Math.min(100, Math.max(1, Number.parseInt(String(filters.limit || '50'), 10) || 50));
-    const offset = (page - 1) * limit;
-
+  _buildListWhere(filters = {}) {
     let where = '1=1';
     const params = [];
-    if (status && VALID_STATUSES.has(status)) {
+
+    const statuses = resolveQueueStatuses(filters).filter((s) => VALID_STATUSES.has(s));
+    if (statuses.length === 1) {
       where += ' AND wo.status = ?';
-      params.push(status);
+      params.push(statuses[0]);
+    } else if (statuses.length > 1) {
+      where += ` AND wo.status IN (${statuses.map(() => '?').join(', ')})`;
+      params.push(...statuses);
     }
+
+    const deliveryMethod = filters.delivery_method ? normalizeDeliveryMethod(filters.delivery_method) : '';
     if (deliveryMethod && this._hasColumn('web_orders', 'delivery_method')) {
       where += ' AND wo.delivery_method = ?';
       params.push(deliveryMethod);
     }
 
+    const salesChannel = filters.sales_channel ? String(filters.sales_channel).trim().toLowerCase() : '';
+    if (salesChannel && VALID_SALES_CHANNELS.has(salesChannel) && this._hasColumn('web_orders', 'sales_channel')) {
+      where += ' AND wo.sales_channel = ?';
+      params.push(salesChannel);
+    }
+
+    const days = Number.parseInt(String(filters.days ?? filters.created_within_days ?? ''), 10);
+    if (Number.isFinite(days) && days > 0) {
+      where += ` AND datetime(wo.created_at) >= datetime('now', ?)`;
+      params.push(`-${days} days`);
+    }
+
+    const search = filters.search ? String(filters.search).trim() : '';
+    if (search.length >= 2) {
+      where += ` AND (
+        wo.order_number LIKE ? OR CAST(wo.id AS TEXT) LIKE ?
+        OR mc.phone LIKE ? OR mc.first_name LIKE ? OR mc.last_name LIKE ?
+      )`;
+      const like = `%${search}%`;
+      params.push(like, like, like, like, like);
+    }
+
+    return { where, params };
+  }
+
+  list(filters = {}) {
+    if (!this._hasWebOrdersTable()) {
+      return { data: [], meta: { page: 1, limit: 50, total: 0, total_pages: 0 } };
+    }
+    const page = Math.max(1, Number.parseInt(String(filters.page || '1'), 10) || 1);
+    const limit = Math.min(100, Math.max(1, Number.parseInt(String(filters.limit || '50'), 10) || 50));
+    const offset = (page - 1) * limit;
+
+    const { where, params } = this._buildListWhere(filters);
+
     const total = Number(
       this.db.prepare(`SELECT COUNT(*) AS n FROM web_orders wo WHERE ${where}`).get(...params).n || 0,
     );
 
+    const salesChannelCol = this._hasColumn('web_orders', 'sales_channel')
+      ? 'wo.sales_channel'
+      : "'telegram' AS sales_channel";
+
     const rows = this.db
       .prepare(
         `
-      SELECT wo.*, mc.telegram_id, mc.first_name, mc.last_name, mc.phone
+      SELECT wo.*, ${salesChannelCol}, mc.telegram_id, mc.first_name, mc.last_name, mc.phone,
+             ${this._marketplaceCustomerJoinSelect()}
       FROM web_orders wo
       LEFT JOIN marketplace_customers mc ON mc.id = wo.customer_id
+      ${this._marketplaceCustomerJoinClause()}
       WHERE ${where}
       ORDER BY datetime(wo.created_at) DESC
       LIMIT ? OFFSET ?
@@ -89,8 +169,93 @@ class WebOrdersService {
         limit,
         total,
         total_pages: Math.max(1, Math.ceil(total / limit)),
+        queue: filters.queue || null,
       },
     };
+  }
+
+  reportSummary(filters = {}) {
+    if (!this._hasWebOrdersTable()) {
+      return { by_status: [], by_channel: [], totals: { orders: 0, amount: 0 } };
+    }
+    const days = Math.min(365, Math.max(1, Number.parseInt(String(filters.days || '30'), 10) || 30));
+    const channel = filters.sales_channel
+      ? normalizeSalesChannel(filters.sales_channel)
+      : null;
+    let where = `datetime(wo.created_at) >= datetime('now', '-${days} days')`;
+    const params = [];
+    if (channel && VALID_SALES_CHANNELS.has(channel) && this._hasColumn('web_orders', 'sales_channel')) {
+      where += ' AND wo.sales_channel = ?';
+      params.push(channel);
+    }
+
+    const byStatus = this.db
+      .prepare(
+        `
+      SELECT wo.status, COUNT(*) AS count, COALESCE(SUM(wo.total_amount), 0) AS amount
+      FROM web_orders wo
+      WHERE ${where}
+      GROUP BY wo.status
+      ORDER BY count DESC
+    `,
+      )
+      .all(...params);
+
+    const byChannel = this._hasColumn('web_orders', 'sales_channel')
+      ? this.db
+          .prepare(
+            `
+      SELECT wo.sales_channel AS channel, COUNT(*) AS count, COALESCE(SUM(wo.total_amount), 0) AS amount
+      FROM web_orders wo
+      WHERE ${where}
+      GROUP BY wo.sales_channel
+      ORDER BY count DESC
+    `,
+          )
+          .all(...params)
+      : [];
+
+    const totals = this.db
+      .prepare(
+        `
+      SELECT COUNT(*) AS orders, COALESCE(SUM(wo.total_amount), 0) AS amount
+      FROM web_orders wo
+      WHERE ${where}
+    `,
+      )
+      .get(...params);
+
+    return {
+      days,
+      by_status: byStatus,
+      by_channel: byChannel,
+      totals: {
+        orders: Number(totals?.orders || 0),
+        amount: Number(totals?.amount || 0),
+      },
+    };
+  }
+
+  countsByQueue() {
+    if (!this._hasWebOrdersTable()) {
+      return { incoming: 0, preparing: 0, ready: 0, delivering: 0, delivered: 0 };
+    }
+    const out = {};
+    for (const [queueId, cfg] of Object.entries(WEB_ORDER_QUEUES)) {
+      const statuses = cfg.statuses.filter((s) => VALID_STATUSES.has(s));
+      if (!statuses.length) {
+        out[queueId] = 0;
+        continue;
+      }
+      const placeholders = statuses.map(() => '?').join(', ');
+      const n = Number(
+        this.db
+          .prepare(`SELECT COUNT(*) AS n FROM web_orders WHERE status IN (${placeholders})`)
+          .get(...statuses).n || 0,
+      );
+      out[queueId] = n;
+    }
+    return out;
   }
 
   get(id) {
@@ -109,9 +274,11 @@ class WebOrdersService {
         mc.first_name,
         mc.last_name,
         mc.phone,
-        mc.address AS customer_address
+        mc.address AS customer_address,
+        ${this._marketplaceCustomerJoinSelect()}
       FROM web_orders wo
       LEFT JOIN marketplace_customers mc ON mc.id = wo.customer_id
+      ${this._marketplaceCustomerJoinClause()}
       WHERE wo.id = ?
     `,
       )
@@ -224,44 +391,8 @@ class WebOrdersService {
       throw createError(ERROR_CODES.VALIDATION_ERROR, 'Pickup orders cannot be sent to courier');
     }
 
-    const botToken = String(process.env.TELEGRAM_BOT_TOKEN || '').trim();
-    if (!botToken) {
-      throw createError(ERROR_CODES.VALIDATION_ERROR, 'TELEGRAM_BOT_TOKEN is not configured');
-    }
-
-    const now = new Date().toISOString();
-    const claimed = this.db
-      .prepare(`UPDATE web_orders SET status = 'out_for_delivery', updated_at = ? WHERE id = ? AND status = 'ready'`)
-      .run(now, wid);
-    if (!claimed.changes) {
-      throw createError(ERROR_CODES.VALIDATION_ERROR, 'Order is no longer ready for courier dispatch');
-    }
-
-    return Promise.resolve(
-      this._notifyCourierOrderReady(order),
-    )
-      .catch((err) => ({ ok: false, reason: err?.message || String(err) }))
-      .then((out) => {
-        if (!out?.ok) {
-          this.db
-            .prepare(`UPDATE web_orders SET status = 'ready', updated_at = ? WHERE id = ? AND status = 'out_for_delivery'`)
-            .run(new Date().toISOString(), wid);
-          throw createError(
-            ERROR_CODES.INTERNAL_ERROR,
-            `Telegram courier notification failed: ${out?.reason || 'unknown_error'}`,
-          );
-        }
-        if (botToken && order?.telegram_id) {
-          void notifyOrderStatusChanged({
-            botToken,
-            telegramId: order.telegram_id,
-            orderNumber: order.order_number,
-            status: 'out_for_delivery',
-            deliveryMethod: order.delivery_method,
-          }).catch(() => {});
-        }
-        return this.get(wid);
-      });
+    // Same transition as PATCH /status — Telegram xabarlari ixtiyoriy (best-effort).
+    return this.updateStatus(wid, 'out_for_delivery');
   }
 
   updateStatus(id, status) {
@@ -280,7 +411,7 @@ class WebOrdersService {
     const row = this.db
       .prepare(
         `
-        SELECT wo.id, wo.status, wo.order_number,
+        SELECT wo.id, wo.status, wo.order_number, wo.payment_method, wo.customer_id,
                ${this._hasColumn('web_orders', 'delivery_method') ? 'wo.delivery_method' : "'courier' AS delivery_method"},
                mc.telegram_id
         FROM web_orders wo
@@ -293,13 +424,74 @@ class WebOrdersService {
       throw createError(ERROR_CODES.NOT_FOUND, `Web order ${wid} not found`);
     }
     const current = String(row.status || '').toLowerCase();
-    const isWorkflowTransition = isValidTransition(current, next, { deliveryMethod: row.delivery_method });
     if (current === next) return this.get(wid);
 
+    const transitionContext = { deliveryMethod: row.delivery_method };
+    if (!isValidTransition(current, next, transitionContext)) {
+      const allowed = allowedNextStatuses(current, transitionContext);
+      throw createError(
+        ERROR_CODES.VALIDATION_ERROR,
+        `Invalid status transition: ${current} → ${next}${allowed.length ? ` (allowed: ${allowed.join(', ')})` : ''}`,
+      );
+    }
+
     const now = new Date().toISOString();
-    this.db.prepare(`UPDATE web_orders SET status = ?, updated_at = ? WHERE id = ?`).run(next, now, wid);
+    const applyStock = this.db.transaction(() => {
+      if (next === 'cancelled') {
+        const paymentRow = this.db
+          .prepare(`SELECT payment_status FROM web_orders WHERE id = ?`)
+          .get(wid);
+        const currentPaymentStatus = String(paymentRow?.payment_status || 'pending');
+        let nextPaymentStatus = currentPaymentStatus;
+        if (currentPaymentStatus === 'paid') nextPaymentStatus = 'refunded';
+        else if (currentPaymentStatus === 'pending') nextPaymentStatus = 'failed';
+
+        this.db
+          .prepare(
+            `UPDATE web_orders SET status = 'cancelled', payment_status = ?, updated_at = ? WHERE id = ?`,
+          )
+          .run(nextPaymentStatus, now, wid);
+        handleWebOrderCancelled(this.db, wid);
+        return;
+      }
+
+      this.db.prepare(`UPDATE web_orders SET status = ?, updated_at = ? WHERE id = ?`).run(next, now, wid);
+
+      if (next === 'processing') {
+        if (row.customer_id) {
+          try {
+            syncPosCustomerFromMarketplace(this.db, row.customer_id);
+          } catch {
+            /* POS mijoz bog‘lanmasa ham buyurtma davom etadi */
+          }
+        }
+        if (!isOrderStockFulfilled(this.db, wid)) {
+          fulfillWebOrderStock(this.db, wid, {
+            reason:
+              String(row.payment_method) === 'cash'
+                ? `Cash order accepted ${row.order_number}`
+                : `Order accepted ${row.order_number}`,
+          });
+        }
+      }
+
+      if (next === 'delivered') {
+        markCashPaymentOnDelivered(this.db, wid);
+        if (!isOrderStockFulfilled(this.db, wid)) {
+          fulfillWebOrderStock(this.db, wid, {
+            reason: `Delivered ${row.order_number}`,
+          });
+        }
+        try {
+          recordWebOrderCustomerSale(this.db, wid);
+        } catch {
+          /* mijoz kartochkasi ixtiyoriy — yetkazish davom etadi */
+        }
+      }
+    });
+    applyStock();
     const token = String(process.env.TELEGRAM_BOT_TOKEN || '').trim();
-    if (isWorkflowTransition && token && row?.telegram_id) {
+    if (token && row?.telegram_id) {
       void notifyOrderStatusChanged({
         botToken: token,
         telegramId: row.telegram_id,
@@ -308,7 +500,7 @@ class WebOrdersService {
         deliveryMethod: row.delivery_method,
       }).catch(() => {});
     }
-    if (isWorkflowTransition && ['ready', 'out_for_delivery'].includes(next) && normalizeDeliveryMethod(row.delivery_method) === 'courier') {
+    if (['ready', 'out_for_delivery'].includes(next) && normalizeDeliveryMethod(row.delivery_method) === 'courier') {
       const orderForCourier = this.get(wid);
       void this._notifyCourierOrderReady(orderForCourier).catch(() => {});
     }
@@ -426,6 +618,11 @@ class WebOrdersService {
         this.db
           .prepare(`UPDATE marketplace_customers SET ${customerSets.join(', ')} WHERE id = ?`)
           .run(...customerVals);
+        try {
+          syncPosCustomerFromMarketplace(this.db, current.customer_id);
+        } catch {
+          /* best-effort */
+        }
       }
     });
     updateTx();
@@ -477,13 +674,16 @@ class WebOrdersService {
     }
 
     const now = new Date().toISOString();
-    this.db
-      .prepare(
-        `UPDATE web_orders
+    this.db.transaction(() => {
+      this.db
+        .prepare(
+          `UPDATE web_orders
          SET status = 'cancelled', payment_status = ?, updated_at = ?
          WHERE id = ?`,
-      )
-      .run(nextPaymentStatus, now, wid);
+        )
+        .run(nextPaymentStatus, now, wid);
+      handleWebOrderCancelled(this.db, wid);
+    })();
 
     const token = String(process.env.TELEGRAM_BOT_TOKEN || '').trim();
     if (token && row?.telegram_id) {

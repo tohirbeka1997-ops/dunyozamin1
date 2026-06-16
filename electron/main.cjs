@@ -1,6 +1,13 @@
 const path = require('path');
 require('./config/loadRootEnv.cjs').loadRootEnv();
 
+// Root `.env` sets POS_SERVER_MODE / POS_DATA_DIR for VPS deploy (`electron/server.cjs`).
+// Desktop Electron must always use app.getPath('userData'), not server paths.
+if (process.versions?.electron) {
+  delete process.env.POS_SERVER_MODE;
+  delete process.env.POS_DATA_DIR;
+}
+
 const { app, BrowserWindow, ipcMain, shell, screen, dialog, protocol, net } = require('electron');
 const fs = require('fs');
 const { pathToFileURL } = require('url');
@@ -192,20 +199,26 @@ function createWindow() {
   // Determine URL to load
   const isDev = process.env.VITE_DEV_SERVER_URL !== undefined;
   const devServerUrl = process.env.VITE_DEV_SERVER_URL || 'http://localhost:5173';
+  const kassaLite =
+    process.env.KASSA_LITE === '1' ||
+    process.env.POS_KASSA_LITE === '1' ||
+    process.env.VITE_KASSA_LITE === '1';
   
   console.log('Is dev mode:', isDev);
   console.log('Dev server URL:', devServerUrl);
+  console.log('Kassa Lite mode:', kassaLite);
   
   let loadURL;
   let allowedMainFramePrefixes = [];
   if (isDev) {
-    loadURL = devServerUrl;
+    loadURL = kassaLite ? `${devServerUrl.replace(/\/$/, '')}/kassa.html` : devServerUrl;
     console.log('Loading from dev server:', loadURL);
     allowedMainFramePrefixes = [devServerUrl];
   } else {
     // Production: load from file
     // In packaged apps, dist/ is inside app.asar. Use app.getAppPath() so we don't depend on __dirname layout.
-    const indexPath = path.join(app.getAppPath(), 'dist', 'index.html');
+    const htmlName = kassaLite ? 'kassa.html' : 'index.html';
+    const indexPath = path.join(app.getAppPath(), 'dist', htmlName);
     console.log('Resolved production index path:', indexPath);
     const patchedIndexPath = buildPatchedIndexForFileProtocol(indexPath);
     const patchedUrl = pathToFileURL(patchedIndexPath).href;
@@ -412,8 +425,8 @@ app.on('ready', async () => {
         url = decodeURIComponent(url).replace(/^\/+/, '');
         const filename = path.basename(url).replace(/\.\./g, '');
         if (!filename) return new Response(null, { status: 404 });
-        const imagesDir = path.join(app.getPath('userData'), 'product-images');
-        const filePath = path.join(imagesDir, filename);
+        const { getProductImagesDir } = require('./lib/productImagesDir.cjs');
+        const filePath = path.join(getProductImagesDir(), filename);
         if (!fs.existsSync(filePath)) return new Response(null, { status: 404 });
         const buf = await fs.promises.readFile(filePath);
         const ext = path.extname(filename).toLowerCase();
@@ -485,10 +498,17 @@ app.on('ready', async () => {
       }
 
       const { registerClientForwarders } = require('./net/clientForwarder.cjs');
-      registerClientForwarders({
+      const { callRpc } = registerClientForwarders({
         hostUrl: appConfig?.client?.hostUrl,
         secret: appConfig?.client?.secret,
       });
+
+      try {
+        const { registerDatabaseHandlers } = require('./ipc/database.ipc.cjs');
+        registerDatabaseHandlers({ mode: 'client', callRpc });
+      } catch (e) {
+        console.warn('[POSNET] Failed to register database download handlers:', e?.message || e);
+      }
 
       try {
         const { registerLocalPrintHandlers } = require('./ipc/print.ipc.cjs');
@@ -570,6 +590,18 @@ app.on('ready', async () => {
     try {
       backupRunner = createBackupRunner({ app, intervalMs: 30 * 60 * 1000, maxBackups: 30, enabled: true });
       backupRunner.start();
+      try {
+        const services = getServices();
+        if (services) services.backup = backupRunner;
+      } catch (e) {
+        console.warn('[Backup] Failed to attach backup runner to services:', e?.message || e);
+      }
+      try {
+        const { registerDatabaseHandlers } = require('./ipc/database.ipc.cjs');
+        registerDatabaseHandlers({ mode: 'host', getBackupRunner: () => backupRunner });
+      } catch (e) {
+        console.warn('[Backup] Failed to register database download handlers:', e?.message || e);
+      }
       // Create an early backup shortly after startup (gives a restore point even on first day)
       setTimeout(() => {
         backupRunner?.backupOnce('startup').catch(() => {});
