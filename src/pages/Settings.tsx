@@ -61,7 +61,7 @@ import { useToast } from '@/hooks/use-toast';
 import { clearAllBrowserStorageAndReload } from '@/lib/clearBrowserStorage';
 import { useQueryClient } from '@tanstack/react-query';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
-import { isElectron, requireElectron, handleIpcResponse } from '@/utils/electron';
+import { isElectron, requireElectron, handleIpcResponse, formatUserFacingError } from '@/utils/electron';
 import type {
   CompanySettings,
   POSSettings,
@@ -499,7 +499,7 @@ export default function Settings() {
       console.error('Error saving pos-config.json:', e);
       toast({
         title: t('settings.offline.toastErrTitle'),
-        description: e instanceof Error ? e.message : t('settings.toast.netSaveErr'),
+        description: formatUserFacingError(e, t('settings.toast.netSaveErr')),
         variant: 'destructive',
       });
     } finally {

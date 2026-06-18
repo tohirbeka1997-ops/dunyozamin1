@@ -14,7 +14,10 @@
       "unstable": "нестабильно",
       "scale_error_title": "Ошибка весов"
     },
-    "search_placeholder": "Поиск продуктов по названию, SKU или штрих-коду... (наведите курсор на F2, добавьте ENTER)",
+    "search_placeholder": "Поиск продуктов по названию, SKU, артикулу или штрих-коду... (наведите курсор на F2, добавьте ENTER)",
+    "brand_label": "Бренд",
+    "article_label": "Артикул",
+    "quick_product_search_placeholder": "Название, SKU, артикул или штрих-код...",
     "all_categories": "Все",
     "no_products": "Товар не найден",
     "try_searching": "Найдите или выберите другую категорию",
@@ -170,17 +173,23 @@
       "payment_need_refund": "Total Negative — утвердить возврат средств клиенту.",
       "payment_need_zero": "Итого ноль — нажмите «Готово».",
       "payment_invalid_method": "Неверный тип платежа.",
-      "refund_panel_intro": "Обмен: Общая сумма денежных средств отрицательна. Передайте клиенту эту сумму наличными и подтвердите.",
+      "refund_panel_intro": "Обмен: сумма отрицательна. Выдайте наличные или зачислите на баланс клиента.",
       "customer_payout_label": "Предоставляется клиенту:",
       "refund_confirm_button": "Подтверждение кэшбэка",
       "refund_confirm_with_amount": "{{amount}} — подтверждение кэшбэка",
+      "refund_balance_hint": "Или зачислить на баланс клиента без выдачи наличных (магазин должен клиенту).",
+      "refund_balance_with_amount": "{{amount}} — зачислить на баланс",
+      "refund_balance_need_customer": "Для зачисления на баланс выберите зарегистрированного клиента.",
+      "refund_balance_need_customer_hint": "Сначала выберите клиента для зачисления на баланс.",
       "zero_settle_intro": "Итого 0 - разницы нет, проверку можно завершать.",
       "zero_settle_button": "Завершение (нулевая сумма)",
       "credit_blocked_returns": "Долг нельзя использовать с обратными (отрицательными) линиями.",
       "credit_blocked_total": "Итого 0 или минус – завершить из окна «Оплатить».",
       "success_refund": "Заказ {{order}}: Кэшбэк (обмен) клиенту {{amount}}.",
+      "success_refund_balance": "Заказ {{order}}: {{amount}} зачислено на баланс клиента (обмен).",
       "success_zero": "Ордер {{order}}: всего 0 — обмен завершен.",
       "receipt_payment_refund": "Наличные клиенту (возврат)",
+      "receipt_payment_refund_balance": "На баланс клиента (возврат)",
       "receipt_payment_zero": "Нулевая сумма (обмен)"
     }
   },
@@ -868,7 +877,7 @@
       "name_required_title": "Ошибка проверки",
       "name_required": "Укажите название категории.",
       "invalid_parent_title": "Ошибка проверки",
-      "invalid_parent": "Категория не может быть собственной родительской категорией."
+      "invalid_parent": "Категория не может быть родителем самой себя или своих подкатегорий"
     },
     "messages": {
       "updated": "Категория успешно обновлена",
@@ -901,6 +910,7 @@
     "description": "Описание",
     "parent_category": "Родительская категория",
     "parent_category_badge": "Родительская категория",
+    "category_path": "Путь категории",
     "parent_not_found": "Родительская категория не найдена",
     "root_category": "Корень (нет родителя)",
     "products_tab": "Продукты ({{count}})",

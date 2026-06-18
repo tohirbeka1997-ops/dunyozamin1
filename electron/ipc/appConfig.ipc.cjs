@@ -2,7 +2,7 @@ const { ipcMain } = require('electron');
 const { wrapHandler } = require('../lib/errors.cjs');
 const { readConfig, writeConfig, resetConfig, getConfigPath } = require('../config/appConfig.cjs');
 const {
-  getCurrentUserRole,
+  resolveActorRole,
   assertAppConfigPatchAllowed,
   requireAdmin,
 } = require('../lib/ipcAuth.cjs');
@@ -45,8 +45,7 @@ function registerAppConfigHandlers(app) {
       // manager-level account rotate the master adminBypass key.
       let db;
       try { db = getDb(); } catch { db = null; }
-      const role = db ? getCurrentUserRole(db) : null;
-      assertAppConfigPatchAllowed(patch || {}, role);
+      assertAppConfigPatchAllowed(patch || {}, resolveActorRole(db));
       return writeConfig(patch || {}, app);
     })
   );

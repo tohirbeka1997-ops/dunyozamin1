@@ -63,7 +63,7 @@ import { Switch } from '@/components/ui/switch';
 import { useToast } from '@/hooks/use-toast';
 import { formatDate } from '@/lib/datetime';
 import { getProductImageDisplayUrl } from '@/lib/productImageUrl';
-import { getMarketplaceCategories } from '@/lib/categoryTree';
+import { getMarketplaceCategories, formatCategoryPath, getCategoryDescendantIds } from '@/lib/categoryTree';
 
 function buildCategoryTreeOptions(cats: Category[]): { id: string; label: string }[] {
   const byParent = new Map<string | null, Category[]>();
@@ -73,7 +73,11 @@ function buildCategoryTreeOptions(cats: Category[]): { id: string; label: string
     byParent.get(p)!.push(c);
   }
   for (const arr of byParent.values()) {
-    arr.sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }));
+    arr.sort((a, b) => {
+      const so = (a.sort_order ?? 0) - (b.sort_order ?? 0);
+      if (so !== 0) return so;
+      return a.name.localeCompare(b.name, undefined, { sensitivity: 'base' });
+    });
   }
   const out: { id: string; label: string }[] = [];
   const walk = (parentId: string | null, depth: number) => {
@@ -366,7 +370,11 @@ export default function Categories() {
     }
 
     if (formData.parent_id && editingCategory) {
-      if (formData.parent_id === editingCategory.id) {
+      const blocked = new Set([
+        editingCategory.id,
+        ...getCategoryDescendantIds(categories, editingCategory.id),
+      ]);
+      if (blocked.has(formData.parent_id)) {
         toast({
           title: t('categories.validation.invalid_parent_title'),
           description: t('categories.validation.invalid_parent'),
@@ -494,6 +502,11 @@ export default function Categories() {
     return parent?.name;
   };
 
+  const getParentCategoryPath = (parentId: string | null) => {
+    if (!parentId) return null;
+    return formatCategoryPath(categories, parentId) || getParentCategoryName(parentId);
+  };
+
   const filteredBySearch = useMemo(() => {
     const q = searchTerm.trim().toLowerCase();
     if (!q) return categories;
@@ -516,10 +529,7 @@ export default function Categories() {
     return flattenCategoryDisplayRows(filteredBySearch, sortBy);
   }, [filteredBySearch, searchTerm, sortBy]);
 
-  const showParentColumn = useMemo(
-    () => categories.some((c) => Boolean(c.parent_id)),
-    [categories]
-  );
+  const showParentColumn = true;
 
   const totalPages = Math.max(1, Math.ceil(displayRows.length / pageSize));
 
@@ -650,7 +660,7 @@ export default function Categories() {
     const rows = exportCategories.map((c) => [
       c.name,
       c.description || '',
-      c.parent_id ? getParentCategoryName(c.parent_id) || '' : t('categories.root'),
+      c.parent_id ? getParentCategoryPath(c.parent_id) || '' : t('categories.root'),
       String(c.products_count ?? productCounts[c.id] ?? 0),
       formatDate(c.created_at),
     ]);
@@ -674,9 +684,14 @@ export default function Categories() {
     : 0;
 
   const parentSelectOptions = useMemo(() => {
-    const available = categories.filter(
-      (cat) => !editingCategory || cat.id !== editingCategory.id
-    );
+    let available = categories;
+    if (editingCategory) {
+      const exclude = new Set([
+        editingCategory.id,
+        ...getCategoryDescendantIds(categories, editingCategory.id),
+      ]);
+      available = categories.filter((cat) => !exclude.has(cat.id));
+    }
     return buildCategoryTreeOptions(available);
   }, [categories, editingCategory?.id]);
 
@@ -918,10 +933,15 @@ export default function Categories() {
                       </TableCell>
                       <TableCell className="py-2">
                         <div
-                          className="flex items-center gap-2.5 min-w-0"
+                          className="flex flex-col gap-0.5 min-w-0"
                           style={{ paddingLeft: depth > 0 ? `${Math.min(depth, 6) * 14}px` : undefined }}
                         >
                           <p className="font-medium leading-tight truncate">{category.name}</p>
+                          {depth > 0 && (
+                            <p className="text-xs text-muted-foreground truncate">
+                              {formatCategoryPath(categories, category.id)}
+                            </p>
+                          )}
                         </div>
                       </TableCell>
                       <TableCell className="py-2 text-muted-foreground max-w-[220px] truncate">
@@ -930,9 +950,9 @@ export default function Categories() {
                       {showParentColumn && (
                         <TableCell className="py-2">
                           {category.parent_id ? (
-                            <Badge variant="outline" className="font-normal">
+                            <Badge variant="outline" className="font-normal max-w-[240px] truncate">
                               <FolderTree className="h-3 w-3 mr-1 shrink-0" />
-                              {getParentCategoryName(category.parent_id) || '—'}
+                              {getParentCategoryPath(category.parent_id) || '—'}
                             </Badge>
                           ) : (
                             <span className="text-muted-foreground text-sm">

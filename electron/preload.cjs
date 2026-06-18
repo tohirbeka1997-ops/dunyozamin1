@@ -390,7 +390,7 @@ contextBridge.exposeInMainWorld('posApi', {
     login: (username, password) => invoke('pos:auth:login', username, password),
     logout: () => invoke('pos:auth:logout'),
     me: () => invoke('pos:auth:me'),
-    setSessionUser: (userId) => invoke('pos:auth:setSessionUser', userId),
+    setSessionUser: (userId, role) => invoke('pos:auth:setSessionUser', userId, role),
     getUser: (userId) => invoke('pos:auth:getUser', userId),
     checkPermission: (userId, permission) => invoke('pos:auth:checkPermission', userId, permission),
     requestPasswordReset: (identifier) => invoke('pos:auth:requestPasswordReset', identifier),

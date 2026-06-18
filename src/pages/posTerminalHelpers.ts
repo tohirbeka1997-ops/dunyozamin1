@@ -94,26 +94,14 @@ export function clearPosNavCartDraft(): void {
   persistPosNavCartDraft(null);
 }
 
-export function registerProductScanIndexes(
-  product: Product,
-  barcodeIndex: Map<string, Product>,
-  skuIndex: Map<string, Product>,
-) {
-  const sku = String(product.sku || '').trim();
-  if (sku) {
-    skuIndex.set(sku, product);
-    const normalized = sku.toLowerCase().replace(/[\s\-_]/g, '');
-    if (normalized) skuIndex.set(normalized, product);
-    const trimmedLeadingZeros = sku.replace(/^0+/, '') || '0';
-    if (trimmedLeadingZeros !== sku) skuIndex.set(trimmedLeadingZeros, product);
-  }
-  const barcode = String((product as any).barcode || '').trim();
-  if (barcode) {
-    barcodeIndex.set(barcode, product);
-    const digitsOnly = barcode.replace(/[^\d]/g, '');
-    if (digitsOnly && digitsOnly !== barcode) barcodeIndex.set(digitsOnly, product);
-  }
-}
+export {
+  registerProductScanIndexes,
+  buildProductScanIndex,
+  lookupProductByScanCode,
+  collectScanLookupKeys,
+  createEmptyProductScanIndex,
+} from '@/lib/pos/productBarcodeIndex';
+export type { ProductScanIndex, ScanLookupHit } from '@/lib/pos/productBarcodeIndex';
 
 // ----- Qidiruv matnini normallashtirish -----
 
@@ -125,7 +113,28 @@ export const normalizeSku = (value: string) =>
     .toLowerCase()
     .replace(/[\s\-_]/g, '');
 
+export const normalizeArticle = (value: string) =>
+  String(value || '')
+    .trim()
+    .toLowerCase()
+    .replace(/[\s\-_]/g, '');
+
 export const normalizeText = (value: string) => String(value || '').trim().toLowerCase();
+
+/** POS mahsulot qidiruvi: nom, SKU, shtrix-kod, artikul, brend */
+export function productMatchesPosTextFilter(product: Product, term: string): boolean {
+  const q = normalizeText(term);
+  if (!q) return true;
+  const article = normalizeArticle(String(product.article ?? ''));
+  const brand = normalizeText(String(product.brand ?? ''));
+  return (
+    product.name.toLowerCase().includes(q) ||
+    String(product.sku || '').toLowerCase().includes(q) ||
+    String((product as { barcode?: string | null }).barcode || '').toLowerCase().includes(q) ||
+    (article.length > 0 && article.includes(q.replace(/[\s\-_]/g, ''))) ||
+    (brand.length > 0 && brand.includes(q))
+  );
+}
 
 export const classifyQuery = (value: string) => {
   const raw = normalizeSearchTerm(value);

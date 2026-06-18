@@ -16,7 +16,9 @@ export type PaymentMethod =
   | 'mixed'
   | 'credit'
   /** Pul chiqimi (almashuv: mijozga qaytarish) — backend cash_movements.refund */
-  | 'refund_cash';
+  | 'refund_cash'
+  /** Almashuv qaytimi mijoz balansiga (naqd emas) */
+  | 'refund_balance';
 export type RefundMethod = 'cash' | 'card' | 'credit';
 export type MovementType = 'purchase' | 'sale' | 'return' | 'adjustment' | 'audit';
 export type ShiftStatus = 'open' | 'closed';

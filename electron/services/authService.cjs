@@ -83,7 +83,11 @@ class AuthService {
         FROM user_roles ur
         INNER JOIN roles r ON ur.role_id = r.id
         WHERE ur.user_id = ? AND r.is_active = 1
-        ORDER BY ur.assigned_at DESC
+        ORDER BY CASE r.code
+          WHEN 'admin' THEN 0
+          WHEN 'manager' THEN 1
+          ELSE 2
+        END, r.code
         LIMIT 1
       `).get(user.id);
       

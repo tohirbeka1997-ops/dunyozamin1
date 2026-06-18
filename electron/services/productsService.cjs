@@ -338,6 +338,30 @@ class ProductsService {
     return this._getProductsColumns().has(name);
   }
 
+  /** WHERE fragment for product text search (name/sku/barcode/article/brand). */
+  _productSearchWhere(raw, params) {
+    const search = `%${String(raw)}%`;
+    const fields = [];
+    if (this._hasCol('normalized_name')) {
+      fields.push('p.normalized_name LIKE ?');
+      params.push(`%${this._normalizeName(raw)}%`);
+    } else {
+      fields.push('p.name LIKE ?');
+      params.push(search);
+    }
+    fields.push('p.sku LIKE ?', 'p.barcode LIKE ?');
+    params.push(search, search);
+    if (this._hasCol('article')) {
+      fields.push('p.article LIKE ?');
+      params.push(search);
+    }
+    if (this._hasCol('brand')) {
+      fields.push('p.brand LIKE ?');
+      params.push(search);
+    }
+    return ` AND (${fields.join(' OR ')})`;
+  }
+
   _hasTable(name) {
     try {
       return !!this.db
@@ -828,21 +852,7 @@ class ProductsService {
     }
 
     if (filters.search) {
-      const raw = String(filters.search);
-      const search = `%${raw}%`;
-      const hasArticle = this._hasCol('article');
-      if (this._hasCol('normalized_name')) {
-        const normalized = `%${this._normalizeName(raw)}%`;
-        query += hasArticle
-          ? ` AND (p.normalized_name LIKE ? OR p.sku LIKE ? OR p.barcode LIKE ? OR p.article LIKE ?)`
-          : ` AND (p.normalized_name LIKE ? OR p.sku LIKE ? OR p.barcode LIKE ?)`;
-        params.push(normalized, search, search, ...(hasArticle ? [search] : []));
-      } else {
-        query += hasArticle
-          ? ` AND (p.name LIKE ? OR p.sku LIKE ? OR p.barcode LIKE ? OR p.article LIKE ?)`
-          : ` AND (p.name LIKE ? OR p.sku LIKE ? OR p.barcode LIKE ?)`;
-        params.push(search, search, search, ...(hasArticle ? [search] : []));
-      }
+      query += this._productSearchWhere(String(filters.search), params);
     }
 
     const catFilter = this._categoryFilterClause(filters);
@@ -1014,17 +1024,11 @@ class ProductsService {
     let searchRankClause = null;
     if (filters.search) {
       const raw = String(filters.search);
-      const search = `%${raw}%`;
       const prefixSearch = `${raw}%`;
-      const hasArticle = this._hasCol('article');
+      query += this._productSearchWhere(raw, params);
       if (this._hasCol('normalized_name')) {
-        const normalized = `%${this._normalizeName(raw)}%`;
         const normalizedPrefix = `${this._normalizeName(raw)}%`;
-        query += hasArticle
-          ? ` AND (p.normalized_name LIKE ? OR p.sku LIKE ? OR p.barcode LIKE ? OR p.article LIKE ?)`
-          : ` AND (p.normalized_name LIKE ? OR p.sku LIKE ? OR p.barcode LIKE ?)`;
-        params.push(normalized, search, search, ...(hasArticle ? [search] : []));
-        // Build ranking CASE WHEN — exact > prefix > contains
+        const normalized = `%${this._normalizeName(raw)}%`;
         searchRankClause = `CASE
           WHEN p.sku = ? OR p.barcode = ? THEN 0
           WHEN p.sku LIKE ? OR p.barcode LIKE ? THEN 1
@@ -1034,10 +1038,7 @@ class ProductsService {
         END`;
         params.push(raw, raw, prefixSearch, prefixSearch, normalizedPrefix, normalized);
       } else {
-        query += hasArticle
-          ? ` AND (p.name LIKE ? OR p.sku LIKE ? OR p.barcode LIKE ? OR p.article LIKE ?)`
-          : ` AND (p.name LIKE ? OR p.sku LIKE ? OR p.barcode LIKE ?)`;
-        params.push(search, search, search, ...(hasArticle ? [search] : []));
+        const search = `%${raw}%`;
         searchRankClause = `CASE
           WHEN p.sku = ? OR p.barcode = ? THEN 0
           WHEN p.sku LIKE ? OR p.barcode LIKE ? THEN 1
@@ -1103,21 +1104,7 @@ class ProductsService {
     }
 
     if (filters.search) {
-      const raw = String(filters.search);
-      const search = `%${raw}%`;
-      const hasArticle = this._hasCol('article');
-      if (this._hasCol('normalized_name')) {
-        const normalized = `%${this._normalizeName(raw)}%`;
-        query += hasArticle
-          ? ` AND (p.normalized_name LIKE ? OR p.sku LIKE ? OR p.barcode LIKE ? OR p.article LIKE ?)`
-          : ` AND (p.normalized_name LIKE ? OR p.sku LIKE ? OR p.barcode LIKE ?)`;
-        params.push(normalized, search, search, ...(hasArticle ? [search] : []));
-      } else {
-        query += hasArticle
-          ? ` AND (p.name LIKE ? OR p.sku LIKE ? OR p.barcode LIKE ? OR p.article LIKE ?)`
-          : ` AND (p.name LIKE ? OR p.sku LIKE ? OR p.barcode LIKE ?)`;
-        params.push(search, search, search, ...(hasArticle ? [search] : []));
-      }
+      query += this._productSearchWhere(String(filters.search), params);
     }
 
     const catFilter = this._categoryFilterClause(filters);
@@ -1281,15 +1268,9 @@ class ProductsService {
   /**
    * Get product by barcode
    */
-  getByBarcode(barcode) {
-    const b = this._requireNonEmptyString(barcode, 'Barcode');
-    if (this.cacheService) {
-      const cached = this.cacheService.getProductByBarcode(b);
-      if (cached) return cached;
-    }
-    let row;
+  _queryProductRowByBarcode(barcode) {
     try {
-      row = this.db
+      return this.db
         .prepare(
           `
           SELECT
@@ -1305,10 +1286,33 @@ class ProductsService {
           LIMIT 1
         `
         )
-        .get(b);
+        .get(barcode);
     } catch (_e) {
-      // Fallback for older schemas without joins
-      row = this.db.prepare(`SELECT * FROM products WHERE barcode = ?`).get(b);
+      return this.db.prepare(`SELECT * FROM products WHERE barcode = ?`).get(barcode);
+    }
+  }
+
+  getByBarcode(barcode) {
+    const b = this._requireNonEmptyString(barcode, 'Barcode');
+    const candidates = [b];
+    const digitsOnly = b.replace(/[^\d]/g, '');
+    if (digitsOnly && digitsOnly !== b) candidates.push(digitsOnly);
+    const upper = b.toUpperCase();
+    if (upper !== b) candidates.push(upper);
+    const lower = b.toLowerCase();
+    if (lower !== b) candidates.push(lower);
+
+    if (this.cacheService) {
+      for (const candidate of candidates) {
+        const cached = this.cacheService.getProductByBarcode(candidate);
+        if (cached) return cached;
+      }
+    }
+
+    let row = null;
+    for (const candidate of candidates) {
+      row = this._queryProductRowByBarcode(candidate);
+      if (row) break;
     }
     if (!row) {
       throw createError(ERROR_CODES.NOT_FOUND, `Product with barcode ${b} not found`);

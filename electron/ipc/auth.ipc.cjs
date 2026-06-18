@@ -1,7 +1,8 @@
 const { ipcMain } = require('electron');
 const { wrapHandler, ERROR_CODES, createError } = require('../lib/errors.cjs');
 const { randomUUID } = require('crypto');
-const { setCurrentUserId } = require('../lib/currentUser.cjs');
+const { setCurrentUserSession } = require('../lib/currentUser.cjs');
+const { getCurrentUserRole } = require('../lib/ipcAuth.cjs');
 
 // Defensive check: ensure wrapHandler is imported correctly
 if (typeof wrapHandler !== 'function') {
@@ -29,7 +30,7 @@ function registerAuthHandlers(services, db) {
 
       if (result.success) {
         if (result.user?.id) {
-          setCurrentUserId(result.user.id);
+          setCurrentUserSession(result.user.id, result.user.role);
         }
 
         // Record login session for "Login Activity" report.
@@ -124,14 +125,26 @@ function registerAuthHandlers(services, db) {
   // logged-in user (best-effort) or null.
   ipcMain.removeHandler('pos:auth:logout');
   ipcMain.handle('pos:auth:logout', wrapHandler(async () => {
-    setCurrentUserId(null);
+    setCurrentUserSession(null, null);
     return { success: true };
   }));
 
   // Renderer localStorage orqali qayta yuklanganda joriy foydalanuvchi ID sini main processga sinxronlash
   ipcMain.removeHandler('pos:auth:setSessionUser');
-  ipcMain.handle('pos:auth:setSessionUser', wrapHandler(async (_event, userId) => {
-    setCurrentUserId(userId);
+  ipcMain.handle('pos:auth:setSessionUser', wrapHandler(async (_event, userId, roleHint) => {
+    if (userId == null || userId === '') {
+      setCurrentUserSession(null, null);
+      return { success: true };
+    }
+    let role = roleHint ? String(roleHint).toLowerCase() : null;
+    if (!role) {
+      try {
+        role = getCurrentUserRole(db);
+      } catch {
+        role = null;
+      }
+    }
+    setCurrentUserSession(userId, role);
     return { success: true };
   }));
 

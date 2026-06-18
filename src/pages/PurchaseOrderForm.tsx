@@ -30,6 +30,7 @@ import {
   TableRow,
 } from '@/components/ui/table';
 import { useToast } from '@/hooks/use-toast';
+import { useDebounce } from '@/hooks/use-debounce';
 import { useAuth } from '@/contexts/AuthContext';
 import { formatUnit } from '@/utils/formatters';
 import { formatMoneyUZS } from '@/lib/format';
@@ -37,8 +38,10 @@ import { invalidateDashboardQueries } from '@/utils/dashboard';
 import MoneyInput from '@/components/common/MoneyInput';
 import {
   getSuppliers,
-  getProducts,
   getPurchaseOrderById,
+  searchProducts,
+  getProductByBarcode,
+  getProductBySku,
   createPurchaseOrder,
   updatePurchaseOrder,
   generatePONumber,
@@ -113,7 +116,6 @@ export default function PurchaseOrderForm() {
 
   const [loading, setLoading] = useState(false);
   const [suppliers, setSuppliers] = useState<SupplierWithBalance[]>([]);
-  const [products, setProducts] = useState<ProductWithCategory[]>([]);
   const [existingPO, setExistingPO] = useState<PurchaseOrderWithDetails | null>(null);
 
   // Form fields
@@ -146,6 +148,10 @@ export default function PurchaseOrderForm() {
 
   // Product search
   const [searchTerm, setSearchTerm] = useState('');
+  const debouncedSearchTerm = useDebounce(searchTerm.trim(), 250);
+  const [productCandidates, setProductCandidates] = useState<ProductWithCategory[]>([]);
+  const [productSearchLoading, setProductSearchLoading] = useState(false);
+  const productSearchSeqRef = useRef(0);
   const [itemsSearchTerm, setItemsSearchTerm] = useState('');
   const [quickAddQty, setQuickAddQty] = useState(1);
   const [pendingSelectProductId, setPendingSelectProductId] = useState<string | null>(null);
@@ -163,29 +169,6 @@ export default function PurchaseOrderForm() {
   const [showExpensesPanel, setShowExpensesPanel] = useState(false);
   const [auditFilter, setAuditFilter] = useState<AuditFilterKey>('all');
 
-  const handleBarcodeAdd = () => {
-    const raw = String(barcodeInput || '').trim();
-    if (!raw) return;
-    const byBarcode = products.find(
-      (p) => p.barcode && String(p.barcode).trim().toLowerCase() === raw.toLowerCase()
-    );
-    const bySku = products.find(
-      (p) => p.sku && String(p.sku).trim().toLowerCase() === raw.toLowerCase()
-    );
-    const product = byBarcode || bySku;
-    if (product) {
-      addProduct(product, quickAddQty);
-      setBarcodeInput('');
-      barcodeInputRef.current?.focus();
-    } else {
-      toast({
-        title: 'Mahsulot topilmadi',
-        description: `"${raw}" shtrix kod yoki SKU bo'yicha mahsulot topilmadi`,
-        variant: 'destructive',
-      });
-    }
-  };
-
   const openProductSearch = () => {
     setShowProductSearch(true);
     setTimeout(() => searchInputRef.current?.focus(), 100);
@@ -195,10 +178,6 @@ export default function PurchaseOrderForm() {
 
   const handleProductCreated = (product: ProductWithCategory) => {
     addProduct(product);
-    getProducts(true, { status: 'all', stockStatus: 'all', limit: 5000, offset: 0 } as any).then(
-      (data) => setProducts(Array.isArray(data) ? data : []),
-      () => {}
-    );
   };
 
   // Supplier modal
@@ -365,25 +344,55 @@ export default function PurchaseOrderForm() {
     loadInitialData();
   }, [id]);
 
+  useEffect(() => {
+    const term = debouncedSearchTerm;
+    if (!term) {
+      productSearchSeqRef.current += 1;
+      setProductCandidates([]);
+      setProductSearchLoading(false);
+      return;
+    }
+
+    const seq = ++productSearchSeqRef.current;
+    let active = true;
+
+    const run = async () => {
+      setProductSearchLoading(true);
+      try {
+        if (term.length < 2) {
+          const exact =
+            (await getProductByBarcode(term)) ||
+            (await getProductBySku(term));
+          if (!active || productSearchSeqRef.current !== seq) return;
+          setProductCandidates(exact ? [exact] : []);
+          return;
+        }
+
+        const results = await searchProducts(term);
+        if (!active || productSearchSeqRef.current !== seq) return;
+        setProductCandidates(results.slice(0, 30));
+      } catch {
+        if (!active || productSearchSeqRef.current !== seq) return;
+        setProductCandidates([]);
+      } finally {
+        if (active && productSearchSeqRef.current === seq) {
+          setProductSearchLoading(false);
+        }
+      }
+    };
+
+    void run();
+    return () => {
+      active = false;
+    };
+  }, [debouncedSearchTerm]);
+
   const loadInitialData = async () => {
     try {
       setLoading(true);
-      const [suppliersData, productsData] = await Promise.all([
-        getSuppliers(),
-        // Purchase order needs broad product visibility; default getProducts() limit (50) is too small
-        // and makes imported products "not found" here.
-        getProducts(true, {
-          status: 'all',
-          stockStatus: 'all',
-          sortBy: 'name',
-          sortOrder: 'asc',
-          limit: 5000,
-          offset: 0,
-        } as any),
-      ]);
+      const suppliersData = await getSuppliers();
 
       setSuppliers(Array.isArray(suppliersData) ? suppliersData : []);
-      setProducts(Array.isArray(productsData) ? productsData : []);
 
       if (id) {
         const poData = await getPurchaseOrderById(id);
@@ -517,6 +526,33 @@ export default function PurchaseOrderForm() {
     setItems([newItem, ...items]);
   };
 
+  const handleBarcodeAdd = async () => {
+    const raw = String(barcodeInput || '').trim();
+    if (!raw) return;
+    try {
+      const byBarcode = await getProductByBarcode(raw);
+      const bySku = byBarcode ? null : await getProductBySku(raw);
+      const product = byBarcode || bySku;
+      if (product) {
+        addProduct(product, quickAddQty);
+        setBarcodeInput('');
+        barcodeInputRef.current?.focus();
+      } else {
+        toast({
+          title: 'Mahsulot topilmadi',
+          description: `"${raw}" shtrix kod yoki SKU bo'yicha mahsulot topilmadi`,
+          variant: 'destructive',
+        });
+      }
+    } catch {
+      toast({
+        title: 'Xatolik',
+        description: 'Mahsulot qidirishda xatolik yuz berdi',
+        variant: 'destructive',
+      });
+    }
+  };
+
   const openInlineSelect = (productId: string) => {
     setPendingSelectProductId(productId);
     setPendingSelectQty(Math.max(1, Number(quickAddQty) || 1));
@@ -594,7 +630,7 @@ export default function PurchaseOrderForm() {
   const totalExpenses = expenses.reduce((sum, e) => sum + (Number(e.amount || 0) || 0), 0);
   const hasLandedCosts = totalExpenses > 0;
 
-  const allocationsByProductId = (() => {
+  const allocationsByProductId = useMemo(() => {
     // Preview allocation (same logic as backend PurchaseService.get)
     const baseValueTotal = items.reduce((sum, it) => sum + (Number(it.line_total || 0) || 0), 0);
     const baseQtyTotal = items.reduce((sum, it) => sum + (Number(it.ordered_qty || 0) || 0), 0);
@@ -620,7 +656,7 @@ export default function PurchaseOrderForm() {
       map.set(it.product_id, { allocated, landedUnitCost });
     }
     return map;
-  })();
+  }, [items, expenses]);
 
   const validateForm = () => {
     if (!supplierId) {
@@ -1535,15 +1571,6 @@ export default function PurchaseOrderForm() {
     }
   };
 
-  const filteredProducts = products.filter(
-    (product) =>
-      searchTerm &&
-      (product.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
-        product.sku.toLowerCase().includes(searchTerm.toLowerCase()) ||
-        (product.barcode && product.barcode.toLowerCase().includes(searchTerm.toLowerCase())))
-  );
-  const productCandidates = searchTerm ? filteredProducts : products.slice(0, 50);
-
   const isZeroCostItem = (item: OrderItem) => {
     const baseUnitCost = Number(item.unit_cost || 0) || 0;
     const landedUnitCost = getEffectiveUnitCost(item);
@@ -2048,6 +2075,9 @@ export default function PurchaseOrderForm() {
                       </Button>
                     </div>
                   </div>
+                  {productSearchLoading && debouncedSearchTerm && (
+                    <p className="text-xs text-muted-foreground px-1">Qidirilmoqda...</p>
+                  )}
                   {productCandidates.length > 0 && (
                     <Card className="border-dashed">
                       <CardContent className="p-2 max-h-48 overflow-y-auto">
@@ -2107,7 +2137,7 @@ export default function PurchaseOrderForm() {
                       </CardContent>
                     </Card>
                   )}
-                  {productCandidates.length === 0 && searchTerm && (
+                  {productCandidates.length === 0 && debouncedSearchTerm && !productSearchLoading && (
                     <p className="text-xs text-muted-foreground px-1">Mos mahsulot topilmadi.</p>
                   )}
                 </div>

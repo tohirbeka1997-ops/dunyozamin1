@@ -116,7 +116,7 @@ function customerPaymentAmountUzsSql(db, cpAlias = 'cp') {
 function paymentSalesSplitExpressions(db, paymentAlias = 'p', orderAlias = 'o') {
   const p = paymentAlias || 'p';
   const o = orderAlias || 'o';
-  const skipRefund = `LOWER(TRIM(COALESCE(${p}.payment_method, ''))) = 'refund_cash'`;
+  const skipRefund = `LOWER(TRIM(COALESCE(${p}.payment_method, ''))) IN ('refund_cash', 'refund_balance')`;
   if (!hasOrderCol(db, 'currency')) {
     return {
       uzsSum: `COALESCE(SUM(CASE WHEN ${skipRefund} THEN 0 ELSE COALESCE(${p}.amount, 0) END), 0)`,

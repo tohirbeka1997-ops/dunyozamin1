@@ -9,6 +9,8 @@
  */
 let _services = null;
 let _db = null;
+/** Optional hook (Electron IPC) to sync module-level services after DB replace. */
+let _afterRebindHook = null;
 
 function init(services, db) {
   if (!services || !db) {
@@ -34,15 +36,26 @@ function isInitialized() {
  * Re-open pos.db (if needed) and rebuild the services layer in-place.
  * Preserves optional attachments such as backup runner on `services.backup`.
  */
+function setAfterRebindHook(fn) {
+  _afterRebindHook = typeof fn === 'function' ? fn : null;
+}
+
 function rebindAfterDbReplace() {
   const dbModule = require('../db/open.cjs');
-  const freshDb = dbModule.getDb();
+  const freshDb = dbModule.open();
   const { createServices } = require('../services/index.cjs');
   const backup = _services?.backup;
   const next = createServices(freshDb);
   if (backup) next.backup = backup;
   _services = next;
   _db = freshDb;
+  if (_afterRebindHook) {
+    try {
+      _afterRebindHook(_services, _db);
+    } catch (err) {
+      console.error('[serviceRuntime] afterRebind hook failed:', err?.message || err);
+    }
+  }
   return { services: _services, db: _db };
 }
 
@@ -56,6 +69,7 @@ module.exports = {
   getServices,
   getDb,
   isInitialized,
+  setAfterRebindHook,
   rebindAfterDbReplace,
   resetForTests,
 };

@@ -23,13 +23,13 @@ function isRemoteRpcMode(): boolean {
   }
 }
 
-/** Joriy foydalanuvchi ID sini main process (audit) bilan sinxronlaydi. */
-async function syncPosMainSessionUser(userId: string | null) {
+/** Joriy foydalanuvchi ID va rolini main process (audit/RBAC) bilan sinxronlaydi. */
+async function syncPosMainSessionUser(userId: string | null, role?: string | null) {
   try {
     if (typeof window === 'undefined') return;
     const api = (window as any).posApi;
     if (api?.auth?.setSessionUser) {
-      await handleIpcResponse<any>(api.auth.setSessionUser(userId ?? null));
+      await handleIpcResponse<any>(api.auth.setSessionUser(userId ?? null, role ?? null));
     }
   } catch (e) {
     console.warn('[Auth] setSessionUser (main) failed:', e);
@@ -240,7 +240,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       });
 
       if (parsed?.id) {
-        void syncPosMainSessionUser(String(parsed.id));
+        await syncPosMainSessionUser(String(parsed.id), parsed.role ?? role);
       }
 
       // Best-effort server-side session validation (web only — in Electron
@@ -384,7 +384,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       // Persist to localStorage with REAL database ID
       localStorage.setItem('auth_user', JSON.stringify(profile));
 
-      void syncPosMainSessionUser(String(realUserId));
+      void syncPosMainSessionUser(String(realUserId), mappedUser.role);
 
       // CRITICAL: Sync shift state from database after login
       // This ensures UI reflects real database status immediately after login
@@ -442,7 +442,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
         loading: false,
       });
       localStorage.setItem('auth_user', JSON.stringify(profile));
-      void syncPosMainSessionUser(String(mu.id));
+      void syncPosMainSessionUser(String(mu.id), 'admin');
     } catch (e) {
       set({ loading: false });
       throw e;
@@ -490,7 +490,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
         loading: false,
       });
       localStorage.setItem('auth_user', JSON.stringify(mockProfile));
-      void syncPosMainSessionUser(String(mockUser.id));
+      void syncPosMainSessionUser(String(mockUser.id), mockProfile.role);
     } catch (error) {
       set({ loading: false });
       throw error;

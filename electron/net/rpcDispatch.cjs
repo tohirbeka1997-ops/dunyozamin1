@@ -418,7 +418,10 @@ function createRpcDispatcher({ services, db, sessions }) {
       case 'pos:categories:list':
         return services.categories.list(a[0] || {});
       case 'pos:categories:get':
-        return services.categories.get(a[0]);
+        return (services.categories.getById || services.categories.get).call(
+          services.categories,
+          a[0]
+        );
       case 'pos:categories:create':
         return services.categories.create(a[0], { event: _event });
       case 'pos:categories:update':
@@ -430,7 +433,10 @@ function createRpcDispatcher({ services, db, sessions }) {
       case 'pos:warehouses:list':
         return services.warehouses.list(a[0] || {});
       case 'pos:warehouses:get':
-        return services.warehouses.get(a[0]);
+        return (services.warehouses.getById || services.warehouses.get).call(
+          services.warehouses,
+          a[0]
+        );
       case 'pos:warehouses:create':
         return services.warehouses.create(a[0] || {});
       case 'pos:warehouses:update':
@@ -857,7 +863,7 @@ function createRpcDispatcher({ services, db, sessions }) {
         };
       }
       case 'pos:auth:setSessionUser': {
-        const { setCurrentUserId } = require('../lib/currentUser.cjs');
+        const { setCurrentUserSession } = require('../lib/currentUser.cjs');
         if (authContext?.userId) {
           if (a[0] && String(a[0]) !== String(authContext.userId)) {
             throw createError(
@@ -865,9 +871,9 @@ function createRpcDispatcher({ services, db, sessions }) {
               'Sessiya foydalanuvchisi ID bilan mos kelmaydi',
             );
           }
-          setCurrentUserId(authContext.userId);
+          setCurrentUserSession(authContext.userId, authContext.role || a[1] || null);
         } else {
-          setCurrentUserId(a[0] || null);
+          setCurrentUserSession(a[0] || null, a[1] || null);
         }
         return { success: true };
       }

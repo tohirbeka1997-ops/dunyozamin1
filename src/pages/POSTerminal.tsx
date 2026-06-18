@@ -56,7 +56,7 @@ import { useTranslation } from 'react-i18next';
 import { useShiftStore } from '@/store/shiftStore';
 import { useInventoryStore } from '@/store/inventoryStore';
 import { formatMoney, getCustomerBalances } from '@/lib/currency';
-import { formatMoneyUZS } from '@/lib/format';
+import { formatCustomerBalance, formatMoneyUZS } from '@/lib/format';
 import { loadRetailUsdPricesForProducts } from '@/lib/productPricing';
 import { clearTierPriceCache } from '@/lib/tierPriceCache';
 import { orderCurrencyFields, toShiftUzsAmount, type PosSaleCurrency } from '@/lib/posSaleCurrency';
@@ -124,7 +124,7 @@ import type {
   OrderItem,
   OrderWithDetails,
 } from '@/types/database';
-import { POS_EXCHANGE_PAYOUT_METHOD, type PosCheckoutPaymentKind } from '@/constants/posExchange';
+import { POS_EXCHANGE_PAYOUT_METHOD, POS_EXCHANGE_BALANCE_METHOD, type PosCheckoutPaymentKind } from '@/constants/posExchange';
 import {
   Search,
   Trash2,
@@ -198,6 +198,12 @@ import {
   clearPosNavCartDraft,
   type PosNavCartDraft,
 } from './posTerminalHelpers';
+import {
+  buildProductScanIndex,
+  lookupProductByScanCode,
+  collectScanLookupKeys,
+  type ProductScanIndex,
+} from '@/lib/pos/productBarcodeIndex';
 
 export default function POSTerminal() {
   const { t } = useTranslation();
@@ -384,12 +390,13 @@ export default function POSTerminal() {
   // Receipt printing state
   const receiptRef = useRef<HTMLDivElement>(null);
   const barcodeCacheRef = useRef<Map<string, Product>>(new Map());
-  const barcodeIndexRef = useRef<Map<string, Product>>(new Map());
-  const skuIndexRef = useRef<Map<string, Product>>(new Map());
+  const scanIndexRef = useRef<ProductScanIndex>(buildProductScanIndex([]));
+  const barcodeIndexRef = useRef<Map<string, Product>>(scanIndexRef.current.barcode);
+  const skuIndexRef = useRef<Map<string, Product>>(scanIndexRef.current.sku);
   const barcodeCacheOrderRef = useRef<string[]>([]);
   const priceCacheRef = useRef<Map<string, number>>(new Map());
-  const barcodeInFlightRef = useRef(false);
-  const lastScanRef = useRef<{ raw: string; at: number }>({ raw: '', at: 0 });
+  /** Dedupe identical scan within ~80ms (double-beep); never block different items. */
+  const lastScanDedupeRef = useRef<{ raw: string; at: number }>({ raw: '', at: 0 });
   const searchDebounceRef = useRef<number | null>(null);
   const searchSeqRef = useRef(0);
   const perfEnabled = (import.meta as any)?.env?.VITE_POS_PERF === 'true';
@@ -605,6 +612,16 @@ export default function POSTerminal() {
       const b = getCustomerBalances(customer);
       const bal = currency === 'USD' ? b.usd : b.uzs;
       return Math.max(0, -bal);
+    },
+    []
+  );
+
+  const getCustomerCreditInCurrency = useCallback(
+    (customer: Customer | null | undefined, currency: PosSaleCurrency) => {
+      if (!customer) return 0;
+      const b = getCustomerBalances(customer);
+      const bal = currency === 'USD' ? b.usd : b.uzs;
+      return Math.max(0, bal);
     },
     []
   );
@@ -966,25 +983,28 @@ export default function POSTerminal() {
 
   const loadAllProducts = useCallback(async () => {
     try {
-      // IMPORTANT: Load from real DB via IPC in Electron.
-      // `searchProducts('')` is intentionally limited (fast search), but POS needs the full catalog.
-      const results = await getProducts(false, {
-        warehouse_id: posWarehouseId,
-        limit: 5000,
-        offset: 0,
-        sortBy: 'name',
-        sortOrder: 'asc',
-        stockStatus: 'all',
-      });
-      setAllProducts(results);
-      // Build fast lookup indexes for barcode/SKU to speed up scans.
-      const nextBarcodeIndex = new Map<string, Product>();
-      const nextSkuIndex = new Map<string, Product>();
-      for (const p of results) {
-        registerProductScanIndexes(p, nextBarcodeIndex, nextSkuIndex);
+      // Load full catalog in pages so barcode index covers every active SKU (not just first 5k).
+      const PAGE_SIZE = 5000;
+      const results: Product[] = [];
+      let offset = 0;
+      for (;;) {
+        const batch = await getProducts(false, {
+          warehouse_id: posWarehouseId,
+          limit: PAGE_SIZE,
+          offset,
+          sortBy: 'name',
+          sortOrder: 'asc',
+          stockStatus: 'all',
+        });
+        results.push(...batch);
+        if (batch.length < PAGE_SIZE) break;
+        offset += PAGE_SIZE;
       }
-      barcodeIndexRef.current = nextBarcodeIndex;
-      skuIndexRef.current = nextSkuIndex;
+      setAllProducts(results);
+      const nextIndex = buildProductScanIndex(results);
+      scanIndexRef.current = nextIndex;
+      barcodeIndexRef.current = nextIndex.barcode;
+      skuIndexRef.current = nextIndex.sku;
     } catch (error) {
       console.error('Error loading all products:', error);
     }
@@ -1482,6 +1502,12 @@ export default function POSTerminal() {
       setSearchResults([]);
       return;
     }
+    // Scanner wedge in search box: skip fuzzy search for barcode-shaped input (Enter / global hook handles add).
+    const q = classifyQuery(term);
+    if (q.isBarcodeLike || (q.numericOnly && term.length >= 8)) {
+      setSearchResults([]);
+      return;
+    }
     searchDebounceRef.current = window.setTimeout(() => {
       runSearch(term, selectedCategory);
     }, SEARCH_DEBOUNCE_MS);
@@ -1496,39 +1522,53 @@ export default function POSTerminal() {
     }
   };
 
+  const cacheBarcodeLookup = useCallback((product: Product, matchKind: 'barcode' | 'sku', matchedKey: string) => {
+    registerProductScanIndexes(product, barcodeIndexRef.current, skuIndexRef.current);
+    const cache = barcodeCacheRef.current;
+    const cacheKey = matchKind === 'barcode' ? `barcode:${matchedKey}` : `sku:${matchedKey}`;
+    cache.set(cacheKey, product);
+    barcodeCacheOrderRef.current.push(cacheKey);
+    if (barcodeCacheOrderRef.current.length > 500) {
+      const drop = barcodeCacheOrderRef.current.splice(0, 200);
+      for (const dropKey of drop) cache.delete(dropKey);
+    }
+  }, []);
+
+  const tryLocalScanLookup = useCallback((rawInput: string): Product | null => {
+    const indexHit = lookupProductByScanCode(rawInput, scanIndexRef.current);
+    if (indexHit) return indexHit.product;
+    const cache = barcodeCacheRef.current;
+    for (const key of collectScanLookupKeys(rawInput)) {
+      const cached = cache.get(`barcode:${key}`) || cache.get(`sku:${key}`);
+      if (cached) return cached;
+    }
+    return null;
+  }, []);
+
   const handleBarcodeSearch = async (barcode: string, opts?: { clearSearch?: boolean }) => {
     let perfStart = 0;
     let perfNote = 'lookup';
+    const rawInput = String(barcode || '').trim();
+    if (!rawInput) return;
+
+    const now = Date.now();
+    if (rawInput === lastScanDedupeRef.current.raw && now - lastScanDedupeRef.current.at < 80) {
+      if (perfEnabled) console.debug('[POS PERF] scan deduped');
+      return;
+    }
+    lastScanDedupeRef.current = { raw: rawInput, at: now };
+
+    const lookupKeys = collectScanLookupKeys(rawInput);
+    const digitsOnly = rawInput.replace(/[^\d]/g, '');
+    const clearSearch = opts?.clearSearch ?? true;
+    const resetSearch = () => {
+      if (!clearSearch) return;
+      setSearchTerm('');
+      setSearchResults([]);
+    };
+
     try {
-      const rawInput = String(barcode || '').trim();
-      if (!rawInput) return;
-      // QR / CODE128 / custom codes may contain letters and symbols — lookup full string first.
-      // Scales still use digit-only payload (13 digits); try that as a second key when it differs.
-      const digitsOnly = rawInput.replace(/[^\d]/g, '');
-      const lookupKeys = Array.from(
-        new Set([rawInput, ...(digitsOnly && digitsOnly !== rawInput ? [digitsOnly] : [])])
-      );
       perfStart = perfEnabled ? performance.now() : 0;
-      const now = Date.now();
-      if (
-        barcodeInFlightRef.current &&
-        rawInput === lastScanRef.current.raw &&
-        now - lastScanRef.current.at < 250
-      ) {
-        if (perfEnabled) console.debug('[POS PERF] scan skipped (in-flight)');
-        return;
-      }
-      barcodeInFlightRef.current = true;
-      lastScanRef.current = { raw: rawInput, at: now };
-      const cache = barcodeCacheRef.current;
-      const indexBarcode = barcodeIndexRef.current;
-      const indexSku = skuIndexRef.current;
-      const clearSearch = opts?.clearSearch ?? true;
-      const resetSearch = () => {
-        if (!clearSearch) return;
-        setSearchTerm('');
-        setSearchResults([]);
-      };
       const scanUpper = rawInput.toUpperCase();
       const looksLikeLoyaltyPayload =
         scanUpper.startsWith('LOYALTY:') || scanUpper.startsWith('LC-');
@@ -1558,38 +1598,15 @@ export default function POSTerminal() {
         return;
       }
 
-      for (const key of lookupKeys) {
-        const indexedBarcode = indexBarcode.get(key);
-        if (indexedBarcode) {
-          void addToCart(indexedBarcode as any, 1);
-          resetSearch();
-          return;
-        }
-        const normalizedKey = normalizeSku(key);
-        const indexedSku =
-          indexSku.get(key) || (normalizedKey ? indexSku.get(normalizedKey) : undefined);
-        if (indexedSku) {
-          void addToCart(indexedSku as any, 1);
-          resetSearch();
-          return;
-        }
-        const cachedBarcode = cache.get(`barcode:${key}`);
-        if (cachedBarcode) {
-          perfNote = 'cache:barcode';
-          void addToCart(cachedBarcode as any, 1);
-          resetSearch();
-          return;
-        }
-        const cachedSku = cache.get(`sku:${key}`);
-        if (cachedSku) {
-          perfNote = 'cache:sku';
-          void addToCart(cachedSku as any, 1);
-          resetSearch();
-          return;
-        }
+      const localProduct = tryLocalScanLookup(rawInput);
+      if (localProduct) {
+        perfNote = 'index';
+        void addToCart(localProduct, 1);
+        resetSearch();
+        return;
       }
 
-      // 1) Scale EAN-13 (variable weight): PP + PLU(5) + WEIGHT(5) + check
+      // Scale EAN-13 (variable weight): PP + PLU(5) + WEIGHT(5) + check
       // Prefer scale parsing first for 20-29 prefixed 13-digit codes to avoid noisy NOT_FOUND logs
       // and to ensure scale barcodes are treated as scale even if they are not stored in products.barcode.
       const scaleStrict = digitsOnly.length === 13 ? parseScaleEan13(digitsOnly) : null;
@@ -1622,22 +1639,14 @@ export default function POSTerminal() {
         const pluPadded3 = pluTrimmed.padStart(3, '0');
         const pluCandidates = Array.from(new Set([pluRaw, pluTrimmed, pluPadded4, pluPadded3].filter(Boolean)));
 
-        let byPlu: any = null;
+        let byPlu: Product | null = null;
         for (const candidate of pluCandidates) {
-          const cached = cache.get(`sku:${candidate}`);
-          if (cached) {
-            byPlu = cached as any;
-            break;
-          }
-          const indexed = skuIndexRef.current.get(candidate);
-          if (indexed) {
-            byPlu = indexed as any;
-            break;
-          }
+          byPlu = tryLocalScanLookup(candidate);
+          if (byPlu) break;
           // eslint-disable-next-line no-await-in-loop
-          byPlu = await getProductBySku(candidate);
+          byPlu = (await getProductBySku(candidate).catch(() => null)) as Product | null;
           if (byPlu) {
-            cache.set(`sku:${candidate}`, byPlu as any);
+            cacheBarcodeLookup(byPlu, 'sku', candidate);
             break;
           }
         }
@@ -1727,21 +1736,8 @@ export default function POSTerminal() {
       }
 
       if (product) {
-        perfNote = 'hit';
-        registerProductScanIndexes(product, barcodeIndexRef.current, skuIndexRef.current);
-        if (hitBarcodeField) {
-          cache.set(`barcode:${matchedKey}`, product);
-          barcodeCacheOrderRef.current.push(`barcode:${matchedKey}`);
-        } else {
-          cache.set(`sku:${matchedKey}`, product);
-          barcodeCacheOrderRef.current.push(`sku:${matchedKey}`);
-        }
-        if (barcodeCacheOrderRef.current.length > 500) {
-          const drop = barcodeCacheOrderRef.current.splice(0, 200);
-          for (const dropKey of drop) {
-            cache.delete(dropKey);
-          }
-        }
+        perfNote = 'rpc';
+        cacheBarcodeLookup(product, hitBarcodeField ? 'barcode' : 'sku', matchedKey);
         void addToCart(product, 1);
         resetSearch();
         return;
@@ -1762,7 +1758,6 @@ export default function POSTerminal() {
         const ms = Math.round(performance.now() - perfStart);
         console.debug(`[POS PERF] scan ${perfNote} → ${ms}ms`);
       }
-      barcodeInFlightRef.current = false;
     }
   };
 
@@ -2097,6 +2092,12 @@ export default function POSTerminal() {
     setNumpadOpen(true);
   };
 
+  const quickAddOneToCart = async (product: Product) => {
+    const resolvedProduct = await resolveProductForCart(product);
+    void addToCart(resolvedProduct, 1);
+    focusSearchInput();
+  };
+
   const addToCart = async (product: Product, quantity: number = 1, saleUnit?: string) => {
     const perfStart = perfEnabled ? performance.now() : 0;
     const qtySaleRaw = Number(quantity || 0) || 0;
@@ -2165,16 +2166,52 @@ export default function POSTerminal() {
       return;
     }
     const qtyBase = toBaseQty(validQuantity, ratio_to_base);
+    let unitSalePrice = sale_price;
     const effectiveTier = ((selectedCustomer as any)?.pricing_tier || currentTierCode || 'retail') as string;
     if (effectiveTier !== 'retail' && effectiveTier !== 'master' && saleCurrency !== 'USD') {
-      const fetched = await fetchTierPrice(product, effectiveTier, resolvedUnit);
-      if (fetched == null) {
-        toast({
-          title: 'Narx topilmadi',
-          description: `Tier: ${effectiveTier} (${resolvedUnit})`,
-          variant: 'destructive',
+      const tierKey = `${product.id}::${effectiveTier}::${resolvedUnit}::${saleCurrency}`;
+      const tierCached = priceCacheRef.current.get(tierKey);
+      if (tierCached != null && tierCached > 0) {
+        unitSalePrice = tierCached;
+      } else {
+        // Fast path: use unit sale price immediately; refine tier price in background (don't block scans).
+        void fetchTierPrice(product, effectiveTier, resolvedUnit).then((fetched) => {
+          const exact = fetched != null ? Number(fetched) : 0;
+          if (exact <= 0) return;
+          priceCacheRef.current.set(tierKey, exact);
+          setCart((prev) => {
+            const idx = prev.findIndex(
+              (item) =>
+                item.product.id === product.id &&
+                (item.sale_unit || item.product.unit) === unit &&
+                !item.is_price_overridden &&
+                item.price_source !== 'manual',
+            );
+            if (idx < 0) return prev;
+            const item = prev[idx];
+            const qtySale = Number(item.qty_sale ?? item.quantity ?? 0) || 0;
+            const qtyBase = Number(item.qty_base ?? 0) || toBaseQty(qtySale, ratio_to_base);
+            const { unitPrice, priceTier } = getLinePricing(
+              product,
+              qtyBase,
+              selectedCustomer,
+              exact,
+              ratio_to_base,
+              resolvedUnit,
+            );
+            const subtotal = unitPrice * qtySale;
+            const lineDiscount = qtySale < 0 ? 0 : item.discount_amount;
+            const next = [...prev];
+            next[idx] = {
+              ...item,
+              unit_price: unitPrice,
+              price_tier: priceTier,
+              subtotal,
+              total: subtotal - lineDiscount,
+            };
+            return next;
+          });
         });
-        return;
       }
     } else if (
       effectiveTier !== 'retail' &&
@@ -2183,7 +2220,6 @@ export default function POSTerminal() {
     ) {
       void fetchTierPrice(product, effectiveTier, resolvedUnit);
     }
-    let unitSalePrice = sale_price;
     if (saleCurrency === 'USD') {
       const fx = Number(saleFxRate || 0);
       if (!Number.isFinite(fx) || fx <= 0) {
@@ -3114,7 +3150,7 @@ export default function POSTerminal() {
       return;
     }
 
-    const cartItem = cart.find((item) => item.product.id === productId);
+    const cartItem = cartRef.current.find((item) => item.product.id === productId);
     if (!cartItem) return;
 
     const saleUnit = cartItem.sale_unit || cartItem.product.unit;
@@ -3931,6 +3967,11 @@ export default function POSTerminal() {
     return getCustomerDebtInCurrency(selectedCustomer, saleCurrency);
   }, [selectedCustomer, saleCurrency, getCustomerDebtInCurrency, isWalkInCustomer]);
 
+  const priorCreditInSaleCurrency = useMemo(() => {
+    if (!selectedCustomer || isWalkInCustomer(selectedCustomer)) return 0;
+    return getCustomerCreditInCurrency(selectedCustomer, saleCurrency);
+  }, [selectedCustomer, saleCurrency, getCustomerCreditInCurrency, isWalkInCustomer]);
+
   const buildOrderItemsSnapshot = useCallback(
     (items: CartItem[], globalDiscountAmount: number): Omit<OrderItem, 'id' | 'order_id'>[] => {
       const lineNetTotals = items.map(
@@ -4114,7 +4155,10 @@ export default function POSTerminal() {
     const amountDueWithDebt = merchandiseCashDue + extraDebtDue;
 
     if (total < 0) {
-      if (paymentMethod !== POS_EXCHANGE_PAYOUT_METHOD) {
+      if (
+        paymentMethod !== POS_EXCHANGE_PAYOUT_METHOD &&
+        paymentMethod !== POS_EXCHANGE_BALANCE_METHOD
+      ) {
         toast({
           title: t('pos.process_payment'),
           description: t('pos.exchange.payment_need_refund'),
@@ -4122,8 +4166,16 @@ export default function POSTerminal() {
         });
         return;
       }
+      if (paymentMethod === POS_EXCHANGE_BALANCE_METHOD && isWalkInCustomer(selectedCustomer)) {
+        toast({
+          title: t('pos.process_payment'),
+          description: t('pos.exchange.refund_balance_need_customer'),
+          variant: 'destructive',
+        });
+        return;
+      }
       const payout = Math.abs(total);
-      orderPayments = [{ method: POS_EXCHANGE_PAYOUT_METHOD as PaymentMethod, amount: payout }];
+      orderPayments = [{ method: paymentMethod as PaymentMethod, amount: payout }];
       paidAmount = 0;
       changeAmount = 0;
       creditAmountValue = 0;
@@ -4317,7 +4369,9 @@ export default function POSTerminal() {
       // Update shift totals (local): kirim / chiqim
       if (currentShift) {
         if (total > 0) addSale(toShiftUzsAmount(total, saleCurrency, saleFxRate));
-        else if (total < 0) addRefund({ amount: toShiftUzsAmount(Math.abs(total), saleCurrency, saleFxRate) });
+        else if (total < 0 && paymentMethod === POS_EXCHANGE_PAYOUT_METHOD) {
+          addRefund({ amount: toShiftUzsAmount(Math.abs(total), saleCurrency, saleFxRate) });
+        }
       }
 
       const movNow = new Date().toISOString();
@@ -4346,10 +4400,16 @@ export default function POSTerminal() {
       // Success message based on payment type
       let successMessage = '';
       if (total < 0) {
-        successMessage = t('pos.exchange.success_refund', {
-          order: orderNumber,
-          amount: formatMoneyUZS(Math.abs(total)),
-        });
+        successMessage =
+          paymentMethod === POS_EXCHANGE_BALANCE_METHOD
+            ? t('pos.exchange.success_refund_balance', {
+                order: orderNumber,
+                amount: formatMoneyUZS(Math.abs(total)),
+              })
+            : t('pos.exchange.success_refund', {
+                order: orderNumber,
+                amount: formatMoneyUZS(Math.abs(total)),
+              });
       } else if (total === 0) {
         successMessage = t('pos.exchange.success_zero', { order: orderNumber });
       } else if (creditAmountValue > 0 && creditAmountValue < total) {
@@ -4376,7 +4436,9 @@ export default function POSTerminal() {
                 ? t('pos.mixed')
                 : paymentMethod === POS_EXCHANGE_PAYOUT_METHOD
                   ? t('pos.exchange.receipt_payment_refund')
-                  : paymentMethod === 'zero_settle'
+                  : paymentMethod === POS_EXCHANGE_BALANCE_METHOD
+                    ? t('pos.exchange.receipt_payment_refund_balance')
+                    : paymentMethod === 'zero_settle'
                     ? t('pos.exchange.receipt_payment_zero')
                     : paymentMethod === 'credit'
                       ? t('pos.credit')
@@ -4544,15 +4606,7 @@ export default function POSTerminal() {
       return;
     }
 
-    if (hasReturnLine) {
-      toast({
-        title: t('pos.credit'),
-        description: t('pos.exchange.credit_blocked_returns'),
-        variant: 'destructive',
-      });
-      return;
-    }
-
+    // Nasiya: net savat jami musbat bo‘lsa ruxsat (qaytarish qatorlari bo‘lsa ham).
     if (totals.total <= 0) {
       toast({
         title: t('pos.credit'),
@@ -5342,8 +5396,12 @@ export default function POSTerminal() {
                         )}
                       </div>
                     </div>
-                    <div className="col-span-3 text-right">
+                    <div className="col-span-2 text-right">
                       <span className="text-[10px] font-bold uppercase text-gray-400 dark:text-gray-500">Narxi</span>
+                    </div>
+                    <div className="col-span-1 text-center">
+                      <span className="sr-only">Savatga qo&apos;shish</span>
+                      <Plus className="mx-auto h-3 w-3 text-gray-400 dark:text-gray-500" aria-hidden />
                     </div>
                     <div className="col-span-3 text-right">
                       <span className="text-[10px] font-bold uppercase text-gray-400 dark:text-gray-500">Ombor</span>
@@ -5353,12 +5411,21 @@ export default function POSTerminal() {
                   {/* Product Rows */}
                   <div className="divide-y divide-gray-200 dark:divide-gray-700">
                     {visibleProducts.map((product) => (
-                      <button
+                      <div
                         key={product.id}
-                        type="button"
+                        role="button"
+                        tabIndex={0}
                         onClick={() => {
-                          requestAddToCart(product);
+                          void requestAddToCart(product);
                           focusSearchInput();
+                        }}
+                        onKeyDown={(e) => {
+                          if (e.target !== e.currentTarget) return;
+                          if (e.key === 'Enter' || e.key === ' ') {
+                            e.preventDefault();
+                            void requestAddToCart(product);
+                            focusSearchInput();
+                          }
                         }}
                         className={cn(
                           'w-full grid grid-cols-12 items-center gap-4 p-3 border-b border-gray-200 dark:border-gray-700 hover:bg-blue-50 dark:hover:bg-blue-900/20 cursor-pointer transition-colors bg-white dark:bg-gray-800',
@@ -5406,15 +5473,42 @@ export default function POSTerminal() {
                                   </Badge>
                                 )}
                               </div>
-                              <div className="flex items-center gap-2 mt-0.5">
+                              <div className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0.5">
                                 <span className="text-xs text-muted-foreground">
                                   SKU: {renderSkuWithHighlight(product.sku, searchTerm)}
                                 </span>
-                                <span className="text-xs text-muted-foreground">•</span>
+                                <span className="text-xs text-muted-foreground" aria-hidden>
+                                  •
+                                </span>
                                 <span className="text-xs text-muted-foreground">
                                   Birlik: {formatUnit(product.unit) || 'Dona'}
                                 </span>
                               </div>
+                              {(product.article || product.brand) && (
+                                <div className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0.5">
+                                  {product.article ? (
+                                    <span className="text-xs text-muted-foreground">
+                                      Artikul:{' '}
+                                      {searchTerm
+                                        ? highlightMatch(product.article, searchTerm)
+                                        : product.article}
+                                    </span>
+                                  ) : null}
+                                  {product.article && product.brand ? (
+                                    <span className="text-xs text-muted-foreground" aria-hidden>
+                                      •
+                                    </span>
+                                  ) : null}
+                                  {product.brand ? (
+                                    <span className="text-xs text-muted-foreground">
+                                      Brend:{' '}
+                                      {searchTerm
+                                        ? highlightMatch(product.brand, searchTerm)
+                                        : product.brand}
+                                    </span>
+                                  ) : null}
+                                </div>
+                              )}
                               {Array.isArray(product.variant_options) && product.variant_options.length > 0 ? (
                                 <div className="mt-1 truncate text-[10px] leading-snug text-muted-foreground">
                                   {product.variant_options
@@ -5427,8 +5521,8 @@ export default function POSTerminal() {
                           </div>
                         </div>
                         
-                        {/* Column 2: Price (Span 3) */}
-                        <div className="col-span-3 text-right">
+                        {/* Column 2: Price (Span 2) */}
+                        <div className="col-span-2 text-right">
                           {saleCurrency === 'USD' ? (
                             <>
                               <p className="font-bold text-blue-600 dark:text-blue-400 text-sm">
@@ -5453,8 +5547,26 @@ export default function POSTerminal() {
                             </>
                           )}
                         </div>
+
+                        {/* Column 3: Quick add 1 unit */}
+                        <div className="col-span-1 flex justify-center">
+                          <Button
+                            type="button"
+                            size="icon"
+                            variant="secondary"
+                            className="h-9 w-9 shrink-0 rounded-lg border border-primary/30 bg-primary/10 text-primary hover:bg-primary hover:text-primary-foreground"
+                            aria-label={`${product.name} — 1 dona savatga qo'shish`}
+                            title="1 dona savatga qo'shish"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              void quickAddOneToCart(product);
+                            }}
+                          >
+                            <Plus className="h-4 w-4" aria-hidden />
+                          </Button>
+                        </div>
                         
-                        {/* Column 3: Stock (Span 3) */}
+                        {/* Column 4: Stock (Span 3) */}
                         <div className="col-span-3 text-right">
                           <span className={`text-xs px-2 py-1 rounded ${
                             product.current_stock === 0
@@ -5466,7 +5578,7 @@ export default function POSTerminal() {
                             {product.current_stock}
                           </span>
                         </div>
-                      </button>
+                      </div>
                     ))}
                   </div>
                 </div>
@@ -5598,19 +5710,33 @@ export default function POSTerminal() {
                                   <span className="flex min-w-0 flex-wrap items-center gap-1">
                                     {(() => {
                                       const b = getCustomerBalances(customer);
-                                      const debtUzs = Math.max(0, -b.uzs);
-                                      const debtUsd = Math.max(0, -b.usd);
-                                      if (debtUzs <= 0 && debtUsd <= 0) return null;
+                                      const uzsInfo = formatCustomerBalance(b.uzs, 'UZS');
+                                      const usdInfo = formatCustomerBalance(b.usd, 'USD');
+                                      if (uzsInfo.type === 'zero' && Math.abs(b.usd) <= 0.0001) return null;
                                       return (
                                         <span className="flex flex-wrap gap-1">
-                                          {debtUzs > 0 && (
-                                            <span className="rounded bg-destructive/10 px-1.5 py-0.5 text-[10px] text-destructive">
-                                              {formatMoney(debtUzs, 'UZS')}
+                                          {uzsInfo.type !== 'zero' && (
+                                            <span
+                                              className={cn(
+                                                'rounded px-1.5 py-0.5 text-[10px]',
+                                                uzsInfo.type === 'debt'
+                                                  ? 'bg-destructive/10 text-destructive'
+                                                  : 'bg-emerald-600/15 text-emerald-700 dark:text-emerald-400'
+                                              )}
+                                            >
+                                              {uzsInfo.label}
                                             </span>
                                           )}
-                                          {debtUsd > 0 && (
-                                            <span className="rounded bg-destructive/10 px-1.5 py-0.5 text-[10px] text-destructive">
-                                              {formatMoney(debtUsd, 'USD')}
+                                          {Math.abs(b.usd) > 0.0001 && (
+                                            <span
+                                              className={cn(
+                                                'rounded px-1.5 py-0.5 text-[10px]',
+                                                usdInfo.type === 'debt'
+                                                  ? 'bg-destructive/10 text-destructive'
+                                                  : 'bg-emerald-600/15 text-emerald-700 dark:text-emerald-400'
+                                              )}
+                                            >
+                                              {usdInfo.label}
                                             </span>
                                           )}
                                         </span>
@@ -5636,6 +5762,7 @@ export default function POSTerminal() {
                     <span className="text-[10px] text-muted-foreground">Oxirgilar:</span>
                     {recentCustomers.map((customer) => {
                       const debt = getCustomerDebtInCurrency(customer, saleCurrency);
+                      const credit = getCustomerCreditInCurrency(customer, saleCurrency);
                       const isSelected = selectedCustomer?.id === customer.id;
                       return (
                         <button
@@ -5653,6 +5780,11 @@ export default function POSTerminal() {
                           {debt > 0 && (
                             <span className="rounded bg-destructive/10 px-1 text-[9px] text-destructive">
                               {formatCurrency(debt)}
+                            </span>
+                          )}
+                          {credit > 0 && (
+                            <span className="rounded bg-emerald-600/15 px-1 text-[9px] text-emerald-700 dark:text-emerald-400">
+                              {formatCurrency(credit)}
                             </span>
                           )}
                         </button>
@@ -5683,26 +5815,56 @@ export default function POSTerminal() {
                     >
                       {selectedCustomer.status === 'active' ? 'Faol' : 'Nofaol'}
                     </span>
-                    <span className="text-foreground/80">Qarz:</span>
-                    <span
-                      className={cn(
-                        'text-xs font-semibold',
-                        priorDebtInSaleCurrency > 0 ? 'text-destructive' : 'text-emerald-600 dark:text-emerald-400'
-                      )}
-                    >
-                      {formatCurrency(priorDebtInSaleCurrency)}
-                    </span>
-                    {priorDebtInSaleCurrency > 0 && (
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        className="ml-auto h-7 px-2 text-xs"
-                        onClick={() => setCustomerPaymentOpen(true)}
-                        disabled={selectedCustomer.status !== 'active'}
-                      >
-                        Qarz so'ndirish
-                      </Button>
-                    )}
+                    {(() => {
+                      const b = getCustomerBalances(selectedCustomer);
+                      const activeBal = saleCurrency === 'USD' ? b.usd : b.uzs;
+                      const activeInfo = formatCustomerBalance(activeBal, saleCurrency);
+                      const otherCur = saleCurrency === 'USD' ? 'UZS' : 'USD';
+                      const otherBal = saleCurrency === 'USD' ? b.uzs : b.usd;
+                      const otherInfo = formatCustomerBalance(otherBal, otherCur);
+                      const balanceLabel =
+                        activeInfo.type === 'debt'
+                          ? t('pos.customer_debt_label')
+                          : activeInfo.type === 'balance'
+                            ? t('pos.customer_credit_label')
+                            : t('pos.customer_balance_zero');
+
+                      return (
+                        <>
+                          <span className="text-foreground/80">{balanceLabel}:</span>
+                          <span className={cn('text-xs font-semibold', activeInfo.color)}>
+                            {activeInfo.type === 'zero'
+                              ? formatCurrency(0)
+                              : formatCurrency(
+                                  activeInfo.type === 'debt' ? priorDebtInSaleCurrency : priorCreditInSaleCurrency
+                                )}
+                          </span>
+                          {Math.abs(otherBal) > 0.0001 && (
+                            <span
+                              className={cn(
+                                'rounded px-1.5 py-0.5 text-[10px]',
+                                otherInfo.type === 'debt'
+                                  ? 'bg-destructive/10 text-destructive'
+                                  : 'bg-emerald-600/15 text-emerald-700 dark:text-emerald-400'
+                              )}
+                            >
+                              {otherInfo.label}
+                            </span>
+                          )}
+                          {priorDebtInSaleCurrency > 0 && (
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              className="ml-auto h-7 px-2 text-xs"
+                              onClick={() => setCustomerPaymentOpen(true)}
+                              disabled={selectedCustomer.status !== 'active'}
+                            >
+                              {t('pos.pay_customer_debt')}
+                            </Button>
+                          )}
+                        </>
+                      );
+                    })()}
                   </div>
                 </div>
               )}
@@ -6787,6 +6949,27 @@ export default function POSTerminal() {
                   amount: formatCurrency(Math.abs(total)),
                 })}
               </Button>
+              {selectedCustomer && !isWalkInCustomer(selectedCustomer) ? (
+                <>
+                  <p className="text-sm text-muted-foreground">
+                    {t('pos.exchange.refund_balance_hint')}
+                  </p>
+                  <Button
+                    className="w-full"
+                    variant="secondary"
+                    disabled={isDiscountActionDisabled}
+                    onClick={() => handleCompletePayment(POS_EXCHANGE_BALANCE_METHOD)}
+                  >
+                    {t('pos.exchange.refund_balance_with_amount', {
+                      amount: formatCurrency(Math.abs(total)),
+                    })}
+                  </Button>
+                </>
+              ) : (
+                <p className="text-xs text-muted-foreground">
+                  {t('pos.exchange.refund_balance_need_customer_hint')}
+                </p>
+              )}
             </div>
           ) : total === 0 ? (
             <div className="space-y-4">

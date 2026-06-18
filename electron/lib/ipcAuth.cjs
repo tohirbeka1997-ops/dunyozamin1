@@ -12,7 +12,7 @@
  * while this module guards local IPC.
  */
 
-const { getCurrentUserId } = require('./currentUser.cjs');
+const { getCurrentUserId, getCurrentUserRoleCache } = require('./currentUser.cjs');
 const { createError, ERROR_CODES } = require('./errors.cjs');
 
 function getCurrentUserRole(db) {
@@ -30,7 +30,11 @@ function getCurrentUserRole(db) {
         INNER JOIN roles r ON ur.role_id = r.id
         INNER JOIN users u ON u.id = ur.user_id
         WHERE ur.user_id = ? AND r.is_active = 1 AND u.is_active = 1
-        ORDER BY ur.assigned_at DESC
+        ORDER BY CASE r.code
+          WHEN 'admin' THEN 0
+          WHEN 'manager' THEN 1
+          ELSE 2
+        END, r.code
         LIMIT 1
       `,
       )
@@ -75,6 +79,20 @@ function requireAdmin(db) {
 }
 
 /**
+ * Resolve the acting user's role for IPC authorization.
+ * Prefers live DB RBAC when a user id is set; falls back to the session
+ * cache synced from the renderer (pos:auth:setSessionUser / login).
+ */
+function resolveActorRole(db) {
+  if (db && getCurrentUserId()) {
+    const fromDb = getCurrentUserRole(db);
+    if (fromDb) return fromDb;
+  }
+  const cached = getCurrentUserRoleCache();
+  return cached ? String(cached).toLowerCase() : null;
+}
+
+/**
  * Keys in `pos-config.json` that, if changed, can effectively pivot to host
  * admin (the host secret is also the LAN "adminBypass" token). These must
  * never be writable by anything below `admin`.
@@ -111,12 +129,13 @@ function assertAppConfigPatchAllowed(patch, role) {
   if (String(role || '').toLowerCase() === 'admin') return;
   throw createError(
     ERROR_CODES.PERMISSION_DENIED,
-    `Only admins may change ${touched.join(', ')}`
+    `Bu sozlamalarni faqat administrator o'zgartira oladi: ${touched.join(', ')}`
   );
 }
 
 module.exports = {
   getCurrentUserRole,
+  resolveActorRole,
   requireAuthenticated,
   requireRole,
   requireAdmin,

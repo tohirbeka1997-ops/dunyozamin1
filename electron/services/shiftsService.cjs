@@ -223,7 +223,7 @@ class ShiftsService {
         FROM payments p
         INNER JOIN orders o ON p.order_id = o.id
         WHERE o.shift_id = ? AND ${WHERE_ORDER_DONE_ALIAS_O}
-          AND LOWER(TRIM(COALESCE(p.payment_method, ''))) <> 'refund_cash'
+          AND LOWER(TRIM(COALESCE(p.payment_method, ''))) NOT IN ('refund_cash', 'refund_balance')
         GROUP BY LOWER(TRIM(COALESCE(p.payment_method, '')))
       `
         )
@@ -473,7 +473,7 @@ class ShiftsService {
       const paymentsData = this.db.prepare(`
         SELECT 
           COALESCE(SUM(CASE
-            WHEN LOWER(TRIM(COALESCE(p.payment_method, ''))) = 'refund_cash' THEN 0
+            WHEN LOWER(TRIM(COALESCE(p.payment_method, ''))) IN ('refund_cash', 'refund_balance') THEN 0
             ELSE ${payUzs}
           END), 0) as total_payments,
           COALESCE(SUM(CASE
@@ -683,7 +683,7 @@ class ShiftsService {
     const paymentsData = this.db.prepare(`
       SELECT 
         COALESCE(SUM(CASE
-          WHEN LOWER(TRIM(COALESCE(p.payment_method, ''))) = 'refund_cash' THEN 0
+          WHEN LOWER(TRIM(COALESCE(p.payment_method, ''))) IN ('refund_cash', 'refund_balance') THEN 0
           ELSE ${payUzs}
         END), 0) as total_payments,
         COALESCE(SUM(CASE

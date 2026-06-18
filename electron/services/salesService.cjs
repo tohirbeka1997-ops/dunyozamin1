@@ -1412,7 +1412,12 @@ class SalesService {
       return m === 'credit' || m === 'on_credit' || m === 'debt';
     };
 
-    const isPayoutMethod = (method) => String(method || '').toLowerCase() === 'refund_cash';
+    const isPayoutMethod = (method) => {
+      const m = String(method || '').toLowerCase();
+      return m === 'refund_cash' || m === 'refund_balance';
+    };
+    const isRefundCashPayout = (method) => String(method || '').toLowerCase() === 'refund_cash';
+    const isRefundBalancePayout = (method) => String(method || '').toLowerCase() === 'refund_balance';
 
     const intakePayments = validPayments.filter(
       (p) => !isCreditMethod(p.payment_method) && !isPayoutMethod(p.payment_method)
@@ -1436,7 +1441,7 @@ class SalesService {
       if (payoutPayments.length > 0) {
         throw createError(
           ERROR_CODES.VALIDATION_ERROR,
-          'refund_cash faqat jami manfiy (mijozga qaytim) bo‘lganda'
+          'refund_cash / refund_balance faqat jami manfiy (mijozga qaytim) bo‘lganda'
         );
       }
       if (prepaidApplied > orderTotalSigned + payEps) {
@@ -1478,8 +1483,33 @@ class SalesService {
       if (payoutPayments.length === 0 || Math.abs(totalPayout - needPayout) > payEps) {
         throw createError(
           ERROR_CODES.VALIDATION_ERROR,
-          `Mijozga ${Math.round(needPayout)} so‘m qaytarish kerak (refund_cash).`
+          `Mijozga ${Math.round(needPayout)} so‘m qaytarish kerak (refund_cash yoki refund_balance).`
         );
+      }
+      const cashPayoutLines = payoutPayments.filter((p) => isRefundCashPayout(p.payment_method));
+      const balancePayoutLines = payoutPayments.filter((p) => isRefundBalancePayout(p.payment_method));
+      if (cashPayoutLines.length > 0 && balancePayoutLines.length > 0) {
+        throw createError(
+          ERROR_CODES.VALIDATION_ERROR,
+          'Bir almashuvda naqd qaytim va balansga qaytim bir vaqtda bo‘lmasin'
+        );
+      }
+      if (balancePayoutLines.length > 0) {
+        if (!orderData.customer_id || orderData.customer_id === KNOWN_DEFAULT_CUSTOMER) {
+          throw createError(
+            ERROR_CODES.VALIDATION_ERROR,
+            'Balansga qaytim uchun ro‘yxatdan o‘tgan mijoz tanlanishi kerak'
+          );
+        }
+        const balanceCustomer = this.db
+          .prepare('SELECT id, name FROM customers WHERE id = ?')
+          .get(orderData.customer_id);
+        if (!balanceCustomer) {
+          throw createError(
+            ERROR_CODES.NOT_FOUND,
+            `Balansga qaytim: mijoz topilmadi (${orderData.customer_id})`
+          );
+        }
       }
     }
 
@@ -2268,10 +2298,13 @@ class SalesService {
         const saleCurrency = normalizeCustomerCurrency(hasFinCurrency ? orderFin?.currency : 'UZS');
         const currentBalance = readBalanceInCurrency(this.db, orderData.customer_id, saleCurrency);
         const curLabel = saleCurrency === 'USD' ? 'USD' : "so'm";
-        // Almashuv: jami manfiy (mijozga naqd qaytim).
+        // Almashuv: jami manfiy — faqat refund_balance to‘lovida balansga yoziladi (naqd refund_cash emas).
         let refundDebtReduction = 0;
         let refundMagForBalance = 0;
-        if (orderTotalAfterRecalc < -payEps) {
+        const hasRefundBalancePayout = payoutPayments.some((p) =>
+          isRefundBalancePayout(p.payment_method)
+        );
+        if (orderTotalAfterRecalc < -payEps && hasRefundBalancePayout) {
           const refundMag = Math.abs(orderTotalAfterRecalc);
           const debtMag = Math.max(0, -currentBalance);
           refundDebtReduction = Math.min(refundMag, debtMag);
@@ -2418,7 +2451,7 @@ class SalesService {
               amount: ledgerAmount,
               balance_after: saleBalanceAfter,
               note: ledgerNote,
-              method: null,
+              method: hasRefundBalancePayout ? 'refund_balance' : null,
             });
             console.log('✅ Ledger entry inserted for sale:', {
               customerId: orderData.customer_id,

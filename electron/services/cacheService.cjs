@@ -22,12 +22,38 @@ class CacheService {
     return this.productById.get(String(id || '')) || null;
   }
 
+  _registerSkuKeys(sku, product) {
+    const s = String(sku || '').trim();
+    if (!s) return;
+    this.productBySku.set(s, product);
+    const normalized = s.toLowerCase().replace(/[\s\-_]/g, '');
+    if (normalized) this.productBySku.set(normalized, product);
+    const trimmed = s.replace(/^0+/, '') || '0';
+    if (trimmed !== s) this.productBySku.set(trimmed, product);
+  }
+
+  _registerBarcodeKeys(barcode, product) {
+    const b = String(barcode || '').trim();
+    if (!b) return;
+    this.productByBarcode.set(b, product);
+    const digitsOnly = b.replace(/[^\d]/g, '');
+    if (digitsOnly && digitsOnly !== b) this.productByBarcode.set(digitsOnly, product);
+    const upper = b.toUpperCase();
+    if (upper !== b) this.productByBarcode.set(upper, product);
+    const lower = b.toLowerCase();
+    if (lower !== b) this.productByBarcode.set(lower, product);
+  }
+
   setProduct(product) {
     if (!product || !product.id) return;
     const id = String(product.id);
     this.productById.set(id, product);
-    if (product.sku) this.productBySku.set(String(product.sku), product);
-    if (product.barcode) this.productByBarcode.set(String(product.barcode), product);
+    if (product.sku) this._registerSkuKeys(product.sku, product);
+    if (product.barcode) this._registerBarcodeKeys(product.barcode, product);
+    const alt = product.alt_barcodes;
+    if (Array.isArray(alt)) {
+      for (const code of alt) this._registerBarcodeKeys(code, product);
+    }
   }
 
   invalidateProduct(productId) {

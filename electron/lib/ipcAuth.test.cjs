@@ -4,8 +4,14 @@
 // Uses a plain mock db (no better-sqlite3) so it runs under stock Node.
 
 const assert = require('node:assert');
-const { setCurrentUserId } = require('./currentUser.cjs');
-const { getCurrentUserRole, requireAdmin, requireRole } = require('./ipcAuth.cjs');
+const { setCurrentUserId, setCurrentUserRole, setCurrentUserSession } = require('./currentUser.cjs');
+const {
+  getCurrentUserRole,
+  resolveActorRole,
+  requireAdmin,
+  requireRole,
+  assertAppConfigPatchAllowed,
+} = require('./ipcAuth.cjs');
 
 let pass = 0;
 let fail = 0;
@@ -71,6 +77,33 @@ check(requireAdmin(makeDb({ joinRole: 'admin' })) === 'admin', 'requireAdmin pas
 check(requireRole(makeDb({ joinRole: 'manager' }), ['admin', 'manager']) === 'manager',
   'requireRole allows listed role');
 
+// 7) resolveActorRole falls back to cached session role when DB lookup fails.
+setCurrentUserSession('u1', 'admin');
+check(
+  resolveActorRole(makeDb({ joinRole: null, legacyRole: null })) === 'admin',
+  'resolveActorRole uses cached role when DB has no role row',
+);
+
+// 8) assertAppConfigPatchAllowed allows admin via cached role (CLIENT mode path).
+let allowed = false;
+try {
+  assertAppConfigPatchAllowed({ host: { secret: 'x' } }, 'admin');
+  allowed = true;
+} catch {
+  allowed = false;
+}
+check(allowed, 'assertAppConfigPatchAllowed passes for admin role');
+
+// 9) assertAppConfigPatchAllowed message is Uzbek.
+let uzMsg = '';
+try {
+  assertAppConfigPatchAllowed({ host: { port: 3333 } }, 'cashier');
+} catch (e) {
+  uzMsg = e?.message || '';
+}
+check(/administrator/i.test(uzMsg), 'permission error message is user-facing Uzbek');
+
 setCurrentUserId(null);
+setCurrentUserRole(null);
 console.log(`\nipcAuth role resolution: ${pass} pass / ${fail} fail`);
 process.exit(fail === 0 ? 0 : 1);

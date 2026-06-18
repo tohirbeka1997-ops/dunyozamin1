@@ -6,6 +6,8 @@ import {
   TooltipTrigger,
 } from '@/components/ui/tooltip';
 import { Crown } from 'lucide-react';
+import { formatCustomerBalance } from '@/lib/format';
+import { getCustomerBalances } from '@/lib/currency';
 import type { Customer } from '@/types/database';
 
 interface CustomerInfoBadgeProps {
@@ -14,8 +16,9 @@ interface CustomerInfoBadgeProps {
 
 export default function CustomerInfoBadge({ customer }: CustomerInfoBadgeProps) {
   const isVIP = customer.total_sales > 10000000;
-  // Balance logic (system-wide): negative = debt (customer owes us), positive = prepaid/credit
-  const hasDebt = (customer.balance || 0) < 0;
+  const balances = getCustomerBalances(customer);
+  const uzsInfo = formatCustomerBalance(balances.uzs, 'UZS');
+  const usdInfo = formatCustomerBalance(balances.usd, 'USD');
 
   const getBadgeInfo = () => {
     if (isVIP) {
@@ -43,9 +46,20 @@ export default function CustomerInfoBadge({ customer }: CustomerInfoBadgeProps) 
           Bonus: {Number(customer.bonus_points ?? 0)} ball
         </Badge>
       )}
-      {hasDebt && (
-        <Badge variant="destructive" className="gap-1">
-          Qarz: {Math.abs(customer.balance || 0).toFixed(2)} so'm
+      {uzsInfo.type !== 'zero' && (
+        <Badge
+          variant={uzsInfo.variant}
+          className={`gap-1 ${uzsInfo.type === 'balance' ? 'bg-green-600 text-white hover:bg-green-700' : ''}`}
+        >
+          {uzsInfo.label}
+        </Badge>
+      )}
+      {Math.abs(balances.usd) > 0.0001 && (
+        <Badge
+          variant={usdInfo.variant}
+          className={`gap-1 ${usdInfo.type === 'balance' ? 'bg-green-600 text-white hover:bg-green-700' : ''}`}
+        >
+          {usdInfo.label}
         </Badge>
       )}
       {badgeInfo && (

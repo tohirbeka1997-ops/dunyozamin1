@@ -149,10 +149,16 @@ export const getProducts = async (
   // Search filter
   if (filters?.searchTerm) {
     const term = filters.searchTerm.toLowerCase();
+    const termNorm = term.replace(/[\s\-_]/g, '');
     products = products.filter(p =>
       p.name.toLowerCase().includes(term) ||
       p.sku.toLowerCase().includes(term) ||
-      (p.barcode && p.barcode.toLowerCase().includes(term))
+      (p.barcode && p.barcode.toLowerCase().includes(term)) ||
+      (String((p as { article?: string | null }).article || '')
+        .toLowerCase()
+        .replace(/[\s\-_]/g, '')
+        .includes(termNorm)) ||
+      String((p as { brand?: string | null }).brand || '').toLowerCase().includes(term)
     );
   }
   
@@ -332,15 +338,23 @@ export const searchProducts = async (
       const skuRaw = String(p.sku || '').toLowerCase();
       const sku = skuRaw.replace(/^0+/, '');
       const barcode = String(p.barcode || '').toLowerCase();
+      const article = String((p as { article?: string | null }).article || '')
+        .toLowerCase()
+        .replace(/[\s\-_]/g, '');
+      const brand = String((p as { brand?: string | null }).brand || '').toLowerCase();
       const termSku = term.replace(/^0+/, '');
+      const termNorm = term.replace(/[\s\-_]/g, '');
       const skuExact = skuRaw === term || (termSku && sku === termSku);
       const skuStarts = skuRaw.startsWith(term) || (termSku && sku.startsWith(termSku));
       const skuContains = skuRaw.includes(term) || (termSku && sku.includes(termSku));
-      if (term && (skuExact || barcode === term)) return 0;
+      const articleExact = termNorm.length > 0 && article === termNorm;
+      const articleStarts = termNorm.length > 0 && article.startsWith(termNorm);
+      const articleContains = termNorm.length > 0 && article.includes(termNorm);
+      if (term && (skuExact || barcode === term || articleExact)) return 0;
       if (term && name === term) return 1;
-      if (term && (skuStarts || barcode.startsWith(term))) return 2;
+      if (term && (skuStarts || barcode.startsWith(term) || articleStarts)) return 2;
       if (term && name.startsWith(term)) return 3;
-      if (term && (skuContains || barcode.includes(term))) return 4;
+      if (term && (skuContains || barcode.includes(term) || articleContains || brand.includes(term))) return 4;
       if (term && name.includes(term)) return 5;
       return 6;
     };
@@ -376,7 +390,12 @@ export const searchProducts = async (
       p.is_active &&
       (p.name.toLowerCase().includes(term) ||
        p.sku.toLowerCase().includes(term) ||
-       (p.barcode && p.barcode.toLowerCase().includes(term)))
+       (p.barcode && p.barcode.toLowerCase().includes(term)) ||
+       String((p as { article?: string | null }).article || '')
+         .toLowerCase()
+         .replace(/[\s\-_]/g, '')
+         .includes(term.replace(/[\s\-_]/g, '')) ||
+       String((p as { brand?: string | null }).brand || '').toLowerCase().includes(term))
     )
     .slice(0, 20);
 

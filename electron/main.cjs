@@ -503,6 +503,22 @@ app.on('ready', async () => {
         secret: appConfig?.client?.secret,
       });
 
+      // Local session sync for pos-config IPC auth (CLIENT mode has no local DB).
+      try {
+        const { wrapHandler } = require('./lib/errors.cjs');
+        const { setCurrentUserSession } = require('./lib/currentUser.cjs');
+        ipcMain.removeHandler('pos:auth:setSessionUser');
+        ipcMain.handle(
+          'pos:auth:setSessionUser',
+          wrapHandler(async (_event, userId, roleHint) => {
+            setCurrentUserSession(userId, roleHint);
+            return { success: true };
+          }),
+        );
+      } catch (e) {
+        console.warn('[POSNET] Failed to register local session sync:', e?.message || e);
+      }
+
       try {
         const { registerDatabaseHandlers } = require('./ipc/database.ipc.cjs');
         registerDatabaseHandlers({ mode: 'client', callRpc });

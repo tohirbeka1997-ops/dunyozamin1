@@ -202,7 +202,18 @@ function registerAllHandlers() {
   console.log('Registering web orders handlers...');
   registerWebOrdersHandlers(services);
   console.log('Registering couriers handlers...');
-  registerCouriersHandlers(services);
+  registerCouriersHandlers(getServices);
+
+  try {
+    const serviceRuntime = require('../lib/serviceRuntime.cjs');
+    serviceRuntime.setAfterRebindHook((nextServices, nextDb) => {
+      services = nextServices;
+      dbInstance = nextDb;
+      console.log('[ipc] services synced after DB replace');
+    });
+  } catch (hookErr) {
+    console.warn('[ipc] serviceRuntime rebind hook not registered:', hookErr?.message || hookErr);
+  }
 
   console.log('Registering files handlers...');
   registerFilesHandlers();

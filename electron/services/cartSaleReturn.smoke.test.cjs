@@ -16,6 +16,7 @@ const path = require('path');
 const WH = 'main-warehouse-001';
 const ADMIN = 'default-admin-001';
 const REFUND_CASH = 'refund_cash';
+const REFUND_BALANCE = 'refund_balance';
 
 const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pos-cart-smoke-'));
 process.env.POS_SERVER_MODE = '1';
@@ -67,7 +68,7 @@ try {
 
   open();
   const db = getDb();
-  const { products, inventory, sales, shifts } = createServices(db);
+  const { products, inventory, sales, shifts, customers } = createServices(db);
 
   const skuA = `CART-A-${Date.now()}`;
   const skuB = `CART-B-${Date.now()}`;
@@ -229,6 +230,149 @@ try {
   assert.ok(oversellOnSale);
   assert.strictEqual(stockOf(inventory, productA.id), 1);
   ok('sotish: qoldiq yetarli emas → rad (qaytarish qatorlari bundan mustasno)');
+
+  // --- 8) Aralash savat + nasiya (net musbat) ---
+  inventory.adjustStock({
+    warehouse_id: WH,
+    adjustment_type: 'set',
+    reason: 'mixed credit test stock',
+    created_by: ADMIN,
+    items: [{ product_id: productA.id, target_quantity: 10 }],
+  });
+  const creditCustomer = customers.create({
+    name: 'Cart Smoke Nasiya',
+    phone: '+998901234599',
+    allow_credit: 1,
+    allow_debt: 1,
+    credit_limit: 50000000,
+  });
+  const mixCreditItems = [
+    cartLine(productA, { qtySale: 3 }),
+    cartLine(productA, { qtySale: -2 }),
+  ];
+  const mixCreditTotal = orderTotalFromItems(mixCreditItems); // 3000 - 2000 = 1000
+  assert.strictEqual(mixCreditTotal, 1000);
+
+  const mixCreditRes = sales.completePOSOrder(
+    {
+      total_amount: mixCreditTotal,
+      customer_id: creditCustomer.id,
+      shift_id: shift.id,
+      user_id: ADMIN,
+    },
+    mixCreditItems,
+    [{ payment_method: 'credit', amount: mixCreditTotal }],
+  );
+  assert.ok(mixCreditRes?.order_id);
+  const mixCreditOrder = db
+    .prepare('SELECT credit_amount, total_amount FROM orders WHERE id = ?')
+    .get(mixCreditRes.order_id);
+  assert.strictEqual(Number(mixCreditOrder.total_amount), 1000);
+  assert.strictEqual(Number(mixCreditOrder.credit_amount), 1000);
+  assert.strictEqual(stockOf(inventory, productA.id), 9); // 10 + 3 - 2 (return) - 2 (sale net +1)
+  ok('almashuv + nasiya: +3/-2 A → jami +1000 qarz, stok A=9');
+
+  // --- 9) Aralash savat + nasiya rad (net manfiy) ---
+  let mixCreditRejected = false;
+  try {
+    sales.completePOSOrder(
+      {
+        total_amount: -1000,
+        customer_id: creditCustomer.id,
+        shift_id: shift.id,
+        user_id: ADMIN,
+      },
+      [cartLine(productA, { qtySale: 1 }), cartLine(productB, { qtySale: -1, unitPrice: 2000 })],
+      [{ payment_method: 'credit', amount: 1000 }],
+    );
+  } catch (e) {
+    mixCreditRejected =
+      /Manfiy jami|qarz sotuvi/i.test(String(e.message || '')) ||
+      String(e.code || '').includes('VALIDATION');
+  }
+  assert.ok(mixCreditRejected, 'net manfiy + credit rad etilishi kerak');
+  ok('validatsiya: net manfiy almashuvda nasiya rad');
+
+  // --- 10) Manfiy jami + balansga qaytim (mijoz haqdor) ---
+  const debtCustomer = customers.create({
+    name: 'Cart Smoke Haqdor',
+    phone: '+998901234588',
+    allow_credit: 1,
+    allow_debt: 1,
+    credit_limit: 50000000,
+  });
+  db.prepare(`UPDATE customers SET balance = -5000, updated_at = datetime('now') WHERE id = ?`).run(
+    debtCustomer.id
+  );
+  const balanceRefundItems = [cartLine(productA, { qtySale: -3 })];
+  const balanceRefundTotal = orderTotalFromItems(balanceRefundItems); // -3000
+  assert.strictEqual(balanceRefundTotal, -3000);
+
+  const balanceRefundRes = sales.completePOSOrder(
+    {
+      total_amount: balanceRefundTotal,
+      customer_id: debtCustomer.id,
+      shift_id: shift.id,
+      user_id: ADMIN,
+    },
+    balanceRefundItems,
+    [{ payment_method: REFUND_BALANCE, amount: 3000 }],
+  );
+  assert.ok(balanceRefundRes?.order_id);
+  const balAfter = db.prepare('SELECT balance FROM customers WHERE id = ?').get(debtCustomer.id);
+  assert.strictEqual(Number(balAfter.balance), -2000);
+  const ledgerRow = db
+    .prepare(
+      `SELECT type, amount FROM customer_ledger WHERE customer_id = ? AND ref_id = ? ORDER BY created_at DESC LIMIT 1`,
+    )
+    .get(debtCustomer.id, balanceRefundRes.order_id);
+  assert.ok(ledgerRow);
+  assert.strictEqual(ledgerRow.type, 'refund');
+  assert.strictEqual(Number(ledgerRow.amount), 3000);
+  const cashMoveCount = db
+    .prepare(
+      `SELECT COUNT(*) AS c FROM cash_movements WHERE reference_type = 'order' AND reference_id = ?`,
+    )
+    .get(balanceRefundRes.order_id);
+  assert.strictEqual(Number(cashMoveCount.c), 0, 'balansga qaytimda cash_movement bo‘lmasin');
+  ok('almashuv: refund_balance → qarz kamaydi, naqd harakati yo‘q');
+
+  // --- 11) refund_balance mijozsiz rad ---
+  let balanceNoCustomer = false;
+  try {
+    sales.completePOSOrder(
+      { total_amount: -1000, shift_id: shift.id, user_id: ADMIN },
+      [cartLine(productA, { qtySale: -1 })],
+      [{ payment_method: REFUND_BALANCE, amount: 1000 }],
+    );
+  } catch (e) {
+    balanceNoCustomer =
+      /mijoz|customer|Balansga/i.test(String(e.message || '')) ||
+      String(e.code || '').includes('VALIDATION');
+  }
+  assert.ok(balanceNoCustomer, 'refund_balance mijozsiz rad etilishi kerak');
+  ok('validatsiya: refund_balance uchun mijoz majburiy');
+
+  // --- 12) Katta qaytim → mijoz haqdor (musbat balans) ---
+  db.prepare(`UPDATE customers SET balance = -5000, updated_at = datetime('now') WHERE id = ?`).run(
+    debtCustomer.id
+  );
+  const surplusRefundItems = [cartLine(productA, { qtySale: -10, unitPrice: 1000 })];
+  const surplusRefundTotal = -10000;
+  sales.completePOSOrder(
+    {
+      total_amount: surplusRefundTotal,
+      customer_id: debtCustomer.id,
+      shift_id: shift.id,
+      user_id: ADMIN,
+    },
+    surplusRefundItems,
+    [{ payment_method: REFUND_BALANCE, amount: 10000 }],
+  );
+  const balSurplus = db.prepare('SELECT balance FROM customers WHERE id = ?').get(debtCustomer.id);
+  // -5000 + 10000 = +5000 (do‘kon mijoz oldida qarzdor)
+  assert.strictEqual(Number(balSurplus.balance), 5000);
+  ok('almashuv: refund_balance → ortiqcha qaytim mijoz haqdorligi (musbat balans)');
 
   console.log(`\n=== NATIJA: ${passed} OK, ${failed} FAIL ===\n`);
   if (failed > 0) process.exit(1);

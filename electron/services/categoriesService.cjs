@@ -2,6 +2,8 @@ const { ERROR_CODES, createError } = require('../lib/errors.cjs');
 const { randomUUID } = require('crypto');
 const { rollupProductCounts } = require('../lib/categoryTree.cjs');
 
+const MAX_CATEGORY_DEPTH = 8;
+
 /**
  * Categories Service
  * Handles category CRUD operations
@@ -17,7 +19,34 @@ class CategoriesService {
     if (!parent?.id) {
       throw createError(ERROR_CODES.VALIDATION_ERROR, `Parent category ${parentId} not found`);
     }
+    this._assertMaxDepth(parentId);
     return parentId;
+  }
+
+  _getCategoryDepth(categoryId) {
+    let depth = 0;
+    let current = categoryId ? String(categoryId) : '';
+    const seen = new Set();
+    while (current) {
+      if (seen.has(current)) break;
+      seen.add(current);
+      depth += 1;
+      const row = this.db.prepare('SELECT parent_id FROM categories WHERE id = ?').get(current);
+      if (!row) break;
+      current = row.parent_id ? String(row.parent_id) : '';
+    }
+    return depth;
+  }
+
+  _assertMaxDepth(parentId) {
+    if (!parentId) return;
+    const parentDepth = this._getCategoryDepth(parentId);
+    if (parentDepth >= MAX_CATEGORY_DEPTH) {
+      throw createError(
+        ERROR_CODES.VALIDATION_ERROR,
+        `Category hierarchy cannot exceed ${MAX_CATEGORY_DEPTH} levels`
+      );
+    }
   }
 
   _assertNoParentCycle(categoryId, parentId) {
@@ -185,6 +214,9 @@ class CategoriesService {
 
     if (data.parent_id !== undefined) {
       const normalizedParent = data.parent_id || null;
+      if (normalizedParent) {
+        this._ensureValidParentForCreate(normalizedParent);
+      }
       this._assertNoParentCycle(id, normalizedParent);
       updates.push('parent_id = ?');
       params.push(normalizedParent);

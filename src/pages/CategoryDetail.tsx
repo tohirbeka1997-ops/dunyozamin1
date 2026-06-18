@@ -15,11 +15,12 @@ import {
 } from '@/components/ui/table';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { useToast } from '@/hooks/use-toast';
-import { getCategoryById, getProductsByCategoryId } from '@/db/api';
+import { getCategoryById, getProductsByCategoryId, getCategories } from '@/db/api';
 import type { Category, Product } from '@/types/database';
-import { ArrowLeft, Pencil, Package, FolderTree } from 'lucide-react';
+import { ArrowLeft, Pencil, Package, FolderTree, ChevronRight } from 'lucide-react';
 import { formatMoneyUZS, formatNumberUZ } from '@/lib/format';
 import { getProductImageDisplayUrl } from '@/lib/productImageUrl';
+import { formatCategoryPath, getCategoryPathSegments } from '@/lib/categoryTree';
 
 export default function CategoryDetail() {
   const { t } = useTranslation();
@@ -27,6 +28,7 @@ export default function CategoryDetail() {
   const navigate = useNavigate();
   const { toast } = useToast();
   const [category, setCategory] = useState<Category | null>(null);
+  const [allCategories, setAllCategories] = useState<Category[]>([]);
   const [parentCategory, setParentCategory] = useState<Category | null>(null);
   const [products, setProducts] = useState<Product[]>([]);
   const [loading, setLoading] = useState(true);
@@ -41,12 +43,14 @@ export default function CategoryDetail() {
     if (!id) return;
     try {
       setLoading(true);
-      const [categoryData, productsData] = await Promise.all([
+      const [categoryData, productsData, categoriesData] = await Promise.all([
         getCategoryById(id),
         getProductsByCategoryId(id),
+        getCategories({ includeInactive: true }),
       ]);
       setCategory(categoryData);
       setProducts(productsData);
+      setAllCategories(categoriesData);
 
       if (categoryData.parent_id) {
         try {
@@ -79,6 +83,10 @@ export default function CategoryDetail() {
     }
     return <Badge className="bg-success text-success-foreground">{t('categoryDetail.in_stock')}</Badge>;
   };
+
+  const categoryPath = category
+    ? getCategoryPathSegments(allCategories, category.id)
+    : [];
 
   if (loading || !category) {
     return (
@@ -119,8 +127,29 @@ export default function CategoryDetail() {
               </div>
             )}
             <div>
+              {categoryPath.length > 1 && (
+                <div className="flex flex-wrap items-center gap-1 text-sm text-muted-foreground mb-1">
+                  {categoryPath.slice(0, -1).map((seg, idx) => (
+                    <span key={seg.id} className="inline-flex items-center gap-1">
+                      {idx > 0 && <ChevronRight className="h-3 w-3 shrink-0" />}
+                      <button
+                        type="button"
+                        className="hover:text-foreground hover:underline"
+                        onClick={() => navigate(`/categories/${seg.id}`)}
+                      >
+                        {seg.name}
+                      </button>
+                    </span>
+                  ))}
+                </div>
+              )}
               <h1 className="page-heading">{category.name}</h1>
-              <p className="text-muted-foreground">{category.description || t('categoryDetail.no_description')}</p>
+              <p className="text-muted-foreground">
+                {category.description ||
+                  (categoryPath.length > 0
+                    ? formatCategoryPath(allCategories, category.id)
+                    : t('categoryDetail.no_description'))}
+              </p>
             </div>
           </div>
         </div>
@@ -211,16 +240,18 @@ export default function CategoryDetail() {
               <p className="text-sm text-muted-foreground mb-1">{t('categoryDetail.parent_category')}</p>
               {category.parent_id ? (
                 parentCategory ? (
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="sm"
-                    className="h-auto py-1.5 font-normal"
-                    onClick={() => navigate(`/categories/${parentCategory.id}`)}
-                  >
-                    <FolderTree className="h-3 w-3 mr-1 shrink-0" />
-                    {parentCategory.name}
-                  </Button>
+                  <div className="space-y-1">
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      className="h-auto py-1.5 font-normal"
+                      onClick={() => navigate(`/categories/${parentCategory.id}`)}
+                    >
+                      <FolderTree className="h-3 w-3 mr-1 shrink-0" />
+                      {formatCategoryPath(allCategories, parentCategory.id) || parentCategory.name}
+                    </Button>
+                  </div>
                 ) : (
                   <span className="text-sm text-muted-foreground">
                     {t('categoryDetail.parent_not_found')}
@@ -229,6 +260,12 @@ export default function CategoryDetail() {
               ) : (
                 <p className="font-medium">{t('categoryDetail.root_category')}</p>
               )}
+            </div>
+            <div>
+              <p className="text-sm text-muted-foreground mb-1">{t('categoryDetail.category_path')}</p>
+              <p className="font-medium">
+                {formatCategoryPath(allCategories, category.id) || category.name}
+              </p>
             </div>
           </div>
         </CardContent>

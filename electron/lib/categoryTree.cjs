@@ -65,14 +65,21 @@ function rollupProductCounts(categories) {
     direct.set(String(c.id), Number(c.products_count) || 0);
   }
   const memo = new Map();
+  const visiting = new Set();
   const sum = (id) => {
     if (memo.has(id)) return memo.get(id);
+    if (visiting.has(id)) {
+      // Broken parent_id cycle in data — return direct count only for this branch.
+      return direct.get(id) || 0;
+    }
+    visiting.add(id);
     let total = direct.get(id) || 0;
     for (const c of categories) {
       if (String(c.parent_id || '') === id) {
         total += sum(String(c.id));
       }
     }
+    visiting.delete(id);
     memo.set(id, total);
     return total;
   };

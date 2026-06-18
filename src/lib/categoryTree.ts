@@ -35,6 +35,57 @@ export function productMatchesCategoryFilter(
   return allowed?.includes(String(productCategoryId)) ?? false;
 }
 
+/** Kategoriya va barcha bolalar ID lari (ota tanlashda tsikl oldini olish). */
+export function getCategoryDescendantIds(
+  categories: Category[],
+  categoryId: string
+): string[] {
+  const root = String(categoryId || '').trim();
+  if (!root) return [];
+  const ids: string[] = [];
+  const queue = [root];
+  while (queue.length > 0) {
+    const id = queue.shift()!;
+    for (const c of categories) {
+      if (String(c.parent_id || '') === id) {
+        const childId = String(c.id);
+        ids.push(childId);
+        queue.push(childId);
+      }
+    }
+  }
+  return ids;
+}
+
+/** Ildizdan beri to'liq yo'l (Santexnika › Fiting › Atvod). */
+export function getCategoryPathSegments(
+  categories: Category[],
+  categoryId: string | null | undefined
+): Category[] {
+  if (!categoryId) return [];
+  const byId = new Map(categories.map((c) => [String(c.id), c]));
+  const path: Category[] = [];
+  const seen = new Set<string>();
+  let current: string | null = String(categoryId);
+  while (current && byId.has(current) && !seen.has(current)) {
+    seen.add(current);
+    const cat = byId.get(current)!;
+    path.unshift(cat);
+    current = cat.parent_id ? String(cat.parent_id) : null;
+  }
+  return path;
+}
+
+export function formatCategoryPath(
+  categories: Category[],
+  categoryId: string | null | undefined,
+  separator = ' › '
+): string | null {
+  const segments = getCategoryPathSegments(categories, categoryId);
+  if (segments.length === 0) return null;
+  return segments.map((s) => s.name).join(separator);
+}
+
 /** Marketplace pill ro'yxati: faol + katalogda ko'rinadigan. */
 export function getMarketplaceCategories(categories: Category[]): Category[] {
   return categories

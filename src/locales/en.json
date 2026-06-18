@@ -14,7 +14,10 @@
       "unstable": "unstable",
       "scale_error_title": "Scale error"
     },
-    "search_placeholder": "Search for products by name, SKU or barcode... (focus F2, add ENTER)",
+    "search_placeholder": "Search for products by name, SKU, article or barcode... (focus F2, add ENTER)",
+    "brand_label": "Brand",
+    "article_label": "Article",
+    "quick_product_search_placeholder": "Name, SKU, article or barcode...",
     "all_categories": "Everything",
     "no_products": "Product not found",
     "try_searching": "Search or choose another category",
@@ -170,17 +173,23 @@
       "payment_need_refund": "Total Negative - Approve a refund to the customer.",
       "payment_need_zero": "Zero total — click finish.",
       "payment_invalid_method": "Invalid payment type.",
-      "refund_panel_intro": "Exchange: Cash total is negative. Give the customer this amount in cash and confirm.",
+      "refund_panel_intro": "Exchange: Cash total is negative. Pay the customer in cash or credit their balance.",
       "customer_payout_label": "Provided to the client:",
       "refund_confirm_button": "Cashback Confirmation",
       "refund_confirm_with_amount": "{{amount}} — confirmation of cashback",
+      "refund_balance_hint": "Or credit the customer's balance instead of cash (shop owes the customer).",
+      "refund_balance_with_amount": "{{amount}} — credit to balance",
+      "refund_balance_need_customer": "Select a registered customer to credit the balance.",
+      "refund_balance_need_customer_hint": "Select a customer first to use balance credit.",
       "zero_settle_intro": "Total 0 - no difference, check can be completed.",
       "zero_settle_button": "Completion (zero sum)",
       "credit_blocked_returns": "Debt cannot be used with return (negative) lines.",
       "credit_blocked_total": "Total 0 or negative - finish from the \"Pay\" window.",
       "success_refund": "Order {{order}}: Cashback (exchange) to customer {{amount}}.",
+      "success_refund_balance": "Order {{order}}: {{amount}} credited to customer balance (exchange).",
       "success_zero": "Order {{order}}: total 0 — exchange completed.",
       "receipt_payment_refund": "Cash to Customer (Refund)",
+      "receipt_payment_refund_balance": "Customer balance (refund)",
       "receipt_payment_zero": "Zero sum (exchange)"
     }
   },
@@ -868,7 +877,7 @@
       "name_required_title": "Validation error",
       "name_required": "Category name is required",
       "invalid_parent_title": "Validation error",
-      "invalid_parent": "A category cannot be its own parent category"
+      "invalid_parent": "A category cannot be its own parent or a parent of its subcategories"
     },
     "messages": {
       "updated": "Category updated successfully",
@@ -901,6 +910,7 @@
     "description": "Description",
     "parent_category": "Parent category",
     "parent_category_badge": "Parent category",
+    "category_path": "Category path",
     "parent_not_found": "Parent category not found",
     "root_category": "Root (no parent)",
     "products_tab": "Products ({{count}})",

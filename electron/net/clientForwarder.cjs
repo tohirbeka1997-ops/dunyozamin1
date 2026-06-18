@@ -1,6 +1,7 @@
 const { ipcMain } = require('electron');
 const { POS_CHANNELS } = require('../ipc/posChannels.cjs');
 const { createError, ERROR_CODES } = require('../lib/errors.cjs');
+const { setCurrentUserSession } = require('../lib/currentUser.cjs');
 
 function defaultClientRpcTimeoutMs() {
   const n = Number(process.env.POS_CLIENT_RPC_TIMEOUT_MS || 120000);
@@ -127,10 +128,14 @@ function registerClientForwarders({ hostUrl, secret }) {
     }
 
     if (json.ok === true) {
-      if (channel === 'pos:auth:login' && json.data && json.data.token) {
-        sessionToken = json.data.token;
+      if (channel === 'pos:auth:login' && json.data) {
+        if (json.data.token) sessionToken = json.data.token;
+        const uid = json.data.user?.id || json.data.userId || null;
+        const role = json.data.user?.role || json.data.role || null;
+        if (uid) setCurrentUserSession(uid, role);
       } else if (channel === 'pos:auth:logout') {
         sessionToken = null;
+        setCurrentUserSession(null, null);
       }
       return json.data;
     }

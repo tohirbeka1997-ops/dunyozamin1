@@ -11,6 +11,17 @@ const {
 const app = getAppLike();
 
 let db = null;
+
+function isConnectionAlive(conn) {
+  if (!conn) return false;
+  try {
+    conn.prepare('SELECT 1').get();
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 const SQL_VERBOSE =
   String(process.env.POS_VERBOSE_LOGS || '').trim() === '1' ||
   String(process.env.POS_SQL_LOGS || '').trim() === '1';
@@ -75,9 +86,12 @@ function getDbPathInternal() {
  * @throws {Error} If path is outside userData or database open fails
  */
 function open(ignoredPath = null) {
-  if (db) {
-    console.log('Database already open, reusing connection');
+  if (db && isConnectionAlive(db)) {
     return db;
+  }
+  if (db) {
+    console.warn('[db] Stale SQLite handle detected — reopening pos.db');
+    db = null;
   }
 
   // SECURITY: Always use canonical path (ignore any passed parameter)
@@ -246,7 +260,11 @@ function open(ignoredPath = null) {
  * @returns {Database} Database instance
  */
 function getDb() {
-  if (!db) {
+  if (!db || !isConnectionAlive(db)) {
+    if (db) {
+      console.warn('[db] getDb: replacing closed SQLite handle');
+      db = null;
+    }
     return open();
   }
   return db;
