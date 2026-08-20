@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useMemo } from 'react';
+import { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
 import { Button } from '@/components/ui/button';
@@ -31,9 +31,11 @@ import {
 } from '@/components/ui/table';
 import { useToast } from '@/hooks/use-toast';
 import { useDebounce } from '@/hooks/use-debounce';
+import { useBarcodeScanner } from '@/hooks/useBarcodeScanner';
 import { useAuth } from '@/contexts/AuthContext';
 import { formatUnit } from '@/utils/formatters';
 import { formatMoneyUZS } from '@/lib/format';
+import { formatMoney, normalizeCurrency } from '@/lib/currency';
 import { invalidateDashboardQueries } from '@/utils/dashboard';
 import MoneyInput from '@/components/common/MoneyInput';
 import {
@@ -42,11 +44,15 @@ import {
   searchProducts,
   getProductByBarcode,
   getProductBySku,
+  getProductsScanIndex,
+  resolveProductScan,
+  getCategories,
   createPurchaseOrder,
   updatePurchaseOrder,
   generatePONumber,
   createSupplier,
   searchSuppliers,
+  getSupplierPurchaseSummary,
   productUpdateEmitter,
   addPurchaseOrderExpense,
   deletePurchaseOrderExpense,
@@ -57,9 +63,22 @@ import {
   createSupplierPayment,
 } from '@/db/api';
 import CreateProductModal from '@/components/products/CreateProductModal';
+import PurchaseOrderFormView from '@/components/purchase/PurchaseOrderFormView';
+import PurchaseOrderBulkAddModal from '@/components/purchase/PurchaseOrderBulkAddModal';
+import {
+  createPurchaseScanIndex,
+  filterPurchaseCatalog,
+  getScanLookupKeys,
+  lookupPurchaseScan,
+  registerPurchaseScanProduct,
+  type ProductScanIndex,
+  type ProductScanIndexEntry,
+} from '@/lib/purchase/purchaseScanSearch';
+import { getSaleUnitConfig } from '@/pages/posTerminalHelpers';
 import type {
   SupplierWithBalance,
   ProductWithCategory,
+  Category,
   PurchaseOrderWithDetails,
   PurchaseOrder,
   PurchaseOrderStatus,
@@ -73,9 +92,22 @@ import {
   convertToSettlementCurrency,
   type LedgerCurrency,
 } from '@/lib/supplierPaymentPayload';
+import {
+  computeSchemeSummary,
+  normalizePaymentScheme,
+  normalizeDueDate,
+  validateInstallmentScheduleSum,
+  type PoPaymentScheme,
+  type PoScheduleRow,
+} from '@/lib/purchasePaymentScheme';
+import {
+  findPoOrderQtyViolations,
+  violationsToMap,
+} from '@/lib/purchase/purchaseOrderQtyValidation';
 import { isElectron } from '@/utils/electron';
 
 interface OrderItem {
+  id?: string;
   product_id: string;
   product_name: string;
   product_sku?: string;
@@ -90,6 +122,8 @@ interface OrderItem {
   discount_amount?: number;
   discount_mode?: 'percent' | 'amount';
   sale_price?: number | null;
+  sale_unit?: string;
+  product_barcode?: string | null;
 }
 
 type POExpenseRow = {
@@ -105,6 +139,74 @@ type POExpenseRow = {
 type AuditFilterKey = 'all' | 'zeroCost' | 'negativeMargin' | 'discountAnomaly' | 'heavyExpenseItems';
 
 type PoPaymentMethod = 'cash' | 'card' | 'transfer' | 'click' | 'payme' | 'uzum';
+
+type PoLineForReceipt = {
+  id: string;
+  product_id: string;
+  product_name?: string | null;
+  ordered_qty: number;
+  received_qty?: number | null;
+  unit_cost?: number;
+  unit_cost_usd?: number | null;
+  landed_unit_cost?: number | null;
+};
+
+/** Build receipt lines from saved PO rows + current form (Saqlash va qabul). */
+function buildReceiptItemsForReceive(
+  poItems: PoLineForReceipt[],
+  formItems: OrderItem[],
+  options: {
+    poCurrency: 'UZS' | 'USD';
+    fxRate: number | null;
+    allocationsByProductId: Map<string, { landedUnitCost: number }>;
+  },
+) {
+  const { poCurrency, fxRate, allocationsByProductId } = options;
+  const receiptFxRate = poCurrency === 'USD' ? fxRate : null;
+
+  return poItems
+    .map((poItem) => {
+      const formItem = formItems.find(
+        (fi) => (poItem.id && fi.id === poItem.id) || fi.product_id === poItem.product_id,
+      );
+      const ordered = Number(formItem?.ordered_qty ?? poItem.ordered_qty ?? 0);
+      const alreadyReceived = Number(poItem.received_qty ?? 0);
+      const qty = Math.max(0, ordered - alreadyReceived);
+      if (!Number.isFinite(qty) || qty <= 0) return null;
+
+      const unitCost =
+        Number(
+          poItem.landed_unit_cost ??
+            allocationsByProductId.get(poItem.product_id)?.landedUnitCost ??
+            formItem?.unit_cost ??
+            poItem.unit_cost ??
+            0,
+        ) || 0;
+      const unitCostUsd =
+        poCurrency === 'USD'
+          ? Number(
+              (receiptFxRate && receiptFxRate > 0 ? unitCost / receiptFxRate : null) ??
+                formItem?.unit_cost_usd ??
+                poItem.unit_cost_usd ??
+                0,
+            ) || 0
+          : null;
+      const lineTotalUsd =
+        poCurrency === 'USD' && unitCostUsd != null ? qty * unitCostUsd : null;
+
+      return {
+        purchase_order_item_id: poItem.id,
+        product_id: poItem.product_id,
+        product_name: poItem.product_name ?? formItem?.product_name ?? '',
+        received_qty: qty,
+        unit_cost: unitCost,
+        line_total: qty * unitCost,
+        unit_cost_usd: unitCostUsd,
+        line_total_usd: lineTotalUsd,
+      };
+    })
+    .filter((row): row is NonNullable<typeof row> => row != null);
+}
 
 export default function PurchaseOrderForm() {
   const { id } = useParams();
@@ -127,11 +229,13 @@ export default function PurchaseOrderForm() {
   const [status, setStatus] = useState<PurchaseOrderStatus>('draft');
   const [notes, setNotes] = useState('');
   const [items, setItems] = useState<OrderItem[]>([]);
-  const [currency, setCurrency] = useState<'UZS' | 'USD'>('UZS');
   const [fxRate, setFxRate] = useState<number | null>(null);
   const [orderDiscountPercent, setOrderDiscountPercent] = useState(0);
   const [orderDiscountAmount, setOrderDiscountAmount] = useState(0);
-  const [orderDiscountMode, setOrderDiscountMode] = useState<'percent' | 'amount'>('amount');
+  const [orderDiscountMode, setOrderDiscountMode] = useState<'percent' | 'amount'>('percent');
+  const [orderTaxPercent, setOrderTaxPercent] = useState(0);
+  const [summaryExpense, setSummaryExpense] = useState(0);
+  const [updateSalePriceOnReceive, setUpdateSalePriceOnReceive] = useState(true);
 
   // Expenses (landed cost): can be edited for any non-cancelled PO
   const [expenses, setExpenses] = useState<POExpenseRow[]>([]);
@@ -145,39 +249,41 @@ export default function PurchaseOrderForm() {
   const [paymentAmount, setPaymentAmount] = useState<number | null>(null);
   const [paymentMethod, setPaymentMethod] = useState<PoPaymentMethod>('cash');
   const [paymentNote, setPaymentNote] = useState('');
+  const [paymentScheme, setPaymentScheme] = useState<PoPaymentScheme>('full');
+  const [paymentDueDate, setPaymentDueDate] = useState('');
+  const [installmentSchedule, setInstallmentSchedule] = useState<PoScheduleRow[]>([
+    { seq: 1, due_date: '', amount: 0 },
+  ]);
 
-  // Product search
-  const [searchTerm, setSearchTerm] = useState('');
-  const debouncedSearchTerm = useDebounce(searchTerm.trim(), 250);
-  const [productCandidates, setProductCandidates] = useState<ProductWithCategory[]>([]);
-  const [productSearchLoading, setProductSearchLoading] = useState(false);
-  const productSearchSeqRef = useRef(0);
-  const [itemsSearchTerm, setItemsSearchTerm] = useState('');
+  // Product scan / search
+  const [scanInput, setScanInput] = useState('');
+  const debouncedScanInput = useDebounce(scanInput.trim(), 200);
+  const [scanIndex, setScanIndex] = useState<ProductScanIndex | null>(null);
+  const [scanCatalog, setScanCatalog] = useState<ProductScanIndexEntry[]>([]);
+  const [scanCandidates, setScanCandidates] = useState<ProductScanIndexEntry[]>([]);
+  const [categories, setCategories] = useState<Category[]>([]);
   const [quickAddQty, setQuickAddQty] = useState(1);
-  const [pendingSelectProductId, setPendingSelectProductId] = useState<string | null>(null);
-  const [pendingSelectQty, setPendingSelectQty] = useState(1);
-  const searchInputRef = useRef<HTMLInputElement>(null);
-  const barcodeInputRef = useRef<HTMLInputElement>(null);
+  const scanInputRef = useRef<HTMLInputElement>(null);
+  const [highlightIds, setHighlightIds] = useState<Set<string>>(new Set());
+  const [showBulkAdd, setShowBulkAdd] = useState(false);
+  const [showMoreMeta, setShowMoreMeta] = useState(false);
   /** sale_price / base_unit_cost ratio per line — preserved across bulk tannarx increases */
   const saleMarkupRef = useRef<Map<string, number>>(new Map());
   const [bulkTannarxConfirm, setBulkTannarxConfirm] = useState<number | null>(null);
   const BULK_TANNARX_CONFIRM_MIN_ITEMS = 5;
-  const [barcodeInput, setBarcodeInput] = useState('');
-  // Keep search open by default in NEW purchase order flow (faster product entry)
-  const [showProductSearch, setShowProductSearch] = useState(false);
-  const [showBasicInfo, setShowBasicInfo] = useState(false);
+  const [itemsSearchTerm, setItemsSearchTerm] = useState('');
+  const [supplierPurchasedProducts, setSupplierPurchasedProducts] = useState<ProductScanIndexEntry[]>([]);
+  const [showCreateProductModal, setShowCreateProductModal] = useState(false);
   const [showExpensesPanel, setShowExpensesPanel] = useState(false);
   const [auditFilter, setAuditFilter] = useState<AuditFilterKey>('all');
-
-  const openProductSearch = () => {
-    setShowProductSearch(true);
-    setTimeout(() => searchInputRef.current?.focus(), 100);
-  };
-
-  const [showCreateProductModal, setShowCreateProductModal] = useState(false);
+  const [qtyViolations, setQtyViolations] = useState<
+    Map<string, { receivedQty: number; orderedQty: number }>
+  >(new Map());
 
   const handleProductCreated = (product: ProductWithCategory) => {
-    addProduct(product);
+    registerScanProduct(product);
+    addProduct(product, quickAddQty);
+    clearScanField();
   };
 
   // Supplier modal
@@ -188,9 +294,26 @@ export default function PurchaseOrderForm() {
   const [creatingSupplier, setCreatingSupplier] = useState(false);
 
   const selectedSupplier = suppliers.find((s) => s.id === supplierId) || null;
-  const supplierSettlementCurrency = String(
-    (selectedSupplier as any)?.settlement_currency || 'UZS'
-  ).toUpperCase() as LedgerCurrency;
+  const supplierSettlementCurrency = normalizeCurrency(
+    (selectedSupplier as any)?.settlement_currency,
+    'UZS'
+  ) as LedgerCurrency;
+
+  /** PO invoice currency follows supplier settlement (read-only). */
+  const poCurrency = useMemo((): 'UZS' | 'USD' => {
+    if (supplierId && selectedSupplier) {
+      return supplierSettlementCurrency;
+    }
+    if (isEditMode && existingPO && existingPO.supplier_id === supplierId) {
+      return normalizeCurrency((existingPO as any)?.currency, 'UZS');
+    }
+    return 'UZS';
+  }, [supplierId, selectedSupplier, supplierSettlementCurrency, isEditMode, existingPO]);
+
+  const formatPoMoney = useCallback(
+    (value: number) => formatMoney(value, poCurrency),
+    [poCurrency]
+  );
 
   const clampPercent = (value: number) => Math.max(0, Math.min(100, value));
   const getFxRateSafe = () => {
@@ -211,9 +334,19 @@ export default function PurchaseOrderForm() {
   const roundUzsPrice = (value: number) => Math.round(value);
   const roundUsdPrice = (value: number) => Math.round(value * 100) / 100;
 
+  const getCostUzsForItem = (item: OrderItem) => {
+    const rate = getFxRateSafe();
+    if (poCurrency === 'USD') {
+      const baseUsd = Number(item.base_unit_cost_usd ?? item.unit_cost_usd ?? 0) || 0;
+      if (baseUsd > 0 && rate) return baseUsd * rate;
+      return Number(item.unit_cost ?? item.base_unit_cost ?? 0) || 0;
+    }
+    return Number(item.base_unit_cost ?? item.unit_cost ?? 0) || 0;
+  };
+
   const rememberSaleMarkupRatios = (list: OrderItem[]) => {
     for (const item of list) {
-      const base = Number(item.base_unit_cost ?? 0) || 0;
+      const base = getCostUzsForItem(item);
       const sale = Number(item.sale_price ?? 0) || 0;
       if (base > 0 && sale > 0) {
         saleMarkupRef.current.set(item.product_id, sale / base);
@@ -222,15 +355,22 @@ export default function PurchaseOrderForm() {
   };
 
   const computeItemTotals = (item: OrderItem): OrderItem => {
-    if (currency === 'USD' && !getFxRateSafe()) {
-      return item;
-    }
-
     const qty = Number(item.ordered_qty || 0) || 0;
-    const baseUzs =
-      currency === 'USD'
-        ? Number(item.base_unit_cost_usd || 0) * Number(getFxRateSafe() || 0)
-        : Number(item.base_unit_cost || 0);
+    const rate = getFxRateSafe();
+    let baseUzs: number;
+    let resolvedBaseUsd = 0;
+    if (poCurrency === 'USD') {
+      let baseUsd = Number(item.base_unit_cost_usd ?? NaN);
+      if (!Number.isFinite(baseUsd) || baseUsd < 0) baseUsd = 0;
+      if (baseUsd === 0 && rate) {
+        const legacyUzs = Number(item.base_unit_cost ?? item.unit_cost ?? 0);
+        if (legacyUzs > 0) baseUsd = legacyUzs / rate;
+      }
+      resolvedBaseUsd = baseUsd;
+      baseUzs = rate && baseUsd > 0 ? baseUsd * rate : Number(item.base_unit_cost ?? 0) || 0;
+    } else {
+      baseUzs = Number(item.base_unit_cost ?? item.unit_cost ?? 0);
+    }
 
     const mode = item.discount_mode || (Number(item.discount_percent || 0) > 0 ? 'percent' : 'amount');
     let discountPercent = clampPercent(Number(item.discount_percent || 0));
@@ -250,52 +390,79 @@ export default function PurchaseOrderForm() {
 
     let netUnitUsd: number | null = null;
     let netLineUsd: number | null = null;
-    if (currency === 'USD') {
-      const rate = Number(getFxRateSafe() || 0);
-      const baseUsd = Number(item.base_unit_cost_usd || 0);
-      const discountUsd = rate > 0 ? discountAmountUzs / rate : 0;
-      netUnitUsd = Math.max(0, baseUsd - discountUsd);
+    if (poCurrency === 'USD') {
+      const discountUsd = rate && rate > 0 ? discountAmountUzs / rate : 0;
+      netUnitUsd = Math.max(0, resolvedBaseUsd - discountUsd);
       netLineUsd = netUnitUsd * qty;
     }
 
     return {
       ...item,
+      base_unit_cost: baseUzs,
+      base_unit_cost_usd: poCurrency === 'USD' ? resolvedBaseUsd : null,
       discount_percent: discountPercent,
       discount_amount: discountAmountUzs,
       unit_cost: netUnitUzs,
       line_total: netLineUzs,
-      unit_cost_usd: currency === 'USD' ? netUnitUsd : null,
-      line_total_usd: currency === 'USD' ? netLineUsd : null,
+      unit_cost_usd: poCurrency === 'USD' ? netUnitUsd : null,
+      line_total_usd: poCurrency === 'USD' ? netLineUsd : null,
     };
   };
 
   const getOrderDiscountAmount = (subtotal: number) => {
-    const amount = Number(orderDiscountAmount || 0);
     const percent = clampPercent(Number(orderDiscountPercent || 0));
-    if (orderDiscountMode === 'percent') {
-      return (subtotal * percent) / 100;
-    }
-    return Math.min(amount, subtotal);
+    return (subtotal * percent) / 100;
   };
 
-  // Match PurchaseReceiptForm: new PO currency follows supplier settlement currency
-  useEffect(() => {
-    if (isEditMode || !supplierId) return;
-    const nextCurrency: 'UZS' | 'USD' =
-      supplierSettlementCurrency === 'USD' ? 'USD' : 'UZS';
-    setCurrency(nextCurrency);
-  }, [supplierId, supplierSettlementCurrency, isEditMode]);
+  const buildOrderTotals = (subtotal: number) => {
+    const orderDiscount = getOrderDiscountAmount(subtotal);
+    const afterDiscount = Math.max(0, subtotal - orderDiscount);
+    const tax = (afterDiscount * clampPercent(orderTaxPercent)) / 100;
+    const totalAmount = afterDiscount + Number(summaryExpense || 0) + tax;
+    return { orderDiscount, tax, totalAmount };
+  };
 
-  // Auto-load USD/UZS rate when PO or supplier settlement needs conversion
+  const flashHighlight = (productId: string) => {
+    setHighlightIds((prev) => new Set(prev).add(productId));
+    window.setTimeout(() => {
+      setHighlightIds((prev) => {
+        const next = new Set(prev);
+        next.delete(productId);
+        return next;
+      });
+    }, 1200);
+  };
+
+  const registerScanProduct = (product: ProductWithCategory | ProductScanIndexEntry) => {
+    const entry = {
+      ...product,
+      cost_price:
+        Number((product as ProductScanIndexEntry).cost_price ?? product.purchase_price ?? 0) || 0,
+    } as ProductScanIndexEntry;
+    setScanCatalog((prev) => {
+      if (prev.some((p) => p.id === entry.id)) return prev;
+      return [entry, ...prev];
+    });
+    setScanIndex((prev) => {
+      const base = prev ?? createPurchaseScanIndex([]);
+      registerPurchaseScanProduct(entry, base);
+      return { barcode: new Map(base.barcode), sku: new Map(base.sku) };
+    });
+  };
+
+  const clearScanField = () => {
+    setScanInput('');
+    setScanCandidates([]);
+    setShowCreateProductModal(false);
+    scanInputRef.current?.focus();
+  };
+
+  // Auto-load USD/UZS rate when PO currency is USD
   useEffect(() => {
     const run = async () => {
       if (!supplierId) return;
-      const entry: LedgerCurrency = currency === 'USD' ? 'USD' : 'UZS';
-      const needsFx =
-        entry === 'USD' ||
-        supplierSettlementCurrency === 'USD' ||
-        entry !== supplierSettlementCurrency;
-      if (!needsFx) return;
+      const entry: LedgerCurrency = poCurrency === 'USD' ? 'USD' : 'UZS';
+      if (entry !== 'USD') return;
       if (getFxRateSafe()) return;
       try {
         const row = await getLatestExchangeRate({
@@ -313,13 +480,13 @@ export default function PurchaseOrderForm() {
     };
     void run();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [supplierId, supplierSettlementCurrency, currency, orderDate]);
+  }, [supplierId, supplierSettlementCurrency, poCurrency, orderDate]);
 
-  // Recompute costs when currency or fxRate changes
+  // Recompute costs when poCurrency or fxRate changes
   useEffect(() => {
     setItems((prev) =>
       prev.map((it) => {
-        if (currency === 'USD') {
+        if (poCurrency === 'USD') {
           const rate = getFxRateSafe();
           if (!rate) return it;
           const baseUzs = Number(it.base_unit_cost ?? it.unit_cost ?? 0);
@@ -338,54 +505,125 @@ export default function PurchaseOrderForm() {
         return computeItemTotals({ ...it, base_unit_cost: baseUzs, base_unit_cost_usd: null });
       })
     );
-  }, [currency, fxRate]);
+  }, [poCurrency, fxRate]);
 
   useEffect(() => {
     loadInitialData();
   }, [id]);
 
   useEffect(() => {
-    const term = debouncedSearchTerm;
-    if (!term) {
-      productSearchSeqRef.current += 1;
-      setProductCandidates([]);
-      setProductSearchLoading(false);
-      return;
-    }
-
-    const seq = ++productSearchSeqRef.current;
     let active = true;
-
-    const run = async () => {
-      setProductSearchLoading(true);
+    const loadScanCatalog = async () => {
       try {
-        if (term.length < 2) {
-          const exact =
-            (await getProductByBarcode(term)) ||
-            (await getProductBySku(term));
-          if (!active || productSearchSeqRef.current !== seq) return;
-          setProductCandidates(exact ? [exact] : []);
-          return;
+        const PAGE = 5000;
+        let offset = 0;
+        const all: ProductScanIndexEntry[] = [];
+        while (active) {
+          const batch = await getProductsScanIndex({ limit: PAGE, offset, status: 'all' });
+          if (!batch.length) break;
+          all.push(...batch);
+          if (batch.length < PAGE) break;
+          offset += PAGE;
         }
-
-        const results = await searchProducts(term);
-        if (!active || productSearchSeqRef.current !== seq) return;
-        setProductCandidates(results.slice(0, 30));
+        if (!active) return;
+        setScanCatalog(all);
+        setScanIndex(createPurchaseScanIndex(all));
+        const cats = await getCategories();
+        if (active) setCategories(Array.isArray(cats) ? cats : []);
       } catch {
-        if (!active || productSearchSeqRef.current !== seq) return;
-        setProductCandidates([]);
-      } finally {
-        if (active && productSearchSeqRef.current === seq) {
-          setProductSearchLoading(false);
-        }
+        // catalog optional — resolveProductScan still works
       }
     };
-
-    void run();
+    void loadScanCatalog();
     return () => {
       active = false;
     };
-  }, [debouncedSearchTerm]);
+  }, []);
+
+  useEffect(() => {
+    if (!loading) {
+      scanInputRef.current?.focus();
+    }
+  }, [loading]);
+
+  useEffect(() => {
+    let active = true;
+    const loadSupplierPurchased = async () => {
+      if (!supplierId) {
+        if (active) setSupplierPurchasedProducts([]);
+        return;
+      }
+      try {
+        const rows = await getSupplierPurchaseSummary(supplierId);
+        if (!active) return;
+        const mapped: ProductScanIndexEntry[] = (Array.isArray(rows) ? rows : [])
+          .map((row: any) => {
+            const pid = String(row.product_id || '');
+            if (!pid) return null;
+            const fromCatalog = scanCatalog.find((p) => p.id === pid);
+            const receivedQty = Number(row.total_received_qty ?? 0) || 0;
+            const totalCost = Number(row.total_cost ?? 0) || 0;
+            const avgCost = receivedQty > 0 ? totalCost / receivedQty : 0;
+            return {
+              id: pid,
+              name: String(row.product_name || fromCatalog?.name || pid),
+              sku: String(row.product_sku || fromCatalog?.sku || ''),
+              barcode: fromCatalog?.barcode ?? null,
+              category_id: fromCatalog?.category_id ?? null,
+              cost_price: Number(fromCatalog?.cost_price ?? avgCost) || avgCost,
+              purchase_price: Number(fromCatalog?.purchase_price ?? avgCost) || avgCost,
+              unit: fromCatalog?.unit ?? 'pcs',
+              is_active: fromCatalog?.is_active ?? true,
+            } as ProductScanIndexEntry;
+          })
+          .filter((p): p is ProductScanIndexEntry => p != null);
+        setSupplierPurchasedProducts(mapped);
+      } catch {
+        if (active) setSupplierPurchasedProducts([]);
+      }
+    };
+    void loadSupplierPurchased();
+    return () => {
+      active = false;
+    };
+  }, [supplierId, scanCatalog]);
+
+  useEffect(() => {
+    const term = debouncedScanInput;
+    if (!term || term.length < 2) {
+      setScanCandidates([]);
+      return;
+    }
+    if (scanIndex && lookupPurchaseScan(term, scanIndex)) {
+      setScanCandidates([]);
+      return;
+    }
+    const catalogHits = filterPurchaseCatalog(scanCatalog, term, 8, scanIndex ?? undefined);
+    const supplierHits =
+      supplierId && supplierPurchasedProducts.length
+        ? filterPurchaseCatalog(supplierPurchasedProducts, term, 8)
+        : [];
+    const seen = new Set<string>();
+    const merged: ProductScanIndexEntry[] = [];
+    for (const hit of [...supplierHits, ...catalogHits]) {
+      if (seen.has(hit.id)) continue;
+      seen.add(hit.id);
+      merged.push(hit);
+      if (merged.length >= 8) break;
+    }
+    setScanCandidates(merged);
+  }, [debouncedScanInput, scanCatalog, scanIndex, supplierId, supplierPurchasedProducts]);
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'F2') {
+        e.preventDefault();
+        scanInputRef.current?.focus();
+      }
+    };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, []);
 
   const loadInitialData = async () => {
     try {
@@ -409,11 +647,26 @@ export default function PurchaseOrderForm() {
           const orderSubtotal = Number(poData.subtotal || 0);
           setOrderDiscountAmount(orderDiscount);
           setOrderDiscountPercent(orderSubtotal > 0 ? (orderDiscount / orderSubtotal) * 100 : 0);
-          setOrderDiscountMode('amount');
-          const poCurrency = (((poData as any).currency || 'UZS') as 'UZS' | 'USD');
+          setOrderTaxPercent(Number((poData as any).tax ?? 0) > 0 && orderSubtotal > 0
+            ? (Number((poData as any).tax) / Math.max(1, orderSubtotal - orderDiscount)) * 100
+            : 0);
+          setOrderDiscountMode('percent');
+          const loadedPoCurrency = normalizeCurrency((poData as any).currency, 'UZS');
           const poFxRate = typeof (poData as any).fx_rate === 'number' ? Number((poData as any).fx_rate) : null;
-          setCurrency(poCurrency);
           setFxRate(poFxRate);
+          setPaymentScheme(normalizePaymentScheme((poData as any).payment_scheme));
+          setPaymentDueDate(String((poData as any).payment_due_date || '').slice(0, 10));
+          const loadedSchedule = (poData as any).payment_schedule as PoScheduleRow[] | undefined;
+          if (Array.isArray(loadedSchedule) && loadedSchedule.length > 0) {
+            setInstallmentSchedule(
+              loadedSchedule.map((row, idx) => ({
+                seq: Number(row.seq ?? idx + 1),
+                due_date: String(row.due_date || '').slice(0, 10),
+                amount: Number(row.amount ?? 0),
+                amount_usd: row.amount_usd != null ? Number(row.amount_usd) : null,
+              }))
+            );
+          }
 
           if (poData.items) {
             const rate = Number.isFinite(Number(poFxRate || 0)) && Number(poFxRate) > 0 ? Number(poFxRate) : null;
@@ -428,11 +681,12 @@ export default function PurchaseOrderForm() {
                 }
                 const baseUnitUzs = unitUzs + discountAmount;
                 const baseUnitUsd =
-                  poCurrency === 'USD'
+                  loadedPoCurrency === 'USD'
                     ? (Number.isFinite(unitUsd) && unitUsd > 0 ? unitUsd : rate && unitUzs > 0 ? unitUzs / rate : 0) +
                       (rate ? discountAmount / rate : 0)
                     : null;
                 return computeItemTotals({
+                  id: item.id,
                   product_id: item.product_id,
                   product_name: item.product_name,
                   product_sku: (item as any).product_sku || '',
@@ -481,93 +735,155 @@ export default function PurchaseOrderForm() {
     }
   };
 
-  const addProduct = (product: ProductWithCategory, qtyToAdd = 1) => {
+  const appendProductToItems = (
+    currentItems: OrderItem[],
+    product: ProductWithCategory | ProductScanIndexEntry,
+    qtyToAdd = 1,
+  ): OrderItem[] => {
     const safeQty = Number.isFinite(qtyToAdd) && qtyToAdd > 0 ? qtyToAdd : 1;
-    const existingIndex = items.findIndex((item) => item.product_id === product.id);
+    const { saleUnit, sale_price: unitSalePrice } = getSaleUnitConfig(product as ProductWithCategory);
+    const existingIndex = currentItems.findIndex(
+      (item) => item.product_id === product.id && (item.sale_unit || saleUnit) === saleUnit,
+    );
     if (existingIndex >= 0) {
-      const updated = [...items];
+      const updated = [...currentItems];
       const existing = { ...updated[existingIndex] };
       existing.ordered_qty = Number(existing.ordered_qty || 0) + safeQty;
       updated[existingIndex] = computeItemTotals(existing);
-      setItems(updated);
-      return;
+      return updated;
     }
 
     const rate = getFxRateSafe();
-    const baseUsd =
-      currency === 'USD' && rate ? Number(product.purchase_price) / Number(rate) : null;
-    const baseUzs =
-      currency === 'USD' && rate ? Number(baseUsd || 0) * Number(rate) : product.purchase_price;
+    const purchaseUzs =
+      Number((product as ProductScanIndexEntry).cost_price ?? product.purchase_price ?? 0) || 0;
+    let baseUsd: number | null = null;
+    let baseUzs = purchaseUzs;
+    if (poCurrency === 'USD') {
+      if (rate && purchaseUzs > 0) {
+        baseUsd = purchaseUzs / rate;
+        baseUzs = baseUsd * rate;
+      } else {
+        baseUsd = 0;
+        baseUzs = 0;
+      }
+    }
 
     const newItem: OrderItem = computeItemTotals({
       product_id: product.id,
       product_name: product.name,
       product_sku: product.sku,
+      product_barcode: String((product as { barcode?: string | null }).barcode || '').trim() || null,
       ordered_qty: safeQty,
       base_unit_cost: baseUzs,
-      base_unit_cost_usd: currency === 'USD' ? baseUsd : null,
+      base_unit_cost_usd: poCurrency === 'USD' ? baseUsd : null,
       unit_cost: baseUzs,
-      line_total: baseUzs,
-      unit_cost_usd: currency === 'USD' ? baseUsd : null,
-      line_total_usd: currency === 'USD' ? (baseUsd ?? 0) : null,
+      line_total: baseUzs * safeQty,
+      unit_cost_usd: poCurrency === 'USD' ? baseUsd : null,
+      line_total_usd: poCurrency === 'USD' ? (baseUsd ?? 0) * safeQty : null,
       discount_percent: 0,
       discount_amount: 0,
       discount_mode: 'amount',
-      sale_price: Number(product.sale_price) > 0 ? Number(product.sale_price) : null,
+      sale_unit: saleUnit,
+      sale_price: Number(unitSalePrice) > 0 ? Number(unitSalePrice) : null,
     });
 
-    if (Number(newItem.base_unit_cost ?? 0) > 0 && Number(newItem.sale_price ?? 0) > 0) {
+    if (getCostUzsForItem(newItem) > 0 && Number(newItem.sale_price ?? 0) > 0) {
       saleMarkupRef.current.set(
         newItem.product_id,
-        Number(newItem.sale_price) / Number(newItem.base_unit_cost)
+        Number(newItem.sale_price) / getCostUzsForItem(newItem)
       );
     }
 
-    setItems([newItem, ...items]);
+    return [newItem, ...currentItems];
   };
 
-  const handleBarcodeAdd = async () => {
-    const raw = String(barcodeInput || '').trim();
-    if (!raw) return;
-    try {
-      const byBarcode = await getProductByBarcode(raw);
-      const bySku = byBarcode ? null : await getProductBySku(raw);
-      const product = byBarcode || bySku;
-      if (product) {
-        addProduct(product, quickAddQty);
-        setBarcodeInput('');
-        barcodeInputRef.current?.focus();
-      } else {
-        toast({
-          title: 'Mahsulot topilmadi',
-          description: `"${raw}" shtrix kod yoki SKU bo'yicha mahsulot topilmadi`,
-          variant: 'destructive',
-        });
+  const addProduct = (product: ProductWithCategory | ProductScanIndexEntry, qtyToAdd = 1) => {
+    setItems((prev) => appendProductToItems(prev, product, qtyToAdd));
+    flashHighlight(product.id);
+  };
+
+  const resolveAndAddProduct = useCallback(
+    async (raw: string, qty = quickAddQty) => {
+      const term = String(raw || '').trim();
+      if (!term) return;
+
+      let product: ProductWithCategory | ProductScanIndexEntry | null = null;
+      if (scanIndex) {
+        product = lookupPurchaseScan(term, scanIndex);
       }
-    } catch {
-      toast({
-        title: 'Xatolik',
-        description: 'Mahsulot qidirishda xatolik yuz berdi',
-        variant: 'destructive',
-      });
+      if (!product) {
+        const resolved = await resolveProductScan(getScanLookupKeys(term)).catch(() => null);
+        if (resolved?.product) {
+          product = resolved.product;
+          registerScanProduct(resolved.product);
+        }
+      }
+      if (!product) {
+        const candidates = filterPurchaseCatalog(scanCatalog, term, 8);
+        if (candidates.length === 1) {
+          product = candidates[0];
+        } else if (candidates.length > 1) {
+          setScanCandidates(candidates);
+          return;
+        }
+      }
+      if (product) {
+        addProduct(product, qty);
+        clearScanField();
+        return;
+      }
+      setShowCreateProductModal(true);
+      setScanCandidates([]);
+    },
+    [quickAddQty, scanIndex, scanCatalog, items, poCurrency, fxRate],
+  );
+
+  const handleScanSubmit = () => {
+    void resolveAndAddProduct(scanInput, quickAddQty);
+  };
+
+  const handleScanKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      handleScanSubmit();
+    }
+    if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      setQuickAddQty((q) => q + 1);
+    }
+    if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      setQuickAddQty((q) => Math.max(1, q - 1));
+    }
+    if (e.key === 'Escape') {
+      clearScanField();
     }
   };
 
-  const openInlineSelect = (productId: string) => {
-    setPendingSelectProductId(productId);
-    setPendingSelectQty(Math.max(1, Number(quickAddQty) || 1));
+  const handlePickCandidate = (product: ProductScanIndexEntry) => {
+    addProduct(product, quickAddQty);
+    clearScanField();
   };
 
-  const confirmInlineSelect = (product: ProductWithCategory) => {
-    addProduct(product, pendingSelectQty);
-    setPendingSelectProductId(null);
-    setPendingSelectQty(1);
+  const handleBulkAddMany = (rows: { product: ProductScanIndexEntry; qty: number }[]) => {
+    if (!rows.length) return;
+    setItems((prev) => {
+      let next = prev;
+      for (const row of rows) {
+        next = appendProductToItems(next, row.product, row.qty);
+      }
+      return next;
+    });
+    for (const row of rows) {
+      flashHighlight(row.product.id);
+    }
+    clearScanField();
   };
 
   const updateItem = (
     index: number,
-    field: 'ordered_qty' | 'base_unit_cost' | 'base_unit_cost_usd' | 'discount_percent' | 'discount_amount' | 'sale_price',
-    value: number
+    field: 'ordered_qty' | 'base_unit_cost' | 'base_unit_cost_usd' | 'discount_percent' | 'discount_amount' | 'sale_price' | 'sale_unit',
+    value: number | string
   ) => {
     const updatedItems = [...items];
     const item = { ...updatedItems[index] };
@@ -580,22 +896,36 @@ export default function PurchaseOrderForm() {
       item.discount_mode = 'amount';
     }
 
-    if (field === 'base_unit_cost_usd' && currency === 'USD') {
+    if (field === 'base_unit_cost_usd' && poCurrency === 'USD') {
       const rate = getFxRateSafe();
       if (rate) {
         item.base_unit_cost = Number(value || 0) * rate;
       }
     }
+    if (field === 'base_unit_cost' && poCurrency === 'USD') {
+      const rate = getFxRateSafe();
+      const usd = rate && Number(value || 0) > 0 ? Number(value || 0) / rate : 0;
+      item.base_unit_cost_usd = usd;
+    }
 
     updatedItems[index] = computeItemTotals(item);
+    if (field === 'ordered_qty') {
+      setQtyViolations(new Map());
+    }
     if (field === 'sale_price' || field === 'base_unit_cost' || field === 'base_unit_cost_usd') {
-      const base = Number(updatedItems[index].base_unit_cost ?? 0) || 0;
+      const base = getCostUzsForItem(updatedItems[index]);
       const sale = Number(updatedItems[index].sale_price ?? 0) || 0;
       if (base > 0 && sale > 0) {
         saleMarkupRef.current.set(updatedItems[index].product_id, sale / base);
       }
     }
     setItems(updatedItems);
+  };
+
+  const bumpItemQty = (index: number, delta: number) => {
+    const item = items[index];
+    if (!item) return;
+    updateItem(index, 'ordered_qty', Math.max(0.01, Number(item.ordered_qty || 0) + delta));
   };
 
   const removeItem = (index: number) => {
@@ -612,20 +942,21 @@ export default function PurchaseOrderForm() {
 
   useEffect(() => {
     const subtotal = calculateSubtotal();
-    if (orderDiscountMode === 'percent') {
-      const nextAmount = (subtotal * clampPercent(orderDiscountPercent)) / 100;
-      if (Math.abs(nextAmount - orderDiscountAmount) > 0.01) {
-        setOrderDiscountAmount(nextAmount);
-      }
-    } else {
-      const nextPercent = subtotal > 0 ? (Number(orderDiscountAmount || 0) / subtotal) * 100 : 0;
-      if (Math.abs(nextPercent - orderDiscountPercent) > 0.01) {
-        setOrderDiscountPercent(nextPercent);
-      }
+    const nextAmount = (subtotal * clampPercent(orderDiscountPercent)) / 100;
+    if (Math.abs(nextAmount - orderDiscountAmount) > 0.01) {
+      setOrderDiscountAmount(nextAmount);
     }
-  }, [items, orderDiscountMode, orderDiscountPercent, orderDiscountAmount]);
+  }, [items, orderDiscountPercent]);
 
   const isReadOnly = existingPO && existingPO.status === 'cancelled';
+
+  useBarcodeScanner({
+    enabled: !isReadOnly,
+    whenInputFocused: 'auto',
+    onScan: (code) => {
+      void resolveAndAddProduct(code, quickAddQty);
+    },
+  });
 
   const totalExpenses = expenses.reduce((sum, e) => sum + (Number(e.amount || 0) || 0), 0);
   const hasLandedCosts = totalExpenses > 0;
@@ -695,7 +1026,7 @@ export default function PurchaseOrderForm() {
       return false;
     }
 
-    if (supplierSettlementCurrency === 'USD' && currency !== 'USD') {
+    if (supplierSettlementCurrency === 'USD' && poCurrency !== 'USD') {
       toast({
         title: 'Validatsiya xatosi',
         description: 'USD hisobli yetkazib beruvchi uchun buyurtma USD valyutasida bo‘lishi kerak',
@@ -704,7 +1035,7 @@ export default function PurchaseOrderForm() {
       return false;
     }
 
-    if (currency === 'USD') {
+    if (poCurrency === 'USD') {
       if (!fxRate || !Number.isFinite(Number(fxRate)) || Number(fxRate) <= 0) {
         toast({
           title: 'Validatsiya xatosi',
@@ -725,7 +1056,7 @@ export default function PurchaseOrderForm() {
         return false;
       }
 
-      if (currency === 'USD') {
+      if (poCurrency === 'USD') {
         if (Number(item.base_unit_cost_usd || 0) < 0) {
           toast({
             title: 'Validatsiya xatosi',
@@ -747,7 +1078,7 @@ export default function PurchaseOrderForm() {
 
       const rate = getFxRateSafe();
       const baseUzs =
-        currency === 'USD' ? Number(item.base_unit_cost_usd || 0) * Number(rate || 0) : Number(item.base_unit_cost || 0);
+        poCurrency === 'USD' ? Number(item.base_unit_cost_usd || 0) * Number(rate || 0) : Number(item.base_unit_cost || 0);
       if (Number(item.discount_amount || 0) < 0 || Number(item.discount_percent || 0) < 0) {
         toast({
           title: 'Validatsiya xatosi',
@@ -766,35 +1097,87 @@ export default function PurchaseOrderForm() {
       }
     }
 
-    if (existingPO && (existingPO.items || []).some((it: any) => Number(it.received_qty || 0) > 0)) {
-      const receivedByPid = new Map<string, number>();
-      for (const it of existingPO.items || []) {
-        const pid = String((it as any).product_id || '');
-        if (!pid) continue;
-        receivedByPid.set(pid, (receivedByPid.get(pid) || 0) + Number((it as any).received_qty || 0));
+    if (paymentScheme === 'partial') {
+      const sub = calculateSubtotal();
+      const totals = buildOrderTotals(sub);
+      let orderTotal = totals.totalAmount;
+      if (poCurrency === 'USD') {
+        const orderDiscountUsd = toUsd(totals.orderDiscount);
+        orderTotal = Math.max(
+          0,
+          calculateSubtotalUSD() -
+            Number(orderDiscountUsd || 0) +
+            toUsd(summaryExpense) +
+            toUsd(totals.tax)
+        );
       }
-      const orderedByPid = new Map<string, number>();
-      for (const item of items) {
-        const pid = String(item.product_id || '');
-        if (!pid) continue;
-        orderedByPid.set(pid, (orderedByPid.get(pid) || 0) + Number(item.ordered_qty || 0));
+      const paid = Math.max(0, Number(paymentAmount || 0));
+      const tol = poCurrency === 'USD' ? 0.02 : 1;
+      if (orderTotal - paid > tol && !normalizeDueDate(paymentDueDate)) {
+        toast({
+          title: 'Validatsiya xatosi',
+          description: 'Qisman to\'lov uchun qarz muddatini kiriting',
+          variant: 'destructive',
+        });
+        return false;
       }
-      for (const [pid, rec] of receivedByPid) {
-        if (rec <= 0) continue;
-        const ord = orderedByPid.get(pid) || 0;
-        if (ord < rec - 1e-9) {
-          toast({
-            title: 'Validatsiya xatosi',
-            description:
-              'Har bir mahsulot bo‘yicha jami buyurtma miqdori qabul qilingan miqdordan kam bo‘lmasligi kerak',
-            variant: 'destructive',
-          });
-          return false;
-        }
+    }
+
+    if (paymentScheme === 'installment') {
+      const sub = calculateSubtotal();
+      const { totalAmount: grandForValidate } = buildOrderTotals(sub);
+      const totalValidate =
+        poCurrency === 'USD'
+          ? Math.max(
+              0,
+              calculateSubtotalUSD() -
+                Number(poCurrency === 'USD' ? toUsd(buildOrderTotals(sub).orderDiscount) : 0) +
+                toUsd(summaryExpense) +
+                toUsd(buildOrderTotals(sub).tax)
+            )
+          : grandForValidate;
+      const scheduleCheck = validateInstallmentScheduleSum(
+        installmentSchedule,
+        totalValidate,
+        poCurrency
+      );
+      if (!scheduleCheck.ok) {
+        toast({
+          title: 'Validatsiya xatosi',
+          description: scheduleCheck.error || 'Bo\'lib to\'lash jadvali noto\'g\'ri',
+          variant: 'destructive',
+        });
+        return false;
       }
     }
 
     return true;
+  };
+
+  /** Validate ordered >= received per product — only before confirm/receive. */
+  const validateForReceive = (): boolean => {
+    if (!existingPO?.items?.some((it: any) => Number(it.received_qty || 0) > 0)) {
+      setQtyViolations(new Map());
+      return true;
+    }
+
+    const violations = findPoOrderQtyViolations(items, existingPO.items);
+    if (violations.length === 0) {
+      setQtyViolations(new Map());
+      return true;
+    }
+
+    setQtyViolations(violationsToMap(violations));
+    const names = violations.map((v) => {
+      const row = items.find((i) => i.product_id === v.productId);
+      return row?.product_name || v.productId;
+    });
+    toast({
+      title: 'Validatsiya xatosi',
+      description: `${names.join(', ')}: buyurtma miqdori qabul qilingandan kam (qatorlarni tekshiring)`,
+      variant: 'destructive',
+    });
+    return false;
   };
 
   const canEditExpenses = !isReadOnly;
@@ -959,11 +1342,41 @@ export default function PurchaseOrderForm() {
     }
   };
 
+  const buildPaymentSchemeForSave = () => {
+    const fx = getFxRateSafe();
+    const schedule =
+      paymentScheme === 'installment'
+        ? installmentSchedule.map((row, idx) => {
+            const seq = row.seq ?? idx + 1;
+            if (poCurrency === 'USD') {
+              const usd = Number(row.amount_usd ?? row.amount ?? 0);
+              return {
+                seq,
+                due_date: normalizeDueDate(row.due_date),
+                amount_usd: usd,
+                amount: fx ? usd * fx : 0,
+              };
+            }
+            return {
+              seq,
+              due_date: normalizeDueDate(row.due_date),
+              amount: Number(row.amount ?? 0),
+              amount_usd: null,
+            };
+          })
+        : undefined;
+    return {
+      payment_scheme: paymentScheme,
+      payment_due_date: paymentScheme === 'partial' ? normalizeDueDate(paymentDueDate) : null,
+      payment_schedule: schedule,
+    };
+  };
+
   const buildInitialPaymentForSave = (): Record<string, unknown> | null => {
     const paid = Number(paymentAmount || 0);
     if (!supplierId || paid <= 0) return null;
 
-    const entryCurrency: LedgerCurrency = currency === 'USD' ? 'USD' : 'UZS';
+    const entryCurrency: LedgerCurrency = poCurrency === 'USD' ? 'USD' : 'UZS';
     const ledger = buildSupplierPaymentPayload({
       paid,
       entryCurrency,
@@ -999,7 +1412,7 @@ export default function PurchaseOrderForm() {
     const paid = Number(paymentAmount || 0);
     if (!supplierId || paid <= 0) return;
 
-    const entryCurrency: LedgerCurrency = currency === 'USD' ? 'USD' : 'UZS';
+    const entryCurrency: LedgerCurrency = poCurrency === 'USD' ? 'USD' : 'UZS';
     const initialPayment = buildInitialPaymentForSave();
     if (!initialPayment) return;
 
@@ -1029,7 +1442,7 @@ export default function PurchaseOrderForm() {
     const paid = Number(paymentAmount || 0);
     if (opts?.paymentIncludedInSave) {
       if (paid > 0) {
-        const entryCurrency: LedgerCurrency = currency === 'USD' ? 'USD' : 'UZS';
+        const entryCurrency: LedgerCurrency = poCurrency === 'USD' ? 'USD' : 'UZS';
         paymentSuccessToast(paid, entryCurrency);
       }
       invalidateDashboardQueries(queryClient);
@@ -1040,7 +1453,7 @@ export default function PurchaseOrderForm() {
       navigate('/purchase-orders');
       return;
     }
-    const entryCur: LedgerCurrency = currency === 'USD' ? 'USD' : 'UZS';
+    const entryCur: LedgerCurrency = poCurrency === 'USD' ? 'USD' : 'UZS';
     const missingFx =
       paid > 0 && entryCur !== supplierSettlementCurrency && !getFxRateSafe();
     if (missingFx) {
@@ -1096,6 +1509,7 @@ export default function PurchaseOrderForm() {
     }
     if (existingPO.status === 'received') return;
     if (!validateForm()) return;
+    if (!validateForReceive()) return;
 
     const totalReceived = (existingPO.items || []).reduce(
       (s, it: any) => s + Number(it.received_qty || 0),
@@ -1107,11 +1521,10 @@ export default function PurchaseOrderForm() {
 
       if (totalReceived === 0) {
         const subtotal = calculateSubtotal();
-        const orderDiscount = getOrderDiscountAmount(subtotal);
-        const totalAmount = Math.max(0, subtotal - orderDiscount);
-        const orderDiscountUsd = currency === 'USD' ? toUsd(orderDiscount) : null;
+        const { orderDiscount, tax, totalAmount } = buildOrderTotals(subtotal);
+        const orderDiscountUsd = poCurrency === 'USD' ? toUsd(orderDiscount) : null;
         const totalUsd =
-          currency === 'USD' ? Math.max(0, calculateSubtotalUSD() - Number(orderDiscountUsd || 0)) : null;
+          poCurrency === 'USD' ? Math.max(0, calculateSubtotalUSD() - Number(orderDiscountUsd || 0)) : null;
 
         const existingItems = existingPO?.items || [];
         // `received` is already handled by the early return above, so it cannot
@@ -1131,34 +1544,18 @@ export default function PurchaseOrderForm() {
           reference: purchaseName.trim() || null,
           subtotal,
           discount: orderDiscount,
-          tax: 0,
+          tax,
           total_amount: totalAmount,
-          currency,
-          fx_rate: currency === 'USD' ? fxRate : null,
+          currency: poCurrency,
+          fx_rate: poCurrency === 'USD' ? fxRate : null,
           total_usd: totalUsd,
           status: persistStatus,
           invoice_number: invoiceNumber.trim() || null,
           notes,
+          ...buildPaymentSchemeForSave(),
         };
 
-        const itemsData = items.map((item) => ({
-          received_qty: Number(
-            existingItems.find((it: any) => it.product_id === item.product_id)?.received_qty || 0
-          ),
-          product_id: item.product_id,
-          product_name: item.product_name,
-          ordered_qty: item.ordered_qty,
-          unit_cost: item.unit_cost,
-          line_total: item.line_total,
-          unit_cost_usd: currency === 'USD' ? (item.unit_cost_usd ?? 0) : null,
-          line_total_usd:
-            currency === 'USD'
-              ? (item.line_total_usd ?? Number(item.ordered_qty) * Number(item.unit_cost_usd || 0))
-              : null,
-          discount_amount: Number(item.discount_amount || 0) || 0,
-          discount_percent: Number(item.discount_percent || 0) || 0,
-          sale_price: Number(item.sale_price ?? 0) > 0 ? Number(item.sale_price) : null,
-        }));
+        const itemsData = buildItemsPayloadForSave();
 
         await updatePurchaseOrder(id, purchaseOrderData, itemsData);
         invalidateDashboardQueries(queryClient);
@@ -1230,6 +1627,7 @@ export default function PurchaseOrderForm() {
       setStatus((finalPo.status as PurchaseOrderStatus) || 'draft');
 
       invalidateDashboardQueries(queryClient);
+      setQtyViolations(new Map());
       toast({
         title: 'Muvaffaqiyatli',
         description:
@@ -1254,6 +1652,67 @@ export default function PurchaseOrderForm() {
     }
   };
 
+  const buildItemsPayloadForSave = () => {
+    const existingItems = existingPO?.items || [];
+    const payload = items.map((item) => {
+      const existingMatch = existingItems.find((it: { id?: string; product_id: string }) =>
+        item.id ? it.id === item.id : it.product_id === item.product_id,
+      );
+      const resolvedId = item.id || existingMatch?.id;
+      return {
+        ...(resolvedId ? { id: resolvedId } : {}),
+        received_qty: Number(existingMatch?.received_qty ?? 0),
+        product_id: item.product_id,
+        product_name: item.product_name,
+        product_sku: item.product_sku || '',
+        ordered_qty: item.ordered_qty,
+        unit_cost: item.unit_cost,
+        line_total: item.line_total,
+        unit_cost_usd: poCurrency === 'USD' ? (item.unit_cost_usd ?? 0) : null,
+        line_total_usd:
+          poCurrency === 'USD'
+            ? (item.line_total_usd ?? Number(item.ordered_qty) * Number(item.unit_cost_usd || 0))
+            : null,
+        discount_amount: Number(item.discount_amount || 0) || 0,
+        discount_percent: Number(item.discount_percent || 0) || 0,
+        sale_price:
+          updateSalePriceOnReceive && Number(item.sale_price ?? 0) > 0 ? Number(item.sale_price) : null,
+      };
+    });
+
+    const coveredIds = new Set(payload.filter((row) => row.id).map((row) => String(row.id)));
+    const coveredProductIds = new Set(payload.map((row) => row.product_id));
+
+    for (const ex of existingItems) {
+      const receivedQty = Number((ex as { received_qty?: number }).received_qty ?? 0);
+      if (receivedQty <= 0) continue;
+      const exId = String((ex as { id?: string }).id || '');
+      const exPid = String((ex as { product_id?: string }).product_id || '');
+      if ((exId && coveredIds.has(exId)) || coveredProductIds.has(exPid)) continue;
+
+      payload.push({
+        id: exId || undefined,
+        received_qty: receivedQty,
+        product_id: exPid,
+        product_name: String((ex as { product_name?: string }).product_name || ''),
+        product_sku: String((ex as { product_sku?: string }).product_sku || ''),
+        ordered_qty: Number((ex as { ordered_qty?: number }).ordered_qty ?? receivedQty),
+        unit_cost: Number((ex as { unit_cost?: number }).unit_cost ?? 0),
+        line_total: Number((ex as { line_total?: number }).line_total ?? 0),
+        unit_cost_usd: poCurrency === 'USD' ? Number((ex as { unit_cost_usd?: number }).unit_cost_usd ?? 0) : null,
+        line_total_usd:
+          poCurrency === 'USD'
+            ? Number((ex as { line_total_usd?: number }).line_total_usd ?? 0)
+            : null,
+        discount_amount: Number((ex as { discount_amount?: number }).discount_amount ?? 0) || 0,
+        discount_percent: Number((ex as { discount_percent?: number }).discount_percent ?? 0) || 0,
+        sale_price: null,
+      });
+    }
+
+    return payload;
+  };
+
   const showConfirmReceiveButton =
     isEditMode &&
     !isReadOnly &&
@@ -1267,23 +1726,23 @@ export default function PurchaseOrderForm() {
 
   const handleSave = async (markAsReceived = false): Promise<void> => {
     if (!validateForm()) return;
+    // Draft save and "Saqlash va qabul" never block on ordered < received — only confirm/receive does.
 
     try {
       setLoading(true);
 
       // Calculate subtotal safely
       const subtotal = calculateSubtotal();
-      const orderDiscount = getOrderDiscountAmount(subtotal);
-      const totalAmount = Math.max(0, subtotal - orderDiscount);
-      const orderDiscountUsd = currency === 'USD' ? toUsd(orderDiscount) : null;
+      const { orderDiscount, tax, totalAmount } = buildOrderTotals(subtotal);
+      const orderDiscountUsd = poCurrency === 'USD' ? toUsd(orderDiscount) : null;
       const totalUsd =
-        currency === 'USD' ? Math.max(0, calculateSubtotalUSD() - Number(orderDiscountUsd || 0)) : null;
+        poCurrency === 'USD' ? Math.max(0, calculateSubtotalUSD() - Number(orderDiscountUsd || 0)) : null;
 
       let initialPayment: Record<string, unknown> | null = null;
       let paymentIncludedInSave = false;
       const paidOnSave = Number(paymentAmount || 0);
       if (paidOnSave > 0) {
-        const entryCur: LedgerCurrency = currency === 'USD' ? 'USD' : 'UZS';
+        const entryCur: LedgerCurrency = poCurrency === 'USD' ? 'USD' : 'UZS';
         const missingFx = entryCur !== supplierSettlementCurrency && !getFxRateSafe();
         if (missingFx) {
           toast({
@@ -1310,6 +1769,7 @@ export default function PurchaseOrderForm() {
       }
 
       let poId: string;
+      let savedPO: PurchaseOrderWithDetails | null = null;
 
       if (isEditMode && id) {
         // Update existing PO
@@ -1334,42 +1794,27 @@ export default function PurchaseOrderForm() {
           reference: purchaseName.trim() || null,
           subtotal,
           discount: orderDiscount,
-          tax: 0,
+          tax,
           total_amount: totalAmount,
-          currency,
-          fx_rate: currency === 'USD' ? fxRate : null,
+          currency: poCurrency,
+          fx_rate: poCurrency === 'USD' ? fxRate : null,
           total_usd: totalUsd,
           status: nextStatus,
           invoice_number: invoiceNumber.trim() || null,
           received_by: markAsReceived ? (user?.id || null) : undefined,
           notes,
+          ...buildPaymentSchemeForSave(),
           ...(paymentIncludedInSave && initialPayment
             ? { initial_payment: initialPayment as any }
             : {}),
         };
 
-        const itemsData = items.map((item) => ({
-          // Preserve existing received_qty to avoid wiping partial receipts
-          received_qty: Number(
-            existingItems.find((it: any) => it.product_id === item.product_id)?.received_qty || 0
-          ),
-          product_id: item.product_id,
-          product_name: item.product_name,
-          ordered_qty: item.ordered_qty,
-          unit_cost: item.unit_cost,
-          line_total: item.line_total,
-          unit_cost_usd: currency === 'USD' ? (item.unit_cost_usd ?? 0) : null,
-          line_total_usd:
-            currency === 'USD'
-              ? (item.line_total_usd ?? Number(item.ordered_qty) * Number(item.unit_cost_usd || 0))
-              : null,
-          discount_amount: Number(item.discount_amount || 0) || 0,
-          discount_percent: Number(item.discount_percent || 0) || 0,
-          sale_price: Number(item.sale_price ?? 0) > 0 ? Number(item.sale_price) : null,
-        }));
+        const itemsData = buildItemsPayloadForSave();
 
-        await updatePurchaseOrder(id, purchaseOrderData, itemsData);
+        savedPO = await updatePurchaseOrder(id, purchaseOrderData, itemsData);
         poId = id;
+        setExistingPO(savedPO);
+        setQtyViolations(new Map());
         
         // Invalidate dashboard queries
         invalidateDashboardQueries(queryClient);
@@ -1395,10 +1840,10 @@ export default function PurchaseOrderForm() {
           reference: purchaseName.trim() || null,
           subtotal,
           discount: orderDiscount,
-          tax: 0,
+          tax,
           total_amount: totalAmount,
-          currency,
-          fx_rate: currency === 'USD' ? fxRate : null,
+          currency: poCurrency,
+          fx_rate: poCurrency === 'USD' ? fxRate : null,
           total_usd: totalUsd,
           // For NEW PO: if markAsReceived, create as 'approved' so receipt can process it
           // If NOT markAsReceived, use the selected status (usually 'draft')
@@ -1409,6 +1854,7 @@ export default function PurchaseOrderForm() {
           approved_at: null,
           notes,
           created_by: user?.id || null,
+          ...buildPaymentSchemeForSave(),
           ...(paymentIncludedInSave && initialPayment
             ? { initial_payment: initialPayment as any }
             : {}),
@@ -1423,20 +1869,21 @@ export default function PurchaseOrderForm() {
           received_qty: 0, // Always 0 for new PO - receipt will update it
           unit_cost: item.unit_cost,
           line_total: item.line_total,
-          unit_cost_usd: currency === 'USD' ? (item.unit_cost_usd ?? 0) : null,
+          unit_cost_usd: poCurrency === 'USD' ? (item.unit_cost_usd ?? 0) : null,
           line_total_usd:
-            currency === 'USD'
+            poCurrency === 'USD'
               ? (item.line_total_usd ?? Number(item.ordered_qty) * Number(item.unit_cost_usd || 0))
               : null,
           discount_amount: Number(item.discount_amount || 0) || 0,
           discount_percent: Number(item.discount_percent || 0) || 0,
-          sale_price: Number(item.sale_price ?? 0) > 0 ? Number(item.sale_price) : null,
+          sale_price: salePriceForSave(item),
         }));
 
         const newPO = await createPurchaseOrder(
           purchaseOrderData as Omit<PurchaseOrder, 'id' | 'created_at' | 'updated_at'>,
           itemsData
         );
+        savedPO = newPO;
         poId = newPO.id;
         
         // Invalidate dashboard queries
@@ -1493,63 +1940,61 @@ export default function PurchaseOrderForm() {
       // If marking as received, create receipt to update stock and status
       // This works for both NEW and EXISTING POs
       if (markAsReceived) {
-        // Fetch the created/updated PO to get the actual item IDs
-        const createdPO = await getPurchaseOrderById(poId);
-        const receiptCurrency = currency;
-        const receiptFxRate = receiptCurrency === 'USD' ? getFxRateSafe() : null;
+        let poLines: PoLineForReceipt[] = (savedPO?.items as PoLineForReceipt[] | undefined) || [];
+        if (!poLines.length) {
+          const refreshed = await getPurchaseOrderById(poId);
+          poLines = (refreshed?.items as PoLineForReceipt[] | undefined) || [];
+        }
 
-        const receiptItems = (createdPO.items || []).map((poItem: any) => {
-          const formItem = items.find((fi) => fi.product_id === poItem.product_id);
-          const qty = poItem.ordered_qty - poItem.received_qty;
-          const unitCost = Number(
-            poItem.landed_unit_cost ?? allocationsByProductId.get(poItem.product_id)?.landedUnitCost ?? formItem?.unit_cost ?? poItem.unit_cost ?? 0
-          ) || 0;
-          const unitCostUsd = receiptCurrency === 'USD'
-            ? Number(
-                (receiptFxRate && receiptFxRate > 0 ? unitCost / receiptFxRate : null) ??
-                formItem?.unit_cost_usd ??
-                poItem.unit_cost_usd ??
-                0
-              ) || 0
-            : null;
-          const lineTotalUsd = receiptCurrency === 'USD' && unitCostUsd != null
-            ? qty * unitCostUsd
-            : null;
-          return {
-            purchase_order_item_id: poItem.id,
-            product_id: poItem.product_id,
-            product_name: poItem.product_name,
-            received_qty: qty,
-            unit_cost: unitCost,
-            line_total: qty * unitCost,
-            unit_cost_usd: unitCostUsd,
-            line_total_usd: lineTotalUsd,
-          };
-        }).filter((it: any) => Number(it.received_qty || 0) > 0);
-
-        await createPurchaseReceipt({
-          purchase_order_id: poId,
-          supplier_id: supplierId || null,
-          currency: receiptCurrency,
-          exchange_rate: receiptFxRate,
-          status: 'received',
-          received_at: orderDate,
-          invoice_number: invoiceNumber.trim() || null,
-          created_by: user?.id || null,
-          items: receiptItems,
+        const receiptItems = buildReceiptItemsForReceive(poLines, items, {
+          poCurrency,
+          fxRate: getFxRateSafe(),
+          allocationsByProductId,
         });
 
-        // Invalidate dashboard queries
-        invalidateDashboardQueries(queryClient);
+        if (receiptItems.length === 0) {
+          const allReceived =
+            poLines.length > 0 &&
+            poLines.every(
+              (it) => Number(it.received_qty ?? 0) >= Number(it.ordered_qty ?? 0),
+            );
+          if (allReceived) {
+            toast({
+              title: 'Muvaffaqiyatli',
+              description: 'Buyurtma allaqachon to\'liq qabul qilingan',
+            });
+          } else {
+            throw new Error(
+              'Qabul qilish uchun buyurtma qatorlari topilmadi. Mahsulot bog\'lanishini tekshiring.',
+            );
+          }
+        } else {
+          const receiptCurrency = poCurrency;
+          const receiptFxRate = receiptCurrency === 'USD' ? getFxRateSafe() : null;
 
-        // Emit product update event to refresh inventory pages
-        // This ensures inventory quantities update immediately across all open pages
-        productUpdateEmitter.emit();
+          await createPurchaseReceipt({
+            purchase_order_id: poId,
+            supplier_id: supplierId || null,
+            currency: receiptCurrency,
+            exchange_rate: receiptFxRate,
+            status: 'received',
+            received_at: orderDate,
+            invoice_number: invoiceNumber.trim() || null,
+            created_by: user?.id || null,
+            items: receiptItems,
+          });
 
-        toast({
-          title: 'Muvaffaqiyatli',
-          description: 'Ombor muvaffaqiyatli yangilandi',
-        });
+          // Invalidate dashboard queries
+          invalidateDashboardQueries(queryClient);
+
+          // Emit product update event to refresh inventory pages
+          productUpdateEmitter.emit();
+
+          toast({
+            title: 'Muvaffaqiyatli',
+            description: 'Ombor muvaffaqiyatli yangilandi',
+          });
+        }
       }
 
       await finalizeSaveWithOptionalPayment(poId, { paymentIncludedInSave });
@@ -1615,15 +2060,15 @@ export default function PurchaseOrderForm() {
 
   const getMarginPercent = (item: OrderItem) => {
     const salePrice = Number(item.sale_price ?? 0) || 0;
-    const cost = getEffectiveUnitCost(item);
+    const cost = getCostUzsForItem(item);
     if (salePrice <= 0 || cost <= 0) return null;
-    return ((salePrice - cost) / cost) * 100;
+    return ((salePrice - cost) / salePrice) * 100;
   };
 
   const getSaleMarkupRatio = (item: OrderItem) => {
     const stored = saleMarkupRef.current.get(item.product_id);
     if (stored != null && Number.isFinite(stored) && stored > 0) return stored;
-    const base = Number(item.base_unit_cost ?? 0) || 0;
+    const base = getCostUzsForItem(item);
     const sale = Number(item.sale_price ?? 0) || 0;
     if (base <= 0 || sale <= 0) return null;
     const ratio = sale / base;
@@ -1646,15 +2091,16 @@ export default function PurchaseOrderForm() {
       rememberSaleMarkupRatios(prev);
       return prev.map((item) => {
         const next = { ...item };
-        if (currency === 'USD') {
+        if (poCurrency === 'USD') {
           const usd = Number(item.base_unit_cost_usd ?? 0) || 0;
           if (usd > 0) {
             next.base_unit_cost_usd = roundUsdPrice(usd * factor);
           }
-        }
-        const base = Number(item.base_unit_cost ?? 0) || 0;
-        if (base > 0) {
-          next.base_unit_cost = roundUzsPrice(base * factor);
+        } else {
+          const base = Number(item.base_unit_cost ?? 0) || 0;
+          if (base > 0) {
+            next.base_unit_cost = roundUzsPrice(base * factor);
+          }
         }
         return computeItemTotals(next);
       });
@@ -1708,27 +2154,55 @@ export default function PurchaseOrderForm() {
 
   const filteredOrderItems = useMemo(() => {
     const term = itemsSearchTerm.trim().toLowerCase();
-    return items.filter((item) => {
-      const name = String(item.product_name || '').toLowerCase();
-      const sku = String(item.product_sku || '').toLowerCase();
-      const searchMatch = !term || name.includes(term) || sku.includes(term);
-      if (!searchMatch) return false;
-      return matchesAuditFilter(item, auditFilter);
-    });
+    return items
+      .map((item, index) => ({ item, index }))
+      .filter(({ item }) => {
+        const name = String(item.product_name || '').toLowerCase();
+        const sku = String(item.product_sku || '').toLowerCase();
+        const barcode = String(item.product_barcode || '').toLowerCase();
+        const searchMatch =
+          !term || name.includes(term) || sku.includes(term) || barcode.includes(term);
+        if (!searchMatch) return false;
+        return matchesAuditFilter(item, auditFilter);
+      });
   }, [items, itemsSearchTerm, auditFilter, allocationsByProductId]);
 
-  const subtotal = calculateSubtotal();
-  const orderDiscountApplied = getOrderDiscountAmount(subtotal);
-  const totalAmount = Math.max(0, subtotal - orderDiscountApplied);
-  const orderDiscountUsd = currency === 'USD' ? toUsd(orderDiscountApplied) : null;
-  const totalUsd = currency === 'USD' ? Math.max(0, calculateSubtotalUSD() - Number(orderDiscountUsd || 0)) : null;
+  const supplierPurchasedIdSet = useMemo(
+    () => new Set(supplierPurchasedProducts.map((p) => p.id)),
+    [supplierPurchasedProducts],
+  );
 
-  const entryCurrency: LedgerCurrency = currency === 'USD' ? 'USD' : 'UZS';
+  const subtotal = calculateSubtotal();
+  const subtotalUsd = calculateSubtotalUSD();
+  const {
+    orderDiscount: orderDiscountApplied,
+    tax: orderTaxApplied,
+    totalAmount,
+  } = buildOrderTotals(subtotal);
+  const totalQty = items.reduce((s, it) => s + Number(it.ordered_qty || 0), 0);
+  const orderDiscountUsd = poCurrency === 'USD' ? toUsd(orderDiscountApplied) : null;
+  const totalUsdForSave =
+    poCurrency === 'USD' ? Math.max(0, subtotalUsd - Number(orderDiscountUsd || 0)) : null;
+  const displayGrandTotal =
+    poCurrency === 'USD'
+      ? Math.max(
+          0,
+          subtotalUsd - Number(orderDiscountUsd || 0) + toUsd(summaryExpense) + toUsd(orderTaxApplied)
+        )
+      : totalAmount;
+  const displaySubtotal = poCurrency === 'USD' ? subtotalUsd : subtotal;
+  const displayOrderDiscount =
+    poCurrency === 'USD' ? Number(orderDiscountUsd || 0) : orderDiscountApplied;
+  const displayTax = poCurrency === 'USD' ? toUsd(orderTaxApplied) : orderTaxApplied;
+  const displayExpense = poCurrency === 'USD' ? toUsd(summaryExpense) : summaryExpense;
+  const warehouseTotalUzs = poCurrency === 'USD' ? totalAmount : null;
+
+  const entryCurrency: LedgerCurrency = poCurrency === 'USD' ? 'USD' : 'UZS';
   const paymentFx = getFxRateSafe();
-  const payableForPayment = currency === 'USD' ? Number(totalUsd || 0) : totalAmount;
+  const payableForPayment = poCurrency === 'USD' ? displayGrandTotal : totalAmount;
   const paymentEntered = Math.max(0, Number(paymentAmount || 0));
   const existingPaidOnPo =
-    currency === 'USD'
+    poCurrency === 'USD'
       ? Number((existingPO as any)?.paid_amount_usd ?? existingPO?.paid_amount ?? 0)
       : Number(existingPO?.paid_amount ?? 0);
   const payableSettlement = convertToSettlementCurrency(
@@ -1755,10 +2229,7 @@ export default function PurchaseOrderForm() {
     paymentEntered > 0 &&
     entryCurrency !== supplierSettlementCurrency &&
     !paymentFx;
-  const formatSettlement = (value: number) =>
-    supplierSettlementCurrency === 'USD'
-      ? `${Number(value || 0).toFixed(2)} USD`
-      : formatMoneyUZS(value);
+  const formatSettlement = (value: number) => formatPoMoney(value);
   const supplierBalanceNow = Number(selectedSupplier?.balance ?? 0);
   const poAlreadyReceived =
     existingPO?.status === 'received' || existingPO?.status === 'partially_received';
@@ -1773,6 +2244,47 @@ export default function PurchaseOrderForm() {
       ? supplierBalanceNow - paymentSettlement
       : null;
 
+  const schemeSummary = computeSchemeSummary({
+    scheme: paymentScheme,
+    total: payableForPayment,
+    payNow: paymentEntered,
+    dueDate:
+      paymentScheme === 'partial'
+        ? paymentDueDate
+        : paymentScheme === 'installment'
+          ? installmentSchedule.map((r) => r.due_date).filter(Boolean).sort()[0] || null
+          : null,
+    currency: poCurrency,
+  });
+  const installmentSumError =
+    paymentScheme === 'installment'
+      ? validateInstallmentScheduleSum(installmentSchedule, displayGrandTotal, poCurrency).error || null
+      : null;
+  const schemeDueLabel =
+    paymentScheme === 'partial' && paymentDueDate
+      ? paymentDueDate
+      : paymentScheme === 'installment'
+        ? (() => {
+            const dates = installmentSchedule.map((r) => r.due_date).filter(Boolean).sort();
+            if (!dates.length) return null;
+            if (dates.length === 1) return dates[0];
+            return `${dates[0]} — ${dates[dates.length - 1]}`;
+          })()
+        : null;
+
+  const receivedQtyByProductId = useMemo(() => {
+    const map = new Map<string, number>();
+    for (const it of existingPO?.items || []) {
+      const pid = String((it as { product_id?: string }).product_id || '');
+      if (!pid) continue;
+      map.set(pid, (map.get(pid) || 0) + Number((it as { received_qty?: number }).received_qty || 0));
+    }
+    return map;
+  }, [existingPO?.items]);
+
+  const salePriceForSave = (item: OrderItem) =>
+    updateSalePriceOnReceive && Number(item.sale_price ?? 0) > 0 ? Number(item.sale_price) : null;
+
   if (loading && !suppliers.length) {
     return (
       <div className="flex justify-center items-center min-h-[400px]">
@@ -1782,1130 +2294,140 @@ export default function PurchaseOrderForm() {
   }
 
   return (
-    <div className="space-y-3 max-w-[1700px] mx-auto pb-6">
-      <div className="flex items-start justify-between gap-3">
-        <div className="flex items-center gap-4">
-          <Button variant="ghost" size="icon" onClick={() => navigate('/purchase-orders')}>
-            <ArrowLeft className="h-4 w-4" />
-          </Button>
-          <div>
-            <h1 className="text-2xl font-semibold leading-tight">
-              {isEditMode ? 'Xarid buyurtmasini tahrirlash' : 'Yangi xarid buyurtmasi'}
-            </h1>
-            <p className="text-muted-foreground text-sm">
-              {isReadOnly
-                ? 'Bu xarid buyurtmasi qabul qilingan va tahrirlash mumkin emas'
-                : 'Xarid buyurtmasini yaratish yoki tahrirlash uchun quyidagi maʼlumotlarni toʻldiring'}
-            </p>
-            <div className="flex flex-wrap items-center gap-2 mt-1 text-[11px]">
-              <span className="rounded-full border bg-muted/40 px-2 py-0.5">
-                Holat: {status}
-              </span>
-              <span className="rounded-full border bg-muted/40 px-2 py-0.5">
-                Mahsulotlar: {items.length}
-              </span>
-              <span className="rounded-full border bg-muted/40 px-2 py-0.5">
-                Valyuta: {currency}
-              </span>
-            </div>
-          </div>
-        </div>
-      </div>
+    <>
+      <PurchaseOrderFormView
+        isEditMode={isEditMode}
+        isReadOnly={!!isReadOnly}
+        status={status}
+        currency={poCurrency}
+        loading={loading}
+        suppliers={suppliers}
+        supplierId={supplierId}
+        onSupplierChange={setSupplierId}
+        onNewSupplier={() => setShowSupplierModal(true)}
+        orderDate={orderDate}
+        onOrderDateChange={setOrderDate}
+        invoiceNumber={invoiceNumber}
+        onInvoiceNumberChange={setInvoiceNumber}
+        showMoreMeta={showMoreMeta}
+        onToggleMoreMeta={() => setShowMoreMeta((v) => !v)}
+        expectedDate={expectedDate}
+        onExpectedDateChange={setExpectedDate}
+        purchaseName={purchaseName}
+        onPurchaseNameChange={setPurchaseName}
+        notes={notes}
+        onNotesChange={setNotes}
+        scanInput={scanInput}
+        onScanInputChange={setScanInput}
+        scanInputRef={scanInputRef}
+        quickAddQty={quickAddQty}
+        onQuickAddQtyChange={setQuickAddQty}
+        onScanSubmit={handleScanSubmit}
+        onScanKeyDown={handleScanKeyDown}
+        scanCandidates={scanCandidates}
+        onPickCandidate={handlePickCandidate}
+        onOpenBulkAdd={() => setShowBulkAdd(true)}
+        onOpenCreateProduct={() => {
+          setScanCandidates([]);
+          setShowCreateProductModal(true);
+        }}
+        supplierPurchasedIdSet={supplierPurchasedIdSet}
+        orderItemRows={filteredOrderItems}
+        itemsSearchTerm={itemsSearchTerm}
+        onItemsSearchTermChange={setItemsSearchTerm}
+        items={items}
+        highlightIds={highlightIds}
+        qtyViolations={qtyViolations}
+        receivedQtyByProductId={receivedQtyByProductId}
+        onUpdateQty={(index, qty) => updateItem(index, 'ordered_qty', qty)}
+        onBumpQty={bumpItemQty}
+        onUpdateCost={(index, cost) =>
+          updateItem(
+            index,
+            poCurrency === 'USD' ? 'base_unit_cost_usd' : 'base_unit_cost',
+            cost
+          )
+        }
+        onUpdateSalePrice={(index, price) => updateItem(index, 'sale_price', price)}
+        onUpdateUnit={(index, unit) => updateItem(index, 'sale_unit', unit)}
+        onRemoveItem={removeItem}
+        getMarginPercent={getMarginPercent}
+        subtotal={displaySubtotal}
+        orderDiscountPercent={orderDiscountPercent}
+        onOrderDiscountPercentChange={setOrderDiscountPercent}
+        summaryExpense={displayExpense}
+        onSummaryExpenseChange={(v) =>
+          setSummaryExpense(poCurrency === 'USD' ? Math.round(v * (getFxRateSafe() || 1)) : v)
+        }
+        orderTaxPercent={orderTaxPercent}
+        onOrderTaxPercentChange={setOrderTaxPercent}
+        grandTotal={displayGrandTotal}
+        orderTaxApplied={displayTax}
+        orderDiscountApplied={displayOrderDiscount}
+        warehouseTotalUzs={warehouseTotalUzs}
+        formatPoMoney={formatPoMoney}
+        fxRate={fxRate}
+        onFxRateChange={setFxRate}
+        showFxRate={poCurrency === 'USD'}
+        supplierSettlementCurrency={supplierSettlementCurrency}
+        supplierBalanceNow={supplierBalanceNow}
+        existingPaidOnPo={existingPaidOnPo}
+        paymentAmount={paymentAmount}
+        onPaymentAmountChange={setPaymentAmount}
+        paymentMethod={paymentMethod}
+        onPaymentMethodChange={setPaymentMethod}
+        paymentNote={paymentNote}
+        onPaymentNoteChange={setPaymentNote}
+        entryCurrency={entryCurrency}
+        paymentFx={paymentFx}
+        payableForPayment={payableForPayment}
+        poRemainingBeforePay={poRemainingBeforePay}
+        needsFxForPayment={needsFxForPayment}
+        paymentEntered={paymentEntered}
+        paymentSettlement={paymentSettlement}
+        poRemainingAfterPay={poRemainingAfterPay}
+        projectedIfReceived={projectedIfReceived}
+        projectedIfDraftOnly={projectedIfDraftOnly}
+        poAlreadyReceived={poAlreadyReceived}
+        onFillFullPayment={() =>
+          setPaymentAmount(
+            convertFromSettlementCurrency(
+              poRemainingBeforePay,
+              supplierSettlementCurrency,
+              entryCurrency,
+              paymentFx
+            )
+          )
+        }
+        formatSettlement={formatSettlement}
+        paymentScheme={paymentScheme}
+        onPaymentSchemeChange={setPaymentScheme}
+        paymentDueDate={paymentDueDate}
+        onPaymentDueDateChange={setPaymentDueDate}
+        installmentSchedule={installmentSchedule}
+        onInstallmentScheduleChange={setInstallmentSchedule}
+        schemePayNow={schemeSummary.payNow}
+        schemeDebt={schemeSummary.debt}
+        schemeDueLabel={schemeDueLabel}
+        installmentSumError={installmentSumError}
+        totalQty={totalQty}
+        updateSalePriceOnReceive={updateSalePriceOnReceive}
+        onUpdateSalePriceOnReceiveChange={setUpdateSalePriceOnReceive}
+        onSaveDraft={() => void handleSave(false)}
+        onSaveReceive={() => void handleSave(true)}
+        onConfirmReceive={showConfirmReceiveButton ? () => void handleConfirmAndReceive() : undefined}
+        showConfirmReceiveButton={!!showConfirmReceiveButton}
+        confirmReceiveLabel={confirmReceiveLabel}
+        onBack={() => navigate('/purchase-orders')}
+      />
 
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-        <div className="lg:col-span-2 space-y-4">
-          {/* Basic Information */}
-          <Card className="shadow-sm">
-            <CardHeader className="pb-2 pt-3 px-4 relative">
-              <div className="flex items-center justify-between">
-                <div>
-                  <CardTitle>Asosiy maʼlumotlar</CardTitle>
-                  <p className="text-xs text-muted-foreground">
-                    Yetkazib beruvchi, sana va buyurtma holatini aniq belgilang.
-                  </p>
-                </div>
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="sm"
-                  onClick={() => setShowBasicInfo((v) => !v)}
-                >
-                  {showBasicInfo ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
-                </Button>
-              </div>
-            </CardHeader>
-            {showBasicInfo && (
-            <CardContent className="space-y-3 px-4 pb-4">
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                <div className="space-y-2">
-                  <Label htmlFor="supplier">
-                    Yetkazib beruvchi <span className="text-destructive">*</span>
-                  </Label>
-                  <div className="flex gap-2">
-                    <Select value={supplierId} onValueChange={setSupplierId} disabled={isReadOnly}>
-                      <SelectTrigger id="supplier" className="flex-1">
-                        <SelectValue placeholder="Yetkazib beruvchini tanlang" />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {suppliers.map((supplier) => (
-                          <SelectItem key={supplier.id} value={supplier.id}>
-                            {supplier.name}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                    {!isReadOnly && (
-                      <Button
-                        type="button"
-                        variant="outline"
-                        size="icon"
-                        onClick={() => setShowSupplierModal(true)}
-                        title="Yangi yetkazib beruvchi qo'shish"
-                      >
-                        <UserPlus className="h-4 w-4" />
-                      </Button>
-                    )}
-                  </div>
-                </div>
-
-                <div className="space-y-2">
-                  <Label htmlFor="order-date">
-                    Buyurtma sanasi <span className="text-destructive">*</span>
-                  </Label>
-                  <Input
-                    id="order-date"
-                    type="date"
-                    value={orderDate}
-                    onChange={(e) => setOrderDate(e.target.value)}
-                    disabled={isReadOnly}
-                  />
-                </div>
-
-                <div className="space-y-2">
-                  <Label htmlFor="expected-date">Kutilayotgan sana</Label>
-                  <Input
-                    id="expected-date"
-                    type="date"
-                    value={expectedDate}
-                    onChange={(e) => setExpectedDate(e.target.value)}
-                    disabled={isReadOnly}
-                  />
-                </div>
-
-                <div className="space-y-2">
-                  <Label htmlFor="purchase-name">Xarid nomi</Label>
-                  <Input
-                    id="purchase-name"
-                    value={purchaseName}
-                    onChange={(e) => setPurchaseName(e.target.value)}
-                    placeholder="Masalan: Avgust oyi zaxira xaridi"
-                    disabled={isReadOnly}
-                  />
-                </div>
-
-                <div className="space-y-2">
-                  <Label htmlFor="invoice-number">Nakladnoy raqami</Label>
-                  <Input
-                    id="invoice-number"
-                    value={invoiceNumber}
-                    onChange={(e) => setInvoiceNumber(e.target.value)}
-                    placeholder="Masalan: INV-2026-00125"
-                    disabled={isReadOnly}
-                  />
-                </div>
-
-                <div className="space-y-2">
-                  <Label htmlFor="status">Holati</Label>
-                  <Select
-                    value={status}
-                    onValueChange={(value) => setStatus(value as PurchaseOrderStatus)}
-                    disabled={isReadOnly || status === 'partially_received' || status === 'received'}
-                  >
-                    <SelectTrigger id="status">
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="draft">Qoralama</SelectItem>
-                      <SelectItem value="approved">Tasdiqlangan</SelectItem>
-                      {status === 'partially_received' && (
-                        <SelectItem value="partially_received" disabled>
-                          Qisman qabul qilingan
-                        </SelectItem>
-                      )}
-                      {status === 'received' && (
-                        <SelectItem value="received" disabled>
-                          Qabul qilingan
-                        </SelectItem>
-                      )}
-                    </SelectContent>
-                  </Select>
-                  {(status === 'approved' || status === 'partially_received' || status === 'received') &&
-                    !isReadOnly && (
-                    <p className="text-xs text-muted-foreground">
-                      {status === 'approved'
-                        ? 'Tasdiqlangan buyurtmani hali omborga kiritilmaguncha tahrirlashingiz mumkin.'
-                        : status === 'partially_received'
-                          ? 'Qabul qilingan qatorlar va miqdorlar saqlanadi; faqat buyurtma miqdori qabuldan kam bo‘lmasligi kerak.'
-                          : 'Qabul qilingan buyurtmada narxlarni, izohni va xarajatlarni tuzatishingiz mumkin. Ombordagi fizik qoldiq o‘zgarmaydi — faqat hujjatdagi miqdorlarni kamaytirsangiz, avval ombor bo‘yicha moslashtirish kerak bo‘lishi mumkin.'}
-                    </p>
-                  )}
-                </div>
-
-                {currency === 'USD' && (
-                  <div className="space-y-2">
-                    <Label htmlFor="fx-rate">Kurs (1 USD = ? UZS)</Label>
-                    <MoneyInput
-                      id="fx-rate"
-                      value={typeof fxRate === 'number' ? fxRate : null}
-                      onValueChange={(val) => setFxRate(Number(val ?? 0))}
-                      placeholder="0"
-                      allowDecimals
-                      allowZero={false}
-                      min={0}
-                      containerClassName="space-y-0"
-                      className="text-right"
-                    />
-                  </div>
-                )}
-              </div>
-
-              <div className="space-y-2">
-                <Label htmlFor="notes">Izohlar</Label>
-                <Textarea
-                  id="notes"
-                  value={notes}
-                  onChange={(e) => setNotes(e.target.value)}
-                  placeholder="Qo'shimcha izoh kiriting..."
-                  rows={2}
-                  disabled={isReadOnly}
-                />
-              </div>
-            </CardContent>
-            )}
-          </Card>
-
-          {/* Products */}
-          <Card className="shadow-sm">
-            <CardHeader className="pb-2 pt-3 px-4">
-              <div className="flex items-center justify-between gap-3 flex-wrap">
-                <div className="flex items-center gap-2">
-                  <CardTitle>Mahsulotlar</CardTitle>
-                  <span className="text-xs text-muted-foreground">
-                    ({items.length} xil)
-                  </span>
-                </div>
-                {!isReadOnly && (
-                  <div className="flex gap-2 flex-wrap">
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={() => setShowCreateProductModal(true)}
-                    >
-                      <Package className="h-4 w-4 mr-2" />
-                      Yangi mahsulot yaratish
-                    </Button>
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={() => setShowProductSearch(!showProductSearch)}
-                    >
-                      <Search className="h-4 w-4 mr-2" />
-                    {showProductSearch ? 'Qidiruvni yashirish' : 'Qidiruvni ko‘rsatish'}
-                  </Button>
-                  </div>
-                )}
-              </div>
-            </CardHeader>
-            <CardContent className="space-y-3 px-4 pb-4">
-              {!isReadOnly && showProductSearch && (
-                <div className="space-y-2">
-                  <div className="grid grid-cols-1 xl:grid-cols-2 gap-2">
-                    <div className="relative flex-1">
-                      <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-                      <Input
-                        ref={searchInputRef}
-                        placeholder="Mahsulotni nom, SKU yoki shtrix kod bo'yicha qidirish..."
-                        value={searchTerm}
-                        onChange={(e) => setSearchTerm(e.target.value)}
-                        onKeyDown={(e) => {
-                          if (e.key === 'Enter' && productCandidates.length > 0) {
-                            e.preventDefault();
-                            addProduct(productCandidates[0], quickAddQty);
-                          }
-                        }}
-                        className="pl-9"
-                      />
-                    </div>
-                    <div className="w-full xl:w-28">
-                      <Input
-                        type="number"
-                        min="1"
-                        step="1"
-                        value={quickAddQty}
-                        onChange={(e) => setQuickAddQty(Math.max(1, Number(e.target.value) || 1))}
-                        className="text-right"
-                        title="Qo'shish soni"
-                      />
-                    </div>
-                    <div className="relative flex-1 flex gap-2 min-w-0">
-                      <div className="relative flex-1 min-w-0">
-                        <Barcode className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-                        <Input
-                          ref={barcodeInputRef}
-                          placeholder="Shtrix kod skanerlash yoki kiriting..."
-                          value={barcodeInput}
-                          onChange={(e) => setBarcodeInput(e.target.value)}
-                          onKeyDown={(e) => {
-                            if (e.key === 'Enter') {
-                              e.preventDefault();
-                              handleBarcodeAdd();
-                            }
-                          }}
-                          className="pl-9"
-                        />
-                      </div>
-                      <Button
-                        type="button"
-                        variant="outline"
-                        size="sm"
-                        onClick={handleBarcodeAdd}
-                        disabled={!barcodeInput.trim()}
-                      >
-                        Qo'shish
-                      </Button>
-                    </div>
-                  </div>
-                  {productSearchLoading && debouncedSearchTerm && (
-                    <p className="text-xs text-muted-foreground px-1">Qidirilmoqda...</p>
-                  )}
-                  {productCandidates.length > 0 && (
-                    <Card className="border-dashed">
-                      <CardContent className="p-2 max-h-48 overflow-y-auto">
-                        {productCandidates.map((product) => (
-                          <div
-                            key={product.id}
-                            className="flex items-center justify-between gap-2 p-2 hover:bg-muted rounded"
-                          >
-                            <div className="min-w-0">
-                              <p className="font-medium">{product.name}</p>
-                              <p className="text-sm text-muted-foreground">
-                                SKU: {product.sku} | Stock: {product.current_stock} {formatUnit(product.unit)}
-                              </p>
-                            </div>
-                            <div className="flex items-center gap-2 shrink-0">
-                              <p className="text-sm font-medium min-w-[90px] text-right">{formatMoneyUZS(product.purchase_price)}</p>
-                              {pendingSelectProductId === product.id ? (
-                                <div className="flex items-center gap-1">
-                                  <Input
-                                    type="number"
-                                    min="1"
-                                    step="1"
-                                    value={pendingSelectQty}
-                                    onChange={(e) => setPendingSelectQty(Math.max(1, Number(e.target.value) || 1))}
-                                    className="h-8 w-16 text-right"
-                                  />
-                                  <Button
-                                    type="button"
-                                    size="sm"
-                                    variant="default"
-                                    onClick={() => confirmInlineSelect(product)}
-                                  >
-                                    Qo‘shish
-                                  </Button>
-                                  <Button
-                                    type="button"
-                                    size="sm"
-                                    variant="ghost"
-                                    onClick={() => setPendingSelectProductId(null)}
-                                  >
-                                    Bekor
-                                  </Button>
-                                </div>
-                              ) : (
-                                <Button
-                                  type="button"
-                                  size="sm"
-                                  variant="outline"
-                                  onClick={() => openInlineSelect(product.id)}
-                                >
-                                  Tanlash
-                                </Button>
-                              )}
-                            </div>
-                          </div>
-                        ))}
-                      </CardContent>
-                    </Card>
-                  )}
-                  {productCandidates.length === 0 && debouncedSearchTerm && !productSearchLoading && (
-                    <p className="text-xs text-muted-foreground px-1">Mos mahsulot topilmadi.</p>
-                  )}
-                </div>
-              )}
-
-              {items.length === 0 ? (
-                <div className="text-center py-8 text-muted-foreground space-y-4">
-                  <p>Hozircha mahsulot qo'shilmagan</p>
-                  {!isReadOnly && <p className="text-sm">Qidiruvni ochib mahsulot tanlang.</p>}
-                </div>
-              ) : (
-                <>
-                  {(auditWarnings.zeroCost.length > 0 ||
-                    auditWarnings.negativeMargin.length > 0 ||
-                    auditWarnings.discountAnomaly.length > 0 ||
-                    auditWarnings.heavyExpenseItems.length > 0) && (
-                    <div className="rounded-md border border-amber-300/60 bg-amber-50/40 px-3 py-2 text-sm space-y-1">
-                      <p className="font-medium inline-flex items-center gap-2">
-                        <AlertTriangle className="h-4 w-4 text-amber-600" />
-                        Audit ogohlantirishlari
-                      </p>
-                      <div className="flex flex-wrap gap-2 pt-1">
-                        <Button size="sm" variant={auditFilter === 'all' ? 'default' : 'outline'} onClick={() => setAuditFilter('all')}>
-                          Barchasi
-                        </Button>
-                        {auditWarnings.zeroCost.length > 0 && (
-                          <Button size="sm" variant={auditFilter === 'zeroCost' ? 'default' : 'outline'} onClick={() => setAuditFilter(auditFilter === 'zeroCost' ? 'all' : 'zeroCost')}>
-                            Tannarx 0 ({auditWarnings.zeroCost.length})
-                          </Button>
-                        )}
-                        {auditWarnings.negativeMargin.length > 0 && (
-                          <Button size="sm" variant={auditFilter === 'negativeMargin' ? 'default' : 'outline'} onClick={() => setAuditFilter(auditFilter === 'negativeMargin' ? 'all' : 'negativeMargin')}>
-                            Manfiy marja ({auditWarnings.negativeMargin.length})
-                          </Button>
-                        )}
-                        {auditWarnings.discountAnomaly.length > 0 && (
-                          <Button size="sm" variant={auditFilter === 'discountAnomaly' ? 'default' : 'outline'} onClick={() => setAuditFilter(auditFilter === 'discountAnomaly' ? 'all' : 'discountAnomaly')}>
-                            Katta chegirma ({auditWarnings.discountAnomaly.length})
-                          </Button>
-                        )}
-                        {auditWarnings.heavyExpenseItems.length > 0 && (
-                          <Button size="sm" variant={auditFilter === 'heavyExpenseItems' ? 'default' : 'outline'} onClick={() => setAuditFilter(auditFilter === 'heavyExpenseItems' ? 'all' : 'heavyExpenseItems')}>
-                            Xarajat baland ({auditWarnings.heavyExpenseItems.length})
-                          </Button>
-                        )}
-                      </div>
-                    </div>
-                  )}
-                  {!isReadOnly && (
-                    <div className="flex flex-wrap items-center gap-2 rounded-md border bg-muted/30 px-3 py-2">
-                      <span className="text-xs font-medium text-muted-foreground shrink-0">Ommaviy:</span>
-                      {[5, 10, 15, 20].map((pct) => (
-                        <Button
-                          key={pct}
-                          type="button"
-                          size="sm"
-                          variant="outline"
-                          onClick={() => requestBulkTannarxIncrease(pct)}
-                        >
-                          Tannarx +{pct}%
-                        </Button>
-                      ))}
-                      <Button
-                        type="button"
-                        size="sm"
-                        variant="secondary"
-                        onClick={recalculateSalePricesByMargin}
-                      >
-                        Sotuv narxini marja bo'yicha qayta hisobla
-                      </Button>
-                    </div>
-                  )}
-                  <div className="relative">
-                    <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-                    <Input
-                      placeholder="Buyurtmadagi mahsulotlarni nom yoki SKU bo'yicha qidirish..."
-                      value={itemsSearchTerm}
-                      onChange={(e) => setItemsSearchTerm(e.target.value)}
-                      className="pl-9"
-                    />
-                  </div>
-                <div className="rounded-md border overflow-auto max-h-[50vh]">
-                <Table>
-                  <TableHeader>
-                    <TableRow>
-                      <TableHead>Mahsulot</TableHead>
-                      <TableHead className="text-right">Miqdor</TableHead>
-                      <TableHead className="text-right">
-                        {currency === 'USD' ? 'Birlik narxi (USD)' : 'Birlik narxi'}
-                      </TableHead>
-                      <TableHead className="text-right">Sotish narxi</TableHead>
-                      <TableHead className="text-right">Marja (%)</TableHead>
-                      <TableHead className="text-right">Chegirma (%)</TableHead>
-                      <TableHead className="text-right">
-                        {currency === 'USD' ? 'Chegirma (USD)' : 'Chegirma'}
-                      </TableHead>
-                      {currency === 'USD' && <TableHead className="text-right">Tannarx (UZS)</TableHead>}
-                      {totalExpenses > 0 && <TableHead className="text-right">Xarajat</TableHead>}
-                      {totalExpenses > 0 && <TableHead className="text-right">Landed tannarx</TableHead>}
-                      <TableHead className="text-right">Jami</TableHead>
-                      {!isReadOnly && <TableHead className="text-right">Amallar</TableHead>}
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {filteredOrderItems.map((item) => {
-                      const index = items.findIndex((it) => it.product_id === item.product_id);
-                      const marginPercent = getMarginPercent(item);
-                      return (
-                      <TableRow
-                        key={index}
-                        className={auditFilter !== 'all' && matchesAuditFilter(item, auditFilter) ? 'bg-amber-50/40' : ''}
-                      >
-                        <TableCell className="font-medium">{item.product_name}</TableCell>
-                        <TableCell className="text-right">
-                          {isReadOnly ? (
-                            item.ordered_qty
-                          ) : (
-                            <Input
-                              type="number"
-                              min="0.01"
-                              step="0.01"
-                              value={item.ordered_qty}
-                              onChange={(e) =>
-                                updateItem(index, 'ordered_qty', Number(e.target.value))
-                              }
-                              className="w-24 text-right"
-                            />
-                          )}
-                        </TableCell>
-                        <TableCell className="text-right">
-                          {currency === 'USD' ? (
-                            isReadOnly ? (
-                              <span className="font-mono">{Number(item.base_unit_cost_usd || 0).toFixed(2)}</span>
-                            ) : (
-                              <MoneyInput
-                                id={`unit-cost-usd-${index}`}
-                                value={
-                                  typeof item.base_unit_cost_usd === 'number'
-                                    ? item.base_unit_cost_usd
-                                    : null
-                                }
-                                onValueChange={(val) =>
-                                  updateItem(index, 'base_unit_cost_usd', Number(val ?? 0))
-                                }
-                                placeholder="0"
-                                allowDecimals
-                                allowZero
-                                min={0}
-                                containerClassName="space-y-0"
-                                className="w-32 text-right"
-                              />
-                            )
-                          ) : isReadOnly ? (
-                            formatMoneyUZS(Number(item.base_unit_cost || 0))
-                          ) : (
-                            <MoneyInput
-                              id={`unit-cost-${index}`}
-                              value={typeof item.base_unit_cost === 'number' ? item.base_unit_cost : null}
-                              onValueChange={(val) => updateItem(index, 'base_unit_cost', Number(val ?? 0))}
-                              placeholder="0"
-                              allowDecimals
-                              allowZero
-                              min={0}
-                              containerClassName="space-y-0"
-                              className="w-32 text-right"
-                            />
-                          )}
-                        </TableCell>
-                        <TableCell className="text-right">
-                          {isReadOnly ? (
-                            Number(item.sale_price ?? 0) > 0 ? formatMoneyUZS(item.sale_price!) : '-'
-                          ) : (
-                            <MoneyInput
-                              id={`sale-price-${index}`}
-                              value={typeof item.sale_price === 'number' && item.sale_price > 0 ? item.sale_price : null}
-                              onValueChange={(val) => updateItem(index, 'sale_price', Number(val ?? 0))}
-                              placeholder="0"
-                              allowDecimals
-                              allowZero
-                              min={0}
-                              containerClassName="space-y-0"
-                              className="w-32 text-right"
-                            />
-                          )}
-                        </TableCell>
-                        <TableCell className="text-right">
-                          {marginPercent == null ? (
-                            <span className="text-muted-foreground">-</span>
-                          ) : (
-                            <span
-                              className={
-                                marginPercent >= 20
-                                  ? 'text-success font-medium'
-                                  : marginPercent >= 10
-                                    ? 'text-warning font-medium'
-                                    : 'text-destructive font-medium'
-                              }
-                            >
-                              {marginPercent.toFixed(1)}%
-                            </span>
-                          )}
-                        </TableCell>
-                        <TableCell className="text-right">
-                          {isReadOnly ? (
-                            <span>{Number(item.discount_percent || 0).toFixed(2)}%</span>
-                          ) : (
-                            <Input
-                              type="number"
-                              min="0"
-                              max="100"
-                              step="0.01"
-                              value={Number(item.discount_percent || 0)}
-                              onChange={(e) => updateItem(index, 'discount_percent', Number(e.target.value))}
-                              className="w-24 text-right"
-                            />
-                          )}
-                        </TableCell>
-                        <TableCell className="text-right">
-                          {isReadOnly ? (
-                            currency === 'USD' ? (
-                              <span className="font-mono">{toUsd(Number(item.discount_amount || 0)).toFixed(2)}</span>
-                            ) : (
-                              formatMoneyUZS(Number(item.discount_amount || 0))
-                            )
-                          ) : currency === 'USD' ? (
-                            <MoneyInput
-                              id={`discount-amount-usd-${index}`}
-                              value={toUsd(Number(item.discount_amount || 0))}
-                              onValueChange={(val) =>
-                                updateItem(index, 'discount_amount', toUzs(Number(val ?? 0)))
-                              }
-                              placeholder="0"
-                              allowDecimals
-                              allowZero
-                              min={0}
-                              containerClassName="space-y-0"
-                              className="w-32 text-right"
-                            />
-                          ) : (
-                            <MoneyInput
-                              id={`discount-amount-${index}`}
-                              value={typeof item.discount_amount === 'number' ? item.discount_amount : null}
-                              onValueChange={(val) => updateItem(index, 'discount_amount', Number(val ?? 0))}
-                              placeholder="0"
-                              allowDecimals
-                              allowZero
-                              min={0}
-                              containerClassName="space-y-0"
-                              className="w-32 text-right"
-                            />
-                          )}
-                        </TableCell>
-                        {currency === 'USD' && (
-                          <TableCell className="text-right">
-                            {formatMoneyUZS(item.unit_cost)}
-                          </TableCell>
-                        )}
-                        {totalExpenses > 0 && (
-                          <TableCell className="text-right">
-                            {formatMoneyUZS(allocationsByProductId.get(item.product_id)?.allocated || 0)}
-                          </TableCell>
-                        )}
-                        {totalExpenses > 0 && (
-                          <TableCell className="text-right">
-                            {formatMoneyUZS(allocationsByProductId.get(item.product_id)?.landedUnitCost || item.unit_cost)}
-                          </TableCell>
-                        )}
-                        <TableCell className="text-right font-medium">
-                          {formatMoneyUZS(item.line_total)}
-                        </TableCell>
-                        {!isReadOnly && (
-                          <TableCell className="text-right">
-                            <Button
-                              variant="ghost"
-                              size="icon"
-                              onClick={() => removeItem(index)}
-                            >
-                              <Trash2 className="h-4 w-4 text-destructive" />
-                            </Button>
-                          </TableCell>
-                        )}
-                      </TableRow>
-                    )})}
-                  </TableBody>
-                </Table>
-                </div>
-                </>
-              )}
-            </CardContent>
-          </Card>
-
-        </div>
-
-        {/* Summary */}
-        <div className="space-y-4 lg:sticky lg:top-3 self-start">
-          <Card className="shadow-sm">
-            <CardHeader className="pb-2 pt-3 px-4">
-              <CardTitle>Buyurtma yig'indisi</CardTitle>
-            </CardHeader>
-            <CardContent className="space-y-3 px-4 pb-4">
-              <div className="space-y-1.5">
-                <div className="flex justify-between text-[13px]">
-                  <span className="text-muted-foreground">Oraliq summa</span>
-                  <span className="font-medium">{formatMoneyUZS(subtotal)}</span>
-                </div>
-                {currency === 'USD' && (
-                  <div className="flex justify-between text-[13px]">
-                    <span className="text-muted-foreground">Oraliq summa (USD)</span>
-                    <span className="font-medium">{calculateSubtotalUSD().toFixed(2)} USD</span>
-                  </div>
-                )}
-                <div className="flex justify-between text-[13px]">
-                  <span className="text-muted-foreground">Xarajatlar</span>
-                  <span className="font-medium">{formatMoneyUZS(totalExpenses)}</span>
-                </div>
-                <div className="flex justify-between text-[13px] items-center gap-2">
-                  <span className="text-muted-foreground">Chegirma (%)</span>
-                  {isReadOnly ? (
-                    <span className="font-medium">{Number(orderDiscountPercent || 0).toFixed(2)}%</span>
-                  ) : (
-                    <Input
-                      type="number"
-                      min="0"
-                      max="100"
-                      step="0.01"
-                      value={Number(orderDiscountPercent || 0)}
-                      onChange={(e) => {
-                        setOrderDiscountMode('percent');
-                        setOrderDiscountPercent(Number(e.target.value));
-                      }}
-                      className="w-24 h-8 text-right"
-                    />
-                  )}
-                </div>
-                <div className="flex justify-between text-[13px] items-center gap-2">
-                  <span className="text-muted-foreground">
-                    {currency === 'USD' ? 'Chegirma (USD)' : 'Chegirma'}
-                  </span>
-                  {isReadOnly ? (
-                    currency === 'USD' ? (
-                      <span className="font-medium">{Number(orderDiscountUsd || 0).toFixed(2)} USD</span>
-                    ) : (
-                      <span className="font-medium">{formatMoneyUZS(orderDiscountApplied)}</span>
-                    )
-                  ) : currency === 'USD' ? (
-                    <MoneyInput
-                      id="order-discount-usd"
-                      value={typeof orderDiscountUsd === 'number' ? orderDiscountUsd : null}
-                      onValueChange={(val) => {
-                        setOrderDiscountMode('amount');
-                        setOrderDiscountAmount(toUzs(Number(val ?? 0)));
-                      }}
-                      placeholder="0"
-                      allowDecimals
-                      allowZero
-                      min={0}
-                      containerClassName="space-y-0"
-                      className="w-24 h-8 text-right"
-                    />
-                  ) : (
-                    <MoneyInput
-                      id="order-discount-amount"
-                      value={typeof orderDiscountAmount === 'number' ? orderDiscountAmount : null}
-                      onValueChange={(val) => {
-                        setOrderDiscountMode('amount');
-                        setOrderDiscountAmount(Number(val ?? 0));
-                      }}
-                      placeholder="0"
-                      allowDecimals
-                      allowZero
-                      min={0}
-                      containerClassName="space-y-0"
-                      className="w-24 h-8 text-right"
-                    />
-                  )}
-                </div>
-                <div className="flex justify-between text-[13px]">
-                  <span className="text-muted-foreground">Soliq</span>
-                  <span className="font-medium">{formatMoneyUZS(0)}</span>
-                </div>
-                <div className="border-t pt-1.5 flex justify-between">
-                  <span className="font-semibold">Jami</span>
-                  <span className="font-bold text-base">{formatMoneyUZS(totalAmount)}</span>
-                </div>
-                {currency === 'USD' && (
-                  <div className="flex justify-between text-[13px]">
-                    <span className="text-muted-foreground">Jami (USD)</span>
-                    <span className="font-medium">{Number(totalUsd || 0).toFixed(2)} USD</span>
-                  </div>
-                )}
-                <div className="flex justify-between text-[13px]">
-                  <span className="text-muted-foreground">Jami + xarajat</span>
-                  <span className="font-semibold">
-                    {formatMoneyUZS(totalAmount + totalExpenses)}
-                  </span>
-                </div>
-              </div>
-
-              {!isReadOnly && supplierId && (
-                <div className="border-t pt-3 space-y-2.5">
-                  <div className="flex items-center gap-2 text-sm font-medium">
-                    <Wallet className="h-4 w-4 text-primary" />
-                    To'lov
-                  </div>
-                  {selectedSupplier && (
-                    <div className="rounded-md border bg-muted/30 px-2.5 py-2 text-[12px] space-y-1">
-                      <div className="flex justify-between">
-                        <span className="text-muted-foreground">Yetkazib beruvchi balansi</span>
-                        <span
-                          className={
-                            supplierBalanceNow > 0
-                              ? 'font-medium text-destructive'
-                              : supplierBalanceNow < 0
-                                ? 'font-medium text-emerald-600'
-                                : 'font-medium'
-                          }
-                        >
-                          {formatSettlement(supplierBalanceNow)}
-                        </span>
-                      </div>
-                      {existingPaidOnPo > 0 && (
-                        <div className="flex justify-between">
-                          <span className="text-muted-foreground">Avval to'langan</span>
-                          <span className="font-medium">
-                            {currency === 'USD'
-                              ? `${existingPaidOnPo.toFixed(2)} USD`
-                              : formatMoneyUZS(existingPaidOnPo)}
-                          </span>
-                        </div>
-                      )}
-                    </div>
-                  )}
-                  {entryCurrency !== supplierSettlementCurrency && (
-                    <p className="text-[11px] text-muted-foreground">
-                      Hisob valyutasi: {supplierSettlementCurrency}
-                      {paymentFx ? ` · kurs ${paymentFx.toLocaleString('uz-UZ')}` : ''}
-                    </p>
-                  )}
-                  {needsFxForPayment && (
-                    <p className="text-[11px] text-destructive">
-                      To'lov uchun USD/UZS kursini kiriting yoki kurs avtomatik yuklanishini kuting.
-                    </p>
-                  )}
-                  <div className="space-y-1.5">
-                    <Label htmlFor="po-payment-amount" className="text-[12px]">
-                      To'lov summasi {entryCurrency === 'USD' ? '(USD)' : '(UZS)'}
-                    </Label>
-                    <div className="flex gap-2">
-                      {currency === 'USD' ? (
-                        <Input
-                          id="po-payment-amount"
-                          type="number"
-                          min={0}
-                          step="0.01"
-                          value={paymentAmount ?? ''}
-                          onChange={(e) =>
-                            setPaymentAmount(e.target.value === '' ? null : Number(e.target.value))
-                          }
-                          placeholder="0"
-                          className="h-9"
-                        />
-                      ) : (
-                        <MoneyInput
-                          id="po-payment-amount"
-                          value={paymentAmount}
-                          onValueChange={(val) => setPaymentAmount(val)}
-                          placeholder="0"
-                          allowDecimals
-                          allowZero
-                          min={0}
-                          containerClassName="flex-1 space-y-0"
-                          className="h-9"
-                        />
-                      )}
-                      <Button
-                        type="button"
-                        variant="outline"
-                        size="sm"
-                        className="shrink-0 h-9"
-                        onClick={() =>
-                          setPaymentAmount(
-                            convertFromSettlementCurrency(
-                              poRemainingBeforePay,
-                              supplierSettlementCurrency,
-                              entryCurrency,
-                              paymentFx
-                            )
-                          )
-                        }
-                        disabled={poRemainingBeforePay <= 0 || needsFxForPayment}
-                      >
-                        To'liq
-                      </Button>
-                    </div>
-                  </div>
-                  <div className="space-y-1.5">
-                    <Label className="text-[12px]">To'lov usuli</Label>
-                    <Select
-                      value={paymentMethod}
-                      onValueChange={(v) => setPaymentMethod(v as PoPaymentMethod)}
-                    >
-                      <SelectTrigger className="h-9">
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="cash">Naqd</SelectItem>
-                        <SelectItem value="card">Karta</SelectItem>
-                        <SelectItem value="transfer">O'tkazma</SelectItem>
-                        <SelectItem value="click">Click</SelectItem>
-                        <SelectItem value="payme">Payme</SelectItem>
-                        <SelectItem value="uzum">Uzum</SelectItem>
-                      </SelectContent>
-                    </Select>
-                  </div>
-                  <div className="space-y-1.5">
-                    <Label htmlFor="po-payment-note" className="text-[12px]">
-                      Izoh (ixtiyoriy)
-                    </Label>
-                    <Input
-                      id="po-payment-note"
-                      value={paymentNote}
-                      onChange={(e) => setPaymentNote(e.target.value)}
-                      placeholder="Masalan: naqd, oldindan to'lov"
-                      className="h-9"
-                    />
-                  </div>
-                  {paymentEntered > 0 && (
-                    <div className="rounded-md border border-primary/20 bg-primary/5 px-2.5 py-2 text-[11px] space-y-1">
-                      <div className="flex justify-between">
-                        <span>Buyurtma jami</span>
-                        <span className="font-medium">
-                          {currency === 'USD'
-                            ? `${payableForPayment.toFixed(2)} USD`
-                            : formatMoneyUZS(payableForPayment)}
-                        </span>
-                      </div>
-                      <div className="flex justify-between">
-                        <span>Farq (hisob valyutasida)</span>
-                        <span
-                          className={
-                            paymentSettlement > poRemainingBeforePay
-                              ? 'font-medium text-emerald-600'
-                              : paymentSettlement < poRemainingBeforePay
-                                ? 'font-medium text-destructive'
-                                : 'font-medium'
-                          }
-                        >
-                          {formatSettlement(paymentSettlement - poRemainingBeforePay)}
-                        </span>
-                      </div>
-                      {poRemainingAfterPay > 0 ? (
-                        <p className="text-destructive">
-                          Buyurtma bo'yicha qoldiq: {formatSettlement(poRemainingAfterPay)}
-                        </p>
-                      ) : poRemainingAfterPay < 0 ? (
-                        <p className="text-emerald-700">
-                          Ortiqcha to'lov (avans): {formatSettlement(Math.abs(poRemainingAfterPay))}
-                        </p>
-                      ) : (
-                        <p className="text-emerald-700">Buyurtma to'liq yopiladi</p>
-                      )}
-                      {projectedIfReceived != null && (
-                        <p>
-                          Qabul qilinganda taxminiy balans:{' '}
-                          <span className="font-semibold">{formatSettlement(projectedIfReceived)}</span>
-                        </p>
-                      )}
-                      {projectedIfDraftOnly != null && !poAlreadyReceived && (
-                        <p className="text-muted-foreground">
-                          Qoralama (qabulsiz) balans:{' '}
-                          <span className="font-medium">{formatSettlement(projectedIfDraftOnly)}</span>
-                        </p>
-                      )}
-                    </div>
-                  )}
-                </div>
-              )}
-
-              {!isReadOnly && (
-                <div className="space-y-1.5">
-                  {hasLandedCosts && (
-                    <div className="rounded-md border border-emerald-300/60 bg-emerald-50/40 px-2 py-1 text-[11px] text-emerald-700">
-                      Landed tannarx qo‘llanadi: qabulda mahsulot tannarxiga xarajatlar taqsimoti qo‘shiladi.
-                    </div>
-                  )}
-                  <Button
-                    className="w-full"
-                    onClick={() => handleSave(false)}
-                    disabled={loading || items.length === 0}
-                  >
-                    <Save className="h-4 w-4 mr-2" />
-                    {isEditMode ? 'Xarid buyurtmasini yangilash' : 'Qoralama sifatida saqlash'}
-                  </Button>
-
-                  {!isEditMode && (
-                    <Button
-                      className="w-full"
-                      variant="secondary"
-                      onClick={() => handleSave(true)}
-                      disabled={loading || items.length === 0}
-                    >
-                      <Package className="h-4 w-4 mr-2" />
-                      Saqlash va qabul qilingan deb belgilash
-                    </Button>
-                  )}
-
-                  {showConfirmReceiveButton && (
-                    <Button
-                      className="w-full"
-                      variant="default"
-                      onClick={() => void handleConfirmAndReceive()}
-                      disabled={loading || items.length === 0}
-                    >
-                      <CheckCircle className="h-4 w-4 mr-2" />
-                      {confirmReceiveLabel}
-                    </Button>
-                  )}
-                </div>
-              )}
-
-              <div className="text-[11px] text-muted-foreground space-y-0.5">
-                <p>• Qoralama: Ombor miqdoriga ta'sir qilmaydi</p>
-                <p>• Qabul qilingan deb belgilash: Ombor qoldig'i darhol yangilanadi</p>
-                <p>• To'lov: kam to'lov — qarz qoladi, ko'p to'lov — yetkazib beruvchi balansida avans</p>
-                {showConfirmReceiveButton && (
-                  <p>• Tasdiqlash: avval saqlaydi, keyin tasdiqlaydi va qoldiqni omborga yozadi</p>
-                )}
-              </div>
-            </CardContent>
-          </Card>
-
-          {/* Expenses (landed cost) */}
-          <Card className="shadow-sm">
-            <CardHeader className="pb-2 pt-3 px-4">
-              <CardTitle>Xarajatlar (tannarxga uriladi)</CardTitle>
-              <Button
-                type="button"
-                variant="ghost"
-                size="sm"
-                className="absolute right-3 top-3"
-                onClick={() => setShowExpensesPanel((v) => !v)}
-              >
-                {showExpensesPanel ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
-              </Button>
-            </CardHeader>
-            {showExpensesPanel && (
-            <CardContent className="space-y-3 px-4 pb-4">
-              {!canEditExpenses && (
-                <p className="text-sm text-muted-foreground">Bekor qilingan buyurtmada xarajatlarni o‘zgartirib bo‘lmaydi.</p>
-              )}
-              {canEditExpenses && existingPO?.status === 'received' && (
-                <p className="text-sm text-muted-foreground">
-                  Qabul qilingan buyurtmada ham xarajat qo‘shish, o‘zgartirish va o‘chirish mumkin.
-                </p>
-              )}
-
-              <div className="grid grid-cols-1 md:grid-cols-4 gap-2">
-                <div className="md:col-span-2 space-y-2">
-                  <Label>Xarajat nomi *</Label>
-                  <Input
-                    value={expenseTitle}
-                    onChange={(e) => setExpenseTitle(e.target.value)}
-                    placeholder="Masalan: Transport, Yuklash, Customs..."
-                    disabled={!canEditExpenses || expenseSaving}
-                  />
-                </div>
-                <div className="space-y-2">
-                  <Label>Summa *</Label>
-                  <MoneyInput
-                    id="po-expense-amount"
-                    value={expenseAmount}
-                    onValueChange={(val) => setExpenseAmount(val)}
-                    placeholder="0"
-                    allowDecimals
-                    allowZero
-                    min={0}
-                    containerClassName="space-y-0"
-                    className="text-right"
-                    disabled={!canEditExpenses || expenseSaving}
-                  />
-                </div>
-                <div className="space-y-2">
-                  <Label>Taqsimlash</Label>
-                  <Select
-                    value={expenseAllocation}
-                    onValueChange={(v) => setExpenseAllocation(v as 'by_value' | 'by_qty')}
-                    disabled={!canEditExpenses || expenseSaving}
-                  >
-                    <SelectTrigger>
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="by_value">Qiymat bo‘yicha</SelectItem>
-                      <SelectItem value="by_qty">Miqdor bo‘yicha</SelectItem>
-                    </SelectContent>
-                  </Select>
-                </div>
-              </div>
-
-              <div className="grid grid-cols-1 md:grid-cols-4 gap-2">
-                <div className="md:col-span-3 space-y-2">
-                  <Label>Izoh</Label>
-                  <Input
-                    value={expenseNotes}
-                    onChange={(e) => setExpenseNotes(e.target.value)}
-                    placeholder="Ixtiyoriy izoh..."
-                    disabled={!canEditExpenses || expenseSaving}
-                  />
-                </div>
-                <div className="flex items-end">
-                  <Button
-                    className="w-full"
-                    variant="outline"
-                    onClick={handleAddExpense}
-                    disabled={!canEditExpenses || expenseSaving}
-                  >
-                    <Plus className="h-4 w-4 mr-2" />
-                    Qo‘shish
-                  </Button>
-                </div>
-              </div>
-
-              <div className="flex justify-between text-sm pt-1">
-                <span className="text-muted-foreground">Jami xarajat:</span>
-                <span className="font-semibold">{formatMoneyUZS(totalExpenses)}</span>
-              </div>
-
-              {expenses.length === 0 ? (
-                <p className="text-sm text-muted-foreground">Hozircha xarajat kiritilmagan</p>
-              ) : (
-                <Table>
-                  <TableHeader>
-                    <TableRow>
-                      <TableHead>Nomi</TableHead>
-                      <TableHead>Taqsimlash</TableHead>
-                      <TableHead className="text-right">Summa</TableHead>
-                      {canEditExpenses && <TableHead className="text-right">Amallar</TableHead>}
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {expenses.map((e) => (
-                      <TableRow key={e.temp_id}>
-                        <TableCell className="font-medium">{e.title}</TableCell>
-                        <TableCell>{e.allocation_method === 'by_qty' ? 'Miqdor bo‘yicha' : 'Qiymat bo‘yicha'}</TableCell>
-                        <TableCell className="text-right">{formatMoneyUZS(Number(e.amount || 0) || 0)}</TableCell>
-                        {canEditExpenses && (
-                          <TableCell className="text-right">
-                            <Button
-                              variant="ghost"
-                              size="icon"
-                              disabled={expenseSaving}
-                              onClick={() => handleDeleteExpense(e)}
-                            >
-                              <Trash2 className="h-4 w-4 text-destructive" />
-                            </Button>
-                          </TableCell>
-                        )}
-                      </TableRow>
-                    ))}
-                  </TableBody>
-                </Table>
-              )}
-            </CardContent>
-            )}
-          </Card>
-        </div>
-      </div>
-
+      <PurchaseOrderBulkAddModal
+        open={showBulkAdd}
+        onOpenChange={setShowBulkAdd}
+        catalog={scanCatalog}
+        categories={categories}
+        onAddMany={handleBulkAddMany}
+      />
       <Dialog
         open={bulkTannarxConfirm != null}
         onOpenChange={(open) => {
@@ -3003,7 +2525,10 @@ export default function PurchaseOrderForm() {
         open={showCreateProductModal}
         onOpenChange={setShowCreateProductModal}
         onCreated={handleProductCreated}
+        initialName={scanInput.trim()}
+        purchaseCostCurrency={poCurrency}
+        fxRate={fxRate}
       />
-    </div>
+    </>
   );
 }

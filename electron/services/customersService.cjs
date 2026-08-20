@@ -14,12 +14,18 @@ const {
   hasCustomerBalanceUsd,
   hasCustomerPaymentCurrency,
   hasCustomerLedgerCurrency,
+  hasCustomerLedgerRef,
   normalizeCustomerCurrency,
   readCustomerBalances,
   readBalanceInCurrency,
   applyCustomerBalanceDelta,
+  applyCustomerBalanceDeltaOnce,
+  computeSaleCreditAmount,
+  assertCreditAmountAligned,
+  paymentAmountInSaleCurrency,
 } = require('../lib/customerBalance.cjs');
 const { normalizePhoneUz, formatPhoneUz } = require('../lib/phoneNormalize.cjs');
+const { recordPaymentFee } = require('../lib/paymentFee.cjs');
 
 /**
  * Customers Service
@@ -57,6 +63,95 @@ class CustomersService {
       phone: formatted || raw,
       phone_normalized,
     };
+  }
+
+  _getSettingRaw(key) {
+    try {
+      const row = this.db.prepare('SELECT value FROM settings WHERE key = ?').get(key);
+      return row?.value ?? null;
+    } catch {
+      return null;
+    }
+  }
+
+  _getCustomerPhoneMode() {
+    const v = String(this._getSettingRaw('customers.phone.mode') || 'recommend').trim().toLowerCase();
+    if (v === 'required' || v === 'optional') return v;
+    return 'recommend';
+  }
+
+  _buildLoyaltyQrPayload(cardCode) {
+    return `LOYALTY:${String(cardCode || '').trim()}`;
+  }
+
+  _buildDefaultLoyaltyCardCode(customerId, customerCode) {
+    const code = String(customerCode || '').trim().toUpperCase();
+    if (code) return `LC-${code}`;
+    return `LC-${String(customerId).slice(0, 12).toUpperCase()}`;
+  }
+
+  /**
+   * Ensure every customer has a stable loyalty card (code + QR payload).
+   * @returns {{ loyalty_card_code: string, qr_payload: string }|null}
+   */
+  ensureLoyaltyCard(customerId, { preferredCode = null, customerCode = null } = {}) {
+    if (!customerId || !this._hasCol('loyalty_card_code')) return null;
+
+    const existing = this.db
+      .prepare(`SELECT loyalty_card_code, loyalty_qr_payload FROM customers WHERE id = ?`)
+      .get(customerId);
+    if (existing?.loyalty_card_code) {
+      return {
+        loyalty_card_code: existing.loyalty_card_code,
+        qr_payload: existing.loyalty_qr_payload || this._buildLoyaltyQrPayload(existing.loyalty_card_code),
+      };
+    }
+
+    let cardCode = preferredCode ? String(preferredCode).trim() : null;
+    if (!cardCode) {
+      const row = this.db.prepare('SELECT code FROM customers WHERE id = ?').get(customerId);
+      cardCode = this._buildDefaultLoyaltyCardCode(customerId, customerCode || row?.code);
+    }
+    const qrPayload = this._buildLoyaltyQrPayload(cardCode);
+    this.db
+      .prepare(
+        `UPDATE customers SET loyalty_card_code = ?, loyalty_qr_payload = ?, updated_at = ? WHERE id = ?`,
+      )
+      .run(cardCode, qrPayload, nowSqlInTimeZone(), customerId);
+    return { loyalty_card_code: cardCode, qr_payload: qrPayload };
+  }
+
+  _findProbablePhonelessDuplicate(name, excludeId = null) {
+    const n = String(name || '').trim();
+    if (!n) return null;
+    let row;
+    if (excludeId) {
+      row = this.db
+        .prepare(
+          `
+          SELECT id, name, code, loyalty_card_code FROM customers
+          WHERE LOWER(TRIM(name)) = LOWER(?)
+            AND (phone IS NULL OR TRIM(COALESCE(phone, '')) = '')
+            AND (phone_normalized IS NULL OR TRIM(COALESCE(phone_normalized, '')) = '')
+            AND id != ?
+          LIMIT 1
+        `,
+        )
+        .get(n, excludeId);
+    } else {
+      row = this.db
+        .prepare(
+          `
+          SELECT id, name, code, loyalty_card_code FROM customers
+          WHERE LOWER(TRIM(name)) = LOWER(?)
+            AND (phone IS NULL OR TRIM(COALESCE(phone, '')) = '')
+            AND (phone_normalized IS NULL OR TRIM(COALESCE(phone_normalized, '')) = '')
+          LIMIT 1
+        `,
+        )
+        .get(n);
+    }
+    return row || null;
   }
 
   _throwDuplicatePhone(existing) {
@@ -334,6 +429,38 @@ class CustomersService {
     return null;
   }
 
+  _applyLinkedOrderPayment(orderId, requestedAmount, payCurrency, payFx) {
+    const order = this.db
+      .prepare(
+        `SELECT id, total_amount, paid_amount, credit_amount, currency, fx_rate, payment_status
+         FROM orders WHERE id = ?`
+      )
+      .get(orderId);
+    if (!order) return;
+    const saleCur = normalizeCustomerCurrency(order.currency);
+    let applied = Number(requestedAmount) || 0;
+    if (payCurrency !== saleCur) {
+      applied = paymentAmountInSaleCurrency(
+        { amount: requestedAmount, currency: payCurrency },
+        saleCur,
+        Number(order.fx_rate || payFx || 0)
+      );
+    }
+    const newPaid = Number(order.paid_amount || 0) + applied;
+    const newCredit = computeSaleCreditAmount(order.total_amount, newPaid, 0, 0.02);
+    assertCreditAmountAligned(order.total_amount, newPaid, newCredit, 0, 0.02);
+    let paymentStatus = 'paid';
+    if (newCredit > 0.02) {
+      paymentStatus = Number(newPaid) > 0.02 ? 'partially_paid' : 'on_credit';
+    }
+    this.db
+      .prepare(
+        `UPDATE orders SET paid_amount = ?, credit_amount = ?, payment_status = ?, updated_at = datetime('now')
+         WHERE id = ?`
+      )
+      .run(newPaid, newCredit, paymentStatus, orderId);
+  }
+
   /**
    * List customers
    */
@@ -533,6 +660,25 @@ class CustomersService {
       : raw;
     if (!normalized) return null;
 
+    if (this._hasCol('loyalty_card_code')) {
+      const byCustomer = this.db
+        .prepare(
+          `
+          SELECT id FROM customers
+          WHERE loyalty_card_code = ? OR loyalty_qr_payload = ? OR loyalty_qr_payload = ?
+          LIMIT 1
+        `,
+        )
+        .get(normalized, raw, `LOYALTY:${normalized}`);
+      if (byCustomer?.id) {
+        try {
+          return this.getById(byCustomer.id);
+        } catch {
+          return null;
+        }
+      }
+    }
+
     const hasBindingTable = this.db
       .prepare(`SELECT name FROM sqlite_master WHERE type='table' AND name='marketplace_customer_bindings'`)
       .get();
@@ -551,7 +697,9 @@ class CustomersService {
     if (!row?.pos_customer_id) return null;
 
     try {
-      return this.getById(row.pos_customer_id);
+      const customer = this.getById(row.pos_customer_id);
+      this.ensureLoyaltyCard(row.pos_customer_id, { preferredCode: normalized });
+      return customer;
     } catch {
       return null;
     }
@@ -559,11 +707,34 @@ class CustomersService {
 
   getLoyaltyCardByCustomerId(customerId) {
     if (!customerId) return null;
+
+    if (this._hasCol('loyalty_card_code')) {
+      const row = this.db
+        .prepare(
+          `
+          SELECT loyalty_card_code, loyalty_qr_payload
+          FROM customers
+          WHERE id = ?
+        `,
+        )
+        .get(customerId);
+      if (row?.loyalty_card_code) {
+        return {
+          loyalty_card_code: row.loyalty_card_code,
+          qr_payload: row.loyalty_qr_payload || this._buildLoyaltyQrPayload(row.loyalty_card_code),
+          marketplace_customer_id: null,
+          created_at: null,
+        };
+      }
+    }
+
     const hasBindingTable = this.db
       .prepare(`SELECT name FROM sqlite_master WHERE type='table' AND name='marketplace_customer_bindings'`)
       .get();
-    if (!hasBindingTable) return null;
-    const row = this.db
+    if (!hasBindingTable) {
+      return this.ensureLoyaltyCard(customerId);
+    }
+    const binding = this.db
       .prepare(
         `
         SELECT loyalty_card_code, qr_payload, marketplace_customer_id, created_at
@@ -573,8 +744,11 @@ class CustomersService {
       `,
       )
       .get(customerId);
-    if (!row) return null;
-    return row;
+    if (binding?.loyalty_card_code) {
+      this.ensureLoyaltyCard(customerId, { preferredCode: binding.loyalty_card_code });
+      return binding;
+    }
+    return this.ensureLoyaltyCard(customerId);
   }
 
   /**
@@ -599,6 +773,19 @@ class CustomersService {
       }
     }
 
+    const phoneMode = this._getCustomerPhoneMode();
+    if (phoneMode === 'required' && !resolvedPhone.phone_normalized) {
+      throw createError(
+        ERROR_CODES.VALIDATION_ERROR,
+        "Telefon raqami majburiy (sozlamalar: customers.phone.mode = required).",
+      );
+    }
+
+    const probableDuplicate =
+      !resolvedPhone.phone_normalized && !data._skipDuplicateCheck
+        ? this._findProbablePhonelessDuplicate(data.name)
+        : null;
+
     const id = data.id || randomUUID();
     const now = nowSqlInTimeZone();
 
@@ -617,7 +804,19 @@ class CustomersService {
 
     try {
       this._insertCustomerRecord(id, code, data, resolvedPhone, now);
-      return this.getById(id);
+      this.ensureLoyaltyCard(id, { customerCode: code });
+      const customer = this.getById(id);
+      if (probableDuplicate && probableDuplicate.id !== id) {
+        customer._probable_duplicate = {
+          id: probableDuplicate.id,
+          name: probableDuplicate.name,
+          code: probableDuplicate.code,
+          loyalty_card_code: probableDuplicate.loyalty_card_code || null,
+          message:
+            "Shu ismli telefonsiz mijoz allaqachon mavjud. Telefon kiriting yoki mavjud kartani ishlating.",
+        };
+      }
+      return customer;
     } catch (error) {
       if (error.code === 'SQLITE_CONSTRAINT_UNIQUE') {
         if (
@@ -793,10 +992,60 @@ class CustomersService {
       return { success: true, softDeleted: true };
     }
 
+    // Soft-delete when balance or payment/ledger history exists (no orders)
+    const balances = readCustomerBalances(this.db, id);
+    const hasBalance =
+      Math.abs(Number(balances.uzs || 0)) > 0.001 || Math.abs(Number(balances.usd || 0)) > 0.001;
+
+    let hasLedger = false;
+    if (this._hasTable('customer_ledger')) {
+      hasLedger = !!this.db
+        .prepare('SELECT 1 AS ok FROM customer_ledger WHERE customer_id = ? LIMIT 1')
+        .get(id);
+    }
+
+    let hasPayments = false;
+    if (this._hasTable('customer_payments')) {
+      hasPayments = !!this.db
+        .prepare('SELECT 1 AS ok FROM customer_payments WHERE customer_id = ? LIMIT 1')
+        .get(id);
+    }
+
+    if (hasBalance || hasLedger || hasPayments) {
+      this.db.prepare('UPDATE customers SET status = ?, updated_at = ? WHERE id = ?').run(
+        'inactive',
+        nowSqlInTimeZone(),
+        id
+      );
+      return { success: true, softDeleted: true, reason: 'has_balance_or_history' };
+    }
+
     // Hard delete
     this.db.prepare('DELETE FROM customers WHERE id = ?').run(id);
 
     return { success: true, softDeleted: false };
+  }
+
+  /**
+   * Aggregate outstanding customer debt (negative balances only).
+   * @returns {{ debt_uzs: number, debt_usd: number }}
+   */
+  getTotalDebt() {
+    const hasUsd = hasCustomerBalanceUsd(this.db);
+    const row = this.db
+      .prepare(
+        `
+        SELECT
+          COALESCE(SUM(CASE WHEN COALESCE(balance,0) < 0 THEN -balance ELSE 0 END), 0) AS debt_uzs
+          ${hasUsd ? `, COALESCE(SUM(CASE WHEN COALESCE(balance_usd,0) < 0 THEN -balance_usd ELSE 0 END), 0) AS debt_usd` : ''}
+        FROM customers
+      `
+      )
+      .get();
+    return {
+      debt_uzs: Number(row?.debt_uzs || 0),
+      debt_usd: Number(hasUsd ? row?.debt_usd || 0 : 0),
+    };
   }
 
   /**
@@ -871,7 +1120,8 @@ class CustomersService {
     operation = 'payment_in',
     shiftId = null,
     currency = 'UZS',
-    fxRate = null
+    fxRate = null,
+    paymentUuid = null
   ) {
     if (customerId && typeof customerId === 'object' && !Array.isArray(customerId)) {
       const p = customerId;
@@ -886,7 +1136,8 @@ class CustomersService {
         p.operation || 'payment_in',
         p.shift_id ?? p.shiftId ?? null,
         p.currency ?? 'UZS',
-        p.fx_rate ?? p.fxRate ?? null
+        p.fx_rate ?? p.fxRate ?? null,
+        p.payment_uuid ?? p.paymentUuid ?? null
       );
     }
 
@@ -925,8 +1176,50 @@ class CustomersService {
       );
     }
 
+    const normalizedPaymentUuid =
+      paymentUuid != null && String(paymentUuid).trim() !== ''
+        ? String(paymentUuid).trim()
+        : null;
+
     // Use transaction for atomicity and consistency
     return this.db.transaction(() => {
+      const paymentId = randomUUID();
+      const paymentNumber = `PAY-${Date.now()}-${paymentId.substring(0, 8).toUpperCase()}`;
+      // Idempotency: client payment_uuid (retry-safe) or fresh paymentId — never order_id
+      // (multiple partial payments against one order must each apply).
+      const ledgerRefId = normalizedPaymentUuid ? `pay-${normalizedPaymentUuid}` : paymentId;
+
+      if (hasCustomerLedgerRef(this.db, ledgerRefId)) {
+        const ledgerRow = this.db
+          .prepare(
+            `SELECT amount, balance_after, ref_no, created_at FROM customer_ledger WHERE ref_id = ? LIMIT 1`
+          )
+          .get(ledgerRefId);
+        const customer = this.getById(normalizedCustomerId);
+        const finalBalances = readCustomerBalances(this.db, normalizedCustomerId);
+        const ledgerAmount = Number(ledgerRow?.amount || 0);
+        const ledgerBalanceAfter = Number(ledgerRow?.balance_after || 0);
+        return {
+          success: true,
+          duplicate: true,
+          customer_id: normalizedCustomerId,
+          currency: payCurrency,
+          old_balance: ledgerBalanceAfter - ledgerAmount,
+          new_balance: ledgerBalanceAfter,
+          old_balance_uzs: finalBalances.uzs - (payCurrency === 'UZS' ? ledgerAmount : 0),
+          new_balance_uzs: finalBalances.uzs,
+          old_balance_usd: finalBalances.usd - (payCurrency === 'USD' ? ledgerAmount : 0),
+          new_balance_usd: finalBalances.usd,
+          requested_amount: requestedAmount,
+          applied_amount: Math.abs(ledgerAmount),
+          signed_amount: ledgerAmount,
+          payment_id: paymentId,
+          payment_number: ledgerRow?.ref_no || paymentNumber,
+          created_at: ledgerRow?.created_at || nowSqlInTimeZone(),
+          operation,
+        };
+      }
+
       // Read current customer balance
       const customer = this.getById(normalizedCustomerId);
       const balancesBefore = readCustomerBalances(this.db, normalizedCustomerId);
@@ -973,32 +1266,21 @@ class CustomersService {
         throw new Error(`CRITICAL: new_balance (${newBalance}) must equal old_balance (${oldBalance}) + signed_amount (${signedAmount})`);
       }
 
-      // Update customer balance atomically using signed amount
-      // This ensures: balance = balance + signedAmount
-      // payment_in: balance = balance + amount (positive)
-      // payment_out: balance = balance - amount (negative)
-      let updateResult;
-      if (hasCustomerBalanceUsd(this.db)) {
-        const uzsDelta = payCurrency === 'UZS' ? signedAmount : 0;
-        const usdDelta = payCurrency === 'USD' ? signedAmount : 0;
-        updateResult = this.db
-          .prepare(
-            `UPDATE customers SET balance = balance + ?, balance_usd = balance_usd + ?, updated_at = ? WHERE id = ?`
-          )
-          .run(uzsDelta, usdDelta, now, normalizedCustomerId);
-      } else {
-        updateResult = this.db
-          .prepare('UPDATE customers SET balance = balance + ?, updated_at = ? WHERE id = ?')
-          .run(signedAmount, now, normalizedCustomerId);
+      // Update customer balance atomically (idempotent per ledger ref_id)
+      const { applied, balances: balancesAfterApply } = applyCustomerBalanceDeltaOnce(
+        this.db,
+        normalizedCustomerId,
+        signedAmount,
+        payCurrency,
+        ledgerRefId,
+        now
+      );
+      if (!applied) {
+        throw new Error(`CRITICAL: balance replay guard failed for ref_id ${ledgerRefId}`);
       }
+      void balancesAfterApply;
 
-      if (updateResult.changes !== 1) {
-        throw new Error(`CRITICAL: Failed to update customer balance. Expected 1 row updated, got ${updateResult.changes}`);
-      }
-
-      // Generate payment ID and number
-      const paymentId = randomUUID();
-      const paymentNumber = `PAY-${Date.now()}-${paymentId.substring(0, 8).toUpperCase()}`;
+      // Generate payment ID and number (ledgerRefId uses paymentId when no order)
       
       // Insert ledger entry (single source of truth for balance changes)
       // Check if customer_ledger table exists before inserting
@@ -1036,7 +1318,7 @@ class CustomersService {
             ledgerId,
             normalizedCustomerId,
             operation,
-            paymentId,
+            ledgerRefId,
             paymentNumber,
             signedAmount,
             newBalance,
@@ -1117,6 +1399,32 @@ class CustomersService {
       this.db
         .prepare(`INSERT INTO customer_payments (${cols.join(', ')}) VALUES (${ph})`)
         .run(...vals);
+
+      if (operation === 'payment_in') {
+        try {
+          recordPaymentFee(this.db, {
+            paymentId,
+            orderId: normalizedOrderId,
+            paymentMethod,
+            paymentAmount: requestedAmount,
+            currency: payCurrency,
+            fxRate: payFx,
+            source: 'customer_payments',
+            createdAt: now,
+          });
+        } catch (feeErr) {
+          console.warn('[CustomersService.receivePayment] payment fee skipped:', feeErr?.message || feeErr);
+        }
+      }
+
+      if (normalizedOrderId && operation === 'payment_in') {
+        this._applyLinkedOrderPayment(
+          normalizedOrderId,
+          requestedAmount,
+          payCurrency,
+          payFx
+        );
+      }
 
       // Return standardized response with all required fields
       const finalBalances = readCustomerBalances(this.db, normalizedCustomerId);

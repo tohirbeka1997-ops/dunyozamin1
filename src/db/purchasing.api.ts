@@ -156,11 +156,14 @@ export const createPurchaseOrder = async (
 export const updatePurchaseOrder = async (
   id: string,
   purchaseOrder: Partial<PurchaseOrder>,
-  orderItems?: Omit<PurchaseOrderItem, 'id' | 'purchase_order_id'>[]
+  orderItems?: (Omit<PurchaseOrderItem, 'id' | 'purchase_order_id'> & { id?: string; received_qty?: number })[]
 ) => {
   if (hasPosApi()) {
     const api = requireElectron();
-    return ipc<any>(api.purchases.updateOrder(id, purchaseOrder, orderItems));
+    const payload = orderItems
+      ? { ...purchaseOrder, items: orderItems }
+      : purchaseOrder;
+    return ipc<any>(api.purchases.updateOrder(id, payload, orderItems));
   }
   await delay();
   
@@ -181,20 +184,34 @@ export const updatePurchaseOrder = async (
   orders[index] = updated;
   savePurchaseOrders(orders);
   
-  // Update items if provided
+  // Update items if provided — full sync by id when possible
   if (orderItems) {
-    const items = getStoredPurchaseOrderItems();
-    // Remove old items
-    const filteredItems = items.filter(item => item.purchase_order_id !== id);
-    // Add new items
-    const newItems: PurchaseOrderItem[] = orderItems.map(item => ({
-      ...item,
-      id: generateId(),
-      purchase_order_id: id,
-      received_qty: 0, // Reset received_qty when updating items
-    }));
-    filteredItems.push(...newItems);
-    savePurchaseOrderItems(filteredItems);
+    const allItems = getStoredPurchaseOrderItems();
+    const prevForPo = allItems.filter((item) => item.purchase_order_id === id);
+    const prevById = new Map(prevForPo.map((row) => [row.id, row]));
+    const keptIds = new Set<string>();
+
+    const nextItems: PurchaseOrderItem[] = [];
+    for (const item of orderItems) {
+      const rowId = (item as { id?: string }).id && prevById.has((item as { id?: string }).id!)
+        ? (item as { id?: string }).id!
+        : null;
+      const receivedQty = rowId
+        ? Number(prevById.get(rowId)?.received_qty || 0)
+        : Number((item as { received_qty?: number }).received_qty || 0);
+      const fullItem: PurchaseOrderItem = {
+        ...item,
+        id: rowId || generateId(),
+        purchase_order_id: id,
+        received_qty: receivedQty,
+      } as PurchaseOrderItem;
+      nextItems.push(fullItem);
+      keptIds.add(fullItem.id);
+    }
+
+    const otherItems = allItems.filter((item) => item.purchase_order_id !== id);
+    otherItems.push(...nextItems);
+    savePurchaseOrderItems(otherItems);
   }
   
   return updated;

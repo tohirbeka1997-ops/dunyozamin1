@@ -4,6 +4,7 @@ import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
+import { Textarea } from '@/components/ui/textarea';
 import {
   Command,
   CommandEmpty,
@@ -48,6 +49,12 @@ import {
   PopoverContent,
   PopoverTrigger,
 } from '@/components/ui/popover';
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from '@/components/ui/tooltip';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { useToast } from '@/hooks/use-toast';
 import { useAuth } from '@/contexts/AuthContext';
@@ -79,8 +86,6 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { invalidateDashboardQueries } from '@/utils/dashboard';
 import {
   searchProductsScreen,
-  getProductByBarcode,
-  getProductBySku,
   getProductById,
   getQuoteById,
   getCustomerById,
@@ -88,6 +93,7 @@ import {
   createCustomer,
   createOrder,
   createCreditOrder,
+  cancelOrder,
   receiveCustomerPayment,
   getOrderById,
   saveHeldOrder,
@@ -96,7 +102,10 @@ import {
   deleteHeldOrder,
   getCategories,
   updateHeldOrderName,
+  isRemoteImportHeldOrder,
   getProducts,
+  getProductsScanIndex,
+  resolveProductScan,
   getSettingsByCategory,
   getPriceTiers,
   getProductTierPrice,
@@ -155,14 +164,19 @@ import {
   FolderTree,
   Star,
   Users,
+  CalendarClock,
 } from 'lucide-react';
 import WaitingOrdersDialog from '@/components/pos/WaitingOrdersDialog';
 import Numpad from '@/components/pos/Numpad';
 import QuickCustomerCreate from '@/components/pos/QuickCustomerCreate';
+import PosProductGrid from '@/components/pos/PosProductGrid';
+import PosCustomerReferrerPanel from '@/components/pos/PosCustomerReferrerPanel';
 import ReceivePaymentModal from '@/components/customers/ReceivePaymentModal';
+import CreditDebtsSheet from '@/components/pos/CreditDebtsSheet';
 import Receipt from '@/components/Receipt';
 import ReceiptPrintView from '@/components/print/ReceiptPrintView';
 import MoneyInput from '@/components/common/MoneyInput';
+import NumberInput from '@/components/common/NumberInput';
 import { openPrintWindow } from '@/lib/print';
 import { renderReceiptTemplate } from '@/lib/receipts/renderReceiptTemplate';
 import { getActiveReceiptTemplate, resolveReceiptTemplateStore } from '@/lib/receipts/templateStore';
@@ -189,13 +203,26 @@ import {
   getSaleUnitConfig,
   toBaseQty,
   getMaxSaleQty,
+  getMaxSaleQtyForCartLine,
   getProbeSaleQtyForUnitPrice,
   readPosReplacesOrderId,
   persistPosReplacesOrderId,
+  resolveReplacesOrderIdForCheckout,
+  computeOrderOutstandingForAmend,
+  netPriorDebtForAmendCheckout,
+  computeCheckoutGrandTotal,
+  resolveLoyaltyRedeemOnOrderImport,
+  isPosAmendCheckoutError,
   cartOrderDiscountBase,
+  computeHeldOrderTotal,
   readPosNavCartDraft,
   persistPosNavCartDraft,
   clearPosNavCartDraft,
+  newCheckoutIdempotencyKey,
+  buildCheckoutIdempotencySignature,
+  getCartLineQuantitySign,
+  canQuickAddWithoutNumpad,
+  getQuickAddSaleQty,
   type PosNavCartDraft,
 } from './posTerminalHelpers';
 import {
@@ -239,6 +266,10 @@ export default function POSTerminal() {
   const [recentCustomerIds, setRecentCustomerIds] = useState<string[]>([]);
   const [customerComboboxOpen, setCustomerComboboxOpen] = useState(false);
   const [customerSearchTerm, setCustomerSearchTerm] = useState('');
+  /** Optional usta — bonus routing only (not payment/debt). */
+  const [selectedBonusReferrer, setSelectedBonusReferrer] = useState<Customer | null>(null);
+  const [bonusReferrerComboboxOpen, setBonusReferrerComboboxOpen] = useState(false);
+  const [bonusReferrerSearchTerm, setBonusReferrerSearchTerm] = useState('');
   const [customerPaymentOpen, setCustomerPaymentOpen] = useState(false);
   const [cartReviewOpen, setCartReviewOpen] = useState(false);
   const [hotkeyGuideOpen, setHotkeyGuideOpen] = useState(false);
@@ -261,14 +292,19 @@ export default function POSTerminal() {
   const [priceTiers, setPriceTiers] = useState<Array<{ id: number; code: string; name: string }>>([]);
   const [paymentDialogOpen, setPaymentDialogOpen] = useState(false);
   const [isProcessingPayment, setIsProcessingPayment] = useState(false);
-  /** Mijozning oldingi qarzini shu safar savat bilan birga yopish (default: yoqilgan) */
-  const [includePriorDebtInPayment, setIncludePriorDebtInPayment] = useState(true);
+  /** Mijozning oldingi qarzini shu safar savat bilan birga yopish (default: o‘chiq — faqat savat) */
+  const [includePriorDebtInPayment, setIncludePriorDebtInPayment] = useState(false);
   const [payments, setPayments] = useState<{ method: PaymentMethod; amount: number }[]>([]);
   const [cashReceived, setCashReceived] = useState<number | null>(null);
   const [editingQuantity, setEditingQuantity] = useState<{ [key: string]: string }>({});
   const [manualPricePopoverProductId, setManualPricePopoverProductId] = useState<string | null>(null);
   const [manualPriceDraft, setManualPriceDraft] = useState<number | null>(null);
-  const [creditAmount, setCreditAmount] = useState<string>('');
+  const [creditAmount, setCreditAmount] = useState<number | null>(null);
+  /** Nasiya / qisman to‘lovda qarz qaytarish sanasi (YYYY-MM-DD) */
+  const [creditDueDate, setCreditDueDate] = useState('');
+  /** Ichki eslatma izohi (kassir/admin uchun) */
+  const [creditReminderNote, setCreditReminderNote] = useState('');
+  const [creditDebtsOpen, setCreditDebtsOpen] = useState(false);
   /** Loyalty points to redeem on current sale (POS); clamped server-side */
   const [loyaltyRedeemPoints, setLoyaltyRedeemPoints] = useState(0);
   const selectedCustomerRef = useRef<Customer | null>(null);
@@ -278,6 +314,8 @@ export default function POSTerminal() {
   const tierCodeRef = useRef<'retail' | 'master' | 'wholesale' | 'marketplace'>('retail');
   const navCartDraftRestoredRef = useRef(false);
   selectedCustomerRef.current = selectedCustomer;
+  const selectedBonusReferrerRef = useRef<Customer | null>(null);
+  selectedBonusReferrerRef.current = selectedBonusReferrer;
   discountRef.current = discount;
   promoCodeRef.current = promoCodeInput;
   saleCurrencyRef.current = saleCurrency;
@@ -293,6 +331,7 @@ export default function POSTerminal() {
         qty_sale: item.qty_sale,
         sale_unit: item.sale_unit,
         ratio_to_base: item.ratio_to_base,
+        amend_original_qty_sale: item.amend_original_qty_sale,
         unit_price: item.unit_price,
         price_tier: item.price_tier,
         price_source: item.price_source,
@@ -302,19 +341,37 @@ export default function POSTerminal() {
         total: item.total,
       })),
       customerId: selectedCustomerRef.current?.id ?? null,
+      bonusReferrerCustomerId: selectedBonusReferrerRef.current?.id ?? null,
       discount: discountRef.current,
       promoCode: promoCodeRef.current || undefined,
       saleCurrency: saleCurrencyRef.current,
       tierCode: tierCodeRef.current,
+      replacesOrderId: importedOrderIdForEditRef.current ?? readPosReplacesOrderId(),
+      importedOrderOutstanding: importedOrderOutstandingDebtRef.current || undefined,
+      replacesOrderNumber: importedOrderNumberForEditRef.current ?? undefined,
+      importedHoldOrderId: importedHoldOrderIdRef.current ?? undefined,
+      importedHoldOrderNumber: importedHoldOrderNumberRef.current ?? undefined,
+      loyaltyRedeemPoints:
+        loyaltyRedeemPointsRef.current > 0 ? loyaltyRedeemPointsRef.current : undefined,
     };
+  }, []);
+
+  /** Intentional cart clear — also drops nav draft so restore effect cannot rehydrate. */
+  const clearCartAndNavDraft = useCallback(() => {
+    clearPosNavCartDraft();
+    navCartDraftRestoredRef.current = true;
+    setCart([]);
   }, []);
 
   const resetCustomerSelection = useCallback(() => {
     const selectedTier = (selectedCustomer as any)?.pricing_tier;
 
     setSelectedCustomer(null);
+    setSelectedBonusReferrer(null);
     setCustomerSearchTerm('');
+    setBonusReferrerSearchTerm('');
     setCustomerComboboxOpen(false);
+    setBonusReferrerComboboxOpen(false);
 
     // Prevent a customer-specific pricing tier from leaking into the next walk-in sale.
     if (selectedTier && currentTierCode === selectedTier) {
@@ -332,6 +389,34 @@ export default function POSTerminal() {
   const [importedWebOrderId, setImportedWebOrderId] = useState<number | null>(null);
   /** Completed POS order loaded for edit (OrderDetail → POS); reversed on checkout via replaces_order_id */
   const [importedOrderIdForEdit, setImportedOrderIdForEdit] = useState<string | null>(null);
+  /** Unpaid portion of the order being amended — excluded from "Oldingi qarz" at checkout */
+  const [importedOrderOutstandingDebt, setImportedOrderOutstandingDebt] = useState(0);
+  /** Mobile/DB hold order imported into cart — void after checkout (not amend) */
+  const [importedHoldOrderId, setImportedHoldOrderId] = useState<string | null>(null);
+  /** Order number labels for amend/hold import banners */
+  const [importedOrderNumberForEdit, setImportedOrderNumberForEdit] = useState<string | null>(null);
+  const [importedHoldOrderNumber, setImportedHoldOrderNumber] = useState<string | null>(null);
+  const importedOrderIdForEditRef = useRef<string | null>(null);
+  const importedOrderOutstandingDebtRef = useRef(0);
+  const importedHoldOrderIdRef = useRef<string | null>(null);
+  const importedOrderNumberForEditRef = useRef<string | null>(null);
+  const importedHoldOrderNumberRef = useRef<string | null>(null);
+  const loyaltyRedeemPointsRef = useRef(0);
+  importedOrderIdForEditRef.current = importedOrderIdForEdit;
+  importedOrderOutstandingDebtRef.current = importedOrderOutstandingDebt;
+  importedHoldOrderIdRef.current = importedHoldOrderId;
+  importedOrderNumberForEditRef.current = importedOrderNumberForEdit;
+  importedHoldOrderNumberRef.current = importedHoldOrderNumber;
+  loyaltyRedeemPointsRef.current = loyaltyRedeemPoints;
+  const clearPosSaleImportContext = useCallback(() => {
+    setImportedWebOrderId(null);
+    setImportedOrderIdForEdit(null);
+    setImportedOrderOutstandingDebt(0);
+    setImportedHoldOrderId(null);
+    setImportedOrderNumberForEdit(null);
+    setImportedHoldOrderNumber(null);
+    persistPosReplacesOrderId(null);
+  }, []);
   const [importQuoteDialogOpen, setImportQuoteDialogOpen] = useState(false);
   const [pendingQuoteImportId, setPendingQuoteImportId] = useState<string | null>(null);
   const [importOrderDialogOpen, setImportOrderDialogOpen] = useState(false);
@@ -348,6 +433,15 @@ export default function POSTerminal() {
   const [quickProductSearch, setQuickProductSearch] = useState('');
   const [favoriteProducts, setFavoriteProducts] = useState<Product[]>([]);
   const [allProducts, setAllProducts] = useState<Product[]>([]);
+  const [scanIndexLoading, setScanIndexLoading] = useState(true);
+  const scanIndexReadyRef = useRef(false);
+  const pendingScansRef = useRef<Array<{ rawInput: string; opts?: { clearSearch?: boolean } }>>([]);
+  const handleBarcodeSearchRef = useRef<
+    (barcode: string, opts?: { clearSearch?: boolean }) => void | Promise<void>
+  >(() => {});
+  const addToCartRef = useRef<
+    (product: Product, quantity?: number, saleUnit?: string) => Promise<void>
+  >(async () => {});
   const [quickProductIds, setQuickProductIds] = useState<string[]>(() => {
     try {
       const saved = localStorage.getItem(POS_QUICK_PRODUCT_IDS_KEY);
@@ -441,6 +535,23 @@ export default function POSTerminal() {
     staleTime: 60_000,
   });
 
+  const { data: creditSettingsRaw } = useQuery({
+    queryKey: ['settings', 'credit', 'pos-due-date'],
+    queryFn: () => getSettingsByCategory('credit'),
+    staleTime: 60_000,
+  });
+
+  const creditDefaultDays = useMemo(() => {
+    const v = Number((creditSettingsRaw || {})['credit.due.default_days']);
+    return Number.isFinite(v) && v > 0 ? Math.floor(v) : 30;
+  }, [creditSettingsRaw]);
+
+  const defaultCreditDueDate = useCallback(() => {
+    const d = new Date();
+    d.setDate(d.getDate() + creditDefaultDays);
+    return d.toISOString().slice(0, 10);
+  }, [creditDefaultDays]);
+
   const loyaltyCfg = useMemo(() => {
     const r = (salesSettingsLoyalty || {}) as Record<string, unknown>;
     const truthy = (v: unknown) => v === true || v === 1 || v === '1' || String(v).toLowerCase() === 'true';
@@ -464,8 +575,16 @@ export default function POSTerminal() {
   }, [selectedCustomer?.id]);
 
   useEffect(() => {
-    setIncludePriorDebtInPayment(true);
+    // Qarz to‘lovi alohida (mijoz kartasi / Qarz to‘lovi). Sotuv checkout — faqat savat.
+    setIncludePriorDebtInPayment(false);
   }, [selectedCustomer?.id]);
+
+  useEffect(() => {
+    if (paymentDialogOpen) {
+      setCreditDueDate(defaultCreditDueDate());
+      setCreditReminderNote('');
+    }
+  }, [paymentDialogOpen, defaultCreditDueDate]);
 
   useEffect(() => {
     if (saleCurrency === 'USD') {
@@ -681,9 +800,19 @@ export default function POSTerminal() {
       if (customer?.id) {
         rememberRecentCustomer(customer.id);
       }
+      if (customer?.id && selectedBonusReferrer?.id === customer.id) {
+        setSelectedBonusReferrer(null);
+        setBonusReferrerSearchTerm('');
+      }
     },
-    [rememberRecentCustomer]
+    [rememberRecentCustomer, selectedBonusReferrer?.id]
   );
+
+  const applySelectedBonusReferrer = useCallback((customer: Customer | null) => {
+    setSelectedBonusReferrer(customer);
+    setBonusReferrerComboboxOpen(false);
+    setBonusReferrerSearchTerm('');
+  }, []);
 
   const printReceipt = useCallback(
     async (data: NonNullable<typeof receiptData>, opts?: { silent?: boolean }) => {
@@ -725,14 +854,22 @@ export default function POSTerminal() {
                 balance: Number((data.customer as any).balance || 0),
               }
             : null,
-          items: (data.items || []).map((it: any, idx: number) => ({
-            id: `${idx}`,
-            product_name: it.product?.name,
-            unit_price: Number(it.unit_price ?? it.product?.sale_price ?? 0),
-            quantity: Number(it.quantity ?? 0),
-            discount_amount: Number(it.discount_amount ?? 0),
-            product: { sku: it.product?.sku },
-          })),
+          items: (data.items || []).map((it: any, idx: number) => {
+            const qty = Number(it.qty_sale ?? it.quantity ?? 0);
+            const lineTotal = Number(it.subtotal ?? 0) - Number(it.discount_amount ?? 0);
+            return {
+              id: `${idx}`,
+              product_name: it.product?.name,
+              unit_price: Number(it.unit_price ?? it.product?.sale_price ?? 0),
+              quantity: qty,
+              qty_sale: qty,
+              line_total: lineTotal,
+              subtotal: Number(it.subtotal ?? 0),
+              discount_amount: Number(it.discount_amount ?? 0),
+              sale_unit: it.sale_unit || it.product?.unit,
+              product: { sku: it.product?.sku },
+            };
+          }),
           payments: [{ payment_method: String(data.paymentMethod || '').toLowerCase(), amount: Number(data.paidAmount || 0) }],
         };
 
@@ -934,6 +1071,30 @@ export default function POSTerminal() {
     [recentCustomerIds, customers]
   );
 
+  const bonusReferrerCandidates = useMemo(() => {
+    const buyerId = selectedCustomer?.id ?? null;
+    return customers
+      .filter((customer) => !isWalkInCustomer(customer))
+      .filter((customer) => customer.id !== buyerId)
+      .filter((customer) => {
+        if (!bonusReferrerSearchTerm) return true;
+        const searchLower = bonusReferrerSearchTerm.toLowerCase();
+        return (
+          customer.name.toLowerCase().includes(searchLower) ||
+          (customer.phone && customer.phone.toLowerCase().includes(searchLower)) ||
+          customer.id.toLowerCase().includes(searchLower)
+        );
+      })
+      .sort((a, b) => {
+        if (!bonusReferrerSearchTerm) {
+          const aMaster = String((a as { pricing_tier?: string }).pricing_tier || '') === 'master' ? 1 : 0;
+          const bMaster = String((b as { pricing_tier?: string }).pricing_tier || '') === 'master' ? 1 : 0;
+          if (aMaster !== bMaster) return bMaster - aMaster;
+        }
+        return a.name.localeCompare(b.name);
+      });
+  }, [customers, selectedCustomer?.id, bonusReferrerSearchTerm, isWalkInCustomer]);
+
   useEffect(() => {
     const tier = (selectedCustomer as any)?.pricing_tier;
     if (tier && tier !== currentTierCode) {
@@ -946,6 +1107,10 @@ export default function POSTerminal() {
       const data = await getCustomers();
       setCustomers(data);
       setSelectedCustomer((prev) => {
+        if (!prev) return prev;
+        return data.find((c) => c.id === prev.id) || prev;
+      });
+      setSelectedBonusReferrer((prev) => {
         if (!prev) return prev;
         return data.find((c) => c.id === prev.id) || prev;
       });
@@ -981,9 +1146,43 @@ export default function POSTerminal() {
     }
   }, [posWarehouseId]);
 
+  const loadScanIndex = useCallback(async () => {
+    try {
+      setScanIndexLoading(true);
+      scanIndexReadyRef.current = false;
+      const PAGE_SIZE = 10000;
+      const results: Product[] = [];
+      let offset = 0;
+      for (;;) {
+        const batch = await getProductsScanIndex({
+          warehouse_id: posWarehouseId,
+          limit: PAGE_SIZE,
+          offset,
+          status: 'active',
+        });
+        results.push(...(batch as Product[]));
+        if (batch.length < PAGE_SIZE) break;
+        offset += PAGE_SIZE;
+      }
+      const nextIndex = buildProductScanIndex(results);
+      scanIndexRef.current = nextIndex;
+      barcodeIndexRef.current = nextIndex.barcode;
+      skuIndexRef.current = nextIndex.sku;
+      scanIndexReadyRef.current = true;
+      setScanIndexLoading(false);
+      const queued = pendingScansRef.current.splice(0);
+      for (const item of queued) {
+        void handleBarcodeSearchRef.current(item.rawInput, item.opts);
+      }
+    } catch (error) {
+      console.error('Error loading scan index:', error);
+      setScanIndexLoading(false);
+    }
+  }, [posWarehouseId]);
+
   const loadAllProducts = useCallback(async () => {
     try {
-      // Load full catalog in pages so barcode index covers every active SKU (not just first 5k).
+      // Full catalog for grid/search display (heavy joins); scan index loads separately via loadScanIndex.
       const PAGE_SIZE = 5000;
       const results: Product[] = [];
       let offset = 0;
@@ -1001,14 +1200,15 @@ export default function POSTerminal() {
         offset += PAGE_SIZE;
       }
       setAllProducts(results);
-      const nextIndex = buildProductScanIndex(results);
-      scanIndexRef.current = nextIndex;
-      barcodeIndexRef.current = nextIndex.barcode;
-      skuIndexRef.current = nextIndex.sku;
     } catch (error) {
       console.error('Error loading all products:', error);
     }
   }, [posWarehouseId]);
+
+  const refreshCatalog = useCallback(async () => {
+    await loadScanIndex();
+    void loadAllProducts();
+  }, [loadScanIndex, loadAllProducts]);
 
   const loadHeldOrders = useCallback(async () => {
     try {
@@ -1023,10 +1223,11 @@ export default function POSTerminal() {
     loadCustomers();
     loadCategories();
     loadFavoriteProducts();
-    loadAllProducts();
+    void loadScanIndex();
+    void loadAllProducts();
     loadHeldOrders();
     loadPriceTiers();
-  }, [loadCustomers, loadCategories, loadFavoriteProducts, loadAllProducts, loadHeldOrders, loadPriceTiers]);
+  }, [loadCustomers, loadCategories, loadFavoriteProducts, loadScanIndex, loadAllProducts, loadHeldOrders, loadPriceTiers]);
 
   useEffect(() => {
     return () => {
@@ -1062,6 +1263,7 @@ export default function POSTerminal() {
         qty_sale: line.qty_sale ?? line.quantity,
         sale_unit: line.sale_unit,
         ratio_to_base: line.ratio_to_base,
+        amend_original_qty_sale: line.amend_original_qty_sale,
         unit_price: line.unit_price,
         price_tier: line.price_tier,
         price_source: line.price_source as CartItem['price_source'],
@@ -1082,11 +1284,44 @@ export default function POSTerminal() {
       const customer = customers.find((entry) => entry.id === draft.customerId);
       if (customer) setSelectedCustomer(customer);
     }
+    if (draft.bonusReferrerCustomerId) {
+      const referrer = customers.find((entry) => entry.id === draft.bonusReferrerCustomerId);
+      if (referrer) setSelectedBonusReferrer(referrer);
+    }
     if (draft.discount) setDiscount(draft.discount);
     if (draft.promoCode) setPromoCodeInput(draft.promoCode);
     if (draft.saleCurrency) setSaleCurrency(draft.saleCurrency as PosSaleCurrency);
     if (draft.tierCode) {
       setCurrentTierCode(draft.tierCode as 'retail' | 'master' | 'wholesale' | 'marketplace');
+    }
+    const draftReplaces = draft.replacesOrderId ?? readPosReplacesOrderId();
+    if (draftReplaces) {
+      setImportedOrderIdForEdit(draftReplaces);
+      persistPosReplacesOrderId(draftReplaces);
+      setImportedOrderOutstandingDebt(
+        Math.max(0, Number(draft.importedOrderOutstanding) || 0),
+      );
+      setImportedOrderNumberForEdit(
+        typeof draft.replacesOrderNumber === 'string' && draft.replacesOrderNumber.length > 0
+          ? draft.replacesOrderNumber
+          : null,
+      );
+      setImportedHoldOrderId(null);
+      setImportedHoldOrderNumber(null);
+    } else if (draft.importedHoldOrderId) {
+      setImportedHoldOrderId(draft.importedHoldOrderId);
+      setImportedHoldOrderNumber(
+        typeof draft.importedHoldOrderNumber === 'string' && draft.importedHoldOrderNumber.length > 0
+          ? draft.importedHoldOrderNumber
+          : null,
+      );
+      setImportedOrderIdForEdit(null);
+      setImportedOrderOutstandingDebt(0);
+      setImportedOrderNumberForEdit(null);
+      persistPosReplacesOrderId(null);
+    }
+    if (Number(draft.loyaltyRedeemPoints) > 0) {
+      setLoyaltyRedeemPoints(Math.floor(Number(draft.loyaltyRedeemPoints)));
     }
     toast({
       title: t('pos.cart_restored_title', 'Savat tiklandi'),
@@ -1109,10 +1344,17 @@ export default function POSTerminal() {
     cart,
     buildNavCartDraft,
     selectedCustomer,
+    selectedBonusReferrer,
     discount,
     promoCodeInput,
     saleCurrency,
     currentTierCode,
+    importedOrderIdForEdit,
+    importedOrderOutstandingDebt,
+    importedHoldOrderId,
+    importedOrderNumberForEdit,
+    importedHoldOrderNumber,
+    loyaltyRedeemPoints,
   ]);
 
   useEffect(() => {
@@ -1185,94 +1427,6 @@ export default function POSTerminal() {
     }
   }, [cart.length]);
 
-
-  const handleRestoreOrder = (order: HeldOrder) => {
-    if (cart.length > 0) {
-      // Show confirmation if cart is not empty
-      setOrderToRestore(order);
-      setRestoreConfirmOpen(true);
-    } else {
-      // Restore directly if cart is empty
-      restoreOrder(order);
-    }
-  };
-
-  const restoreOrder = async (order: HeldOrder) => {
-    try {
-      const restoredCustomer = order.customer_id
-        ? (customers.find((c) => c.id === order.customer_id) || null)
-        : null;
-
-      // Backward-compatible restore:
-      // - Old held orders might not have unit_price / price_tier
-      // - New held orders should preserve saved unit_price / price_tier
-      const normalizedItems = (order.items || []).map((item) => {
-        const qty = Number(item.quantity || 0) || 0;
-        const savedUnitPrice = Number((item as any).unit_price);
-        const hasSavedUnitPrice = Number.isFinite(savedUnitPrice);
-
-        const computed = getLinePricing(item.product, qty, restoredCustomer, undefined, 1, item.sale_unit);
-        const unitPrice = hasSavedUnitPrice ? savedUnitPrice : computed.unitPrice;
-        const priceTier = typeof (item as any).price_tier === 'string'
-          ? (item as any).price_tier
-          : computed.priceTier;
-
-        const subtotal = unitPrice * qty;
-        const lineDiscount = Math.min(Number((item as any).discount_amount || 0) || 0, subtotal);
-
-        return {
-          ...item,
-          unit_price: unitPrice,
-          price_tier: priceTier,
-          subtotal,
-          discount_amount: lineDiscount,
-          total: subtotal - lineDiscount,
-        };
-      });
-
-      setCart(normalizedItems);
-      
-      // Restore discount
-      if (order.discount && Number(order.discount.value) > 0) {
-        setDiscount({
-          type: order.discount.type === 'percent' ? 'percent' : 'amount',
-          value: String(order.discount.value),
-        });
-      } else {
-        setDiscount({ type: 'amount', value: '' });
-      }
-      
-      // Restore customer if exists
-      if (order.customer_id) {
-        setSelectedCustomer(restoredCustomer || null);
-      }
-
-      // Delete the held order (since we're restoring it, we don't want it in the list anymore)
-      await deleteHeldOrder(order.id);
-
-      // Reload held orders list to remove the restored order
-      loadHeldOrders();
-
-      // Close dialogs
-      setWaitingOrdersDialogOpen(false);
-      setRestoreConfirmOpen(false);
-      setOrderToRestore(null);
-
-      // Show success toast
-      toast({
-        title: '✅ Buyurtma qayta tiklandi',
-        description: `${order.items.length} ta mahsulot savatga qaytarildi`,
-        className: 'bg-green-50 border-green-200',
-      });
-    } catch (error) {
-      console.error('Error restoring order:', error);
-      toast({
-        title: 'Xatolik',
-        description: 'Buyurtmani qayta tiklashda xatolik yuz berdi',
-        variant: 'destructive',
-      });
-    }
-  };
 
   const handleCancelHeldOrder = async (orderId: string) => {
     try {
@@ -1534,6 +1688,27 @@ export default function POSTerminal() {
     }
   }, []);
 
+  const showScanAddFeedback = useCallback((product: Product, saleUnit?: string) => {
+    const { saleUnit: unit } = getSaleUnitConfig(product, saleUnit);
+    const barcode = String((product as { barcode?: string | null }).barcode || product.sku || '').trim();
+    const cost =
+      Number(
+        (product as { cost_price?: number }).cost_price ??
+          (product as { purchase_price?: number }).purchase_price ??
+          0,
+      ) || 0;
+    const parts = [
+      barcode || null,
+      cost > 0 ? `tannarx ${formatMoneyUZS(cost)}` : null,
+      formatUnit(unit) || unit,
+    ].filter(Boolean);
+    toast({
+      title: product.name,
+      description: parts.join(' · '),
+      duration: 2200,
+    });
+  }, [toast]);
+
   const tryLocalScanLookup = useCallback((rawInput: string): Product | null => {
     const indexHit = lookupProductByScanCode(rawInput, scanIndexRef.current);
     if (indexHit) return indexHit.product;
@@ -1550,6 +1725,11 @@ export default function POSTerminal() {
     let perfNote = 'lookup';
     const rawInput = String(barcode || '').trim();
     if (!rawInput) return;
+
+    if (!scanIndexReadyRef.current) {
+      pendingScansRef.current.push({ rawInput, opts });
+      return;
+    }
 
     const now = Date.now();
     if (rawInput === lastScanDedupeRef.current.raw && now - lastScanDedupeRef.current.at < 80) {
@@ -1601,6 +1781,7 @@ export default function POSTerminal() {
       const localProduct = tryLocalScanLookup(rawInput);
       if (localProduct) {
         perfNote = 'index';
+        showScanAddFeedback(localProduct);
         void addToCart(localProduct, 1);
         resetSearch();
         return;
@@ -1643,11 +1824,14 @@ export default function POSTerminal() {
         for (const candidate of pluCandidates) {
           byPlu = tryLocalScanLookup(candidate);
           if (byPlu) break;
-          // eslint-disable-next-line no-await-in-loop
-          byPlu = (await getProductBySku(candidate).catch(() => null)) as Product | null;
-          if (byPlu) {
-            cacheBarcodeLookup(byPlu, 'sku', candidate);
-            break;
+        }
+        if (!byPlu) {
+          const pluHit = await resolveProductScan(pluCandidates, { warehouse_id: posWarehouseId }).catch(
+            () => null,
+          );
+          if (pluHit?.product) {
+            byPlu = pluHit.product as Product;
+            cacheBarcodeLookup(byPlu, pluHit.matchKind, pluHit.matchedKey);
           }
         }
 
@@ -1684,6 +1868,7 @@ export default function POSTerminal() {
           (isKgToken(normalizeUnit((byPlu as any)?.unit_name)) ? (byPlu as any)?.unit_name : null) ||
           'kg';
         if (byPlu && isKg) {
+          showScanAddFeedback(byPlu as Product, String(matchedUnit));
           void addToCart(byPlu as any, scale.weightKg, String(matchedUnit));
           resetSearch();
           return;
@@ -1703,42 +1888,15 @@ export default function POSTerminal() {
         return;
       }
 
-      // 2) Normal barcode lookup (exact match: full scan, then digits-only if different)
-      let product: any = null;
-      let matchedKey = '';
-      let hitBarcodeField = false;
-      for (const key of lookupKeys) {
-        const looksLikeBarcode = key.length >= 8;
-        let byBarcode: any = null;
-        let bySku: any = null;
-        if (looksLikeBarcode) {
-          // eslint-disable-next-line no-await-in-loop
-          byBarcode = await getProductByBarcode(key).catch(() => null);
-          if (!byBarcode && key.length <= 8) {
-            // eslint-disable-next-line no-await-in-loop
-            bySku = await getProductBySku(key).catch(() => null);
-          }
-        } else {
-          // eslint-disable-next-line no-await-in-loop
-          bySku = await getProductBySku(key).catch(() => null);
-          if (!bySku) {
-            // eslint-disable-next-line no-await-in-loop
-            byBarcode = await getProductByBarcode(key).catch(() => null);
-          }
-        }
-        const p = byBarcode || bySku;
-        if (p) {
-          product = p;
-          matchedKey = key;
-          hitBarcodeField = !!byBarcode;
-          break;
-        }
-      }
-
-      if (product) {
+      // 2) Normal barcode lookup — single batched IPC fallback on index miss
+      const resolved = await resolveProductScan(lookupKeys, { warehouse_id: posWarehouseId }).catch(
+        () => null,
+      );
+      if (resolved?.product) {
         perfNote = 'rpc';
-        cacheBarcodeLookup(product, hitBarcodeField ? 'barcode' : 'sku', matchedKey);
-        void addToCart(product, 1);
+        cacheBarcodeLookup(resolved.product, resolved.matchKind, resolved.matchedKey);
+        showScanAddFeedback(resolved.product);
+        void addToCart(resolved.product, 1);
         resetSearch();
         return;
       }
@@ -1761,6 +1919,8 @@ export default function POSTerminal() {
     }
   };
 
+  handleBarcodeSearchRef.current = handleBarcodeSearch;
+
   // ---------------------------------------------------------------------
   // Global HID barcode scanner listener.
   // Scanners typed in keyboard-wedge mode hit the `onKeyDown` on the search
@@ -1772,6 +1932,8 @@ export default function POSTerminal() {
   useBarcodeScanner({
     enabled: true,
     minLength: 4,
+    maxIntervalMs: 40,
+    idleTimeoutMs: 60,
     onScan: (code) => {
       if (!code) return;
       void handleBarcodeSearch(code, { clearSearch: true });
@@ -1868,7 +2030,7 @@ export default function POSTerminal() {
       const displayQuantity =
         editingQuantity[item.product.id] !== undefined
           ? editingQuantity[item.product.id]
-          : formatQuantity(item.quantity || quantityMin, unit);
+          : formatQuantity((item.qty_sale ?? item.quantity) || quantityMin, unit);
       return {
         item,
         index,
@@ -2002,7 +2164,25 @@ export default function POSTerminal() {
           };
         })
       );
-      if (!cancelled) setCart(mapped);
+      if (cancelled) return;
+      // Preserve erkin narx if cashier applied it while this async recalc was in flight.
+      setCart((liveCart) => {
+        if (liveCart.length === 0) return liveCart;
+        const liveByKey = new Map(
+          liveCart.map((it) => {
+            const unit = it.sale_unit || it.product.unit || '';
+            return [`${it.product.id}::${unit}`, it] as const;
+          })
+        );
+        return mapped.map((m) => {
+          const unit = m.sale_unit || m.product.unit || '';
+          const live = liveByKey.get(`${m.product.id}::${unit}`);
+          if (live && (live.is_price_overridden || live.price_source === 'manual')) {
+            return live;
+          }
+          return m;
+        });
+      });
     })();
     return () => {
       cancelled = true;
@@ -2036,9 +2216,9 @@ export default function POSTerminal() {
       .filter(Boolean);
     const uniqueNames = [...new Set(names)];
     return uniqueNames.map((name, idx) => (
-      <Badge key={`${name}-${idx}`} variant="default" className="h-5 text-[10px] px-1.5 bg-green-600">
+      <span key={`${name}-${idx}`} className="text-[9px] text-emerald-600 dark:text-emerald-400">
         {name}
-      </Badge>
+      </span>
     ));
   };
 
@@ -2058,7 +2238,7 @@ export default function POSTerminal() {
     return full || product;
   };
 
-  const requestAddToCart = async (product: Product) => {
+  const requestAddToCart = useCallback(async (product: Product) => {
     const resolvedProduct = await resolveProductForCart(product);
     const { saleUnit, ratio_to_base, sale_price } = getSaleUnitConfig(resolvedProduct);
     const maxAllowed = getMaxSaleQty(resolvedProduct, ratio_to_base, saleUnit);
@@ -2090,16 +2270,28 @@ export default function POSTerminal() {
       refUnitPrice,
     });
     setNumpadOpen(true);
-  };
+  }, [selectedCustomer, getLinePricing]);
 
-  const quickAddOneToCart = async (product: Product) => {
+  const quickAddOneToCart = useCallback(async (product: Product) => {
     const resolvedProduct = await resolveProductForCart(product);
-    void addToCart(resolvedProduct, 1);
+    if (canQuickAddWithoutNumpad(resolvedProduct)) {
+      void addToCartRef.current(resolvedProduct, getQuickAddSaleQty(resolvedProduct));
+    } else {
+      await requestAddToCart(resolvedProduct);
+    }
     focusSearchInput();
-  };
+  }, [focusSearchInput, requestAddToCart]);
 
   const addToCart = async (product: Product, quantity: number = 1, saleUnit?: string) => {
     const perfStart = perfEnabled ? performance.now() : 0;
+    // Fresh manual sale: drop stale amend/hold context left in sessionStorage.
+    if (
+      cartRef.current.length === 0 &&
+      !importedOrderIdForEditRef.current &&
+      !importedHoldOrderIdRef.current
+    ) {
+      persistPosReplacesOrderId(null);
+    }
     const qtySaleRaw = Number(quantity || 0) || 0;
     const { saleUnit: resolvedUnit, ratio_to_base, sale_price } = getSaleUnitConfig(product, saleUnit);
     if (qtySaleRaw <= 0) return;
@@ -2111,7 +2303,7 @@ export default function POSTerminal() {
       });
       return;
     }
-    const sign = exchangeReturnMode ? -1 : 1;
+    const sign = getCartLineQuantitySign(exchangeReturnMode);
     const unit = resolvedUnit;
     const existingItem = cartRef.current.find(
       (item) =>
@@ -2119,15 +2311,16 @@ export default function POSTerminal() {
         (item.sale_unit || item.product.unit) === unit
     );
     let validQuantity = clampQuantityForUnit(qtySaleRaw, unit) * sign;
+    let stockLimitToast: { title: string; description: string } | null = null;
+    let lowStockToast: { title: string; description: string } | null = null;
     if (validQuantity > 0) {
       const maxAllowed = getMaxSaleQty(product, ratio_to_base, unit);
       if (maxAllowed > 0 && validQuantity > maxAllowed) {
         validQuantity = maxAllowed;
-        toast({
+        stockLimitToast = {
           title: 'Stock Limit Reached',
           description: `Maximum available quantity is ${formatQuantity(maxAllowed, unit)}`,
-          variant: 'destructive',
-        });
+        };
       }
       if (
         posTerminalSettings.show_low_stock_warning &&
@@ -2139,10 +2332,10 @@ export default function POSTerminal() {
         const minStock = Number((product as any)?.min_stock_level || 0) || 0;
         const threshold = minStock > 0 ? minStock : 10;
         if (remainingBase >= 0 && remainingBase <= threshold) {
-          toast({
+          lowStockToast = {
             title: 'Kam zaxira',
             description: `${product.name}: qoldiq ${formatQuantity(remainingBase, unit)} (minimal ${formatQuantity(threshold, unit)})`,
-          });
+          };
         }
       }
     } else {
@@ -2163,6 +2356,10 @@ export default function POSTerminal() {
       if (perfEnabled) {
         console.debug(`[POS PERF] add_to_cart merge ${product.id} → ${Math.round(performance.now() - perfStart)}ms`);
       }
+      queueMicrotask(() => {
+        if (stockLimitToast) toast({ ...stockLimitToast, variant: 'destructive' });
+        if (lowStockToast) toast(lowStockToast);
+      });
       return;
     }
     const qtyBase = toBaseQty(validQuantity, ratio_to_base);
@@ -2304,7 +2501,12 @@ export default function POSTerminal() {
       const ms = Math.round(performance.now() - perfStart);
       console.debug(`[POS PERF] add_to_cart ${product.id} → ${ms}ms`);
     }
+    queueMicrotask(() => {
+      if (stockLimitToast) toast({ ...stockLimitToast, variant: 'destructive' });
+      if (lowStockToast) toast(lowStockToast);
+    });
   };
+  addToCartRef.current = addToCart;
 
   const sanitizeWebOrderNamePart = useCallback((value: unknown): string => {
     const raw = String(value || '').trim();
@@ -2828,10 +3030,13 @@ export default function POSTerminal() {
           const { saleUnit: resolvedUnit, ratio_to_base } = getSaleUnitConfig(product, saleUnitHint);
 
           let validQty = clampQuantityForUnit(qtySale, resolvedUnit);
-          const maxAllowed = getMaxSaleQty(product, ratio_to_base, resolvedUnit);
-          if (maxAllowed > 0 && validQty > maxAllowed) {
-            validQty = maxAllowed;
-            stockClamped += 1;
+          const isAmendImport = st === 'completed';
+          if (!isAmendImport) {
+            const maxAllowed = getMaxSaleQty(product, ratio_to_base, resolvedUnit);
+            if (maxAllowed > 0 && validQty > maxAllowed) {
+              validQty = maxAllowed;
+              stockClamped += 1;
+            }
           }
           if (validQty <= 0) {
             skipped.push(pid);
@@ -2862,6 +3067,7 @@ export default function POSTerminal() {
             qty_sale: validQty,
             qty_base: toBaseQty(validQty, ratio_to_base),
             ratio_to_base,
+            ...(isAmendImport ? { amend_original_qty_sale: validQty } : {}),
             unit_price: unitPrice,
             price_tier: priceTier,
             price_source: 'manual',
@@ -2891,6 +3097,21 @@ export default function POSTerminal() {
           }
         }
 
+        const bonusReferrerId = String(
+          (order as OrderWithDetails & { bonus_referrer_customer_id?: string | null })
+            .bonus_referrer_customer_id ?? '',
+        ).trim();
+        if (bonusReferrerId) {
+          try {
+            const referrer = await getCustomerById(bonusReferrerId);
+            if (referrer) setSelectedBonusReferrer(referrer);
+          } catch {
+            /* ignore */
+          }
+        } else {
+          setSelectedBonusReferrer(null);
+        }
+
         const tierCode = String((order as OrderWithDetails & { price_tier_code?: string }).price_tier_code ?? '').toLowerCase();
         setCurrentTierCode(tierCode === 'master' || tierCode === 'usta' ? 'master' : 'retail');
 
@@ -2906,17 +3127,44 @@ export default function POSTerminal() {
 
         setCart(built);
         setImportedWebOrderId(null);
-        setImportedOrderIdForEdit(order.id);
-        persistPosReplacesOrderId(order.id);
+        const orderNum = String(order.order_number ?? '').trim();
+        if (st === 'completed') {
+          setImportedOrderIdForEdit(order.id);
+          setImportedOrderNumberForEdit(orderNum || null);
+          setImportedOrderOutstandingDebt(computeOrderOutstandingForAmend(order));
+          persistPosReplacesOrderId(order.id);
+          setImportedHoldOrderId(null);
+          setImportedHoldOrderNumber(null);
+        } else if (st === 'hold' || st === 'pending' || st === 'on_hold' || st === 'draft') {
+          setImportedOrderIdForEdit(null);
+          setImportedOrderNumberForEdit(null);
+          setImportedOrderOutstandingDebt(0);
+          persistPosReplacesOrderId(null);
+          setImportedHoldOrderId(order.id);
+          setImportedHoldOrderNumber(orderNum || null);
+        } else {
+          setImportedOrderIdForEdit(null);
+          setImportedOrderNumberForEdit(null);
+          setImportedOrderOutstandingDebt(0);
+          setImportedHoldOrderId(null);
+          setImportedHoldOrderNumber(null);
+          persistPosReplacesOrderId(null);
+        }
         setPromoCodeInput('');
-        setLoyaltyRedeemPoints(0);
+        setLoyaltyRedeemPoints(resolveLoyaltyRedeemOnOrderImport(order, st === 'completed'));
         setSelectedCartIndex(0);
 
+        const importDescKey =
+          st === 'completed'
+            ? 'orders.import_order_success_desc_amend'
+            : st === 'hold' || st === 'pending' || st === 'on_hold' || st === 'draft'
+              ? 'orders.import_order_success_desc_hold'
+              : 'orders.import_order_success_desc';
         toast({
           title: t('orders.import_order_success_title'),
-          description: t('orders.import_order_success_desc', {
+          description: t(importDescKey, {
             n: built.length,
-            num: String(order.order_number ?? ''),
+            num: orderNum,
           }),
           className: 'bg-green-50 border-green-200',
         });
@@ -2963,7 +3211,178 @@ export default function POSTerminal() {
       setSelectedCartIndex,
       setCurrentTierCode,
       setSelectedCustomer,
+      setSelectedBonusReferrer,
     ],
+  );
+
+  const restoreRemoteHeldOrder = useCallback(
+    async (order: HeldOrder) => {
+      try {
+        const webId = order.web_order_id;
+        if (webId != null && Number.isFinite(Number(webId))) {
+          await importWebOrderIntoCart(Number(webId));
+        } else {
+          await importOrderIntoCart(order.id);
+        }
+        setWaitingOrdersDialogOpen(false);
+        setRestoreConfirmOpen(false);
+        setOrderToRestore(null);
+      } catch (error) {
+        console.error('Error restoring remote held order:', error);
+        const msg = error instanceof Error ? error.message : String(error);
+        toast({
+          title: 'Xatolik',
+          description: msg || 'Buyurtmani qayta tiklashda xatolik yuz berdi',
+          variant: 'destructive',
+        });
+      }
+    },
+    [importWebOrderIntoCart, importOrderIntoCart, toast],
+  );
+
+  const restoreLocalHeldOrder = useCallback(
+    async (order: HeldOrder) => {
+      try {
+        const restoredCustomer = order.customer_id
+          ? (customers.find((c) => c.id === order.customer_id) || null)
+          : null;
+
+        const normalizedItems = await Promise.all(
+          (order.items || []).map(async (item) => {
+            const qty = Number(item.quantity || 0) || 0;
+            const savedUnitPrice = Number(item.unit_price);
+            const hasSavedUnitPrice = Number.isFinite(savedUnitPrice) && savedUnitPrice > 0;
+
+            const pid = item.product?.id;
+            const fromCatalog = pid ? allProducts.find((p) => p.id === pid) : undefined;
+            let product = fromCatalog ?? null;
+            if (!product && pid) {
+              const rawProduct = await getProductById(pid);
+              if (rawProduct) product = await resolveProductForCart(rawProduct as Product);
+            }
+            if (!product) {
+              product = await resolveProductForCart(item.product);
+            }
+
+            const { saleUnit, ratio_to_base, sale_price } = getSaleUnitConfig(
+              product,
+              item.sale_unit || product.unit,
+            );
+            const qtyBase = toBaseQty(qty, ratio_to_base);
+
+            const computed = getLinePricing(
+              product,
+              qtyBase,
+              restoredCustomer,
+              hasSavedUnitPrice ? savedUnitPrice : sale_price,
+              ratio_to_base,
+              item.sale_unit || saleUnit,
+            );
+            const unitPrice = hasSavedUnitPrice ? savedUnitPrice : computed.unitPrice;
+            const priceTier =
+              typeof item.price_tier === 'string' ? item.price_tier : computed.priceTier;
+            const wasManual =
+              item.is_price_overridden === true ||
+              item.price_source === 'manual' ||
+              (hasSavedUnitPrice &&
+                Math.abs(savedUnitPrice - Number(computed.unitPrice || 0)) > 0.009);
+
+            const subtotal = unitPrice * qty;
+            const lineDiscount = Math.min(Number(item.discount_amount || 0) || 0, subtotal);
+
+            return {
+              ...item,
+              product,
+              sale_unit: item.sale_unit || saleUnit,
+              qty_sale: qty,
+              qty_base: qtyBase,
+              ratio_to_base,
+              unit_price: unitPrice,
+              price_tier: priceTier,
+              price_source: wasManual ? 'manual' : item.price_source || 'tier',
+              is_price_overridden: wasManual,
+              subtotal,
+              discount_amount: lineDiscount,
+              total: subtotal - lineDiscount,
+            };
+          }),
+        );
+
+        setCart(normalizedItems);
+
+        clearPosSaleImportContext();
+
+        if (order.discount && Number(order.discount.value) > 0) {
+          setDiscount({
+            type: order.discount.type === 'percent' ? 'percent' : 'amount',
+            value: String(order.discount.value),
+          });
+        } else {
+          setDiscount({ type: 'amount', value: '' });
+        }
+
+        if (order.customer_id) {
+          setSelectedCustomer(restoredCustomer || null);
+        }
+
+        if (order.bonus_referrer_customer_id) {
+          const restoredReferrer =
+            customers.find((c) => c.id === order.bonus_referrer_customer_id) || null;
+          setSelectedBonusReferrer(restoredReferrer);
+        } else {
+          setSelectedBonusReferrer(null);
+        }
+
+        await deleteHeldOrder(order.id);
+        loadHeldOrders();
+
+        setWaitingOrdersDialogOpen(false);
+        setRestoreConfirmOpen(false);
+        setOrderToRestore(null);
+
+        toast({
+          title: '✅ Buyurtma qayta tiklandi',
+          description: `${order.items.length} ta mahsulot savatga qaytarildi`,
+          className: 'bg-green-50 border-green-200',
+        });
+      } catch (error) {
+        console.error('Error restoring order:', error);
+        const msg = error instanceof Error ? error.message : String(error);
+        toast({
+          title: 'Xatolik',
+          description: msg || 'Buyurtmani qayta tiklashda xatolik yuz berdi',
+          variant: 'destructive',
+        });
+      }
+    },
+    [
+      customers,
+      allProducts,
+      getProductById,
+      resolveProductForCart,
+      getSaleUnitConfig,
+      getLinePricing,
+      toBaseQty,
+      loadHeldOrders,
+      toast,
+      clearPosSaleImportContext,
+    ],
+  );
+
+  const handleRestoreOrder = useCallback(
+    (order: HeldOrder) => {
+      const restore = isRemoteImportHeldOrder(order)
+        ? restoreRemoteHeldOrder
+        : restoreLocalHeldOrder;
+
+      if (cart.length > 0) {
+        setOrderToRestore(order);
+        setRestoreConfirmOpen(true);
+      } else {
+        void restore(order);
+      }
+    },
+    [cart.length, restoreRemoteHeldOrder, restoreLocalHeldOrder],
   );
 
   useLayoutEffect(() => {
@@ -3049,10 +3468,36 @@ export default function POSTerminal() {
     }
   }, [location.state, location.key, navigate, importOrderIntoCart]);
 
+  // Validate stale sessionStorage pos_replaces_order_id on load (survives refresh during edit only).
+  useEffect(() => {
+    const staleId = readPosReplacesOrderId();
+    if (!staleId) return;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const order = (await getOrderById(staleId)) as OrderWithDetails | null;
+        const st = String(order?.status || '').toLowerCase();
+        if (cancelled) return;
+        if (st === 'completed') {
+          setImportedOrderIdForEdit(staleId);
+          setImportedOrderNumberForEdit(String(order?.order_number ?? '').trim() || null);
+          setImportedOrderOutstandingDebt(computeOrderOutstandingForAmend(order));
+        } else {
+          persistPosReplacesOrderId(null);
+        }
+      } catch {
+        if (!cancelled) persistPosReplacesOrderId(null);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   const handleConfirmWebOrderImport = () => {
     const id = pendingWebOrderImportId;
     if (id == null) return;
-    setCart([]);
+    clearCartAndNavDraft();
     setImportedWebOrderId(null);
     setDiscount({ type: 'amount', value: '' });
     resetCustomerSelection();
@@ -3071,7 +3516,7 @@ export default function POSTerminal() {
   const handleConfirmQuoteImport = () => {
     const id = pendingQuoteImportId;
     if (!id) return;
-    setCart([]);
+    clearCartAndNavDraft();
     setImportedWebOrderId(null);
     setDiscount({ type: 'amount', value: '' });
     resetCustomerSelection();
@@ -3090,10 +3535,8 @@ export default function POSTerminal() {
   const handleConfirmOrderImport = () => {
     const id = pendingOrderImportId;
     if (!id) return;
-    setCart([]);
-    setImportedWebOrderId(null);
-    setImportedOrderIdForEdit(null);
-    persistPosReplacesOrderId(null);
+    clearCartAndNavDraft();
+    clearPosSaleImportContext();
     setDiscount({ type: 'amount', value: '' });
     resetCustomerSelection();
     setPromoCodeInput('');
@@ -3140,6 +3583,23 @@ export default function POSTerminal() {
     }
   }, []);
 
+  const voidImportedHoldOrderAfterSale = useCallback(
+    async (holdOrderId: string | null) => {
+      if (!holdOrderId) return;
+      try {
+        await cancelOrder(holdOrderId);
+        void loadHeldOrders();
+      } catch (e) {
+        toast({
+          title: 'Kutilayotgan buyurtma',
+          description: `Sotuv yakunlandi, lekin hold buyurtmani yopishda xatolik: ${e instanceof Error ? e.message : String(e)}`,
+          variant: 'destructive',
+        });
+      }
+    },
+    [loadHeldOrders, toast],
+  );
+
   const updateQuantity = (
     productId: string,
     quantity: number,
@@ -3158,7 +3618,12 @@ export default function POSTerminal() {
     let validQuantity = clampSignedQuantityForUnit(quantity, saleUnit);
 
     if (validQuantity > 0) {
-      const maxAllowed = getMaxSaleQty(cartItem.product, ratioToBase, saleUnit);
+      const maxAllowed = getMaxSaleQtyForCartLine(
+        cartItem.product,
+        ratioToBase,
+        saleUnit,
+        cartItem.amend_original_qty_sale,
+      );
       if (maxAllowed > 0 && validQuantity > maxAllowed) {
         validQuantity = maxAllowed;
         toast({
@@ -3273,7 +3738,7 @@ export default function POSTerminal() {
       const okSigned =
         !isNaN(numValue) &&
         ((curQ >= 0 && numValue >= min) || (curQ < 0 && numValue <= -min));
-      if (okSigned && cartItem.quantity !== numValue) {
+      if (okSigned && curQ !== numValue) {
         updateQuantity(productId, numValue);
       }
     }
@@ -3332,7 +3797,12 @@ export default function POSTerminal() {
     const ratioToBase = Number(cartItem?.ratio_to_base ?? 1) || 1;
     const maxAllowed =
       currentQuantity > 0 && maxStock > 0
-        ? getMaxSaleQty(cartItem?.product as any, ratioToBase, unit)
+        ? getMaxSaleQtyForCartLine(
+            cartItem?.product as any,
+            ratioToBase,
+            unit,
+            cartItem?.amend_original_qty_sale,
+          )
         : undefined;
     setNumpadConfig({
       type: 'quantity',
@@ -3496,8 +3966,18 @@ export default function POSTerminal() {
     const cartItem = cart.find((item) => item.product.id === productId);
     if (!cartItem) return;
     const nextConfig = getSaleUnitConfig(cartItem.product, nextUnit);
-    const qtySale = Number(cartItem.qty_sale ?? cartItem.quantity ?? 0) || 0;
-    const qtyBase = toBaseQty(qtySale, nextConfig.ratio_to_base);
+    const prevQtySale = Number(cartItem.qty_sale ?? cartItem.quantity ?? 0) || 0;
+    const prevRatio = Number(cartItem.ratio_to_base ?? 1) || 1;
+    const prevQtyBaseRaw = Number(cartItem.qty_base);
+    const prevQtyBase =
+      Number.isFinite(prevQtyBaseRaw) && prevQtyBaseRaw !== 0
+        ? prevQtyBaseRaw
+        : toBaseQty(prevQtySale, prevRatio);
+    const nextRatio = Number(nextConfig.ratio_to_base ?? 1) || 1;
+    let qtySale =
+      nextRatio > 0 ? prevQtyBase / nextRatio : prevQtySale;
+    qtySale = clampSignedQuantityForUnit(qtySale, nextConfig.saleUnit);
+    const qtyBase = toBaseQty(qtySale, nextRatio);
     const effectiveTier = ((selectedCustomer as any)?.pricing_tier || currentTierCode || 'retail') as string;
     if (effectiveTier !== 'retail' && effectiveTier !== 'master' && saleCurrency !== 'USD') {
       const fetched = await fetchTierPrice(cartItem.product, effectiveTier, nextUnit);
@@ -3758,7 +4238,7 @@ export default function POSTerminal() {
       return;
     }
 
-    if (cart.length === 0) {
+    if (effectiveCart.length === 0) {
       toast({
         title: 'Xatolik',
         description: 'Savatcha bo\'sh. Buyurtmani saqlash uchun mahsulot qo\'shing',
@@ -3770,6 +4250,11 @@ export default function POSTerminal() {
     try {
       const heldNumber = await generateHeldNumber();
       const displayName = selectedCustomer?.name?.trim() || null;
+      const holdDiscount =
+        discount.type !== 'promo' && discountValueNumber > 0
+          ? { type: discount.type as 'amount' | 'percent', value: discountValueNumber }
+          : null;
+      const holdTotal = computeHeldOrderTotal(effectiveCart, holdDiscount);
 
       await saveHeldOrder({
         held_number: heldNumber,
@@ -3777,11 +4262,10 @@ export default function POSTerminal() {
         shift_id: currentShift?.id || null,
         customer_id: selectedCustomer?.id || null,
         customer_name: displayName,
-        items: cart,
-        discount:
-          discount.type !== 'promo' && discountValueNumber > 0
-            ? { type: discount.type as 'amount' | 'percent', value: discountValueNumber }
-            : null,
+        bonus_referrer_customer_id: selectedBonusReferrer?.id || null,
+        items: effectiveCart,
+        discount: holdDiscount,
+        total_amount: holdTotal,
         note: null,
       });
 
@@ -3791,7 +4275,8 @@ export default function POSTerminal() {
         className: 'bg-green-50 border-green-200',
       });
 
-      setCart([]);
+      clearCartAndNavDraft();
+      clearPosSaleImportContext();
       setDiscount({ type: 'amount', value: '' });
       setPromoCodeInput('');
       resetCustomerSelection();
@@ -3807,12 +4292,14 @@ export default function POSTerminal() {
   }, [
     profile,
     currentShift,
-    cart,
+    effectiveCart,
     selectedCustomer,
+    selectedBonusReferrer,
     discount.type,
     discountValueNumber,
     loadHeldOrders,
     resetCustomerSelection,
+    clearCartAndNavDraft,
     toast,
     t,
     posTerminalSettings.enable_hold_order,
@@ -3967,6 +4454,14 @@ export default function POSTerminal() {
     return getCustomerDebtInCurrency(selectedCustomer, saleCurrency);
   }, [selectedCustomer, saleCurrency, getCustomerDebtInCurrency, isWalkInCustomer]);
 
+  const priorDebtForCheckout = useMemo(() => {
+    return netPriorDebtForAmendCheckout(
+      priorDebtInSaleCurrency,
+      importedOrderOutstandingDebt,
+      Boolean(importedOrderIdForEdit),
+    );
+  }, [priorDebtInSaleCurrency, importedOrderOutstandingDebt, importedOrderIdForEdit]);
+
   const priorCreditInSaleCurrency = useMemo(() => {
     if (!selectedCustomer || isWalkInCustomer(selectedCustomer)) return 0;
     return getCustomerCreditInCurrency(selectedCustomer, saleCurrency);
@@ -3986,9 +4481,12 @@ export default function POSTerminal() {
         const baseUnitPrice = Number(baseUnitPriceRaw ?? (item.product as any)?.sale_price ?? item.unit_price ?? 0) || 0;
         const masterBasePrice = Number((item.product as any)?.master_price ?? 0) || 0;
         const ustaUnitPrice = masterBasePrice > 0 ? masterBasePrice * ratioToBase : null;
-        const priceSource =
-          item.price_source ||
-          (item.price_tier === 'master' ? 'usta' : item.price_tier === 'retail' ? 'base' : 'tier');
+        const isManual =
+          item.is_price_overridden === true || item.price_source === 'manual';
+        const priceSource = isManual
+          ? 'manual'
+          : item.price_source ||
+            (item.price_tier === 'master' ? 'usta' : item.price_tier === 'retail' ? 'base' : 'tier');
         const lineNet = lineNetTotals[index] || 0;
         const orderShare =
           positiveSum > 0 && lineNet > 0 ? (lineNet / positiveSum) * globalDiscountAmount : 0;
@@ -4013,15 +4511,54 @@ export default function POSTerminal() {
           final_unit_price: finalUnitPrice,
           final_total: finalLineTotal,
           price_source: priceSource as any,
+          is_price_overridden: isManual,
+          manual_price: isManual,
           subtotal: item.subtotal,
-          discount_amount: item.discount_amount,
-          total: item.total,
+          discount_amount: totalDiscountLine,
+          total: finalLineTotal,
           promotion_id: item.promotion_id ?? null,
         };
       });
     },
     [getSaleUnitConfig]
   );
+
+  // --- Checkout idempotency guard (duplicate orders / double stock deduction) ---
+  // One key is bound to THE CURRENT basket. It is reused across retries (slow
+  // response / 429) so the backend dedups via `order_uuid`, and reset to null
+  // after a completed sale or whenever the basket changes (new checkout).
+  const checkoutIdempotencyKeyRef = useRef<string | null>(null);
+  const checkoutIdempotencySignature = useMemo(
+    () =>
+      buildCheckoutIdempotencySignature({
+        lines: cart.map((item) => ({
+          productId: item.product.id,
+          qtyBase: item.qty_base ?? item.quantity,
+          unitPrice: Number(item.unit_price || 0),
+          discountAmount: Number(item.discount_amount || 0),
+        })),
+        customerId: selectedCustomer?.id ?? null,
+        bonusReferrerCustomerId: selectedBonusReferrer?.id ?? null,
+        discountType: discount.type,
+        discountValue: discount.value,
+        saleCurrency,
+        loyaltyRedeemPoints,
+      }),
+    [cart, selectedCustomer, selectedBonusReferrer, discount, saleCurrency, loyaltyRedeemPoints],
+  );
+  useEffect(() => {
+    // Basket changed → next submit starts a fresh checkout session so a new
+    // basket can never be bound to a previous order's idempotency key.
+    checkoutIdempotencyKeyRef.current = null;
+  }, [checkoutIdempotencySignature]);
+
+  /** Get the current checkout idempotency key, creating one on first submit. */
+  const getOrCreateCheckoutIdempotencyKey = (): string => {
+    if (!checkoutIdempotencyKeyRef.current) {
+      checkoutIdempotencyKeyRef.current = newCheckoutIdempotencyKey();
+    }
+    return checkoutIdempotencyKeyRef.current;
+  };
 
   const handleCompletePayment = async (
     paymentMethod: PosCheckoutPaymentKind,
@@ -4147,9 +4684,28 @@ export default function POSTerminal() {
       return;
     }
 
+    if (creditAmountValue > 0) {
+      if (!selectedCustomer || isWalkInCustomer(selectedCustomer)) {
+        toast({
+          title: 'Mijoz kerak',
+          description: 'Nasiya yoki qisman to‘lov uchun ro‘yxatdan o‘tgan mijoz tanlanishi kerak.',
+          variant: 'destructive',
+        });
+        return;
+      }
+      if (!creditDueDate) {
+        toast({
+          title: 'Qarz qaytarish sanasi',
+          description: 'Nasiya uchun muddat sanasini tanlang.',
+          variant: 'destructive',
+        });
+        return;
+      }
+    }
+
     const extraDebtDue =
-      total > 0 && includePriorDebtInPayment && priorDebtInSaleCurrency > 0
-        ? priorDebtInSaleCurrency
+      total > 0 && includePriorDebtInPayment && priorDebtForCheckout > 0
+        ? priorDebtForCheckout
         : 0;
     const merchandiseCashDue = Math.max(0, total - creditAmountValue);
     const amountDueWithDebt = merchandiseCashDue + extraDebtDue;
@@ -4276,9 +4832,17 @@ export default function POSTerminal() {
     try {
       const checkoutStart = perfEnabled ? performance.now() : 0;
       const importedWebOrderIdForSale = importedWebOrderId;
-      const replacesOrderIdForSale = importedOrderIdForEdit ?? readPosReplacesOrderId();
+      const importedHoldOrderIdForSale = importedHoldOrderId;
+      const replacesOrderIdForSale = resolveReplacesOrderIdForCheckout(
+        importedOrderIdForEditRef.current,
+        importedHoldOrderIdRef.current,
+      );
+      // Stable per-checkout idempotency key — reused on retry so a slow/429
+      // re-submit cannot create a second order or deduct stock twice.
+      const checkoutIdempotencyKey = getOrCreateCheckoutIdempotencyKey();
       const order = {
         order_number: '',
+        order_uuid: checkoutIdempotencyKey,
         customer_id: selectedCustomer?.id || null,
         cashier_id: profile.id,
         shift_id: currentShift?.id || null,
@@ -4301,7 +4865,12 @@ export default function POSTerminal() {
                 ? ('paid' as const)
                 : ('partially_paid' as const),
         notes: null,
+        ...(creditAmountValue > 0 && creditDueDate ? { due_date: creditDueDate } : {}),
+        ...(creditAmountValue > 0 && creditReminderNote.trim()
+          ? { credit_reminder_note: creditReminderNote.trim() }
+          : {}),
         ...(loyaltyRedeemPointsApplied > 0 ? { loyalty_redeem_points: loyaltyRedeemPointsApplied } : {}),
+        ...(selectedBonusReferrer?.id ? { bonus_referrer_customer_id: selectedBonusReferrer.id } : {}),
         ...orderCurrencyFields(saleCurrency, saleFxRate),
         ...(replacesOrderIdForSale ? { replaces_order_id: replacesOrderIdForSale } : {}),
       };
@@ -4328,16 +4897,17 @@ export default function POSTerminal() {
       }
       const orderNumber = created?.order_number || order.order_number || 'ORD';
 
+      // Clear cart immediately on successful checkout — before receipt dialog / follow-up work.
+      checkoutIdempotencyKeyRef.current = null;
+      clearCartAndNavDraft();
+
       if (created?.offline_queued) {
         toast({
           title: 'Offline saqlandi',
           description: `${orderNumber} — internet qaytganida serverga yuboriladi.`,
           className: 'bg-amber-50 border-amber-200',
         });
-        setCart([]);
-        setImportedWebOrderId(null);
-        setImportedOrderIdForEdit(null);
-        persistPosReplacesOrderId(null);
+        clearPosSaleImportContext();
         setExchangeReturnMode(false);
         setPayments([]);
         setDiscount({ type: 'amount', value: '' });
@@ -4346,8 +4916,9 @@ export default function POSTerminal() {
         resetCustomerSelection();
         setPaymentDialogOpen(false);
         setCashReceived(null);
-        setCreditAmount('');
+        setCreditAmount(null);
         setIsProcessingPayment(false);
+        void voidImportedHoldOrderAfterSale(importedHoldOrderIdForSale);
         return;
       }
 
@@ -4362,6 +4933,8 @@ export default function POSTerminal() {
           });
         }
       }
+
+      await voidImportedHoldOrderAfterSale(importedHoldOrderIdForSale);
 
       // Invalidate dashboard queries
       invalidateDashboardQueries(queryClient);
@@ -4500,7 +5073,7 @@ export default function POSTerminal() {
       // 4. Update local product stock — tahrir (amend) backendda avval qaytaradi,
       // shuning uchun optimistik kamaytirish ikki marta hisoblanmasin.
       if (replacesOrderIdForSale) {
-        void loadAllProducts();
+        void refreshCatalog();
       } else {
         const cartItemsForStockUpdate = [...checkoutCart];
         const updateProductsWithStockDeduction = (products: Product[]) =>
@@ -4524,11 +5097,8 @@ export default function POSTerminal() {
         className: 'bg-green-50 border-green-200',
       });
 
-      // 5. Cleanup - Clear cart and reset state (AFTER stock update)
-      setCart([]);
-      setImportedWebOrderId(null);
-      setImportedOrderIdForEdit(null);
-      persistPosReplacesOrderId(null);
+      // Sale committed — idempotency key already released when cart was cleared.
+      clearPosSaleImportContext();
       setExchangeReturnMode(false);
       setPayments([]);
       setDiscount({ type: 'amount', value: '' });
@@ -4537,7 +5107,7 @@ export default function POSTerminal() {
       resetCustomerSelection();
       setPaymentDialogOpen(false);
       setCashReceived(null);
-      setCreditAmount('');
+      setCreditAmount(null);
       setSelectedCartIndex(-1);
 
       // Har doim yangilash: qarz yopilganda ham balans eski qolmasin (credit/bonus shart emas)
@@ -4545,7 +5115,7 @@ export default function POSTerminal() {
 
       if (!replacesOrderIdForSale) {
         setTimeout(() => {
-          loadAllProducts();
+          void refreshCatalog();
         }, 500);
       }
 
@@ -4565,6 +5135,9 @@ export default function POSTerminal() {
         variant: 'destructive',
         duration: 10000,
       });
+      if (isPosAmendCheckoutError(errorMessage)) {
+        clearPosSaleImportContext();
+      }
     } finally {
       setIsProcessingPayment(false);
     }
@@ -4693,7 +5266,7 @@ export default function POSTerminal() {
     }
 
     // Boshlang'ich naqd P: istalgan miqdor (savat + qarzdan oshiq bo‘lsa — mijoz oldindan to‘lovga o‘tadi)
-    const initialPayment = creditAmount.trim() === '' ? 0 : Number(creditAmount);
+    const initialPayment = creditAmount ?? 0;
     if (!Number.isFinite(initialPayment) || initialPayment < 0) {
       toast({
         title: t('common.error'),
@@ -4703,7 +5276,7 @@ export default function POSTerminal() {
       return;
     }
 
-    const priorAmt = includePriorDebtInPayment ? priorDebtInSaleCurrency : 0;
+    const priorAmt = includePriorDebtInPayment ? priorDebtForCheckout : 0;
     const toPriorRaw = priorAmt > 0 ? Math.min(initialPayment, priorAmt) : 0;
     const toPrior = Number.isFinite(toPriorRaw) ? Math.max(0, toPriorRaw) : 0;
     const safePriorPaymentAmount = Math.round(toPrior);
@@ -4723,10 +5296,26 @@ export default function POSTerminal() {
       }
     }
 
+    if (merchCredit > 0.01 && !creditDueDate) {
+      toast({
+        title: 'Qarz qaytarish sanasi',
+        description: 'Nasiya uchun muddat sanasini tanlang.',
+        variant: 'destructive',
+      });
+      return;
+    }
+
     // Process credit sale (full or partial)
     setIsProcessingPayment(true);
     try {
-      const replacesOrderIdForSale = importedOrderIdForEdit ?? readPosReplacesOrderId();
+      const importedHoldOrderIdForSale = importedHoldOrderId;
+      const replacesOrderIdForSale = resolveReplacesOrderIdForCheckout(
+        importedOrderIdForEditRef.current,
+        importedHoldOrderIdRef.current,
+      );
+      // Stable per-checkout idempotency key (reused on retry) — same guard as
+      // the cash/card path so a slow/429 re-submit cannot create a duplicate.
+      const checkoutIdempotencyKey = getOrCreateCheckoutIdempotencyKey();
       const orderItems = buildOrderItemsSnapshot(checkoutCart, globalDiscountAmount + loyaltyDiscountUzs);
 
       let result: {
@@ -4760,6 +5349,7 @@ export default function POSTerminal() {
         const applyPrepaid = orderCash > total + 0.01;
         const order: Record<string, unknown> = {
           order_number: '',
+          order_uuid: checkoutIdempotencyKey,
           customer_id: selectedCustomer.id,
           cashier_id: profile.id,
           shift_id: currentShift?.id || null,
@@ -4776,7 +5366,12 @@ export default function POSTerminal() {
           payment_status: (merchCredit > 0.01 ? 'partially_paid' : 'paid') as 'partially_paid' | 'paid',
           notes: null,
           apply_overpay_as_prepaid: applyPrepaid,
+          ...(merchCredit > 0.01 && creditDueDate ? { due_date: creditDueDate } : {}),
+          ...(merchCredit > 0.01 && creditReminderNote.trim()
+            ? { credit_reminder_note: creditReminderNote.trim() }
+            : {}),
           ...(loyaltyRedeemPointsApplied > 0 ? { loyalty_redeem_points: loyaltyRedeemPointsApplied } : {}),
+          ...(selectedBonusReferrer?.id ? { bonus_referrer_customer_id: selectedBonusReferrer.id } : {}),
           ...orderCurrencyFields(saleCurrency, saleFxRate),
           ...(replacesOrderIdForSale ? { replaces_order_id: replacesOrderIdForSale } : {}),
         };
@@ -4817,7 +5412,11 @@ export default function POSTerminal() {
           tax_amount: 0,
           total_amount: total,
           notes: undefined,
+          order_uuid: checkoutIdempotencyKey,
+          ...(creditDueDate ? { due_date: creditDueDate } : {}),
+          ...(creditReminderNote.trim() ? { credit_reminder_note: creditReminderNote.trim() } : {}),
           ...(loyaltyRedeemPointsApplied > 0 ? { loyalty_redeem_points: loyaltyRedeemPointsApplied } : {}),
+          ...(selectedBonusReferrer?.id ? { bonus_referrer_customer_id: selectedBonusReferrer.id } : {}),
           ...orderCurrencyFields(saleCurrency, saleFxRate),
           ...(replacesOrderIdForSale ? { replaces_order_id: replacesOrderIdForSale } : {}),
         });
@@ -4830,8 +5429,11 @@ export default function POSTerminal() {
         throw new Error(result.error || 'Failed to create credit order');
       }
 
+      checkoutIdempotencyKeyRef.current = null;
+      clearCartAndNavDraft();
+
       if (replacesOrderIdForSale) {
-        void loadAllProducts();
+        void refreshCatalog();
       }
 
       if (importedWebOrderId) {
@@ -4845,6 +5447,8 @@ export default function POSTerminal() {
           });
         }
       }
+
+      await voidImportedHoldOrderAfterSale(importedHoldOrderIdForSale);
 
       // CRITICAL: Ensure we have order_number for receipt (backend may not return it in some edge cases)
       let orderNumber = result.order_number;
@@ -4863,7 +5467,7 @@ export default function POSTerminal() {
       const finalBal = Number(result.new_balance ?? projectedBalance);
       const nextReceipt = {
         orderNumber: orderNumber || 'N/A',
-        items: cart,
+        items: checkoutCart,
         customer: selectedCustomer,
         subtotal,
         discountAmount,
@@ -4933,11 +5537,7 @@ export default function POSTerminal() {
         );
       }
 
-      // Clear cart and reset state so the next sale starts clean.
-      setCart([]);
-      setImportedWebOrderId(null);
-      setImportedOrderIdForEdit(null);
-      persistPosReplacesOrderId(null);
+      clearPosSaleImportContext();
       setPayments([]);
       setDiscount({ type: 'amount', value: '' });
       setPromoCodeInput('');
@@ -4945,7 +5545,7 @@ export default function POSTerminal() {
       resetCustomerSelection();
       setPaymentDialogOpen(false);
       setCashReceived(null);
-      setCreditAmount('');
+      setCreditAmount(null);
       setSelectedCartIndex(-1);
 
       // Refresh customer data to ensure sync
@@ -4969,6 +5569,9 @@ export default function POSTerminal() {
         variant: 'destructive',
         duration: 10000,
       });
+      if (isPosAmendCheckoutError(errorMessage)) {
+        clearPosSaleImportContext();
+      }
     } finally {
       setIsProcessingPayment(false);
     }
@@ -4985,11 +5588,8 @@ export default function POSTerminal() {
   } = totals;
 
   const checkoutGrandTotal = useMemo(() => {
-    if (total <= 0) return total;
-    const extra =
-      includePriorDebtInPayment && priorDebtInSaleCurrency > 0 ? priorDebtInSaleCurrency : 0;
-    return total + extra;
-  }, [total, includePriorDebtInPayment, priorDebtInSaleCurrency]);
+    return computeCheckoutGrandTotal(total, priorDebtForCheckout, includePriorDebtInPayment);
+  }, [total, includePriorDebtInPayment, priorDebtForCheckout]);
 
   // Memoize paid amount calculation
   const paidAmount = useMemo(() => {
@@ -5162,9 +5762,13 @@ export default function POSTerminal() {
     return allProducts;
   }, [searchResults, allProducts, selectedCategory, categories]);
 
-  const MAX_DISPLAY = 300;
-  const isTruncated = displayProducts.length > MAX_DISPLAY;
-  const visibleProducts = isTruncated ? displayProducts.slice(0, MAX_DISPLAY) : displayProducts;
+  const MAX_DISPLAY = displayProducts.length;
+  const isTruncated = false;
+  const visibleProducts = displayProducts;
+  const categoryNameById = useMemo(
+    () => Object.fromEntries(categories.map((c) => [c.id, c.name])),
+    [categories],
+  );
   useEffect(() => {
     let cancelled = false;
     void loadRetailUsdPricesForProducts(visibleProducts).then((map) => {
@@ -5206,9 +5810,9 @@ export default function POSTerminal() {
             <Lock className="h-10 w-10 text-muted-foreground" />
           </div>
           <div>
-            <h2 className="text-2xl font-bold mb-2">Kassa yopiq</h2>
+            <h2 className="text-2xl font-bold mb-2">{t('pos.shift_closed_title')}</h2>
             <p className="text-muted-foreground">
-              To start selling, please open a new shift.
+              {t('pos.shift_closed_hint')}
             </p>
           </div>
           <ShiftControl />
@@ -5231,127 +5835,155 @@ export default function POSTerminal() {
     <>
       {/* Split View: flex-1 + min-h-0 — mahsulot va savat viewport bo‘yicha cho‘ziladi */}
       {/* Chap/yuqori/pastki: layout paddingini yutish; o‘ng tomonda padding yo‘q */}
-      <div className="-mb-4 -ml-4 -mt-4 flex h-full min-h-0 w-full min-w-0 max-w-none flex-1 flex-col self-stretch overflow-x-hidden xl:-mb-6 xl:-ml-6 xl:-mt-6">
-        {/* xl: mahsulot | savat+rail — to‘liq kenglik */}
-        <div className="flex min-h-0 min-w-0 w-full max-w-none flex-1 flex-col gap-2 pl-2 pt-2 pb-0 pr-0 sm:gap-3 md:gap-4 md:pl-3 md:pt-3 md:pb-0 md:pr-0 xl:flex-row xl:flex-nowrap xl:items-stretch xl:gap-0 xl:pl-3 xl:pt-3 xl:pb-0 xl:!pr-0">
+      <div className="-mb-4 -ml-4 -mr-4 -mt-4 flex h-full min-h-0 w-full min-w-0 max-w-none flex-1 flex-col self-stretch overflow-x-hidden xl:-mb-6 xl:-ml-6 xl:-mr-6 xl:-mt-6">
+        {/* xl: mahsulot | savat+rail — savat kengligi barqaror, rail o‘ng chetga */}
+        <div className="flex min-h-0 min-w-0 w-full max-w-none flex-1 flex-col gap-2 pl-2 pt-2 pb-0 pr-0 sm:gap-3 md:gap-4 md:pl-3 md:pt-3 md:pb-0 md:pr-0 xl:flex-row xl:flex-nowrap xl:items-stretch xl:gap-0 xl:pl-3 xl:pt-3 xl:pb-0 xl:pr-0">
           {/* Left Column - Product Catalog */}
-          <div className="flex min-h-0 min-w-0 flex-col overflow-hidden rounded-xl border bg-white xl:w-0 xl:min-w-0 xl:shrink xl:grow-[1.45] xl:basis-0 xl:pr-3">
-            {/* Shift Control - Left column only */}
-            <div className="flex-shrink-0 border-b bg-white dark:bg-gray-900 p-2 md:p-3">
-              <div className="flex items-center justify-between gap-2 flex-wrap">
-                <div className="flex items-center gap-2 flex-wrap">
-                  <ShiftControl />
-                  <NetworkBadge />
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="sm"
-                    className="h-8 gap-1.5 text-xs"
-                    onClick={() => navigate('/customers')}
-                  >
-                    <Users className="h-3.5 w-3.5" />
-                    {t('navigation.customers')}
-                  </Button>
-                  <div className="flex flex-col gap-0.5">
-                    <div className="flex items-center gap-1 rounded-md border p-0.5">
+          <div className="flex min-h-0 min-w-0 flex-col overflow-hidden rounded-xl border border-border bg-white xl:min-w-0 xl:flex-1 xl:pr-3">
+            {/* Compact toolbar + search — single header block */}
+            <div className="flex-shrink-0 border-b bg-white px-2 py-1.5 dark:bg-gray-900">
+              {scanIndexLoading && (
+                <p className="mb-1 flex items-center gap-1 text-[10px] text-muted-foreground">
+                  <Loader2 className="h-2.5 w-2.5 animate-spin shrink-0" aria-hidden />
+                  Katalog yuklanmoqda…
+                </p>
+              )}
+              <TooltipProvider delayDuration={300}>
+                <div className="flex min-w-0 items-center gap-1">
+                  <ShiftControl compact />
+                  <div className="mx-0.5 hidden h-4 w-px shrink-0 bg-border sm:block" aria-hidden />
+                  <NetworkBadge compact />
+                  <Tooltip>
+                    <TooltipTrigger asChild>
                       <Button
                         type="button"
-                        size="sm"
-                        variant={saleCurrency === 'UZS' ? 'default' : 'ghost'}
-                        className="h-7 px-2.5 text-xs"
-                        disabled={saleFxLoading}
-                        onClick={() => setSaleCurrency('UZS')}
+                        variant="outline"
+                        size="icon"
+                        className="h-7 w-7 shrink-0"
+                        onClick={() => navigate('/customers')}
+                        aria-label={t('navigation.customers')}
                       >
-                        UZS
+                        <Users className="h-3.5 w-3.5" />
                       </Button>
-                      <Button
+                    </TooltipTrigger>
+                    <TooltipContent side="bottom">{t('navigation.customers')}</TooltipContent>
+                  </Tooltip>
+                  {isPaymentEnabled('credit') && saleCurrency !== 'USD' && (
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="icon"
+                          className="h-7 w-7 shrink-0"
+                          onClick={() => setCreditDebtsOpen(true)}
+                          aria-label="Qarzlar (nasiya)"
+                        >
+                          <CalendarClock className="h-3.5 w-3.5" />
+                        </Button>
+                      </TooltipTrigger>
+                      <TooltipContent side="bottom">Qarzlar (nasiya)</TooltipContent>
+                    </Tooltip>
+                  )}
+                  <div className="relative min-w-[6rem] flex-1">
+                    <Search className="pointer-events-none absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
+                    <Input
+                      ref={searchInputRef}
+                      placeholder={t('pos.search_placeholder')}
+                      value={searchTerm}
+                      onChange={(e) => handleSearch(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') {
+                          e.preventDefault();
+                          if (searchResults.length > 0) {
+                            requestAddToCart(searchResults[0]);
+                            focusSearchInput();
+                            return;
+                          }
+                          const raw = (e.currentTarget as HTMLInputElement)?.value || '';
+                          if (raw) handleBarcodeSearch(raw, { clearSearch: true });
+                        }
+                      }}
+                      className={cn(
+                        'h-8 pl-7 text-xs font-medium',
+                        searchTerm ? 'pr-7' : 'pr-2',
+                      )}
+                      autoFocus
+                    />
+                    {searchTerm && (
+                      <button
                         type="button"
-                        size="sm"
-                        variant={saleCurrency === 'USD' ? 'default' : 'ghost'}
-                        className="h-7 px-2.5 text-xs"
-                        disabled={saleFxLoading}
-                        onClick={() => setSaleCurrency('USD')}
+                        onClick={() => {
+                          setSearchTerm('');
+                          setSearchResults([]);
+                          setRecentPosSearches(getRecentSearches('pos'));
+                          searchInputRef.current?.focus();
+                        }}
+                        className="absolute right-1.5 top-1/2 flex h-5 w-5 -translate-y-1/2 items-center justify-center rounded text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+                        aria-label="Qidiruvni tozalash"
                       >
-                        USD
-                      </Button>
-                    </div>
-                    {saleCurrency === 'USD' && saleFxRate != null && saleFxRate > 0 && (
-                      <span className="text-[10px] text-muted-foreground tabular-nums px-0.5">
-                        1 USD = {formatMoney(saleFxRate, 'UZS')}
-                      </span>
+                        <X className="h-3 w-3" />
+                      </button>
                     )}
                   </div>
-                </div>
-                <PosDeviceBar
-                  onWeigh={(weightKg, unit) => {
-                    const normalize = (v: unknown) => String(v ?? '').trim().toLowerCase();
-                    const isKg = (tok: string) =>
-                      tok === 'kg' || tok === 'кг' || tok.startsWith('kg') || tok.includes('kilogram') || tok.includes('килограмм');
-                    const selected =
-                      selectedCartIndex >= 0 && selectedCartIndex < cart.length
-                        ? cart[selectedCartIndex]
-                        : null;
-                    if (!selected) return true;
-                    const saleUnit = normalize(selected.sale_unit || selected.product.unit || selected.product.base_unit || '');
-                    if (!isKg(saleUnit) && !isKg(normalize(unit))) return true;
-                    const sign = Number(selected.qty_sale ?? selected.quantity ?? 1) < 0 ? -1 : 1;
-                    updateQuantity(selected.product.id, sign * weightKg);
-                    toast({
-                      title: t('pos.device_bar.applied_title'),
-                      description: `${selected.product.name}: ${weightKg.toFixed(3)} ${unit}`,
-                    });
-                    return false;
-                  }}
-                />
-              </div>
-            </div>
-            {/* Search Header - Fixed Height */}
-            <div className="flex-shrink-0 p-3 border-b bg-white dark:bg-gray-900">
-              <div className="relative mb-2">
-                <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-                <Input
-                  ref={searchInputRef}
-                  placeholder={t('pos.search_placeholder')}
-                  value={searchTerm}
-                  onChange={(e) => handleSearch(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter') {
-                      e.preventDefault();
-                      // Prefer manual search add; fallback to barcode flow
-                      if (searchResults.length > 0) {
-                        requestAddToCart(searchResults[0]);
-                        focusSearchInput();
-                        return;
-                      }
-                      // Use the actual input value to avoid React state lag with fast scanners
-                      const raw = (e.currentTarget as HTMLInputElement)?.value || '';
-                      if (raw) handleBarcodeSearch(raw, { clearSearch: true });
+                  <div
+                    className="flex shrink-0 items-center gap-0.5 rounded-md border p-0.5"
+                    title={
+                      saleCurrency === 'USD' && saleFxRate != null && saleFxRate > 0
+                        ? `1 USD = ${formatMoney(saleFxRate, 'UZS')}`
+                        : undefined
                     }
-                  }}
-                  className={`pl-10 ${searchTerm ? 'pr-10' : ''} h-12 text-base font-medium`}
-                  autoFocus
-                />
-                {searchTerm && (
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setSearchTerm('');
-                      setSearchResults([]);
-                      setRecentPosSearches(getRecentSearches('pos'));
-                      searchInputRef.current?.focus();
-                    }}
-                    className="absolute right-3 top-1/2 transform -translate-y-1/2 h-5 w-5 flex items-center justify-center text-muted-foreground hover:text-foreground hover:bg-gray-100 dark:hover:bg-gray-800 rounded transition-colors"
                   >
-                    <X className="h-4 w-4" />
-                  </button>
-                )}
-              </div>
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant={saleCurrency === 'UZS' ? 'default' : 'ghost'}
+                      className="h-6 px-2 text-[10px]"
+                      disabled={saleFxLoading}
+                      onClick={() => setSaleCurrency('UZS')}
+                    >
+                      UZS
+                    </Button>
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant={saleCurrency === 'USD' ? 'default' : 'ghost'}
+                      className="h-6 px-2 text-[10px]"
+                      disabled={saleFxLoading}
+                      onClick={() => setSaleCurrency('USD')}
+                    >
+                      USD
+                    </Button>
+                  </div>
+                  <PosDeviceBar
+                    className="shrink-0"
+                    onWeigh={(weightKg, unit) => {
+                      const normalize = (v: unknown) => String(v ?? '').trim().toLowerCase();
+                      const isKg = (tok: string) =>
+                        tok === 'kg' || tok === 'кг' || tok.startsWith('kg') || tok.includes('kilogram') || tok.includes('килограмм');
+                      const selected =
+                        selectedCartIndex >= 0 && selectedCartIndex < cart.length
+                          ? cart[selectedCartIndex]
+                          : null;
+                      if (!selected) return true;
+                      const saleUnit = normalize(selected.sale_unit || selected.product.unit || selected.product.base_unit || '');
+                      if (!isKg(saleUnit) && !isKg(normalize(unit))) return true;
+                      const sign = Number(selected.qty_sale ?? selected.quantity ?? 1) < 0 ? -1 : 1;
+                      updateQuantity(selected.product.id, sign * weightKg);
+                      toast({
+                        title: t('pos.device_bar.applied_title'),
+                        description: `${selected.product.name}: ${weightKg.toFixed(3)} ${unit}`,
+                      });
+                      return false;
+                    }}
+                  />
+                </div>
+              </TooltipProvider>
 
-              {/* Recent Searches - shown when input is empty */}
               {!searchTerm && recentPosSearches.length > 0 && (
-                <div className="flex items-center gap-1.5 flex-wrap mb-2">
-                  <span className="text-xs text-muted-foreground shrink-0">Oxirgi:</span>
-                  {recentPosSearches.slice(0, 6).map((s) => (
+                <div className="mt-1 flex min-w-0 items-center gap-1 overflow-x-auto pb-0.5 [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+                  <span className="shrink-0 text-[10px] text-muted-foreground">Oxirgi:</span>
+                  {recentPosSearches.slice(0, 8).map((s) => (
                     <button
                       key={s}
                       type="button"
@@ -5359,12 +5991,13 @@ export default function POSTerminal() {
                         handleSearch(s);
                         if (searchInputRef.current) searchInputRef.current.value = s;
                       }}
-                      className="group flex items-center gap-1 px-2 py-0.5 rounded-full bg-muted hover:bg-primary/10 text-xs text-muted-foreground hover:text-primary transition-colors"
+                      className="group flex max-w-[8rem] shrink-0 items-center gap-0.5 rounded-full bg-muted px-1.5 py-px text-[10px] text-muted-foreground transition-colors hover:bg-primary/10 hover:text-primary"
+                      title={s}
                     >
-                      <Clock className="h-3 w-3 shrink-0" />
-                      {s}
+                      <Clock className="h-2.5 w-2.5 shrink-0" />
+                      <span className="truncate">{s}</span>
                       <span
-                        className="hidden group-hover:inline-flex items-center justify-center h-3 w-3 rounded-full hover:bg-destructive/20 hover:text-destructive"
+                        className="hidden h-3 w-3 shrink-0 items-center justify-center rounded-full group-hover:inline-flex hover:bg-destructive/20 hover:text-destructive"
                         onClick={(e) => {
                           e.stopPropagation();
                           removeRecentSearch('pos', s);
@@ -5377,506 +6010,67 @@ export default function POSTerminal() {
                   ))}
                 </div>
               )}
-
             </div>
 
-            {/* Product List - Scrollable - Takes Remaining Space */}
-            <div className="flex-1 min-h-0 overflow-y-auto">
-              {visibleProducts.length > 0 ? (
-                <div className="w-full">
-                  {/* Header Row */}
-                  <div className="grid grid-cols-12 items-center gap-3 px-3 py-1.5 bg-gray-50 dark:bg-gray-900 border-b border-gray-200 dark:border-gray-700 sticky top-0 z-10">
-                    <div className="col-span-6">
-                      <div className="flex min-w-0 items-center gap-2">
-                        <span className="text-[10px] font-bold uppercase text-gray-400 dark:text-gray-500">Mahsulot Nomi</span>
-                        {isTruncated && (
-                          <span className="truncate text-[10px] font-medium text-muted-foreground">
-                            {MAX_DISPLAY}/{displayProducts.length}
-                          </span>
-                        )}
-                      </div>
-                    </div>
-                    <div className="col-span-2 text-right">
-                      <span className="text-[10px] font-bold uppercase text-gray-400 dark:text-gray-500">Narxi</span>
-                    </div>
-                    <div className="col-span-1 text-center">
-                      <span className="sr-only">Savatga qo&apos;shish</span>
-                      <Plus className="mx-auto h-3 w-3 text-gray-400 dark:text-gray-500" aria-hidden />
-                    </div>
-                    <div className="col-span-3 text-right">
-                      <span className="text-[10px] font-bold uppercase text-gray-400 dark:text-gray-500">Ombor</span>
-                    </div>
-                  </div>
-                  
-                  {/* Product Rows */}
-                  <div className="divide-y divide-gray-200 dark:divide-gray-700">
-                    {visibleProducts.map((product) => (
-                      <div
-                        key={product.id}
-                        role="button"
-                        tabIndex={0}
-                        onClick={() => {
-                          void requestAddToCart(product);
-                          focusSearchInput();
-                        }}
-                        onKeyDown={(e) => {
-                          if (e.target !== e.currentTarget) return;
-                          if (e.key === 'Enter' || e.key === ' ') {
-                            e.preventDefault();
-                            void requestAddToCart(product);
-                            focusSearchInput();
-                          }
-                        }}
-                        className={cn(
-                          'w-full grid grid-cols-12 items-center gap-4 p-3 border-b border-gray-200 dark:border-gray-700 hover:bg-blue-50 dark:hover:bg-blue-900/20 cursor-pointer transition-colors bg-white dark:bg-gray-800',
-                          !productShowInMarketplace(product) && 'opacity-[0.92]',
-                        )}
-                      >
-                        {/* Column 1: Product Name (Span 6) */}
-                        <div className="col-span-6 text-left">
-                          <div className="flex items-center gap-2">
-                            <div className="h-10 w-10 rounded-lg bg-muted flex-shrink-0 overflow-hidden flex items-center justify-center">
-                              {product.image_url ? (
-                                <img
-                                  src={getProductImageDisplayUrl(product.image_url) || product.image_url}
-                                  alt=""
-                                  className="h-full w-full object-cover"
-                                />
-                              ) : (
-                                <Package className="h-5 w-5 text-muted-foreground" />
-                              )}
-                            </div>
-                            <div className="min-w-0 flex-1">
-                              <div className="flex items-center gap-2">
-                                <h3 className="font-bold text-gray-800 dark:text-gray-100 text-sm truncate">
-                                  {searchTerm ? highlightMatch(product.name, searchTerm) : product.name}
-                                </h3>
-                                {hasPromoForProduct(product) && (
-                                  <span className="shrink-0 px-1.5 py-0.5 text-[10px] font-medium rounded bg-green-600 text-white">
-                                    Aksiya
-                                  </span>
-                                )}
-                                {productShowInMarketplace(product) ? (
-                                  <Badge
-                                    variant="secondary"
-                                    className="h-5 shrink-0 gap-0.5 border border-primary/20 bg-primary/10 px-1.5 text-[10px] font-medium text-primary"
-                                  >
-                                    <Store className="h-3 w-3" aria-hidden />
-                                    {t('pos.marketplace_on')}
-                                  </Badge>
-                                ) : (
-                                  <Badge
-                                    variant="outline"
-                                    className="h-5 shrink-0 px-1.5 text-[10px] font-normal text-muted-foreground"
-                                  >
-                                    {t('pos.marketplace_off')}
-                                  </Badge>
-                                )}
-                              </div>
-                              <div className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0.5">
-                                <span className="text-xs text-muted-foreground">
-                                  SKU: {renderSkuWithHighlight(product.sku, searchTerm)}
-                                </span>
-                                <span className="text-xs text-muted-foreground" aria-hidden>
-                                  •
-                                </span>
-                                <span className="text-xs text-muted-foreground">
-                                  Birlik: {formatUnit(product.unit) || 'Dona'}
-                                </span>
-                              </div>
-                              {(product.article || product.brand) && (
-                                <div className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0.5">
-                                  {product.article ? (
-                                    <span className="text-xs text-muted-foreground">
-                                      Artikul:{' '}
-                                      {searchTerm
-                                        ? highlightMatch(product.article, searchTerm)
-                                        : product.article}
-                                    </span>
-                                  ) : null}
-                                  {product.article && product.brand ? (
-                                    <span className="text-xs text-muted-foreground" aria-hidden>
-                                      •
-                                    </span>
-                                  ) : null}
-                                  {product.brand ? (
-                                    <span className="text-xs text-muted-foreground">
-                                      Brend:{' '}
-                                      {searchTerm
-                                        ? highlightMatch(product.brand, searchTerm)
-                                        : product.brand}
-                                    </span>
-                                  ) : null}
-                                </div>
-                              )}
-                              {Array.isArray(product.variant_options) && product.variant_options.length > 0 ? (
-                                <div className="mt-1 truncate text-[10px] leading-snug text-muted-foreground">
-                                  {product.variant_options
-                                    .slice(0, 4)
-                                    .map((o) => `${o.name}: ${o.value}`)
-                                    .join(' · ')}
-                                </div>
-                              ) : null}
-                            </div>
-                          </div>
-                        </div>
-                        
-                        {/* Column 2: Price (Span 2) */}
-                        <div className="col-span-2 text-right">
-                          {saleCurrency === 'USD' ? (
-                            <>
-                              <p className="font-bold text-blue-600 dark:text-blue-400 text-sm">
-                                {usdRetailByProductId[product.id] != null
-                                  ? formatMoney(usdRetailByProductId[product.id], 'USD')
-                                  : '—'}
-                              </p>
-                              <p className="text-xs text-muted-foreground">
-                                {formatMoney(Number(product.sale_price || 0), 'UZS')}
-                              </p>
-                            </>
-                          ) : (
-                            <>
-                              <p className="font-bold text-blue-600 dark:text-blue-400 text-sm">
-                                {formatCurrency(Number(product.sale_price))}
-                              </p>
-                              {usdRetailByProductId[product.id] != null && (
-                                <p className="text-xs text-muted-foreground">
-                                  {formatMoney(usdRetailByProductId[product.id], 'USD')}
-                                </p>
-                              )}
-                            </>
-                          )}
-                        </div>
-
-                        {/* Column 3: Quick add 1 unit */}
-                        <div className="col-span-1 flex justify-center">
-                          <Button
-                            type="button"
-                            size="icon"
-                            variant="secondary"
-                            className="h-9 w-9 shrink-0 rounded-lg border border-primary/30 bg-primary/10 text-primary hover:bg-primary hover:text-primary-foreground"
-                            aria-label={`${product.name} — 1 dona savatga qo'shish`}
-                            title="1 dona savatga qo'shish"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              void quickAddOneToCart(product);
-                            }}
-                          >
-                            <Plus className="h-4 w-4" aria-hidden />
-                          </Button>
-                        </div>
-                        
-                        {/* Column 4: Stock (Span 3) */}
-                        <div className="col-span-3 text-right">
-                          <span className={`text-xs px-2 py-1 rounded ${
-                            product.current_stock === 0
-                              ? 'text-red-600 font-bold bg-red-50 dark:bg-red-900/30 dark:text-red-400'
-                              : product.current_stock < 10
-                              ? 'text-orange-500 font-medium'
-                              : 'text-green-600'
-                          }`}>
-                            {product.current_stock}
-                          </span>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              ) : (
-                <div className="flex items-center justify-center h-full text-muted-foreground p-3">
-                  <div className="text-center">
-                    <Package className="h-12 w-12 mx-auto mb-3 opacity-50" />
-                    <p className="text-base font-medium">{t('pos.no_products')}</p>
-                    <p className="text-xs mt-1">{t('pos.try_searching')}</p>
-                  </div>
-                </div>
-              )}
+            {/* Product List - virtualized grid (cart updates do not re-render rows when props stable) */}
+            <div className="flex min-h-0 flex-1 flex-col">
+              <PosProductGrid
+                products={visibleProducts}
+                totalCount={displayProducts.length}
+                isTruncated={isTruncated}
+                maxDisplay={MAX_DISPLAY}
+                searchTerm={searchTerm}
+                saleCurrency={saleCurrency}
+                usdRetailByProductId={usdRetailByProductId}
+                formatCurrency={formatCurrency}
+                formatMoney={formatMoney}
+                hasPromoForProduct={hasPromoForProduct}
+                onRequestAddToCart={requestAddToCart}
+                onQuickAddOneToCart={quickAddOneToCart}
+                onFocusSearch={focusSearchInput}
+                renderSkuWithHighlight={renderSkuWithHighlight}
+                categoryNameById={categoryNameById}
+                t={t}
+              />
             </div>
           </div>
 
-          {/* Savat + rail: kichik ekranda bitta karta; xl da ikki bolali wrapper (contents emas) — o‘ng chetga cho‘zilish barqaror */}
-          <div
-            className={cn(
-              'flex min-h-[min(280px,min(48vh,52dvh))] min-h-0 w-full min-w-0 flex-1 flex-row overflow-hidden rounded-xl border border-border bg-white xl:h-full xl:max-h-full xl:min-h-0 xl:w-0 xl:min-w-0 xl:shrink xl:basis-0 xl:flex-row xl:items-stretch xl:overflow-hidden xl:rounded-none xl:border-0 xl:bg-transparent',
-              cart.length === 0 ? 'xl:grow-[0.72]' : 'xl:grow-[0.9]'
-            )}
-          >
-            <div className="flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden rounded-xl border border-border bg-white xl:min-h-0 xl:min-w-0 xl:shrink xl:grow xl:basis-0 xl:rounded-xl xl:rounded-r-none xl:border xl:border-r-0 xl:border-border">
-            {/* Top Section - Header: Customer Selection/Search (Fixed) */}
-            <div className="flex-shrink-0 border-b bg-white dark:bg-gray-900 p-2 space-y-1 md:p-3 md:space-y-2">
-              <div className="space-y-1 md:space-y-2">
-              <Label className="text-sm font-semibold">{t('pos.customer')}</Label>
-              <div className="flex w-full min-w-0 flex-col gap-2">
-                <div className="min-w-0 flex-1">
-                <Popover 
-                  open={customerComboboxOpen} 
-                  onOpenChange={(open) => {
-                    setCustomerComboboxOpen(open);
-                    if (!open) {
-                      // Reset search when closing
-                      setCustomerSearchTerm('');
-                    }
-                  }}
-                >
-                  <PopoverTrigger asChild>
-                    <Button
-                      variant="outline"
-                      role="combobox"
-                      aria-expanded={customerComboboxOpen}
-                      className="h-9 w-full min-w-0 justify-between"
-                    >
-                      {selectedCustomer 
-                        ? `${selectedCustomer.name}${selectedCustomer.phone ? ` - ${selectedCustomer.phone}` : ''}`
-                        : t('pos.select_customer')}
-                      <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
-                    </Button>
-                  </PopoverTrigger>
-                  <PopoverContent
-                    className="w-[min(92vw,28rem)] p-0 sm:w-[min(90vw,30rem)]"
-                    align="start"
-                  >
-                    <Command 
-                      shouldFilter={false} 
-                      className="[&_[data-slot=command-input-wrapper]]:border-b [&_[data-slot=command-input-wrapper]]:border-border/40 [&_[data-slot=command-input-wrapper]]:bg-transparent [&_[data-slot=command-input-wrapper]_svg]:text-gray-400 [&_[data-slot=command-input-wrapper]_svg]:opacity-60"
-                    >
-                      <CommandInput 
-                        placeholder={t('pos.search_customer')} 
-                        value={customerSearchTerm}
-                        onValueChange={setCustomerSearchTerm}
-                        className="border-0 focus:ring-0 focus:ring-offset-0 focus-visible:ring-0 focus-visible:ring-offset-0 outline-none bg-transparent shadow-none ring-0"
-                      />
-                      <CommandList className="max-h-[min(55vh,22rem)]">
-                        <CommandEmpty>{t('pos.no_customer_found')}</CommandEmpty>
-                        <CommandGroup>
-                          <CommandItem
-                            value="walk-in"
-                            onSelect={() => {
-                              applySelectedCustomer(null);
-                            }}
-                          >
-                            <Check
-                              className={cn(
-                                "mr-2 h-4 w-4",
-                                !selectedCustomer ? "opacity-100" : "opacity-0"
-                              )}
-                            />
-                            {t('pos.walk_in_customer')}
-                          </CommandItem>
-                          {customers
-                            .filter((customer) => {
-                              if (!customerSearchTerm) return true;
-                              const searchLower = customerSearchTerm.toLowerCase();
-                              return (
-                                customer.name.toLowerCase().includes(searchLower) ||
-                                (customer.phone && customer.phone.toLowerCase().includes(searchLower)) ||
-                                customer.id.toLowerCase().includes(searchLower)
-                              );
-                            })
-                            .sort((a, b) => {
-                              // No search: keep debt customers near top for quicker cashier handling.
-                              if (!customerSearchTerm) {
-                                const aDebt = Number(a.balance || 0) < 0 ? 1 : 0;
-                                const bDebt = Number(b.balance || 0) < 0 ? 1 : 0;
-                                if (aDebt !== bDebt) return bDebt - aDebt;
-                              }
-                              return a.name.localeCompare(b.name);
-                            })
-                            .map((customer) => (
-                              <CommandItem
-                                key={customer.id}
-                                value={`${customer.id}-${customer.name}-${customer.phone || ''}`}
-                                onSelect={() => {
-                                  applySelectedCustomer(customer);
-                                }}
-                              >
-                                <Check
-                                  className={cn(
-                                    "mr-2 h-4 w-4",
-                                    selectedCustomer?.id === customer.id ? "opacity-100" : "opacity-0"
-                                  )}
-                                />
-                                <span className="flex min-w-0 flex-1 flex-col gap-1 py-0.5">
-                                  <span className="min-w-0">
-                                    <span className="block truncate font-medium">{customer.name}</span>
-                                    {customer.phone && (
-                                      <span className="block text-xs text-muted-foreground">{customer.phone}</span>
-                                    )}
-                                    {customer.id && (
-                                      <span className="block text-[11px] text-muted-foreground">
-                                        ({customer.id.slice(0, 8)})
-                                      </span>
-                                    )}
-                                  </span>
-                                  <span className="flex min-w-0 flex-wrap items-center gap-1">
-                                    {(() => {
-                                      const b = getCustomerBalances(customer);
-                                      const uzsInfo = formatCustomerBalance(b.uzs, 'UZS');
-                                      const usdInfo = formatCustomerBalance(b.usd, 'USD');
-                                      if (uzsInfo.type === 'zero' && Math.abs(b.usd) <= 0.0001) return null;
-                                      return (
-                                        <span className="flex flex-wrap gap-1">
-                                          {uzsInfo.type !== 'zero' && (
-                                            <span
-                                              className={cn(
-                                                'rounded px-1.5 py-0.5 text-[10px]',
-                                                uzsInfo.type === 'debt'
-                                                  ? 'bg-destructive/10 text-destructive'
-                                                  : 'bg-emerald-600/15 text-emerald-700 dark:text-emerald-400'
-                                              )}
-                                            >
-                                              {uzsInfo.label}
-                                            </span>
-                                          )}
-                                          {Math.abs(b.usd) > 0.0001 && (
-                                            <span
-                                              className={cn(
-                                                'rounded px-1.5 py-0.5 text-[10px]',
-                                                usdInfo.type === 'debt'
-                                                  ? 'bg-destructive/10 text-destructive'
-                                                  : 'bg-emerald-600/15 text-emerald-700 dark:text-emerald-400'
-                                              )}
-                                            >
-                                              {usdInfo.label}
-                                            </span>
-                                          )}
-                                        </span>
-                                      );
-                                    })()}
-                                    {customer.status !== 'active' && (
-                                      <span className="rounded bg-amber-100 px-1.5 py-0.5 text-[10px] text-amber-800 dark:bg-amber-900/40 dark:text-amber-200">
-                                        Nofaol
-                                      </span>
-                                    )}
-                                  </span>
-                                </span>
-                              </CommandItem>
-                            ))}
-                        </CommandGroup>
-                      </CommandList>
-                    </Command>
-                  </PopoverContent>
-                </Popover>
-                </div>
-                {recentCustomers.length > 0 && (
-                  <div className="flex flex-wrap items-center gap-1.5 pt-1">
-                    <span className="text-[10px] text-muted-foreground">Oxirgilar:</span>
-                    {recentCustomers.map((customer) => {
-                      const debt = getCustomerDebtInCurrency(customer, saleCurrency);
-                      const credit = getCustomerCreditInCurrency(customer, saleCurrency);
-                      const isSelected = selectedCustomer?.id === customer.id;
-                      return (
-                        <button
-                          key={customer.id}
-                          type="button"
-                          onClick={() => applySelectedCustomer(customer)}
-                          className={cn(
-                            'inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] transition-colors',
-                            isSelected
-                              ? 'border-primary bg-primary/10 text-primary'
-                              : 'border-border bg-muted/40 text-foreground/80 hover:bg-muted'
-                          )}
-                        >
-                          <span className="max-w-[8rem] truncate">{customer.name}</span>
-                          {debt > 0 && (
-                            <span className="rounded bg-destructive/10 px-1 text-[9px] text-destructive">
-                              {formatCurrency(debt)}
-                            </span>
-                          )}
-                          {credit > 0 && (
-                            <span className="rounded bg-emerald-600/15 px-1 text-[9px] text-emerald-700 dark:text-emerald-400">
-                              {formatCurrency(credit)}
-                            </span>
-                          )}
-                        </button>
-                      );
-                    })}
-                  </div>
-                )}
-              </div>
-              {selectedCustomer && !isWalkInCustomer(selectedCustomer) && (
-                <div className="pt-1">
-                  <div className="flex flex-wrap items-center gap-2 rounded-md border border-border/60 bg-muted/30 px-2 py-1.5 text-xs">
-                    <span className="font-medium text-foreground">Holat:</span>
-                    <span className="rounded bg-slate-600 px-2 py-0.5 text-xs font-medium text-white dark:bg-slate-500">
-                      Tier: {String((selectedCustomer as any)?.pricing_tier || currentTierCode || 'retail')}
-                    </span>
-                    {String((selectedCustomer as any)?.pricing_tier || currentTierCode || 'retail') === 'master' && (
-                      <span className="rounded bg-indigo-600 px-2 py-0.5 text-xs font-medium text-white dark:bg-indigo-500">
-                        Bonus: {Number(selectedCustomer.bonus_points ?? 0)} ball
-                      </span>
-                    )}
-                    <span
-                      className={cn(
-                        'rounded px-1.5 py-0.5 font-medium',
-                        selectedCustomer.status === 'active'
-                          ? 'bg-emerald-600 text-white dark:bg-emerald-500'
-                          : 'bg-amber-600 text-white dark:bg-amber-500'
-                      )}
-                    >
-                      {selectedCustomer.status === 'active' ? 'Faol' : 'Nofaol'}
-                    </span>
-                    {(() => {
-                      const b = getCustomerBalances(selectedCustomer);
-                      const activeBal = saleCurrency === 'USD' ? b.usd : b.uzs;
-                      const activeInfo = formatCustomerBalance(activeBal, saleCurrency);
-                      const otherCur = saleCurrency === 'USD' ? 'UZS' : 'USD';
-                      const otherBal = saleCurrency === 'USD' ? b.uzs : b.usd;
-                      const otherInfo = formatCustomerBalance(otherBal, otherCur);
-                      const balanceLabel =
-                        activeInfo.type === 'debt'
-                          ? t('pos.customer_debt_label')
-                          : activeInfo.type === 'balance'
-                            ? t('pos.customer_credit_label')
-                            : t('pos.customer_balance_zero');
-
-                      return (
-                        <>
-                          <span className="text-foreground/80">{balanceLabel}:</span>
-                          <span className={cn('text-xs font-semibold', activeInfo.color)}>
-                            {activeInfo.type === 'zero'
-                              ? formatCurrency(0)
-                              : formatCurrency(
-                                  activeInfo.type === 'debt' ? priorDebtInSaleCurrency : priorCreditInSaleCurrency
-                                )}
-                          </span>
-                          {Math.abs(otherBal) > 0.0001 && (
-                            <span
-                              className={cn(
-                                'rounded px-1.5 py-0.5 text-[10px]',
-                                otherInfo.type === 'debt'
-                                  ? 'bg-destructive/10 text-destructive'
-                                  : 'bg-emerald-600/15 text-emerald-700 dark:text-emerald-400'
-                              )}
-                            >
-                              {otherInfo.label}
-                            </span>
-                          )}
-                          {priorDebtInSaleCurrency > 0 && (
-                            <Button
-                              variant="ghost"
-                              size="sm"
-                              className="ml-auto h-7 px-2 text-xs"
-                              onClick={() => setCustomerPaymentOpen(true)}
-                              disabled={selectedCustomer.status !== 'active'}
-                            >
-                              {t('pos.pay_customer_debt')}
-                            </Button>
-                          )}
-                        </>
-                      );
-                    })()}
-                  </div>
-                </div>
-              )}
-              </div>
-              
-            </div>
+          {/* Savat + rail: xl da qat’iy kenglik — savat tarkibidan qat’iy nazar o‘zgarmaydi */}
+          <div className="flex min-h-[min(280px,min(48vh,52dvh))] min-h-0 w-full min-w-0 flex-1 flex-row overflow-hidden rounded-xl border border-border bg-white xl:h-full xl:max-h-full xl:min-h-0 xl:w-[calc(470px+3.5rem)] xl:min-w-[calc(470px+3.5rem)] xl:max-w-[calc(470px+3.5rem)] xl:flex-none xl:flex-row xl:items-stretch xl:overflow-hidden xl:rounded-none xl:border-0 xl:bg-transparent">
+            <div className="flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden rounded-xl border border-border bg-white xl:w-[470px] xl:min-w-[470px] xl:max-w-[470px] xl:flex-none xl:rounded-xl xl:rounded-r-none xl:border xl:border-r-0 xl:border-border">
+            <PosCustomerReferrerPanel
+              t={t}
+              customers={customers}
+              recentCustomers={recentCustomers}
+              selectedCustomer={selectedCustomer}
+              selectedBonusReferrer={selectedBonusReferrer}
+              customerComboboxOpen={customerComboboxOpen}
+              setCustomerComboboxOpen={setCustomerComboboxOpen}
+              customerSearchTerm={customerSearchTerm}
+              setCustomerSearchTerm={setCustomerSearchTerm}
+              bonusReferrerComboboxOpen={bonusReferrerComboboxOpen}
+              setBonusReferrerComboboxOpen={setBonusReferrerComboboxOpen}
+              bonusReferrerSearchTerm={bonusReferrerSearchTerm}
+              setBonusReferrerSearchTerm={setBonusReferrerSearchTerm}
+              bonusReferrerCandidates={bonusReferrerCandidates}
+              applySelectedCustomer={applySelectedCustomer}
+              applySelectedBonusReferrer={applySelectedBonusReferrer}
+              isWalkInCustomer={isWalkInCustomer}
+              saleCurrency={saleCurrency}
+              currentTierCode={currentTierCode}
+              getCustomerDebtInCurrency={getCustomerDebtInCurrency}
+              getCustomerCreditInCurrency={getCustomerCreditInCurrency}
+              formatCurrency={formatCurrency}
+              priorDebtInSaleCurrency={priorDebtInSaleCurrency}
+              priorCreditInSaleCurrency={priorCreditInSaleCurrency}
+              onPayCustomerDebt={() => setCustomerPaymentOpen(true)}
+            />
 
             {/* Savat ro‘yxati (tezkor bar alohida grid ustuni) */}
             <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
-                <div className="z-10 flex shrink-0 flex-col gap-2 border-b bg-muted/30 px-3 py-2">
+                <div className="z-10 flex shrink-0 flex-col gap-0.5 border-b px-2 py-1">
                   <div className="flex items-center gap-2">
-                    <span className="text-xs font-medium text-muted-foreground">
+                    <span className="text-[11px] text-muted-foreground">
                       {t('pos.exchange.cart_count', { count: cart.length })}
                     </span>
                   </div>
@@ -5925,6 +6119,22 @@ export default function POSTerminal() {
                       {t('pos.exchange.return_mode_banner')}
                     </p>
                   )}
+                  {importedOrderIdForEdit && importedOrderNumberForEdit && (
+                    <div className="rounded border border-blue-200 bg-blue-50 px-2 py-1 text-[10px] text-blue-900 dark:border-blue-800 dark:bg-blue-950/40 dark:text-blue-100">
+                      <p className="font-semibold">
+                        {t('pos.order_import.amend_banner', { num: importedOrderNumberForEdit })}
+                      </p>
+                      <p className="mt-0.5 opacity-90">{t('pos.order_import.amend_banner_hint')}</p>
+                    </div>
+                  )}
+                  {importedHoldOrderId && importedHoldOrderNumber && !importedOrderIdForEdit && (
+                    <div className="rounded border border-violet-200 bg-violet-50 px-2 py-1 text-[10px] text-violet-900 dark:border-violet-800 dark:bg-violet-950/40 dark:text-violet-100">
+                      <p className="font-semibold">
+                        {t('pos.order_import.hold_banner', { num: importedHoldOrderNumber })}
+                      </p>
+                      <p className="mt-0.5 opacity-90">{t('pos.order_import.hold_banner_hint')}</p>
+                    </div>
+                  )}
                   {hasReturnLine && !exchangeReturnMode && (
                     <p className="text-[10px] text-muted-foreground">{t('pos.exchange.cart_hint_returns')}</p>
                   )}
@@ -5960,23 +6170,23 @@ export default function POSTerminal() {
                     <div key={`${item.product.id}-${index}`} className="group relative">
                       {/* Main Row */}
                       <div
-                        className={`flex items-center justify-between border-b border-gray-100 bg-white dark:bg-gray-800 last:border-0 transition-colors ${
-                          posUiMode === 'beginner' ? 'p-3 md:p-3.5' : 'p-2 md:p-3'
+                        className={`flex items-center justify-between bg-white dark:bg-gray-800 transition-colors ${
+                          posUiMode === 'beginner' ? 'p-2' : 'p-1.5'
                         } ${
-                          isSelected ? 'border-primary bg-primary/10 ring-1 ring-primary/20' : ''
+                          isSelected ? 'bg-primary/10 ring-1 ring-inset ring-primary/20' : ''
                         } ${isRecent ? 'bg-blue-50 dark:bg-blue-900/20' : ''} ${
                           isBelowCost && showCostPrice ? 'bg-red-50 dark:bg-red-900/10' : ''
                         }`}
                         onClick={() => setSelectedCartIndex(index)}
                       >
                         {/* Left Side - Product Info */}
-                        <div className="flex flex-col flex-1 min-w-0 mr-3">
-                          <div className="flex items-center gap-2 flex-wrap">
-                            <p className={cn('font-medium truncate', posUiMode === 'beginner' ? 'text-sm md:text-base' : 'text-xs md:text-sm')}>{item.product.name}</p>
+                        <div className="flex flex-col flex-1 min-w-0 mr-2">
+                          <div className="flex items-center gap-1.5 flex-wrap">
+                            <p className="truncate text-[11px] font-medium leading-tight md:text-xs">{item.product.name}</p>
                             {(item.qty_sale ?? item.quantity) < 0 && (
-                              <Badge variant="destructive" className="h-5 text-[10px] px-1.5 shrink-0">
+                              <span className="shrink-0 text-[9px] text-destructive">
                                 {t('pos.exchange.line_badge_return')}
-                              </Badge>
+                              </span>
                             )}
                             {isBelowCost && showCostPrice && (
                               <span title="Narx tannarxdan past!" className="inline-flex">
@@ -5984,10 +6194,14 @@ export default function POSTerminal() {
                               </span>
                             )}
                           </div>
-                          <div className="flex items-center gap-2 mt-0.5 flex-wrap">
+                          <div className="mt-0.5 flex flex-wrap items-center gap-x-1.5 gap-y-0.5">
                             {(item.promotion_name || item.price_source === 'promo') ? (
-                              <p className="text-[10px] md:text-xs text-gray-500 dark:text-gray-400">
+                              <p className="text-[10px] text-muted-foreground">
                                 {formatCurrency(Number(item.unit_price || 0))}
+                                <span className="text-muted-foreground/80">
+                                  {' '}
+                                  / {formatUnit(unit) || unit}
+                                </span>
                               </p>
                             ) : (
                               <Popover
@@ -6006,10 +6220,14 @@ export default function POSTerminal() {
                                 <PopoverTrigger asChild>
                                   <button
                                     type="button"
-                                    className="text-[10px] md:text-xs text-gray-500 dark:text-gray-400 hover:text-primary underline-offset-2 hover:underline text-left"
+                                    className="text-left text-[10px] text-muted-foreground hover:text-primary underline-offset-2 hover:underline"
                                     onClick={(e) => e.stopPropagation()}
                                   >
                                     {formatCurrency(Number(item.unit_price || 0))}
+                                    <span className="text-muted-foreground/80">
+                                      {' '}
+                                      / {formatUnit(unit) || unit}
+                                    </span>
                                   </button>
                                 </PopoverTrigger>
                                 <PopoverContent
@@ -6058,34 +6276,32 @@ export default function POSTerminal() {
                               </Popover>
                             )}
                             {item.price_tier && item.price_source !== 'manual' && (
-                              <Badge variant="secondary" className="h-5 text-[10px] px-1.5">
+                              <span className="text-[9px] text-muted-foreground">
                                 {getTierLabel(item.price_tier)}
-                              </Badge>
+                              </span>
                             )}
                             {item.price_source === 'manual' && (
-                              <Badge variant="outline" className="h-5 text-[10px] px-1.5 border-amber-600 text-amber-800 dark:text-amber-200">
+                              <span className="text-[9px] text-amber-700 dark:text-amber-300">
                                 {t('pos.manual_price_badge')}
-                              </Badge>
+                              </span>
                             )}
                             {renderPromotionBadges(item)}
                             {item.discount_amount > 0 && !item.promotion_name && (
-                              <Badge variant="outline" className="h-5 text-[10px] px-1.5">
-                                Discount
-                              </Badge>
+                              <span className="text-[9px] text-muted-foreground">−</span>
                             )}
                             {showCostPrice && (
-                              <p className="text-[10px] md:text-xs text-muted-foreground">
-                                (Tannarx: {formatCurrency(costPrice)})
+                              <p className="text-[9px] text-muted-foreground">
+                                {formatCurrency(costPrice)}
                               </p>
                             )}
                           </div>
-                          <div className="flex items-center gap-2 mt-1">
-                            <div className="w-24 md:w-28">
+                          <div className="mt-1 flex items-center gap-1.5">
+                            <div className="w-20">
                               <Select
                                 value={unit}
                                 onValueChange={(value) => void updateSaleUnit(item.product.id, value)}
                               >
-                                <SelectTrigger className="h-9 text-xs md:h-7 md:text-[10px]">
+                                <SelectTrigger className="h-6 text-[10px]">
                                   <SelectValue />
                                 </SelectTrigger>
                                 <SelectContent>
@@ -6113,7 +6329,7 @@ export default function POSTerminal() {
                                 type="button"
                                 variant="outline"
                                 size="sm"
-                                className="h-9 min-h-9 min-w-10 touch-manipulation px-2 text-xs md:h-6 md:min-h-0 md:min-w-8 md:px-1 md:text-[10px]"
+                                className="h-7 min-h-0 min-w-7 touch-manipulation px-1 text-[10px] md:h-5 md:min-w-6"
                                 onClick={(e) => {
                                   e.stopPropagation();
                                   updateQuantity(item.product.id, (item.qty_sale ?? item.quantity) - quantityStep);
@@ -6125,7 +6341,7 @@ export default function POSTerminal() {
                                 type="button"
                                 variant="outline"
                                 size="sm"
-                                className="h-9 min-h-9 min-w-10 touch-manipulation px-2 text-xs md:h-6 md:min-h-0 md:min-w-8 md:px-1 md:text-[10px]"
+                                className="h-7 min-h-0 min-w-7 touch-manipulation px-1 text-[10px] md:h-5 md:min-w-6"
                                 onClick={(e) => {
                                   e.stopPropagation();
                                   updateQuantity(item.product.id, (item.qty_sale ?? item.quantity) + quantityStep);
@@ -6137,7 +6353,7 @@ export default function POSTerminal() {
                                 type="button"
                                 variant="outline"
                                 size="sm"
-                                className="h-9 min-h-9 min-w-11 touch-manipulation px-2 text-xs md:h-6 md:min-h-0 md:min-w-9 md:px-1 md:text-[10px]"
+                                className="h-7 min-h-0 min-w-8 touch-manipulation px-1 text-[10px] md:h-5 md:min-w-7"
                                 onClick={(e) => {
                                   e.stopPropagation();
                                   updateQuantity(
@@ -6150,7 +6366,7 @@ export default function POSTerminal() {
                               </Button>
                             </div>
                             {(item.product as any)?.product_units?.length > 1 && (
-                              <p className="text-[10px] text-muted-foreground hidden md:block">
+                              <p className="hidden text-[9px] text-muted-foreground md:block">
                                 {formatQuantity(item.qty_sale ?? item.quantity, unit)} {formatUnit(unit)} =
                                 {` `}
                                 {formatQuantity(item.qty_base ?? item.quantity, baseUnit)} {formatUnit(baseUnit)}
@@ -6160,23 +6376,24 @@ export default function POSTerminal() {
                         </div>
                         
                         {/* Right Side - Controls */}
-                        <div className="flex items-center gap-2">
+                        <div className="flex shrink-0 items-center gap-1.5">
                           {/* Quantity Group */}
-                          <div className="flex items-center">
+                          <div className="flex shrink-0 items-center">
                             <button
                               type="button"
-                              className="flex h-11 w-11 shrink-0 touch-manipulation items-center justify-center rounded bg-gray-100 dark:bg-gray-700 hover:bg-gray-200 dark:hover:bg-gray-600 md:h-8 md:w-8 transition-colors"
+                              className="flex h-9 w-7 shrink-0 touch-manipulation items-center justify-center rounded bg-muted/60 hover:bg-muted md:h-6 md:w-6 transition-colors"
                               onClick={(e) => {
                                 e.stopPropagation();
-                                updateQuantity(item.product.id, item.quantity - quantityStep);
+                                updateQuantity(
+                                  item.product.id,
+                                  (item.qty_sale ?? item.quantity) - quantityStep,
+                                );
                               }}
                             >
-                              <Minus className="h-4 w-4 md:h-3 md:w-3" />
+                              <Minus className="h-3 w-3" />
                             </button>
                             <Input
-                              type="number"
-                              min={quantityMin.toString()}
-                              step={quantityStep.toString()}
+                              type="text"
                               inputMode={inputMode}
                               value={displayQuantity}
                               onChange={(e) => handleQuantityInputChange(item.product.id, e.target.value)}
@@ -6187,25 +6404,32 @@ export default function POSTerminal() {
                               }}
                               onDoubleClick={(e) => {
                                 e.stopPropagation();
-                                openQuantityNumpad(item.product.id, item.quantity, item.product.current_stock);
+                                openQuantityNumpad(
+                                  item.product.id,
+                                  item.qty_sale ?? item.quantity,
+                                  item.product.current_stock,
+                                );
                               }}
-                              className="h-11 min-w-[3.25rem] touch-manipulation text-center border-y border-gray-200 dark:border-gray-600 text-sm md:h-8 md:w-16 md:min-w-0 md:text-xs focus:outline-none rounded-none bg-white dark:bg-gray-800"
+                              className="h-9 w-12 min-w-[2.75rem] shrink-0 touch-manipulation rounded-none border-y border-border bg-background px-0.5 text-center text-[11px] focus:outline-none md:h-6 md:w-12 md:text-[10px]"
                             />
                             <button
                               type="button"
-                              className="flex h-11 w-11 shrink-0 touch-manipulation items-center justify-center rounded bg-gray-100 dark:bg-gray-700 hover:bg-gray-200 dark:hover:bg-gray-600 md:h-8 md:w-8 transition-colors"
+                              className="flex h-9 w-7 shrink-0 touch-manipulation items-center justify-center rounded bg-muted/60 hover:bg-muted md:h-6 md:w-6 transition-colors"
                               onClick={(e) => {
                                 e.stopPropagation();
-                                updateQuantity(item.product.id, item.quantity + quantityStep);
+                                updateQuantity(
+                                  item.product.id,
+                                  (item.qty_sale ?? item.quantity) + quantityStep,
+                                );
                               }}
                             >
-                              <Plus className="h-4 w-4 md:h-3 md:w-3" />
+                              <Plus className="h-3 w-3" />
                             </button>
                           </div>
                           
                           {/* Total Price */}
-                          <div className="min-w-[72px] text-right mr-2">
-                            <p className="font-bold text-xs md:text-sm">
+                          <div className="min-w-[3.5rem] text-right">
+                            <p className="text-[11px] font-semibold md:text-xs">
                               {formatCurrency(item.total)}
                             </p>
                           </div>
@@ -6213,13 +6437,13 @@ export default function POSTerminal() {
                           {/* Delete Button */}
                           <button
                             type="button"
-                            className="flex min-h-11 min-w-11 touch-manipulation items-center justify-center rounded text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20 md:min-h-0 md:min-w-0 md:p-2 transition-colors"
+                            className="flex min-h-9 min-w-7 touch-manipulation items-center justify-center rounded text-destructive/80 hover:bg-destructive/10 md:min-h-0 md:min-w-0 md:p-1 transition-colors"
                             onClick={(e) => {
                               e.stopPropagation();
                               removeFromCart(item.product.id);
                             }}
                           >
-                            <Trash2 className="h-5 w-5 md:h-4 md:w-4" />
+                            <Trash2 className="h-3.5 w-3.5" />
                           </button>
                         </div>
                       </div>
@@ -6243,21 +6467,25 @@ export default function POSTerminal() {
                               <div className="space-y-3">
                                 <div className="space-y-1">
                                   <Label className="text-xs">{t('pos.line_discount')}</Label>
-                                  <Input
-                                    type="number"
-                                    step="0.01"
-                                    min="0"
-                                    max={item.subtotal}
-                                    value={item.discount_amount}
-                                    onChange={(e) => {
-                                      const value = e.target.value === '' ? 0 : Number(e.target.value);
-                                      updateLineDiscount(item.product.id, value);
-                                    }}
-                                    onClick={() => openDiscountNumpad(item.product.id, item.discount_amount, item.subtotal)}
-                                    placeholder="0.00"
-                                    className="h-8 cursor-pointer"
-                                    readOnly
-                                  />
+                                  <div
+                                    className="cursor-pointer"
+                                    onClick={() =>
+                                      openDiscountNumpad(item.product.id, item.discount_amount, item.subtotal)
+                                    }
+                                  >
+                                    <MoneyInput
+                                      value={item.discount_amount > 0 ? item.discount_amount : null}
+                                      onValueChange={(v) =>
+                                        updateLineDiscount(item.product.id, v ?? 0)
+                                      }
+                                      max={item.subtotal}
+                                      allowZero
+                                      readOnly
+                                      placeholder="0"
+                                      containerClassName="space-y-0"
+                                      className="h-8"
+                                    />
+                                  </div>
                                   <p className="text-xs text-muted-foreground">
                                     {t('pos.max')}: {formatCurrency(item.subtotal)}
                                   </p>
@@ -6313,27 +6541,27 @@ export default function POSTerminal() {
               </div>
 
             {/* Pastki qism: jami + faqat To‘lash — mobil pastki xavfsiz zona (home indicator) */}
-            <div className="shrink-0 border-t bg-white dark:bg-gray-900 p-4 pb-[max(1rem,env(safe-area-inset-bottom))] shadow-sm">
+            <div className="shrink-0 border-t bg-white dark:bg-gray-900 p-3 pb-[max(0.75rem,env(safe-area-inset-bottom))]">
               {/* Totals */}
-              <div className="space-y-2 pt-2 border-t">
-                <div className="flex justify-between text-sm">
-                  <span className="text-muted-foreground">{t('pos.subtotal')}:</span>
-                  <span className="font-medium">{formatCurrency(subtotal)}</span>
+              <div className="space-y-1 pt-1">
+                <div className="flex justify-between text-[11px]">
+                  <span className="text-muted-foreground">{t('pos.subtotal')}</span>
+                  <span>{formatCurrency(subtotal)}</span>
                 </div>
                 {ustaSavings > 0 && (
-                  <div className="flex justify-between text-xs text-emerald-700 dark:text-emerald-300">
+                  <div className="flex justify-between text-[10px] text-emerald-700 dark:text-emerald-300">
                     <span>{getTierLabel(currentTierCode)} narx farqi:</span>
                     <span>-{formatCurrency(ustaSavings)}</span>
                   </div>
                 )}
                 {lineDiscountsTotal > 0 && (
-                  <div className="flex justify-between text-xs text-destructive">
+                  <div className="flex justify-between text-[10px] text-destructive">
                     <span>{t('pos.line_discounts')}:</span>
                     <span>-{formatCurrency(lineDiscountsTotal)}</span>
                   </div>
                 )}
                 {globalDiscountAmount > 0 && (
-                  <div className="flex justify-between text-xs text-destructive">
+                  <div className="flex justify-between text-[10px] text-destructive">
                     <span>{t('pos.order_discount_label')}:</span>
                     <span>-{formatCurrency(globalDiscountAmount)}</span>
                   </div>
@@ -6353,22 +6581,14 @@ export default function POSTerminal() {
                         Mavjud: {Math.floor(Number(selectedCustomer.bonus_points) || 0)} ball · minimal ishlatish:{' '}
                         {loyaltyCfg.minRedeemPts} ball
                       </p>
-                      <Input
-                        type="number"
+                      <NumberInput
+                        value={loyaltyRedeemPoints > 0 ? loyaltyRedeemPoints : null}
+                        onValueChange={(v) => setLoyaltyRedeemPoints(Math.max(0, Math.floor(v ?? 0)))}
+                        allowZero
                         min={0}
-                        step={1}
-                        value={loyaltyRedeemPoints === 0 ? '' : loyaltyRedeemPoints}
-                        onChange={(e) => {
-                          const raw = e.target.value;
-                          if (raw === '') {
-                            setLoyaltyRedeemPoints(0);
-                            return;
-                          }
-                          const v = parseInt(raw, 10);
-                          setLoyaltyRedeemPoints(Number.isFinite(v) && v >= 0 ? v : 0);
-                        }}
                         placeholder="Ishlatiladigan ball"
                         disabled={cart.length === 0}
+                        containerClassName="space-y-0"
                         className="h-9"
                       />
                       {loyaltyDiscountUzs > 0 && (
@@ -6379,21 +6599,22 @@ export default function POSTerminal() {
                     </div>
                   )}
                 {discountAmount > 0 && (
-                  <div className="flex justify-between text-sm text-destructive font-medium">
-                    <span>{t('pos.total_discount')}:</span>
+                  <div className="flex justify-between text-[11px] text-destructive">
+                    <span>{t('pos.total_discount')}</span>
                     <span>-{formatCurrency(discountAmount)}</span>
                   </div>
                 )}
-                {includePriorDebtInPayment &&
-                  priorDebtInSaleCurrency > 0 &&
-                  total > 0 && (
-                  <div className="flex justify-between text-sm text-muted-foreground">
-                    <span>Oldingi qarz:</span>
-                    <span className="font-mono">+{formatCurrency(priorDebtInSaleCurrency)}</span>
+                {priorDebtForCheckout > 0 && total > 0 && (
+                  <div className="flex justify-between text-[11px] text-muted-foreground">
+                    <span>Oldingi qarz</span>
+                    <span className="font-mono">
+                      {formatCurrency(priorDebtForCheckout)}
+                      {!includePriorDebtInPayment ? ' (alohida)' : ''}
+                    </span>
                   </div>
                 )}
-                <div className="flex justify-between text-2xl font-bold pt-2 border-t">
-                  <span>{t('pos.total')}:</span>
+                <div className="flex justify-between border-t pt-1.5 text-base font-bold">
+                  <span>{t('pos.total')}</span>
                   <span className="text-primary">{formatCurrency(checkoutGrandTotal)}</span>
                 </div>
                 
@@ -6426,9 +6647,9 @@ export default function POSTerminal() {
                 })()}
               </div>
 
-              <div className="space-y-2 border-t pt-3">
-                <Label className="text-sm font-semibold">{t('pos.order_discount')}</Label>
-                <div className="flex items-center gap-2">
+              <div className="space-y-1.5 border-t pt-2">
+                <Label className="text-[11px] font-normal text-muted-foreground">{t('pos.order_discount')}</Label>
+                <div className="flex items-center gap-1.5">
                   <Select
                     value={discount.type}
                     onValueChange={(value) =>
@@ -6436,7 +6657,7 @@ export default function POSTerminal() {
                     }
                   >
                     <SelectTrigger
-                      className="h-10 w-[4.5rem] shrink-0"
+                      className="h-8 w-[3.75rem] shrink-0 text-xs"
                       title={
                         discount.type === 'promo' ? t('pos.promo_code_select_hint') : undefined
                       }
@@ -6462,7 +6683,7 @@ export default function POSTerminal() {
                         value={promoCodeInput}
                         onChange={(e) => setPromoCodeInput(e.target.value)}
                         placeholder={t('pos.promo_code_placeholder')}
-                        className="h-10 min-w-0 flex-1 font-mono text-sm uppercase"
+                        className="h-8 min-w-0 flex-1 font-mono text-xs uppercase"
                         disabled={cart.length === 0}
                       />
                       {promoCodeInput ? (
@@ -6470,7 +6691,7 @@ export default function POSTerminal() {
                           type="button"
                           variant="outline"
                           size="icon"
-                          className="h-10 w-10 shrink-0"
+                          className="h-8 w-8 shrink-0"
                           title={t('pos.clear')}
                           onClick={() => setPromoCodeInput('')}
                           disabled={cart.length === 0}
@@ -6479,21 +6700,37 @@ export default function POSTerminal() {
                         </Button>
                       ) : null}
                     </>
-                  ) : (
-                    <Input
-                      type="text"
-                      inputMode="decimal"
-                      value={discount.value}
-                      onChange={(e) =>
+                  ) : discount.type === 'amount' ? (
+                    <MoneyInput
+                      value={parsedDiscountValue}
+                      onValueChange={(v) =>
                         setDiscount({
                           ...discount,
-                          value: sanitizeDiscountInput(e.target.value),
+                          value: v == null ? '' : String(v),
                         })
                       }
+                      max={maxDiscountAmount > 0 ? maxDiscountAmount : undefined}
+                      allowZero
                       placeholder="0"
-                      className="h-10 min-w-0 flex-1"
-                      aria-invalid={discountError !== ''}
                       disabled={cart.length === 0}
+                      containerClassName="min-w-0 flex-1 space-y-0"
+                      className={cn('h-8 text-xs', discountError !== '' && 'border-destructive')}
+                    />
+                  ) : (
+                    <NumberInput
+                      value={parsedDiscountValue}
+                      onValueChange={(v) =>
+                        setDiscount({
+                          ...discount,
+                          value: v == null ? '' : String(v),
+                        })
+                      }
+                      max={100}
+                      allowZero
+                      placeholder="0"
+                      disabled={cart.length === 0}
+                      containerClassName="min-w-0 flex-1 space-y-0"
+                      className={cn('h-8 text-xs', discountError !== '' && 'border-destructive')}
                     />
                   )}
                 </div>
@@ -6502,25 +6739,25 @@ export default function POSTerminal() {
                 )}
               </div>
 
-              <div className="pt-3">
+              <div className="pt-2">
                 <Button
-                  className="h-14 w-full touch-manipulation bg-green-600 text-lg font-bold text-white hover:bg-green-700 disabled:cursor-not-allowed disabled:bg-muted disabled:text-muted-foreground"
+                  className="h-11 w-full touch-manipulation bg-green-600 text-sm font-semibold text-white hover:bg-green-700 disabled:cursor-not-allowed disabled:bg-muted disabled:text-muted-foreground"
                   size="lg"
                   disabled={cart.length === 0 || isDiscountActionDisabled || !currentShift || isProcessingPayment}
                   title={paymentDisabledReason || undefined}
                   onClick={() => setPaymentDialogOpen(true)}
                 >
-                  <DollarSign className="mr-2 h-6 w-6" />
+                  <DollarSign className="mr-1.5 h-4 w-4" />
                   {t('pos.pay_checkout')}
                 </Button>
               </div>
             </div>
             </div>
           <aside
-            className="flex w-14 shrink-0 grow-0 basis-14 flex-col items-stretch border-l border-border bg-muted/30 py-2 xl:h-full xl:min-h-0 xl:grow-0 xl:shrink-0 xl:basis-14 xl:w-14 xl:self-stretch xl:border-y-0 xl:border-r-0 xl:bg-muted/40 xl:py-0"
+            className="flex w-14 shrink-0 grow-0 basis-14 flex-col items-stretch border-l border-border bg-muted/30 py-2 xl:h-full xl:min-h-0 xl:w-14 xl:flex-none xl:self-stretch xl:rounded-none xl:border-y-0 xl:border-r-0 xl:bg-muted/40 xl:py-0"
             aria-label="Savat tezkor tugmalari"
           >
-            <div className="flex flex-row flex-wrap items-end justify-start gap-2.5 px-1 py-0.5 shrink-0">
+            <div className="flex flex-row flex-wrap items-end justify-start gap-2.5 px-1 py-0.5 shrink-0 xl:flex-col xl:items-stretch xl:gap-2 xl:px-0 xl:py-2">
             <Button
               type="button"
               variant={selectedCategory ? 'default' : 'outline'}
@@ -6677,10 +6914,8 @@ export default function POSTerminal() {
                   return;
                 }
                 queueCartUndo(cart, 'Savat tozalandi');
-                setCart([]);
-                setImportedWebOrderId(null);
-                setImportedOrderIdForEdit(null);
-                persistPosReplacesOrderId(null);
+                clearCartAndNavDraft();
+                clearPosSaleImportContext();
                 setExchangeReturnMode(false);
                 setDiscount({ type: 'amount', value: '' });
                 setPromoCodeInput('');
@@ -6706,7 +6941,7 @@ export default function POSTerminal() {
             </Button>
             </div>
 
-            <div className="mx-1 mb-1 mt-0 hidden min-h-0 flex-1 rounded-md bg-gradient-to-b from-muted/0 via-muted/20 to-muted/35 px-1 py-2 dark:via-muted/10 dark:to-muted/25 xl:flex xl:flex-col xl:items-center xl:gap-2">
+            <div className="mx-1 mb-1 mt-0 hidden min-h-0 flex-1 rounded-md bg-gradient-to-b from-muted/0 via-muted/20 to-muted/35 px-1 py-2 dark:via-muted/10 dark:to-muted/25 xl:mx-0 xl:flex xl:flex-col xl:items-center xl:gap-2 xl:px-0">
               <Select
                 value={currentTierCode}
                 onValueChange={(value) => {
@@ -6901,21 +7136,20 @@ export default function POSTerminal() {
           <DialogHeader>
             <DialogTitle>{t('pos.process_payment')}</DialogTitle>
             <DialogDescription>
-              {total > 0 &&
-              includePriorDebtInPayment &&
-              priorDebtInSaleCurrency > 0 ? (
+              {total > 0 && priorDebtForCheckout > 0 ? (
                 <span className="block space-y-1 text-foreground">
                   <span className="block text-sm">
                     Savat: <span className="font-semibold tabular-nums">{formatCurrency(total)}</span>
                   </span>
-                  <span className="block text-sm">
-                    + Oldingi qarz:{' '}
+                  <span className="block text-sm text-muted-foreground">
+                    Oldingi qarz:{' '}
                     <span className="font-semibold tabular-nums text-destructive">
-                      {formatCurrency(priorDebtInSaleCurrency)}
+                      {formatCurrency(priorDebtForCheckout)}
                     </span>
+                    {!includePriorDebtInPayment ? ' (shu to‘lovga kirmaydi)' : ''}
                   </span>
                   <span className="block text-sm border-t mt-2 pt-2">
-                    Jami to‘lash:{' '}
+                    {includePriorDebtInPayment ? 'Jami to‘lash:' : 'To‘lash (savat):'}{' '}
                     <span className="text-primary font-bold tabular-nums">
                       {formatCurrency(checkoutGrandTotal)}
                     </span>
@@ -7176,11 +7410,9 @@ export default function POSTerminal() {
                   </p>
                 </div>
               ) : (() => {
-                const pRaw = creditAmount.trim();
-                const pNum = pRaw === '' ? 0 : Number(pRaw);
-                const payInvalid = pRaw !== '' && (!Number.isFinite(pNum) || pNum < 0);
-                const initialPaymentUi = payInvalid ? 0 : pNum;
-                const priorAmt = includePriorDebtInPayment ? priorDebtInSaleCurrency : 0;
+                const initialPaymentUi = creditAmount ?? 0;
+                const payInvalid = creditAmount != null && creditAmount < 0;
+                const priorAmt = includePriorDebtInPayment ? priorDebtForCheckout : 0;
                 const toPrior = priorAmt > 0 ? Math.min(initialPaymentUi, priorAmt) : 0;
                 const orderCash = Math.max(0, initialPaymentUi - toPrior);
                 const merchCredit = Math.max(0, total - orderCash);
@@ -7200,19 +7432,49 @@ export default function POSTerminal() {
 
                 return (
                   <>
+                    <div className="space-y-2">
+                      <Label htmlFor="credit-due-date">{t('pos.credit_due_date')}</Label>
+                      <Input
+                        id="credit-due-date"
+                        type="date"
+                        value={creditDueDate}
+                        min={new Date().toISOString().slice(0, 10)}
+                        onChange={(e) => setCreditDueDate(e.target.value)}
+                      />
+                      <p className="text-xs text-muted-foreground">
+                        {t('pos.credit_due_date_default', { days: creditDefaultDays })}
+                      </p>
+                    </div>
+
+                    <div className="space-y-2">
+                      <Label htmlFor="credit-reminder-note">{t('pos.credit_reminder_note')}</Label>
+                      <Textarea
+                        id="credit-reminder-note"
+                        value={creditReminderNote}
+                        onChange={(e) => setCreditReminderNote(e.target.value)}
+                        placeholder={t('pos.credit_reminder_note_placeholder')}
+                        rows={2}
+                        maxLength={500}
+                        className="resize-none"
+                      />
+                      <p className="text-xs text-muted-foreground">
+                        {t('pos.credit_reminder_note_hint')}
+                      </p>
+                    </div>
+
                     {/* Initial Payment Input */}
                     <div className="space-y-2">
                       <Label htmlFor="initial-payment">{t('pos.initial_payment')}</Label>
-                      <Input
+                      <MoneyInput
                         id="initial-payment"
-                        type="number"
-                        step="1"
-                        min="0"
                         value={creditAmount}
-                        onChange={(e) => setCreditAmount(e.target.value)}
+                        onValueChange={setCreditAmount}
                         placeholder="0"
+                        allowZero
+                        min={0}
                         autoFocus
                         disabled={creditLimitExceeded}
+                        containerClassName="space-y-0"
                       />
                       <p className="text-xs text-muted-foreground">
                         {t('pos.initial_payment_desc')} Istalgan summa: {formatCurrency(checkoutGrandTotal)} gacha/yoki
@@ -7751,7 +8013,16 @@ export default function POSTerminal() {
             <AlertDialogCancel onClick={() => setOrderToRestore(null)}>
               {t('pos.cancel')}
             </AlertDialogCancel>
-            <AlertDialogAction onClick={() => orderToRestore && restoreOrder(orderToRestore)}>
+            <AlertDialogAction
+              onClick={() => {
+                if (!orderToRestore) return;
+                if (isRemoteImportHeldOrder(orderToRestore)) {
+                  void restoreRemoteHeldOrder(orderToRestore);
+                } else {
+                  void restoreLocalHeldOrder(orderToRestore);
+                }
+              }}
+            >
               {t('pos.replace')}
             </AlertDialogAction>
           </AlertDialogFooter>
@@ -7819,6 +8090,12 @@ export default function POSTerminal() {
         source="pos"
         defaultCurrency={saleCurrency}
         onSuccess={refreshCustomersAfterCustomerPayment}
+      />
+
+      <CreditDebtsSheet
+        open={creditDebtsOpen}
+        onOpenChange={setCreditDebtsOpen}
+        customerId={selectedCustomer?.id}
       />
 
       {/* Hidden Receipt Component for Printing */}

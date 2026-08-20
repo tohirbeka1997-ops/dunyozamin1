@@ -11,9 +11,24 @@ class PurchaseService {
     this.inventoryService = inventoryService;
     this.batchService = batchService;
     this.cacheService = cacheService;
+    this.productsService = null;
     this._poCols = null;
     this._poiCols = null;
     this._spCols = null;
+  }
+
+  /** Late-bound — sync product_prices after PO pushes sale_price to catalog. */
+  bindProductsService(productsService) {
+    this.productsService = productsService;
+  }
+
+  _afterProductCatalogPriceChange(productId) {
+    if (!productId) return;
+    try {
+      this.productsService?._afterCatalogPriceChange?.(productId);
+    } catch (e) {
+      console.warn('[PurchaseService] catalog price sync after PO:', e?.message);
+    }
   }
 
   _cols(tableName) {
@@ -38,6 +53,143 @@ class PurchaseService {
   _hasSupplierPaymentCol(name) {
     if (!this._spCols) this._spCols = this._cols('supplier_payments');
     return this._spCols.has(name);
+  }
+
+  _hasScheduleTable() {
+    if (this._scheduleTableReady != null) return this._scheduleTableReady;
+    try {
+      this._scheduleTableReady = !!this.db
+        .prepare(`SELECT 1 FROM sqlite_master WHERE type='table' AND name='po_payment_schedule'`)
+        .get();
+    } catch {
+      this._scheduleTableReady = false;
+    }
+    return this._scheduleTableReady;
+  }
+
+  _normalizeScheme(value) {
+    const s = String(value || 'full').toLowerCase();
+    if (s === 'partial' || s === 'installment') return s;
+    return 'full';
+  }
+
+  _normalizeDueDate(value) {
+    if (value == null || value === '') return null;
+    const s = String(value).trim().slice(0, 10);
+    return /^\d{4}-\d{2}-\d{2}$/.test(s) ? s : null;
+  }
+
+  _poSettlementTotal(poCurrency, totalAmount, totalUsd) {
+    const cur = String(poCurrency || 'UZS').toUpperCase() === 'USD' ? 'USD' : 'UZS';
+    return cur === 'USD' ? Number(totalUsd || 0) : Number(totalAmount || 0);
+  }
+
+  _schemeTolerance(poCurrency) {
+    return String(poCurrency || 'UZS').toUpperCase() === 'USD' ? 0.02 : 1;
+  }
+
+  _validatePaymentSchemeInput({
+    scheme,
+    poCurrency,
+    totalAmount,
+    totalUsd,
+    paymentDueDate,
+    paymentSchedule,
+    initialPaymentAmount,
+  }) {
+    if (!this._hasPOCol('payment_scheme')) return;
+    const normalizedScheme = this._normalizeScheme(scheme);
+    const total = this._poSettlementTotal(poCurrency, totalAmount, totalUsd);
+    const tol = this._schemeTolerance(poCurrency);
+    const paidNow = Math.max(0, Number(initialPaymentAmount || 0) || 0);
+
+    if (normalizedScheme === 'partial') {
+      const debt = total - paidNow;
+      if (debt > tol && !this._normalizeDueDate(paymentDueDate)) {
+        throw createError(ERROR_CODES.VALIDATION_ERROR, 'Qisman to\'lov uchun muddat sanasini kiriting');
+      }
+      if (paidNow > total + tol) {
+        throw createError(ERROR_CODES.VALIDATION_ERROR, 'To\'lov summasi jami summadan oshmasligi kerak');
+      }
+      return;
+    }
+
+    if (normalizedScheme === 'installment') {
+      const rows = Array.isArray(paymentSchedule) ? paymentSchedule : [];
+      if (!rows.length) {
+        throw createError(ERROR_CODES.VALIDATION_ERROR, 'Bo\'lib to\'lash jadvali kamida 1 qator bo\'lishi kerak');
+      }
+      let sum = 0;
+      for (let i = 0; i < rows.length; i += 1) {
+        const row = rows[i] || {};
+        const due = this._normalizeDueDate(row.due_date);
+        if (!due) {
+          throw createError(ERROR_CODES.VALIDATION_ERROR, `Bo'lib to'lash #${i + 1}: muddat sanasi kerak`);
+        }
+        const amt =
+          String(poCurrency || 'UZS').toUpperCase() === 'USD'
+            ? Number(row.amount_usd ?? row.amount ?? 0)
+            : Number(row.amount ?? 0);
+        if (!Number.isFinite(amt) || amt <= 0) {
+          throw createError(ERROR_CODES.VALIDATION_ERROR, `Bo'lib to'lash #${i + 1}: summa > 0 bo'lishi kerak`);
+        }
+        sum += amt;
+      }
+      if (Math.abs(sum - total) > tol) {
+        throw createError(
+          ERROR_CODES.VALIDATION_ERROR,
+          `Bo'lib to'lash jami ${total} bo'lishi kerak (hozir ${sum})`
+        );
+      }
+    }
+  }
+
+  _savePaymentScheme(purchaseOrderId, { scheme, payment_due_date, payment_schedule }) {
+    if (!this._hasPOCol('payment_scheme')) return;
+    const normalizedScheme = this._normalizeScheme(scheme);
+    const dueDate =
+      normalizedScheme === 'partial' ? this._normalizeDueDate(payment_due_date) : null;
+
+    this.db
+      .prepare(
+        `UPDATE purchase_orders SET payment_scheme = ?, payment_due_date = ?, updated_at = datetime('now') WHERE id = ?`
+      )
+      .run(normalizedScheme, dueDate, purchaseOrderId);
+
+    if (!this._hasScheduleTable()) return;
+
+    this.db.prepare(`DELETE FROM po_payment_schedule WHERE purchase_order_id = ?`).run(purchaseOrderId);
+
+    if (normalizedScheme !== 'installment') return;
+
+    const rows = Array.isArray(payment_schedule) ? payment_schedule : [];
+    const insert = this.db.prepare(
+      `INSERT INTO po_payment_schedule (id, purchase_order_id, seq, due_date, amount, amount_usd, status)
+       VALUES (?, ?, ?, ?, ?, ?, 'pending')`
+    );
+    rows.forEach((row, idx) => {
+      const seq = Number(row.seq ?? idx + 1) || idx + 1;
+      const due = this._normalizeDueDate(row.due_date);
+      const amountUzs = Number(row.amount ?? 0) || 0;
+      const amountUsd = row.amount_usd != null ? Number(row.amount_usd) : null;
+      insert.run(randomUUID(), purchaseOrderId, seq, due, amountUzs, amountUsd);
+    });
+  }
+
+  _loadPaymentSchedule(purchaseOrderId) {
+    if (!this._hasScheduleTable()) return [];
+    return (
+      this.db
+        .prepare(
+          `
+        SELECT id, purchase_order_id, seq, due_date, amount, amount_usd, status, paid_at
+        FROM po_payment_schedule
+        WHERE purchase_order_id = ?
+        ORDER BY seq ASC
+      `
+        )
+        .all(purchaseOrderId) || []
+    );
   }
 
   _computePaymentStatus(paidAmount, totalAmount) {
@@ -375,11 +527,11 @@ class PurchaseService {
         const itemsQuery = `
           SELECT 
             poi.*,
-            p.name as product_name,
-            p.sku as product_sku,
+            COALESCE(p.name, poi.product_name) as product_name,
+            COALESCE(p.sku, poi.product_sku) as product_sku,
             p.unit as product_unit
           FROM purchase_order_items poi
-          INNER JOIN products p ON poi.product_id = p.id
+          LEFT JOIN products p ON poi.product_id = p.id
           WHERE poi.purchase_order_id IN (${placeholders})
           ORDER BY poi.purchase_order_id, poi.id
         `;
@@ -467,11 +619,11 @@ class PurchaseService {
     const items = this.db.prepare(`
       SELECT 
         poi.*,
-        p.name as product_name,
-        p.sku as product_sku,
+        COALESCE(p.name, poi.product_name) as product_name,
+        COALESCE(p.sku, poi.product_sku) as product_sku,
         p.unit as product_unit
       FROM purchase_order_items poi
-      INNER JOIN products p ON poi.product_id = p.id
+      LEFT JOIN products p ON poi.product_id = p.id
       WHERE poi.purchase_order_id = ?
       ORDER BY poi.id
     `).all(id);
@@ -545,6 +697,7 @@ class PurchaseService {
       supplier,
       expenses,
       total_expenses: totalExpenses,
+      payment_schedule: this._loadPaymentSchedule(id),
       paid_amount_uzs: paidAmountUZS,
       remaining_amount_uzs: Number(po.total_amount ?? 0) - paidAmountUZS,
       paid_amount_usd: poCurrency === 'USD' ? paidAmountUSD : null,
@@ -785,6 +938,24 @@ class PurchaseService {
         )
       : null;
 
+    const initialPaid =
+      data.initial_payment != null
+        ? Number(
+            isUSD
+              ? data.initial_payment.amount_usd ?? data.initial_payment.amount ?? 0
+              : data.initial_payment.amount ?? 0
+          ) || 0
+        : 0;
+    this._validatePaymentSchemeInput({
+      scheme: data.payment_scheme,
+      poCurrency: currency,
+      totalAmount,
+      totalUsd,
+      paymentDueDate: data.payment_due_date,
+      paymentSchedule: data.payment_schedule,
+      initialPaymentAmount: initialPaid,
+    });
+
     // Begin transaction (insert statements are schema-aware)
     const poCols = [
       'id',
@@ -937,6 +1108,12 @@ class PurchaseService {
         insertItem.run(...params);
       }
 
+      this._savePaymentScheme(id, {
+        scheme: data.payment_scheme,
+        payment_due_date: data.payment_due_date,
+        payment_schedule: data.payment_schedule,
+      });
+
       if (data.initial_payment && data.supplier_id) {
         this._insertSupplierPaymentForPo({
           purchaseOrderId: id,
@@ -983,6 +1160,33 @@ class PurchaseService {
       newStatus = 'partially_received';
     }
     this.db.prepare(`UPDATE purchase_orders SET status = ?, updated_at = ? WHERE id = ?`).run(newStatus, now, purchaseOrderId);
+  }
+
+  _validateStatusTransition(currentStatus, requestedStatus, totalReceived = 0) {
+    if (requestedStatus == null || String(requestedStatus) === '') return;
+    const current = String(currentStatus || '').toLowerCase();
+    const next = String(requestedStatus || '').toLowerCase();
+    if (!next) return;
+    const hasReceived = Number(totalReceived || 0) > 0;
+
+    if (hasReceived && (next === 'draft' || next === 'approved' || next === 'cancelled')) {
+      throw createError(ERROR_CODES.VALIDATION_ERROR, `Cannot set status '${next}' after goods were received`);
+    }
+
+    const allowed = {
+      draft: new Set(['draft', 'approved', 'cancelled']),
+      approved: new Set(['approved', 'cancelled']),
+      partially_received: new Set(['partially_received', 'received']),
+      received: new Set(['received']),
+      cancelled: new Set(['cancelled']),
+    };
+    const allowSet = allowed[current] || new Set([current]);
+    if (!allowSet.has(next)) {
+      throw createError(
+        ERROR_CODES.VALIDATION_ERROR,
+        `Invalid purchase status transition: ${current || 'unknown'} -> ${next}`
+      );
+    }
   }
 
   /**
@@ -1040,6 +1244,7 @@ class PurchaseService {
         }
         if (this.cacheService?.invalidateProduct) this.cacheService.invalidateProduct(pid);
         if (this.cacheService?.invalidatePricesForProduct) this.cacheService.invalidatePricesForProduct(pid);
+        this._afterProductCatalogPriceChange(pid);
       } catch (e) {
         console.warn('[PurchaseService] sync sale_price from PO lines:', e?.message);
       }
@@ -1047,8 +1252,277 @@ class PurchaseService {
   }
 
   /**
+   * After a received PO's unit_cost is edited, update remaining qty on batches
+   * that still belong to this PO's receipts. Closed/fully consumed batches are left unchanged.
+   */
+  _syncOpenBatchCostsFromPoLines(purchaseOrderId, now) {
+    try {
+      const batchTable = this.db
+        .prepare(`SELECT 1 FROM sqlite_master WHERE type='table' AND name='inventory_batches'`)
+        .get();
+      if (!batchTable) return;
+      const batchCols = new Set(
+        (this.db.prepare(`PRAGMA table_info(inventory_batches)`).all() || []).map((c) => c.name)
+      );
+      if (!batchCols.has('unit_cost') || !batchCols.has('remaining_qty')) return;
+
+      const lines =
+        this.db
+          .prepare(
+            `
+          SELECT id, product_id, unit_cost
+          FROM purchase_order_items
+          WHERE purchase_order_id = ? AND COALESCE(received_qty, 0) > 0
+        `
+          )
+          .all(purchaseOrderId) || [];
+      if (!lines.length) return;
+
+      const hasCostUzs = batchCols.has('cost_price_uzs');
+      const hasUpdatedAt = batchCols.has('updated_at');
+      const hasReceiptItemId = batchCols.has('receipt_item_id');
+      const hasReceiptId = batchCols.has('receipt_id');
+      const hasPriTable = this.db
+        .prepare(`SELECT 1 FROM sqlite_master WHERE type='table' AND name='purchase_receipt_items'`)
+        .get();
+      const hasPrTable = this.db
+        .prepare(`SELECT 1 FROM sqlite_master WHERE type='table' AND name='purchase_receipts'`)
+        .get();
+
+      for (const row of lines) {
+        const pid = row.product_id;
+        const uc = Number(row.unit_cost || 0);
+        if (!pid || !(uc >= 0)) continue;
+        const sets = ['unit_cost = ?'];
+        const params = [uc];
+        if (hasCostUzs) {
+          sets.push('cost_price_uzs = ?');
+          params.push(uc);
+        }
+        if (hasUpdatedAt) {
+          sets.push('updated_at = ?');
+          params.push(now);
+        }
+
+        let where = `product_id = ? AND remaining_qty > 0 AND COALESCE(status, 'active') = 'active'`;
+        params.push(pid);
+
+        if (hasReceiptItemId && hasPriTable) {
+          where += ` AND receipt_item_id IN (
+            SELECT pri.id FROM purchase_receipt_items pri
+            WHERE pri.purchase_order_item_id = ?
+          )`;
+          params.push(row.id);
+        } else if (hasReceiptId && hasPrTable) {
+          where += ` AND receipt_id IN (
+            SELECT pr.id FROM purchase_receipts pr WHERE pr.purchase_order_id = ?
+          )`;
+          params.push(purchaseOrderId);
+        } else {
+          continue;
+        }
+
+        this.db.prepare(`UPDATE inventory_batches SET ${sets.join(', ')} WHERE ${where}`).run(...params);
+      }
+    } catch (e) {
+      console.warn('[PurchaseService] sync open batch costs from PO lines:', e?.message);
+    }
+  }
+
+  /**
+   * Normalize line items payload from explicit arg or nested data.items.
+   */
+  _resolveLineItems(data, items) {
+    if (Array.isArray(items)) return items;
+    if (data && Array.isArray(data.items)) return data.items;
+    return null;
+  }
+
+  /**
+   * Compute UZS/USD unit + line amounts for a PO line payload row.
+   */
+  _normalizePoLineAmounts(item, isUSD, fxRate) {
+    const orderedQty = Number(item.ordered_qty);
+    if (!Number.isFinite(orderedQty) || orderedQty <= 0) {
+      throw createError(ERROR_CODES.VALIDATION_ERROR, 'ordered_qty must be > 0');
+    }
+
+    let unitUzs = Number(item.unit_cost);
+    let lineUzs = Number(item.line_total ?? orderedQty * unitUzs);
+    let unitUsd = null;
+    let lineUsd = null;
+
+    if (isUSD) {
+      unitUsd = Number(item.unit_cost_usd ?? item.unit_price_usd ?? item.unit_cost);
+      if (!Number.isFinite(unitUsd) || unitUsd < 0) {
+        throw createError(ERROR_CODES.VALIDATION_ERROR, 'unit_cost_usd must be >= 0 for USD purchase');
+      }
+      lineUsd = Number.isFinite(Number(item.line_total_usd)) ? Number(item.line_total_usd) : orderedQty * unitUsd;
+      unitUzs = unitUsd * fxRate;
+      lineUzs = orderedQty * unitUzs;
+    }
+
+    return { orderedQty, unitUzs, lineUzs, unitUsd, lineUsd };
+  }
+
+  /**
+   * Full line-item sync when nothing received yet: UPDATE by id, INSERT new, DELETE removed.
+   */
+  _replacePurchaseOrderItems(purchaseOrderId, items, ctx) {
+    const {
+      isUSD,
+      fxRate,
+      hasItemSku,
+      hasItemUsd,
+      hasItemDiscountPercent,
+      hasItemDiscountAmount,
+      hasItemSalePrice,
+    } = ctx;
+
+    const dbRows =
+      this.db
+        .prepare(`SELECT * FROM purchase_order_items WHERE purchase_order_id = ? ORDER BY id`)
+        .all(purchaseOrderId) || [];
+    const byId = new Map(dbRows.map((row) => [row.id, row]));
+    const keptIds = new Set();
+
+    const updateSets = [
+      'product_id = ?',
+      'product_name = ?',
+      ...(hasItemSku ? ['product_sku = ?'] : []),
+      'ordered_qty = ?',
+      'unit_cost = ?',
+      'line_total = ?',
+      ...(hasItemUsd ? ['unit_cost_usd = ?', 'line_total_usd = ?'] : []),
+      ...(hasItemDiscountPercent ? ['discount_percent = ?'] : []),
+      ...(hasItemDiscountAmount ? ['discount_amount = ?'] : []),
+      ...(hasItemSalePrice ? ['sale_price = ?'] : []),
+    ];
+    const updateItem = this.db.prepare(
+      `UPDATE purchase_order_items SET ${updateSets.join(', ')} WHERE id = ? AND purchase_order_id = ?`
+    );
+
+    const itemCols = [
+      'id',
+      'purchase_order_id',
+      'product_id',
+      'product_name',
+      ...(hasItemSku ? ['product_sku'] : []),
+      'ordered_qty',
+      'received_qty',
+      'unit_cost',
+      'line_total',
+      ...(hasItemUsd ? ['unit_cost_usd', 'line_total_usd'] : []),
+      ...(hasItemDiscountPercent ? ['discount_percent'] : []),
+      ...(hasItemDiscountAmount ? ['discount_amount'] : []),
+      ...(hasItemSalePrice ? ['sale_price'] : []),
+    ];
+    const insertItem = this.db.prepare(
+      `INSERT INTO purchase_order_items (${itemCols.join(', ')}) VALUES (${itemCols.map(() => '?').join(', ')})`
+    );
+    const deleteItem = this.db.prepare(`DELETE FROM purchase_order_items WHERE id = ?`);
+
+    for (const item of items) {
+      const { orderedQty, unitUzs, lineUzs, unitUsd, lineUsd } = this._normalizePoLineAmounts(
+        item,
+        isUSD,
+        fxRate
+      );
+
+      const product = this.db.prepare('SELECT id, sku, name FROM products WHERE id = ?').get(item.product_id);
+      if (!product) {
+        throw createError(ERROR_CODES.NOT_FOUND, `Product ${item.product_id} not found`);
+      }
+
+      const rowId = item.id && byId.has(item.id) ? item.id : null;
+      if (rowId) {
+        const dbRow = byId.get(rowId);
+        const uargs = [
+          item.product_id,
+          item.product_name || product.name,
+          ...(hasItemSku ? [item.product_sku ?? dbRow.product_sku ?? product.sku ?? ''] : []),
+          orderedQty,
+          unitUzs,
+          lineUzs,
+          ...(hasItemUsd ? [unitUsd, lineUsd] : []),
+          ...(hasItemDiscountPercent ? [Number(item.discount_percent ?? 0) || 0] : []),
+          ...(hasItemDiscountAmount ? [Number(item.discount_amount ?? 0) || 0] : []),
+          ...(hasItemSalePrice ? [Number(item.sale_price ?? 0) > 0 ? Number(item.sale_price) : null] : []),
+          rowId,
+          purchaseOrderId,
+        ];
+        updateItem.run(...uargs);
+        keptIds.add(rowId);
+        continue;
+      }
+
+      const params = [
+        randomUUID(),
+        purchaseOrderId,
+        item.product_id,
+        item.product_name || product.name,
+        ...(hasItemSku ? [item.product_sku || product.sku || ''] : []),
+        orderedQty,
+        0,
+        unitUzs,
+        lineUzs,
+        ...(hasItemUsd ? [unitUsd, lineUsd] : []),
+        ...(hasItemDiscountPercent ? [Number(item.discount_percent ?? 0) || 0] : []),
+        ...(hasItemDiscountAmount ? [Number(item.discount_amount ?? 0) || 0] : []),
+        ...(hasItemSalePrice ? [Number(item.sale_price ?? 0) > 0 ? Number(item.sale_price) : null] : []),
+      ];
+      insertItem.run(...params);
+    }
+
+    for (const row of dbRows) {
+      if (keptIds.has(row.id)) continue;
+      const rq = Number(row.received_qty || 0);
+      if (rq > 0) {
+        // Draft edits may omit received lines — keep row to preserve receipt history.
+        continue;
+      }
+      deleteItem.run(row.id);
+    }
+  }
+
+  /**
+   * Per product: ordered qty must not fall below already received (aggregated).
+   * Used only on receive/confirm — draft edits may temporarily set ordered below received.
+   */
+  _assertOrderQtyCoversReceived(purchaseOrderId) {
+    const rows =
+      this.db
+        .prepare(
+          `
+        SELECT product_id, product_name,
+               COALESCE(SUM(ordered_qty), 0) AS ordered,
+               COALESCE(SUM(received_qty), 0) AS received
+        FROM purchase_order_items
+        WHERE purchase_order_id = ?
+        GROUP BY product_id
+      `
+        )
+        .all(purchaseOrderId) || [];
+
+    const bad = [];
+    for (const row of rows) {
+      const ordered = Number(row.ordered || 0);
+      const received = Number(row.received || 0);
+      if (received > 0 && ordered < received - 1e-9) {
+        bad.push(String(row.product_name || row.product_id || ''));
+      }
+    }
+    if (bad.length) {
+      throw createError(
+        ERROR_CODES.VALIDATION_ERROR,
+        `Har bir mahsulot bo'yicha jami buyurtma miqdori qabul qilingan miqdordan kam bo'lmasligi kerak: ${bad.join(', ')}`
+      );
+    }
+  }
+
+  /**
    * Update PO line items when some goods were already received: match rows by product_id (FIFO),
-   * preserve received_qty and row ids, disallow ordered_qty < received_qty, disallow removing received lines.
+   * preserve received_qty and row ids; disallow removing received lines.
    */
   _mergePurchaseOrderItemsKeepReceipts(purchaseOrderId, items, ctx) {
     const {
@@ -1117,38 +1591,33 @@ class PurchaseService {
     );
 
     for (const item of items) {
-      const orderedQty = Number(item.ordered_qty);
-      if (!Number.isFinite(orderedQty) || orderedQty <= 0) {
-        throw createError(ERROR_CODES.VALIDATION_ERROR, 'ordered_qty must be > 0');
-      }
-
-      let unitUzs = Number(item.unit_cost);
-      let lineUzs = Number(item.line_total ?? orderedQty * unitUzs);
-      let unitUsd = null;
-      let lineUsd = null;
-
-      if (isUSD) {
-        unitUsd = Number(item.unit_cost_usd ?? item.unit_price_usd ?? item.unit_cost);
-        if (!Number.isFinite(unitUsd) || unitUsd < 0) {
-          throw createError(ERROR_CODES.VALIDATION_ERROR, 'unit_cost_usd must be >= 0 for USD purchase');
-        }
-        lineUsd = Number.isFinite(Number(item.line_total_usd)) ? Number(item.line_total_usd) : orderedQty * unitUsd;
-        unitUzs = unitUsd * fxRate;
-        lineUzs = orderedQty * unitUzs;
-      }
+      const { orderedQty, unitUzs, lineUzs, unitUsd, lineUsd } = this._normalizePoLineAmounts(
+        item,
+        isUSD,
+        fxRate
+      );
 
       const pid = item.product_id;
-      const queue = queues.get(pid);
-      const dbRow = queue && queue.length ? queue.shift() : null;
+      let dbRow = null;
+
+      if (item.id) {
+        const direct = dbRows.find((r) => r.id === item.id);
+        if (direct) {
+          dbRow = direct;
+          const queue = queues.get(direct.product_id);
+          if (queue) {
+            const qIdx = queue.findIndex((r) => r.id === direct.id);
+            if (qIdx >= 0) queue.splice(qIdx, 1);
+          }
+        }
+      }
+
+      if (!dbRow) {
+        const queue = queues.get(pid);
+        dbRow = queue && queue.length ? queue.shift() : null;
+      }
 
       if (dbRow) {
-        const rq = Number(dbRow.received_qty || 0);
-        if (orderedQty < rq) {
-          throw createError(
-            ERROR_CODES.VALIDATION_ERROR,
-            `Buyurtma miqdori qabul qilinganidan (${rq}) kam bo‘lishi mumkin emas: ${item.product_name || pid}`
-          );
-        }
         const uargs = [
           item.product_name || dbRow.product_name,
           ...(hasItemSku ? [item.product_sku ?? dbRow.product_sku ?? null] : []),
@@ -1192,10 +1661,8 @@ class PurchaseService {
       if (updatedIds.has(row.id)) continue;
       const rq = Number(row.received_qty || 0);
       if (rq > 0) {
-        throw createError(
-          ERROR_CODES.VALIDATION_ERROR,
-          'Qabul qilingan mahsulot qatorini o‘chirib bo‘lmaydi — buyurtmada saqlang yoki qabulni bekor qiling'
-        );
+        // Draft edits may omit received lines — keep row to preserve receipt history.
+        continue;
       }
       deleteItem.run(row.id);
     }
@@ -1220,6 +1687,10 @@ class PurchaseService {
       throw createError(ERROR_CODES.VALIDATION_ERROR, `Cannot update purchase order with status '${po.status}'`);
     }
 
+    const lineItems = this._resolveLineItems(data, items);
+    const headerData = data && typeof data === 'object' ? { ...data } : null;
+    if (headerData && 'items' in headerData) delete headerData.items;
+
     const existingItems = this.db.prepare(`
       SELECT COALESCE(SUM(received_qty), 0) as total_received
       FROM purchase_order_items
@@ -1228,7 +1699,7 @@ class PurchaseService {
 
     const totalReceived = Number(existingItems?.total_received || 0);
 
-    if (items && (!Array.isArray(items) || items.length === 0)) {
+    if (lineItems && (!Array.isArray(lineItems) || lineItems.length === 0)) {
       throw createError(ERROR_CODES.VALIDATION_ERROR, 'Purchase order must have at least one item');
     }
 
@@ -1244,9 +1715,24 @@ class PurchaseService {
       const hasItemDiscountAmount = this._hasPOItemCol('discount_amount');
       const hasItemSalePrice = this._hasPOItemCol('sale_price');
 
-      const nextCurrency = hasCurrency ? String((data && data.currency) || po.currency || 'UZS').toUpperCase() : 'UZS';
+      const nextCurrency = hasCurrency ? String((headerData && headerData.currency) || po.currency || 'UZS').toUpperCase() : 'UZS';
       const isUSD = nextCurrency === 'USD';
-      const fxRate = isUSD ? Number((data && data.fx_rate) ?? po.fx_rate) : null;
+      const fxRate = isUSD ? Number((headerData && headerData.fx_rate) ?? po.fx_rate) : null;
+
+      const supplierIdForCheck = (headerData && headerData.supplier_id) || po.supplier_id;
+      if (supplierIdForCheck && hasCurrency && this._cols('suppliers').has('settlement_currency')) {
+        const supplierRow = this.db
+          .prepare('SELECT settlement_currency FROM suppliers WHERE id = ?')
+          .get(supplierIdForCheck);
+        const settlement = String(supplierRow?.settlement_currency || 'UZS').toUpperCase();
+        if (settlement === 'USD' && nextCurrency !== 'USD') {
+          throw createError(
+            ERROR_CODES.VALIDATION_ERROR,
+            'USD supplier requires purchase order in USD currency'
+          );
+        }
+      }
+
       if (isUSD) {
         if (!hasCurrency || !hasFxRate || !hasTotalUsd || !hasItemUsd) {
           throw createError(ERROR_CODES.DB_ERROR, 'USD purchase columns missing (apply latest migrations and restart app)');
@@ -1256,11 +1742,21 @@ class PurchaseService {
         }
       }
 
+      const itemCtx = {
+        isUSD,
+        fxRate,
+        hasItemSku,
+        hasItemUsd,
+        hasItemDiscountPercent,
+        hasItemDiscountAmount,
+        hasItemSalePrice,
+      };
+
       // Update header
-      if (data) {
+      if (headerData) {
         // Recalculate totals from items if provided
-        const sourceItemsRaw = Array.isArray(items)
-          ? items
+        const sourceItemsRaw = Array.isArray(lineItems)
+          ? lineItems
           : this.db.prepare('SELECT * FROM purchase_order_items WHERE purchase_order_id = ?').all(purchaseOrderId);
 
         const sourceItems = sourceItemsRaw.map((it) => {
@@ -1284,8 +1780,8 @@ class PurchaseService {
         });
 
         const subtotal = sourceItems.reduce((sum, it) => sum + (Number(it.line_total) || 0), 0);
-        const discount = Number(data.discount || 0);
-        const tax = Number(data.tax || 0);
+        const discount = Number(headerData.discount || 0);
+        const tax = Number(headerData.tax || 0);
         const totalAmount = subtotal - discount + tax;
         const totalUsd = isUSD
           ? Math.max(
@@ -1294,6 +1790,8 @@ class PurchaseService {
                 (Number(discount || 0) / Number(fxRate || 1))
             )
           : null;
+
+        this._validateStatusTransition(po.status, headerData.status, totalReceived);
 
         const sets = [
           'supplier_id = COALESCE(?, supplier_id)',
@@ -1311,18 +1809,18 @@ class PurchaseService {
           'updated_at = ?',
         ];
         const params = [
-          data.supplier_id ?? null,
-          data.supplier_name ?? null,
-          data.order_date ?? null,
-          data.expected_date ?? null,
-          data.reference ?? null,
+          headerData.supplier_id ?? null,
+          headerData.supplier_name ?? null,
+          headerData.order_date ?? null,
+          headerData.expected_date ?? null,
+          headerData.reference ?? null,
           subtotal,
           discount,
           tax,
           totalAmount,
-          data.status ?? null,
-          data.invoice_number ?? null,
-          data.notes ?? null,
+          headerData.status ?? null,
+          headerData.invoice_number ?? null,
+          headerData.notes ?? null,
           now,
         ];
 
@@ -1340,97 +1838,64 @@ class PurchaseService {
         }
         params.push(purchaseOrderId);
 
+        const initialPaid =
+          headerData.initial_payment != null
+            ? Number(
+                isUSD
+                  ? headerData.initial_payment.amount_usd ?? headerData.initial_payment.amount ?? 0
+                  : headerData.initial_payment.amount ?? 0
+              ) || 0
+            : 0;
+        if (
+          headerData.payment_scheme != null ||
+          headerData.payment_due_date != null ||
+          headerData.payment_schedule != null
+        ) {
+          this._validatePaymentSchemeInput({
+            scheme: headerData.payment_scheme ?? po.payment_scheme,
+            poCurrency: nextCurrency,
+            totalAmount,
+            totalUsd,
+            paymentDueDate: headerData.payment_due_date ?? po.payment_due_date,
+            paymentSchedule: headerData.payment_schedule,
+            initialPaymentAmount: initialPaid,
+          });
+        }
+
         this.db.prepare(`
           UPDATE purchase_orders
           SET ${sets.join(', ')}
           WHERE id = ?
         `).run(...params);
+
+        if (
+          headerData.payment_scheme != null ||
+          headerData.payment_due_date != null ||
+          headerData.payment_schedule != null
+        ) {
+          this._savePaymentScheme(purchaseOrderId, {
+            scheme: headerData.payment_scheme ?? po.payment_scheme,
+            payment_due_date: headerData.payment_due_date,
+            payment_schedule: headerData.payment_schedule,
+          });
+        }
       }
 
       // Replace or merge line items
-      if (Array.isArray(items)) {
+      if (Array.isArray(lineItems)) {
         if (totalReceived > 0) {
-          this._mergePurchaseOrderItemsKeepReceipts(purchaseOrderId, items, {
-            isUSD,
-            fxRate,
-            hasItemSku,
-            hasItemUsd,
-            hasItemDiscountPercent,
-            hasItemDiscountAmount,
-            hasItemSalePrice,
-          });
+          this._mergePurchaseOrderItemsKeepReceipts(purchaseOrderId, lineItems, itemCtx);
         } else {
-          this.db.prepare('DELETE FROM purchase_order_items WHERE purchase_order_id = ?').run(purchaseOrderId);
-          const itemCols = [
-            'id',
-            'purchase_order_id',
-            'product_id',
-            'product_name',
-            ...(hasItemSku ? ['product_sku'] : []),
-            'ordered_qty',
-            'received_qty',
-            'unit_cost',
-            'line_total',
-            ...(hasItemUsd ? ['unit_cost_usd', 'line_total_usd'] : []),
-            ...(hasItemDiscountPercent ? ['discount_percent'] : []),
-            ...(hasItemDiscountAmount ? ['discount_amount'] : []),
-            ...(hasItemSalePrice ? ['sale_price'] : []),
-          ];
-          const insertItem = this.db.prepare(
-            `INSERT INTO purchase_order_items (${itemCols.join(', ')}) VALUES (${itemCols.map(() => '?').join(', ')})`
-          );
-
-          for (const item of items) {
-            const orderedQty = Number(item.ordered_qty);
-            if (!Number.isFinite(orderedQty) || orderedQty <= 0) {
-              throw createError(ERROR_CODES.VALIDATION_ERROR, 'ordered_qty must be > 0');
-            }
-
-            let unitUzs = Number(item.unit_cost);
-            let lineUzs = Number(item.line_total ?? orderedQty * unitUzs);
-            let unitUsd = null;
-            let lineUsd = null;
-
-            if (isUSD) {
-              unitUsd = Number(item.unit_cost_usd ?? item.unit_price_usd ?? item.unit_cost);
-              if (!Number.isFinite(unitUsd) || unitUsd < 0) {
-                throw createError(ERROR_CODES.VALIDATION_ERROR, 'unit_cost_usd must be >= 0 for USD purchase');
-              }
-              lineUsd = Number.isFinite(Number(item.line_total_usd)) ? Number(item.line_total_usd) : orderedQty * unitUsd;
-              unitUzs = unitUsd * fxRate;
-              lineUzs = orderedQty * unitUzs;
-            }
-
-            const product = this.db.prepare('SELECT id, sku, name FROM products WHERE id = ?').get(item.product_id);
-            if (!product) {
-              throw createError(ERROR_CODES.NOT_FOUND, `Product ${item.product_id} not found`);
-            }
-
-            const params = [
-              randomUUID(),
-              purchaseOrderId,
-              item.product_id,
-              item.product_name || product.name,
-              ...(hasItemSku ? [item.product_sku || product.sku || ''] : []),
-              orderedQty,
-              0,
-              unitUzs,
-              lineUzs,
-              ...(hasItemUsd ? [unitUsd, lineUsd] : []),
-              ...(hasItemDiscountPercent ? [Number(item.discount_percent ?? 0) || 0] : []),
-              ...(hasItemDiscountAmount ? [Number(item.discount_amount ?? 0) || 0] : []),
-              ...(hasItemSalePrice ? [Number(item.sale_price ?? 0) > 0 ? Number(item.sale_price) : null] : []),
-            ];
-            insertItem.run(...params);
-          }
+          this._replacePurchaseOrderItems(purchaseOrderId, lineItems, itemCtx);
         }
 
-        this._finalizePurchaseOrderStatus(purchaseOrderId, po, data, now);
+        this._finalizePurchaseOrderStatus(purchaseOrderId, po, headerData, now);
         this._syncProductCatalogFromReceivedPoLines(purchaseOrderId, now);
+        this._syncOpenBatchCostsFromPoLines(purchaseOrderId, now);
       }
 
-      if (data && data.initial_payment) {
-        const supplierId = data.supplier_id ?? po.supplier_id;
+      if (headerData && headerData.initial_payment) {
+        const supplierId = headerData.supplier_id ?? po.supplier_id;
         if (!supplierId) {
           throw createError(ERROR_CODES.VALIDATION_ERROR, 'Supplier is required for payment');
         }
@@ -1438,7 +1903,7 @@ class PurchaseService {
         this._insertSupplierPaymentForPo({
           purchaseOrderId,
           supplierId,
-          payment: data.initial_payment,
+          payment: headerData.initial_payment,
           poCurrency: header?.currency || po.currency,
           totalAmountUzs: Number(header?.total_amount ?? 0),
           totalAmountUsd: header?.total_usd != null ? Number(header.total_usd) : null,
@@ -1545,6 +2010,10 @@ class PurchaseService {
     );
 
     const transaction = this.db.transaction(() => {
+      if (purchaseOrderId && status === 'received') {
+        this._assertOrderQtyCoversReceived(purchaseOrderId);
+      }
+
       // Currency rules: USD suppliers must use USD receipts with exchange rate
       const currency = String(data.currency || 'USD').toUpperCase() === 'USD' ? 'USD' : 'UZS';
       if (settlementCurrency === 'USD' && currency !== 'USD') {
@@ -1720,6 +2189,7 @@ class PurchaseService {
                 } catch (puErr) {
                   console.warn('[PurchaseService.createReceipt] Failed to update product_units sale_price:', puErr?.message);
                 }
+                this._afterProductCatalogPriceChange(item.product_id);
               }
             } catch (err) {
               console.warn('[PurchaseService.createReceipt] Failed to update product sale_price:', err?.message);
@@ -1950,6 +2420,8 @@ class PurchaseService {
     if (po.status === 'cancelled') {
       throw createError(ERROR_CODES.VALIDATION_ERROR, 'Cannot receive goods for a cancelled purchase order');
     }
+
+    this._assertOrderQtyCoversReceived(purchaseOrderId);
 
     const hasCurrency = this._hasPOCol('currency');
     const hasFxRate = this._hasPOCol('fx_rate');

@@ -711,9 +711,6 @@ class ProductsService {
     )`;
   }
 
-  /**
-   * Match product detail / inventory: if last received PO line has a cost, use it for API display.
-   */
   _effectivePurchasePriceForDisplay(productId, storedPurchasePrice) {
     const stored = Number(storedPurchasePrice) || 0;
     if (!productId) return stored;
@@ -739,6 +736,25 @@ class ProductsService {
       /* ignore */
     }
     return stored;
+  }
+
+  /** Default product_units row is authoritative for catalog retail display. */
+  _effectiveSalePriceFromUnits(storedSalePrice, units = []) {
+    if (!Array.isArray(units) || units.length === 0) {
+      return Number(storedSalePrice ?? 0) || 0;
+    }
+    const defaultRow = units.find((u) => u.is_default) || units[0];
+    const fromUnit = Number(defaultRow?.sale_price ?? 0);
+    if (Number.isFinite(fromUnit) && fromUnit > 0) return fromUnit;
+    return Number(storedSalePrice ?? 0) || 0;
+  }
+
+  _applyEffectiveSalePrice(row) {
+    if (!row) return row;
+    if (Array.isArray(row.product_units) && row.product_units.length > 0) {
+      row.sale_price = this._effectiveSalePriceFromUnits(row.sale_price, row.product_units);
+    }
+    return row;
   }
 
   /**
@@ -952,11 +968,13 @@ class ProductsService {
     if (this._hasTable('product_units')) {
       const ids = normalizedRows.map((r) => r.id).filter(Boolean);
       const unitsMap = this._getProductUnitsByIds(ids);
-      return normalizedRows.map((row) => ({
-        ...row,
-        product_units: unitsMap.get(row.id) || [],
-        base_unit: row.base_unit ?? row.unit ?? row.unit_code ?? null,
-      }));
+      return normalizedRows.map((row) =>
+        this._applyEffectiveSalePrice({
+          ...row,
+          product_units: unitsMap.get(row.id) || [],
+          base_unit: row.base_unit ?? row.unit ?? row.unit_code ?? null,
+        }),
+      );
     }
     return normalizedRows;
   }
@@ -1070,6 +1088,187 @@ class ProductsService {
       ...r,
       purchase_price: this._effectivePurchasePriceForDisplay(r.id, r.purchase_price),
     }));
+  }
+
+  /**
+   * Lightweight POS scan index — minimal columns/joins for fast full-catalog load.
+   * filters: { status, warehouse_id, limit, offset }
+   */
+  listScanIndex(filters = {}) {
+    const params = [];
+    const wantsWarehouse = !!filters.warehouse_id;
+    const stockJoin = wantsWarehouse
+      ? `LEFT JOIN stock_balances sb ON sb.product_id = p.id AND sb.warehouse_id = ?`
+      : `LEFT JOIN (
+          SELECT product_id, SUM(quantity) AS quantity
+          FROM stock_balances
+          GROUP BY product_id
+        ) sb ON sb.product_id = p.id`;
+
+    const extraCols = [];
+    if (this._hasCol('purchase_price')) extraCols.push('p.purchase_price');
+    else extraCols.push('0 AS purchase_price');
+    if (this._hasCol('master_price')) extraCols.push('p.master_price');
+    else extraCols.push('NULL AS master_price');
+    if (this._hasCol('master_min_qty')) extraCols.push('p.master_min_qty');
+    else extraCols.push('NULL AS master_min_qty');
+    if (this._hasCol('base_unit')) extraCols.push('p.base_unit');
+    else extraCols.push('NULL AS base_unit');
+    if (this._hasCol('category_id')) extraCols.push('p.category_id');
+    else extraCols.push('NULL AS category_id');
+    if (this._hasCol('brand')) extraCols.push('p.brand');
+    else extraCols.push('NULL AS brand');
+    if (this._hasCol('article')) extraCols.push('p.article');
+    else extraCols.push('NULL AS article');
+
+    let query = `
+      SELECT
+        p.id,
+        p.name,
+        p.sku,
+        p.barcode,
+        p.sale_price,
+        p.track_stock,
+        p.min_stock_level,
+        p.is_active,
+        ${extraCols.join(', ')},
+        c.name AS category_name,
+        COALESCE(u.code, p.unit) AS unit,
+        COALESCE(sb.quantity, 0) AS current_stock
+      FROM products p
+      LEFT JOIN units u ON u.id = p.unit_id
+      LEFT JOIN categories c ON c.id = p.category_id
+      ${stockJoin}
+      WHERE 1=1
+    `;
+
+    if (wantsWarehouse) params.push(filters.warehouse_id);
+
+    const status = filters.status || 'active';
+    if (status === 'active') query += ` AND p.is_active = 1`;
+    else if (status === 'inactive') query += ` AND p.is_active = 0`;
+
+    query += ` ORDER BY p.name ASC`;
+    const limit = Number.isFinite(Number(filters.limit)) ? Number(filters.limit) : 10000;
+    const offset = Number.isFinite(Number(filters.offset)) ? Number(filters.offset) : 0;
+    query += ` LIMIT ? OFFSET ?`;
+    params.push(limit, offset);
+
+    const rows = this.db.prepare(query).all(params) || [];
+    const normalizedRows = rows.map((row) => {
+      const purchasePrice = this._hasCol('purchase_price')
+        ? this._effectivePurchasePriceForDisplay(row.id, row.purchase_price)
+        : 0;
+      const baseUnit = row.base_unit ?? row.unit ?? 'pcs';
+      return {
+        id: row.id,
+        name: row.name,
+        sku: row.sku,
+        barcode: row.barcode,
+        sale_price: Number(row.sale_price ?? 0) || 0,
+        purchase_price: Number(purchasePrice ?? 0) || 0,
+        cost_price: Number(purchasePrice ?? 0) || 0,
+        track_stock: row.track_stock !== 0 && row.track_stock !== false,
+        current_stock: Number(row.current_stock ?? 0) || 0,
+        min_stock_level: Number(row.min_stock_level ?? 0) || 0,
+        is_active: row.is_active !== 0 && row.is_active !== false,
+        master_price: row.master_price ?? null,
+        master_min_qty: row.master_min_qty ?? null,
+        base_unit: baseUnit,
+        unit: row.unit ?? baseUnit,
+        category_id: row.category_id ?? null,
+        category_name: row.category_name ?? null,
+        brand: row.brand ?? null,
+        article: row.article ?? null,
+      };
+    });
+
+    if (this._hasTable('product_units')) {
+      const ids = normalizedRows.map((r) => r.id).filter(Boolean);
+      const unitsMap = this._getProductUnitsByIds(ids);
+      return normalizedRows.map((row) =>
+        this._applyEffectiveSalePrice({
+          ...row,
+          product_units: unitsMap.get(row.id) || [],
+          base_unit: row.base_unit ?? row.unit ?? 'pcs',
+        }),
+      );
+    }
+    return normalizedRows;
+  }
+
+  /**
+   * Batched barcode/SKU resolve for POS scan fallback (single round-trip).
+   * keys: string[] — lookup variants; returns { product, matchKind, matchedKey } | null
+   */
+  resolveScan(rawKeys = [], opts = {}) {
+    const keys = [
+      ...new Set(
+        (Array.isArray(rawKeys) ? rawKeys : [])
+          .map((k) => String(k || '').trim())
+          .filter(Boolean)
+      ),
+    ];
+    if (!keys.length) return null;
+
+    const tryBarcode = (key) => {
+      try {
+        const product = this.getByBarcode(key);
+        if (product) return { product, matchKind: 'barcode', matchedKey: key };
+      } catch (err) {
+        if (!err || err.code !== ERROR_CODES.NOT_FOUND) throw err;
+      }
+      return null;
+    };
+
+    const trySku = (key) => {
+      try {
+        const product = this.getBySku(key);
+        if (product) return { product, matchKind: 'sku', matchedKey: key };
+      } catch (err) {
+        if (!err || err.code !== ERROR_CODES.NOT_FOUND) throw err;
+      }
+      return null;
+    };
+
+    for (const key of keys) {
+      const looksLikeBarcode = key.length >= 8;
+      let hit = null;
+      if (looksLikeBarcode) {
+        hit = tryBarcode(key);
+        if (!hit && key.length <= 8) hit = trySku(key);
+      } else {
+        hit = trySku(key);
+        if (!hit) hit = tryBarcode(key);
+      }
+      if (hit) return hit;
+    }
+
+    const nameTerm = keys.join(' ').trim();
+    if (nameTerm.length >= 2) {
+      const params = [];
+      let query = `
+        SELECT p.id
+        FROM products p
+        WHERE 1=1
+      `;
+      query += this._productSearchWhere(nameTerm, params);
+      query += ` ORDER BY p.name ASC LIMIT 5`;
+      const rows = this.db.prepare(query).all(params) || [];
+      if (rows.length === 1) {
+        const product = this.getById(rows[0].id);
+        if (product) return { product, matchKind: 'sku', matchedKey: nameTerm };
+      }
+      const exact = rows.find((r) => {
+        const p = this.db.prepare('SELECT name FROM products WHERE id = ?').get(r.id);
+        return String(p?.name || '').toLowerCase() === nameTerm.toLowerCase();
+      });
+      if (exact) {
+        const product = this.getById(exact.id);
+        if (product) return { product, matchKind: 'sku', matchedKey: nameTerm };
+      }
+    }
+    return null;
   }
 
   /**
@@ -1194,6 +1393,7 @@ class ProductsService {
       const unitsMap = this._getProductUnitsByIds([normalized.id]);
       normalized.product_units = unitsMap.get(normalized.id) || [];
       normalized.base_unit = normalized.base_unit ?? normalized.unit ?? row.unit_code ?? null;
+      this._applyEffectiveSalePrice(normalized);
     }
     if (this.cacheService) this.cacheService.setProduct(normalized);
     return normalized;
@@ -1260,6 +1460,7 @@ class ProductsService {
       const unitsMap = this._getProductUnitsByIds([normalized.id]);
       normalized.product_units = unitsMap.get(normalized.id) || [];
       normalized.base_unit = normalized.base_unit ?? normalized.unit ?? row.unit_code ?? null;
+      this._applyEffectiveSalePrice(normalized);
     }
     if (this.cacheService) this.cacheService.setProduct(normalized);
     return normalized;
@@ -1331,6 +1532,7 @@ class ProductsService {
       const unitsMap = this._getProductUnitsByIds([normalized.id]);
       normalized.product_units = unitsMap.get(normalized.id) || [];
       normalized.base_unit = normalized.base_unit ?? normalized.unit ?? row.unit_code ?? null;
+      this._applyEffectiveSalePrice(normalized);
     }
     if (this.cacheService) this.cacheService.setProduct(normalized);
     return normalized;

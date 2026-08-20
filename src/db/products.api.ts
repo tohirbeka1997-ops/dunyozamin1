@@ -327,9 +327,113 @@ export const getProductBySku = async (sku: string) => {
   } as ProductWithCategory;
 };
 
+/** Lightweight scan-index rows for POS barcode lookup (minimal joins). */
+export type ProductScanIndexRow = Product & { cost_price?: number };
+
+export const getProductsScanIndex = async (filters?: {
+  warehouse_id?: string | null;
+  limit?: number;
+  offset?: number;
+  status?: 'active' | 'inactive' | 'all';
+}): Promise<ProductScanIndexRow[]> => {
+  if (hasPosApi()) {
+    const api = requireElectron();
+    const f: Record<string, unknown> = {
+      status: filters?.status || 'active',
+      limit: Number.isFinite(Number(filters?.limit)) ? Number(filters?.limit) : 10000,
+      offset: Number.isFinite(Number(filters?.offset)) ? Number(filters?.offset) : 0,
+    };
+    if (filters?.warehouse_id) f.warehouse_id = filters.warehouse_id;
+    const listFn = api?.products?.listScanIndex;
+    if (typeof listFn === 'function') {
+      return ipc<ProductScanIndexRow[]>(listFn.call(api.products, f));
+    }
+    // Fallback for stale preload: use list with fields hint if backend supports it
+    return ipc<ProductScanIndexRow[]>(
+      api.products.list({ ...f, fields: 'scan' } as Record<string, unknown>),
+    );
+  }
+  await delay();
+  const offset = filters?.offset || 0;
+  const limit = filters?.limit || 10000;
+  const status = filters?.status || 'active';
+  const products = mockDB.products
+    .filter((p) => {
+      if (status === 'active') return p.is_active;
+      if (status === 'inactive') return !p.is_active;
+      return true;
+    })
+    .slice(offset, offset + limit)
+    .map((p) => {
+      const normalized = normalizeProductUnits(p);
+      const cost = Number((normalized as { purchase_price?: number }).purchase_price ?? 0) || 0;
+      return {
+        ...normalized,
+        cost_price: cost,
+        purchase_price: cost,
+      } as ProductScanIndexRow;
+    });
+  return products;
+};
+
+export type ResolveScanResult = {
+  product: ProductWithCategory;
+  matchKind: 'barcode' | 'sku';
+  matchedKey: string;
+} | null;
+
+export const resolveProductScan = async (
+  keys: string[],
+  opts?: { warehouse_id?: string | null },
+): Promise<ResolveScanResult> => {
+  const cleanKeys = [...new Set(keys.map((k) => String(k || '').trim()).filter(Boolean))];
+  if (!cleanKeys.length) return null;
+  if (hasPosApi()) {
+    const api = requireElectron();
+    const resolveFn = api?.products?.resolveScan;
+    if (typeof resolveFn === 'function') {
+      try {
+        const result = await ipc<ResolveScanResult>(resolveFn.call(api.products, cleanKeys, opts || {}));
+        if (!result || typeof result !== 'object' || !('product' in result)) return null;
+        return result;
+      } catch (error: any) {
+        if (error?.code === 'NOT_FOUND') return null;
+        throw error;
+      }
+    }
+  }
+  for (const key of cleanKeys) {
+    const looksLikeBarcode = key.length >= 8;
+    let product: ProductWithCategory | null = null;
+    if (looksLikeBarcode) {
+      product = await getProductByBarcode(key);
+      if (product) return { product, matchKind: 'barcode', matchedKey: key };
+      if (key.length <= 8) {
+        product = await getProductBySku(key);
+        if (product) return { product, matchKind: 'sku', matchedKey: key };
+      }
+    } else {
+      product = await getProductBySku(key);
+      if (product) return { product, matchKind: 'sku', matchedKey: key };
+      product = await getProductByBarcode(key);
+      if (product) return { product, matchKind: 'barcode', matchedKey: key };
+    }
+  }
+  const nameTerm = cleanKeys.join(' ').trim();
+  if (nameTerm.length >= 2) {
+    const hits = await searchProducts(nameTerm, { status: 'all' });
+    if (hits.length === 1) {
+      return { product: hits[0], matchKind: 'sku', matchedKey: nameTerm };
+    }
+    const exact = hits.find((p) => String(p.name || '').toLowerCase() === nameTerm.toLowerCase());
+    if (exact) return { product: exact, matchKind: 'sku', matchedKey: nameTerm };
+  }
+  return null;
+};
+
 export const searchProducts = async (
   searchTerm: string,
-  opts?: { warehouse_id?: string | null }
+  opts?: { warehouse_id?: string | null; status?: 'active' | 'inactive' | 'all' }
 ) => {
   const term = String(searchTerm || '').trim().toLowerCase();
   const prioritize = (items: ProductWithCategory[]) => {
@@ -372,7 +476,7 @@ export const searchProducts = async (
     const results = await ipc<ProductWithCategory[]>(
       api.products.list({
         search: term.length > 0 ? term : undefined,
-        status: 'active',
+        status: opts?.status || 'active',
         ...(opts?.warehouse_id ? { warehouse_id: opts.warehouse_id } : {}),
         // Keep POS search snappy and consistent with the UI expectations.
         limit: 20,
@@ -385,18 +489,22 @@ export const searchProducts = async (
   }
 
   await delay();
+  const status = opts?.status || 'active';
   const products = mockDB.products
-    .filter(p =>
-      p.is_active &&
-      (p.name.toLowerCase().includes(term) ||
+    .filter(p => {
+      if (status === 'active' && !p.is_active) return false;
+      if (status === 'inactive' && p.is_active) return false;
+      const termMatch =
+      p.name.toLowerCase().includes(term) ||
        p.sku.toLowerCase().includes(term) ||
        (p.barcode && p.barcode.toLowerCase().includes(term)) ||
        String((p as { article?: string | null }).article || '')
          .toLowerCase()
          .replace(/[\s\-_]/g, '')
          .includes(term.replace(/[\s\-_]/g, '')) ||
-       String((p as { brand?: string | null }).brand || '').toLowerCase().includes(term))
-    )
+       String((p as { brand?: string | null }).brand || '').toLowerCase().includes(term);
+      return termMatch;
+    })
     .slice(0, 20);
 
   const mapped = products.map(p => ({

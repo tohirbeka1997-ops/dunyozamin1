@@ -91,6 +91,27 @@ function orderLinkedFieldUzsSql(db, orderAlias = 'o', amountExpr = '0') {
   END`;
 }
 
+/** Web order total in UZS — USD rows × fx_rate on web_orders. */
+function webOrderAmountUzsSql(db, alias = 'wo') {
+  const a = alias || 'wo';
+  let hasCur = false;
+  try {
+    hasCur = !!db
+      .prepare(`SELECT 1 AS ok FROM pragma_table_info('web_orders') WHERE name = 'currency' LIMIT 1`)
+      .get()?.ok;
+  } catch {
+    hasCur = false;
+  }
+  if (!hasCur) {
+    return `CAST(COALESCE(${a}.total_amount, 0) AS REAL)`;
+  }
+  return `CASE
+    WHEN UPPER(TRIM(COALESCE(${a}.currency, 'UZS'))) = 'USD'
+      THEN CAST(COALESCE(${a}.total_amount, 0) AS REAL) * COALESCE(${a}.fx_rate, 0)
+    ELSE CAST(COALESCE(${a}.total_amount, 0) AS REAL)
+  END`;
+}
+
 /** Customer payment (AR) in UZS — USD rows × fx_rate on customer_payments. */
 function customerPaymentAmountUzsSql(db, cpAlias = 'cp') {
   const cp = cpAlias || 'cp';
@@ -159,6 +180,7 @@ module.exports = {
   orderSalesSplitExpressions,
   returnRefundUzsSql,
   customerPaymentAmountUzsSql,
+  webOrderAmountUzsSql,
   paymentAmountUzsSql,
   paymentSalesSplitExpressions,
 };

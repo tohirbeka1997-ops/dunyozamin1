@@ -74,6 +74,22 @@ function runStep(name, fn) {
   }
 }
 
+function withLedgerInsertFailure(db, fn) {
+  const originalPrepare = db.prepare.bind(db);
+  db.prepare = function patchedPrepare(sql, ...rest) {
+    const normalized = String(sql || '').replace(/\s+/g, ' ').trim().toUpperCase();
+    if (normalized.includes('INSERT INTO CUSTOMER_LEDGER')) {
+      throw new Error('INJECTED_LEDGER_INSERT_FAILURE');
+    }
+    return originalPrepare(sql, ...rest);
+  };
+  try {
+    return fn();
+  } finally {
+    db.prepare = originalPrepare;
+  }
+}
+
 console.log('\n=== BUYURTMALAR / MIJOZ BALANSI SMOKE TEST ===');
 console.log(`Temp DB: ${tmpDir}\n`);
 
@@ -143,6 +159,93 @@ try {
     assert.strictEqual(Number(saleLed.amount), -15000);
   });
 
+  runStep('nasiya: recalc jami authoritative (POS 130k, qatorlar 10k)', () => {
+    const balBefore = bal(db, customerId);
+    const res = sales.completePOSOrder(
+      { total_amount: 130000, customer_id: customerId, shift_id: shift.id, user_id: ADMIN },
+      [cartLine(product, 2, 5000)],
+      [{ payment_method: 'credit', amount: 130000 }],
+    );
+    const row = db
+      .prepare('SELECT total_amount, credit_amount FROM orders WHERE id = ?')
+      .get(res.order_id);
+    assert.strictEqual(Number(row.total_amount), 10000);
+    assert.strictEqual(Number(row.credit_amount), 10000);
+    assert.strictEqual(bal(db, customerId), balBefore - 10000);
+    const led = db
+      .prepare(
+        `SELECT amount FROM customer_ledger WHERE customer_id = ? AND type = 'sale' AND ref_id = ?`,
+      )
+      .get(customerId, res.order_id);
+    assert.strictEqual(Number(led.amount), -10000);
+  });
+
+  runStep('nasiya: erkin narx (15000→12000) credit + balans modified total', () => {
+    const erkinCust = customers.create({
+      name: 'Smoke Erkin Narx Nasiya',
+      phone: '+998901234599',
+      allow_credit: 1,
+      allow_debt: 1,
+      credit_limit: 50000000,
+    });
+    const erkinId = erkinCust.id;
+    const balBefore = bal(db, erkinId);
+    products.update(product.id, {
+      sale_price: 15000,
+      product_units: [{ unit: 'pcs', ratio_to_base: 1, sale_price: 15000, is_default: true }],
+    });
+
+    const res = sales.completePOSOrder(
+      { total_amount: 12000, customer_id: erkinId, shift_id: shift.id, user_id: ADMIN },
+      [
+        {
+          product_id: product.id,
+          product_name: product.name,
+          quantity: 1,
+          qty_sale: 1,
+          qty_base: 1,
+          unit_price: 12000,
+          final_unit_price: 12000,
+          final_total: 12000,
+          line_total: 12000,
+          discount_amount: 0,
+          price_source: 'manual',
+          is_price_overridden: true,
+          manual_price: true,
+          price_tier: 'retail',
+          base_price: 15000,
+        },
+      ],
+      [],
+    );
+
+    const row = db
+      .prepare('SELECT total_amount, credit_amount FROM orders WHERE id = ?')
+      .get(res.order_id);
+    assert.strictEqual(Number(row.total_amount), 12000, 'order total must use erkin narx');
+    assert.strictEqual(Number(row.credit_amount), 12000, 'credit must match modified total');
+    assert.strictEqual(bal(db, erkinId), balBefore - 12000, 'balance delta must be modified total');
+
+    const item = db
+      .prepare('SELECT unit_price, final_total, price_source FROM order_items WHERE order_id = ?')
+      .get(res.order_id);
+    assert.strictEqual(Number(item.unit_price), 12000);
+    assert.strictEqual(Number(item.final_total), 12000);
+    assert.strictEqual(String(item.price_source), 'manual');
+
+    const led = db
+      .prepare(
+        `SELECT amount FROM customer_ledger WHERE customer_id = ? AND type = 'sale' AND ref_id = ?`,
+      )
+      .get(erkinId, res.order_id);
+    assert.strictEqual(Number(led.amount), -12000);
+
+    products.update(product.id, {
+      sale_price: 5000,
+      product_units: [{ unit: 'pcs', ratio_to_base: 1, sale_price: 5000, is_default: true }],
+    });
+  });
+
   // --- Qisman to‘lov + nasiya ---
   const partialRes = sales.completePOSOrder(
     { total_amount: 10000, customer_id: customerId, shift_id: shift.id, user_id: ADMIN },
@@ -155,8 +258,8 @@ try {
   const partialOrder = db.prepare('SELECT paid_amount, credit_amount FROM orders WHERE id = ?').get(partialRes.order_id);
   assert.ok(Number(partialOrder.paid_amount) >= 3999);
   assert.strictEqual(Number(partialOrder.credit_amount), 6000);
-  assert.strictEqual(bal(db, customerId), -21000);
-  ok('qisman: 4000 naqd + 6000 nasiya → balans -21000');
+  assert.strictEqual(bal(db, customerId), -31000);
+  ok('qisman: 4000 naqd + 6000 nasiya → balans -31000');
 
   // --- Kirdi (payment_in / oldi) ---
   const payIn = customers.receivePayment({
@@ -168,9 +271,9 @@ try {
     received_by: ADMIN,
     shift_id: shift.id,
   });
-  assert.strictEqual(payIn.new_balance, -11000);
-  assert.strictEqual(bal(db, customerId), -11000);
-  ok('kirdi (payment_in 10000): balans -11000');
+  assert.strictEqual(payIn.new_balance, -21000);
+  assert.strictEqual(bal(db, customerId), -21000);
+  ok('kirdi (payment_in 10000): balans -21000');
 
   runStep('ledger: payment_in', () => {
     const row = db
@@ -190,9 +293,9 @@ try {
     notes: 'Smoke: mijozga berdi',
     received_by: ADMIN,
   });
-  assert.strictEqual(payOut.new_balance, -14000);
-  assert.strictEqual(bal(db, customerId), -14000);
-  ok('chiqdi (payment_out 3000): balans -14000');
+  assert.strictEqual(payOut.new_balance, -24000);
+  assert.strictEqual(bal(db, customerId), -24000);
+  ok('chiqdi (payment_out 3000): balans -24000');
 
   runStep('buyurtmalar tarixi (getByCustomer)', () => {
     const orders = sales.getByCustomer(customerId);
@@ -213,7 +316,7 @@ try {
   runStep('ledger: oxirgi qoldiq = mijoz balansi', () => {
     const last = lastLedger(db, customerId);
     assert.strictEqual(Number(last.balance_after), bal(db, customerId));
-    assert.strictEqual(bal(db, customerId), -14000);
+    assert.strictEqual(bal(db, customerId), -24000);
   });
 
   runStep('ledger: chiqdi yozuvi (payment_out)', () => {
@@ -242,7 +345,7 @@ try {
   const edited = sales.updateItemQuantity(draft.id, itemId, 3);
   assert.strictEqual(Number(edited.total_amount), 15000);
   assert.strictEqual(String(edited.status).toLowerCase(), 'hold');
-  assert.strictEqual(bal(db, customerId), -14000);
+  assert.strictEqual(bal(db, customerId), -24000);
   ok('qoralama tahrir (hold): 2→3 dona, jami 15000, balans o‘zgarmagan');
 
   runStep('tahrirdan keyin hold buyurtma DB da', () => {
@@ -250,6 +353,27 @@ try {
     assert.strictEqual(hold.status, 'hold');
     assert.strictEqual(Number(hold.total_amount), 15000);
   });
+
+  runStep('hold import → POS checkout: replaces_order_id hold ni void qiladi (amend emas)', () => {
+    const holdCheckout = sales.completePOSOrder(
+      {
+        total_amount: 15000,
+        customer_id: customerId,
+        shift_id: shift.id,
+        user_id: ADMIN,
+        replaces_order_id: draft.id,
+      },
+      [cartLine(product, 3, 5000)],
+      [{ payment_method: 'cash', amount: 15000 }],
+    );
+    assert.ok(holdCheckout.order_id);
+    assert.notStrictEqual(holdCheckout.order_id, draft.id);
+    const voided = db.prepare(`SELECT status FROM orders WHERE id = ?`).get(draft.id);
+    assert.strictEqual(String(voided.status).toLowerCase(), 'voided');
+    const completed = db.prepare(`SELECT status FROM orders WHERE id = ?`).get(holdCheckout.order_id);
+    assert.strictEqual(String(completed.status).toLowerCase(), 'completed');
+  });
+  ok('hold buyurtma POS import checkout: yangi sotuv, hold void');
 
   // --- Yakunlangan buyurtmani “tuzatish” (qaytarish + yangi nasiya) ---
   const customerFix = customers.create({
@@ -284,7 +408,7 @@ try {
     [{ payment_method: 'credit', amount: 12000 }],
   );
   assert.ok(fixedSale.order_id);
-  assert.strictEqual(bal(db, fixId), -12000);
+  assert.strictEqual(bal(db, fixId), -10000);
 
   runStep('tuzatishdan keyin 2 ta buyurtma', () => {
     const orders = sales.getByCustomer(fixId);
@@ -296,7 +420,7 @@ try {
   runStep('buyurtmaga bog‘langan to‘lov (order_id)', () => {
     const payLinked = customers.receivePayment({
       customer_id: fixId,
-      amount: 12000,
+      amount: 10000,
       payment_method: 'cash',
       operation: 'payment_in',
       order_id: fixedSale.order_id,
@@ -489,6 +613,114 @@ try {
       'amended',
       'walk-in tahrir: asl buyurtma "amended" holatiga o‘tadi',
     );
+  });
+
+  runStep('rollback: nasiya sale ledger yiqilsa order/balans diverge bo‘lmaydi', () => {
+    const rollbackCustomer = customers.create({
+      name: 'Smoke Rollback Credit Sale',
+      phone: `+99890${String(Date.now()).slice(-7)}`,
+      allow_credit: 1,
+      allow_debt: 1,
+      credit_limit: 50000000,
+    });
+    const rollbackCustomerId = rollbackCustomer.id;
+    const beforeBalance = bal(db, rollbackCustomerId);
+    const beforeStock = stockQty(product.id);
+    const rollbackOrderNumber = `ORD-ROLLBACK-SALE-${Date.now()}`;
+
+    let failed = false;
+    try {
+      withLedgerInsertFailure(db, () =>
+        sales.completePOSOrder(
+          {
+            order_number: rollbackOrderNumber,
+            total_amount: 7000,
+            customer_id: rollbackCustomerId,
+            shift_id: shift.id,
+            user_id: ADMIN,
+          },
+          [cartLine(product, 1, 7000)],
+          [{ payment_method: 'credit', amount: 7000 }],
+        )
+      );
+    } catch (e) {
+      failed = /Failed to record customer ledger for sale|INJECTED_LEDGER_INSERT_FAILURE/i.test(
+        String(e.message || e),
+      );
+    }
+    assert.ok(failed, 'ledger insert xatosi tx ni yiqitishi kerak');
+
+    const persistedOrder = db
+      .prepare(`SELECT id, status FROM orders WHERE order_number = ? LIMIT 1`)
+      .get(rollbackOrderNumber);
+    assert.ok(!persistedOrder, 'order saqlanmasligi kerak (rollback)');
+    assert.strictEqual(bal(db, rollbackCustomerId), beforeBalance, 'mijoz balansi rollback bo‘lishi kerak');
+    assert.strictEqual(stockQty(product.id), beforeStock, 'ombor qoldig‘i rollback bo‘lishi kerak');
+  });
+
+  runStep('rollback: return refund ledger yiqilsa return/balans diverge bo‘lmaydi', () => {
+    const rollbackReturnCustomer = customers.create({
+      name: 'Smoke Rollback Return',
+      phone: `+99891${String(Date.now()).slice(-7)}`,
+      allow_credit: 1,
+      allow_debt: 1,
+      credit_limit: 50000000,
+    });
+    const rollbackReturnCustomerId = rollbackReturnCustomer.id;
+    const baseSale = sales.completePOSOrder(
+      {
+        total_amount: 9000,
+        customer_id: rollbackReturnCustomerId,
+        shift_id: shift.id,
+        user_id: ADMIN,
+      },
+      [cartLine(product, 1, 9000)],
+      [{ payment_method: 'credit', amount: 9000 }],
+    );
+    const baseSaleOrderId = baseSale.order_id;
+    const orderItem = db
+      .prepare(`SELECT id FROM order_items WHERE order_id = ? LIMIT 1`)
+      .get(baseSaleOrderId);
+    assert.ok(orderItem?.id, 'return uchun order item topilishi kerak');
+
+    const balanceBeforeReturn = bal(db, rollbackReturnCustomerId);
+    const stockBeforeReturn = stockQty(product.id);
+    const returnCountBefore = Number(
+      db.prepare(`SELECT COUNT(*) AS c FROM sales_returns WHERE order_id = ?`).get(baseSaleOrderId)?.c || 0,
+    );
+
+    let failed = false;
+    try {
+      withLedgerInsertFailure(db, () =>
+        returnsSvc.createReturn({
+          order_id: baseSaleOrderId,
+          return_reason: 'Rollback injection for refund ledger',
+          refund_method: 'customer_account',
+          user_id: ADMIN,
+          items: [{ order_item_id: orderItem.id, quantity: 1 }],
+        })
+      );
+    } catch (e) {
+      failed = /Failed to record customer ledger for refund|INJECTED_LEDGER_INSERT_FAILURE/i.test(
+        String(e.message || e),
+      );
+    }
+    assert.ok(failed, 'refund ledger insert xatosi tx ni yiqitishi kerak');
+
+    const returnCountAfter = Number(
+      db.prepare(`SELECT COUNT(*) AS c FROM sales_returns WHERE order_id = ?`).get(baseSaleOrderId)?.c || 0,
+    );
+    assert.strictEqual(returnCountAfter, returnCountBefore, 'sales_returns rollback bo‘lishi kerak');
+    assert.strictEqual(
+      bal(db, rollbackReturnCustomerId),
+      balanceBeforeReturn,
+      'returnda mijoz balansi rollback bo‘lishi kerak',
+    );
+    assert.strictEqual(stockQty(product.id), stockBeforeReturn, 'returnda ombor qoldig‘i rollback bo‘lishi kerak');
+    const returnedQty = Number(
+      db.prepare(`SELECT returned_quantity FROM order_items WHERE id = ?`).get(orderItem.id)?.returned_quantity || 0,
+    );
+    assert.strictEqual(returnedQty, 0, 'order_item returned_quantity rollback bo‘lishi kerak');
   });
 
   close();

@@ -5,11 +5,18 @@ const { UZBEKISTAN_TZ_SQLITE_OFFSET, parseDbTimestamp } = require('../lib/timezo
 const {
   hasCustomerBalanceUsd,
   hasCustomerLedgerCurrency,
+  hasCustomerLedgerRef,
   normalizeCustomerCurrency,
   readCustomerBalances,
   readBalanceInCurrency,
+  applyCustomerBalanceDeltaOnce,
   orderSalesStatUzs,
+  computeSaleCreditAmount,
+  assertCreditAmountAligned,
+  paymentAmountInSaleCurrency,
 } = require('../lib/customerBalance.cjs');
+const { recordPaymentFee } = require('../lib/paymentFee.cjs');
+const { allocateOrderDiscountOntoItems } = require('../lib/allocateOrderDiscount.cjs');
 
 /**
  * Sales Service (POS Terminal)
@@ -44,6 +51,28 @@ class SalesService {
 
   _normalizeUnitCode(unit) {
     return String(unit || 'pcs').trim().toLowerCase() || 'pcs';
+  }
+
+  /**
+   * True when POS/cashier explicitly set a free (erkin) unit price that must not be
+   * re-resolved from catalog / product_prices.
+   */
+  _isManualPriceOverride(itemData = {}) {
+    if (!itemData || typeof itemData !== 'object') return false;
+    if (itemData.price_source === 'manual') return true;
+    if (itemData.manual_price === true || itemData.manual_price === 1 || itemData.manual_price === '1') {
+      return true;
+    }
+    if (
+      itemData.is_price_overridden === true ||
+      itemData.is_price_overridden === 1 ||
+      itemData.is_price_overridden === '1'
+    ) {
+      return true;
+    }
+    // Quotes / legacy payloads
+    if (itemData.override_price !== undefined && itemData.override_price !== null) return true;
+    return false;
   }
 
   /**
@@ -170,6 +199,67 @@ class SalesService {
     }
   }
 
+  _recordPaymentFee(paymentId, order, paymentMethod, paymentAmount, paidAt) {
+    try {
+      recordPaymentFee(this.db, {
+        paymentId,
+        orderId: order?.id || null,
+        paymentMethod,
+        paymentAmount,
+        currency: order?.currency || 'UZS',
+        fxRate: order?.fx_rate,
+        createdAt: paidAt,
+      });
+    } catch (err) {
+      console.warn('[SALE] payment fee record skipped:', err?.message || err);
+    }
+  }
+
+  _getCreditDueDefaultDays() {
+    const v = Number(this._getSettingRaw('credit.due.default_days'));
+    return Number.isFinite(v) && v > 0 ? Math.floor(v) : 30;
+  }
+
+  _normalizeDueDate(value) {
+    if (value == null || value === '') return null;
+    const s = String(value).trim().slice(0, 10);
+    return /^\d{4}-\d{2}-\d{2}$/.test(s) ? s : null;
+  }
+
+  _normalizeReminderNote(value) {
+    if (value == null || value === '') return null;
+    const s = String(value).trim();
+    if (!s) return null;
+    return s.slice(0, 500);
+  }
+
+  _isCreditPaymentStatus(paymentStatus) {
+    const ps = String(paymentStatus || '').toLowerCase();
+    return ps === 'on_credit' || ps === 'partial' || ps === 'partially_paid';
+  }
+
+  _resolveOrderDueDate(orderData, paymentStatus, creditAmount) {
+    if (!this._hasOrderCol('due_date')) return null;
+    const credit = Number(creditAmount || 0);
+    if (credit <= 0.009 || !this._isCreditPaymentStatus(paymentStatus)) return null;
+    const explicit = this._normalizeDueDate(orderData?.due_date);
+    if (explicit) return explicit;
+    const days = this._getCreditDueDefaultDays();
+    const row = this.db
+      .prepare(`SELECT date('now', 'localtime', '+' || ? || ' days') AS d`)
+      .get(days);
+    return row?.d || null;
+  }
+
+  _resolveOrderReminderNote(orderData, paymentStatus, creditAmount) {
+    if (!this._hasOrderCol('credit_reminder_note')) return null;
+    const credit = Number(creditAmount || 0);
+    if (credit <= 0.009 || !this._isCreditPaymentStatus(paymentStatus)) return null;
+    return this._normalizeReminderNote(
+      orderData?.credit_reminder_note ?? orderData?.reminder_note,
+    );
+  }
+
   _isLoyaltyMasterEnabled() {
     const v = (this._getSettingRaw('loyalty.master.enabled') || '').trim().toLowerCase();
     return v === '1' || v === 'true' || v === 'yes';
@@ -186,8 +276,10 @@ class SalesService {
   }
 
   _getLoyaltyEarnScope() {
-    const raw = (this._getSettingRaw('loyalty.earn.scope') || 'master_only').trim().toLowerCase();
-    if (raw === 'all_registered' || raw === 'exclude_walk_in') return raw;
+    const raw = (this._getSettingRaw('loyalty.earn.scope') || 'all_customers').trim().toLowerCase();
+    if (raw === 'off' || raw === 'disabled' || raw === 'none') return 'off';
+    if (raw === 'all_customers' || raw === 'all_registered') return 'all_registered';
+    if (raw === 'exclude_walk_in') return 'exclude_walk_in';
     return 'master_only';
   }
 
@@ -259,6 +351,72 @@ class SalesService {
         .run(lid, customerId, type, points, orderId || null, note || null, now, createdBy || null);
     } catch (e) {
       console.warn('[loyalty] customer_bonus_ledger insert skip:', e?.message || e);
+    }
+  }
+
+  /**
+   * Reverse loyalty earn/redeem tied to an order before POS amend replaces it.
+   * Prevents double bonus accrual when the amended sale is re-completed.
+   */
+  _reverseLoyaltyForAmendedOrder(orderId, { userId, now }) {
+    if (!this._hasBonusLedgerTable() || !this._hasCustomersCol('bonus_points') || !orderId) return;
+
+    const already = this.db
+      .prepare(
+        `SELECT 1 FROM customer_bonus_ledger
+         WHERE order_id = ? AND type = 'adjust' AND note LIKE 'Tahrir:%' LIMIT 1`,
+      )
+      .get(orderId);
+    if (already) return;
+
+    const rows = this.db
+      .prepare(
+        `SELECT customer_id, type, points FROM customer_bonus_ledger
+         WHERE order_id = ? AND type IN ('earn', 'redeem')`,
+      )
+      .all(orderId);
+
+    for (const row of rows) {
+      const pts = Math.floor(Number(row.points) || 0);
+      if (pts <= 0 || !row.customer_id) continue;
+
+      if (row.type === 'earn') {
+        this.db
+          .prepare(
+            `UPDATE customers
+             SET bonus_points = CASE
+               WHEN COALESCE(bonus_points, 0) - ? < 0 THEN 0
+               ELSE COALESCE(bonus_points, 0) - ?
+             END,
+             updated_at = ?
+             WHERE id = ?`,
+          )
+          .run(pts, pts, now, row.customer_id);
+        this._insertBonusLedgerRow({
+          customerId: row.customer_id,
+          type: 'adjust',
+          points: -pts,
+          orderId,
+          note: 'Tahrir: avvalgi sotuv bonusi bekor',
+          createdBy: userId,
+          now,
+        });
+      } else if (row.type === 'redeem') {
+        this.db
+          .prepare(
+            'UPDATE customers SET bonus_points = COALESCE(bonus_points, 0) + ?, updated_at = ? WHERE id = ?',
+          )
+          .run(pts, now, row.customer_id);
+        this._insertBonusLedgerRow({
+          customerId: row.customer_id,
+          type: 'adjust',
+          points: pts,
+          orderId,
+          note: 'Tahrir: ball ishlatish qaytarildi',
+          createdBy: userId,
+          now,
+        });
+      }
     }
   }
 
@@ -356,10 +514,12 @@ class SalesService {
 
   /**
    * Accrue bonus: master tier uses master settings (exclusive). Other tiers use general rules when enabled.
-   * Based on actually paid amount only (excludes unpaid credit). Idempotent per order (earn).
+   * Buyer earn uses paid amount only (excludes unpaid credit). Usta/referrer earn uses full order total.
+   * Idempotent per order (earn).
    */
   _accrueCustomerLoyalty({
     customerId,
+    bonusReferrerCustomerId,
     paidAmount,
     orderTotalAmount,
     orderId,
@@ -368,35 +528,43 @@ class SalesService {
     now,
     skipWalkInCustomerId,
   }) {
-    if (!customerId || (skipWalkInCustomerId && customerId === skipWalkInCustomerId)) return;
+    const recipientId = bonusReferrerCustomerId || customerId;
+    if (!recipientId) return;
+    if (!bonusReferrerCustomerId) {
+      if (skipWalkInCustomerId && customerId === skipWalkInCustomerId) return;
+    } else if (skipWalkInCustomerId && recipientId === skipWalkInCustomerId) return;
     if (!this._hasCustomersCol('bonus_points')) return;
-    const paid = Number(paidAmount) || 0;
-    if (paid <= 0) return;
+    const earnBase = bonusReferrerCustomerId
+      ? Number(orderTotalAmount) || 0
+      : Number(paidAmount) || 0;
+    if (earnBase <= 0) return;
 
-    if (this._hasEarnLedgerForOrder(customerId, orderId)) return;
+    if (this._hasEarnLedgerForOrder(recipientId, orderId)) return;
 
     const minOrder = this._getLoyaltyMinOrderUzs();
     const orderTotal = Number(orderTotalAmount) || 0;
     if (minOrder > 0 && orderTotal < minOrder) return;
 
-    const cust = this.db.prepare('SELECT pricing_tier FROM customers WHERE id = ?').get(customerId);
+    const cust = this.db.prepare('SELECT pricing_tier FROM customers WHERE id = ?').get(recipientId);
     const tier = String(cust?.pricing_tier || 'retail');
 
     if (this._isLoyaltyMasterEnabled() && tier === 'master') {
       const perUzs = this._getLoyaltyPointsPerUzs();
-      const earned = Math.floor(paid / perUzs);
+      const earned = Math.floor(earnBase / perUzs);
       if (earned <= 0) return;
       this.db
         .prepare(
           'UPDATE customers SET bonus_points = COALESCE(bonus_points, 0) + ?, updated_at = ? WHERE id = ?'
         )
-        .run(earned, now, customerId);
+        .run(earned, now, recipientId);
       this._insertBonusLedgerRow({
-        customerId,
+        customerId: recipientId,
         type: 'earn',
         points: earned,
         orderId,
-        note: `Usta sotuv ${orderNumber || orderId || ''}`.trim(),
+        note: bonusReferrerCustomerId
+          ? `Usta bonus: sotuv ${orderNumber || orderId || ''}`.trim()
+          : `Usta sotuv ${orderNumber || orderId || ''}`.trim(),
         createdBy,
         now,
       });
@@ -406,26 +574,28 @@ class SalesService {
     if (!this._isLoyaltyGeneralEnabled()) return;
 
     const scope = this._getLoyaltyEarnScope();
+    if (scope === 'off') return;
     // "master_only" = ball faqat usta (master) toifasidagi mijozlarga; chakanaga emas.
-    // Ilgari butun funksiyadan chiqarilgani uchun usta + umumiy yig'ish yoq + usta-loyalnost o'chiq bo'lsa hech narsa yig'ilmay qolardi.
     if (scope === 'master_only' && tier !== 'master') return;
-    if (skipWalkInCustomerId && customerId === skipWalkInCustomerId) return;
+    if (!bonusReferrerCustomerId && skipWalkInCustomerId && customerId === skipWalkInCustomerId) return;
 
     const perUzs = this._getLoyaltyGeneralPointsPerUzs();
-    const earned = Math.floor(paid / perUzs);
+    const earned = Math.floor(earnBase / perUzs);
     if (earned <= 0) return;
 
     this.db
       .prepare(
         'UPDATE customers SET bonus_points = COALESCE(bonus_points, 0) + ?, updated_at = ? WHERE id = ?'
       )
-      .run(earned, now, customerId);
+      .run(earned, now, recipientId);
     this._insertBonusLedgerRow({
-      customerId,
+      customerId: recipientId,
       type: 'earn',
       points: earned,
       orderId,
-      note: `Sotuv ${orderNumber || orderId || ''}`.trim(),
+      note: bonusReferrerCustomerId
+        ? `Usta bonus: sotuv ${orderNumber || orderId || ''}`.trim()
+        : `Sotuv ${orderNumber || orderId || ''}`.trim(),
       createdBy,
       now,
     });
@@ -626,9 +796,7 @@ class SalesService {
 
     const itemId = randomUUID();
     const priceTier = itemData.price_tier === 'master' ? 'master' : 'retail';
-    const manualOverride =
-      itemData.price_source === 'manual' ||
-      itemData.manual_price === true;
+    const manualOverride = this._isManualPriceOverride(itemData);
     const unitPrice = this._resolveCatalogUnitPrice(product, {
       saleUnit,
       tierCode: priceTier,
@@ -636,7 +804,12 @@ class SalesService {
       manualOverride,
     });
     const discountAmount = itemData.discount_amount || 0;
-    const lineTotal = (unitPrice * qtySale) - discountAmount;
+    const grossLine = unitPrice * qtySale;
+    const lineTotal =
+      itemData.final_total != null && Number.isFinite(Number(itemData.final_total))
+        ? Number(itemData.final_total)
+        : grossLine - discountAmount;
+    const effectiveDiscount = Math.max(0, grossLine - lineTotal);
     const basePrice = itemData.base_price ?? unitPrice;
     const ustaPrice = itemData.usta_price ?? null;
     const discountType = itemData.discount_type ?? (discountAmount > 0 ? 'fixed' : 'none');
@@ -645,7 +818,9 @@ class SalesService {
     const finalUnitPrice =
       itemData.final_unit_price ?? (qtySale > 0 ? lineTotal / qtySale : unitPrice);
     const finalTotal = itemData.final_total ?? lineTotal;
-    const priceSource = itemData.price_source ?? (priceTier === 'master' ? 'usta' : 'base');
+    const priceSource = manualOverride
+      ? 'manual'
+      : itemData.price_source ?? (priceTier === 'master' ? 'usta' : 'base');
 
     const hasPriceTier = this._hasOrderItemCol('price_tier');
     const createdAt = new Date().toISOString();
@@ -661,10 +836,12 @@ class SalesService {
     const hasFinalTotal = this._hasOrderItemCol('final_total');
     const hasPriceSource = this._hasOrderItemCol('price_source');
     const hasCostPrice = this._hasOrderItemCol('cost_price');
+    const hasLineProfit = this._hasOrderItemCol('line_profit');
 
     const unitCost = hasCostPrice && this.costService
       ? this.costService.resolveCostForSale(product.id, qtyBase, order.warehouse_id, null)
       : 0;
+    const lineProfit = lineTotal - (Number(unitCost) || 0) * Math.abs(Number(qtyBase || qtySale || 0));
 
     const cols = [
       'id',
@@ -689,6 +866,7 @@ class SalesService {
       ...(hasFinalTotal ? ['final_total'] : []),
       ...(hasPriceSource ? ['price_source'] : []),
       ...(hasCostPrice ? ['cost_price'] : []),
+      ...(hasLineProfit ? ['line_profit'] : []),
     ];
     const vals = [
       itemId,
@@ -699,7 +877,7 @@ class SalesService {
       unitPrice,
       ...(hasPriceTier ? [priceTier] : []),
       qtySale,
-      discountAmount,
+      effectiveDiscount,
       lineTotal,
       createdAt,
       ...(hasSaleUnit ? [saleUnit] : []),
@@ -713,6 +891,7 @@ class SalesService {
       ...(hasFinalTotal ? [finalTotal] : []),
       ...(hasPriceSource ? [priceSource] : []),
       ...(hasCostPrice ? [unitCost] : []),
+      ...(hasLineProfit ? [lineProfit] : []),
     ];
     const placeholders = cols.map(() => '?').join(', ');
     this.db
@@ -948,7 +1127,10 @@ class SalesService {
           throw createError(ERROR_CODES.VALIDATION_ERROR, 'Payment method is required');
         }
 
-        totalPaid += payment.amount;
+        const payMethod = String(payment.payment_method || '').toLowerCase();
+        const isCreditPay =
+          payMethod === 'credit' || payMethod === 'on_credit' || payMethod === 'debt';
+        if (!isCreditPay) totalPaid += payment.amount;
 
         const paymentId = randomUUID();
         const paymentNumber = `PAY-${Date.now()}-${payments.length}`;
@@ -972,6 +1154,7 @@ class SalesService {
         );
 
         payments.push({ id: paymentId, payment_number: paymentNumber, ...payment });
+        this._recordPaymentFee(paymentId, order, payment.payment_method, payment.amount, now);
 
         // Create cash movement if cash payment
         if (payment.payment_method === 'cash') {
@@ -1049,7 +1232,8 @@ class SalesService {
 
       // Calculate change
       const changeAmount = totalPaid > order.total_amount ? totalPaid - order.total_amount : 0;
-      const creditAmount = totalPaid < order.total_amount ? order.total_amount - totalPaid : 0;
+      const creditAmount = computeSaleCreditAmount(order.total_amount, totalPaid, 0, 0.02);
+      assertCreditAmountAligned(order.total_amount, totalPaid, creditAmount, 0, 0.02);
 
       // Determine payment status
       let paymentStatus = 'paid';
@@ -1059,20 +1243,36 @@ class SalesService {
         paymentStatus = 'partial';
       }
 
-      // Update order
-      this.db.prepare(`
-        UPDATE orders 
-        SET status = ?, payment_status = ?, paid_amount = ?, change_amount = ?, credit_amount = ?, updated_at = ?
-        WHERE id = ?
-      `).run(
+      const dueDate = this._resolveOrderDueDate(order, paymentStatus, creditAmount);
+      const reminderNote = this._resolveOrderReminderNote(order, paymentStatus, creditAmount);
+      const finalizeSet = [
+        'status = ?',
+        'payment_status = ?',
+        'paid_amount = ?',
+        'change_amount = ?',
+        'credit_amount = ?',
+        'updated_at = ?',
+      ];
+      const finalizeVals = [
         'completed',
         paymentStatus,
         totalPaid,
         changeAmount,
         creditAmount,
         now,
-        orderId
-      );
+      ];
+      if (this._hasOrderCol('due_date')) {
+        finalizeSet.push('due_date = ?');
+        finalizeVals.push(dueDate);
+      }
+      if (this._hasOrderCol('credit_reminder_note')) {
+        finalizeSet.push('credit_reminder_note = ?');
+        finalizeVals.push(reminderNote);
+      }
+      finalizeVals.push(orderId);
+      this.db
+        .prepare(`UPDATE orders SET ${finalizeSet.join(', ')} WHERE id = ?`)
+        .run(...finalizeVals);
 
       // Batch mode: allocate FIFO batches for each order_item before writing stock movements.
       // This ensures no "partiyasiz sotuv" after cutover.
@@ -1094,7 +1294,7 @@ class SalesService {
           if (product && product.track_stock) {
             const exists = hasAllocStmt.get(item.id);
             if (!exists) {
-              this.batchService.allocateFIFOForOrderItem({
+              this.batchService.allocateFIFOWithFallback({
                 orderItemId: item.id,
                 productId: item.product_id,
                 warehouseId: order.warehouse_id,
@@ -1166,6 +1366,19 @@ class SalesService {
 
         this._accrueCustomerLoyalty({
           customerId: order.customer_id,
+          bonusReferrerCustomerId: order.bonus_referrer_customer_id || null,
+          paidAmount: totalPaid,
+          orderTotalAmount: order.total_amount,
+          orderId,
+          orderNumber: order.order_number,
+          createdBy: order.user_id,
+          now,
+          skipWalkInCustomerId: 'default-customer-001',
+        });
+      } else if (order.bonus_referrer_customer_id) {
+        this._accrueCustomerLoyalty({
+          customerId: order.customer_id,
+          bonusReferrerCustomerId: order.bonus_referrer_customer_id,
           paidAmount: totalPaid,
           orderTotalAmount: order.total_amount,
           orderId,
@@ -1328,6 +1541,34 @@ class SalesService {
     orderData.customer_id = customerId;
     orderData.shift_id = shiftId; // CRITICAL: Always use the resolved shiftId (never null at this point)
 
+    // Optional usta/referrer — bonus routing only (sale/debt stay on customer_id)
+    let bonusReferrerCustomerId =
+      orderData.bonus_referrer_customer_id ?? orderData.referrer_customer_id ?? null;
+    if (bonusReferrerCustomerId != null && String(bonusReferrerCustomerId).trim() === '') {
+      bonusReferrerCustomerId = null;
+    }
+    if (bonusReferrerCustomerId) {
+      bonusReferrerCustomerId = String(bonusReferrerCustomerId).trim();
+      if (bonusReferrerCustomerId === KNOWN_DEFAULT_CUSTOMER) {
+        throw createError(
+          ERROR_CODES.VALIDATION_ERROR,
+          'Usta (bonus) uchun yuruvchi mijoz tanlanmaydi.'
+        );
+      }
+      const refExists = this.db
+        .prepare('SELECT id FROM customers WHERE id = ?')
+        .get(bonusReferrerCustomerId);
+      if (!refExists) {
+        throw createError(
+          ERROR_CODES.NOT_FOUND,
+          `Usta (bonus) mijozi topilmadi (ID: ${bonusReferrerCustomerId}).`
+        );
+      }
+    } else {
+      bonusReferrerCustomerId = null;
+    }
+    orderData.bonus_referrer_customer_id = bonusReferrerCustomerId;
+
     // Idempotency + device tracking
     const hasOrderUuid = this._hasOrderCol('order_uuid');
     const hasDeviceId = this._hasOrderCol('device_id');
@@ -1425,8 +1666,30 @@ class SalesService {
     const payoutPayments = validPayments.filter((p) => isPayoutMethod(p.payment_method));
     const creditPayments = validPayments.filter((p) => isCreditMethod(p.payment_method));
 
-    const totalPaidIntake = intakePayments.reduce((sum, p) => sum + Number(p.amount || 0), 0);
-    const totalPayout = payoutPayments.reduce((sum, p) => sum + Number(p.amount || 0), 0);
+    const hasOrderCurrencyPre = this._hasOrderCol('currency');
+    const saleCurrencyForPay =
+      hasOrderCurrencyPre && String(orderData.currency || 'UZS').toUpperCase() === 'USD' ? 'USD' : 'UZS';
+    const saleFxRateForPay =
+      saleCurrencyForPay === 'USD' ? Number(orderData.fx_rate ?? orderData.exchange_rate ?? 0) : null;
+    if (saleCurrencyForPay === 'USD' && hasOrderCurrencyPre) {
+      if (!Number.isFinite(saleFxRateForPay) || saleFxRateForPay <= 0) {
+        throw createError(
+          ERROR_CODES.VALIDATION_ERROR,
+          'fx_rate is required for USD sales (UZS per 1 USD)'
+        );
+      }
+    }
+
+    const amountInSaleCurrency = (payment) => {
+      try {
+        return paymentAmountInSaleCurrency(payment, saleCurrencyForPay, saleFxRateForPay);
+      } catch (err) {
+        throw createError(ERROR_CODES.VALIDATION_ERROR, err.message || String(err));
+      }
+    };
+
+    const totalPaidIntake = intakePayments.reduce((sum, p) => sum + amountInSaleCurrency(p), 0);
+    const totalPayout = payoutPayments.reduce((sum, p) => sum + amountInSaleCurrency(p), 0);
     const prepaidApplied = Math.max(0, Number(orderData.prepaid_applied || 0) || 0);
 
     const orderTotalSigned = Number(orderData.total_amount || 0);
@@ -1515,13 +1778,11 @@ class SalesService {
 
     // Diagnostic: if client sent explicit credit payment lines, ensure they match computed credit
     const creditFromPayments = creditPayments.reduce((sum, p) => sum + Number(p.amount || 0), 0);
-    if (creditFromPayments > 0 && Math.abs(creditFromPayments - creditAmount) > 0.01) {
-      console.warn('⚠️ Credit amount mismatch (payments vs computed):', {
-        creditFromPayments,
-        computedCreditAmount: creditAmount,
-        total: orderData.total_amount,
-        paidNonCredit: totalPaidIntake,
-      });
+    if (creditFromPayments > 0 && Math.abs(creditFromPayments - creditAmount) > payEps) {
+      throw createError(
+        ERROR_CODES.VALIDATION_ERROR,
+        `credit_amount (${creditFromPayments}) must equal total_amount − paid_amount (${creditAmount})`
+      );
     }
     
     // CRITICAL: For credit sales, require a real customer (not default walk-in)
@@ -1568,7 +1829,7 @@ class SalesService {
     const replacesOrderId =
       orderData.replaces_order_id || orderData.amend_order_id || orderData.replace_order_id || null;
 
-    return this.db.transaction(() => {
+    const __runSaleTx = this.db.transaction(() => {
       // Generate orderId ONCE and use it consistently throughout
       const orderId = randomUUID();
       const orderNumber = orderData.order_number || `ORD-${Date.now()}`;
@@ -1593,6 +1854,7 @@ class SalesService {
       const hasOrderFxRate = this._hasOrderCol('fx_rate');
       const hasOrderTotalUsd = this._hasOrderCol('total_usd');
       const hasSalesChannel = this._hasOrderCol('sales_channel');
+      const hasBonusReferrer = this._hasOrderCol('bonus_referrer_customer_id');
       const salesChannel = this._resolveSalesChannel(orderData);
       const saleCurrency =
         hasOrderCurrency && String(orderData.currency || 'UZS').toUpperCase() === 'USD' ? 'USD' : 'UZS';
@@ -1636,6 +1898,7 @@ class SalesService {
         ...(hasOrderFxRate ? ['fx_rate'] : []),
         ...(hasOrderTotalUsd ? ['total_usd'] : []),
         ...(hasSalesChannel ? ['sales_channel'] : []),
+        ...(hasBonusReferrer ? ['bonus_referrer_customer_id'] : []),
       ];
       const orderVals = [
         orderId,
@@ -1665,6 +1928,7 @@ class SalesService {
         ...(hasOrderFxRate ? [saleCurrency === 'USD' ? saleFxRate : null] : []),
         ...(hasOrderTotalUsd ? [totalUsdSnapshot] : []),
         ...(hasSalesChannel ? [salesChannel] : []),
+        ...(hasBonusReferrer ? [orderData.bonus_referrer_customer_id || null] : []),
       ];
       this.db
         .prepare(`INSERT INTO orders (${orderCols.join(', ')}) VALUES (${orderCols.map(() => '?').join(', ')})`)
@@ -1677,6 +1941,8 @@ class SalesService {
         throw createError(ERROR_CODES.VALIDATION_ERROR, 
           `Order ${orderId} was not created successfully. Cannot insert order_items.`);
       }
+
+      this._allocateOrderDiscountOntoItems(itemsData, Number(orderData.discount_amount || 0) || 0);
 
       // Add all items
       // Note: Stock availability check happens in _updateBalance to ensure atomicity
@@ -1713,48 +1979,43 @@ class SalesService {
         const itemId = randomUUID();
         const saleUnit = itemData.sale_unit ?? product.unit ?? product.base_unit ?? null;
         const unitForPrice = saleUnit ?? product.base_unit ?? product.unit ?? 'pcs';
-        const manualOverride =
-          itemData.price_source === 'manual' ||
-          itemData.override_price !== undefined ||
-          itemData.manual_price === true;
+        const manualOverride = this._isManualPriceOverride(itemData);
 
         if (manualOverride && !canManualOverride) {
           throw createError(ERROR_CODES.FORBIDDEN, 'Manual price override is not allowed for this role');
         }
 
-        let resolvedUnitPrice = itemData.unit_price;
-        if (!manualOverride) {
-          if (this.pricingService && typeof this.pricingService.getPriceForProduct === 'function') {
-            try {
-              const price = this.pricingService.getPriceForProduct({
-                product_id: product.id,
-                tier_code: tierCode,
-                currency: orderData.currency || 'UZS',
-                unit: unitForPrice,
-              });
-              if (price != null && price > 0) {
-                resolvedUnitPrice = price;
-              } else {
-                // Fallback: use frontend price or product's sale/master price
-                resolvedUnitPrice = itemData.unit_price
-                  || (tierCode === 'master' ? (product.master_price ?? product.sale_price) : product.sale_price);
-                console.warn(`⚠️ No price found in product_prices for product ${product.id} tier ${tierCode} unit ${unitForPrice}. Using fallback: ${resolvedUnitPrice}`);
-              }
-            } catch (priceError) {
-              // Pricing service error - use frontend price or product's direct price
-              resolvedUnitPrice = itemData.unit_price
-                || (tierCode === 'master' ? (product.master_price ?? product.sale_price) : product.sale_price);
-              console.warn(`⚠️ Pricing service error for product ${product.id}: ${priceError.message}. Using fallback: ${resolvedUnitPrice}`);
+        const resolvedUnitPrice = this._resolveCatalogUnitPrice(product, {
+          saleUnit: unitForPrice,
+          tierCode,
+          explicitUnitPrice: itemData.unit_price,
+          manualOverride,
+        });
+        let unitPrice = Number(resolvedUnitPrice || 0) || 0;
+        if (unitPrice <= 0 && qtySale !== 0) {
+          const inferredLine =
+            itemData.final_total != null && Number.isFinite(Number(itemData.final_total))
+              ? Number(itemData.final_total)
+              : itemData.line_total != null && Number.isFinite(Number(itemData.line_total))
+                ? Number(itemData.line_total)
+                : null;
+          if (inferredLine != null) {
+            const inferredUnit = inferredLine / qtySale;
+            if (Number.isFinite(inferredUnit) && inferredUnit > 0) {
+              unitPrice = inferredUnit;
             }
-          } else {
-            resolvedUnitPrice = tierCode === 'master' ? (product.master_price ?? product.sale_price) : product.sale_price;
           }
         }
-
-        const unitPrice = Number(resolvedUnitPrice || 0) || 0;
         const priceTier = itemData.price_tier || tierCode || 'retail';
         const discountAmount = Number(itemData.discount_amount || 0) || 0;
-        const lineTotal = (unitPrice * qtySale) - discountAmount;
+        const grossLine = unitPrice * qtySale;
+        const lineTotal =
+          itemData.final_total != null && Number.isFinite(Number(itemData.final_total))
+            ? Number(itemData.final_total)
+            : itemData.line_total != null && Number.isFinite(Number(itemData.line_total))
+              ? Number(itemData.line_total)
+              : grossLine - discountAmount;
+        const effectiveDiscount = Math.max(0, grossLine - lineTotal);
 
         let retailPrice = product.sale_price;
         let masterPrice = product.master_price;
@@ -1785,12 +2046,14 @@ class SalesService {
         const finalUnitPrice =
           itemData.final_unit_price ?? (qtySale !== 0 ? lineTotal / qtySale : unitPrice);
         const finalTotal = itemData.final_total ?? lineTotal;
-        const priceSource = itemData.price_source ??
-          (manualOverride ? 'manual' : priceTier === 'master' ? 'usta' : priceTier === 'retail' ? 'base' : 'tier');
+        const priceSource = manualOverride
+          ? 'manual'
+          : itemData.price_source ??
+            (priceTier === 'master' ? 'usta' : priceTier === 'retail' ? 'base' : 'tier');
 
-        if (qtySale !== 0 && discountAmount > 0 && maxDiscountPercent > 0) {
+        if (qtySale !== 0 && effectiveDiscount > 0 && maxDiscountPercent > 0) {
           const denom = Math.abs(unitPrice * qtySale);
-          const pct = denom > 0 ? (discountAmount / denom) * 100 : 0;
+          const pct = denom > 0 ? (effectiveDiscount / denom) * 100 : 0;
           if (pct > maxDiscountPercent + 0.0001) {
             throw createError(
               ERROR_CODES.FORBIDDEN,
@@ -1811,17 +2074,20 @@ class SalesService {
         const hasFinalTotal = this._hasOrderItemCol('final_total');
         const hasPriceSource = this._hasOrderItemCol('price_source');
         const hasCostPrice = this._hasOrderItemCol('cost_price');
+        const hasLineProfit = this._hasOrderItemCol('line_profit');
         const hasPromotionId = this._hasOrderItemCol('promotion_id');
 
         // Batch mode: allocate FIFO batches BEFORE insert so cost_price can be frozen correctly.
         if (batchActive && this.batchService && product.track_stock && qtyBase > 0) {
-          this.batchService.allocateFIFOForOrderItem(itemId, product.id, warehouseId, qtyBase);
+          this.batchService.allocateFIFOWithFallback(itemId, product.id, warehouseId, qtyBase);
         }
 
         const unitCost =
           hasCostPrice && this.costService && qtyBase > 0
             ? this.costService.resolveCostForSale(product.id, qtyBase, warehouseId, itemId)
             : 0;
+        const lineProfit =
+          lineTotal - (Number(unitCost) || 0) * Math.abs(Number(qtyBase || qtySale || 0));
         const cols = [
           'id',
           'order_id',
@@ -1845,6 +2111,7 @@ class SalesService {
           ...(hasFinalTotal ? ['final_total'] : []),
           ...(hasPriceSource ? ['price_source'] : []),
           ...(hasCostPrice ? ['cost_price'] : []),
+          ...(hasLineProfit ? ['line_profit'] : []),
           ...(hasPromotionId ? ['promotion_id'] : []),
         ];
         const vals = [
@@ -1856,7 +2123,7 @@ class SalesService {
           unitPrice,
           ...(hasPriceTier ? [priceTier] : []),
           qtySale,
-          discountAmount,
+          effectiveDiscount,
           lineTotal,
           now,
           ...(hasSaleUnit ? [saleUnit] : []),
@@ -1870,6 +2137,7 @@ class SalesService {
           ...(hasFinalTotal ? [finalTotal] : []),
           ...(hasPriceSource ? [priceSource] : []),
           ...(hasCostPrice ? [unitCost] : []),
+          ...(hasLineProfit ? [lineProfit] : []),
           ...(hasPromotionId ? [itemData.promotion_id || null] : []),
         ];
         const placeholders = cols.map(() => '?').join(', ');
@@ -1894,8 +2162,8 @@ class SalesService {
           });
         }
 
-        if (this.promotionService && itemData.promotion_id && discountAmount > 0) {
-          this.promotionService.recordUsage(itemData.promotion_id, orderId, itemId, discountAmount);
+        if (this.promotionService && itemData.promotion_id && effectiveDiscount > 0) {
+          this.promotionService.recordUsage(itemData.promotion_id, orderId, itemId, effectiveDiscount);
         }
       }
 
@@ -1912,6 +2180,7 @@ class SalesService {
 
       // Recalculate totals (in case items don't match orderData)
       this._recalculateOrderTotals(orderId);
+      this._refreshOrderItemLineProfits(orderId);
 
       // Get updated order totals
       const order = this.db.prepare('SELECT * FROM orders WHERE id = ?').get(orderId);
@@ -1951,10 +2220,11 @@ class SalesService {
           console.log('ℹ️ payment_methods table check skipped:', error.message);
         }
 
-        totalPaid += payment.amount;
+        totalPaid += amountInSaleCurrency(payment);
 
         const paymentId = randomUUID();
         const paymentNumber = payment.payment_number || `PAY-${Date.now()}-${payments.length}`;
+        const paymentAmountStored = amountInSaleCurrency(payment);
 
         this.db.prepare(`
           INSERT INTO payments (
@@ -1967,7 +2237,7 @@ class SalesService {
           orderId,
           paymentNumber,
           paymentMethod, // Use validated payment method
-          payment.amount,
+          paymentAmountStored,
           payment.reference_number || null,
           payment.notes || null,
           now, // ✅ Already normalized to SQLite format
@@ -1975,6 +2245,7 @@ class SalesService {
         );
 
         payments.push({ id: paymentId, payment_number: paymentNumber, ...payment });
+        this._recordPaymentFee(paymentId, order, paymentMethod, paymentAmountStored, now);
 
         // Create cash movement if cash payment
         if (payment.payment_method === 'cash') {
@@ -2113,9 +2384,31 @@ class SalesService {
       // CRITICAL FIX: Use pre-calculated values from validation (already calculated from validPayments)
       // These values are consistent and account for zero-amount payments being filtered out
       const finalTotalPaid = totalPaidIntake;
-      const finalCreditAmount = creditAmount;
       const orderTotalAfterRecalc = Number(order.total_amount || 0);
       const clientDeclaredTotal = Number(orderData.total_amount || 0);
+      const finalCreditAmount = computeSaleCreditAmount(
+        orderTotalAfterRecalc,
+        finalTotalPaid,
+        prepaidApplied,
+        payEps
+      );
+      assertCreditAmountAligned(
+        orderTotalAfterRecalc,
+        finalTotalPaid,
+        finalCreditAmount,
+        prepaidApplied,
+        payEps
+      );
+      if (creditAmount > payEps && Math.abs(finalCreditAmount - creditAmount) > payEps) {
+        console.warn('[SALE] Credit amount adjusted after order total recalculation:', {
+          client_declared_total: clientDeclaredTotal,
+          recalculated_total: orderTotalAfterRecalc,
+          credit_from_client: creditAmount,
+          credit_authoritative: finalCreditAmount,
+          paid: finalTotalPaid,
+          prepaid: prepaidApplied,
+        });
+      }
       // _recalculateOrderTotals() can diverge from POS-declared total (qty/unit/tax rounding).
       // If DB total is inflated vs client, naive overpay = paid - db_total becomes 0 and prior debt is never reduced.
       // Use the lower of the two as "merchandise total" for overpay / debt allocation only.
@@ -2174,20 +2467,36 @@ class SalesService {
         paymentStatus = 'paid';
       }
 
-      // Update order to completed status
-      this.db.prepare(`
-        UPDATE orders 
-        SET status = ?, payment_status = ?, paid_amount = ?, change_amount = ?, credit_amount = ?, updated_at = ?
-        WHERE id = ?
-      `).run(
+      const dueDate = this._resolveOrderDueDate(orderData, paymentStatus, finalCreditAmount);
+      const reminderNote = this._resolveOrderReminderNote(orderData, paymentStatus, finalCreditAmount);
+      const completeSet = [
+        'status = ?',
+        'payment_status = ?',
+        'paid_amount = ?',
+        'change_amount = ?',
+        'credit_amount = ?',
+        'updated_at = ?',
+      ];
+      const completeVals = [
         'completed',
         paymentStatus,
-        finalTotalPaid, // ✅ Use pre-calculated value
+        finalTotalPaid,
         changeAmount,
-        finalCreditAmount, // ✅ Use pre-calculated value
+        finalCreditAmount,
         now,
-        orderId
-      );
+      ];
+      if (this._hasOrderCol('due_date')) {
+        completeSet.push('due_date = ?');
+        completeVals.push(dueDate);
+      }
+      if (this._hasOrderCol('credit_reminder_note')) {
+        completeSet.push('credit_reminder_note = ?');
+        completeVals.push(reminderNote);
+      }
+      completeVals.push(orderId);
+      this.db
+        .prepare(`UPDATE orders SET ${completeSet.join(', ')} WHERE id = ?`)
+        .run(...completeVals);
 
       // CRITICAL FIX: Decrement stock using InventoryService._updateBalance
       // This updates stock_balances AND creates stock_moves records atomically
@@ -2333,38 +2642,28 @@ class SalesService {
           is_credit_sale: finalCreditAmount > 0,
         });
 
-        if (hasCustomerBalanceUsd(this.db)) {
-          const uzsDelta = saleCurrency === 'UZS' ? balanceDelta : 0;
-          const usdDelta = saleCurrency === 'USD' ? balanceDelta : 0;
-          this.db
-            .prepare(
-              `
+        if (!hasCustomerLedgerRef(this.db, orderId)) {
+        this.db
+          .prepare(
+            `
             UPDATE customers 
             SET total_sales = total_sales + ?,
                 total_orders = total_orders + 1,
                 last_order_date = ?,
-                balance = balance + ?,
-                balance_usd = balance_usd + ?,
                 updated_at = ?
             WHERE id = ?
           `
-            )
-            .run(salesStatUzs, now, uzsDelta, usdDelta, now, orderData.customer_id);
-        } else {
-          this.db
-            .prepare(
-              `
-            UPDATE customers 
-            SET total_sales = total_sales + ?,
-                total_orders = total_orders + 1,
-                last_order_date = ?,
-                balance = balance + ?,
-                updated_at = ?
-            WHERE id = ?
-          `
-            )
-            .run(salesStatUzs, now, balanceDelta, now, orderData.customer_id);
-        }
+          )
+          .run(salesStatUzs, now, now, orderData.customer_id);
+
+        applyCustomerBalanceDeltaOnce(
+          this.db,
+          orderData.customer_id,
+          balanceDelta,
+          saleCurrency,
+          orderId,
+          now
+        );
 
         const balancesAfter = readCustomerBalances(this.db, orderData.customer_id);
         const newBalance = readBalanceInCurrency(this.db, orderData.customer_id, saleCurrency);
@@ -2477,7 +2776,11 @@ class SalesService {
             }
           }
         } catch (ledgerError) {
-          console.error('❌ Failed to insert ledger entry for sale (non-critical):', ledgerError.message);
+          console.error('❌ Failed to insert ledger entry for sale (critical, rolling back):', ledgerError.message);
+          throw createError(
+            ERROR_CODES.DB_ERROR,
+            `Failed to record customer ledger for sale: ${ledgerError.message || ledgerError}`
+          );
         }
 
         this._applyLoyaltyRedeemOnOrder({
@@ -2489,17 +2792,6 @@ class SalesService {
           createdBy: orderData.cashier_id || orderData.user_id || null,
           now,
         });
-
-        this._accrueCustomerLoyalty({
-          customerId: orderData.customer_id,
-          paidAmount: Math.max(0, finalTotalPaid - debtPaidFromOverpay),
-          orderTotalAmount: order.total_amount,
-          orderId,
-          orderNumber: order.order_number,
-          createdBy: orderData.cashier_id || orderData.user_id || null,
-          now,
-          skipWalkInCustomerId: KNOWN_DEFAULT_CUSTOMER,
-        });
         
         // Verify update
         const customerAfter = this.db.prepare('SELECT balance FROM customers WHERE id = ?').get(orderData.customer_id);
@@ -2509,9 +2801,25 @@ class SalesService {
           expected: newBalance,
           match: customerAfter?.balance === newBalance
         });
+        } else {
+          console.log('🛡️ Customer sale ledger already recorded for order — skipping balance/stats replay:', orderId);
+        }
       } else if (finalCreditAmount > 0 && !orderData.customer_id) {
         console.error('❌ CRITICAL: Credit amount > 0 but no customer_id - this should have been caught in validation!');
       }
+
+      // Loyalty earn — idempotent; usta/referrer uses order total (credit counts).
+      this._accrueCustomerLoyalty({
+        customerId: orderData.customer_id,
+        bonusReferrerCustomerId: orderData.bonus_referrer_customer_id || null,
+        paidAmount: Math.max(0, finalTotalPaid - (debtPaidFromOverpay || 0)),
+        orderTotalAmount: order.total_amount,
+        orderId,
+        orderNumber: order.order_number,
+        createdBy: orderData.cashier_id || orderData.user_id || null,
+        now,
+        skipWalkInCustomerId: KNOWN_DEFAULT_CUSTOMER,
+      });
 
       // Return order details (include customer new_balance when credit sale happened)
       let new_balance;
@@ -2531,7 +2839,45 @@ class SalesService {
         order_number: orderNumber,
         ...(new_balance !== undefined ? { new_balance } : {}),
       };
-    })();
+    });
+
+    // Idempotency safety net (POS checkout double-submit / 429 retry).
+    //
+    // The client binds a single `order_uuid` to a checkout session and reuses
+    // it across retries (slow response / HTTP 429). The fast path above already
+    // returns the existing order when that uuid is found before the
+    // transaction. This catch closes the remaining race window: if two
+    // requests with the same uuid run concurrently, the UNIQUE index on
+    // orders.order_uuid makes the second INSERT fail and rolls back its ENTIRE
+    // transaction — so stock is decremented exactly once. We resolve that race
+    // by returning the already-committed order instead of surfacing a confusing
+    // duplicate-key error to the cashier.
+    try {
+      return __runSaleTx();
+    } catch (txErr) {
+      const msg = String(txErr && txErr.message ? txErr.message : txErr);
+      if (
+        hasOrderUuid &&
+        orderData.order_uuid &&
+        /UNIQUE constraint failed:\s*orders\.order_uuid/i.test(msg)
+      ) {
+        const existing = this.db
+          .prepare('SELECT id FROM orders WHERE order_uuid = ?')
+          .get(orderData.order_uuid);
+        if (existing && existing.id) {
+          const existingOrder = this._getOrderWithDetails(existing.id);
+          console.warn(
+            '🛡️ Concurrent duplicate order_uuid resolved post-insert — returning existing order:',
+            { order_uuid: orderData.order_uuid, existing_order_id: existing.id }
+          );
+          return {
+            order_id: existing.id,
+            order_number: existingOrder ? existingOrder.order_number : null,
+          };
+        }
+      }
+      throw txErr;
+    }
   }
 
   /**
@@ -2568,6 +2914,14 @@ class SalesService {
         ERROR_CODES.VALIDATION_ERROR,
         `Order ${replacesOrderId} cannot be amended (status: ${status})`,
       );
+    }
+    // Hold/draft orders were never finalized — no stock or ledger to reverse.
+    // Void the draft so POS checkout can create a fresh completed sale.
+    if (status === 'hold' || status === 'pending' || status === 'on_hold' || status === 'draft') {
+      this.db
+        .prepare("UPDATE orders SET status = 'voided', updated_at = ? WHERE id = ?")
+        .run(now, replacesOrderId);
+      return;
     }
     if (status !== 'completed') {
       throw createError(
@@ -2615,6 +2969,23 @@ class SalesService {
       cashier_id: userId,
       created_at: now,
     });
+
+    this._reverseLoyaltyForAmendedOrder(replacesOrderId, { userId, now });
+
+    if (
+      order.customer_id &&
+      String(order.customer_id) !== KNOWN_DEFAULT_CUSTOMER &&
+      orderHadUnpaidCredit &&
+      paidOnOrder > 0.02
+    ) {
+      // createReturn(customer_account) credits full merchandise; naqd/qisman qismi allaqachon
+      // kassada — balansga qayta yozilmasligi kerak (aks holda tahrirda qarz past bo‘lib qoladi).
+      this.db
+        .prepare(
+          `UPDATE customers SET balance = balance - ?, updated_at = ? WHERE id = ?`,
+        )
+        .run(paidOnOrder, now, order.customer_id);
+    }
 
     if (
       order.customer_id &&
@@ -2736,6 +3107,41 @@ class SalesService {
 
       return { success: true, returnId: result.id };
     })();
+  }
+
+  /**
+   * Distribute remaining order-level discount onto line final_total / discount_amount
+   * so line_profit and soldLineRevenueSql stay aligned. Skips when lines already net of that discount.
+   */
+  _allocateOrderDiscountOntoItems(itemsData, orderDiscountAmount) {
+    return allocateOrderDiscountOntoItems(itemsData, orderDiscountAmount);
+  }
+
+  _refreshOrderItemLineProfits(orderId) {
+    if (!this._hasOrderItemCol('line_profit')) return;
+    const hasFinalTotal = this._hasOrderItemCol('final_total');
+    const hasCost = this._hasOrderItemCol('cost_price');
+    const items = this.db.prepare('SELECT * FROM order_items WHERE order_id = ?').all(orderId);
+    const upd = this.db.prepare(
+      hasFinalTotal
+        ? `UPDATE order_items SET final_total = ?, line_profit = ? WHERE id = ?`
+        : `UPDATE order_items SET line_profit = ? WHERE id = ?`
+    );
+    for (const item of items) {
+      const qty = Number(item.qty_sale ?? item.quantity ?? 0) || 0;
+      const qtyBase = Math.abs(Number(item.qty_base ?? qty) || 0);
+      const revenue =
+        hasFinalTotal && Number(item.final_total || 0) !== 0
+          ? Number(item.final_total)
+          : Number(item.line_total || 0) !== 0
+            ? Number(item.line_total)
+            : Number(item.unit_price || 0) * qty - Number(item.discount_amount || 0);
+      const cogs = hasCost ? (Number(item.cost_price || 0) || 0) * qtyBase : 0;
+      const profit = revenue - cogs;
+      const finalTotal = Number.isFinite(revenue) ? revenue : Number(item.line_total || 0);
+      if (hasFinalTotal) upd.run(finalTotal, profit, item.id);
+      else upd.run(profit, item.id);
+    }
   }
 
   /**

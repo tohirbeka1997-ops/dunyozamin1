@@ -274,6 +274,66 @@ function makeSqlIdempotent(sql, db) {
   return sql;
 }
 
+function rebuildPaymentFeesStandalone(db) {
+  db.pragma('defer_foreign_keys = 1');
+  if (!hasTable(db, 'payment_fees')) {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS payment_fees (
+        id TEXT PRIMARY KEY,
+        payment_id TEXT NOT NULL UNIQUE,
+        order_id TEXT,
+        source TEXT NOT NULL DEFAULT 'payments',
+        payment_method TEXT NOT NULL,
+        payment_amount REAL NOT NULL DEFAULT 0,
+        fee_percent REAL NOT NULL DEFAULT 0,
+        fee_fixed REAL NOT NULL DEFAULT 0,
+        fee_amount REAL NOT NULL DEFAULT 0,
+        fee_amount_uzs REAL NOT NULL DEFAULT 0,
+        currency TEXT NOT NULL DEFAULT 'UZS',
+        created_at TEXT NOT NULL DEFAULT (datetime('now'))
+      )
+    `);
+    return;
+  }
+  if (!hasColumn(db, 'payment_fees', 'source')) {
+    safeAddColumn(db, 'payment_fees', 'source', "TEXT NOT NULL DEFAULT 'payments'");
+    console.log('    ✓ Added payment_fees.source');
+  }
+  const ddl =
+    db.prepare(`SELECT sql FROM sqlite_master WHERE type='table' AND name='payment_fees'`).get()?.sql ||
+    '';
+  if (!/REFERENCES\s+payments/i.test(ddl)) {
+    return;
+  }
+  db.exec(`
+    CREATE TABLE payment_fees_standalone (
+      id TEXT PRIMARY KEY,
+      payment_id TEXT NOT NULL UNIQUE,
+      order_id TEXT,
+      source TEXT NOT NULL DEFAULT 'payments',
+      payment_method TEXT NOT NULL,
+      payment_amount REAL NOT NULL DEFAULT 0,
+      fee_percent REAL NOT NULL DEFAULT 0,
+      fee_fixed REAL NOT NULL DEFAULT 0,
+      fee_amount REAL NOT NULL DEFAULT 0,
+      fee_amount_uzs REAL NOT NULL DEFAULT 0,
+      currency TEXT NOT NULL DEFAULT 'UZS',
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    INSERT OR IGNORE INTO payment_fees_standalone (
+      id, payment_id, order_id, source, payment_method, payment_amount,
+      fee_percent, fee_fixed, fee_amount, fee_amount_uzs, currency, created_at
+    )
+    SELECT
+      id, payment_id, order_id, COALESCE(source, 'payments'), payment_method, payment_amount,
+      fee_percent, fee_fixed, fee_amount, fee_amount_uzs, currency, created_at
+    FROM payment_fees;
+    DROP TABLE payment_fees;
+    ALTER TABLE payment_fees_standalone RENAME TO payment_fees;
+  `);
+  console.log('    ✓ Rebuilt payment_fees without payments FK');
+}
+
 /**
  * Run all pending migrations
  * 
@@ -631,6 +691,12 @@ function runMigrations(db) {
           // re-resolved and indexes ensured. Idempotent.
           const { normalizePhoneUz } = require('../lib/phoneNormalize.cjs');
           if (hasTable(db, 'customers') && hasColumn(db, 'customers', 'phone_normalized')) {
+            // Drop the partial unique index BEFORE bulk updates — two distinct
+            // legacy phones can collapse to the same normalized value mid-pass.
+            try {
+              db.exec('DROP INDEX IF EXISTS idx_customers_phone_normalized_unique');
+            } catch { /* ignore */ }
+
             const rows = db
               .prepare(
                 `SELECT id, phone, phone_normalized FROM customers WHERE phone IS NOT NULL AND TRIM(phone) != ''`,
@@ -686,6 +752,179 @@ function runMigrations(db) {
                 '    ⚠ Could not create unique index on phone_normalized — duplicates remain; merge script needed',
               );
             }
+          }
+          db.exec(sql);
+        } else if (file === '097_batch_audit_settings.sql') {
+          if (hasTable(db, 'inventory_batch_allocations') && !hasColumn(db, 'inventory_batch_allocations', 'note')) {
+            safeAddColumn(db, 'inventory_batch_allocations', 'note', 'TEXT');
+            console.log('    ✓ Added inventory_batch_allocations.note');
+          }
+          db.exec(sql);
+        } else if (file === '101_unified_loyalty.sql') {
+          if (hasTable(db, 'customers')) {
+            if (!hasColumn(db, 'customers', 'loyalty_card_code')) {
+              safeAddColumn(db, 'customers', 'loyalty_card_code', 'TEXT');
+              console.log('    ✓ Added customers.loyalty_card_code');
+            }
+            if (!hasColumn(db, 'customers', 'loyalty_qr_payload')) {
+              safeAddColumn(db, 'customers', 'loyalty_qr_payload', 'TEXT');
+              console.log('    ✓ Added customers.loyalty_qr_payload');
+            }
+
+            if (hasTable(db, 'marketplace_customer_bindings')) {
+              db.exec(`
+                UPDATE customers SET
+                  loyalty_card_code = (
+                    SELECT b.loyalty_card_code FROM marketplace_customer_bindings b
+                    WHERE b.pos_customer_id = customers.id
+                    LIMIT 1
+                  ),
+                  loyalty_qr_payload = (
+                    SELECT b.qr_payload FROM marketplace_customer_bindings b
+                    WHERE b.pos_customer_id = customers.id
+                    LIMIT 1
+                  )
+                WHERE (loyalty_card_code IS NULL OR TRIM(COALESCE(loyalty_card_code, '')) = '')
+                  AND id IN (SELECT pos_customer_id FROM marketplace_customer_bindings)
+              `);
+            }
+
+            const missingCards = db
+              .prepare(
+                `
+                SELECT id, code FROM customers
+                WHERE loyalty_card_code IS NULL OR TRIM(COALESCE(loyalty_card_code, '')) = ''
+              `,
+              )
+              .all();
+            const cardUpd = db.prepare(
+              `UPDATE customers SET loyalty_card_code = ?, loyalty_qr_payload = ? WHERE id = ?`,
+            );
+            for (const row of missingCards) {
+              const custCode = String(row.code || '').trim().toUpperCase();
+              const cardCode = custCode ? `LC-${custCode}` : `LC-${String(row.id).slice(0, 12).toUpperCase()}`;
+              cardUpd.run(cardCode, `LOYALTY:${cardCode}`, row.id);
+            }
+            if (missingCards.length) {
+              console.log(`    ✓ Backfilled loyalty cards for ${missingCards.length} customer(s)`);
+            }
+
+            if (
+              hasTable(db, 'marketplace_loyalty_accounts') &&
+              hasColumn(db, 'customers', 'bonus_points') &&
+              hasTable(db, 'marketplace_customer_bindings')
+            ) {
+              const migrated = db
+                .prepare(
+                  `
+                  UPDATE customers
+                  SET bonus_points = COALESCE(bonus_points, 0) + COALESCE((
+                    SELECT mla.points_balance
+                    FROM marketplace_loyalty_accounts mla
+                    INNER JOIN marketplace_customer_bindings b
+                      ON b.marketplace_customer_id = mla.customer_id
+                    WHERE b.pos_customer_id = customers.id
+                      AND mla.points_balance > 0
+                  ), 0)
+                  WHERE id IN (
+                    SELECT b.pos_customer_id
+                    FROM marketplace_customer_bindings b
+                    INNER JOIN marketplace_loyalty_accounts mla
+                      ON mla.customer_id = b.marketplace_customer_id
+                    WHERE mla.points_balance > 0
+                  )
+                `,
+                )
+                .run();
+              if (migrated.changes > 0) {
+                console.log(
+                  `    ✓ Migrated marketplace_loyalty_accounts → customers.bonus_points (${migrated.changes} row(s))`,
+                );
+              }
+            }
+
+            try {
+              db.exec(`
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_customers_loyalty_card_code_unique
+                ON customers(loyalty_card_code)
+                WHERE loyalty_card_code IS NOT NULL AND TRIM(loyalty_card_code) != ''
+              `);
+            } catch (idxErr) {
+              if (!String(idxErr.message || '').includes('UNIQUE')) throw idxErr;
+              console.warn(
+                '    ⚠ Could not create unique index on loyalty_card_code — duplicates remain',
+              );
+            }
+          }
+          db.exec(sql);
+        } else if (file === '106_bonus_referrer_customer.sql') {
+          if (hasTable(db, 'orders') && !hasColumn(db, 'orders', 'bonus_referrer_customer_id')) {
+            safeAddColumn(db, 'orders', 'bonus_referrer_customer_id', 'TEXT');
+            console.log('    ✓ Added orders.bonus_referrer_customer_id');
+          }
+          db.exec(sql);
+        } else if (file === '109_web_order_fx_unified.sql') {
+          if (hasTable(db, 'web_orders')) {
+            if (safeAddColumn(db, 'web_orders', 'currency', "TEXT DEFAULT 'UZS'")) {
+              console.log('    ✓ Added web_orders.currency');
+            }
+            if (safeAddColumn(db, 'web_orders', 'fx_rate', 'REAL')) {
+              console.log('    ✓ Added web_orders.fx_rate');
+            }
+            try {
+              db.exec(`UPDATE web_orders SET currency = COALESCE(NULLIF(TRIM(currency), ''), 'UZS') WHERE currency IS NULL OR TRIM(currency) = ''`);
+            } catch {
+              /* column may still be missing on partial DBs */
+            }
+          }
+          db.exec(sql);
+        } else if (file === '110_payment_fees.sql') {
+          if (hasTable(db, 'payment_methods')) {
+            if (safeAddColumn(db, 'payment_methods', 'fee_percent', 'REAL NOT NULL DEFAULT 0')) {
+              console.log('    ✓ Added payment_methods.fee_percent');
+            }
+            if (safeAddColumn(db, 'payment_methods', 'fee_fixed', 'REAL NOT NULL DEFAULT 0')) {
+              console.log('    ✓ Added payment_methods.fee_fixed');
+            }
+          }
+          db.exec(sql);
+        } else if (file === '111_payment_fees_standalone.sql') {
+          rebuildPaymentFeesStandalone(db);
+          db.exec(sql);
+        } else if (file === '112_web_line_discount_unified.sql') {
+          if (hasTable(db, 'web_order_items')) {
+            if (safeAddColumn(db, 'web_order_items', 'discount_amount', 'REAL')) {
+              console.log('    ✓ Added web_order_items.discount_amount');
+            }
+            if (safeAddColumn(db, 'web_order_items', 'line_total', 'REAL')) {
+              console.log('    ✓ Added web_order_items.line_total');
+            }
+            if (safeAddColumn(db, 'web_order_items', 'final_total', 'REAL')) {
+              console.log('    ✓ Added web_order_items.final_total');
+            }
+            if (safeAddColumn(db, 'web_order_items', 'final_unit_price', 'REAL')) {
+              console.log('    ✓ Added web_order_items.final_unit_price');
+            }
+          }
+          db.exec(sql);
+        } else if (file === '100_upgrade_legacy_password_hashes.sql') {
+          const { hashPassword } = require('../lib/password.cjs');
+          const FACTORY_SHA256 =
+            '5994471abb01112afcc18159f6cc74b4f511b99806da59b3caf5a9c173cacfc5';
+          const userCols = hasTable(db, 'users')
+            ? db.prepare(`PRAGMA table_info(users)`).all().map((c) => c.name)
+            : [];
+          const hasPasswordExpired = userCols.includes('password_expired');
+          const rows = db
+            .prepare('SELECT id FROM users WHERE password_hash = ?')
+            .all(FACTORY_SHA256);
+          const updateSql = hasPasswordExpired
+            ? `UPDATE users SET password_hash = ?, password_expired = 0, updated_at = datetime('now') WHERE id = ?`
+            : `UPDATE users SET password_hash = ?, updated_at = datetime('now') WHERE id = ?`;
+          const upd = db.prepare(updateSql);
+          for (const row of rows) {
+            upd.run(hashPassword('12345'), row.id);
+            console.log(`    ✓ Upgraded factory admin password hash for ${row.id}`);
           }
           db.exec(sql);
         } else {

@@ -66,7 +66,7 @@ console.log(`Temp DB: ${tmpDir}\n`);
 try {
   open();
   const db = getDb();
-  const { products, inventory, sales, shifts } = createServices(db);
+  const { products, inventory, sales, shifts, customers } = createServices(db);
 
   const sku = `PRICE-SMOKE-${Date.now()}`;
   const product = products.create({
@@ -175,6 +175,148 @@ try {
     assert.strictEqual(Number(row.unit_price), 5500);
   });
 
+  runStep('completePOSOrder: erkin narx (manual) katalogni yozib qo‘ymaydi', () => {
+    products.update(product.id, {
+      sale_price: 12000,
+      product_units: [{ unit: 'pcs', ratio_to_base: 1, sale_price: 12000, is_default: true }],
+    });
+    assert.strictEqual(retailPrice(db, product.id), 12000);
+
+    const res = sales.completePOSOrder(
+      {
+        total_amount: 7777,
+        subtotal: 7777,
+        shift_id: shift.id,
+        user_id: ADMIN,
+        cashier_id: ADMIN,
+      },
+      [
+        {
+          product_id: product.id,
+          product_name: product.name,
+          quantity: 1,
+          qty_sale: 1,
+          qty_base: 1,
+          unit_price: 7777,
+          final_unit_price: 7777,
+          final_total: 7777,
+          line_total: 7777,
+          discount_amount: 0,
+          price_source: 'manual',
+          is_price_overridden: true,
+          manual_price: true,
+          price_tier: 'retail',
+          base_price: 12000,
+        },
+      ],
+      [{ payment_method: 'cash', amount: 7777 }],
+    );
+    const item = db
+      .prepare(
+        `SELECT unit_price, final_unit_price, final_total, line_total, price_source, base_price
+         FROM order_items WHERE order_id = ?`,
+      )
+      .get(res.order_id);
+    assert.strictEqual(Number(item.unit_price), 7777, 'unit_price must stay manual');
+    assert.strictEqual(Number(item.final_unit_price), 7777, 'final_unit_price');
+    assert.strictEqual(Number(item.final_total), 7777, 'final_total');
+    assert.strictEqual(Number(item.line_total), 7777, 'line_total');
+    assert.strictEqual(String(item.price_source), 'manual', 'price_source');
+    assert.notStrictEqual(Number(item.unit_price), 12000, 'must not store catalog sale_price');
+  });
+
+  runStep('completePOSOrder: erkin narx + to‘liq nasiya → credit_amount va balans 12000', () => {
+    products.update(product.id, {
+      sale_price: 15000,
+      product_units: [{ unit: 'pcs', ratio_to_base: 1, sale_price: 15000, is_default: true }],
+    });
+    const creditCust = customers.create({
+      name: 'Erkin Nasiya',
+      phone: `+99890123${String(Date.now()).slice(-4)}`,
+      allow_credit: 1,
+      allow_debt: 1,
+      credit_limit: 50000000,
+    });
+
+    const res = sales.completePOSOrder(
+      {
+        total_amount: 12000,
+        customer_id: creditCust.id,
+        shift_id: shift.id,
+        user_id: ADMIN,
+        cashier_id: ADMIN,
+      },
+      [
+        {
+          product_id: product.id,
+          product_name: product.name,
+          quantity: 1,
+          qty_sale: 1,
+          qty_base: 1,
+          unit_price: 12000,
+          final_unit_price: 12000,
+          final_total: 12000,
+          line_total: 12000,
+          discount_amount: 0,
+          price_source: 'manual',
+          is_price_overridden: true,
+          manual_price: true,
+          price_tier: 'retail',
+          base_price: 15000,
+        },
+      ],
+      [],
+    );
+    const order = db
+      .prepare('SELECT credit_amount, total_amount FROM orders WHERE id = ?')
+      .get(res.order_id);
+    assert.strictEqual(Number(order.total_amount), 12000);
+    assert.strictEqual(Number(order.credit_amount), 12000);
+    const bal = db.prepare('SELECT balance FROM customers WHERE id = ?').get(creditCust.id);
+    assert.strictEqual(Number(bal.balance), -12000);
+
+    products.update(product.id, {
+      sale_price: 5000,
+      product_units: [{ unit: 'pcs', ratio_to_base: 1, sale_price: 5000, is_default: true }],
+    });
+  });
+
+  runStep('completePOSOrder: is_price_overridden yetarli (price_source yo‘q)', () => {
+    products.update(product.id, {
+      sale_price: 15000,
+      product_units: [{ unit: 'pcs', ratio_to_base: 1, sale_price: 15000, is_default: true }],
+    });
+    const res = sales.completePOSOrder(
+      {
+        total_amount: 8888,
+        subtotal: 8888,
+        shift_id: shift.id,
+        user_id: ADMIN,
+        cashier_id: ADMIN,
+      },
+      [
+        {
+          product_id: product.id,
+          product_name: product.name,
+          quantity: 1,
+          qty_sale: 1,
+          qty_base: 1,
+          unit_price: 8888,
+          final_unit_price: 8888,
+          final_total: 8888,
+          is_price_overridden: true,
+          price_tier: 'retail',
+        },
+      ],
+      [{ payment_method: 'cash', amount: 8888 }],
+    );
+    const item = db
+      .prepare('SELECT unit_price, price_source FROM order_items WHERE order_id = ?')
+      .get(res.order_id);
+    assert.strictEqual(Number(item.unit_price), 8888);
+    assert.strictEqual(String(item.price_source), 'manual');
+  });
+
   products.update(product.id, {
     sale_price: 9000,
     product_units: [{ unit: 'pcs', ratio_to_base: 1, sale_price: 9000, is_default: true }],
@@ -200,6 +342,52 @@ try {
       .get(res.order_id);
     assert.strictEqual(Number(item.unit_price), 9000);
     assert.strictEqual(Number(item.line_total), 9000);
+  });
+
+  runStep('product_prices eski: checkout product_units narxini oladi (30000)', () => {
+    const retailId = db.prepare(`SELECT id FROM price_tiers WHERE code = 'retail'`).get()?.id;
+    products.update(product.id, {
+      sale_price: 30000,
+      product_units: [{ unit: 'pcs', ratio_to_base: 1, sale_price: 30000, is_default: true }],
+    });
+    db.prepare(
+      `
+      UPDATE product_prices SET price = 22000, updated_at = datetime('now')
+      WHERE product_id = ? AND tier_id = ? AND currency = 'UZS'
+    `,
+    ).run(product.id, retailId);
+    assert.strictEqual(retailPrice(db, product.id), 22000);
+    const { pricing } = createServices(db);
+    assert.strictEqual(
+      pricing.getPriceForProduct({
+        product_id: product.id,
+        tier_code: 'retail',
+        currency: 'UZS',
+        unit: 'pcs',
+      }),
+      30000,
+    );
+
+    const res = sales.completePOSOrder(
+      { total_amount: 30000, shift_id: shift.id, user_id: ADMIN },
+      [
+        {
+          product_id: product.id,
+          product_name: product.name,
+          quantity: 1,
+          qty_sale: 1,
+          qty_base: 1,
+          unit_price: 30000,
+          line_total: 30000,
+        },
+      ],
+      [{ payment_method: 'cash', amount: 30000 }],
+    );
+    const item = db
+      .prepare('SELECT unit_price FROM order_items WHERE order_id = ?')
+      .get(res.order_id);
+    assert.strictEqual(Number(item.unit_price), 30000);
+    assert.strictEqual(retailPrice(db, product.id), 30000);
   });
 
   // --- Ommaviy narx yangilash (bulk) + orqaga qaytarish (undo) ---

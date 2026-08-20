@@ -184,6 +184,25 @@ try {
   po2ItemId = edited.items[0].id;
   ok('tahrir: 5→6 dona, jami 36000');
 
+  runStep('tahrir: mavjud qator narxini yangilash (id bo‘yicha)', () => {
+    const priceEdit = purchases.updateOrder(
+      po2Id,
+      { notes: 'Smoke: narx yangilandi' },
+      [
+        {
+          id: po2ItemId,
+          product_id: productId,
+          ordered_qty: 6,
+          unit_cost: 7500,
+          line_total: 45000,
+        },
+      ],
+    );
+    assert.strictEqual(Number(priceEdit.items[0].unit_cost), 7500);
+    assert.strictEqual(Number(priceEdit.total_amount), 45000);
+    assert.strictEqual(priceEdit.items[0].id, po2ItemId);
+  });
+
   runStep('xarajat (landed cost) qo‘shish', () => {
     purchases.addExpense(po2Id, {
       title: 'Yetkazish',
@@ -227,11 +246,11 @@ try {
     assert.ok(list.length >= 2);
     const agg = aggregatePoUzs(list);
     assert.strictEqual(agg.count, 2);
-    assert.strictEqual(agg.orderedUzs, 86000);
+    assert.strictEqual(agg.orderedUzs, 95000);
     assert.strictEqual(agg.paidUzs, 50000);
-    assert.ok(agg.receivedUzs >= 86000, 'qabul qiymati landed cost bilan');
+    assert.ok(agg.receivedUzs >= 95000, 'qabul qiymati landed cost bilan');
     assert.strictEqual(agg.debtUzs, agg.receivedUzs - agg.paidUzs);
-    assert.strictEqual(agg.debtUzs, 36600);
+    assert.strictEqual(agg.debtUzs, 45600);
   });
 
   runStep('hisobot: getDeliveryDetails', () => {
@@ -258,12 +277,12 @@ try {
         )
         .get(supplierId).d || 0,
     );
-    assert.strictEqual(legacyDebt, 36000);
+    assert.strictEqual(legacyDebt, 45000);
 
     const aging = reports.getSupplierAging();
     const row = aging.find((r) => r.id === supplierId);
     if (row) {
-      assert.ok(Math.abs(Number(row.total_debt) - legacyDebt) < 1 || Number(row.total_debt) >= 36000);
+      assert.ok(Math.abs(Number(row.total_debt) - legacyDebt) < 1 || Number(row.total_debt) >= 45000);
     }
   });
 
@@ -398,6 +417,75 @@ try {
     assert.ok(Math.abs(Number(supPaid.balance)) < 0.01, `balance after pay expected ~0, got ${supPaid.balance}`);
   });
 
+  runStep('UZS ta\'minotchi: to\'liq UZS oqim — PO, qabul, qarz va to\'lov', () => {
+    const uzsSupplierFull = suppliers.create({
+      name: 'UZS Full Flow Smoke',
+      phone: '+998901555003',
+      settlement_currency: 'UZS',
+    });
+
+    const uzsPo = purchases.createOrder({
+      supplier_id: uzsSupplierFull.id,
+      order_date: today,
+      status: 'approved',
+      created_by: ADMIN,
+      currency: 'UZS',
+      items: [
+        {
+          product_id: productId,
+          ordered_qty: 8,
+          unit_cost: 125000,
+          line_total: 1_000_000,
+        },
+      ],
+    });
+    assert.strictEqual(String(uzsPo.currency).toUpperCase(), 'UZS');
+    assert.strictEqual(Number(uzsPo.total_amount), 1_000_000);
+    assert.ok(uzsPo.total_usd == null || Number(uzsPo.total_usd) === 0);
+
+    const uzsItemId = uzsPo.items[0].id;
+    purchases.receiveGoods(uzsPo.id, {
+      items: [{ item_id: uzsItemId, product_id: productId, received_qty: 8 }],
+      received_by: ADMIN,
+    });
+
+    const supAfterUzsReceive = suppliers.get(uzsSupplierFull.id);
+    assert.ok(
+      Math.abs(Number(supAfterUzsReceive.balance) - 1_000_000) < 1,
+      `UZS balance after receive expected 1000000, got ${supAfterUzsReceive.balance}`
+    );
+
+    suppliers.createPayment({
+      supplier_id: uzsSupplierFull.id,
+      purchase_order_id: uzsPo.id,
+      amount: 400_000,
+      currency: 'UZS',
+      payment_method: 'cash',
+      created_by: ADMIN,
+    });
+    const uzsPoPartial = purchases.get(uzsPo.id);
+    assert.strictEqual(uzsPoPartial.payment_status, 'PARTIALLY_PAID');
+    assert.strictEqual(Number(uzsPoPartial.paid_amount), 400_000);
+
+    suppliers.createPayment({
+      supplier_id: uzsSupplierFull.id,
+      purchase_order_id: uzsPo.id,
+      amount: 600_000,
+      currency: 'UZS',
+      payment_method: 'transfer',
+      created_by: ADMIN,
+    });
+    const uzsPoPaid = purchases.get(uzsPo.id);
+    assert.strictEqual(uzsPoPaid.payment_status, 'PAID');
+    assert.strictEqual(Number(uzsPoPaid.paid_amount), 1_000_000);
+
+    const supUzsPaid = suppliers.get(uzsSupplierFull.id);
+    assert.ok(
+      Math.abs(Number(supUzsPaid.balance)) < 1,
+      `UZS balance after pay expected ~0, got ${supUzsPaid.balance}`
+    );
+  });
+
   runStep('UZS ta\'minotchi: USD PO to\'lov paid_amount_usd yangilanadi', () => {
     const fxRate = 12100;
     const uzsSupplier = suppliers.create({
@@ -447,6 +535,231 @@ try {
       `paid USD expected 221.82, got ${mixedPaid.paid_amount_usd ?? mixedPaid.paid_amount}`
     );
     assert.strictEqual(mixedPaid.payment_status, 'PAID');
+  });
+
+  runStep('tahrir + createReceipt: USD qoralama Saqlash va qabul (UI oqimi)', () => {
+    const fxRate = 12100;
+    const usdSupplier = suppliers.create({
+      name: 'Edit Receive Smoke USD',
+      phone: '+998901555004',
+      settlement_currency: 'USD',
+    });
+
+    const draftPo = purchases.createOrder({
+      supplier_id: usdSupplier.id,
+      order_date: today,
+      status: 'draft',
+      created_by: ADMIN,
+      currency: 'USD',
+      fx_rate: fxRate,
+      items: [
+        {
+          product_id: productId,
+          product_name: 'Chint 2Pls 32A',
+          ordered_qty: 1,
+          unit_cost_usd: 2.7,
+          line_total_usd: 2.7,
+        },
+      ],
+    });
+    const draftItemId = draftPo.items[0].id;
+
+    const edited = purchases.updateOrder(
+      draftPo.id,
+      {
+        supplier_id: usdSupplier.id,
+        order_date: today,
+        status: 'approved',
+        currency: 'USD',
+        fx_rate: fxRate,
+      },
+      [
+        {
+          id: draftItemId,
+          product_id: productId,
+          product_name: 'Chint 2Pls 32A',
+          ordered_qty: 1,
+          unit_cost: 2.7 * fxRate,
+          line_total: 2.7 * fxRate,
+          unit_cost_usd: 2.7,
+          line_total_usd: 2.7,
+        },
+      ],
+    );
+    assert.strictEqual(edited.items.length, 1, 'tahrirdan keyin 1 qator bo‘lishi kerak');
+    assert.strictEqual(edited.items[0].id, draftItemId, 'qator id saqlanishi kerak');
+
+    const poLine = edited.items[0];
+    const remaining = Number(poLine.ordered_qty) - Number(poLine.received_qty || 0);
+    assert.ok(remaining > 0, 'qabul qilinadigan qoldiq bo‘lishi kerak');
+
+    const stockBefore = stockOf(inventory, productId);
+    purchases.createReceipt({
+      purchase_order_id: draftPo.id,
+      supplier_id: usdSupplier.id,
+      currency: 'USD',
+      exchange_rate: fxRate,
+      status: 'received',
+      received_at: today,
+      created_by: ADMIN,
+      items: [
+        {
+          purchase_order_item_id: poLine.id,
+          product_id: productId,
+          product_name: poLine.product_name,
+          received_qty: remaining,
+          unit_cost_usd: 2.7,
+          line_total_usd: remaining * 2.7,
+        },
+      ],
+    });
+
+    const after = purchases.get(draftPo.id);
+    assert.strictEqual(after.status, 'received');
+    assert.strictEqual(Number(after.items[0].received_qty), 1);
+    assert.strictEqual(stockOf(inventory, productId), stockBefore + 1);
+  });
+
+  runStep('qoralama: qabul qilingandan keyin ordered kamaytirish — omborga ta\'sir qilmaydi', () => {
+    const stockBeforePartial = stockOf(inventory, productId);
+    const po = purchases.createOrder({
+      supplier_id: supplierId,
+      order_date: today,
+      status: 'approved',
+      created_by: ADMIN,
+      items: [
+        {
+          product_id: productId,
+          ordered_qty: 5,
+          unit_cost: 4000,
+          line_total: 20000,
+        },
+      ],
+    });
+    const lineId = po.items[0].id;
+    purchases.receiveGoods(po.id, {
+      items: [{ item_id: lineId, product_id: productId, received_qty: 2 }],
+      received_by: ADMIN,
+    });
+
+    const stockAfterPartial = stockOf(inventory, productId);
+    assert.strictEqual(stockAfterPartial, stockBeforePartial + 2);
+
+    const edited = purchases.updateOrder(
+      po.id,
+      { notes: 'ordered kamaytirildi' },
+      [
+        {
+          id: lineId,
+          product_id: productId,
+          ordered_qty: 1,
+          unit_cost: 4000,
+          line_total: 4000,
+        },
+      ],
+    );
+    assert.strictEqual(Number(edited.items[0].ordered_qty), 1);
+    assert.strictEqual(Number(edited.items[0].received_qty), 2);
+    assert.strictEqual(stockOf(inventory, productId), stockAfterPartial, 'qoralama tahrir omborga ta\'sir qilmasligi kerak');
+
+    let receiveFailed = false;
+    try {
+      purchases.receiveGoods(po.id, {
+        items: [{ item_id: lineId, product_id: productId, received_qty: 1 }],
+        received_by: ADMIN,
+      });
+    } catch (e) {
+      receiveFailed = true;
+      assert.match(String(e.message || e), /kam bo'lmasligi kerak|qolgan miqdordan/i);
+    }
+    assert.ok(receiveFailed, 'ordered < received bo\'lganda qabul bloklanishi kerak');
+  });
+
+  runStep('qoralama: qabul qilingan qator payload dan tushsa ham DB da qoladi', () => {
+    const extraProduct = products.create({
+      name: 'Smoke Keep Received Line',
+      sku: `PO-KEEP-${Date.now()}`,
+      sale_price: 5000,
+      purchase_price: 2000,
+      track_stock: 1,
+      current_stock: 0,
+    });
+    const po = purchases.createOrder({
+      supplier_id: supplierId,
+      order_date: today,
+      status: 'approved',
+      created_by: ADMIN,
+      items: [
+        {
+          product_id: productId,
+          ordered_qty: 4,
+          unit_cost: 4000,
+          line_total: 16000,
+        },
+      ],
+    });
+    const receivedLineId = po.items[0].id;
+    purchases.receiveGoods(po.id, {
+      items: [{ item_id: receivedLineId, product_id: productId, received_qty: 2 }],
+      received_by: ADMIN,
+    });
+
+    const edited = purchases.updateOrder(
+      po.id,
+      { notes: 'received qator payload dan olib tashlandi' },
+      [
+        {
+          product_id: extraProduct.id,
+          ordered_qty: 1,
+          unit_cost: 2000,
+          line_total: 2000,
+        },
+      ],
+    );
+    assert.strictEqual(edited.items.length, 2);
+    const kept = edited.items.find((row) => row.id === receivedLineId);
+    assert.ok(kept, 'qabul qilingan qator saqlanishi kerak');
+    assert.strictEqual(Number(kept.received_qty), 2);
+    assert.strictEqual(Number(kept.ordered_qty), 4);
+  });
+
+  runStep('tahrir: id siz qator almashtirish — received_qty 0 qoladi', () => {
+    const po = purchases.createOrder({
+      supplier_id: supplierId,
+      order_date: today,
+      status: 'draft',
+      created_by: ADMIN,
+      items: [
+        {
+          product_id: productId,
+          ordered_qty: 3,
+          unit_cost: 4000,
+          line_total: 12000,
+        },
+      ],
+    });
+    const edited = purchases.updateOrder(
+      po.id,
+      { notes: 'id siz tahrir' },
+      [
+        {
+          product_id: productId,
+          ordered_qty: 3,
+          unit_cost: 4000,
+          line_total: 12000,
+          received_qty: 3,
+        },
+      ],
+    );
+    assert.strictEqual(edited.items.length, 1);
+    assert.strictEqual(Number(edited.items[0].received_qty), 0);
+    const remaining = Number(edited.items[0].ordered_qty) - Number(edited.items[0].received_qty || 0);
+    assert.strictEqual(remaining, 3);
+  });
+
+  runStep('hisobot: listSupplierPaymentsDue', () => {
+    const dueToday = reports.listSupplierPaymentsDue({ filter: 'today' });
+    assert.ok(Array.isArray(dueToday));
   });
 
   close();

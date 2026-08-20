@@ -262,6 +262,8 @@ export interface Order {
   price_tier_id?: number | null;
   price_tier_code?: 'retail' | 'master' | 'wholesale' | 'marketplace' | string | null;
   customer_id: string | null;
+  /** Optional usta/referrer — bonus accrual destination only (sale stays on customer_id). */
+  bonus_referrer_customer_id?: string | null;
   cashier_id: string;
   shift_id: string | null;
   subtotal: number;
@@ -281,6 +283,10 @@ export interface Order {
   total_usd?: number | null;
   status: OrderStatus;
   payment_status: PaymentStatus;
+  /** Nasiya qarz qaytarish sanasi (YYYY-MM-DD). */
+  due_date?: string | null;
+  /** Ichki eslatma izohi (kassir/admin). */
+  credit_reminder_note?: string | null;
   notes: string | null;
   created_at: string;
   updated_at?: string;
@@ -311,6 +317,10 @@ export interface OrderItem {
   final_unit_price?: number;
   final_total?: number;
   price_source?: 'base' | 'usta' | 'promo' | 'tier' | 'manual';
+  /** POS erkin narx — checkout payload flag (not a DB column). */
+  is_price_overridden?: boolean;
+  /** POS erkin narx — checkout payload flag (not a DB column). */
+  manual_price?: boolean;
   subtotal: number;
   discount_amount: number;
   total: number;
@@ -443,6 +453,17 @@ export interface PurchaseOrder {
   notes: string | null;
   created_at: string;
   updated_at: string;
+  payment_scheme?: 'full' | 'partial' | 'installment';
+  payment_due_date?: string | null;
+  payment_schedule?: Array<{
+    id?: string;
+    seq: number;
+    due_date: string;
+    amount: number;
+    amount_usd?: number | null;
+    status?: string;
+    paid_at?: string | null;
+  }>;
 }
 
 export interface PurchaseOrderItem {
@@ -618,6 +639,8 @@ export interface CartItem {
   discount_amount: number;
   subtotal: number;
   total: number;
+  /** Original sold qty when amending a completed order — stock cap adds this back at checkout. */
+  amend_original_qty_sale?: number;
   // Promo fields (when promotion is applied)
   promotion_id?: string | null;
   promotion_name?: string | null;
@@ -678,12 +701,22 @@ export type HeldOrderStatus = 'HELD' | 'RESTORED' | 'CANCELLED';
 export interface HeldOrder {
   id: string;
   held_number: string;
+  /** Same as held_number for DB/mobile orders (ORD-…); omitted for legacy local holds. */
+  order_number?: string;
+  /** local = POS park (HOLD-…); db/mobile = sales API hold; web = online order. */
+  source?: 'local' | 'db' | 'mobile' | 'web';
+  sales_channel?: string | null;
+  web_order_id?: number | null;
   cashier_id: string;
   shift_id: string | null;
   customer_id: string | null;
   customer_name: string | null;
+  /** Optional usta/referrer for bonus routing when order is restored. */
+  bonus_referrer_customer_id?: string | null;
   items: CartItem[];
   discount: { type: 'amount' | 'percent'; value: number } | null;
+  /** Cart merchandise total at hold time (excludes prior debt / loyalty). */
+  total_amount?: number | null;
   note: string | null;
   status: HeldOrderStatus;
   created_at: string;
