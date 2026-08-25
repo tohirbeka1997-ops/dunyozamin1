@@ -15,6 +15,7 @@ const { mountStaffDevicesRoutes } = require('./devices.cjs');
 const { mountStaffExpensesRoutes } = require('./expenses.cjs');
 const { createStaffAuth } = require('../../middleware/staffAuth.cjs');
 const { openTenantDatabase } = require('../../lib/staffDb.cjs');
+const { requireStaffArea } = require('../../lib/staffRoles.cjs');
 
 function mountStaffRoutes() {
   const router = express.Router();
@@ -49,7 +50,8 @@ function mountStaffRoutes() {
     }
   });
 
-  router.use('/orders', jsonBody, staffAuth, mountStaffOrdersRoutes());
+  // Cashier: no web-order ops (same as Electron POS floor operator matrix).
+  router.use('/orders', jsonBody, staffAuth, requireStaffArea('orders'), mountStaffOrdersRoutes());
 
   // Real point-of-sale selling (v2 "Tez savdo / quick sale").
   router.use('/products', staffAuth, mountStaffProductsRoutes());
@@ -57,14 +59,21 @@ function mountStaffRoutes() {
   router.use('/sales', jsonBody, staffAuth, mountStaffSalesRoutes());
   router.use('/returns', jsonBody, staffAuth, mountStaffReturnsRoutes());
   router.use('/customers', jsonBody, staffAuth, mountStaffCustomersRoutes());
-  router.use('/suppliers', jsonBody, staffAuth, mountStaffSuppliersRoutes());
+  router.use('/suppliers', jsonBody, staffAuth, requireStaffArea('suppliers'), mountStaffSuppliersRoutes());
   router.use('/devices', jsonBody, staffAuth, mountStaffDevicesRoutes());
-  router.use('/purchase-orders', jsonBody, staffAuth, mountStaffPurchaseOrdersRoutes());
+  router.use(
+    '/purchase-orders',
+    jsonBody,
+    staffAuth,
+    requireStaffArea('purchaseOrders'),
+    mountStaffPurchaseOrdersRoutes(),
+  );
   router.use('/reports', staffAuth, mountStaffReportsRoutes());
-  router.use('/expenses', jsonBody, staffAuth, mountStaffExpensesRoutes());
+  router.use('/expenses', jsonBody, staffAuth, requireStaffArea('expenses'), mountStaffExpensesRoutes());
 
   // GET /v1/staff/exchange-rates/latest?base_currency=USD&quote_currency=UZS
-  router.get('/exchange-rates/latest', staffAuth, (req, res) => {
+  // Used by purchase-order create (USD suppliers) — same gate as purchasing.
+  router.get('/exchange-rates/latest', staffAuth, requireStaffArea('purchaseOrders'), (req, res) => {
     try {
       const { getPosBundle } = require('../../lib/staffPos.cjs');
       const { exchangeRates } = getPosBundle(openTenantDatabase(req.staffUser.tenant));

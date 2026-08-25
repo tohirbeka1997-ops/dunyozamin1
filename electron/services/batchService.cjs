@@ -1,5 +1,8 @@
 const { randomUUID } = require('crypto');
 const { ERROR_CODES, createError } = require('../lib/errors.cjs');
+const { createLogger } = require('../lib/logger.cjs');
+
+const batchLogger = createLogger('batch');
 
 /**
  * BatchService
@@ -19,6 +22,7 @@ class BatchService {
     this.db = db;
     this.inventoryService = inventoryService;
     this._batchCols = null;
+    this._allocCols = null;
   }
 
   // ---------------------------------------------------------------------------
@@ -84,6 +88,47 @@ class BatchService {
     this.db.prepare(sql).run(...vals);
   }
 
+  _getAllocCols() {
+    if (this._allocCols) return this._allocCols;
+    try {
+      const cols = this.db.prepare(`PRAGMA table_info(inventory_batch_allocations)`).all() || [];
+      this._allocCols = new Set(cols.map((c) => c.name));
+    } catch {
+      this._allocCols = new Set();
+    }
+    return this._allocCols;
+  }
+
+  _hasAllocCol(name) {
+    return this._getAllocCols().has(name);
+  }
+
+  _insertAllocation(fields) {
+    const cols = [];
+    const vals = [];
+    for (const [key, value] of Object.entries(fields)) {
+      if (!this._hasAllocCol(key)) continue;
+      cols.push(key);
+      vals.push(value);
+    }
+    if (cols.length === 0) {
+      throw createError(ERROR_CODES.DB_ERROR, 'inventory_batch_allocations schema mismatch');
+    }
+    const placeholders = cols.map(() => '?').join(', ');
+    const sql = `INSERT INTO inventory_batch_allocations (${cols.join(', ')}) VALUES (${placeholders})`;
+    this.db.prepare(sql).run(...vals);
+  }
+
+  _warnZeroCostBatch(batchId, productId, unitCost, context = 'batch_create') {
+    const cost = Number(unitCost || 0);
+    if (!(cost === 0)) return;
+    batchLogger.warn('Zero-cost batch created', {
+      batch_id: batchId,
+      product_id: productId,
+      context,
+    });
+  }
+
   // ---------------------------------------------------------------------------
   // Settings helpers (batch enable + cutover)
   // ---------------------------------------------------------------------------
@@ -103,6 +148,27 @@ class BatchService {
 
   isBatchModeEnabled() {
     return this._isTruthySetting('inventory.batch_mode_enabled') || this._isTruthySetting('batch_mode_enabled');
+  }
+
+  /**
+   * Whether batch coverage must be complete before sale.
+   * Missing setting = strict (safe). Existing DBs with inventory.batch_strict_block=0
+   * keep auto-coverage; do not flip that stored production default.
+   */
+  isBatchStrictBlock() {
+    const v = this._getSettingValue('inventory.batch_strict_block');
+    if (v == null || String(v).trim() === '') return true;
+    return this._isTruthySetting('inventory.batch_strict_block');
+  }
+
+  isAutoReconcileEnabled() {
+    const v = this._getSettingValue('inventory.batch_auto_reconcile');
+    if (v == null || v === '') return true;
+    return this._isTruthySetting('inventory.batch_auto_reconcile');
+  }
+
+  isAutoRepairEnabled() {
+    return this._isTruthySetting('inventory.batch_auto_repair');
   }
 
   getCutoverAt() {
@@ -241,6 +307,12 @@ class BatchService {
         isPublic: 1,
         updatedBy,
       });
+      let repair = null;
+      try {
+        repair = this.repairBatchCoverage({ warehouseId: warehouseId || null, dryRun: false });
+      } catch (repairErr) {
+        batchLogger.warn('repairBatchCoverage on batch re-enable failed', repairErr);
+      }
       return {
         ok: true,
         resumed: true,
@@ -254,7 +326,8 @@ class BatchService {
         created: 0,
         skipped: 0,
         batches: [],
-        message: 'Existing cutover preserved. Use force=true to override.',
+        repair,
+        message: 'Existing cutover preserved. Uncovered stock repaired. Use force=true to override.',
       };
     }
 
@@ -313,6 +386,13 @@ class BatchService {
         if (Array.isArray(r?.batches)) allBatches.push(...r.batches);
       }
 
+      let repair = null;
+      try {
+        repair = this.repairBatchCoverage({ warehouseId: warehouseId || null, dryRun: false });
+      } catch (repairErr) {
+        batchLogger.warn('repairBatchCoverage after cutover failed', repairErr);
+      }
+
       return {
         ok: true,
         resumed: false,
@@ -326,6 +406,7 @@ class BatchService {
         created: totalCreated,
         skipped: totalSkipped,
         batches: allBatches,
+        repair,
       };
     })();
   }
@@ -561,6 +642,7 @@ class BatchService {
       created_at: now,
     });
 
+    this._warnZeroCostBatch(batchId, productId2, cost, 'purchase_receive');
     return this.db.prepare('SELECT * FROM inventory_batches WHERE id = ?').get(batchId);
   }
 
@@ -615,6 +697,7 @@ class BatchService {
       created_at: now,
     });
 
+    this._warnZeroCostBatch(batchId, productId2, cost, 'purchase_receipt');
     return this.db.prepare('SELECT * FROM inventory_batches WHERE id = ?').get(batchId);
   }
 
@@ -650,6 +733,7 @@ class BatchService {
       created_at: now,
     });
 
+    this._warnZeroCostBatch(batchId, productId, cost, 'opening');
     return this.db.prepare('SELECT * FROM inventory_batches WHERE id = ?').get(batchId);
   }
 
@@ -657,28 +741,25 @@ class BatchService {
   // Allocations
   // ---------------------------------------------------------------------------
 
-  /**
-   * Supports both call styles:
-   * - allocateFIFOForOrderItem({ orderItemId, productId, warehouseId, quantity })
-   * - allocateFIFOForOrderItem(orderItemId, productId, warehouseId, quantity)
-   */
-  allocateFIFOForOrderItem(arg1, productId, warehouseId, quantity) {
-    this._requireBatchTables();
-    const payload = arg1 && typeof arg1 === 'object'
-      ? arg1
-      : { orderItemId: arg1, productId, warehouseId, quantity };
-
-    const orderItemId2 = payload.orderItemId;
-    const productId2 = payload.productId;
-    const wh = this._resolveWarehouseId(payload.warehouseId);
-    const requested = Number(payload.quantity || 0);
-    if (!orderItemId2) throw createError(ERROR_CODES.VALIDATION_ERROR, 'orderItemId is required');
-    if (!productId2) throw createError(ERROR_CODES.VALIDATION_ERROR, 'productId is required');
-    if (!(requested > 0)) throw createError(ERROR_CODES.VALIDATION_ERROR, 'quantity must be > 0');
-
+  _fifoTakeFromBatches({
+    productId,
+    warehouseId,
+    quantity,
+    referenceType,
+    referenceId,
+    note = null,
+    supplierId = null,
+  }) {
+    const wh = this._resolveWarehouseId(warehouseId);
+    const requested = Number(quantity || 0);
     let remaining = requested;
     const allocations = [];
     const now = this._nowSql();
+
+    const hasSupplierCol = this._hasBatchCol('supplier_id');
+    const supplierFilter =
+      supplierId && hasSupplierCol ? ' AND supplier_id = ?' : '';
+    const batchParams = supplierId && hasSupplierCol ? [productId, wh, supplierId] : [productId, wh];
 
     const batches = this.db
       .prepare(
@@ -689,10 +770,11 @@ class BatchService {
           AND warehouse_id = ?
           AND status = 'active'
           AND remaining_qty > 0
+          ${supplierFilter}
         ORDER BY opened_at ASC, created_at ASC, id ASC
       `
       )
-      .all(productId2, wh);
+      .all(...batchParams);
 
     for (const b of batches) {
       if (remaining <= 0) break;
@@ -713,17 +795,19 @@ class BatchService {
         .run(after, after, b.id);
 
       const allocId = randomUUID();
-      this.db
-        .prepare(
-          `
-          INSERT INTO inventory_batch_allocations (
-            id, batch_id, direction, product_id, warehouse_id,
-            quantity, unit_cost, reference_type, reference_id, created_at
-          )
-          VALUES (?, ?, 'out', ?, ?, ?, ?, 'order_item', ?, ?)
-        `
-        )
-        .run(allocId, b.id, productId2, wh, take, Number(b.unit_cost || 0), orderItemId2, now);
+      this._insertAllocation({
+        id: allocId,
+        batch_id: b.id,
+        direction: 'out',
+        product_id: productId,
+        warehouse_id: wh,
+        quantity: take,
+        unit_cost: Number(b.unit_cost || 0),
+        reference_type: referenceType,
+        reference_id: referenceId,
+        note,
+        created_at: now,
+      });
 
       allocations.push({
         id: allocId,
@@ -731,9 +815,143 @@ class BatchService {
         quantity: take,
         unit_cost: Number(b.unit_cost || 0),
       });
-
       remaining -= take;
     }
+
+    return { allocations, remaining, requested, warehouseId: wh };
+  }
+
+  _createAutoCoverageBatch(productId, warehouseId, quantity, orderItemId) {
+    const wh = this._resolveWarehouseId(warehouseId);
+    const qty = Number(quantity || 0);
+    if (!(qty > 0)) return null;
+
+    const unitCost = this.defaultUnitCost(productId);
+    const now = this._nowSql();
+    const batchId = randomUUID();
+    const docNo = `AUTO-COVERAGE-${String(now).slice(0, 10).replace(/-/g, '')}`;
+
+    this._insertBatch({
+      id: batchId,
+      product_id: productId,
+      warehouse_id: wh,
+      opened_at: now,
+      unit_cost: unitCost,
+      cost_price_uzs: unitCost,
+      initial_qty: qty,
+      remaining_qty: qty,
+      source_type: 'adjustment_in',
+      source_id: orderItemId,
+      supplier_id: null,
+      supplier_name: null,
+      doc_no: docNo,
+      status: 'active',
+      created_at: now,
+    });
+
+    this._warnZeroCostBatch(batchId, productId, unitCost, 'auto_coverage');
+    batchLogger.warn('Auto-coverage batch created for missing batch stock', {
+      batch_id: batchId,
+      product_id: productId,
+      warehouse_id: wh,
+      quantity: qty,
+      order_item_id: orderItemId,
+    });
+
+    return this.db.prepare('SELECT * FROM inventory_batches WHERE id = ?').get(batchId);
+  }
+
+  /**
+   * FIFO allocation with protected fallback: never throws when strict block is off.
+   */
+  allocateFIFOWithFallback(arg1, productId, warehouseId, quantity) {
+    this._requireBatchTables();
+    const payload = arg1 && typeof arg1 === 'object'
+      ? arg1
+      : { orderItemId: arg1, productId, warehouseId, quantity };
+
+    const orderItemId2 = payload.orderItemId;
+    const productId2 = payload.productId;
+    const wh = this._resolveWarehouseId(payload.warehouseId);
+    const requested = Number(payload.quantity || 0);
+    if (!orderItemId2) throw createError(ERROR_CODES.VALIDATION_ERROR, 'orderItemId is required');
+    if (!productId2) throw createError(ERROR_CODES.VALIDATION_ERROR, 'productId is required');
+    if (!(requested > 0)) throw createError(ERROR_CODES.VALIDATION_ERROR, 'quantity must be > 0');
+
+    const first = this._fifoTakeFromBatches({
+      productId: productId2,
+      warehouseId: wh,
+      quantity: requested,
+      referenceType: 'order_item',
+      referenceId: orderItemId2,
+    });
+
+    if (first.remaining <= 0) return first.allocations;
+
+    if (this.isBatchStrictBlock()) {
+      const err = createError(
+        ERROR_CODES.INSUFFICIENT_BATCH_STOCK,
+        `Insufficient batch stock for product ${productId2}. Requested: ${requested}, Allocated: ${requested - first.remaining}`
+      );
+      err.details = {
+        productId: productId2,
+        warehouseId: wh,
+        requested,
+        allocated: requested - first.remaining,
+        shortage: first.remaining,
+      };
+      throw err;
+    }
+
+    const autoBatch = this._createAutoCoverageBatch(productId2, wh, first.remaining, orderItemId2);
+    if (!autoBatch) return first.allocations;
+
+    const second = this._fifoTakeFromBatches({
+      productId: productId2,
+      warehouseId: wh,
+      quantity: first.remaining,
+      referenceType: 'order_item',
+      referenceId: orderItemId2,
+      note: 'auto-created: missing batch coverage',
+    });
+
+    if (second.remaining > 0) {
+      batchLogger.error('Auto-coverage batch still insufficient after creation', {
+        product_id: productId2,
+        warehouse_id: wh,
+        shortage: second.remaining,
+      });
+    }
+
+    return [...first.allocations, ...second.allocations];
+  }
+
+  /**
+   * Supports both call styles:
+   * - allocateFIFOForOrderItem({ orderItemId, productId, warehouseId, quantity })
+   * - allocateFIFOForOrderItem(orderItemId, productId, warehouseId, quantity)
+   */
+  allocateFIFOForOrderItem(arg1, productId, warehouseId, quantity) {
+    this._requireBatchTables();
+    const payload = arg1 && typeof arg1 === 'object'
+      ? arg1
+      : { orderItemId: arg1, productId, warehouseId, quantity };
+
+    const orderItemId2 = payload.orderItemId;
+    const productId2 = payload.productId;
+    const wh = this._resolveWarehouseId(payload.warehouseId);
+    const requested = Number(payload.quantity || 0);
+    if (!orderItemId2) throw createError(ERROR_CODES.VALIDATION_ERROR, 'orderItemId is required');
+    if (!productId2) throw createError(ERROR_CODES.VALIDATION_ERROR, 'productId is required');
+    if (!(requested > 0)) throw createError(ERROR_CODES.VALIDATION_ERROR, 'quantity must be > 0');
+
+    const { allocations, remaining } = this._fifoTakeFromBatches({
+      productId: productId2,
+      warehouseId: wh,
+      quantity: requested,
+      referenceType: 'order_item',
+      referenceId: orderItemId2,
+    });
 
     if (remaining > 0) {
       const err = createError(
@@ -898,6 +1116,57 @@ class BatchService {
     return allocations;
   }
 
+  /**
+   * Supplier return: consume FIFO only from batches that belong to this supplier.
+   * Does not fall back to other suppliers' stock.
+   */
+  allocateFIFOForSupplierReturn({
+    returnId,
+    productId,
+    warehouseId,
+    quantity,
+    supplierId,
+  } = {}) {
+    this._requireBatchTables();
+    if (!returnId) throw createError(ERROR_CODES.VALIDATION_ERROR, 'returnId is required');
+    if (!productId) throw createError(ERROR_CODES.VALIDATION_ERROR, 'productId is required');
+    if (!supplierId) throw createError(ERROR_CODES.VALIDATION_ERROR, 'supplierId is required');
+    const wh = this._resolveWarehouseId(warehouseId);
+    const requested = Number(quantity || 0);
+    if (!(requested > 0)) throw createError(ERROR_CODES.VALIDATION_ERROR, 'quantity must be > 0');
+
+    const { allocations, remaining } = this._fifoTakeFromBatches({
+      productId,
+      warehouseId: wh,
+      quantity: requested,
+      referenceType: 'supplier_return',
+      referenceId: returnId,
+      note: 'supplier return',
+      supplierId,
+    });
+
+    if (remaining > 0) {
+      const product = this.db.prepare('SELECT name FROM products WHERE id = ?').get(productId);
+      const productName = product?.name || productId;
+      const err = createError(
+        ERROR_CODES.INSUFFICIENT_BATCH_STOCK,
+        `Qaytarish miqdori yetkazib beruvchidan kelgan partiya qoldig‘idan oshib ketdi. Mahsulot: ${productName}. Mavjud: ${requested - remaining}, so‘ralgan: ${requested}.`
+      );
+      err.details = {
+        productId,
+        productName,
+        warehouseId: wh,
+        supplierId,
+        requested,
+        allocated: requested - remaining,
+        shortage: remaining,
+      };
+      throw err;
+    }
+
+    return allocations;
+  }
+
   // ---------------------------------------------------------------------------
   // Adjustments
   // ---------------------------------------------------------------------------
@@ -1019,6 +1288,7 @@ class BatchService {
         status: 'active',
         created_at: now,
       });
+      this._warnZeroCostBatch(batchId, productId2, cost, 'adjustment_in');
       return { createdBatch: this.db.prepare('SELECT * FROM inventory_batches WHERE id = ?').get(batchId), allocations: [] };
     }
 
@@ -1029,49 +1299,261 @@ class BatchService {
   // ---------------------------------------------------------------------------
   // Reconciliation
   // ---------------------------------------------------------------------------
-  reconcile(productId = null, warehouseId = null) {
-    this._requireBatchTables();
-    const wh = warehouseId ? this._resolveWarehouseId(warehouseId) : null;
 
+  _listTargetWarehouseIds(warehouseId = null) {
+    if (warehouseId) return [this._resolveWarehouseId(warehouseId)];
+    return this._listAllWarehouseIds();
+  }
+
+  _stockPairsForReconcile(productId = null, warehouseId = null) {
+    this._requireBatchTables();
+    const warehouses = this._listTargetWarehouseIds(warehouseId);
+    const whPlaceholders = warehouses.map(() => '?').join(', ');
     const params = [];
-    let where = 'WHERE 1=1';
-    if (wh) {
-      where += ' AND b.warehouse_id = ?';
-      params.push(wh);
-    }
+    let productWhere = 'WHERE p.track_stock = 1';
     if (productId) {
-      where += ' AND b.product_id = ?';
+      productWhere += ' AND p.id = ?';
       params.push(productId);
     }
+    params.push(...warehouses);
+
+    const hasStockBalances = this._hasTable('stock_balances');
+    const hasWhView = !!this.db
+      .prepare(`SELECT 1 FROM sqlite_master WHERE name = 'v_product_stock_by_warehouse' LIMIT 1`)
+      .get();
+    const stockSql = hasStockBalances
+      ? `COALESCE((SELECT SUM(sb.quantity) FROM stock_balances sb
+          WHERE sb.product_id = p.id AND sb.warehouse_id = w.id), 0)`
+      : hasWhView
+        ? `COALESCE((SELECT v.stock FROM v_product_stock_by_warehouse v
+          WHERE v.product_id = p.id AND v.warehouse_id = w.id), 0)`
+        : `COALESCE((SELECT SUM(im.quantity) FROM inventory_movements im
+          WHERE im.product_id = p.id AND im.warehouse_id = w.id), 0)`;
 
     const rows = this.db
       .prepare(
         `
         SELECT
-          b.product_id,
-          b.warehouse_id,
-          COALESCE(SUM(b.remaining_qty), 0) AS stock_from_batches
-        FROM inventory_batches b
-        ${where}
-        GROUP BY b.product_id, b.warehouse_id
+          p.id AS product_id,
+          p.name AS product_name,
+          w.id AS warehouse_id,
+          ${stockSql} AS stock_from_balances,
+          COALESCE((
+            SELECT SUM(b.remaining_qty)
+            FROM inventory_batches b
+            WHERE b.product_id = p.id AND b.warehouse_id = w.id
+          ), 0) AS stock_from_batches,
+          COALESCE((
+            SELECT COUNT(*)
+            FROM inventory_batches b
+            WHERE b.product_id = p.id AND b.warehouse_id = w.id AND b.status = 'active'
+          ), 0) AS active_batch_count,
+          COALESCE((
+            SELECT COUNT(*)
+            FROM inventory_batches b
+            WHERE b.product_id = p.id AND b.warehouse_id = w.id
+              AND b.status = 'active' AND COALESCE(b.unit_cost, 0) = 0 AND COALESCE(b.remaining_qty, 0) > 0
+          ), 0) AS zero_cost_active_batches
+        FROM products p
+        CROSS JOIN warehouses w
+        ${productWhere}
+          AND w.id IN (${whPlaceholders})
+        ORDER BY p.name ASC, w.id ASC
       `
       )
-      .all(params);
+      .all(...params);
 
     return rows.map((r) => {
+      const stockFromBalances = Number(r.stock_from_balances || 0) || 0;
+      const stockFromMovements = stockFromBalances;
       const stockFromBatches = Number(r.stock_from_batches || 0) || 0;
-      const stockFromMovements =
-        this.inventoryService?.getCurrentStock
-          ? Number(this.inventoryService.getCurrentStock(r.product_id, r.warehouse_id)) || 0
-          : null;
+      const difference = stockFromBatches - stockFromBalances;
+      const activeBatchCount = Number(r.active_batch_count || 0) || 0;
+      const zeroCostActive = Number(r.zero_cost_active_batches || 0) || 0;
       return {
         product_id: r.product_id,
+        product_name: r.product_name,
         warehouse_id: r.warehouse_id,
-        stock_from_batches: stockFromBatches,
+        stock_from_balances: stockFromBalances,
         stock_from_movements: stockFromMovements,
-        difference: stockFromMovements == null ? null : stockFromBatches - stockFromMovements,
+        stock_from_batches: stockFromBatches,
+        difference,
+        drift: Math.abs(difference) > 0.0001 ? Math.abs(difference) : 0,
+        has_no_batch_stock: stockFromMovements > 0.0001 && activeBatchCount === 0,
+        zero_cost_batches: zeroCostActive,
       };
     });
+  }
+
+  reconcile(productId = null, warehouseId = null) {
+    return this._stockPairsForReconcile(productId, warehouseId).filter(
+      (r) => Math.abs(r.difference) > 0.0001 || r.has_no_batch_stock || r.zero_cost_batches > 0
+    );
+  }
+
+  getBatchHealth(productId = null, warehouseId = null) {
+    const rows = this._stockPairsForReconcile(productId, warehouseId);
+    const drifts = rows.filter((r) => r.drift > 0);
+    const noBatchStock = rows.filter((r) => r.has_no_batch_stock);
+    const zeroCostRows = rows.filter((r) => r.zero_cost_batches > 0);
+    const zeroCostBatchCount = zeroCostRows.reduce((sum, r) => sum + r.zero_cost_batches, 0);
+
+    return {
+      drift_count: drifts.length,
+      no_batch_stock_count: noBatchStock.length,
+      zero_cost_batch_count: zeroCostBatchCount,
+      total_drift_qty: drifts.reduce((sum, r) => sum + r.drift, 0),
+      drifts: drifts.slice(0, 50),
+      no_batch_stock: noBatchStock.slice(0, 50),
+      zero_cost: zeroCostRows.slice(0, 50),
+      checked_at: this._nowSql(),
+    };
+  }
+
+  runReconcileCheck({ autoRepair = null, source = 'scheduler' } = {}) {
+    if (!this.isBatchModeEnabled()) return { ok: true, skipped: true, reason: 'batch_mode_off' };
+    if (!this.isAutoReconcileEnabled()) return { ok: true, skipped: true, reason: 'auto_reconcile_off' };
+
+    const health = this.getBatchHealth();
+    if (health.drift_count > 0 || health.no_batch_stock_count > 0) {
+      batchLogger.warn('Batch drift detected', { source, ...health });
+    }
+
+    const shouldRepair = autoRepair != null ? !!autoRepair : this.isAutoRepairEnabled();
+    let repair = null;
+    if (shouldRepair && (health.drift_count > 0 || health.no_batch_stock_count > 0)) {
+      repair = this.repairBatchCoverage({ dryRun: false });
+    }
+
+    return { ok: true, health, repair, source };
+  }
+
+  repairBatchCoverage({ warehouseId = null, dryRun = true } = {}) {
+    this._requireBatchTables();
+    const rows = this._stockPairsForReconcile(null, warehouseId);
+    const actions = [];
+    let created = 0;
+    let reduced = 0;
+    let skipped = 0;
+
+    const work = () => {
+      for (const row of rows) {
+        const diff = Number(row.difference || 0);
+        if (Math.abs(diff) <= 0.0001) continue;
+
+        if (diff < 0) {
+          const shortage = Math.abs(diff);
+          const unitCost = this.defaultUnitCost(row.product_id);
+          const action = {
+            type: 'create_opening',
+            product_id: row.product_id,
+            warehouse_id: row.warehouse_id,
+            quantity: shortage,
+            unit_cost: unitCost,
+            dry_run: dryRun,
+          };
+          if (!dryRun) {
+            this.createOpeningBatch(
+              row.product_id,
+              row.warehouse_id,
+              shortage,
+              unitCost,
+              this._nowSql(),
+              `REPAIR-COVERAGE-${String(this._nowSql()).slice(0, 10).replace(/-/g, '')}`
+            );
+            created += 1;
+          }
+          actions.push(action);
+          continue;
+        }
+
+        const excess = diff;
+        const reducedQty = this._reduceExcessBatches(row.product_id, row.warehouse_id, excess, dryRun);
+        if (reducedQty > 0) {
+          reduced += 1;
+          actions.push({
+            type: 'reduce_excess',
+            product_id: row.product_id,
+            warehouse_id: row.warehouse_id,
+            quantity: reducedQty,
+            dry_run: dryRun,
+          });
+        } else {
+          skipped += 1;
+          actions.push({
+            type: 'reduce_skipped',
+            product_id: row.product_id,
+            warehouse_id: row.warehouse_id,
+            excess,
+            dry_run: dryRun,
+            reason: 'no_unallocated_batches',
+          });
+        }
+      }
+
+      const after = dryRun ? null : this.getBatchHealth(null, warehouseId);
+      return {
+        ok: true,
+        dry_run: dryRun,
+        warehouse_id: warehouseId || null,
+        created,
+        reduced,
+        skipped,
+        actions,
+        after_health: after,
+      };
+    };
+
+    if (dryRun) return work();
+    return this.db.transaction(work)();
+  }
+
+  _reduceExcessBatches(productId, warehouseId, excessQty, dryRun) {
+    const wh = this._resolveWarehouseId(warehouseId);
+    let remaining = Number(excessQty || 0);
+    if (!(remaining > 0)) return 0;
+
+    const batches = this.db
+      .prepare(
+        `
+        SELECT b.id, b.remaining_qty
+        FROM inventory_batches b
+        WHERE b.product_id = ?
+          AND b.warehouse_id = ?
+          AND b.status = 'active'
+          AND COALESCE(b.remaining_qty, 0) > 0
+          AND b.id NOT IN (
+            SELECT DISTINCT batch_id
+            FROM inventory_batch_allocations
+            WHERE direction = 'out' AND batch_id IS NOT NULL
+          )
+        ORDER BY b.opened_at DESC, b.created_at DESC, b.id DESC
+      `
+      )
+      .all(productId, wh);
+
+    let reducedTotal = 0;
+    for (const b of batches) {
+      if (remaining <= 0) break;
+      const available = Number(b.remaining_qty || 0);
+      if (!(available > 0)) continue;
+      const take = Math.min(available, remaining);
+      const after = available - take;
+      if (!dryRun) {
+        this.db
+          .prepare(
+            `
+            UPDATE inventory_batches
+            SET remaining_qty = ?, status = CASE WHEN ? <= 0 THEN 'closed' ELSE status END
+            WHERE id = ?
+          `
+          )
+          .run(after, after, b.id);
+      }
+      reducedTotal += take;
+      remaining -= take;
+    }
+    return reducedTotal;
   }
 }
 

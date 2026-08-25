@@ -21,9 +21,12 @@ import {
   getSalesReturns,
   getEmployeeSessions,
   getAllInventoryMovements,
+  getProfitAndLossSQL,
+  getCustomerSalesReport,
 } from '@/db/api';
 import type { OrderWithDetails, Profile, Customer, Category, Product, SalesReturnWithDetails } from '@/types/database';
 import { formatDate, formatDateTime, formatDateYMD, todayYMD } from '@/lib/datetime';
+import { calculateOrderProfit } from '@/lib/reportProfit';
 
 /**
  * Format number to UZS string (1.000.000 so'm)
@@ -57,18 +60,14 @@ export const exportDailySales = async (
     if (p?.id) purchasePriceById[String(p.id)] = Number(p.purchase_price || 0);
   });
 
-  const calculateProfit = (order: OrderWithDetails) => {
-    const items = order.items || [];
-    const totalCost = items.reduce((sum, item) => {
-      const qty = Number((item as any).quantity || 0);
-      const unitCost =
-        Number((item as any).cost_price ?? 0) ||
+  const calculateProfit = (order: OrderWithDetails) =>
+    calculateOrderProfit(order as any, {
+      useExplicitProfit: false,
+      resolveUnitCost: (item) =>
+        Number(item.cost_price ?? 0) ||
         Number((item as any).product?.purchase_price ?? 0) ||
-        Number(purchasePriceById[String((item as any).product_id)] ?? 0);
-      return sum + unitCost * qty;
-    }, 0);
-    return Number(order.total_amount) - totalCost;
-  };
+        Number(purchasePriceById[String(item.product_id)] ?? 0),
+    });
 
   const getPaymentType = (order: OrderWithDetails) => {
     const payments = order.payments || [];
@@ -303,105 +302,174 @@ export const exportProductSales = async (
  * Export Customer Sales Report
  */
 export const exportCustomerSales = async (
-  format: 'excel' | 'pdf' | 'csv'
+  format: 'excel' | 'pdf' | 'csv',
+  opts?: { dateFrom?: string; dateTo?: string; warehouseId?: string }
 ): Promise<void> => {
-  const [ordersData, customersData] = await Promise.all([
-    getOrders(),
-    getCustomers(),
-  ]);
-
   const today = todayYMD();
-  // TZ-safe: see the note in exportProductSales — UTC-based filtering would
-  // miss late-evening/early-morning orders for the user's local "today".
-  const filtered = ordersData.filter((order) => {
-    const orderDate = formatDateYMD(order.created_at);
-    return orderDate === today && order.status === 'completed';
-  });
+  const dateFrom = opts?.dateFrom || (() => {
+    const d = new Date();
+    d.setDate(d.getDate() - 29);
+    return formatDateYMD(d);
+  })();
+  const dateTo = opts?.dateTo || today;
 
-  interface CustomerSalesData {
+  let salesData: Array<{
     customer_id: string;
     customer_name: string;
     total_purchases: number;
     order_count: number;
     average_order_value: number;
     outstanding_balance: number;
+    balance_usd?: number;
+  }> = [];
+
+  try {
+    const rows = await getCustomerSalesReport({
+      date_from: dateFrom,
+      date_to: dateTo,
+      warehouse_id: opts?.warehouseId,
+    });
+    salesData = (rows || []).map((r: any) => ({
+      customer_id: r.customer_id,
+      customer_name: r.customer_name,
+      total_purchases: Number(r.total_purchases) || 0,
+      order_count: Number(r.order_count) || 0,
+      average_order_value: Number(r.average_order_value) || 0,
+      outstanding_balance: Number(r.balance) || 0,
+      balance_usd: Number(r.balance_usd) || 0,
+    }));
+  } catch {
+    // Fallback: client-side aggregation (browser/mock)
+    const [ordersData, customersData] = await Promise.all([
+      getOrders(100000),
+      getCustomers(),
+    ]);
+
+    const filtered = ordersData.filter((order) => {
+      const orderDate = formatDateYMD(order.created_at);
+      const amount = Number(order.total_amount);
+      return (
+        orderDate >= dateFrom &&
+        orderDate <= dateTo &&
+        order.status === 'completed' &&
+        amount >= -0.009
+      );
+    });
+
+    const customerMap = new Map<string, (typeof salesData)[0]>();
+
+    filtered.forEach((order) => {
+      const customerId = order.customer_id || 'walk-in';
+      const customerName = order.customer?.name || 'Yangi mijoz';
+      const existing = customerMap.get(customerId);
+      const amount = Number(order.total_amount);
+
+      if (existing) {
+        existing.total_purchases += amount;
+        existing.order_count += 1;
+        existing.average_order_value = existing.total_purchases / existing.order_count;
+      } else {
+        const customer = customersData.find((c) => c.id === customerId);
+        customerMap.set(customerId, {
+          customer_id: customerId,
+          customer_name: customerName,
+          total_purchases: amount,
+          order_count: 1,
+          average_order_value: amount,
+          outstanding_balance: customer ? Number(customer.balance || 0) : 0,
+          balance_usd: customer ? Number((customer as any).balance_usd || 0) : 0,
+        });
+      }
+    });
+
+    salesData = Array.from(customerMap.values()).sort(
+      (a, b) => b.total_purchases - a.total_purchases
+    );
   }
 
-  const customerMap = new Map<string, CustomerSalesData>();
-
-  filtered.forEach((order) => {
-    const customerId = order.customer_id || 'walk-in';
-    const customerName = order.customer?.name || 'Tasodifiy mijoz';
-    const existing = customerMap.get(customerId);
-    
-    const amount = Number(order.total_amount);
-
-    if (existing) {
-      existing.total_purchases += amount;
-      existing.order_count += 1;
-      existing.average_order_value = existing.total_purchases / existing.order_count;
-    } else {
-      const customer = customersData.find((c) => c.id === customerId);
-      customerMap.set(customerId, {
-        customer_id: customerId,
-        customer_name: customerName,
-        total_purchases: amount,
-        order_count: 1,
-        average_order_value: amount,
-        outstanding_balance: customer ? Number(customer.balance || 0) : 0,
-      });
-    }
-  });
-
-  const salesData = Array.from(customerMap.values()).sort((a, b) => b.total_purchases - a.total_purchases);
+  const fileSuffix = dateFrom === dateTo ? dateFrom : `${dateFrom}_${dateTo}`;
 
   if (format === 'excel') {
     const wb = XLSX.utils.book_new();
-    const headers = ['Mijoz nomi', 'Buyurtmalar soni', 'Jami xaridlar', 'O\'rtacha buyurtma', 'Qarz balansi'];
+    const headers = [
+      'Mijoz nomi',
+      'Buyurtmalar soni',
+      'Jami xaridlar',
+      "O'rtacha buyurtma",
+      'Qarz balansi (UZS)',
+      'Qarz balansi (USD)',
+    ];
     const rows = salesData.map((item) => [
       item.customer_name,
       item.order_count,
       formatUzs(item.total_purchases),
       formatUzs(item.average_order_value),
       formatUzs(item.outstanding_balance),
+      Number(item.balance_usd || 0).toFixed(2),
     ]);
     const ws = XLSX.utils.aoa_to_sheet([headers, ...rows]);
-    ws['!cols'] = [{ wch: 30 }, { wch: 15 }, { wch: 18 }, { wch: 18 }, { wch: 18 }];
+    ws['!cols'] = [
+      { wch: 30 },
+      { wch: 15 },
+      { wch: 18 },
+      { wch: 18 },
+      { wch: 18 },
+      { wch: 16 },
+    ];
     XLSX.utils.book_append_sheet(wb, ws, 'Hisobot');
-    XLSX.writeFile(wb, `customer-sales-report_${today}.xlsx`);
+    XLSX.writeFile(wb, `customer-sales-report_${fileSuffix}.xlsx`);
   } else if (format === 'pdf') {
     const doc = new jsPDF('landscape', 'mm', 'a4');
     doc.setFontSize(18);
-    doc.text('Mijozlar bo\'yicha sotuvlar', 14, 15);
-    
+    doc.text("Mijozlar bo'yicha sotuvlar", 14, 15);
+    doc.setFontSize(10);
+    doc.text(`Davr: ${dateFrom} — ${dateTo}`, 14, 22);
+
     const tableData = salesData.map((item) => [
       item.customer_name,
       String(item.order_count),
       formatUzs(item.total_purchases),
       formatUzs(item.average_order_value),
       formatUzs(item.outstanding_balance),
+      Number(item.balance_usd || 0).toFixed(2),
     ]);
 
     autoTable(doc, {
-      head: [['Mijoz nomi', 'Buyurtmalar soni', 'Jami xaridlar', 'O\'rtacha buyurtma', 'Qarz balansi']],
+      head: [
+        [
+          'Mijoz nomi',
+          'Buyurtmalar soni',
+          'Jami xaridlar',
+          "O'rtacha buyurtma",
+          'Qarz (UZS)',
+          'Qarz (USD)',
+        ],
+      ],
       body: tableData,
-      startY: 25,
+      startY: 28,
       styles: { fontSize: 8 },
       headStyles: { fillColor: [66, 139, 202], textColor: 255 },
     } as any);
 
-    doc.save(`customer-sales-report_${today}.pdf`);
+    doc.save(`customer-sales-report_${fileSuffix}.pdf`);
   } else {
-    // CSV
-    const headers = ['Mijoz nomi', 'Buyurtmalar soni', 'Jami xaridlar', 'O\'rtacha buyurtma', 'Qarz balansi'];
+    const headers = [
+      'Mijoz nomi',
+      'Buyurtmalar soni',
+      'Jami xaridlar',
+      "O'rtacha buyurtma",
+      'Qarz balansi (UZS)',
+      'Qarz balansi (USD)',
+    ];
     const rows = salesData.map((item) => [
       item.customer_name,
       String(item.order_count),
       formatUzs(item.total_purchases),
       formatUzs(item.average_order_value),
       formatUzs(item.outstanding_balance),
+      Number(item.balance_usd || 0).toFixed(2),
     ]);
-    downloadCSV(headers, rows, `customer-sales-report_${today}.csv`);
+    downloadCSV(headers, rows, `customer-sales-report_${fileSuffix}.csv`);
   }
 };
 
@@ -941,121 +1009,27 @@ export const exportLoginActivity = async (
  */
 export const exportProfitLoss = async (
   format: 'excel' | 'pdf' | 'csv',
-  opts?: { dateFrom?: string; dateTo?: string }
+  opts?: { dateFrom?: string; dateTo?: string; warehouseId?: string; priceTierId?: number | null }
 ): Promise<void> => {
   const dateFrom = opts?.dateFrom ?? todayYMD();
   const dateTo = opts?.dateTo ?? todayYMD();
-
-  const [ordersData, expensesData, products, returnsData] = await Promise.all([
-    getOrders(),
-    getExpenses({ dateFrom, dateTo }),
-    getProducts(true),
-    // Still post-filter by formatDateYMD below for timezone safety
-    getSalesReturns({ status: 'Completed', startDate: dateFrom, endDate: dateTo }),
-  ]);
-
-  const inRange = (createdAt: string) => {
-    const ymd = formatDateYMD(createdAt);
-    return ymd >= dateFrom && ymd <= dateTo;
-  };
-
-  const filteredOrders = ordersData.filter((o) => inRange(o.created_at));
-  const completedOrdersBase = filteredOrders.filter((o) => o.status === 'completed');
-
-  // IMPORTANT: In Electron/SQLite mode, list() may not include order items.
-  // Fetch detailed orders to compute COGS correctly.
-  const needsDetails = completedOrdersBase.some((o) => !Array.isArray((o as any).items) || ((o as any).items?.length ?? 0) === 0);
-  const completedOrders: OrderWithDetails[] = needsDetails
-    ? (
-        await Promise.all(
-          completedOrdersBase.map(async (o) => {
-            try {
-              return await getOrderById((o as any).id);
-            } catch {
-              return null;
-            }
-          })
-        )
-      ).filter(Boolean) as any
-    : (completedOrdersBase as any);
-  const approvedExpenses = expensesData.filter((e) => e.status === 'approved');
-  const completedReturns = (returnsData || []).filter((r) => {
-    const ok = inRange(r.created_at);
-    return ok && String(r.status).toLowerCase() === 'completed';
-  });
-
-  // Returns list endpoint may not include items; fetch details to compute returned COGS.
-  const completedReturnsDetailed: SalesReturnWithDetails[] = (await Promise.all(
-    completedReturns.map(async (r) => {
-      try {
-        return await getSalesReturnById((r as any).id);
-      } catch {
-        return r as any;
-      }
-    })
-  )) as any;
-
-  const productCostById: Record<string, number> = {};
-  for (const p of products || []) {
-    if (!p?.id) continue;
-    productCostById[p.id] = Number((p as any).purchase_price || 0);
-  }
-
-  const calculateOrderGrossSales = (order: OrderWithDetails) => {
-    const subtotal = Number((order as any).subtotal || 0);
-    if (subtotal > 0) return subtotal;
-    const items = (order as any).items || [];
-    return items.reduce((sum: number, item: any) => sum + Number(item?.line_total || item?.subtotal || 0), 0);
-  };
-
-  const calculateOrderDiscount = (order: OrderWithDetails) => {
-    const orderDiscount = Number((order as any).discount_amount || 0);
-    if (orderDiscount > 0) return orderDiscount;
-    const items = (order as any).items || [];
-    return items.reduce((sum: number, item: any) => sum + Number(item?.discount_amount || 0), 0);
-  };
-
-  const calculateCOGS = (order: OrderWithDetails) => {
-    const items = order.items || [];
-    return items.reduce((sum, item) => {
-      // Frozen cost from the order line is the source of truth; product table
-      // purchase_price is just a last-resort fallback for legacy orders.
-      const productId = (item as any).product_id || (item as any).productId;
-      const frozen = Number((item as any).cost_price ?? 0);
-      const fallback = productId ? Number(productCostById[String(productId)] || 0) : 0;
-      const cost = frozen > 0 ? frozen : fallback;
-      return sum + cost * Number((item as any).quantity || 0);
-    }, 0);
-  };
-
-  const grossSales = completedOrders.reduce((sum, o) => sum + calculateOrderGrossSales(o), 0);
-  const totalDiscounts = completedOrders.reduce((sum, o) => sum + calculateOrderDiscount(o), 0);
-  const netSales = grossSales - totalDiscounts;
-  const cogs = completedOrders.reduce((sum, o) => sum + calculateCOGS(o), 0);
-  const grossProfit = netSales - cogs;
-  const returnsRevenue = completedReturnsDetailed.reduce((sum, r) => sum + Number((r as any).total_amount || 0), 0);
-  const returnsCogs = completedReturnsDetailed.reduce((sum, r: any) => {
-    const items = Array.isArray(r.items) ? r.items : [];
-    const c = items.reduce((s: number, it: any) => {
-      const productId = String(it?.product_id || it?.productId || '');
-      // Prefer the line's own cost (frozen at sale time), then the linked
-      // order_item's cost, only fallback to current purchase_price last.
-      const frozen = Number(it?.cost_price ?? it?.unit_cost ?? 0);
-      const fallback = productId ? Number(productCostById[productId] || 0) : 0;
-      const cost = frozen > 0 ? frozen : fallback;
-      return s + cost * Number(it?.quantity || 0);
-    }, 0);
-    return sum + c;
-  }, 0);
-  const totalExpenses = approvedExpenses.reduce((sum, e) => sum + Number(e.amount || 0), 0);
-  const netProfit = grossProfit - returnsRevenue + returnsCogs - totalExpenses;
 
   const formatMinusMoney = (value: number) => {
     if (!value || value === 0) return formatUzs(0);
     return `-${formatUzs(value)}`;
   };
 
-  const rows: Array<[string, string]> = [
+  const buildRows = (
+    grossSales: number,
+    totalDiscounts: number,
+    netSales: number,
+    cogs: number,
+    grossProfit: number,
+    returnsRevenue: number,
+    returnsCogs: number,
+    totalExpenses: number,
+    netProfit: number
+  ): Array<[string, string]> => [
     ['Yalpi sotuv', formatUzs(grossSales)],
     ['Chegirmalar', formatMinusMoney(totalDiscounts)],
     ['Sof sotuv', formatUzs(netSales)],
@@ -1066,6 +1040,140 @@ export const exportProfitLoss = async (
     ['Tasdiqlangan xarajatlar', formatMinusMoney(totalExpenses)],
     ['Sof foyda', formatUzs(netProfit)],
   ];
+
+  let rows: Array<[string, string]>;
+
+  try {
+    const report = await getProfitAndLossSQL({
+      date_from: dateFrom,
+      date_to: dateTo,
+      warehouse_id: opts?.warehouseId,
+      price_tier_id: opts?.priceTierId ?? null,
+    });
+    const summary = report?.summary || {};
+    rows = buildRows(
+      Number(summary.revenue || 0),
+      Number(summary.discount || 0),
+      Number(summary.net_sales || 0),
+      Number(summary.cogs || 0),
+      Number(summary.gross_profit || 0),
+      Number(summary.returns_revenue || 0),
+      Number(summary.returns_cogs || 0),
+      Number(summary.expenses || 0),
+      Number(summary.net_profit || 0)
+    );
+  } catch {
+    // Fallback: client-side recompute (no warehouse/tier filters) — only when SQL throws
+    const [ordersData, expensesData, products, returnsData] = await Promise.all([
+      getOrders(),
+      getExpenses({ dateFrom, dateTo }),
+      getProducts(true),
+      getSalesReturns({ status: 'Completed', startDate: dateFrom, endDate: dateTo }),
+    ]);
+
+    const inRange = (createdAt: string) => {
+      const ymd = formatDateYMD(createdAt);
+      return ymd >= dateFrom && ymd <= dateTo;
+    };
+
+    const filteredOrders = ordersData.filter((o) => inRange(o.created_at));
+    const completedOrdersBase = filteredOrders.filter((o) => o.status === 'completed');
+
+    const needsDetails = completedOrdersBase.some(
+      (o) => !Array.isArray((o as any).items) || ((o as any).items?.length ?? 0) === 0
+    );
+    const completedOrders: OrderWithDetails[] = needsDetails
+      ? (
+          await Promise.all(
+            completedOrdersBase.map(async (o) => {
+              try {
+                return await getOrderById((o as any).id);
+              } catch {
+                return null;
+              }
+            })
+          )
+        ).filter(Boolean) as any
+      : (completedOrdersBase as any);
+    const approvedExpenses = expensesData.filter((e) => e.status === 'approved');
+    const completedReturns = (returnsData || []).filter((r) => {
+      const ok = inRange(r.created_at);
+      return ok && String(r.status).toLowerCase() === 'completed';
+    });
+
+    const completedReturnsDetailed: SalesReturnWithDetails[] = (await Promise.all(
+      completedReturns.map(async (r) => {
+        try {
+          return await getSalesReturnById((r as any).id);
+        } catch {
+          return r as any;
+        }
+      })
+    )) as any;
+
+    const productCostById: Record<string, number> = {};
+    for (const p of products || []) {
+      if (!p?.id) continue;
+      productCostById[p.id] = Number((p as any).purchase_price || 0);
+    }
+
+    const calculateOrderGrossSales = (order: OrderWithDetails) => {
+      const subtotal = Number((order as any).subtotal || 0);
+      if (subtotal > 0) return subtotal;
+      const items = (order as any).items || [];
+      return items.reduce((sum: number, item: any) => sum + Number(item?.line_total || item?.subtotal || 0), 0);
+    };
+
+    const calculateOrderDiscount = (order: OrderWithDetails) => {
+      const orderDiscount = Number((order as any).discount_amount || 0);
+      if (orderDiscount > 0) return orderDiscount;
+      const items = (order as any).items || [];
+      return items.reduce((sum: number, item: any) => sum + Number(item?.discount_amount || 0), 0);
+    };
+
+    const calculateCOGS = (order: OrderWithDetails) => {
+      const items = order.items || [];
+      return items.reduce((sum, item) => {
+        const productId = (item as any).product_id || (item as any).productId;
+        const frozen = Number((item as any).cost_price ?? 0);
+        const fallback = productId ? Number(productCostById[String(productId)] || 0) : 0;
+        const cost = frozen > 0 ? frozen : fallback;
+        return sum + cost * Number((item as any).quantity || 0);
+      }, 0);
+    };
+
+    const grossSales = completedOrders.reduce((sum, o) => sum + calculateOrderGrossSales(o), 0);
+    const totalDiscounts = completedOrders.reduce((sum, o) => sum + calculateOrderDiscount(o), 0);
+    const netSales = grossSales - totalDiscounts;
+    const cogs = completedOrders.reduce((sum, o) => sum + calculateCOGS(o), 0);
+    const grossProfit = netSales - cogs;
+    const returnsRevenue = completedReturnsDetailed.reduce((sum, r) => sum + Number((r as any).total_amount || 0), 0);
+    const returnsCogs = completedReturnsDetailed.reduce((sum, r: any) => {
+      const items = Array.isArray(r.items) ? r.items : [];
+      const c = items.reduce((s: number, it: any) => {
+        const productId = String(it?.product_id || it?.productId || '');
+        const frozen = Number(it?.cost_price ?? it?.unit_cost ?? 0);
+        const fallback = productId ? Number(productCostById[productId] || 0) : 0;
+        const cost = frozen > 0 ? frozen : fallback;
+        return s + cost * Number(it?.quantity || 0);
+      }, 0);
+      return sum + c;
+    }, 0);
+    const totalExpenses = approvedExpenses.reduce((sum, e) => sum + Number(e.amount || 0), 0);
+    const netProfit = grossProfit - returnsRevenue + returnsCogs - totalExpenses;
+
+    rows = buildRows(
+      grossSales,
+      totalDiscounts,
+      netSales,
+      cogs,
+      grossProfit,
+      returnsRevenue,
+      returnsCogs,
+      totalExpenses,
+      netProfit
+    );
+  }
 
   const fileSuffix = `${dateFrom}_${dateTo}`;
 

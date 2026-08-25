@@ -225,13 +225,16 @@ function handlePaycomRpc(db, req, body, { merchantId, apiKey }) {
     const row = db.prepare('SELECT id, status, payment_status FROM web_orders WHERE id = ?').get(orderId);
     if (!row) return { body: jsonRpcError(id, E_ORDER_NOT_FOUND, 'Order not found') };
     const now = new Date().toISOString();
-    if (row.status === 'new' && row.payment_status === 'pending') {
+    const status = String(row.status || '').toLowerCase();
+    const payStatus = String(row.payment_status || '').toLowerCase();
+    if (status !== 'cancelled') {
+      const nextPay = payStatus === 'paid' ? 'refunded' : 'failed';
       db.transaction(() => {
         db.prepare(
           `
-        UPDATE web_orders SET status = 'cancelled', payment_status = 'failed', updated_at = ? WHERE id = ?
+        UPDATE web_orders SET status = 'cancelled', payment_status = ?, updated_at = ? WHERE id = ?
       `,
-        ).run(now, orderId);
+        ).run(nextPay, now, orderId);
         handleWebOrderCancelled(db, orderId);
       })();
     }

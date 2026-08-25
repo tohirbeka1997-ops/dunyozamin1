@@ -11,6 +11,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
+import SearchableCustomerCombobox from '@/components/common/SearchableCustomerCombobox';
 import {
   Table,
   TableBody,
@@ -19,19 +20,22 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table';
-import { getSalesReturns, getCustomers, getSalesReturnById } from '@/db/api';
-import type { Customer, SalesReturnWithDetails } from '@/types/database';
+import { getSalesReturns, getCustomers, getSalesReturnById, getSettingsByCategory } from '@/db/api';
+import type { CompanySettings, Customer, SalesReturnWithDetails } from '@/types/database';
 import { Plus, Search, Eye, Printer, RotateCcw, Edit } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 import { formatMoneyUZS, formatOrderMoney, formatReturnMoney, aggregateReturnAmounts } from '@/lib/format';
 import { DualCurrencyAmount } from '@/components/common/DualCurrencyAmount';
 import { formatOrderDateTime } from '@/lib/datetime';
-import { printHtml } from '@/lib/print';
+import { printReturnReceipt } from '@/lib/receipts/printReturnReceipt';
+import { useReceiptSettings } from '@/hooks/useReceiptSettings';
 import { useSessionSearchParams } from '@/hooks/useSessionSearchParams';
 import { createBackNavigationState } from '@/lib/pageState';
+import { useTranslation } from 'react-i18next';
 
 export default function SalesReturns() {
   const { toast } = useToast();
+  const { t } = useTranslation();
   const navigate = useNavigate();
   const location = useLocation();
   const { searchParams, updateParams, clearTrackedParams } = useSessionSearchParams({
@@ -47,6 +51,14 @@ export default function SalesReturns() {
   const selectedCustomer = searchParams.get('customer') || 'all';
   const selectedStatus = searchParams.get('status') || 'all';
   const [printingReturnId, setPrintingReturnId] = useState<string | null>(null);
+  const [companySettings, setCompanySettings] = useState<CompanySettings | null>(null);
+  const receiptSettings = useReceiptSettings();
+
+  useEffect(() => {
+    void getSettingsByCategory('company')
+      .then((raw) => setCompanySettings(raw as unknown as CompanySettings))
+      .catch(() => setCompanySettings(null));
+  }, []);
 
   useEffect(() => {
     loadData();
@@ -146,10 +158,23 @@ export default function SalesReturns() {
         return_number: returnData?.return_number,
         items_count: returnData?.items?.length || 0,
       });
-      
-      // Generate HTML content for the receipt
-      const htmlContent = generateReturnReceiptHTML(returnData, 'thermal');
-      printHtml('Qaytarish cheki', htmlContent, '78mm');
+
+      if (!returnData?.items?.length) {
+        toast({
+          title: 'Ogohlantirish',
+          description: 'Qaytarishda mahsulotlar topilmadi — chekda faqat jami summa chiqadi',
+          variant: 'destructive',
+        });
+      }
+
+      const transport = await printReturnReceipt(returnData, companySettings, receiptSettings);
+      toast({
+        title: 'Chek',
+        description:
+          transport === 'escpos'
+            ? 'Qaytarish cheki printerga yuborildi'
+            : 'Qaytarish cheki chop etish oynasi ochildi',
+      });
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : 'Chop etishda xatolik yuz berdi';
       toast({
@@ -161,135 +186,6 @@ export default function SalesReturns() {
       setPrintingReturnId(null);
     }
   };
-
-  const generateReturnReceiptHTML = (returnData: SalesReturnWithDetails, variant: 'thermal' | 'a4'): string => {
-    // Create a temporary wrapper to render React component
-    // For simplicity, we'll generate HTML string directly
-    const storeName = 'POS tizimi';
-    const dateTime = formatOrderDateTime(returnData.created_at);
-    const cashierName = returnData.cashier?.username || returnData.cashier?.full_name || '-';
-    const customerName = returnData.customer?.name || 'Yangi mijoz';
-    const orderNumber = returnData.order?.order_number || 'Ordersiz';
-    const sourceLabel = returnData.return_mode === 'manual' ? 'Ordersiz qaytarish' : 'Buyurtma bo‘yicha qaytarish';
-    const isPending = returnData.status === 'Pending';
-    const orderCur = { currency: (returnData as any).order_currency ?? returnData.order?.currency };
-    
-    const statusLabels: Record<string, string> = {
-      Completed: 'Yakunlangan',
-      Pending: 'Kutilmoqda',
-      Cancelled: 'Bekor qilingan',
-    };
-    
-    if (variant === 'a4') {
-      return `
-        <div class="return-receipt-a4">
-          ${isPending ? '<div class="text-center mb-4 p-2 bg-yellow-100 border-2 border-yellow-400 rounded"><p class="font-bold text-yellow-800">QORALAMA / JARAYONDA</p></div>' : ''}
-          <div class="text-center mb-6">
-            <h1 class="text-2xl font-bold mb-2">${storeName}</h1>
-            <p class="text-sm text-muted-foreground">Sotuv qaytarilishi cheki</p>
-          </div>
-          <div class="grid grid-cols-2 gap-4 mb-6 text-sm">
-            <div><p class="font-semibold">Qaytarish raqami:</p><p class="font-mono">${returnData.return_number}</p></div>
-            <div><p class="font-semibold">Manba:</p><p>${sourceLabel}</p></div>
-            <div><p class="font-semibold">Buyurtma raqami:</p><p class="font-mono">${orderNumber}</p></div>
-            <div><p class="font-semibold">Sana va vaqt:</p><p>${dateTime}</p></div>
-            <div><p class="font-semibold">Holati:</p><p>${statusLabels[returnData.status] || returnData.status}</p></div>
-            <div><p class="font-semibold">Kassir:</p><p>${cashierName}</p></div>
-            <div><p class="font-semibold">Mijoz:</p><p>${customerName}</p></div>
-          </div>
-          ${returnData.reason ? `<div class="mb-6"><p class="font-semibold mb-2">Qaytarish sababi:</p><p class="text-sm">${returnData.reason}</p></div>` : ''}
-          <div class="mb-6">
-            <table class="w-full border-collapse">
-              <thead>
-                <tr class="border-b-2 border-gray-300">
-                  <th class="text-left py-2 px-2">Mahsulot</th>
-                  <th class="text-center py-2 px-2">Miqdor</th>
-                  <th class="text-right py-2 px-2">Narx</th>
-                  <th class="text-right py-2 px-2">Jami</th>
-                </tr>
-              </thead>
-              <tbody>
-                ${returnData.items?.map(item => `
-                  <tr class="border-b border-gray-200">
-                    <td class="py-2 px-2">${item.product?.name || item.product_name || '-'}</td>
-                    <td class="text-center py-2 px-2">${item.quantity}</td>
-                    <td class="text-right py-2 px-2">${formatOrderMoney(orderCur, item.unit_price)}</td>
-                    <td class="text-right py-2 px-2 font-medium">${formatOrderMoney(orderCur, item.line_total)}</td>
-                  </tr>
-                `).join('') || ''}
-              </tbody>
-            </table>
-          </div>
-          <div class="mb-6 space-y-2 text-sm">
-            <div class="flex justify-between font-bold text-lg border-t-2 border-gray-300 pt-2">
-              <span>Jami qaytarilgan summa:</span>
-              <span>${formatReturnMoney(returnData, orderCur)}</span>
-            </div>
-          </div>
-          ${returnData.notes ? `<div class="mb-6"><p class="font-semibold mb-2">Izoh:</p><p class="text-sm text-muted-foreground">${returnData.notes}</p></div>` : ''}
-          <div class="text-center mt-8 pt-4 border-t border-gray-300">
-            <p class="text-sm text-muted-foreground">Rahmat!</p>
-            <p class="text-xs text-muted-foreground mt-2">${dateTime}</p>
-          </div>
-        </div>
-      `;
-    }
-    
-    // Thermal format
-    return `
-      <div class="return-receipt-thermal">
-        ${isPending ? '<div class="text-center mb-2 p-1 border border-yellow-400 rounded"><p class="text-xs font-bold text-yellow-800">QORALAMA</p></div>' : ''}
-        <div class="text-center mb-2">
-          <h2 class="text-lg font-bold">${storeName}</h2>
-          <p class="text-xs">Sotuv qaytarilishi cheki</p>
-        </div>
-        <div class="text-center mb-3 text-xs">
-          <p class="font-mono">${returnData.return_number}</p>
-          <p class="font-mono">Buyurtma: ${orderNumber}</p>
-          <p>${sourceLabel}</p>
-          <p>${dateTime}</p>
-        </div>
-        <div class="mb-3 text-xs space-y-1">
-          <div class="flex justify-between">
-            <span>Holati:</span>
-            <span class="font-semibold">${statusLabels[returnData.status] || returnData.status}</span>
-          </div>
-          <div class="flex justify-between">
-            <span>Kassir:</span>
-            <span>${cashierName}</span>
-          </div>
-          <div class="flex justify-between">
-            <span>Mijoz:</span>
-            <span>${customerName}</span>
-          </div>
-        </div>
-        ${returnData.reason ? `<div class="mb-3 text-xs"><p class="font-semibold">Sabab:</p><p>${returnData.reason}</p></div>` : ''}
-        <div class="border-t border-b border-dashed border-gray-400 py-2 mb-3">
-          ${returnData.items?.map(item => `
-            <div class="mb-2 text-xs">
-              <div class="font-medium">${item.product?.name || item.product_name || '-'}</div>
-              <div class="flex justify-between mt-1">
-                <span class="text-gray-600">${item.quantity} x ${formatOrderMoney(orderCur, item.unit_price)}</span>
-                <span class="font-semibold">${formatOrderMoney(orderCur, item.line_total)}</span>
-              </div>
-            </div>
-          `).join('') || ''}
-        </div>
-        <div class="mb-3 text-xs">
-          <div class="flex justify-between font-bold border-t border-gray-400 pt-1 mt-1">
-            <span>JAMI QAYTARILGAN:</span>
-            <span>${formatReturnMoney(returnData, orderCur)}</span>
-          </div>
-        </div>
-        ${returnData.notes ? `<div class="mb-3 text-xs border-t border-dashed border-gray-400 pt-2"><p class="font-semibold">Izoh:</p><p class="text-gray-600">${returnData.notes}</p></div>` : ''}
-        <div class="text-center mt-4 pt-2 border-t border-dashed border-gray-400">
-          <p class="text-xs">Rahmat!</p>
-          <p class="text-xs text-gray-500 mt-1">${dateTime}</p>
-        </div>
-      </div>
-    `;
-  };
-
   const filteredReturns = returns.filter((ret) => {
     if (!searchTerm) return true;
     const search = searchTerm.toLowerCase();
@@ -386,19 +282,15 @@ export default function SalesReturns() {
                   aria-label="Gacha"
                 />
                 <div className="min-w-[8rem] flex-1 basis-[10rem]">
-                  <Select value={selectedCustomer} onValueChange={(value) => updateParams({ customer: value })}>
-                    <SelectTrigger className="h-8 w-full min-w-0 bg-background px-2 text-xs [&_span]:truncate">
-                      <SelectValue placeholder="Barcha mijozlar" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="all">Barcha mijozlar</SelectItem>
-                      {customers.map((customer) => (
-                        <SelectItem key={customer.id} value={customer.id}>
-                          {customer.name}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
+                  <SearchableCustomerCombobox
+                    value={selectedCustomer}
+                    onValueChange={(value) => updateParams({ customer: value })}
+                    knownCustomers={customers}
+                    prefixOptions={[
+                      { value: 'all', label: t('combobox.all_customers', 'Barcha mijozlar') },
+                    ]}
+                    triggerClassName="h-8 bg-background px-2 text-xs"
+                  />
                 </div>
                 <div className="min-w-[8rem] flex-1 basis-[9rem]">
                   <Select value={selectedStatus} onValueChange={(value) => updateParams({ status: value })}>

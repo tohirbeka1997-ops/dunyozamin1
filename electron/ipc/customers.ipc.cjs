@@ -77,7 +77,7 @@ function registerCustomersHandlers(services) {
   ipcMain.removeHandler('pos:customers:receivePayment');
   ipcMain.handle('pos:customers:receivePayment', wrapHandler(async (_event, payload) => {
     // Accept payload object (backward-compatible):
-    // - New UI: { customer_id, amount, operation, payment_method, notes, received_by, order_id, source }
+    // - New UI: { customer_id, amount, operation, payment_method, notes, received_by, order_id, source, payment_uuid }
     // - Old UI: { customer_id, amount, method, notes, received_by, order_id, source }
     const customer_id = payload?.customer_id;
     const amount = payload?.amount;
@@ -88,6 +88,7 @@ function registerCustomersHandlers(services) {
     const order_id = payload?.order_id ?? payload?.orderId ?? null;
     const source = payload?.source ?? null;
     const shift_id = payload?.shift_id ?? payload?.shiftId ?? null;
+    const payment_uuid = payload?.payment_uuid ?? payload?.paymentUuid ?? null;
 
     if (!operation || (operation !== 'payment_in' && operation !== 'payment_out')) {
       throw new Error('Invalid operation type. Must be "payment_in" or "payment_out"');
@@ -104,8 +105,15 @@ function registerCustomersHandlers(services) {
       operation,
       shift_id || null,
       payload?.currency ?? 'UZS',
-      payload?.fx_rate ?? payload?.fxRate ?? null
+      payload?.fx_rate ?? payload?.fxRate ?? null,
+      payment_uuid
     );
+  }));
+
+  console.log('Registering pos:customers:getTotalDebt handler...');
+  ipcMain.removeHandler('pos:customers:getTotalDebt');
+  ipcMain.handle('pos:customers:getTotalDebt', wrapHandler(async () => {
+    return customers.getTotalDebt();
   }));
 
   console.log('Registering pos:customers:getPayments handler...');
@@ -169,6 +177,46 @@ function registerCustomersHandlers(services) {
       return customers.adjustBonusPoints(p.actorUserId, p.customerId, p.deltaPoints, p.note);
     })
   );
+
+  const {
+    listCreditReminders,
+    listOpenCreditOrders,
+    listUnreadStaffCreditAlerts,
+    markStaffCreditAlertRead,
+    sendManualCreditReminder,
+    sendManualCreditReminderForCustomer,
+    updateOrderDueDate,
+  } = require('../../public-api/lib/creditReminder.cjs');
+
+  const creditReminderHandlers = [
+    ['pos:creditReminders:list', 'pos:creditReminder:list', async (_event, filters) => listCreditReminders(customers.db, filters || {})],
+    ['pos:creditReminders:listOpenOrders', 'pos:creditReminder:listOpenOrders', async (_event, filters) => listOpenCreditOrders(customers.db, filters || {})],
+    ['pos:creditReminders:updateDueDate', 'pos:creditReminder:updateDueDate', async (_event, payload) => {
+      const p = payload || {};
+      if (!p.orderId) throw new Error('orderId kerak');
+      return updateOrderDueDate(customers.db, p.orderId, p.dueDate);
+    }],
+    ['pos:creditReminders:send', 'pos:creditReminder:send', async (_event, payload) => {
+      const p = payload || {};
+      if (p.orderId) return sendManualCreditReminder(customers.db, p.orderId, p);
+      if (p.customerId) return sendManualCreditReminderForCustomer(customers.db, p.customerId, p);
+      throw new Error('customerId yoki orderId kerak');
+    }],
+    ['pos:creditReminders:listStaffAlerts', 'pos:creditReminder:listStaffAlerts', async (_event, filters) => listUnreadStaffCreditAlerts(customers.db, filters || {})],
+    ['pos:creditReminders:ackStaffAlert', 'pos:creditReminder:ackStaffAlert', async (_event, payload) => {
+      const p = payload || {};
+      if (!p.alertId) throw new Error('alertId kerak');
+      return markStaffCreditAlertRead(customers.db, p.alertId);
+    }],
+  ];
+
+  for (const [primary, legacy, handler] of creditReminderHandlers) {
+    ipcMain.removeHandler(primary);
+    ipcMain.removeHandler(legacy);
+    const wrapped = wrapHandler(handler);
+    ipcMain.handle(primary, wrapped);
+    ipcMain.handle(legacy, wrapped);
+  }
 
   console.log('✅ Customers handlers registered (real DB)');
 }

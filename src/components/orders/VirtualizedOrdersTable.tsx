@@ -53,14 +53,17 @@ export default function VirtualizedOrdersTable({
   const discountOf = (o: any) =>
     typeof getEffectiveDiscountAmount === 'function' ? getEffectiveDiscountAmount(o) : 0;
   const scrollRef = useRef<HTMLDivElement | null>(null);
+  const restoredRef = useRef(false);
   const [scrollTop, setScrollTop] = useState(0);
   const [viewportHeight, setViewportHeight] = useState(600);
 
   useEffect(() => {
     const el = scrollRef.current;
     if (!el) return;
+    if (restoredRef.current) return;
     el.scrollTop = initialScrollTop;
     setScrollTop(initialScrollTop);
+    restoredRef.current = true;
   }, [initialScrollTop, orders.length]);
 
   useEffect(() => {

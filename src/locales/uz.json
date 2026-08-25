@@ -14,7 +14,7 @@
       "unstable": "beqaror",
       "scale_error_title": "Tarozi xatosi"
     },
-    "search_placeholder": "Mahsulotlarni nom, SKU, artikul yoki shtrix-kod bo'yicha qidiring... (F2 fokuslash, ENTER qo'shish)",
+    "search_placeholder": "Nom, SKU, shtrix-kod… (F2 · Enter)",
     "brand_label": "Brend",
     "article_label": "Artikul",
     "quick_product_search_placeholder": "Nom, SKU, artikul yoki shtrix-kod...",
@@ -25,6 +25,7 @@
     "marketplace_off": "Faqat POS",
     "stock": "Omborda",
     "customer": "Mijoz",
+    "customer_profile": "Mijoz kartasi",
     "select_customer": "Mijozni tanlang...",
     "customer_debt_label": "Qarz",
     "customer_credit_label": "Mijoz haqqi",
@@ -33,6 +34,14 @@
     "search_customer": "Ism, telefon yoki ID bo'yicha qidiring...",
     "no_customer_found": "Mijoz topilmadi.",
     "walk_in_customer": "Yuruvchi mijoz",
+    "bonus_referrer": "Usta (bonus)",
+    "bonus_referrer_short": "Usta",
+    "select_bonus_referrer": "Ustani tanlang (ixtiyoriy)...",
+    "search_bonus_referrer": "Usta ismi, telefon yoki ID...",
+    "no_bonus_referrer_found": "Usta topilmadi.",
+    "clear_bonus_referrer": "Ustani olib tashlash",
+    "bonus_referrer_hint": "Tanlansa, sotuv bonus ballari ustaga o'tadi (mijoz balansiga emas).",
+    "bonus_referrer_points": "{{points}} ball",
     "hold_order": "Buyurtmani saqlash",
     "holdOrder": {
       "title": "Buyurtmani saqlab qo'yish",
@@ -125,6 +134,12 @@
     "credit_limit": "Nasiya limiti",
     "available_credit": "Mavjud nasiya",
     "credit_amount": "Nasiya summasi (UZS)",
+    "credit_due_date": "Qarz qaytarish sanasi",
+    "credit_due_date_default": "Standart: bugun + {{days}} kun",
+    "credit_reminder_note": "Eslatma izohi",
+    "credit_reminder_note_placeholder": "Masalan: telefon qilib eslatish, kechqurun keladi...",
+    "credit_reminder_note_hint": "Faqat kassir/admin ko'radi. Muddat kelganda bildirishnomada chiqadi.",
+    "credit_staff_alert_title": "Nasiya muddati",
     "enter_credit_amount": "Nasiya bo'yicha to'lanadigan summani kiriting. To'liq nasiya savdosi uchun bo'sh qoldiring yoki to'liq summani kiriting.",
     "order_total": "Buyurtma jami",
     "remaining_to_pay": "Qolgan to'lov",
@@ -164,7 +179,15 @@
     "shift_opened": "Smena muvaffaqiyatli ochildi",
     "shift_open_failed": "Smenani ochishda xatolik",
     "open_shift_first": "Iltimos, avval smenani oching",
+    "shift_closed_title": "Kassa yopiq",
+    "shift_closed_hint": "Sotuvni boshlash uchun yangi smena oching.",
     "hold_order_failed": "Buyurtmani saqlashda xatolik",
+    "order_import": {
+      "amend_banner": "Buyurtma tahriri: {{num}}",
+      "amend_banner_hint": "Yakunlashda avvalgi sotuv bekor qilinadi va yangi chek chiqadi.",
+      "hold_banner": "Kutib turgan buyurtma: {{num}}",
+      "hold_banner_hint": "Bu tahrir emas — yakunlashda yangi sotuv yaratiladi, kutib turgan buyurtma bekor qilinadi."
+    },
     "exchange": {
       "return_mode": "Qaytarish rejimi",
       "return_mode_short": "Qaytarish (F8)",
@@ -294,9 +317,15 @@
     "toast_print": "Chop etish oynasi ochildi",
     "cancel": "Bekor qilish",
     "save": "Saqlash",
-    "create": "Yaratish",
+    "save_draft": "Qoralama saqlash",
+    "create": "Smeta yaratish",
+    "select_customer": "Mijozni tanlash",
+    "select_customer_placeholder": "Mavjud mijozni qidirish...",
+    "create_customer": "Yangi mijoz sifatida saqlash",
     "toast_saved": "Smeta saqlandi",
+    "toast_draft_saved": "Qoralama saqlandi",
     "toast_created": "Smeta yaratildi",
+    "toast_customer_created": "Mijoz yaratildi",
     "toast_updated": "Smeta yangilandi",
     "error_min_items": "Kamida bitta mahsulot qo'shing",
     "error_customer_name": "Mijoz nomini kiriting",
@@ -423,6 +452,7 @@
     "sales_returns": "Sotuv qaytarishlari",
     "customers": "Mijozlar",
     "inventory": "Ombor",
+    "inventory_revision": "Ombor reviziyasi",
     "purchase_orders": "Xarid buyurtmalari",
     "suppliers": "Yetkazib beruvchilar",
     "expenses": "Xarajatlar",
@@ -492,6 +522,8 @@
     "product_name_required": "Mahsulot nomi *",
     "sku": "SKU",
     "sku_required": "SKU *",
+    "article": "Artikul",
+    "brand": "Brend",
     "barcode": "Shtrix-kod",
     "category": "Kategoriya",
     "unit": "Birlik",
@@ -504,7 +536,7 @@
     "general_information": "Umumiy ma'lumotlar",
     "pricing": "Narxlash",
     "inventory": "Ombor",
-    "search_placeholder": "Nom, SKU yoki shtrix-kod bo'yicha qidiring...",
+    "search_placeholder": "Nom, SKU, artikul, brend yoki shtrix-kod...",
     "all_categories": "Barcha kategoriyalar",
     "all_statuses": "Barcha holatlar",
     "all_stock": "Barcha ombor",
@@ -684,7 +716,27 @@
     "payment_amount": "To'lov summasi",
     "payment_method": "To'lov usuli",
     "reference_number": "Referens raqami",
-    "payment_notes": "To'lov eslatmalari"
+    "payment_notes": "To'lov eslatmalari",
+    "credit_orders_title": "Nasiya / Qarzlar",
+    "credit_orders_empty": "Ochiq nasiya yo'q",
+    "credit_orders_count": "{{count}} ta ochiq buyurtma",
+    "credit_orders_overdue_count": "{{count}} ta muddati o'tgan",
+    "credit_orders_open": "Nasiya buyurtmalar ({{count}})",
+    "credit_orders_view": "Qarzlar ro'yxati",
+    "credit_orders_sheet_desc": "Ochiq nasiya buyurtmalar va qaytarish sanasi",
+    "credit_orders_sheet_for": "{{name}} — ochiq nasiya buyurtmalar",
+    "credit_remaining": "Qolgan qarz",
+    "credit_due_date": "Qaytarish sanasi",
+    "credit_due_overdue": "Muddati o'tgan",
+    "credit_send_reminder": "Eslatma yuborish",
+    "credit_reminder_sent": "Eslatma yuborildi",
+    "credit_reminder_failed": "Eslatma yuborilmadi",
+    "credit_reminder_error": "Eslatma yuborishda xatolik",
+    "credit_reminder_failed_hint": "Telefon / Telegram / SMS_PROVIDER ni tekshiring",
+    "credit_due_saved": "Sana saqlandi",
+    "credit_due_save_failed": "Sanani saqlab bo'lmadi",
+    "credit_reminder_note": "Eslatma izohi",
+    "credit_orders_loading": "Yuklanmoqda..."
   },
   "orders": {
     "title": "Buyurtmalar",
@@ -718,6 +770,8 @@
     "import_order_no_products": "Savatga qo'shiladigan mahsulot topilmadi",
     "import_order_success_title": "Buyurtma savatga yuklandi",
     "import_order_success_desc": "{{num}} — {{n}} ta qator POS savatiga qo'shildi (yangi sotuv)",
+    "import_order_success_desc_amend": "{{num}} — {{n}} ta qator tahrir uchun yuklandi",
+    "import_order_success_desc_hold": "{{num}} — {{n}} ta qator kutib turgan buyurtmadan yuklandi",
     "import_order_failed_title": "Buyurtmani savatga yuklashda xatolik"
   },
   "web_orders": {
@@ -739,6 +793,22 @@
     "report_by_status": "Holat bo'yicha",
     "report_by_channel": "Kanal bo'yicha",
     "report_count": "Soni",
+    "report_days_custom": "Maxsus",
+    "report_scope_hint": "Hisob: Toshkent sanasi bo‘yicha onlayn (web_orders) buyurtmalar, summa UZS ekvivalentida. Bekor / refunded / failed jami KPI ga kirmaydi; holat jadvalida ko‘rinadi.",
+    "report_avg_order": "O'rtacha buyurtma",
+    "report_cancelled": "Bekor / refund",
+    "report_by_payment": "To'lov usuli bo'yicha",
+    "report_desktop_only": "Bu hisobot faqat desktop ilovada mavjud.",
+    "report_invalid_range_title": "Sana oralig‘i",
+    "report_invalid_range": "Boshlanish tugashdan keyin edi — sanalar almashtirildi.",
+    "report_export_no_data": "Eksport qilish uchun ma'lumot yo'q",
+    "report_export_ok_title": "Muvaffaqiyatli",
+    "report_export_ok": "{{format}} formatida eksport qilindi",
+    "report_export_failed": "Eksportda xatolik yuz berdi",
+    "payment_payme": "Payme",
+    "payment_click": "Click",
+    "payment_cash": "Naqd",
+    "payment_other": "Boshqa",
     "all_incoming": "Barcha yangi",
     "channel": "Kanal",
     "channel_telegram": "Telegram",
@@ -809,7 +879,13 @@
     "enter_description": "Kategoriya tavsifini kiriting",
     "description_placeholder": "Qisqa tavsif (onlayn katalog uchun)",
     "description_hint": "Bo‘sh tavsif katalogda kamroq ma’lumot beradi — 1–2 jumlada yozing.",
-    "image_url_label": "Kategoriya rasmi (URL, ixtiyoriy)",
+    "image_label": "Kategoriya rasmi",
+    "image_pick": "Rasm tanlash",
+    "image_remove": "Olib tashlash",
+    "image_optimizing": "Optimizatsiya qilinmoqda...",
+    "image_upload_hint": "JPG, PNG yoki WebP. POS va onlayn katalogda kategoriya ikonkasi sifatida ko‘rinadi.",
+    "image_upload_failed": "Rasm yuklab bo‘lmadi",
+    "image_url_label": "Yoki rasm URL manzilini kiriting (ixtiyoriy)",
     "active_in_pos": "POS da faol",
     "show_in_marketplace": "Onlayn katalogda",
     "marketplace_preview_title": "Onlayn katalog ko‘rinishi",
@@ -950,6 +1026,68 @@
     "in_stock": "Omborida bor",
     "out_of_stock": "Omborida yo'q"
   },
+  "inventory_revision": {
+    "title": "Ombor reviziyasi",
+    "subtitle": "Mahsulotlarni sanab, tizim qoldig'ini haqiqiy qoldiqqa moslang",
+    "new_revision": "Yangi reviziya",
+    "creating": "Yaratilmoqda...",
+    "created_title": "Reviziya ochildi",
+    "created_desc": "{{number}} — {{count}} ta mahsulot snapshot qilindi",
+    "no_revisions": "Hali reviziya yo'q. Yangi reviziya oching.",
+    "number": "Raqam",
+    "status": "Holat",
+    "progress": "Sanangan",
+    "variances": "Farqlar",
+    "created_at": "Yaratilgan",
+    "filter_all_statuses": "Barcha holatlar",
+    "status_draft": "Qoralama",
+    "status_in_progress": "Jarayonda",
+    "status_completed": "Yakunlangan",
+    "status_cancelled": "Bekor qilingan",
+    "detail_title": "Reviziya {{number}}",
+    "summary_line": "Sanangan: {{counted}}/{{total}} ({{percent}}%) · Farq: {{variance}} · Kutilmoqda: {{pending}}",
+    "items_title": "Mahsulotlar",
+    "search_placeholder": "Nomi, SKU yoki shtrix-kod...",
+    "filter_all": "Barchasi",
+    "filter_counted": "Sanangan",
+    "filter_pending": "Sanamagan",
+    "filter_variance": "Farqli",
+    "badge_counted": "Reviziya qilindi",
+    "badge_pending": "Kutilmoqda",
+    "badge_variance": "Farq bor",
+    "badge_stock_drift": "Ombor o'zgargan",
+    "product": "Mahsulot",
+    "system_qty": "Tizim (snapshot)",
+    "live_qty": "Hozirgi",
+    "counted_qty": "Sanalgan",
+    "variance": "Farq",
+    "barcode_placeholder": "Shtrix-kod yoki SKU + Enter",
+    "barcode_hint": "Skaner yoki qo'lda kiriting — har skan +1 (yoki yangi sanash).",
+    "scan_ok": "Sanash yangilandi",
+    "scan_fail": "Mahsulot topilmadi",
+    "invalid_qty": "Miqdor noto'g'ri",
+    "clear_count": "Sanashni tozalash",
+    "mark_zero": "Nol deb belgilash",
+    "mark_zero_confirm_title": "Ko'rinayotgan sanamaganlarni 0 qilish?",
+    "mark_zero_confirm_body": "{{count}} ta mahsulot sanalgan miqdori 0 ga o'rnatiladi.",
+    "mark_zero_done": "{{count}} ta mahsulot 0 deb belgilandi",
+    "no_items": "Mahsulot topilmadi",
+    "complete": "Yakunlash",
+    "cancel": "Bekor qilish",
+    "complete_confirm_title": "Reviziyani yakunlash?",
+    "complete_confirm_body": "Faqat sanangan mahsulotlarning ombori yangilanadi. Sanamaganlar o'zgarishsiz qoladi. Yakunlash har bir sanangan mahsulot uchun sanalgan miqdorni omborga yozadi (set) — hatto snapshot bilan farq 0 bo'lsa ham (jonli qoldiq o'zgargan bo'lishi mumkin).",
+    "complete_confirm_stats": "Sanangan: {{counted}}, sanamagan: {{pending}}, farqli: {{variance}}",
+    "complete_stock_drift_warn": "Diqqat: sanashdan keyin ombor o'zgargan ({{count}} ta mahsulot). Snapshot va hozirgi qoldiq farq qiladi — yakunlash baribir sanalgan miqdorni yozadi.",
+    "completed_title": "Reviziya yakunlandi",
+    "completed_desc": "{{counted}} ta sanandi, {{adjusted}} ta qoldiq yozildi",
+    "cancel_confirm_title": "Reviziyani bekor qilish?",
+    "cancel_confirm_body": "Hech qanday ombor harakati yaratilmaydi.",
+    "cancelled_title": "Reviziya bekor qilindi",
+    "already_open_hint": "Ochiq reviziya bor ({{number}}). Yangi ochish uchun avval yakunlang yoki bekor qiling.",
+    "open_banner_title": "Ochiq ombor reviziyasi bor",
+    "open_banner_body": "{{number}} jarayonda. Qo'lda qoldiq to'g'rilash vaqtincha bloklangan.",
+    "open_banner_action": "Reviziyaga o'tish"
+  },
   "purchase_orders": {
     "title": "Xarid buyurtmalari",
     "subtitle": "Xarid buyurtmalarini boshqaring",
@@ -973,7 +1111,10 @@
     "line_total": "Qator jami",
     "subtotal": "Oraliq summa",
     "tax": "Soliq",
-    "total": "Jami"
+    "total": "Jami",
+    "validation_error": "Validatsiya xatosi",
+    "qty_below_received_summary": "Har bir mahsulot bo'yicha jami buyurtma miqdori qabul qilingan miqdordan kam bo'lmasligi kerak",
+    "qty_below_received_inline": "Qabul: {{received}}, Buyurtma: {{ordered}}"
   },
   "suppliers": {
     "title": "Yetkazib beruvchilar",
@@ -1090,6 +1231,289 @@
     "inventory_movement": "Ombor harakati",
     "profit_loss": "Foyda va zarar",
     "payment_methods": "To'lov usullari",
+    "abc_analysis": {
+      "title": "ABC tahlil (sotuv bo‘yicha)",
+      "subtitle": "Mahsulotlar daromad ulushi bo‘yicha A / B / C sinflarga ajratiladi",
+      "rule_hint": "Qoida: mahsulotlar sotuv summasi (UZS ekv.) bo‘yicha kamayish tartibida. A — kumulativ ~0–80%, B — ~80–95%, C — ~95–100%.",
+      "scope_hint": "Hisob: yakunlangan sotuvlarning gross summasi (UZS ekv.). POS savat qaytarishlari (manfiy buyurtmalar) chiqarib tashlanadi; alohida sales_returns hujjatlari ayirilmaydi.",
+      "filters": {
+        "from": "Boshlanish sanasi",
+        "to": "Tugash sanasi",
+        "warehouse": "Ombor",
+        "category": "Kategoriya",
+        "class": "Sinf",
+        "all_classes": "Barchasi",
+        "search": "Qidirish",
+        "search_ph": "Nomi yoki SKU..."
+      },
+      "summary": {
+        "total": "Jami tushum",
+        "products": "{{count}} ta mahsulot"
+      },
+      "table": {
+        "product": "Mahsulot",
+        "sku": "SKU",
+        "qty": "Sotilgan",
+        "amount": "Summa",
+        "share": "Ulush %",
+        "cumulative": "Kumulativ %",
+        "class": "Sinf",
+        "stock": "Qoldiq"
+      },
+      "empty": "Tanlangan davrda sotuv topilmadi",
+      "errors": {
+        "desktop_only": "Bu hisobot faqat desktop ilovada mavjud.",
+        "load_failed": "Ma'lumotlarni yuklab bo'lmadi"
+      }
+    },
+    "product_sales_page": {
+      "title": "Mahsulotlar bo'yicha sotuv hisobotlari",
+      "subtitle": "Mahsulotlarning sotuv samaradorligi va foydaliligini tahlil qilish (daromad UZS ekvivalent + USD ajratilgan)",
+      "scope_hint": "Hisob: yakunlangan sotuvlarning gross summasi (UZS ekv.). POS savat qaytarishlari (manfiy buyurtmalar) chiqarib tashlanadi; alohida sales_returns hujjatlari ayirilmaydi.",
+      "abc_link": "ABC tahlil (daromad ulushi)",
+      "filters": {
+        "from": "Boshlanish sanasi",
+        "to": "Tugash sanasi",
+        "warehouse": "Ombor",
+        "category": "Kategoriya",
+        "all_categories": "Barcha kategoriyalar",
+        "price_tier": "Narx turi",
+        "all_tiers": "Barcha turlar",
+        "tier_retail": "Oddiy (retail)",
+        "tier_master": "Usta (master)",
+        "tier_wholesale": "Ulgurji (wholesale)",
+        "tier_marketplace": "Marketplace",
+        "search": "Qidirish",
+        "search_ph": "Nomi yoki SKU bo'yicha qidirish..."
+      },
+      "summary": {
+        "revenue": "Jami daromad",
+        "profit": "Jami foyda",
+        "cogs_note": "COGS va foyda — UZS",
+        "products": "{{count}} ta mahsulot"
+      },
+      "top10": {
+        "title": "Eng ko'p sotilgan 10 ta mahsulot",
+        "empty": "Tanlangan davrda sotuv yo‘q. Oxirgi 30 kunni tekshiring yoki filtrni kengaytiring."
+      },
+      "slow": {
+        "title": "Sezilarli sotilmayotgan mahsulotlar",
+        "empty": "Kam sotilgan mahsulotlar yo‘q — davrda sotuv bo‘lmagan yoki barcha mahsulotlar bir xil darajada sotilgan.",
+        "sold": "{{count}} sotilgan"
+      },
+      "table": {
+        "product": "Mahsulot nomi",
+        "sku": "SKU",
+        "category": "Kategoriya",
+        "qty": "Sotilgan miqdor",
+        "revenue": "Daromad (UZS/USD)",
+        "retail": "Oddiy",
+        "master": "Usta",
+        "profit": "Foyda",
+        "margin": "Foyda foizi",
+        "empty": "Tanlangan davrda mahsulot sotuvi topilmadi. Sana oralig‘ini kengaytiring yoki filtrni o‘zgartiring."
+      },
+      "export": {
+        "title": "Eksport",
+        "exporting_to": "{{format}} formatiga eksport qilinmoqda...",
+        "excel": "Excel",
+        "pdf": "PDF"
+      },
+      "errors": {
+        "load_failed": "Mahsulotlar bo'yicha sotuv ma'lumotlarini yuklab bo'lmadi"
+      }
+    },
+    "customer_sales_page": {
+      "title": "Mijozlar bo'yicha sotuv hisobotlari",
+      "subtitle": "Mijozlarning xarid qilish odatlari va sodiqligini tahlil qilish",
+      "scope_hint": "Hisob: yakunlangan sotuvlarning gross summasi (UZS ekv.), shu jumladan nasiya. POS savat qaytarishlari chiqarib tashlanadi. Qoldiq qarz — davrdagi faol mijozlarning joriy customers.balance (ledger), credit_amount yig'indisi emas.",
+      "filters": {
+        "from": "Boshlanish sanasi",
+        "to": "Tugash sanasi",
+        "warehouse": "Ombor",
+        "search": "Mijozni qidirish",
+        "search_ph": "Mijoz ismi bo'yicha qidirish..."
+      },
+      "summary": {
+        "revenue": "Umumiy tushum (UZS ekv.)",
+        "orders": "Umumiy buyurtmalar",
+        "debt": "Qoldiq qarz",
+        "debt_usd": "+ {{amount}} USD qarz",
+        "customers": "{{count}} ta mijoz"
+      },
+      "table": {
+        "customer": "Mijoz",
+        "purchases": "Umumiy xarid (UZS ekv.)",
+        "orders": "Buyurtmalar soni",
+        "avg_order": "O'rtacha buyurtma (UZS ekv.)",
+        "balance": "Qoldiq qarz",
+        "balance_usd": "Qoldiq (USD)",
+        "empty": "Tanlangan davrda mijoz sotuvi topilmadi. Standart — oxirgi 30 kun; sana oralig'ini kengaytiring yoki omborni o'zgartiring."
+      },
+      "export": {
+        "title": "Eksport",
+        "excel": "Excel",
+        "pdf": "PDF",
+        "period": "Davr",
+        "no_data": "Eksport qilish uchun ma'lumot yo'q",
+        "success_title": "Muvaffaqiyatli",
+        "success": "{{format}} formatida eksport qilindi",
+        "failed": "Eksportda xatolik yuz berdi"
+      },
+      "errors": {
+        "load_failed": "Mijozlar bo'yicha sotuv ma'lumotlarini yuklab bo'lmadi"
+      }
+    },
+    "supplier_due_page": {
+      "title": "To'lanishi kerak",
+      "subtitle": "Yetkazib beruvchi qarzlari — muddat bo'yicha",
+      "scope_hint": "Qarz — hujjat qoldig‘i (buyurtma − to‘lovlar), ombor landed cost emas. «Bugun» faqat bugungi muddatli to‘lovlarni ko‘rsatadi; muddatsiz ochiq qarzlar «Barcha ochiq qarz» yoki «Muddat belgilanmagan»da.",
+      "list_title": "To'lovlar ro'yxati",
+      "filters": {
+        "open": "Barcha ochiq qarz",
+        "today": "Bugun",
+        "overdue": "Muddati o'tgan",
+        "upcoming7": "7 kun ichida",
+        "upcoming30": "30 kun ichida",
+        "no_due": "Muddat belgilanmagan"
+      },
+      "summary": {
+        "total": "Jami (filtr)",
+        "overdue": "Muddati o'tgan",
+        "today": "Bugun",
+        "no_due": "Muddat yo‘q",
+        "rows": "{{count}} qator"
+      },
+      "status": {
+        "overdue": "Muddati o'tgan",
+        "today": "Bugun",
+        "upcoming": "Kelyapti",
+        "no_due": "Muddat yo‘q"
+      },
+      "scheme": {
+        "full": "To‘liq (ochiq qarz)",
+        "partial": "Qisman",
+        "installment": "Bo'lib #{{n}}"
+      },
+      "table": {
+        "po": "PO",
+        "supplier": "Ta'minotchi",
+        "scheme": "Sxema",
+        "amount": "Summa",
+        "currency": "Valyuta",
+        "due": "Muddat",
+        "status": "Holat"
+      },
+      "empty": "Tanlangan filtr bo‘yicha qarz topilmadi.",
+      "empty_today": "Bugun muddati kelgan to‘lov yo‘q. Ochiq qarzlar uchun «Barcha ochiq qarz» yoki «Muddat belgilanmagan»ni tanlang.",
+      "export": {
+        "filter": "Filtr",
+        "no_data": "Eksport qilish uchun ma'lumot yo'q",
+        "success_title": "Muvaffaqiyatli",
+        "success": "{{format}} formatida eksport qilindi",
+        "failed": "Eksportda xatolik yuz berdi"
+      },
+      "errors": {
+        "load_failed": "Yuklashda xatolik",
+        "desktop_only": "Bu hisobot faqat desktop ilovada mavjud."
+      }
+    },
+    "po_summary_page": {
+      "title": "Xarid buyurtmalari umumiy hisobot",
+      "subtitle": "Xarid buyurtmalari haqida umumiy ma'lumot",
+      "scope_hint": "Buyurtma / to‘lov / qarz — hujjat valyutasida (UZS va USD alohida). «Ombor (UZS)» — qabul qilingan tovarning ombor qiymati (landed cost), USD buyurtmalarni ham UZS ga yig‘adi; shuning uchun u «Jami buyurtma»dan katta ko‘rinishi mumkin — bu xato emas.",
+      "filters": {
+        "from": "Boshlanish sanasi",
+        "to": "Tugash sanasi"
+      },
+      "summary": {
+        "ordered": "Jami buyurtma (hujjat)",
+        "received_doc": "Jami qabul (hujjat valyutasi)",
+        "received_wh": "Ombor qiymati (UZS)",
+        "received_wh_hint": "Barcha PO (shu jumladan USD) — landed cost",
+        "paid": "Jami to'langan",
+        "debt": "Jami qarz (to'lash kerak)",
+        "credit": "Ortiqcha to‘lov",
+        "count": "{{count}} ta buyurtma"
+      },
+      "table": {
+        "po_number": "Buyurtma raqami",
+        "supplier": "Yetkazib beruvchi",
+        "date": "Sana",
+        "currency": "Valyuta",
+        "ordered": "Buyurtma summasi",
+        "received_doc": "Qabul (hujjat)",
+        "received_wh": "Ombor (UZS)",
+        "paid": "To'langan",
+        "debt": "Qarz",
+        "status": "Holati",
+        "empty": "Tanlangan davrda xarid buyurtmalari topilmadi. Standart — oxirgi 30 kun."
+      },
+      "status": {
+        "draft": "Qoralama",
+        "approved": "Tasdiqlangan",
+        "partial": "Qisman qabul qilingan",
+        "received": "Qabul qilingan",
+        "cancelled": "Bekor qilingan"
+      },
+      "export": {
+        "excel": "Excel",
+        "pdf": "PDF",
+        "period": "Davr",
+        "no_data": "Eksport qilish uchun ma'lumot yo'q",
+        "success_title": "Muvaffaqiyatli",
+        "success": "{{format}} formatida eksport qilindi",
+        "failed": "Eksportda xatolik yuz berdi"
+      },
+      "errors": {
+        "load_failed": "Xarid buyurtmalari hisobotini yuklab bo'lmadi",
+        "invalid_range_title": "Sana oralig‘i",
+        "invalid_range": "Boshlanish tugashdan keyin edi — sanalar almashtirildi."
+      }
+    },
+    "promotions_page": {
+      "title": "Aksiyalar bo'yicha hisobot",
+      "subtitle": "Aksiya ishlatilishi va chegirma summasi",
+      "scope_hint": "Hisob: yakunlangan buyurtmalardagi aksiya qo‘llanilishi (UZS ekv.). POS savat qaytarishlari chiqarib tashlanadi. Standart davr — oxirgi 30 kun.",
+      "filters": {
+        "from": "Boshlanish",
+        "to": "Tugash",
+        "warehouse": "Ombor",
+        "search": "Qidirish",
+        "search_ph": "Aksiya nomi bo'yicha qidirish..."
+      },
+      "summary": {
+        "promotions": "Aksiyalar soni",
+        "usage": "Jami ishlatilish",
+        "discount": "Jami chegirma (UZS ekv.)"
+      },
+      "types": {
+        "percent": "Foizli chegirma",
+        "amount": "Summali chegirma",
+        "fixed": "Belgilangan narx"
+      },
+      "table": {
+        "name": "Aksiya nomi",
+        "type": "Turi",
+        "usage": "Ishlatilish soni",
+        "discount": "Jami chegirma",
+        "empty": "Tanlangan davrda aksiya ishlatilmagan. Standart — oxirgi 30 kun; sana oralig'ini kengaytiring yoki omborni o'zgartiring."
+      },
+      "export": {
+        "excel": "Excel",
+        "pdf": "PDF",
+        "period": "Davr",
+        "no_data": "Eksport qilish uchun ma'lumot yo'q",
+        "success_title": "Muvaffaqiyatli",
+        "success": "{{format}} formatida eksport qilindi",
+        "failed": "Eksportda xatolik yuz berdi"
+      },
+      "errors": {
+        "load_failed": "Aksiya hisobotini yuklab bo'lmadi",
+        "invalid_range_title": "Sana oralig‘i",
+        "invalid_range": "Boshlanish tugashdan keyin edi — sanalar almashtirildi."
+      }
+    },
     "payment_methods_page": {
       "title": "To‘lov usullari bo‘yicha",
       "subtitle": "Tanlangan davrda to‘lovlar taqsimoti (naqd/karta/QR va boshqalar)",
@@ -1226,7 +1650,7 @@
     "notifications": "Bildirishnomalar",
     "security": "Xavfsizlik",
     "marketplace": {
-      "tab": "Marketplace sozlamalari",
+      "tab": "Marketplace",
       "title": "Marketplace tuning",
       "description": "Qidiruv va trending algoritmi parametrlarini boshqarish",
       "searchPrefilterLimit": "Search prefilter limiti",
@@ -1256,16 +1680,33 @@
     "error_loading_metric": "Metrikani yuklashda xatolik",
     "cards": {
       "total_sales": {
-        "title": "Jami sotuv",
+        "title": "Jami savdo",
+        "subtitle": "Yalpi / Gross (qaytarishdan oldingi)",
         "orders": "buyurtma"
+      },
+      "total_collected": {
+        "title": "Tushum (naqd)",
+        "subtitle": "Naqd va to'langan qism (yalpi undirilgan)"
+      },
+      "returns_amount": {
+        "title": "Qaytarilgan summa",
+        "subtitle": "Davrdagi qaytarishlar"
+      },
+      "net_sales": {
+        "title": "Sof savdo",
+        "subtitle": "Net tushum (yalpi − qaytarish)"
+      },
+      "credit_issued": {
+        "title": "Nasiya",
+        "subtitle": "Berilgan qarz"
       },
       "total_cogs": {
         "title": "Sotilgan mahsulot tannarxi",
         "subtitle": "Sotuvlar bo‘yicha tannarx (COGS)"
       },
       "total_profit": {
-        "title": "Jami foyda",
-        "subtitle": "Sotuvdan sof foyda"
+        "title": "Sof foyda",
+        "subtitle": "Qaytarish va xarajatlardan keyin"
       },
       "profit_margin": {
         "title": "Foyda marjasi",
@@ -1439,5 +1880,45 @@
       "invalid_token": "Noto'g'ri yoki muddati o'tgan havola"
     },
     "email_confirmation_sent": "Tasdiqlash havolasi emailingizga yuborildi"
+  },
+  "status": {
+    "marketplace_on": "Marketplace",
+    "marketplace_off": "Faqat POS"
+  },
+  "barcodeLabel": {
+    "showSku": "SKU ko'rsatish",
+    "showSkuPrefix": "SKU: prefiksi",
+    "showCurrency": "So'm ko'rsatish"
+  },
+  "combobox": {
+    "select_option": "Tanlang...",
+    "select_customer": "Mijozni tanlang...",
+    "select_supplier": "Yetkazib beruvchini tanlang...",
+    "select_employee": "Xodimni tanlang...",
+    "select_warehouse": "Omborni tanlang...",
+    "select_category": "Kategoriyani tanlang...",
+    "select_product": "Mahsulotni tanlang...",
+    "search_default": "Qidirish...",
+    "search_customer": "Ism, telefon yoki email bo'yicha qidirish...",
+    "search_supplier": "Ism yoki telefon bo'yicha qidirish...",
+    "search_employee": "Nom yoki email bo'yicha qidirish...",
+    "search_warehouse": "Ombor nomi bo'yicha qidirish...",
+    "search_category": "Kategoriya nomi bo'yicha qidirish...",
+    "search_product": "Nom, SKU yoki shtrix-kod bo'yicha qidirish...",
+    "all_customers": "Barcha mijozlar",
+    "all_suppliers": "Barcha yetkazib beruvchilar",
+    "all_cashiers": "Barcha kassirlar",
+    "all_warehouses": "Barcha omborlar",
+    "all_categories": "Barchasi",
+    "all_products": "Hammasi",
+    "none_customer": "Mijoz tanlanmagan",
+    "no_customer": "Mijoz topilmadi",
+    "no_supplier": "Yetkazib beruvchi topilmadi",
+    "no_employee": "Xodim topilmadi",
+    "no_warehouse": "Ombor topilmadi",
+    "no_category": "Kategoriya topilmadi",
+    "no_product": "Mahsulot topilmadi",
+    "not_found": "Topilmadi",
+    "loading": "Qidirilmoqda..."
   }
 }

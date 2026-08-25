@@ -263,6 +263,137 @@ export const createStockAdjustment = async (adjustment: {
   return movement;
 };
 
+// ============================================================================
+// INVENTORY REVISION (Ombor reviziyasi)
+// ============================================================================
+
+export const createInventoryRevision = async (payload?: {
+  warehouse_id?: string;
+  notes?: string;
+  created_by?: string | null;
+}) => {
+  if (hasPosApi()) {
+    const api = requireElectron();
+    return ipc<any>(api.inventory.createRevision(payload || {}));
+  }
+  throw new Error('Inventory revision requires Electron POS');
+};
+
+export const listInventoryRevisions = async (filters?: {
+  status?: string;
+  warehouse_id?: string;
+  limit?: number;
+}) => {
+  if (hasPosApi()) {
+    const api = requireElectron();
+    return ipc<any[]>(api.inventory.listRevisions(filters || {}));
+  }
+  await delay();
+  return [] as any[];
+};
+
+/** Active draft/in_progress revision for soft-lock banners (single-warehouse MVP). */
+export const getOpenInventoryRevision = async (warehouseId?: string) => {
+  const list = await listInventoryRevisions({
+    warehouse_id: warehouseId,
+    limit: 100,
+  });
+  if (!Array.isArray(list)) return null;
+  return (
+    list.find((r) => r?.status === 'draft' || r?.status === 'in_progress') || null
+  );
+};
+
+export const getInventoryRevision = async (
+  revisionId: string,
+  opts?: { filter?: string; search?: string }
+) => {
+  if (hasPosApi()) {
+    const api = requireElectron();
+    return ipc<any>(api.inventory.getRevision(revisionId, opts || {}));
+  }
+  throw new Error('Inventory revision requires Electron POS');
+};
+
+export const updateInventoryRevisionItemCount = async (payload: {
+  revision_id: string;
+  item_id?: string;
+  product_id?: string;
+  counted_qty: number;
+  notes?: string;
+}) => {
+  if (hasPosApi()) {
+    const api = requireElectron();
+    return ipc<any>(api.inventory.updateRevisionItemCount(payload));
+  }
+  throw new Error('Inventory revision requires Electron POS');
+};
+
+export const clearInventoryRevisionItemCount = async (payload: {
+  revision_id: string;
+  item_id?: string;
+  product_id?: string;
+}) => {
+  if (hasPosApi()) {
+    const api = requireElectron();
+    return ipc<any>(api.inventory.clearRevisionItemCount(payload));
+  }
+  throw new Error('Inventory revision requires Electron POS');
+};
+
+export const countInventoryRevisionByBarcode = async (payload: {
+  revision_id: string;
+  barcode: string;
+  counted_qty?: number;
+  increment?: number;
+}) => {
+  if (hasPosApi()) {
+    const api = requireElectron();
+    return ipc<any>(api.inventory.countRevisionByBarcode(payload));
+  }
+  throw new Error('Inventory revision requires Electron POS');
+};
+
+export const bulkSetInventoryRevisionItemCounts = async (payload: {
+  revision_id: string;
+  counted_qty: number;
+  item_ids?: string[];
+  only_pending?: boolean;
+  filter?: string;
+  search?: string;
+}) => {
+  if (hasPosApi()) {
+    const api = requireElectron();
+    return ipc<any>(api.inventory.bulkSetRevisionItemCounts(payload));
+  }
+  throw new Error('Inventory revision requires Electron POS');
+};
+
+export const completeInventoryRevision = async (payload: {
+  revision_id: string;
+  notes?: string;
+  created_by?: string | null;
+}) => {
+  if (hasPosApi()) {
+    const api = requireElectron();
+    const result = await ipc<any>(api.inventory.completeRevision(payload));
+    productUpdateEmitter.emit();
+    return result;
+  }
+  throw new Error('Inventory revision requires Electron POS');
+};
+
+export const cancelInventoryRevision = async (payload: {
+  revision_id: string;
+  notes?: string;
+}) => {
+  if (hasPosApi()) {
+    const api = requireElectron();
+    return ipc<any>(api.inventory.cancelRevision(payload));
+  }
+  throw new Error('Inventory revision requires Electron POS');
+};
+
 export const getProductPurchaseHistory = async (_productId: string) => {
   await delay();
   return [] as any[];

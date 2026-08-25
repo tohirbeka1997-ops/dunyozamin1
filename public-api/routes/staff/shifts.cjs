@@ -4,6 +4,12 @@ const express = require('express');
 const { openTenantDatabase } = require('../../lib/staffDb.cjs');
 const { getPosBundle } = require('../../lib/staffPos.cjs');
 const { mapStaffServiceError } = require('../../lib/staffErrorMap.cjs');
+const { validate } = require('../../middleware/validate.cjs');
+const {
+  staffShiftOpenBodySchema,
+  staffShiftCloseBodySchema,
+} = require('../../schemas/staff.schema.cjs');
+const { logger } = require('../../lib/logger.cjs');
 
 function mapServiceError(e, res) {
   mapStaffServiceError(e, res, { logTag: '[staff/shifts]' });
@@ -61,7 +67,7 @@ function mountStaffShiftsRoutes() {
       try {
         summary = shifts.getShiftSummary(shift.id);
       } catch (e) {
-        console.warn('[staff/shifts] summary failed', e?.message || e);
+        logger.warn({ err: e?.message || e }, '[staff/shifts] summary failed');
       }
       res.json({ data: { shift, summary, is_own_shift: isOwnShift } });
     } catch (e) {
@@ -70,7 +76,7 @@ function mountStaffShiftsRoutes() {
   });
 
   // POST /v1/staff/shifts/open { opening_cash }
-  router.post('/open', (req, res) => {
+  router.post('/open', validate({ body: staffShiftOpenBodySchema }), (req, res) => {
     try {
       const { shifts } = bundleForReq(req);
       const openingCash = Number(req.body?.opening_cash);
@@ -85,7 +91,7 @@ function mountStaffShiftsRoutes() {
   });
 
   // POST /v1/staff/shifts/close { closing_cash, notes }
-  router.post('/close', (req, res) => {
+  router.post('/close', validate({ body: staffShiftCloseBodySchema }), (req, res) => {
     try {
       const { shifts } = bundleForReq(req);
       // Only the cashier who opened the shift may close it (not store-wide fallback).

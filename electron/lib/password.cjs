@@ -4,9 +4,9 @@
  * Password hashing utilities.
  *
  * Uses Node's built-in scrypt KDF (no native deps, works in Electron and
- * headless Node). Stays backward compatible with the previous SHA-256 hex
- * digests so existing accounts keep working and get transparently upgraded to
- * scrypt on their next successful login.
+ * headless Node). Legacy SHA-256 hex digests are still accepted for verify
+ * during password reset, but successful login with a legacy hash is blocked
+ * until the user completes a reset (new passwords are scrypt-only).
  *
  * Stored scrypt format: `scrypt$<N>$<r>$<p>$<saltHex>$<hashHex>`
  * Legacy format: 64-char lowercase/uppercase hex (raw SHA-256 of the password)

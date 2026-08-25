@@ -9,8 +9,29 @@ import settingsUz from '../locales/settings.uz.json';
 import settingsEn from '../locales/settings.en.json';
 import settingsRu from '../locales/settings.ru.json';
 
+/** Deep-merge so settings.*.json overlays uz/en/ru.json without dropping nested keys (e.g. marketplace). */
+function deepMergeSettings(base: unknown, overlay: unknown): unknown {
+  if (overlay == null) return base;
+  if (
+    typeof overlay !== 'object' ||
+    Array.isArray(overlay) ||
+    typeof base !== 'object' ||
+    base == null ||
+    Array.isArray(base)
+  ) {
+    return overlay;
+  }
+  const out: Record<string, unknown> = { ...(base as Record<string, unknown>) };
+  for (const [key, value] of Object.entries(overlay as Record<string, unknown>)) {
+    out[key] = key in out ? deepMergeSettings(out[key], value) : value;
+  }
+  return out;
+}
+
 function mergeSettings<T extends Record<string, unknown>>(base: T, settings: unknown): T & { settings: unknown } {
-  return { ...base, settings } as T & { settings: unknown };
+  return { ...base, settings: deepMergeSettings((base as { settings?: unknown }).settings, settings) } as T & {
+    settings: unknown;
+  };
 }
 
 const resources = {

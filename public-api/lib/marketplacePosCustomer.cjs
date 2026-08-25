@@ -3,6 +3,7 @@
 const { randomUUID } = require('crypto');
 const CustomersService = require('../../electron/services/customersService.cjs');
 const { normalizePhoneUz, formatPhoneUz } = require('../../electron/lib/phoneNormalize.cjs');
+const { hasCustomerLedgerRef } = require('../../electron/lib/customerBalance.cjs');
 
 function toLatinName(value) {
   const raw = String(value || '').trim();
@@ -194,8 +195,16 @@ function linkMarketplaceCustomerToPos(db, marketplaceCustomerId) {
   `,
   ).run(mcId, posCustomerId, loyaltyCardCode, qrPayload);
 
+  try {
+    const customers = new CustomersService(db);
+    customers.ensureLoyaltyCard(posCustomerId, { preferredCode: loyaltyCardCode });
+  } catch (e) {
+    console.warn('[marketplacePosCustomer] ensureLoyaltyCard failed:', e?.message || e);
+  }
+
   return posCustomerId;
 }
+
 
 function hasTable(db, name) {
   try {
@@ -220,10 +229,9 @@ function recordWebOrderCustomerSale(db, webOrderId) {
   }
 
   const refId = `web:${wid}`;
-  const existing = db
-    .prepare(`SELECT id FROM customer_ledger WHERE ref_id = ? AND type = 'sale' LIMIT 1`)
-    .get(refId);
-  if (existing) return { ok: true, skipped: true, reason: 'already_recorded' };
+  if (hasCustomerLedgerRef(db, refId)) {
+    return { ok: true, skipped: true, reason: 'already_recorded' };
+  }
 
   const wo = db
     .prepare(

@@ -13,6 +13,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
+import SearchableCustomerCombobox from '@/components/common/SearchableCustomerCombobox';
 import {
   Table,
   TableBody,
@@ -25,12 +26,13 @@ import {
   getOrders,
   getOrderForReturn,
   createSalesReturn,
-  getSalesReturnByOrderId,
   getProducts,
   getCustomers,
   getProductTierPrice,
+  getSalesReturnById,
+  getSettingsByCategory,
 } from '@/db/api';
-import type { Customer, OrderWithDetails, Product } from '@/types/database';
+import type { Customer, OrderWithDetails, Product, CompanySettings } from '@/types/database';
 import { Search, ArrowLeft, Package, AlertCircle } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 import { useInventoryStore } from '@/store/inventoryStore';
@@ -41,6 +43,8 @@ import { invalidateDashboardQueries } from '@/utils/dashboard';
 import { formatDate } from '@/lib/datetime';
 import { formatQuantity } from '@/utils/quantity';
 import { formatUnit } from '@/utils/formatters';
+import { printReturnReceipt } from '@/lib/receipts/printReturnReceipt';
+import { useReceiptSettings } from '@/hooks/useReceiptSettings';
 
 interface ReturnItem {
   product_id: string;
@@ -172,6 +176,8 @@ export default function CreateReturn() {
   const { profile } = useAuth();
   const { addMovement } = useInventoryStore();
   const queryClient = useQueryClient();
+  const receiptSettings = useReceiptSettings();
+  const [companySettings, setCompanySettings] = useState<CompanySettings | null>(null);
   const [step, setStep] = useState(1);
   const [loading, setLoading] = useState(false);
   const [returnMode, setReturnMode] = useState<'order' | 'manual'>(
@@ -198,6 +204,9 @@ export default function CreateReturn() {
   useEffect(() => {
     loadOrders();
     loadManualData();
+    void getSettingsByCategory('company')
+      .then((raw) => setCompanySettings(raw as unknown as CompanySettings))
+      .catch(() => setCompanySettings(null));
     
     // Check if orderId is provided in query string
     const orderId = searchParams.get('orderId');
@@ -362,19 +371,7 @@ export default function CreateReturn() {
       setReturnMode('order');
       setLoading(true);
       
-      // First, check if a return already exists for this order
-      const existingReturn = await getSalesReturnByOrderId(orderId);
-      if (existingReturn) {
-        toast({
-          title: 'Qaytarish mavjud',
-          description: `Bu buyurtma bo'yicha qaytarish allaqachon yaratilgan: ${existingReturn.return_number}. Qaytarish tafsilotlariga o'tilmoqda...`,
-          variant: 'default',
-        });
-        navigate(`/returns/${existingReturn.id}`);
-        return;
-      }
-      
-      // Load order details and prefill the form
+      // Load order details and prefill the form (supports multiple partial returns per order)
       console.log('[RETURN] Fetching order details for query orderId:', orderId);
       const orderData = await getOrderForReturn(orderId);
       
@@ -406,6 +403,12 @@ export default function CreateReturn() {
         });
         const orderNumberDisplay = normalized.orderNumber ?? orderData.id ?? '-';
         throw new Error(`Bu buyurtmada mahsulotlar topilmadi. Buyurtma raqami: ${orderNumberDisplay}`);
+      }
+
+      if (!items.some((item) => item.available_quantity > 0)) {
+        throw new Error(
+          'Bu buyurtmadagi barcha mahsulotlar allaqachon qaytarilgan. Qolgan qaytariladigan miqdor yo‘q.'
+        );
       }
       
       setReturnItems(items);
@@ -492,6 +495,12 @@ export default function CreateReturn() {
         });
         const orderNumberDisplay = normalized.orderNumber ?? orderData.id ?? '-';
         throw new Error(`Bu buyurtmada mahsulotlar topilmadi. Buyurtma raqami: ${orderNumberDisplay}`);
+      }
+
+      if (!items.some((item) => item.available_quantity > 0)) {
+        throw new Error(
+          'Bu buyurtmadagi barcha mahsulotlar allaqachon qaytarilgan. Qolgan qaytariladigan miqdor yo‘q.'
+        );
       }
       
       setReturnItems(items);
@@ -769,6 +778,28 @@ export default function CreateReturn() {
         title: t('common.success'),
         description: t('sales_returns.create.success'),
       });
+
+      try {
+        const returnId = createdReturn?.id;
+        const printable = returnId
+          ? await getSalesReturnById(returnId)
+          : ({
+              ...createdReturn,
+              items: itemsToReturn.map((item) => ({
+                product_id: item.product_id,
+                product_name: item.product_name,
+                quantity: item.return_quantity,
+                qty_sale: item.return_quantity,
+                unit_price: item.unit_price,
+                line_total: item.line_total,
+                sale_unit: item.sale_unit,
+                price_source: item.price_source,
+              })),
+            } as any);
+        await printReturnReceipt(printable, companySettings, receiptSettings, { silent: true });
+      } catch (printError) {
+        console.warn('[RETURN] Auto-print failed (non-critical):', printError);
+      }
       
       navigate('/returns');
     } catch (error) {
@@ -1215,19 +1246,21 @@ export default function CreateReturn() {
                       {selectedOrder?.customer?.name || 'Mijoz tanlanmagan'}
                     </div>
                   ) : (
-                    <Select value={selectedCustomerId} onValueChange={setSelectedCustomerId}>
-                      <SelectTrigger id="return-customer" className={refundMethod === 'customer_account' && selectedCustomerId === 'none' ? 'border-destructive' : ''}>
-                        <SelectValue placeholder="Mijozni tanlang" />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="none">Mijoz tanlanmagan</SelectItem>
-                        {customers.map((customer) => (
-                          <SelectItem key={customer.id} value={customer.id}>
-                            {customer.name}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
+                    <SearchableCustomerCombobox
+                      id="return-customer"
+                      value={selectedCustomerId}
+                      onValueChange={setSelectedCustomerId}
+                      knownCustomers={customers}
+                      status="active"
+                      prefixOptions={[
+                        { value: 'none', label: t('combobox.none_customer', 'Mijoz tanlanmagan') },
+                      ]}
+                      triggerClassName={
+                        refundMethod === 'customer_account' && selectedCustomerId === 'none'
+                          ? 'border-destructive'
+                          : undefined
+                      }
+                    />
                   )}
                 </div>
               )}

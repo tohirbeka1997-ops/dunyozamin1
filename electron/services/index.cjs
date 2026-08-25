@@ -102,6 +102,7 @@ const ProductsService = requireService('./productsService.cjs', 'ProductsService
 const WarehousesService = requireService('./warehousesService.cjs', 'WarehousesService');
 const CustomersService = requireService('./customersService.cjs', 'CustomersService');
 const InventoryService = requireService('./inventoryService.cjs', 'InventoryService');
+const InventoryRevisionService = requireService('./inventoryRevisionService.cjs', 'InventoryRevisionService');
 const BatchService = requireService('./batchService.cjs', 'BatchService');
 const SalesService = requireService('./salesService.cjs', 'SalesService');
 const CostService = requireService('./costService.cjs', 'CostService');
@@ -152,6 +153,10 @@ function createServices(db) {
 
   const productsService = new ProductsService(db, cacheService, pricingService);
   productsService.bindSalesService(salesService);
+  purchaseService.bindProductsService(productsService);
+
+  const shiftsService = new ShiftsService(db);
+  shiftsService.batchService = batchService;
 
   const services = {
     categories: new CategoriesService(db),
@@ -159,14 +164,15 @@ function createServices(db) {
     warehouses: new WarehousesService(db),
     customers: new CustomersService(db),
     suppliers: new SupplierService(db),
-    supplierReturns: new SupplierReturnsService(db, inventoryService),
+    supplierReturns: new SupplierReturnsService(db, inventoryService, batchService),
     inventory: inventoryService,
+    inventoryRevisions: new InventoryRevisionService(db, inventoryService),
     batches: batchService,
     sales: salesService,
     returns: returnsService,
     purchases: purchaseService,
     expenses: new ExpensesService(db),
-    shifts: new ShiftsService(db),
+    shifts: shiftsService,
     settings: new SettingsService(db),
     exchangeRates: new ExchangeRatesService(db),
     audit: new AuditService(db),
@@ -180,6 +186,10 @@ function createServices(db) {
     cache: cacheService,
     promotions: promotionService,
   };
+  // Soft-lock: InventoryService.adjustStock consults open revisions.
+  inventoryService.inventoryRevisions = services.inventoryRevisions;
+  // Same soft-lock for stock-affecting POS sales.
+  salesService.inventoryRevisions = services.inventoryRevisions;
   services.quotes = new QuotesService(db, salesService);
   services.webOrders = new WebOrdersService(db);
   services.couriers = new CouriersService(db);
@@ -193,6 +203,7 @@ module.exports = {
   WarehousesService,
   CustomersService,
   InventoryService,
+  InventoryRevisionService,
   BatchService,
   SalesService,
   CostService,

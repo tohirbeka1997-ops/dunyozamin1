@@ -104,7 +104,10 @@ export const getProducts = async (
     const api = requireElectron();
     const f: any = {};
 
-    if (filters?.searchTerm) f.search = filters.searchTerm;
+    if (filters?.searchTerm) {
+      const q = String(filters.searchTerm).trim();
+      if (q) f.search = q;
+    }
     if (filters?.categoryId && filters.categoryId !== 'all') f.category_id = filters.categoryId;
 
     // Status mapping: service supports 'active' | 'inactive' (or undefined = all)
@@ -148,18 +151,20 @@ export const getProducts = async (
   
   // Search filter
   if (filters?.searchTerm) {
-    const term = filters.searchTerm.toLowerCase();
-    const termNorm = term.replace(/[\s\-_]/g, '');
-    products = products.filter(p =>
-      p.name.toLowerCase().includes(term) ||
-      p.sku.toLowerCase().includes(term) ||
-      (p.barcode && p.barcode.toLowerCase().includes(term)) ||
-      (String((p as { article?: string | null }).article || '')
-        .toLowerCase()
-        .replace(/[\s\-_]/g, '')
-        .includes(termNorm)) ||
-      String((p as { brand?: string | null }).brand || '').toLowerCase().includes(term)
-    );
+    const term = filters.searchTerm.toLowerCase().trim();
+    if (term) {
+      const termNorm = term.replace(/[\s\-_]/g, '');
+      products = products.filter(p =>
+        p.name.toLowerCase().includes(term) ||
+        p.sku.toLowerCase().includes(term) ||
+        (p.barcode && p.barcode.toLowerCase().includes(term)) ||
+        (String((p as { article?: string | null }).article || '')
+          .toLowerCase()
+          .replace(/[\s\-_]/g, '')
+          .includes(termNorm)) ||
+        String((p as { brand?: string | null }).brand || '').toLowerCase().includes(term)
+      );
+    }
   }
   
   // Category filter

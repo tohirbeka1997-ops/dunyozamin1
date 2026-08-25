@@ -52,6 +52,24 @@ jobs:
         # install script, so we rebuild it explicitly for the CI Node ABI.
         run: npm rebuild better-sqlite3 --build-from-source
 
+      - name: POS domain — smoke tests (inventory, cart, sales, reports)
+        run: npm run test:pos-smoke
+
+      - name: Aging report — unit tests
+        run: npm run test:aging-unit
+
+      - name: Aging report — UI totals tests
+        run: npm run test:aging-ui
+
+      - name: Aging report — integration smoke
+        run: npm run test:aging-smoke
+
+      - name: Store AI analysis — mocked LLM smoke
+        run: npm run test:store-ai-smoke
+
+      - name: Public API — security, auth, payments, customers
+        run: npm run test:public-api
+
       - name: Print agent — HTTP layer smoke tests
         run: npm run test:agent
 
@@ -179,6 +197,12 @@ jobs:
       - name: Install
         run: npm ci --ignore-scripts
 
+      - name: Typecheck (npm run typecheck)
+        run: npm run typecheck
+
+      - name: npm audit (high severity and above, advisory)
+        run: npm audit --audit-level=high
+        continue-on-error: true
       - name: tsc --noEmit (non-blocking baseline)
         # The repo has pre-existing TS errors; we keep this non-blocking
         # and surface the new-files diff below. Once the baseline is clean
@@ -219,3 +243,9 @@ jobs:
           tags: pos-server:ci-${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+          load: true
+
+      - name: Verify public-api deps in image
+        run: |
+          docker run --rm pos-server:ci-${{ github.sha }} \
+            node -e "require('./public-api/lib/logger.cjs'); require('./public-api/lib/creditReminder.cjs'); console.log('pino-ok')"

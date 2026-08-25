@@ -87,6 +87,17 @@ function mountStaffOrdersRoutes() {
     }
   });
 
+  // Dedicated cancel — same stock/payment semantics as desktop pos:webOrders:cancel
+  router.post('/:id/cancel', express.json({ limit: '8kb' }), (req, res) => {
+    try {
+      const svc = new WebOrdersService(dbForReq(req));
+      const updated = svc.cancel(req.params.id);
+      res.json({ data: enrichOrder(updated) });
+    } catch (e) {
+      mapServiceError(e, res);
+    }
+  });
+
   router.post('/:id/dispatch-courier', express.json({ limit: '8kb' }), (req, res) => {
     try {
       const svc = new WebOrdersService(dbForReq(req));

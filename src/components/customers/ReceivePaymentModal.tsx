@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Button } from '@/components/ui/button';
 import {
   Dialog,
@@ -8,14 +8,25 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog';
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from '@/components/ui/alert-dialog';
 import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
 import { useToast } from '@/hooks/use-toast';
 import { receiveCustomerPayment } from '@/db/api';
 import type { Customer } from '@/types/database';
 import { DollarSign } from 'lucide-react';
-import { formatCustomerBalance, formatMoney } from '@/lib/format';
+import { formatCustomerBalance, formatMoneyUZS } from '@/lib/format';
 import {
+  formatMoney,
   getCustomerBalances,
   type AppCurrency,
 } from '@/lib/currency';
@@ -71,8 +82,9 @@ export default function ReceivePaymentModal({
   onSuccess,
 }: ReceivePaymentModalProps) {
   const { toast } = useToast();
-  const { user } = useAuth();
+  const { user, profile } = useAuth();
   const { currentShift } = useShiftStore();
+  const isAdmin = profile?.role === 'admin';
   const [direction, setDirection] = useState<'in' | 'out'>('in');
   const [amount, setAmount] = useState<number | null>(null);
   const [paymentCurrency, setPaymentCurrency] = useState<AppCurrency>(defaultCurrency);
@@ -80,6 +92,8 @@ export default function ReceivePaymentModal({
   const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>('cash');
   const [note, setNote] = useState('');
   const [loading, setLoading] = useState(false);
+  const [confirmOutOpen, setConfirmOutOpen] = useState(false);
+  const paymentUuidRef = useRef<string | null>(null);
   const queryClient = useQueryClient();
 
   const balances = customer ? getCustomerBalances(customer) : { uzs: 0, usd: 0 };
@@ -98,12 +112,15 @@ export default function ReceivePaymentModal({
       }
       setPaymentMethod('cash');
       setNote('');
+      paymentUuidRef.current = null;
     } else if (!open) {
       setDirection('in');
       setAmount(null);
       setPaymentCurrency(defaultCurrency);
       setPaymentMethod('cash');
       setNote('');
+      setConfirmOutOpen(false);
+      paymentUuidRef.current = null;
     }
   }, [open, customer, defaultCurrency]);
 
@@ -116,26 +133,22 @@ export default function ReceivePaymentModal({
     void fetchUzsPerUsdRate().then((r) => setFxRate(r));
   }, [open, paymentCurrency]);
 
-  const handleSubmit = async () => {
+  useEffect(() => {
+    if (!isAdmin && direction === 'out') {
+      setDirection('in');
+    }
+  }, [isAdmin, direction]);
+
+  const submitPayment = async () => {
     if (!customer) return;
 
-    if (!amount || amount <= 0) {
-      toast({
-        title: 'Xatolik',
-        description: "To'lov summasi 0 dan katta bo'lishi kerak",
-        variant: 'destructive',
-      });
-      return;
+    if (!paymentUuidRef.current) {
+      paymentUuidRef.current =
+        typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+          ? crypto.randomUUID()
+          : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
     }
-
-    if (paymentCurrency === 'USD' && (!fxRate || fxRate <= 0)) {
-      toast({
-        title: 'Kurs kerak',
-        description: 'USD to‘lov uchun 1 USD = ? UZS kursini sozlamalardan oling.',
-        variant: 'destructive',
-      });
-      return;
-    }
+    const paymentUuid = paymentUuidRef.current;
 
     try {
       setLoading(true);
@@ -143,7 +156,7 @@ export default function ReceivePaymentModal({
 
       const result = await receiveCustomerPayment({
         customer_id: customer.id,
-        amount,
+        amount: amount!,
         currency: paymentCurrency,
         fx_rate: paymentCurrency === 'USD' ? fxRate : null,
         operation,
@@ -152,6 +165,7 @@ export default function ReceivePaymentModal({
         received_by: user?.id || null,
         source,
         shift_id: currentShift?.id ?? null,
+        payment_uuid: paymentUuid,
       });
 
       if (!result.success) {
@@ -162,7 +176,7 @@ export default function ReceivePaymentModal({
       queryClient.invalidateQueries({ queryKey: ['customers'] });
       queryClient.invalidateQueries({ queryKey: ['customer', customer.id] });
 
-      const appliedAmount = result.applied_amount ?? amount;
+      const appliedAmount = result.applied_amount ?? amount!;
       const newBal =
         paymentCurrency === 'USD'
           ? Number(result.new_balance_usd ?? result.new_balance ?? 0)
@@ -191,6 +205,7 @@ export default function ReceivePaymentModal({
       setAmount(null);
       setPaymentMethod('cash');
       setNote('');
+      paymentUuidRef.current = null;
       onOpenChange(false);
       onSuccess?.();
     } catch (error) {
@@ -205,10 +220,46 @@ export default function ReceivePaymentModal({
     }
   };
 
+  const handleSubmit = async () => {
+    if (!customer) return;
+
+    if (!amount || amount <= 0) {
+      toast({
+        title: 'Xatolik',
+        description: "To'lov summasi 0 dan katta bo'lishi kerak",
+        variant: 'destructive',
+      });
+      return;
+    }
+
+    if (paymentCurrency === 'USD' && (!fxRate || fxRate <= 0)) {
+      toast({
+        title: 'Kurs kerak',
+        description: 'USD to‘lov uchun 1 USD = ? UZS kursini sozlamalardan oling.',
+        variant: 'destructive',
+      });
+      return;
+    }
+
+    if (direction === 'out') {
+      if (!isAdmin) {
+        toast({
+          title: 'Xatolik',
+          description: 'Pul berish faqat admin uchun ruxsat etilgan',
+          variant: 'destructive',
+        });
+        return;
+      }
+      setConfirmOutOpen(true);
+      return;
+    }
+
+    await submitPayment();
+  };
+
   if (!customer) return null;
 
   const isDebt = activeBalance < 0;
-  const isCredit = activeBalance > 0;
   const previewAmount = amount && amount > 0 ? amount : 0;
   const delta = direction === 'in' ? previewAmount : -previewAmount;
   const newBalance = activeBalance + delta;
@@ -216,164 +267,204 @@ export default function ReceivePaymentModal({
   const usdInfo = formatCustomerBalance(balances.usd, 'USD');
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="w-[calc(100vw-1rem)] sm:max-w-[400px] max-h-[82vh] overflow-y-auto p-3">
-        <DialogHeader>
-          <DialogTitle className="text-base">
-            {direction === 'in' ? 'Pul qabul qilish' : 'Pul berish'}
-          </DialogTitle>
-          <DialogDescription className="text-xs">
-            {direction === 'in'
-              ? `${customer.name} — to‘lov valyutasini tanlang (UZS/USD alohida)`
-              : `${customer.name} mijozga pul bering`}
-          </DialogDescription>
-        </DialogHeader>
-        <div className="space-y-2 py-1">
-          <div className="space-y-2">
-            <Label>Operatsiya turi *</Label>
-            <RadioGroup value={direction} onValueChange={(value) => setDirection(value as 'in' | 'out')}>
-              <div className="flex flex-wrap items-center gap-x-6 gap-y-2">
-                <div className="flex items-center space-x-2">
-                  <RadioGroupItem value="in" id="in" />
-                  <Label htmlFor="in" className="font-normal cursor-pointer">
-                    + Qabul
-                  </Label>
+    <>
+      <Dialog open={open} onOpenChange={onOpenChange}>
+        <DialogContent className="w-[calc(100vw-1rem)] sm:max-w-[400px] max-h-[82vh] overflow-y-auto p-3">
+          <DialogHeader>
+            <DialogTitle className="text-base">
+              {direction === 'in' ? 'Pul qabul qilish' : 'Pul berish'}
+            </DialogTitle>
+            <DialogDescription className="text-xs">
+              {direction === 'in'
+                ? `${customer.name} — to‘lov valyutasini tanlang (UZS/USD alohida)`
+                : `${customer.name} mijozga pul bering`}
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-2 py-1">
+            <div className="space-y-2">
+              <Label>Operatsiya turi *</Label>
+              <RadioGroup value={direction} onValueChange={(value) => setDirection(value as 'in' | 'out')}>
+                <div className="flex flex-wrap items-center gap-x-6 gap-y-2">
+                  <div className="flex items-center space-x-2">
+                    <RadioGroupItem value="in" id="in" />
+                    <Label htmlFor="in" className="font-normal cursor-pointer">
+                      + Qabul
+                    </Label>
+                  </div>
+                  {isAdmin && (
+                    <div className="flex items-center space-x-2">
+                      <RadioGroupItem value="out" id="out" />
+                      <Label htmlFor="out" className="font-normal cursor-pointer">
+                        - Berish
+                      </Label>
+                    </div>
+                  )}
                 </div>
-                <div className="flex items-center space-x-2">
-                  <RadioGroupItem value="out" id="out" />
-                  <Label htmlFor="out" className="font-normal cursor-pointer">
-                    - Berish
-                  </Label>
-                </div>
-              </div>
-            </RadioGroup>
-          </div>
+              </RadioGroup>
+            </div>
 
-          <div className="p-2 bg-muted rounded-lg space-y-1">
-            <div className="flex justify-between">
-              <span className="text-xs text-muted-foreground">Mijoz:</span>
-              <span className="text-xs font-semibold">{customer.name}</span>
-            </div>
-            <div className="flex justify-between items-center">
-              <span className="text-xs text-muted-foreground">Balans (UZS):</span>
-              <BalanceLine variant={uzsInfo.variant} label={uzsInfo.label} />
-            </div>
-            {(Math.abs(balances.usd) > 0.0001 || paymentCurrency === 'USD') && (
+            <div className="p-2 bg-muted rounded-lg space-y-1">
+              <div className="flex justify-between">
+                <span className="text-xs text-muted-foreground">Mijoz:</span>
+                <span className="text-xs font-semibold">{customer.name}</span>
+              </div>
               <div className="flex justify-between items-center">
-                <span className="text-xs text-muted-foreground">Balans (USD):</span>
-                <BalanceLine variant={usdInfo.variant} label={usdInfo.label} />
+                <span className="text-xs text-muted-foreground">Balans (UZS):</span>
+                <BalanceLine variant={uzsInfo.variant} label={uzsInfo.label} />
+              </div>
+              {(Math.abs(balances.usd) > 0.0001 || paymentCurrency === 'USD') && (
+                <div className="flex justify-between items-center">
+                  <span className="text-xs text-muted-foreground">Balans (USD):</span>
+                  <BalanceLine variant={usdInfo.variant} label={usdInfo.label} />
+                </div>
+              )}
+            </div>
+
+            <div className="space-y-2">
+              <Label>To‘lov valyutasi</Label>
+              <Select
+                value={paymentCurrency}
+                onValueChange={(v) => {
+                  setPaymentCurrency(v as AppCurrency);
+                  setAmount(null);
+                }}
+              >
+                <SelectTrigger className="h-9 text-sm">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="UZS">UZS (so‘m)</SelectItem>
+                  <SelectItem value="USD">USD</SelectItem>
+                </SelectContent>
+              </Select>
+              {paymentCurrency === 'USD' && (
+                <p
+                  className={`text-xs ${fxRate && fxRate > 0 ? 'text-muted-foreground' : 'text-destructive'}`}
+                >
+                  {fxRate && fxRate > 0
+                    ? `Kurs: 1 USD = ${formatMoneyUZS(fxRate)}`
+                    : 'USD kursi topilmadi — sozlamalardan kursni kiriting.'}
+                </p>
+              )}
+            </div>
+
+            <div className="space-y-2">
+              <Label htmlFor="amount">Summa ({paymentCurrency}) *</Label>
+              <MoneyInput
+                id="amount"
+                value={amount}
+                onValueChange={(val) => setAmount(val)}
+                placeholder="0"
+                required
+                min={1}
+                className="h-9 text-sm"
+              />
+              {direction === 'in' && isDebt && (
+                <div className="flex flex-wrap gap-2 mt-2">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setAmount(Math.abs(activeBalance))}
+                    className="h-8 px-2 text-xs"
+                  >
+                    100% qarz
+                  </Button>
+                </div>
+              )}
+            </div>
+
+            <div className="space-y-2">
+              <Label>To'lov usuli *</Label>
+              <Select value={paymentMethod} onValueChange={(value) => setPaymentMethod(value as PaymentMethod)}>
+                <SelectTrigger className="h-9 text-sm">
+                  <SelectValue placeholder="To'lov usuli tanlang" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="cash">Naqd</SelectItem>
+                  <SelectItem value="card">Karta</SelectItem>
+                  <SelectItem value="click">Click</SelectItem>
+                  <SelectItem value="payme">Payme</SelectItem>
+                  <SelectItem value="transfer">Transfer</SelectItem>
+                  <SelectItem value="other">Boshqa</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+
+            <div className="space-y-2">
+              <Label htmlFor="note">Izoh (ixtiyoriy)</Label>
+              <Textarea
+                id="note"
+                value={note}
+                onChange={(e) => setNote(e.target.value)}
+                placeholder="To'lov haqida qo'shimcha ma'lumot..."
+                rows={2}
+              />
+            </div>
+
+            {amount && amount > 0 && (
+              <div className="p-2 bg-primary/10 border border-primary/20 rounded-lg space-y-1">
+                <div className="flex justify-between items-center">
+                  <span className="text-xs font-medium">Joriy ({paymentCurrency}):</span>
+                  <BalanceLine
+                    variant={formatCustomerBalance(activeBalance, paymentCurrency).variant}
+                    label={formatCustomerBalance(activeBalance, paymentCurrency).label}
+                  />
+                </div>
+                <div className="flex justify-between items-center">
+                  <span className="text-xs font-medium">O'zgarish:</span>
+                  <span
+                    className={`text-xs font-semibold ${delta >= 0 ? 'text-green-600' : 'text-destructive'}`}
+                  >
+                    {delta >= 0 ? '+' : ''}
+                    {formatMoney(delta, paymentCurrency)}
+                  </span>
+                </div>
+                <div className="flex justify-between items-center pt-1 border-t">
+                  <span className="text-xs font-medium">Yangi:</span>
+                  <BalanceLine
+                    variant={formatCustomerBalance(newBalance, paymentCurrency).variant}
+                    label={formatCustomerBalance(newBalance, paymentCurrency).label}
+                  />
+                </div>
               </div>
             )}
           </div>
+          <DialogFooter>
+            <Button size="sm" variant="outline" onClick={() => onOpenChange(false)} disabled={loading}>
+              Bekor qilish
+            </Button>
+            <Button size="sm" onClick={handleSubmit} disabled={loading || !amount || amount <= 0}>
+              <DollarSign className="h-3.5 w-3.5 mr-2" />
+              {loading ? 'Jarayonda...' : direction === 'in' ? 'Qabul qilish' : 'Berish'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
-          <div className="space-y-2">
-            <Label>To‘lov valyutasi</Label>
-            <Select
-              value={paymentCurrency}
-              onValueChange={(v) => setPaymentCurrency(v as AppCurrency)}
+      <AlertDialog open={confirmOutOpen} onOpenChange={setConfirmOutOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Pul berishni tasdiqlang</AlertDialogTitle>
+            <AlertDialogDescription>
+              „{customer.name}” mijozga {formatMoney(amount || 0, paymentCurrency)} berilsinmi?
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={loading}>Bekor qilish</AlertDialogCancel>
+            <AlertDialogAction
+              disabled={loading}
+              onClick={(e) => {
+                e.preventDefault();
+                setConfirmOutOpen(false);
+                void submitPayment();
+              }}
             >
-              <SelectTrigger className="h-9 text-sm">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="UZS">UZS (so‘m)</SelectItem>
-                <SelectItem value="USD">USD</SelectItem>
-              </SelectContent>
-            </Select>
-          </div>
-
-          <div className="space-y-2">
-            <Label htmlFor="amount">Summa ({paymentCurrency}) *</Label>
-            <MoneyInput
-              id="amount"
-              value={amount}
-              onValueChange={(val) => setAmount(val)}
-              placeholder="0"
-              required
-              min={1}
-              className="h-9 text-sm"
-            />
-            {direction === 'in' && isDebt && (
-              <div className="flex flex-wrap gap-2 mt-2">
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  onClick={() => setAmount(Math.abs(activeBalance))}
-                  className="h-8 px-2 text-xs"
-                >
-                  100% qarz
-                </Button>
-              </div>
-            )}
-          </div>
-
-          <div className="space-y-2">
-            <Label>To'lov usuli *</Label>
-            <Select value={paymentMethod} onValueChange={(value) => setPaymentMethod(value as PaymentMethod)}>
-              <SelectTrigger className="h-9 text-sm">
-                <SelectValue placeholder="To'lov usuli tanlang" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="cash">Naqd</SelectItem>
-                <SelectItem value="card">Karta</SelectItem>
-                <SelectItem value="click">Click</SelectItem>
-                <SelectItem value="payme">Payme</SelectItem>
-                <SelectItem value="transfer">Transfer</SelectItem>
-                <SelectItem value="other">Boshqa</SelectItem>
-              </SelectContent>
-            </Select>
-          </div>
-
-          <div className="space-y-2">
-            <Label htmlFor="note">Izoh (ixtiyoriy)</Label>
-            <Textarea
-              id="note"
-              value={note}
-              onChange={(e) => setNote(e.target.value)}
-              placeholder="To'lov haqida qo'shimcha ma'lumot..."
-              rows={2}
-            />
-          </div>
-
-          {amount && amount > 0 && (
-            <div className="p-2 bg-primary/10 border border-primary/20 rounded-lg space-y-1">
-              <div className="flex justify-between items-center">
-                <span className="text-xs font-medium">Joriy ({paymentCurrency}):</span>
-                <BalanceLine
-                  variant={formatCustomerBalance(activeBalance, paymentCurrency).variant}
-                  label={formatCustomerBalance(activeBalance, paymentCurrency).label}
-                />
-              </div>
-              <div className="flex justify-between items-center">
-                <span className="text-xs font-medium">O'zgarish:</span>
-                <span
-                  className={`text-xs font-semibold ${delta >= 0 ? 'text-green-600' : 'text-destructive'}`}
-                >
-                  {delta >= 0 ? '+' : ''}
-                  {formatMoney(delta, paymentCurrency)}
-                </span>
-              </div>
-              <div className="flex justify-between items-center pt-1 border-t">
-                <span className="text-xs font-medium">Yangi:</span>
-                <BalanceLine
-                  variant={formatCustomerBalance(newBalance, paymentCurrency).variant}
-                  label={formatCustomerBalance(newBalance, paymentCurrency).label}
-                />
-              </div>
-            </div>
-          )}
-        </div>
-        <DialogFooter>
-          <Button size="sm" variant="outline" onClick={() => onOpenChange(false)} disabled={loading}>
-            Bekor qilish
-          </Button>
-          <Button size="sm" onClick={handleSubmit} disabled={loading || !amount || amount <= 0}>
-            <DollarSign className="h-3.5 w-3.5 mr-2" />
-            {loading ? 'Jarayonda...' : direction === 'in' ? 'Qabul qilish' : 'Berish'}
-          </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
+              Tasdiqlash
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+    </>
   );
 }

@@ -126,6 +126,27 @@ curl -fsS http://127.0.0.1:3334/health
 npm run telegram:verify
 ```
 
+### DB / Docker unity (majburiy serverda)
+
+Dual DB (docker named volume vs host `/var/lib/pos`) va ikki marta `:3333` egasi eng ko‘p uchraydigan production nosozlik.
+
+```bash
+# Serverda (/opt/pos):
+node scripts/deploy-db-unity-check.cjs
+# Qattiq rejim (WARN → FAIL):
+DEPLOY_DB_UNITY_STRICT=1 node scripts/deploy-db-unity-check.cjs
+```
+
+Checklist:
+
+- [ ] `pos-server` **bind-mount** `/var/lib/pos` (named volume `pos-data` emas) — `docker-compose.prod.yaml`
+- [ ] Faqat **bitta** `:3333` egasi: Docker `pos-server` **XOR** systemd `pos-rpc`
+- [ ] `curl :3333/health` va `:3334/health` — `ok` / version
+- [ ] `PUBLIC_API_DB_PATH` yoki `POS_DATA_DIR` host DB bilan bir xil
+- [ ] Kerak bo‘lsa: `deploy/scripts/fix-docker-db-bind-mount.sh`
+
+`deploy/server-update-opt-pos.sh` yangilash oxirida shu unity checkni chaqiradi.
+
 After deploy, verify:
 
 - Admin web loads and logs in.

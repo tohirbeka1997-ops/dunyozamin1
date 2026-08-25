@@ -6,6 +6,14 @@ const { decrementStockForPaidWebOrder } = require('./stockDecrement.cjs');
 
 const PROVIDER = 'click';
 
+/**
+ * Click SHOP API (Prepare action=0, Complete action=1) has no inbound cancel/refund
+ * callback like Payme CancelTransaction. Post-capture reversal is via Click Merchant
+ * API `/cancel` (outbound, not wired here). Cancelled/refunded Click web orders are
+ * excluded from v_unified_sales by status/payment_status (migration 113). Staff or
+ * customer cancel uses WebOrdersService.cancel → cancelled + refunded when paid.
+ */
+
 function timingSafeEqualHex(a, b) {
   try {
     const ba = Buffer.from(String(a), 'hex');

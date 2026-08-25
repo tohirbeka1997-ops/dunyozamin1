@@ -134,7 +134,7 @@ try {
   assert.ok(Number(retOrder.total_amount) < 0);
   const retMove = db
     .prepare(
-      `SELECT quantity, move_type FROM stock_moves WHERE reference_type = 'order' AND reference_id = ? AND product_id = ?`,
+      `SELECT quantity, movement_type FROM inventory_movements WHERE reference_type = 'order' AND reference_id = ? AND product_id = ?`,
     )
     .get(returnRes.order_id, productA.id);
   assert.ok(retMove);
@@ -375,7 +375,7 @@ try {
   ok('almashuv: refund_balance → ortiqcha qaytim mijoz haqdorligi (musbat balans)');
 
   console.log(`\n=== NATIJA: ${passed} OK, ${failed} FAIL ===\n`);
-  if (failed > 0) process.exit(1);
+  process.exit(failed > 0 ? 1 : 0);
 } catch (e) {
   fail('cart sale/return suite', e);
   console.log(`\n=== NATIJA: ${passed} OK, ${failed} FAIL ===\n`);

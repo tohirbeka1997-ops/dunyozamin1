@@ -84,9 +84,18 @@ function mountAdminPromotionsRoutes(dbGetter) {
   });
 
   // ---- Promo-bannerlar (carousel) ----
+  // DEPRECATED legacy HTTP path. The canonical admin surface is now the host
+  // RPC channels `pos:marketplaceContent:*` (see rpcDispatch.cjs) used by the
+  // web POS page src/pages/MarketplaceContent.tsx. These routes are retained
+  // ONLY for the standalone admin-panel app (admin-panel/src/pages/Promotions
+  // Page.tsx) which still talks plain HTTP. Do not add new features here —
+  // extend the RPC path instead so banners/daily-deal stay single-sourced.
   router.get('/content/banners', (req, res) => {
     try {
-      res.json({ data: content(req).listBanners({ includeInactive: true }) });
+      // Admin view wants ALL banners (active + inactive). Passing no options
+      // returns everything; the previous `{ includeInactive: true }` was a
+      // no-op the service never understood (it only knows `activeOnly`).
+      res.json({ data: content(req).listBanners({}) });
     } catch (e) {
       fail(e, res, '[admin/promotions] GET banners');
     }

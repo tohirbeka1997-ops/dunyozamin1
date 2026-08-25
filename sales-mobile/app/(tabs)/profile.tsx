@@ -5,9 +5,11 @@ import Constants from 'expo-constants';
 import { staffLogout } from '@/api/client';
 import { loadUser } from '@/auth/session';
 import {
+  authenticateBiometric,
   isBiometricAvailable,
   isBiometricEnabled,
   setBiometricEnabled,
+  touchAppActive,
 } from '@/lib/biometrics';
 import { getOfflineQueueCount, getPermanentSyncFailures, clearPermanentFailures } from '@/lib/offlineQueue';
 import { syncWithFeedback } from '@/lib/syncFeedback';
@@ -16,7 +18,9 @@ import {
   isNotificationsEnabled,
   setNotificationsEnabled,
 } from '@/lib/notificationsPref';
+import { schedulePushRegistration } from '@/lib/pushNotifications';
 import { getLocale, setLocale, t, type Locale } from '@/i18n';
+import { clearCart } from '@/store/cart';
 import type { StaffUser } from '@/types/orders';
 
 const LOCALES: Locale[] = ['uz', 'ru', 'en'];
@@ -51,6 +55,7 @@ export default function ProfileScreen() {
   );
 
   async function handleLogout() {
+    clearCart();
     await staffLogout();
     router.replace('/(auth)/login');
   }
@@ -61,13 +66,27 @@ export default function ProfileScreen() {
   }
 
   async function toggleBiometric(next: boolean) {
-    setBioOn(next);
-    await setBiometricEnabled(next);
+    if (next) {
+      const ok = await authenticateBiometric(t('unlockPrompt'));
+      if (!ok) {
+        setBioOn(false);
+        return;
+      }
+      await setBiometricEnabled(true);
+      await touchAppActive();
+      setBioOn(true);
+      return;
+    }
+    setBioOn(false);
+    await setBiometricEnabled(false);
   }
 
   async function toggleNotifications(next: boolean) {
     setNotifOn(next);
     await setNotificationsEnabled(next);
+    if (next) {
+      schedulePushRegistration();
+    }
   }
 
   async function handleSyncNow() {
@@ -191,6 +210,10 @@ export default function ProfileScreen() {
 
       <View style={styles.spacer} />
 
+      <Pressable style={styles.linkRow} onPress={() => router.push('/privacy')}>
+        <Text style={styles.linkText}>{t('privacyPolicy')}</Text>
+      </Pressable>
+
       <Text style={styles.version}>
         {t('appVersion')} {appVersion}
       </Text>
@@ -265,6 +288,8 @@ const styles = StyleSheet.create({
   dismissFail: { alignSelf: 'flex-end', marginBottom: 16, paddingVertical: 6 },
   dismissFailText: { color: '#64748b', fontWeight: '600' },
   spacer: { flex: 1 },
+  linkRow: { alignItems: 'center', paddingVertical: 12, marginBottom: 8 },
+  linkText: { color: '#166534', fontWeight: '600', fontSize: 15 },
   version: { textAlign: 'center', color: '#94a3b8', fontSize: 12, marginBottom: 12 },
   logout: {
     backgroundColor: '#fff',

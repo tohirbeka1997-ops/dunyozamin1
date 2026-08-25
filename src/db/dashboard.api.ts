@@ -28,9 +28,15 @@ export interface DashboardAnalytics {
   /** Document-currency buckets (do not add together). */
   total_sales_uzs?: number;
   total_sales_usd?: number;
+  /** Mijoz to'lagan summa (paid_amount, UZS ekvivalent). */
+  total_collected?: number;
+  /** Berilgan nasiya / qarz (credit_amount, UZS ekvivalent). */
+  credit_issued?: number;
   total_orders: number;
   total_cogs: number;
   total_profit: number;
+  /** Gross sales − returns (UZS equivalent). */
+  net_sales?: number;
   net_profit?: number;
   profit_margin: number;
   total_expenses: number;
@@ -152,6 +158,8 @@ export const getDashboardAnalytics = async (
   });
   const returns_count = returnsInPeriod.length;
   const returns_amount = returnsInPeriod.reduce((sum, ret) => sum + (ret.total_amount || 0), 0);
+  const net_sales = Math.max(0, total_sales - returns_amount);
+  const net_profit = total_profit - returns_amount;
   
   // Low stock count: products with stock <= min_stock_level
   const low_stock_count = products.filter(
@@ -168,6 +176,8 @@ export const getDashboardAnalytics = async (
     total_orders,
     total_cogs,
     total_profit,
+    net_sales,
+    net_profit,
     profit_margin,
     total_expenses,
     low_stock_count,
@@ -274,10 +284,33 @@ export const getProductSalesReport = async (_params?: {
   return [] as any[];
 };
 
+export const getCustomerSalesReport = async (_params?: {
+  date_from?: string;
+  date_to?: string;
+  warehouse_id?: string;
+  sales_channel?: string | null;
+}) => {
+  if (hasPosApi()) {
+    const api = requireElectron();
+    return ipc<any[]>(
+      api.reports?.customerSalesReport?.({
+        date_from: _params?.date_from,
+        date_to: _params?.date_to,
+        warehouse_id: _params?.warehouse_id,
+        sales_channel: _params?.sales_channel ?? null,
+      }) || Promise.resolve([])
+    );
+  }
+
+  await delay();
+  return [] as any[];
+};
+
 export const getPromotionUsageReport = async (params?: {
   date_from?: string;
   date_to?: string;
   promotion_id?: string | null;
+  warehouse_id?: string;
 }) => {
   if (hasPosApi()) {
     const api = requireElectron();
@@ -286,6 +319,7 @@ export const getPromotionUsageReport = async (params?: {
         date_from: params?.date_from,
         date_to: params?.date_to,
         promotion_id: params?.promotion_id ?? null,
+        warehouse_id: params?.warehouse_id,
       }) || Promise.resolve([])
     );
   }

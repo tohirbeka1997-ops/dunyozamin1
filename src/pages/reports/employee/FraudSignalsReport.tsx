@@ -15,7 +15,7 @@ import { Badge } from '@/components/ui/badge';
 import { ArrowLeft, Shield, AlertTriangle, XCircle, Percent } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 import { handleIpcResponse, isElectron, requireElectron } from '@/utils/electron';
-import { todayYMD, formatDate } from '@/lib/datetime';
+import { todayYMD, ymdShiftMonths, formatDate } from '@/lib/datetime';
 import { formatMoneyUZS } from '@/lib/format';
 import { useReportAutoRefresh } from '@/hooks/useReportAutoRefresh';
 
@@ -57,9 +57,7 @@ export default function FraudSignalsReport() {
   const [loading, setLoading] = useState(true);
   const [signalRows, setSignalRows] = useState<FraudSignal[]>([]);
   const [incidentRows, setIncidentRows] = useState<FraudIncident[]>([]);
-  const [dateFrom, setDateFrom] = useState(
-    new Date(new Date().setMonth(new Date().getMonth() - 1)).toISOString().split('T')[0]
-  );
+  const [dateFrom, setDateFrom] = useState(ymdShiftMonths(todayYMD(), -1));
   const [dateTo, setDateTo] = useState(todayYMD());
   const [searchTerm, setSearchTerm] = useState('');
   const [riskFilter, setRiskFilter] = useState<string>('all');

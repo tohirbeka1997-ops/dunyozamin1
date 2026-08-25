@@ -167,7 +167,7 @@ export const createSupplier = async (supplier: Omit<Supplier, 'id' | 'created_at
   // Create new supplier
   // NOTE: balance is NOT stored - it's calculated dynamically from transactions
   const newSupplier: Supplier = {
-    settlement_currency: (supplier as any).settlement_currency || 'USD',
+    settlement_currency: (supplier as any).settlement_currency || 'UZS',
     ...supplier,
     id: generateId(),
     created_at: new Date().toISOString(),
@@ -565,6 +565,37 @@ export const getSupplierLedger = async (
 // SUPPLIER RETURNS (CREDIT NOTES)
 // ============================================================================
 
+export type SupplierReturnableProduct = {
+  product_id: string;
+  product_name: string;
+  product_sku: string;
+  returnable_qty: number;
+  current_stock: number;
+  unit_cost: number;
+  unit_cost_uzs?: number | null;
+  unit_cost_usd?: number | null;
+  cost_currency?: 'UZS' | 'USD';
+  fx_rate?: number | null;
+  settlement_currency?: 'UZS' | 'USD';
+  supplier_id: string;
+  warehouse_id: string;
+};
+
+export const listSupplierReturnableProducts = async (filters: {
+  supplier_id: string;
+  warehouse_id?: string;
+  search?: string;
+  limit?: number;
+  fx_rate?: number;
+}): Promise<SupplierReturnableProduct[]> => {
+  if (hasPosApi()) {
+    const api = requireElectron();
+    return ipc<SupplierReturnableProduct[]>(api.suppliers.listReturnableProducts(filters));
+  }
+  await delay();
+  return [];
+};
+
 export const createSupplierReturn = async (payload: {
   supplier_id: string;
   purchase_order_id?: string | null;
@@ -574,7 +605,17 @@ export const createSupplierReturn = async (payload: {
   notes?: string | null;
   created_by?: string | null;
   return_date?: string;
-  items: { product_id: string; quantity: number; unit_cost?: number; reason?: string | null }[];
+  fx_rate?: number;
+  cost_currency?: 'UZS' | 'USD';
+  items: {
+    product_id: string;
+    quantity: number;
+    unit_cost?: number;
+    unit_cost_usd?: number | null;
+    cost_currency?: 'UZS' | 'USD';
+    fx_rate?: number;
+    reason?: string | null;
+  }[];
 }) => {
   if (hasPosApi()) {
     const api = requireElectron();

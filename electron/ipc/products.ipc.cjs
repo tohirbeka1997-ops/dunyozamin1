@@ -40,6 +40,18 @@ function registerProductsHandlers(services) {
     return products.searchScreen(filters || {});
   }));
 
+  console.log('Registering pos:products:listScanIndex handler...');
+  ipcMain.removeHandler('pos:products:listScanIndex');
+  ipcMain.handle('pos:products:listScanIndex', wrapHandler(async (_event, filters) => {
+    return products.listScanIndex(filters || {});
+  }));
+
+  console.log('Registering pos:products:resolveScan handler...');
+  ipcMain.removeHandler('pos:products:resolveScan');
+  ipcMain.handle('pos:products:resolveScan', wrapHandler(async (_event, keys, opts) => {
+    return products.resolveScan(keys || [], opts || {});
+  }));
+
   console.log('Registering pos:products:get handler...');
   ipcMain.removeHandler('pos:products:get');
   ipcMain.handle('pos:products:get', wrapHandler(async (_event, id) => {

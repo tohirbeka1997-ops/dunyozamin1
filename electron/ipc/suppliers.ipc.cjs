@@ -107,6 +107,12 @@ function registerSuppliersHandlers(services) {
     ipcMain.handle('pos:suppliers:listReturns', wrapHandler(async (_event, filters) => {
       return supplierReturns.list(filters || {});
     }));
+
+    console.log('Registering pos:suppliers:listReturnableProducts handler...');
+    ipcMain.removeHandler('pos:suppliers:listReturnableProducts');
+    ipcMain.handle('pos:suppliers:listReturnableProducts', wrapHandler(async (_event, filters) => {
+      return supplierReturns.listReturnableProducts(filters || {});
+    }));
   } else {
     console.warn('[Suppliers IPC] supplierReturns service not available; return handlers not registered');
   }

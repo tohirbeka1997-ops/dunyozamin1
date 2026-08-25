@@ -91,7 +91,7 @@ export function useProducts(
       setLoadingMore(false);
       isLoadingRef.current = false;
     }
-  }, [includeInactive, authLoading, user, pageSize, filters?.searchTerm, filters?.categoryId, filters?.status, filters?.stockStatus, filters?.sortBy, filters?.sortOrder]);
+  }, [includeInactive, authLoading, user, pageSize, filters?.searchTerm, filters?.categoryId, filters?.status, filters?.stockStatus, filters?.marketplace, filters?.sortBy, filters?.sortOrder]);
 
   // Store latest loadData in a ref to use in subscription handler
   const loadDataRef = useRef(loadData);
@@ -105,7 +105,7 @@ export function useProducts(
     if (!authLoading && user) {
       loadData({ append: false, pageOverride: 0 });
     }
-  }, [authLoading, user, includeInactive, filters?.searchTerm, filters?.categoryId, filters?.status, filters?.stockStatus, filters?.sortBy, filters?.sortOrder, pageSize]); // keep stable, avoids infinite loops
+  }, [authLoading, user, includeInactive, filters?.searchTerm, filters?.categoryId, filters?.status, filters?.stockStatus, filters?.marketplace, filters?.sortBy, filters?.sortOrder, pageSize]); // keep stable, avoids infinite loops
 
   // Subscribe to product update events
   // Use ref to access latest loadData without re-subscribing

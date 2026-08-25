@@ -402,7 +402,7 @@ export const completePOSOrder = async (
         
         customers[customerIndex] = {
           ...customer,
-          balance: currentBalance + creditAmount,
+          balance: currentBalance - creditAmount,
           total_sales: currentTotalSales + fullOrder.total_amount,
           total_orders: currentTotalOrders + 1,
           last_order_date: createdAt,

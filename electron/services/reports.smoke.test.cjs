@@ -161,6 +161,7 @@ async function runAsync(name, fn, validate) {
       assertObject(r, 'dailySales');
       assert.ok(Number(r.order_count) >= 1, 'order_count >= 1');
       assert.ok(Number(r.total_sales) >= saleTotal - 1, 'total_sales mos');
+      assert.ok(Number.isFinite(Number(r.net_profit)), 'net_profit present');
     });
     runSync('dailySalesSQL', () => reports.getDailySalesReportSQL(filtersToday));
     runSync('dailySalesSummary', () => reports.getDailySalesSummary(filters), assertObject);
@@ -171,6 +172,10 @@ async function runAsync(name, fn, validate) {
     runSync('returnsReport', () => reports.getReturnsReport(filters), assertArray);
     runSync('paymentMethodsSummary', () => reports.getPaymentMethodsSummary(filters), (r) => {
       assertObject(r, 'paymentMethodsSummary');
+    });
+    runSync('bankCashReconciliation', () => reports.getBankCashReconciliation(filters), (r) => {
+      assertObject(r, 'bankCashReconciliation');
+      assert.ok(r.cash && r.bank, 'cash/bank buckets');
     });
 
     // --- Ombor ---
@@ -186,6 +191,12 @@ async function runAsync(name, fn, validate) {
       assert.ok(Array.isArray(r.rows), 'rows');
     });
     runSync('purchasePlanning', () => reports.getPurchasePlanning({ plan_days: 7, analysis_days: 7 }), assertArray);
+    runSync('abcAnalysis', () => reports.getAbcAnalysis(filters), (r) => {
+      assertObject(r, 'abcAnalysis');
+      assert.ok(Array.isArray(r.rows), 'abcAnalysis.rows');
+      assert.ok(r.summary && typeof r.summary === 'object', 'abcAnalysis.summary');
+      assert.ok(r.thresholds && r.thresholds.a === 80 && r.thresholds.b === 95, 'abc thresholds');
+    });
     runSync('latestPurchaseCosts', () => reports.getLatestPurchaseCosts(), (r) => {
       assert.ok(r != null && typeof r === 'object', 'latestPurchaseCosts object/map');
     });
@@ -274,7 +285,7 @@ async function runAsync(name, fn, validate) {
       for (const f of failures) console.log(`  - ${f.name}: ${f.message}`);
     }
     console.log('');
-    if (failed > 0) process.exit(1);
+    process.exit(failed > 0 ? 1 : 0);
   } catch (e) {
     fail('reports smoke suite', e);
     console.log(`\n=== NATIJA: ${passed} OK, ${failed} FAIL ===\n`);

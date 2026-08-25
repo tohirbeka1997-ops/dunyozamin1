@@ -2,6 +2,11 @@ import type { CompanySettings, OrderWithDetails, ReceiptSettings } from '@/types
 import { formatOrderMoney, formatMoneyUZS } from '@/lib/format';
 import { formatReceiptDateTime } from '@/lib/datetime';
 import { formatQuantity } from '@/utils/quantity';
+import {
+  getReceiptDisplayQty,
+  getReceiptLineTotal,
+  shouldShowOnReceipt,
+} from '@/lib/receipts/receiptLineQty';
 
 interface ReceiptPrintViewProps {
   order: OrderWithDetails;
@@ -143,28 +148,14 @@ export default function ReceiptPrintView({
             </thead>
             <tbody>
               {order.items
-                ?.filter((item: any) => {
-                  const remaining =
-                    (item.remaining_quantity ?? ((item.qty_sale ?? item.quantity) - (item.returned_quantity || 0))) ||
-                    (item.qty_sale ?? item.quantity) ||
-                    0;
-                  return remaining > 0;
-                })
+                ?.filter((item: any) => shouldShowOnReceipt(item))
                 .map((item: any, index) => {
                   const returned = item.returned_quantity || 0;
                   const unit = (item as any).sale_unit || item.product?.unit || item.unit;
                   const qtySale = (item as any).qty_sale ?? item.quantity;
-                  const remaining =
-                    (item.remaining_quantity ?? (qtySale - returned)) ||
-                    qtySale ||
-                    0;
-                  const baseLineTotal = Number(
-                    item.total ??
-                      item.line_total ??
-                      item.subtotal ??
-                      (Number(item.unit_price || 0) * Number(qtySale || 0))
-                  );
-                  const lineTotal = baseLineTotal * (remaining / Number(qtySale || 1));
+                  const remaining = getReceiptDisplayQty(item);
+                  const lineTotal = getReceiptLineTotal(item, remaining);
+                  const isReturnLine = Number(qtySale ?? 0) < 0;
                   const sku = item.product?.sku || '';
 
                   return (
@@ -172,7 +163,10 @@ export default function ReceiptPrintView({
                       <td className="py-2 px-2">
                         <div>
                           {item.product_name}
-                          {returned > 0 && (
+                          {isReturnLine && (
+                            <span className="text-xs text-red-600 ml-2">(Qaytarish)</span>
+                          )}
+                          {!isReturnLine && returned > 0 && (
                             <span className="text-xs text-red-600 ml-2">(Qaytarilgan: {returned})</span>
                           )}
                         </div>
@@ -330,35 +324,24 @@ export default function ReceiptPrintView({
 
       <div className="border-t border-b border-dashed border-gray-400 py-2 mb-3">
         {order.items
-          ?.filter((item: any) => {
-            const remaining =
-              (item.remaining_quantity ?? ((item.qty_sale ?? item.quantity) - (item.returned_quantity || 0))) ||
-              (item.qty_sale ?? item.quantity) ||
-              0;
-            return remaining > 0;
-          })
+          ?.filter((item: any) => shouldShowOnReceipt(item))
           .map((item: any, index) => {
             const returned = item.returned_quantity || 0;
             const unit = (item as any).sale_unit || item.product?.unit || item.unit;
             const qtySale = (item as any).qty_sale ?? item.quantity;
-            const remaining =
-              (item.remaining_quantity ?? (qtySale - returned)) ||
-              qtySale ||
-              0;
-            const baseLineTotal = Number(
-              item.total ??
-                item.line_total ??
-                item.subtotal ??
-                (Number(item.unit_price || 0) * Number(qtySale || 0))
-            );
-            const lineTotal = baseLineTotal * (remaining / Number(qtySale || 1));
+            const remaining = getReceiptDisplayQty(item);
+            const lineTotal = getReceiptLineTotal(item, remaining);
+            const isReturnLine = Number(qtySale ?? 0) < 0;
             const sku = item.product?.sku || '';
 
             return (
               <div key={item.id || index} className="mb-2 text-xs">
                 <div className="font-medium">
                   {item.product_name}
-                  {returned > 0 && <span className="text-red-600"> (Qaytarilgan: {returned})</span>}
+                  {isReturnLine && <span className="text-red-600"> (Qaytarish)</span>}
+                  {!isReturnLine && returned > 0 && (
+                    <span className="text-red-600"> (Qaytarilgan: {returned})</span>
+                  )}
                 </div>
                 {showSku && sku && <div className="text-[11px] text-gray-600 font-mono">{sku}</div>}
                 <div className="flex justify-between mt-1">

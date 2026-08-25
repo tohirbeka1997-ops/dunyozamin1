@@ -68,8 +68,10 @@ import PurchaseOrderBulkAddModal from '@/components/purchase/PurchaseOrderBulkAd
 import {
   createPurchaseScanIndex,
   filterPurchaseCatalog,
+  filterPurchaseCatalogWithTotal,
   getScanLookupKeys,
   lookupPurchaseScan,
+  PO_PRODUCT_SEARCH_LIMIT,
   registerPurchaseScanProduct,
   type ProductScanIndex,
   type ProductScanIndexEntry,
@@ -261,6 +263,7 @@ export default function PurchaseOrderForm() {
   const [scanIndex, setScanIndex] = useState<ProductScanIndex | null>(null);
   const [scanCatalog, setScanCatalog] = useState<ProductScanIndexEntry[]>([]);
   const [scanCandidates, setScanCandidates] = useState<ProductScanIndexEntry[]>([]);
+  const [scanMatchTotal, setScanMatchTotal] = useState(0);
   const [categories, setCategories] = useState<Category[]>([]);
   const [quickAddQty, setQuickAddQty] = useState(1);
   const scanInputRef = useRef<HTMLInputElement>(null);
@@ -453,6 +456,7 @@ export default function PurchaseOrderForm() {
   const clearScanField = () => {
     setScanInput('');
     setScanCandidates([]);
+    setScanMatchTotal(0);
     setShowCreateProductModal(false);
     scanInputRef.current?.focus();
   };
@@ -569,6 +573,8 @@ export default function PurchaseOrderForm() {
               name: String(row.product_name || fromCatalog?.name || pid),
               sku: String(row.product_sku || fromCatalog?.sku || ''),
               barcode: fromCatalog?.barcode ?? null,
+              article: fromCatalog?.article ?? null,
+              brand: fromCatalog?.brand ?? null,
               category_id: fromCatalog?.category_id ?? null,
               cost_price: Number(fromCatalog?.cost_price ?? avgCost) || avgCost,
               purchase_price: Number(fromCatalog?.purchase_price ?? avgCost) || avgCost,
@@ -592,16 +598,23 @@ export default function PurchaseOrderForm() {
     const term = debouncedScanInput;
     if (!term || term.length < 2) {
       setScanCandidates([]);
+      setScanMatchTotal(0);
       return;
     }
     if (scanIndex && lookupPurchaseScan(term, scanIndex)) {
       setScanCandidates([]);
+      setScanMatchTotal(0);
       return;
     }
-    const catalogHits = filterPurchaseCatalog(scanCatalog, term, 8, scanIndex ?? undefined);
+    const catalogHits = filterPurchaseCatalog(
+      scanCatalog,
+      term,
+      Number.MAX_SAFE_INTEGER,
+      scanIndex ?? undefined,
+    );
     const supplierHits =
       supplierId && supplierPurchasedProducts.length
-        ? filterPurchaseCatalog(supplierPurchasedProducts, term, 8)
+        ? filterPurchaseCatalog(supplierPurchasedProducts, term, Number.MAX_SAFE_INTEGER)
         : [];
     const seen = new Set<string>();
     const merged: ProductScanIndexEntry[] = [];
@@ -609,9 +622,9 @@ export default function PurchaseOrderForm() {
       if (seen.has(hit.id)) continue;
       seen.add(hit.id);
       merged.push(hit);
-      if (merged.length >= 8) break;
     }
-    setScanCandidates(merged);
+    setScanMatchTotal(merged.length);
+    setScanCandidates(merged.slice(0, PO_PRODUCT_SEARCH_LIMIT));
   }, [debouncedScanInput, scanCatalog, scanIndex, supplierId, supplierPurchasedProducts]);
 
   useEffect(() => {
@@ -819,11 +832,16 @@ export default function PurchaseOrderForm() {
         }
       }
       if (!product) {
-        const candidates = filterPurchaseCatalog(scanCatalog, term, 8);
-        if (candidates.length === 1) {
+        const { items: candidates, total } = filterPurchaseCatalogWithTotal(
+          scanCatalog,
+          term,
+          PO_PRODUCT_SEARCH_LIMIT,
+        );
+        if (candidates.length === 1 && total === 1) {
           product = candidates[0];
-        } else if (candidates.length > 1) {
+        } else if (total > 1) {
           setScanCandidates(candidates);
+          setScanMatchTotal(total);
           return;
         }
       }
@@ -834,6 +852,7 @@ export default function PurchaseOrderForm() {
       }
       setShowCreateProductModal(true);
       setScanCandidates([]);
+      setScanMatchTotal(0);
     },
     [quickAddQty, scanIndex, scanCatalog, items, poCurrency, fxRate],
   );
@@ -928,7 +947,31 @@ export default function PurchaseOrderForm() {
     updateItem(index, 'ordered_qty', Math.max(0.01, Number(item.ordered_qty || 0) + delta));
   };
 
+  const getExistingReceivedQtyForItem = (item: OrderItem | undefined): number => {
+    if (!item) return 0;
+    const existingItems = existingPO?.items || [];
+    if (item.id) {
+      const byId = existingItems.find((it: { id?: string }) => it.id === item.id);
+      if (byId) return Number((byId as { received_qty?: number }).received_qty || 0);
+    }
+    return (existingItems as { product_id?: string; received_qty?: number }[])
+      .filter((it) => it.product_id === item.product_id)
+      .reduce((sum, it) => sum + Number(it.received_qty || 0), 0);
+  };
+
   const removeItem = (index: number) => {
+    const item = items[index];
+    if (!item) return;
+    const receivedQty = getExistingReceivedQtyForItem(item);
+    if (receivedQty > 0) {
+      toast({
+        title: 'O‘chirib bo‘lmaydi',
+        description:
+          'Qabul qilingan mahsulotni buyurtmadan o‘chirib bo‘lmaydi — omborga kirgan. Qaytarish uchun alohida qaytarish amalidan foydalaning.',
+        variant: 'destructive',
+      });
+      return;
+    }
     setItems(items.filter((_, i) => i !== index));
   };
 
@@ -1654,7 +1697,9 @@ export default function PurchaseOrderForm() {
 
   const buildItemsPayloadForSave = () => {
     const existingItems = existingPO?.items || [];
-    const payload = items.map((item) => {
+    // Payload is exactly the form lines. Omitted unreceived lines are deleted on save.
+    // Omitted received lines are rejected by the backend (stock already posted).
+    return items.map((item) => {
       const existingMatch = existingItems.find((it: { id?: string; product_id: string }) =>
         item.id ? it.id === item.id : it.product_id === item.product_id,
       );
@@ -1679,38 +1724,6 @@ export default function PurchaseOrderForm() {
           updateSalePriceOnReceive && Number(item.sale_price ?? 0) > 0 ? Number(item.sale_price) : null,
       };
     });
-
-    const coveredIds = new Set(payload.filter((row) => row.id).map((row) => String(row.id)));
-    const coveredProductIds = new Set(payload.map((row) => row.product_id));
-
-    for (const ex of existingItems) {
-      const receivedQty = Number((ex as { received_qty?: number }).received_qty ?? 0);
-      if (receivedQty <= 0) continue;
-      const exId = String((ex as { id?: string }).id || '');
-      const exPid = String((ex as { product_id?: string }).product_id || '');
-      if ((exId && coveredIds.has(exId)) || coveredProductIds.has(exPid)) continue;
-
-      payload.push({
-        id: exId || undefined,
-        received_qty: receivedQty,
-        product_id: exPid,
-        product_name: String((ex as { product_name?: string }).product_name || ''),
-        product_sku: String((ex as { product_sku?: string }).product_sku || ''),
-        ordered_qty: Number((ex as { ordered_qty?: number }).ordered_qty ?? receivedQty),
-        unit_cost: Number((ex as { unit_cost?: number }).unit_cost ?? 0),
-        line_total: Number((ex as { line_total?: number }).line_total ?? 0),
-        unit_cost_usd: poCurrency === 'USD' ? Number((ex as { unit_cost_usd?: number }).unit_cost_usd ?? 0) : null,
-        line_total_usd:
-          poCurrency === 'USD'
-            ? Number((ex as { line_total_usd?: number }).line_total_usd ?? 0)
-            : null,
-        discount_amount: Number((ex as { discount_amount?: number }).discount_amount ?? 0) || 0,
-        discount_percent: Number((ex as { discount_percent?: number }).discount_percent ?? 0) || 0,
-        sale_price: null,
-      });
-    }
-
-    return payload;
   };
 
   const showConfirmReceiveButton =
@@ -2325,10 +2338,12 @@ export default function PurchaseOrderForm() {
         onScanSubmit={handleScanSubmit}
         onScanKeyDown={handleScanKeyDown}
         scanCandidates={scanCandidates}
+        scanMatchTotal={scanMatchTotal}
         onPickCandidate={handlePickCandidate}
         onOpenBulkAdd={() => setShowBulkAdd(true)}
         onOpenCreateProduct={() => {
           setScanCandidates([]);
+          setScanMatchTotal(0);
           setShowCreateProductModal(true);
         }}
         supplierPurchasedIdSet={supplierPurchasedIdSet}

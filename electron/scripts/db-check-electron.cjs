@@ -17,6 +17,10 @@ const Database = require('better-sqlite3');
 const path = require('path');
 const fs = require('fs');
 
+// Unpackaged `electron script.cjs` defaults to %APPDATA%/Electron — match packaged app userData.
+const pkg = require('../../package.json');
+app.setName(pkg.name || 'pos-tizimi');
+
 // Get database type from command line or default to 'new'
 const dbType = process.argv[2] === 'legacy' ? 'legacy' : 'new';
 

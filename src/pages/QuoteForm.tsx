@@ -44,8 +44,9 @@ import {
   updateQuote,
   generateQuoteNumber,
   getCategories,
+  createCustomer,
 } from '@/db/api';
-import type { ProductWithCategory, Quote, QuoteItem } from '@/types/database';
+import type { ProductWithCategory, Quote, QuoteItem, Customer } from '@/types/database';
 import { useTranslation } from 'react-i18next';
 import {
   ArrowLeft,
@@ -61,6 +62,7 @@ import {
 import { Skeleton } from '@/components/ui/skeleton';
 import * as XLSX from 'xlsx';
 import { printHtml } from '@/lib/print';
+import SearchableCustomerCombobox from '@/components/common/SearchableCustomerCombobox';
 
 type PriceType = 'retail' | 'usta';
 
@@ -115,11 +117,13 @@ export default function QuoteForm() {
   const { t } = useTranslation();
   const { toast } = useToast();
   const { profile } = useAuth();
-  const isEdit = !!id;
+  const isEdit = Boolean(id && id !== 'new');
 
   const [loading, setLoading] = useState(false);
+  const [customerId, setCustomerId] = useState<string>('');
   const [customerName, setCustomerName] = useState('');
   const [phone, setPhone] = useState('');
+  const [creatingCustomer, setCreatingCustomer] = useState(false);
   const [priceType, setPriceType] = useState<PriceType>('retail');
   const [notes, setNotes] = useState('');
   const [items, setItems] = useState<QuoteItemRow[]>([]);
@@ -444,6 +448,7 @@ export default function QuoteForm() {
         setLoading(true);
         const q = await getQuoteById(id!);
         if (q) {
+          setCustomerId(q.customer_id || '');
           setCustomerName(q.customer_name || '');
           setPhone(q.phone || '');
           setPriceType((q.price_type as PriceType) || 'retail');
@@ -502,7 +507,7 @@ export default function QuoteForm() {
     }
   }, [isEdit, quoteNumber]);
 
-  const handleSave = async () => {
+  const handleSave = async (status: 'draft' | 'confirmed' = 'draft') => {
     if (!profile) {
       toast({ title: t('common.error'), description: t('quotes.error_login'), variant: 'destructive' });
       return;
@@ -518,10 +523,11 @@ export default function QuoteForm() {
 
     const payload = {
       quote_number: quoteNumber,
+      customer_id: customerId || null,
       customer_name: customerName.trim(),
       phone: phone.trim() || null,
       price_type: priceType,
-      status: 'draft',
+      status,
       subtotal,
       discount_amount: orderDiscNumber,
       discount_percent:
@@ -556,7 +562,9 @@ export default function QuoteForm() {
         toast({ title: t('quotes.toast_updated') });
       } else {
         await createQuote(payload);
-        toast({ title: t('quotes.toast_created') });
+        toast({
+          title: status === 'draft' ? t('quotes.toast_draft_saved') : t('quotes.toast_created'),
+        });
       }
       navigate('/quotes');
     } catch (e) {
@@ -568,6 +576,43 @@ export default function QuoteForm() {
     } finally {
       setLoading(false);
     }
+  };
+
+  const handleCreateCustomer = async () => {
+    const name = customerName.trim();
+    if (!name) {
+      toast({ title: t('common.error'), description: t('quotes.error_customer_name'), variant: 'destructive' });
+      return;
+    }
+    try {
+      setCreatingCustomer(true);
+      const created = await createCustomer({
+        name,
+        phone: phone.trim() || undefined,
+        type: 'individual',
+        status: 'active',
+      });
+      if (created?.id) {
+        setCustomerId(created.id);
+        setCustomerName(created.name || name);
+        if (created.phone) setPhone(created.phone);
+        toast({ title: t('quotes.toast_customer_created') });
+      }
+    } catch (e) {
+      toast({
+        title: t('common.error'),
+        description: e instanceof Error ? e.message : String(e),
+        variant: 'destructive',
+      });
+    } finally {
+      setCreatingCustomer(false);
+    }
+  };
+
+  const handleCustomerPick = (customer: Customer) => {
+    setCustomerId(customer.id);
+    setCustomerName(customer.name || '');
+    setPhone(customer.phone || '');
   };
 
   if (loading && isEdit) {
@@ -610,21 +655,48 @@ export default function QuoteForm() {
             ) : null}
           </div>
         </div>
-        <div className="flex w-full flex-col-reverse gap-2 sm:w-auto sm:flex-row sm:justify-end">
+        <div className="flex w-full flex-col-reverse gap-2 sm:w-auto sm:flex-row sm:flex-wrap sm:justify-end">
           <Button
             variant="outline"
             className="h-10 w-full touch-manipulation sm:h-9 sm:w-auto"
-            onClick={() => navigate(-1)}
+            aria-label={t('quotes.cancel')}
+            onClick={() => navigate('/quotes')}
           >
             {t('quotes.cancel')}
           </Button>
-          <Button
-            className="h-10 w-full touch-manipulation sm:h-9 sm:w-auto"
-            onClick={handleSave}
-            disabled={loading}
-          >
-            {isEdit ? t('quotes.save') : t('quotes.create')}
-          </Button>
+          {isEdit ? (
+            <Button
+              className="h-10 w-full touch-manipulation sm:h-9 sm:w-auto"
+              onClick={() => void handleSave('confirmed')}
+              disabled={loading}
+              aria-label={t('quotes.save')}
+            >
+              {loading ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
+              {t('quotes.save')}
+            </Button>
+          ) : (
+            <>
+              <Button
+                variant="secondary"
+                className="h-10 w-full touch-manipulation sm:h-9 sm:w-auto"
+                onClick={() => void handleSave('draft')}
+                disabled={loading}
+                aria-label={t('quotes.save_draft')}
+              >
+                {loading ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
+                {t('quotes.save_draft')}
+              </Button>
+              <Button
+                className="h-10 w-full touch-manipulation sm:h-9 sm:w-auto"
+                onClick={() => void handleSave('confirmed')}
+                disabled={loading}
+                aria-label={t('quotes.create')}
+              >
+                {loading ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
+                {t('quotes.create')}
+              </Button>
+            </>
+          )}
         </div>
       </div>
 
@@ -1076,13 +1148,31 @@ export default function QuoteForm() {
             </CardHeader>
             <CardContent className="space-y-3 pt-0">
               <div>
+                <Label className="text-sm">{t('quotes.select_customer')}</Label>
+                <div className="mt-1">
+                  <SearchableCustomerCombobox
+                    value={customerId}
+                    onValueChange={(value) => {
+                      setCustomerId(value);
+                      if (!value) return;
+                    }}
+                    onCustomerPick={handleCustomerPick}
+                    placeholder={t('quotes.select_customer_placeholder')}
+                    triggerClassName="h-10"
+                  />
+                </div>
+              </div>
+              <div>
                 <Label htmlFor="customer-name" className="text-sm">
                   {t('quotes.customer_name_required')}
                 </Label>
                 <Input
                   id="customer-name"
                   value={customerName}
-                  onChange={(e) => setCustomerName(e.target.value)}
+                  onChange={(e) => {
+                    setCustomerName(e.target.value);
+                    if (customerId) setCustomerId('');
+                  }}
                   placeholder={t('quotes.customer_placeholder')}
                   className="mt-1"
                   autoComplete="name"
@@ -1102,6 +1192,20 @@ export default function QuoteForm() {
                   autoComplete="tel"
                 />
               </div>
+              {!customerId && customerName.trim() ? (
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  className="h-9 w-full touch-manipulation"
+                  onClick={() => void handleCreateCustomer()}
+                  disabled={creatingCustomer}
+                  aria-label={t('quotes.create_customer')}
+                >
+                  {creatingCustomer ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Plus className="mr-2 h-4 w-4" />}
+                  {t('quotes.create_customer')}
+                </Button>
+              ) : null}
             </CardContent>
           </Card>
 

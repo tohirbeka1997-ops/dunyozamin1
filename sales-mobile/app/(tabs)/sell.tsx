@@ -3,12 +3,13 @@ import { useFocusEffect, useRouter } from 'expo-router';
 import {
   Alert,
   FlatList,
+  Image,
   Pressable,
   StyleSheet,
   Text,
   View,
 } from 'react-native';
-import { fetchCurrentShift, searchProducts } from '@/api/client';
+import { fetchCurrentShift } from '@/api/client';
 import { AddToCartModal } from '@/components/AddToCartModal';
 import { BarcodeScanModal } from '@/components/BarcodeScanModal';
 import { CustomerPickerBanner } from '@/components/CustomerPicker';
@@ -16,7 +17,10 @@ import { SearchSpinnerSlot } from '@/components/SearchSpinnerSlot';
 import { SearchWithScan } from '@/components/SearchWithScan';
 import { useDebouncedSearch } from '@/hooks/useDebouncedSearch';
 import { t } from '@/i18n';
-import { lookupProductByCode } from '@/lib/barcodeLookup';
+import {
+  lookupProductByCodeWithCache,
+  searchProductsWithCache,
+} from '@/lib/productSearch';
 import { useCartItemCount } from '@/store/cart';
 import type { PosProduct } from '@/types/sales';
 
@@ -35,12 +39,22 @@ const ProductRow = memo(function ProductRow({
 }) {
   const stock = Number(item.current_stock ?? 0);
   const out = stock <= 0;
+  const imageUrl = typeof item.image_url === 'string' ? item.image_url.trim() : '';
   return (
     <Pressable
       style={[styles.product, out && styles.productOut]}
       onPress={() => !out && onAdd(item)}
       disabled={out}
     >
+      {imageUrl ? (
+        <Image source={{ uri: imageUrl }} style={styles.thumb} />
+      ) : (
+        <View style={styles.thumbPlaceholder}>
+          <Text style={styles.thumbPlaceholderText}>
+            {(item.name || '?').slice(0, 1).toUpperCase()}
+          </Text>
+        </View>
+      )}
       <View style={{ flex: 1 }}>
         <Text style={styles.productName} numberOfLines={1}>
           {item.name}
@@ -65,7 +79,7 @@ export default function SellScreen() {
   const [scanOpen, setScanOpen] = useState(false);
   const [scanBusy, setScanBusy] = useState(false);
 
-  const searchFetcher = useCallback((q: string) => searchProducts(q), []);
+  const searchFetcher = useCallback((q: string) => searchProductsWithCache(q), []);
   const { results, searching } = useDebouncedSearch(query, searchFetcher);
 
   useFocusEffect(
@@ -93,7 +107,7 @@ export default function SellScreen() {
   const handleBarcodeScan = useCallback(async (code: string) => {
     setScanBusy(true);
     try {
-      const product = await lookupProductByCode(code);
+      const product = await lookupProductByCodeWithCache(code);
       if (!product) {
         Alert.alert(t('scanBarcode'), t('barcodeNotFound'));
         return;
@@ -229,12 +243,28 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     backgroundColor: '#fff',
     marginTop: 8,
-    padding: 14,
+    padding: 12,
     borderRadius: 10,
     borderWidth: 1,
     borderColor: '#e2e8f0',
+    gap: 10,
   },
   productOut: { opacity: 0.5 },
+  thumb: {
+    width: 44,
+    height: 44,
+    borderRadius: 8,
+    backgroundColor: '#f1f5f9',
+  },
+  thumbPlaceholder: {
+    width: 44,
+    height: 44,
+    borderRadius: 8,
+    backgroundColor: '#e2e8f0',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  thumbPlaceholderText: { fontSize: 16, fontWeight: '700', color: '#64748b' },
   productName: { fontSize: 15, fontWeight: '600', color: '#0f172a' },
   productMeta: { fontSize: 13, color: '#64748b', marginTop: 2 },
   addBtn: { color: '#166534', fontWeight: '700', fontSize: 13 },

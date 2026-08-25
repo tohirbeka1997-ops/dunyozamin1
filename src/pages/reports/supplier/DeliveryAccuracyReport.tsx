@@ -22,7 +22,7 @@ import { Badge } from '@/components/ui/badge';
 import { ArrowLeft, Truck, Clock, AlertTriangle, CheckCircle2, XCircle } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 import { handleIpcResponse, isElectron, requireElectron } from '@/utils/electron';
-import { todayYMD, formatDate } from '@/lib/datetime';
+import { todayYMD, ymdShiftMonths, formatDate } from '@/lib/datetime';
 import { formatMoneyUZS } from '@/lib/format';
 import { useReportAutoRefresh } from '@/hooks/useReportAutoRefresh';
 
@@ -61,9 +61,7 @@ export default function DeliveryAccuracyReport() {
   const [loading, setLoading] = useState(true);
   const [summaryRows, setSummaryRows] = useState<DeliveryAccuracy[]>([]);
   const [detailRows, setDetailRows] = useState<DeliveryDetail[]>([]);
-  const [dateFrom, setDateFrom] = useState(
-    new Date(new Date().setMonth(new Date().getMonth() - 3)).toISOString().split('T')[0]
-  );
+  const [dateFrom, setDateFrom] = useState(ymdShiftMonths(todayYMD(), -3));
   const [dateTo, setDateTo] = useState(todayYMD());
   const [searchTerm, setSearchTerm] = useState('');
   const [viewMode, setViewMode] = useState<'summary' | 'details'>('summary');

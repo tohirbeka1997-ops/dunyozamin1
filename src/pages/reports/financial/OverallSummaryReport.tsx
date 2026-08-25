@@ -19,6 +19,8 @@ import { aggregatePurchaseOrders, formatMoney, splitSupplierBalances } from '@/l
 import { DualCurrencyAmount } from '@/components/common/DualCurrencyAmount';
 import { formatDateTime, todayYMD } from '@/lib/datetime';
 import { useReportAutoRefresh } from '@/hooks/useReportAutoRefresh';
+import SearchableCombobox from '@/components/common/SearchableCombobox';
+import { useTranslation } from 'react-i18next';
 import {
   getDashboardAnalytics,
   getInventoryValuationSummary,
@@ -48,6 +50,7 @@ function dateToYMDLocal(d: Date) {
 export default function OverallSummaryReport() {
   const navigate = useNavigate();
   const { toast } = useToast();
+  const { t } = useTranslation();
 
   const [loading, setLoading] = useState(true);
   const [period, setPeriod] = useState<Period>('daily');
@@ -63,13 +66,25 @@ export default function OverallSummaryReport() {
     out_of_stock_count: number;
     low_stock_count: number;
   }>(null);
-  const [customerDebt, setCustomerDebt] = useState<number>(0);
+  const [customerDebtUzs, setCustomerDebtUzs] = useState(0);
+  const [customerDebtUsd, setCustomerDebtUsd] = useState(0);
   const [supplierPayablesUzs, setSupplierPayablesUzs] = useState(0);
   const [supplierPayablesUsd, setSupplierPayablesUsd] = useState(0);
   const [supplierCreditsUzs, setSupplierCreditsUzs] = useState(0);
   const [supplierCreditsUsd, setSupplierCreditsUsd] = useState(0);
   const [warehouses, setWarehouses] = useState<Warehouse[]>([]);
   const [warehouseId, setWarehouseId] = useState<string>('all');
+
+  const warehouseOptions = useMemo(
+    () => [
+      { value: 'all', label: t('combobox.all_warehouses', 'Barcha omborlar') },
+      ...warehouses.map((warehouse) => ({
+        value: warehouse.id,
+        label: warehouse.name,
+      })),
+    ],
+    [warehouses, t]
+  );
 
   const selectedRange = useMemo(() => {
     const today = todayYMD();
@@ -143,7 +158,8 @@ export default function OverallSummaryReport() {
       setAnalytics(a);
       setPurchaseOrders((pos || []) as any);
       setInventorySummary(inv);
-      setCustomerDebt(Number(custDebt || 0));
+      setCustomerDebtUzs(Number(custDebt?.debt_uzs || 0));
+      setCustomerDebtUsd(Number(custDebt?.debt_usd || 0));
 
       const split = splitSupplierBalances(suppliers || []);
       setSupplierPayablesUzs(split.payablesUzs);
@@ -170,8 +186,8 @@ export default function OverallSummaryReport() {
 
   const netDebtPositionUzs = useMemo(() => {
     // UZS-only net: customer AR (UZS) minus UZS supplier payables (USD payables shown separately).
-    return Number(customerDebt || 0) - Number(supplierPayablesUzs || 0);
-  }, [customerDebt, supplierPayablesUzs]);
+    return Number(customerDebtUzs || 0) - Number(supplierPayablesUzs || 0);
+  }, [customerDebtUzs, supplierPayablesUzs]);
 
   const rangeLabel = useMemo(() => {
     const from = selectedRange.fromYMD;
@@ -312,19 +328,14 @@ export default function OverallSummaryReport() {
 
             <div>
               <label className="text-sm text-muted-foreground">Ombor</label>
-              <Select value={warehouseId} onValueChange={setWarehouseId}>
-                <SelectTrigger>
-                  <SelectValue placeholder="Barcha omborlar" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="all">Barcha omborlar</SelectItem>
-                  {warehouses.map((w) => (
-                    <SelectItem key={w.id} value={w.id}>
-                      {w.name}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+              <SearchableCombobox
+                value={warehouseId}
+                onValueChange={setWarehouseId}
+                options={warehouseOptions}
+                placeholder={t('combobox.all_warehouses', 'Barcha omborlar')}
+                searchPlaceholder={t('combobox.search_warehouse', "Ombor nomi bo'yicha qidirish...")}
+                emptyMessage={t('combobox.no_warehouse', 'Ombor topilmadi')}
+              />
             </div>
 
             <div className="flex items-end gap-2">
@@ -473,7 +484,15 @@ export default function OverallSummaryReport() {
             </div>
             <div className="flex items-center justify-between">
               <span className="text-muted-foreground">Mijozlardan qarz (hozir)</span>
-              <span className="font-bold">{formatMoneyUZS(customerDebt)}</span>
+              {customerDebtUsd > 0 ? (
+                <DualCurrencyAmount
+                  uzs={customerDebtUzs}
+                  usd={customerDebtUsd}
+                  className="font-bold"
+                />
+              ) : (
+                <span className="font-bold">{formatMoneyUZS(customerDebtUzs)}</span>
+              )}
             </div>
             <div className="flex items-center justify-between">
               <span className="text-muted-foreground">Yetkazib beruvchiga qarz (UZS)</span>

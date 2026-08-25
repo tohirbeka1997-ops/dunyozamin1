@@ -33,6 +33,12 @@ export default function PurchaseSupplierReportsHub() {
         icon: <ShoppingCart className="h-4 w-4 opacity-90" />,
       },
       {
+        title: "To'lanishi kerak",
+        description: 'Yetkazib beruvchi qarzlari muddati',
+        path: '/reports/purchase/due',
+        icon: <CheckCircle2 className="h-4 w-4 opacity-90" />,
+      },
+      {
         title: 'Yetkazib beruvchi samaradorligi',
         description: 'Yetkazib beruvchilar kesimida tahlil',
         path: '/reports/purchase/suppliers',

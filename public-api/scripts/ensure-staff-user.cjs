@@ -22,7 +22,7 @@
  *   STAFF_SEED_USERNAME   default: sotuvchi
  *   STAFF_SEED_PASSWORD   default: Sotuvchi#2026
  *   STAFF_SEED_FULLNAME   default: Sotuvchi (POS)
- *   STAFF_SEED_ROLE       default: sales   (must be admin|manager|sales)
+ *   STAFF_SEED_ROLE       default: sales   (must be admin|manager|sales|cashier)
  *
  * Usage (PowerShell, repo root):
  *   node public-api/scripts/ensure-staff-user.cjs
@@ -60,7 +60,7 @@ function fail(msg) {
 
 function main() {
   if (!isStaffRoleAllowed(ROLE)) {
-    fail(`STAFF_SEED_ROLE="${ROLE}" not allowed. Use admin | manager | sales.`);
+    fail(`STAFF_SEED_ROLE="${ROLE}" not allowed. Use admin | manager | sales | cashier.`);
   }
 
   const dbPath = resolvePosDbPath();

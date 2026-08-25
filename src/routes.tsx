@@ -32,6 +32,8 @@ import ForgotPassword from './pages/ForgotPassword';
 const CourierOrders = lazy(() => import('./pages/CourierOrders'));
 const Inventory = lazy(() => import('./pages/Inventory'));
 const InventoryDetail = lazy(() => import('./pages/InventoryDetail'));
+const InventoryRevisions = lazy(() => import('./pages/InventoryRevisions'));
+const InventoryRevisionDetail = lazy(() => import('./pages/InventoryRevisionDetail'));
 const PurchaseOrders = lazy(() => import('./pages/PurchaseOrders'));
 const PurchaseOrderForm = lazy(() => import('./pages/PurchaseOrderForm'));
 const PurchaseOrderDetail = lazy(() => import('./pages/PurchaseOrderDetail'));
@@ -65,6 +67,7 @@ const InventoryAdvancedReport = lazy(() => import('./pages/reports/inventory/Inv
 const ProductTraceabilityReport = lazy(() => import('./pages/reports/inventory/ProductTraceabilityReport'));
 const StockHealthReport = lazy(() => import('./pages/reports/inventory/StockHealthReport'));
 const PurchasePlanningReport = lazy(() => import('./pages/reports/inventory/PurchasePlanningReport'));
+const AbcAnalysisReport = lazy(() => import('./pages/reports/inventory/AbcAnalysisReport'));
 const ActSverkaReport = lazy(() => import('./pages/reports/act-sverka/ActSverkaReport'));
 const ProductActSverkaReport = lazy(() => import('./pages/reports/inventory/ProductActSverkaReport'));
 const OverallSummaryReport = lazy(() => import('./pages/reports/financial/OverallSummaryReport'));
@@ -87,6 +90,7 @@ const PurchaseVsSoldReport = lazy(() => import('./pages/reports/supplier/Purchas
 const CashierPerformanceReport = lazy(() => import('./pages/reports/employee/CashierPerformanceReport'));
 const CashierErrorsReport = lazy(() => import('./pages/reports/employee/CashierErrorsReport'));
 const ShiftProductivityReport = lazy(() => import('./pages/reports/employee/ShiftProductivityReport'));
+const ShiftClosingsReport = lazy(() => import('./pages/reports/employee/ShiftClosingsReport'));
 const FraudSignalsReport = lazy(() => import('./pages/reports/employee/FraudSignalsReport'));
 const DeviceHealthReport = lazy(() => import('./pages/reports/system/DeviceHealthReport'));
 const AuditLogReport = lazy(() => import('./pages/reports/system/AuditLogReport'));
@@ -95,6 +99,7 @@ const ExecutiveDashboard = lazy(() => import('./pages/reports/executive/Executiv
 const LoginActivityReport = lazy(() => import('./pages/reports/employee/LoginActivityReport'));
 const PurchaseOrderSummaryReport = lazy(() => import('./pages/reports/purchase/PurchaseOrderSummaryReport'));
 const SupplierPerformanceReport = lazy(() => import('./pages/reports/purchase/SupplierPerformanceReport'));
+const SupplierPaymentsDueReport = lazy(() => import('./pages/reports/purchase/SupplierPaymentsDueReport'));
 const ExportManager = lazy(() => import('./pages/reports/export/ExportManager'));
 const SalesReportsHub = lazy(() => import('./pages/reports/hubs/SalesReportsHub'));
 const WebOnlineSalesReport = lazy(() => import('./pages/reports/sales/WebOnlineSalesReport'));
@@ -110,6 +115,7 @@ const TechAuditReportsHub = lazy(() => import('./pages/reports/hubs/TechAuditRep
 const ReceiptBarcodePage = lazy(() => import('./pages/tools/ReceiptBarcodePage'));
 const BarcodeDesignerPage = lazy(() => import('./pages/tools/BarcodeDesignerPage'));
 const BarcodeCenterPage = lazy(() => import('./pages/barcodes/BarcodeCenterPage'));
+const BarcodeStudioPage = lazy(() => import('./pages/barcodes/BarcodeStudioPage'));
 const ReceiptDesignerPage = lazy(() => import('./pages/barcodes/ReceiptDesignerPage'));
 const ProductBarcodeServicePage = lazy(() => import('./pages/barcodes/ProductBarcodeServicePage'));
 const ScaleBarcodeServicePage = lazy(() => import('./pages/barcodes/ScaleBarcodeServicePage'));
@@ -404,16 +410,16 @@ const routes: RouteConfig[] = [
     requireAuth: true,
   },
   {
-    name: 'Quote Detail',
-    path: '/quotes/:id',
-    element: lazyElement(QuoteDetail),
+    name: 'Edit Quote',
+    path: '/quotes/:id/edit',
+    element: lazyElement(QuoteForm),
     visible: false,
     requireAuth: true,
   },
   {
-    name: 'Edit Quote',
-    path: '/quotes/:id/edit',
-    element: lazyElement(QuoteForm),
+    name: 'Quote Detail',
+    path: '/quotes/:id',
+    element: lazyElement(QuoteDetail),
     visible: false,
     requireAuth: true,
   },
@@ -483,6 +489,22 @@ const routes: RouteConfig[] = [
     allowedRoles: ['admin', 'manager'],
   },
   {
+    name: 'Inventory Revision',
+    path: '/inventory/revisions',
+    element: lazyElement(InventoryRevisions),
+    visible: true,
+    requireAuth: true,
+    allowedRoles: ['admin', 'manager'],
+  },
+  {
+    name: 'Inventory Revision Detail',
+    path: '/inventory/revisions/:id',
+    element: lazyElement(InventoryRevisionDetail),
+    visible: false,
+    requireAuth: true,
+    allowedRoles: ['admin', 'manager'],
+  },
+  {
     name: 'Inventory Detail',
     path: '/inventory/:id',
     element: lazyElement(InventoryDetail),
@@ -495,6 +517,14 @@ const routes: RouteConfig[] = [
     path: '/purchase-orders',
     element: lazyElement(PurchaseOrders),
     visible: true,
+    requireAuth: true,
+    allowedRoles: ['admin', 'manager'],
+  },
+  {
+    name: 'To\'lanishi kerak',
+    path: '/purchase-orders/due',
+    element: lazyElement(SupplierPaymentsDueReport),
+    visible: false,
     requireAuth: true,
     allowedRoles: ['admin', 'manager'],
   },
@@ -687,6 +717,14 @@ const routes: RouteConfig[] = [
     name: 'Bozorga borish hisoboti',
     path: '/reports/inventory/purchase-planning',
     element: lazyElement(PurchasePlanningReport),
+    visible: false,
+    requireAuth: true,
+    allowedRoles: ['admin', 'manager'],
+  },
+  {
+    name: 'ABC tahlil (sotuv bo‘yicha)',
+    path: '/reports/inventory/abc-analysis',
+    element: lazyElement(AbcAnalysisReport),
     visible: false,
     requireAuth: true,
     allowedRoles: ['admin', 'manager'],
@@ -886,6 +924,14 @@ const routes: RouteConfig[] = [
     allowedRoles: ['admin', 'manager'],
   },
   {
+    name: 'Smena yopilishlari',
+    path: '/reports/employee/shift-closings',
+    element: lazyElement(ShiftClosingsReport),
+    visible: false,
+    requireAuth: true,
+    allowedRoles: ['admin', 'manager'],
+  },
+  {
     name: 'Firibgarlik signallari',
     path: '/reports/employee/fraud-signals',
     element: lazyElement(FraudSignalsReport),
@@ -897,6 +943,14 @@ const routes: RouteConfig[] = [
     name: 'Xaridlar xulosasi',
     path: '/reports/purchase/summary',
     element: lazyElement(PurchaseOrderSummaryReport),
+    visible: false,
+    requireAuth: true,
+    allowedRoles: ['admin', 'manager'],
+  },
+  {
+    name: 'To\'lanishi kerak',
+    path: '/reports/purchase/due',
+    element: lazyElement(SupplierPaymentsDueReport),
     visible: false,
     requireAuth: true,
     allowedRoles: ['admin', 'manager'],
@@ -1066,6 +1120,14 @@ const routes: RouteConfig[] = [
     name: 'Receipt & Barcode Tools',
     path: '/tools/receipt-barcode',
     element: lazyElement(ReceiptBarcodePage),
+    visible: false,
+    requireAuth: true,
+    allowedRoles: ['admin', 'manager'],
+  },
+  {
+    name: 'Barcode Studio',
+    path: '/barcodes/studio',
+    element: lazyElement(BarcodeStudioPage),
     visible: false,
     requireAuth: true,
     allowedRoles: ['admin', 'manager'],

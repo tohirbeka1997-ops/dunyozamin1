@@ -36,4 +36,25 @@ assert.strictEqual(
   'Net Profit = Gross − Returns Revenue + Returns COGS − Expenses − Commission',
 );
 
+{
+  const rows = {
+    'payment_fees.payme.percent': '2.5',
+    'payment_fees.payme.fixed': '50',
+  };
+  const stubDb = {
+    prepare(sql) {
+      if (/sqlite_master/.test(sql)) return { get: () => null, all: () => [] };
+      if (/PRAGMA table_info/.test(sql)) return { all: () => [] };
+      if (/SELECT value FROM settings WHERE key = \?/.test(sql)) {
+        return { get: (key) => (rows[key] != null ? { value: rows[key] } : undefined) };
+      }
+      return { get: () => null, all: () => [] };
+    },
+  };
+  const { getPaymentFeeRates } = require('./paymentFee.cjs');
+  const r = getPaymentFeeRates(stubDb, 'payme');
+  assert.strictEqual(r.percent, 2.5);
+  assert.strictEqual(r.fixed, 50);
+}
+
 console.log('paymentFee.test.cjs: all passed');

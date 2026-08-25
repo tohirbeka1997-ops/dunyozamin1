@@ -232,6 +232,15 @@ function registerReportsHandlers(services) {
     })
   );
 
+  console.log('Registering pos:reports:bankCashReconciliation handler...');
+  ipcMain.removeHandler('pos:reports:bankCashReconciliation');
+  ipcMain.handle(
+    'pos:reports:bankCashReconciliation',
+    wrapHandler(async (_event, filters) => {
+      return reports.getBankCashReconciliation(filters || {});
+    })
+  );
+
   console.log('Registering pos:reports:cashierPerformance handler...');
   ipcMain.removeHandler('pos:reports:cashierPerformance');
   ipcMain.handle(
@@ -275,6 +284,24 @@ function registerReportsHandlers(services) {
     'pos:reports:supplierAging',
     wrapHandler(async (_event) => {
       return reports.getSupplierAging();
+    })
+  );
+
+  console.log('Registering pos:reports:agingWarnings handler...');
+  ipcMain.removeHandler('pos:reports:agingWarnings');
+  ipcMain.handle(
+    'pos:reports:agingWarnings',
+    wrapHandler(async (_event) => {
+      return reports.getAgingWarnings();
+    })
+  );
+
+  console.log('Registering pos:reports:supplierPaymentsDue handler...');
+  ipcMain.removeHandler('pos:reports:supplierPaymentsDue');
+  ipcMain.handle(
+    'pos:reports:supplierPaymentsDue',
+    wrapHandler(async (_event, filters) => {
+      return reports.listSupplierPaymentsDue(filters || {});
     })
   );
 
@@ -357,6 +384,15 @@ function registerReportsHandlers(services) {
     'pos:reports:purchasePlanning',
     wrapHandler(async (_event, filters) => {
       return reports.getPurchasePlanning(filters || {});
+    })
+  );
+
+  console.log('Registering pos:reports:abcAnalysis handler...');
+  ipcMain.removeHandler('pos:reports:abcAnalysis');
+  ipcMain.handle(
+    'pos:reports:abcAnalysis',
+    wrapHandler(async (_event, filters) => {
+      return reports.getAbcAnalysis(filters || {});
     })
   );
 

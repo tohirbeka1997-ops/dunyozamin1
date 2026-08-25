@@ -29,6 +29,7 @@ import PageBreadcrumb from '@/components/common/PageBreadcrumb';
 import { getElectronAPI, handleIpcResponse } from '@/utils/electron';
 import { getProducts } from '@/db/api';
 import { formatMoneyUZS } from '@/lib/format';
+import { todayYMD, tashkentLocalToUtcIso, utcIsoToTashkentLocal } from '@/lib/datetime';
 
 // ─── Types mirror the service shape (kept local — small surface) ──────────
 type Banner = {
@@ -52,7 +53,13 @@ type DailyDeal = {
   featured_date: string;
   product_id: string;
   badge_text: string | null;
-  product: { id: string; name: string; price_uzs: number; image_url: string | null } | null;
+  product: {
+    id: string;
+    name: string;
+    price_uzs: number;
+    image_url: string | null;
+    is_active?: boolean;
+  } | null;
 } | null;
 
 type DailyDealHistory = {
@@ -71,7 +78,9 @@ const THEME_OPTIONS: Array<{ value: Banner['theme']; label: string; preview: str
 ];
 
 function todayISO(): string {
-  return new Date().toISOString().slice(0, 10);
+  // Shop timezone (Asia/Tashkent) "today" so the admin default date matches
+  // the public mini-app daily-deal read near midnight (UTC+5 boundary).
+  return todayYMD();
 }
 
 function ipcApi() {
@@ -381,10 +390,21 @@ export default function MarketplaceContent() {
               </div>
               <div className="flex-1 min-w-0">
                 <div className="text-xs uppercase tracking-wider text-amber-700">{dealDate}</div>
-                <div className="truncate font-semibold">{dailyDealQuery.data.product.name}</div>
+                <div className="flex items-center gap-2">
+                  <span className="truncate font-semibold">{dailyDealQuery.data.product.name}</span>
+                  {dailyDealQuery.data.product.is_active === false && (
+                    <Badge variant="destructive" className="shrink-0">mahsulot nofaol</Badge>
+                  )}
+                </div>
                 <div className="text-sm font-bold text-amber-700">
                   {formatMoneyUZS(dailyDealQuery.data.product.price_uzs)} so‘m
                 </div>
+                {dailyDealQuery.data.product.is_active === false && (
+                  <p className="mt-1 text-xs text-destructive">
+                    Bu mahsulot arxivlangan/nofaol — mini-app uni ko‘rsatmaydi va avtomatik
+                    trendingga qaytadi. Faol mahsulot tanlang.
+                  </p>
+                )}
               </div>
               <div className="flex flex-col gap-1">
                 <Button size="sm" variant="outline" onClick={() => setPickerOpen(true)}>
@@ -678,9 +698,9 @@ function BannerEditor({
                 <Input
                   id="starts_at"
                   type="datetime-local"
-                  value={(value.starts_at || '').slice(0, 16)}
+                  value={utcIsoToTashkentLocal(value.starts_at)}
                   onChange={(e) =>
-                    onChange({ ...value, starts_at: e.target.value ? `${e.target.value}:00` : null })
+                    onChange({ ...value, starts_at: tashkentLocalToUtcIso(e.target.value) })
                   }
                 />
               </div>
@@ -689,9 +709,9 @@ function BannerEditor({
                 <Input
                   id="ends_at"
                   type="datetime-local"
-                  value={(value.ends_at || '').slice(0, 16)}
+                  value={utcIsoToTashkentLocal(value.ends_at)}
                   onChange={(e) =>
-                    onChange({ ...value, ends_at: e.target.value ? `${e.target.value}:00` : null })
+                    onChange({ ...value, ends_at: tashkentLocalToUtcIso(e.target.value) })
                   }
                 />
               </div>

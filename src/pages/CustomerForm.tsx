@@ -3,6 +3,7 @@ import { useLocation, useNavigate, useParams, useSearchParams } from 'react-rout
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
+import NumberInput from '@/components/common/NumberInput';
 import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
 import {
@@ -44,6 +45,7 @@ export default function CustomerForm() {
     status: 'active' as 'active' | 'inactive',
     notes: '',
     bonus_points: 0,
+    telegram: '',
   });
 
   useEffect(() => {
@@ -57,14 +59,26 @@ export default function CustomerForm() {
 
     try {
       setLoading(true);
-      // Prefer list lookup first: in some environments `customers.get(id)` may fail
-      // while list API returns valid records.
-      const allCustomers = await getCustomers();
-      let customer = allCustomers.find((c) => String((c as any).id) === String(id));
-      if (!customer) {
+      // Prefer get-by-id first; fall back to list scan for environments where get(id) fails.
+      let customer: Customer | null | undefined = null;
+      try {
         customer = await getCustomerById(id);
+      } catch {
+        customer = null;
+      }
+      if (!customer) {
+        const allCustomers = await getCustomers();
+        customer = allCustomers.find((c) => String((c as any).id) === String(id));
       }
       if (!customer) throw new Error('Customer not found');
+
+      const tgUsername = (customer as Customer).telegram_username;
+      const tgId = (customer as Customer).telegram_id;
+      const telegramDisplay = tgUsername
+        ? `@${String(tgUsername).replace(/^@+/, '')}`
+        : tgId != null && String(tgId).trim() !== ''
+          ? String(tgId)
+          : '';
 
       setFormData({
         name: customer.name,
@@ -78,6 +92,7 @@ export default function CustomerForm() {
         status: customer.status === 'inactive' ? 'inactive' : 'active',
         notes: customer.notes || '',
         bonus_points: Number((customer as Customer).bonus_points) || 0,
+        telegram: telegramDisplay,
       });
     } catch (error) {
       toast({
@@ -113,6 +128,36 @@ export default function CustomerForm() {
       return;
     }
 
+    const phoneInput = formData.phone?.trim();
+    if (phoneInput) {
+      const digits = phoneInput.replace(/\D/g, '');
+      const validPhone =
+        digits.length === 9 || (digits.length === 12 && digits.startsWith('998'));
+      if (!validPhone) {
+        toast({
+          title: 'Validatsiya xatosi',
+          description: "Telefon raqami noto'g'ri formatda. Masalan: +998 90 123 45 67",
+          variant: 'destructive',
+        });
+        return;
+      }
+    }
+
+    const telegramInput = formData.telegram?.trim() || '';
+    if (telegramInput) {
+      const isNumeric = /^-?\d+$/.test(telegramInput);
+      const username = telegramInput.replace(/^@+/, '');
+      const isUsername = /^[A-Za-z][A-Za-z0-9_]{4,31}$/.test(username);
+      if (!isNumeric && !isUsername) {
+        toast({
+          title: 'Validatsiya xatosi',
+          description: 'Telegram: @username (masalan @ali) yoki raqamli chat id kiriting',
+          variant: 'destructive',
+        });
+        return;
+      }
+    }
+
     if (saving) return;
 
     try {
@@ -130,8 +175,9 @@ export default function CustomerForm() {
           tax_number: formData.tax_number || null,
           status: formData.status,
           notes: formData.notes || null,
+          telegram: formData.telegram.trim() || null,
           ...(isAdmin ? { bonus_points: Math.max(0, Math.floor(Number(formData.bonus_points) || 0)) } : {}),
-        });
+        } as Partial<Customer> & { telegram?: string | null });
         toast({
           title: 'Muvaffaqiyatli',
           description: 'Mijoz muvaffaqiyatli yangilandi',
@@ -163,6 +209,7 @@ export default function CustomerForm() {
           tax_number: formData.tax_number || null,
           status: formData.status,
           notes: formData.notes || null,
+          telegram: formData.telegram.trim() || null,
           ...(isAdmin ? { bonus_points: Math.max(0, Math.floor(Number(formData.bonus_points) || 0)) } : {}),
         });
         toast({
@@ -287,20 +334,19 @@ export default function CustomerForm() {
                 {(id || isAdmin) && (
                   <div className="space-y-2">
                     <Label htmlFor="bonus_points">Bonus ball</Label>
-                    <Input
+                    <NumberInput
                       id="bonus_points"
-                      type="number"
-                      min={0}
-                      step={1}
-                      value={formData.bonus_points}
-                      readOnly={!isAdmin}
-                      disabled={!isAdmin}
-                      onChange={(e) =>
+                      value={formData.bonus_points > 0 ? formData.bonus_points : null}
+                      onValueChange={(v) =>
                         setFormData((prev) => ({
                           ...prev,
-                          bonus_points: Math.max(0, Math.floor(Number(e.target.value) || 0)),
+                          bonus_points: Math.max(0, Math.floor(v ?? 0)),
                         }))
                       }
+                      allowZero
+                      min={0}
+                      readOnly={!isAdmin}
+                      disabled={!isAdmin}
                     />
                     <p className="text-xs text-muted-foreground">
                       {isAdmin
@@ -319,6 +365,20 @@ export default function CustomerForm() {
                     onChange={(e) => handleChange('phone', e.target.value)}
                     placeholder="90 123 45 67"
                   />
+                </div>
+
+                <div className="space-y-2">
+                  <Label htmlFor="telegram">Telegram</Label>
+                  <Input
+                    id="telegram"
+                    value={formData.telegram}
+                    onChange={(e) => handleChange('telegram', e.target.value)}
+                    placeholder="@username yoki chat id"
+                    autoComplete="off"
+                  />
+                  <p className="text-xs text-muted-foreground">
+                    Nasiya eslatmasi uchun: @username yoki raqamli chat id. Mini App bogʻlangan boʻlsa, u ustuvor.
+                  </p>
                 </div>
 
                 <div className="space-y-2">

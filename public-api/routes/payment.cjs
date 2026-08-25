@@ -7,6 +7,12 @@ const { handleClickCallback } = require('../lib/click.cjs');
 const { buildPaymeCheckoutUrl, buildClickCheckoutUrl } = require('../lib/paymentLinks.cjs');
 const { notifyOrderPaid } = require('../lib/telegramNotify.cjs');
 const { awardPaidOrderPoints } = require('../lib/marketplaceLoyalty.cjs');
+const { validate } = require('../middleware/validate.cjs');
+const {
+  paymentCreateBodySchema,
+  paymentOrderIdParamsSchema,
+} = require('../schemas/payment.schema.cjs');
+const { logger } = require('../lib/logger.cjs');
 
 function logPaymentSafe(db, orderId, provider, event, payload) {
   try {
@@ -18,7 +24,7 @@ function logPaymentSafe(db, orderId, provider, event, payload) {
     `
     ).run(orderId, provider, event, JSON.stringify(payload));
   } catch (e) {
-    console.warn('[payment] payment_logs:', e.message);
+    logger.warn({ err: e.message }, '[payment] payment_logs');
   }
 }
 
@@ -48,7 +54,7 @@ async function notifyAfterPaid(dbGetter, orderId) {
     earned = loyalty.earned_points || 0;
     balance = loyalty.balance;
   } catch (e) {
-    console.warn('[payment] loyalty award failed:', e.message || String(e));
+    logger.warn({ err: e.message || String(e) }, '[payment] loyalty award failed');
   }
   await notifyOrderPaid({
     botToken: token,
@@ -89,7 +95,7 @@ function mountPaymentRoutes(dbGetter) {
 
       res.json(out.body);
     } catch (e) {
-      console.error('[payment] payme callback', e);
+      logger.error({ err: e }, '[payment] payme callback');
       res.status(500).json({ error: 'internal_error' });
     }
   });
@@ -119,14 +125,14 @@ function mountPaymentRoutes(dbGetter) {
 
       res.json(result);
     } catch (e) {
-      console.error('[payment] click callback', e);
+      logger.error({ err: e }, '[payment] click callback');
       res.status(500).json({ error: 'internal_error' });
     }
   });
 
-  router.get('/status/:orderId', bearerAuth, (req, res) => {
+  router.get('/status/:orderId', bearerAuth, validate({ params: paymentOrderIdParamsSchema }), (req, res) => {
     try {
-      const oid = Number.parseInt(String(req.params.orderId), 10);
+      const oid = req.params.orderId;
       if (!Number.isFinite(oid)) {
         res.status(400).json({ error: 'invalid_id' });
         return;
@@ -168,14 +174,14 @@ function mountPaymentRoutes(dbGetter) {
         res.json(row);
         return;
       }
-      console.error('[payment] GET status', e);
+      logger.error({ err: e }, '[payment] GET status');
       res.status(500).json({ error: 'internal_error' });
     }
   });
 
-  router.post('/payme/create', jsonBody, bearerAuth, (req, res) => {
+  router.post('/payme/create', jsonBody, bearerAuth, validate({ body: paymentCreateBodySchema }), (req, res) => {
     try {
-      const orderId = Number.parseInt(String(req.body?.order_id ?? ''), 10);
+      const orderId = req.body.order_id;
       if (!Number.isFinite(orderId)) {
         res.status(400).json({ error: 'order_id_required' });
         return;
@@ -211,7 +217,7 @@ function mountPaymentRoutes(dbGetter) {
       }
 
       const returnUrl = String(
-        req.body?.return_url || process.env.PAYME_RETURN_URL || process.env.PUBLIC_APP_RETURN_URL || '',
+        req.body.return_url || process.env.PAYME_RETURN_URL || process.env.PUBLIC_APP_RETURN_URL || '',
       ).trim();
       const paymentUrl = buildPaymeCheckoutUrl({
         merchantId: mid,
@@ -227,14 +233,14 @@ function mountPaymentRoutes(dbGetter) {
 
       res.json({ payment_url: paymentUrl, order_id: orderId });
     } catch (e) {
-      console.error('[payment] payme create', e);
+      logger.error({ err: e }, '[payment] payme create');
       res.status(500).json({ error: 'internal_error' });
     }
   });
 
-  router.post('/click/create', jsonBody, bearerAuth, (req, res) => {
+  router.post('/click/create', jsonBody, bearerAuth, validate({ body: paymentCreateBodySchema }), (req, res) => {
     try {
-      const orderId = Number.parseInt(String(req.body?.order_id ?? ''), 10);
+      const orderId = req.body.order_id;
       if (!Number.isFinite(orderId)) {
         res.status(400).json({ error: 'order_id_required' });
         return;
@@ -271,7 +277,7 @@ function mountPaymentRoutes(dbGetter) {
       }
 
       const returnUrl = String(
-        req.body?.return_url || process.env.CLICK_RETURN_URL || process.env.PUBLIC_APP_RETURN_URL || '',
+        req.body.return_url || process.env.CLICK_RETURN_URL || process.env.PUBLIC_APP_RETURN_URL || '',
       ).trim();
       const paymentUrl = buildClickCheckoutUrl({
         serviceId,
@@ -288,7 +294,7 @@ function mountPaymentRoutes(dbGetter) {
 
       res.json({ payment_url: paymentUrl, order_id: orderId });
     } catch (e) {
-      console.error('[payment] click create', e);
+      logger.error({ err: e }, '[payment] click create');
       res.status(500).json({ error: 'internal_error' });
     }
   });

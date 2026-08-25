@@ -62,6 +62,7 @@ export type TelegramWebAppLike = {
   close?: () => void;
   initData: string;
   version?: string;
+  isVersionAtLeast?: (version: string) => boolean;
   platform?: string;
   colorScheme?: 'light' | 'dark';
   openLink?: (url: string, options?: { try_instant_view?: boolean }) => void;
@@ -217,18 +218,25 @@ export function tgAlert(message: string): Promise<void> {
 export function tgConfirm(message: string): Promise<boolean> {
   return new Promise<boolean>((resolve) => {
     const tg = getTg();
-    if (!tg?.showConfirm) {
+    const confirmViaWeb = () => {
       try {
         resolve(window.confirm(message));
       } catch {
         resolve(false);
       }
+    };
+    // showConfirm was added in Bot API 6.2. Older Telegram clients expose the
+    // method but silently no-op (the callback never fires), which would hang
+    // the awaiting caller — so fall back to a plain confirm in that case.
+    const supportsConfirm = !!tg?.showConfirm && (tg.isVersionAtLeast ? tg.isVersionAtLeast('6.2') : true);
+    if (!supportsConfirm) {
+      confirmViaWeb();
       return;
     }
     try {
-      tg.showConfirm(message, (ok) => resolve(!!ok));
+      tg!.showConfirm!(message, (ok) => resolve(!!ok));
     } catch {
-      resolve(false);
+      confirmViaWeb();
     }
   });
 }

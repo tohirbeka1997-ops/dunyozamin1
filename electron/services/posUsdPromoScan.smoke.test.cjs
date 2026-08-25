@@ -196,7 +196,7 @@ try {
   });
 
   console.log(`\n=== NATIJA: ${passed} OK, ${failed} FAIL ===\n`);
-  if (failed > 0) process.exit(1);
+  process.exit(failed > 0 ? 1 : 0);
 } catch (e) {
   fail('pos usd/promo/scan suite', e);
   console.log(`\n=== NATIJA: ${passed} OK, ${failed} FAIL ===\n`);

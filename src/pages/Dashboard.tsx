@@ -151,7 +151,7 @@ export default function Dashboard() {
     queryKey: ['dashboardAnalytics', dateRangeKey],
     queryFn: () => getDashboardAnalytics(dateRange.from, dateRange.to),
     refetchOnMount: true,
-    refetchOnWindowFocus: true,
+    refetchOnWindowFocus: false,
     refetchInterval: DASHBOARD_REFRESH_MS,
     retry: 1,
   });
@@ -199,7 +199,7 @@ export default function Dashboard() {
     retry: 1,
   });
 
-  const { data: totalCustomerDebt = 0 } = useQuery({
+  const { data: totalCustomerDebt = { debt_uzs: 0, debt_usd: 0 } } = useQuery({
     queryKey: ['totalCustomerDebt'],
     queryFn: getTotalCustomerDebt,
     refetchOnMount: true,
@@ -356,7 +356,7 @@ export default function Dashboard() {
         </p>
       </div>
 
-      {/* Row 1: Main KPI Cards */}
+      {/* Row 1: Main KPI Cards — gross / returns / net sales / net profit */}
       <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
         <MetricCard
           variant="sales"
@@ -372,18 +372,31 @@ export default function Dashboard() {
               formatCurrency(analytics?.total_sales || 0)
             )
           }
-          subtitle={`${analytics?.total_orders || 0} ${t('dashboard.cards.total_sales.orders')}`}
+          subtitle={`${analytics?.total_orders || 0} ${t('dashboard.cards.total_sales.orders')} · ${t('dashboard.cards.total_sales.subtitle')}`}
           icon={<DollarSign />}
           loading={analyticsLoading}
           error={analyticsError}
         />
 
         <MetricCard
+          variant="warning"
+          title={t('dashboard.cards.returns_amount.title')}
+          value={formatCurrency(analytics?.returns_amount || 0)}
+          subtitle={`${analytics?.returns_count || 0} · ${t('dashboard.cards.returns_amount.subtitle')}`}
+          icon={<TrendingDown />}
+          loading={analyticsLoading}
+          error={analyticsError}
+        />
+
+        <MetricCard
           variant="teal"
-          title={t('dashboard.cards.total_cogs.title')}
-          value={formatCurrency(analytics?.total_cogs || 0)}
-          subtitle={t('dashboard.cards.total_cogs.subtitle')}
-          icon={<Package />}
+          title={t('dashboard.cards.net_sales.title')}
+          value={formatCurrency(
+            analytics?.net_sales ??
+              Math.max(0, Number(analytics?.total_sales || 0) - Number(analytics?.returns_amount || 0))
+          )}
+          subtitle={t('dashboard.cards.net_sales.subtitle')}
+          icon={<ShoppingCart />}
           loading={analyticsLoading}
           error={analyticsError}
         />
@@ -394,6 +407,39 @@ export default function Dashboard() {
           value={formatCurrency((analytics?.net_profit ?? analytics?.total_profit) || 0)}
           subtitle={t('dashboard.cards.total_profit.subtitle')}
           icon={<TrendingUp />}
+          loading={analyticsLoading}
+          error={analyticsError}
+        />
+      </div>
+
+      {/* Row 1b: secondary finance KPIs */}
+      <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+        <MetricCard
+          variant="teal"
+          title={t('dashboard.cards.total_collected.title')}
+          value={formatCurrency(analytics?.total_collected || 0)}
+          subtitle={t('dashboard.cards.total_collected.subtitle')}
+          icon={<ShoppingCart />}
+          loading={analyticsLoading}
+          error={analyticsError}
+        />
+
+        <MetricCard
+          variant="warning"
+          title={t('dashboard.cards.credit_issued.title')}
+          value={formatCurrency(analytics?.credit_issued || 0)}
+          subtitle={t('dashboard.cards.credit_issued.subtitle')}
+          icon={<TrendingDown />}
+          loading={analyticsLoading}
+          error={analyticsError}
+        />
+
+        <MetricCard
+          variant="teal"
+          title={t('dashboard.cards.total_cogs.title')}
+          value={formatCurrency(analytics?.total_cogs || 0)}
+          subtitle={t('dashboard.cards.total_cogs.subtitle')}
+          icon={<Package />}
           loading={analyticsLoading}
           error={analyticsError}
         />
@@ -441,11 +487,21 @@ export default function Dashboard() {
           error={analyticsError}
         />
 
-        {totalCustomerDebt > 0 && (
+        {(totalCustomerDebt.debt_uzs > 0 || totalCustomerDebt.debt_usd > 0) && (
           <MetricCard
             variant="expense"
             title={t('dashboard.cards.total_customer_debt.title')}
-            value={formatCurrency(totalCustomerDebt)}
+            value={
+              totalCustomerDebt.debt_usd > 0 ? (
+                <DualCurrencyAmount
+                  uzs={totalCustomerDebt.debt_uzs}
+                  usd={totalCustomerDebt.debt_usd}
+                  className="text-inherit"
+                />
+              ) : (
+                formatCurrency(totalCustomerDebt.debt_uzs)
+              )
+            }
             subtitle={t('dashboard.cards.total_customer_debt.subtitle')}
             icon={<DollarSign />}
             loading={analyticsLoading}

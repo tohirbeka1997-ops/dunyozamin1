@@ -20,7 +20,7 @@ import {
   TableRow,
 } from '@/components/ui/table';
 import { useToast } from '@/hooks/use-toast';
-import { getOrdersPage, getProfiles, getCustomers, getSalesReturnByOrderId, getWarehouses } from '@/db/api';
+import { getOrdersPage, getProfiles, getCustomers, getWarehouses } from '@/db/api';
 import type { OrderWithDetails, Profile, Customer } from '@/types/database';
 import { Search, Eye, Printer, RotateCcw, DollarSign, ShoppingCart, TrendingUp, Pencil } from 'lucide-react';
 import { highlightMatch } from '@/utils/searchHighlight';
@@ -46,6 +46,8 @@ import { createBackNavigationState } from '@/lib/pageState';
 import { useOrdersListStore } from '@/store/ordersListStore';
 import { useDebounce } from '@/hooks/use-debounce';
 import { useTranslation } from 'react-i18next';
+import SearchableCustomerCombobox from '@/components/common/SearchableCustomerCombobox';
+import SearchableCombobox from '@/components/common/SearchableCombobox';
 
 function isWebOrderRow(o: { order_source?: string; id?: string } | null | undefined) {
   return o?.order_source === 'web' || String(o?.id || '').startsWith('web:');
@@ -102,6 +104,30 @@ export default function Orders() {
   const warehouseFilter = searchParams.get('warehouse') || 'all';
   const channelFilter = searchParams.get('channel') || 'all';
   const sortBy = searchParams.get('sortBy') || 'created_at-desc';
+
+  const cashierOptions = useMemo(
+    () => [
+      { value: 'all', label: t('combobox.all_cashiers', 'Barcha kassirlar') },
+      ...cashiers.map((cashier) => ({
+        value: cashier.id,
+        label: cashier.username || cashier.full_name || cashier.email || cashier.id,
+        keywords: [cashier.full_name, cashier.email].filter(Boolean).join(' '),
+      })),
+    ],
+    [cashiers, t]
+  );
+
+  const warehouseOptions = useMemo(
+    () => [
+      { value: 'all', label: t('combobox.all_warehouses', 'Barcha omborlar') },
+      ...warehouses.map((wh) => ({
+        value: wh.id,
+        label: wh.name || wh.id,
+      })),
+    ],
+    [warehouses, t]
+  );
+
   const [printDialogOpen, setPrintDialogOpen] = useState(false);
   const [selectedOrderIdForPrint, setSelectedOrderIdForPrint] = useState<string | null>(null);
   const [returnLoadingOrderId, setReturnLoadingOrderId] = useState<string | null>(null);
@@ -613,60 +639,48 @@ export default function Orders() {
             </div>
 
             <div className="min-w-[6.5rem] shrink-0 flex-1 basis-0">
-            <Select value={cashierFilter} onValueChange={(value) => updateParams({ cashier: value })}>
-              <SelectTrigger className="h-8 w-full min-w-0 bg-background px-2 text-xs [&_span]:truncate">
-                <SelectValue placeholder="Barcha kassirlar" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="all">Barcha kassirlar</SelectItem>
-                {cashiers.map((cashier) => (
-                  <SelectItem key={cashier.id} value={cashier.id}>
-                    {cashier.username}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
+            <SearchableCombobox
+              value={cashierFilter}
+              onValueChange={(value) => updateParams({ cashier: value })}
+              options={cashierOptions}
+              placeholder={t('combobox.all_cashiers', 'Barcha kassirlar')}
+              searchPlaceholder={t('combobox.search_employee', "Nom yoki email bo'yicha qidirish...")}
+              emptyMessage={t('combobox.no_employee', 'Xodim topilmadi')}
+              triggerClassName="h-8 bg-background px-2 text-xs"
+            />
             </div>
 
             {/* Customer filter */}
             <div className="min-w-[6.5rem] shrink-0 flex-1 basis-0">
-            <Select
+            <SearchableCustomerCombobox
               value={customerFilter || 'all'}
               onValueChange={(value) => updateParams({ customer: value === 'all' ? null : value })}
+              knownCustomers={customers}
+              status="active"
               disabled={customersLoading}
-            >
-              <SelectTrigger className="h-8 w-full min-w-0 bg-background px-2 text-xs [&_span]:truncate">
-                <SelectValue placeholder={customersLoading ? 'Yuklanmoqda...' : 'Barcha mijozlar'} />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="all">Barcha mijozlar</SelectItem>
-                {customers.length === 0 && !customersLoading ? (
-                  <SelectItem value="none" disabled>Mijozlar yuklanmadi</SelectItem>
-                ) : (
-                  customers.map((customer) => (
-                    <SelectItem key={customer.id} value={customer.id}>
-                      {customer.name}
-                    </SelectItem>
-                  ))
-                )}
-              </SelectContent>
-            </Select>
+              loading={customersLoading}
+              prefixOptions={[
+                { value: 'all', label: t('combobox.all_customers', 'Barcha mijozlar') },
+              ]}
+              placeholder={
+                customersLoading
+                  ? t('common.loading', 'Yuklanmoqda...')
+                  : t('combobox.all_customers', 'Barcha mijozlar')
+              }
+              triggerClassName="h-8 bg-background px-2 text-xs"
+            />
             </div>
 
             <div className="min-w-[6.5rem] shrink-0 flex-1 basis-0">
-            <Select value={warehouseFilter} onValueChange={(value) => updateParams({ warehouse: value })}>
-              <SelectTrigger className="h-8 w-full min-w-0 bg-background px-2 text-xs [&_span]:truncate">
-                <SelectValue placeholder="Ombor" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="all">Barcha omborlar</SelectItem>
-                {warehouses.map((wh) => (
-                  <SelectItem key={wh.id} value={wh.id}>
-                    {wh.name || wh.id}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
+            <SearchableCombobox
+              value={warehouseFilter}
+              onValueChange={(value) => updateParams({ warehouse: value })}
+              options={warehouseOptions}
+              placeholder={t('combobox.select_warehouse', 'Omborni tanlang...')}
+              searchPlaceholder={t('combobox.search_warehouse', "Ombor nomi bo'yicha qidirish...")}
+              emptyMessage={t('combobox.no_warehouse', 'Ombor topilmadi')}
+              triggerClassName="h-8 bg-background px-2 text-xs"
+            />
             </div>
 
             <div className="min-w-[6.5rem] shrink-0 flex-1 basis-0">

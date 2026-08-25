@@ -23,14 +23,16 @@ import {
   AlertDialogTitle,
   AlertDialogTrigger,
 } from '@/components/ui/alert-dialog';
-import { getSalesReturnById, deleteSalesReturn, updateSalesReturn, completeSalesReturn } from '@/db/api';
-import type { SalesReturnWithDetails } from '@/types/database';
+import { getSalesReturnById, deleteSalesReturn, updateSalesReturn, completeSalesReturn, getSettingsByCategory } from '@/db/api';
+import type { CompanySettings, SalesReturnWithDetails } from '@/types/database';
 import { ArrowLeft, Printer, Package, Edit, Trash2 } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 import { Skeleton } from '@/components/ui/skeleton';
 import { formatReturnMoney } from '@/lib/format';
 import { formatOrderDateTime } from '@/lib/datetime';
 import { createBackNavigationState, navigateBackTo, resolveBackTarget } from '@/lib/pageState';
+import { printReturnReceipt } from '@/lib/receipts/printReturnReceipt';
+import { useReceiptSettings } from '@/hooks/useReceiptSettings';
 
 export default function ReturnDetail() {
   const { id } = useParams<{ id: string }>();
@@ -40,6 +42,9 @@ export default function ReturnDetail() {
   const [returnData, setReturnData] = useState<SalesReturnWithDetails | null>(null);
   const [loading, setLoading] = useState(true);
   const [actionLoading, setActionLoading] = useState(false);
+  const [printing, setPrinting] = useState(false);
+  const [companySettings, setCompanySettings] = useState<CompanySettings | null>(null);
+  const receiptSettings = useReceiptSettings();
   const backTo = resolveBackTarget(location, '/sales-returns');
 
   const fmtReturn = (amount?: number | null) =>
@@ -55,6 +60,12 @@ export default function ReturnDetail() {
       loadReturnData();
     }
   }, [id]);
+
+  useEffect(() => {
+    void getSettingsByCategory('company')
+      .then((raw) => setCompanySettings(raw as unknown as CompanySettings))
+      .catch(() => setCompanySettings(null));
+  }, []);
 
   const loadReturnData = async () => {
     if (!id) return;
@@ -118,6 +129,29 @@ export default function ReturnDetail() {
         variant: 'destructive',
       });
       setActionLoading(false);
+    }
+  };
+
+  const handlePrint = async () => {
+    if (!returnData) return;
+    try {
+      setPrinting(true);
+      const transport = await printReturnReceipt(returnData, companySettings, receiptSettings);
+      toast({
+        title: 'Chek',
+        description:
+          transport === 'escpos'
+            ? 'Qaytarish cheki printerga yuborildi'
+            : 'Qaytarish cheki chop etish oynasi ochildi',
+      });
+    } catch (error) {
+      toast({
+        title: 'Xatolik',
+        description: error instanceof Error ? error.message : 'Chop etishda xatolik',
+        variant: 'destructive',
+      });
+    } finally {
+      setPrinting(false);
     }
   };
 
@@ -253,17 +287,9 @@ export default function ReturnDetail() {
               Yakunlash
             </Button>
           )}
-          <Button
-            variant="outline"
-            onClick={() => {
-              toast({
-                title: 'Chop etish',
-                description: 'Chop etish funksiyasi tez orada qo‘shiladi',
-              });
-            }}
-          >
+          <Button variant="outline" onClick={handlePrint} disabled={printing}>
             <Printer className="h-4 w-4 mr-2" />
-            Chop etish
+            {printing ? 'Chop etilmoqda...' : 'Chop etish'}
           </Button>
         </div>
       </div>

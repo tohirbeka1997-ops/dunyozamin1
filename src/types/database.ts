@@ -219,6 +219,10 @@ export interface Customer {
   status: 'active' | 'inactive';
   notes: string | null;
   bonus_points: number;
+  /** Numeric Telegram chat id for debt reminders (optional). */
+  telegram_id?: number | null;
+  /** Telegram @username without @ (optional; used when telegram_id missing). */
+  telegram_username?: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -813,6 +817,8 @@ export interface POSSettings {
 export interface PaymentSettings {
   methods: string[];
   method_labels: Record<string, string>;
+  /** Commission rates keyed by method slug (card/click/payme/…) — maps to payment_fees.* settings */
+  fee_rates?: Record<string, { percent: number; fixed: number }>;
 }
 
 export interface TaxSettings {

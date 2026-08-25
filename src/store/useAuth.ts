@@ -5,6 +5,12 @@
 
 import { create } from 'zustand';
 import { clearAllBrowserStorage } from '@/lib/clearBrowserStorage';
+import { clearRemoteSessionForLogin, isRemoteRpcMode } from '@/lib/remotePosApi';
+import {
+  readSessionValue,
+  writeSessionValue,
+  removeSessionValue,
+} from '@/lib/auth/sessionPersistence';
 import { handleIpcResponse } from '@/utils/electron';
 
 /**
@@ -13,20 +19,18 @@ import { handleIpcResponse } from '@/utils/electron';
  * a `pos_session_token`. In pure Electron the preload always injects
  * `window.posApi` but there is no session token (desktop window is trusted).
  */
-function isRemoteRpcMode(): boolean {
-  try {
-    if (typeof window === 'undefined') return false;
-    const api = (window as any).posApi;
-    return !!(api && api._session && typeof api._session.hasToken === 'function');
-  } catch {
-    return false;
-  }
+function isRemoteRpcModeLocal(): boolean {
+  return isRemoteRpcMode();
 }
 
 /** Joriy foydalanuvchi ID va rolini main process (audit/RBAC) bilan sinxronlaydi. */
 async function syncPosMainSessionUser(userId: string | null, role?: string | null) {
   try {
     if (typeof window === 'undefined') return;
+    // Web RPC: setSessionUser requires a live session bearer. Calling it
+    // after the token was cleared (or before login) spams /rpc and can trip
+    // the per-IP rate limiter, blocking products:list and other reads.
+    if (isRemoteRpcModeLocal() && !hasActiveSessionToken()) return;
     const api = (window as any).posApi;
     if (api?.auth?.setSessionUser) {
       await handleIpcResponse<any>(api.auth.setSessionUser(userId ?? null, role ?? null));
@@ -35,6 +39,8 @@ async function syncPosMainSessionUser(userId: string | null, role?: string | nul
     console.warn('[Auth] setSessionUser (main) failed:', e);
   }
 }
+
+let signOutInFlight: Promise<void> | null = null;
 
 function hasActiveSessionToken(): boolean {
   try {
@@ -128,7 +134,12 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   scope: 'tenant',
   tenantSlug: null,
   multiTenantMode: null,
-  loading: false,
+  // Start in the loading state so route guards (PrivateRoute/PublicRoute) wait
+  // for init() to rehydrate the session BEFORE they decide to redirect. This
+  // fixes the F5/new-tab boot race where a guard saw `loading=false, user=null`
+  // on the very first render, redirected to /login, and that redirect made
+  // init() wipe a perfectly valid remembered session.
+  loading: true,
   initialized: false,
 
   /**
@@ -139,7 +150,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
    */
   probeServerMode: async () => {
     try {
-      if (!isRemoteRpcMode()) {
+      if (!isRemoteRpcModeLocal()) {
         set({ multiTenantMode: false });
         return false;
       }
@@ -167,11 +178,33 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     // Probe server mode in the background — non-blocking so login UX stays fast.
     void get().probeServerMode();
 
+    const onLoginPage =
+      typeof window !== 'undefined' &&
+      (window.location.pathname === '/login' ||
+        window.location.pathname.endsWith('/login'));
+
+    // Web login page: never restore a cached profile/token — the operator is
+    // explicitly signing in again and stale tokens cause 401 noise.
+    if (isRemoteRpcModeLocal() && onLoginPage) {
+      clearRemoteSessionForLogin();
+      set({
+        session: null,
+        user: null,
+        profile: null,
+        role: 'cashier',
+        scope: 'tenant',
+        tenantSlug: null,
+        loading: false,
+        initialized: true,
+      });
+      return;
+    }
+
     // In the web/SaaS build we MUST have a valid session token.
     // If the user object is in localStorage but the token is gone or expired,
     // clear the local profile so the app redirects to /login.
-    if (isRemoteRpcMode() && !hasActiveSessionToken()) {
-      try { localStorage.removeItem('auth_user'); } catch {}
+    if (isRemoteRpcModeLocal() && !hasActiveSessionToken()) {
+      try { removeSessionValue('auth_user'); } catch {}
       set({
         session: null, user: null, profile: null,
         role: 'cashier', scope: 'tenant', tenantSlug: null,
@@ -180,7 +213,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       return;
     }
 
-    const storedUser = localStorage.getItem('auth_user');
+    const storedUser = readSessionValue('auth_user');
     if (!storedUser) {
       set({ loading: false, initialized: true });
       return;
@@ -214,7 +247,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
         role = deriveRole(parsed);
       } catch (err) {
         console.error('[useAuth] Stored profile has unknown role, clearing session.', err);
-        localStorage.removeItem('auth_user');
+        removeSessionValue('auth_user');
         set({
           session: null,
           user: null,
@@ -245,7 +278,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
 
       // Best-effort server-side session validation (web only — in Electron
       // `pos:auth:me` just returns the most recent active user, so we skip it).
-      if (isRemoteRpcMode()) {
+      if (isRemoteRpcModeLocal()) {
         try {
           const api = (window as any).posApi;
           if (api?.auth?.me) {
@@ -261,7 +294,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       }
     } catch (e) {
       console.error('Failed to parse stored user:', e);
-      try { localStorage.removeItem('auth_user'); } catch {}
+      try { removeSessionValue('auth_user'); } catch {}
       set({ loading: false, initialized: true });
     }
   },
@@ -382,7 +415,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       });
 
       // Persist to localStorage with REAL database ID
-      localStorage.setItem('auth_user', JSON.stringify(profile));
+      writeSessionValue('auth_user', JSON.stringify(profile));
 
       void syncPosMainSessionUser(String(realUserId), mappedUser.role);
 
@@ -441,7 +474,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
         tenantSlug: null,
         loading: false,
       });
-      localStorage.setItem('auth_user', JSON.stringify(profile));
+      writeSessionValue('auth_user', JSON.stringify(profile));
       void syncPosMainSessionUser(String(mu.id), 'admin');
     } catch (e) {
       set({ loading: false });
@@ -489,7 +522,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
         role: deriveRole(mockProfile),
         loading: false,
       });
-      localStorage.setItem('auth_user', JSON.stringify(mockProfile));
+      writeSessionValue('auth_user', JSON.stringify(mockProfile));
       void syncPosMainSessionUser(String(mockUser.id), mockProfile.role);
     } catch (error) {
       set({ loading: false });
@@ -498,46 +531,57 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   },
 
   signOut: async () => {
-    set({ loading: true });
-    await syncPosMainSessionUser(null);
+    if (signOutInFlight) return signOutInFlight;
 
-    // 1. Tell the server to destroy this user's sessions (web/SaaS build only).
-    //    In Electron `pos:auth:logout` is a no-op, so this is always safe.
-    try {
-      const api = (typeof window !== 'undefined' ? (window as any).posApi : null);
-      if (api?.auth?.logout) {
-        await api.auth.logout().catch((e: unknown) => {
-          console.warn('⚠️ signOut: server logout failed (continuing):', e);
-        });
+    signOutInFlight = (async () => {
+      set({ loading: true });
+
+      // Capture token once, then clear local session immediately so cascading
+      // pos:auth:required handlers cannot each fire another logout RPC.
+      let hadSessionToken = false;
+      try {
+        const api = (typeof window !== 'undefined' ? (window as any).posApi : null);
+        hadSessionToken = !!(api?._session?.hasToken?.());
+        if (api?._session?.setToken) api._session.setToken(null);
+      } catch { /* ignore */ }
+      try { removeSessionValue('auth_user'); } catch {}
+
+      // Best-effort server logout only while we still had a token to send.
+      if (hadSessionToken) {
+        try {
+          const api = (typeof window !== 'undefined' ? (window as any).posApi : null);
+          if (api?.auth?.logout) {
+            await api.auth.logout().catch((e: unknown) => {
+              console.warn('⚠️ signOut: server logout failed (continuing):', e);
+            });
+          }
+        } catch (e) {
+          console.warn('⚠️ signOut: server logout threw (continuing):', e);
+        }
       }
-    } catch (e) {
-      console.warn('⚠️ signOut: server logout threw (continuing):', e);
-    }
 
-    // 2. Clear local IndexedDB / cached data.
+      try {
+        await clearAllBrowserStorage();
+      } catch (error) {
+        console.warn('⚠️ signOut: storage clear failed (continuing):', error);
+      }
+
+      set({
+        session: null,
+        user: null,
+        profile: null,
+        role: 'cashier',
+        scope: 'tenant',
+        tenantSlug: null,
+        loading: false,
+      });
+    })();
+
     try {
-      await clearAllBrowserStorage();
-    } catch (error) {
-      console.warn('⚠️ signOut: storage clear failed (continuing):', error);
+      await signOutInFlight;
+    } finally {
+      signOutInFlight = null;
     }
-
-    // 3. Always clear local auth state, even if the above steps failed.
-    try { localStorage.removeItem('auth_user'); } catch {}
-    // Belt-and-braces: if remotePosApi still has a cached token, wipe it.
-    try {
-      const api = (typeof window !== 'undefined' ? (window as any).posApi : null);
-      if (api?._session?.setToken) api._session.setToken(null);
-    } catch {}
-
-    set({
-      session: null,
-      user: null,
-      profile: null,
-      role: 'cashier',
-      scope: 'tenant',
-      tenantSlug: null,
-      loading: false,
-    });
   },
 
   refreshProfile: async () => {

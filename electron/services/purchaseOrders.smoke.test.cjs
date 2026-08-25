@@ -29,27 +29,34 @@ function stockOf(inventory, productId) {
   return Number(inventory.getCurrentStock(productId, WH)) || 0;
 }
 
-/** UI `aggregatePurchaseOrders` UZS qoidasi (currency.ts) */
+/** UI `aggregatePurchaseOrders` — invoice debt (not warehouse received − paid) */
 function aggregatePoUzs(orders) {
   const active = (orders || []).filter((po) => String(po.status || '').toLowerCase() !== 'cancelled');
   let orderedUzs = 0;
   let paidUzs = 0;
   let receivedUzs = 0;
+  let debtUzs = 0;
   for (const po of active) {
     const cur = String(po.currency || 'UZS').toUpperCase();
+    for (const it of po.items || []) {
+      receivedUzs += (Number(it.received_qty) || 0) * (Number(it.landed_unit_cost ?? it.unit_cost) || 0);
+    }
     if (cur === 'USD') continue;
     orderedUzs += Number(po.total_amount || 0);
-    paidUzs += Number(po.paid_amount ?? po.paid_amount_uzs ?? po.computed_paid_amount ?? 0);
-    for (const it of po.items || []) {
-      receivedUzs += (Number(it.received_qty) || 0) * (Number(it.unit_cost) || 0);
-    }
+    const paid = Number(po.paid_amount ?? po.paid_amount_uzs ?? po.computed_paid_amount ?? 0);
+    paidUzs += paid;
+    const remaining =
+      po.remaining_amount != null && Number.isFinite(Number(po.remaining_amount))
+        ? Number(po.remaining_amount)
+        : Number(po.total_amount || 0) - paid;
+    if (remaining > 0) debtUzs += remaining;
   }
   return {
     count: active.length,
     orderedUzs,
     paidUzs,
     receivedUzs,
-    debtUzs: Math.max(0, receivedUzs - paidUzs),
+    debtUzs,
   };
 }
 
@@ -82,7 +89,7 @@ console.log(`Temp DB: ${tmpDir}\n`);
 try {
   open();
   const db = getDb();
-  const { products, inventory, purchases, suppliers, reports, exchangeRates } = createServices(db);
+  const { products, inventory, purchases, suppliers, reports, exchangeRates, sales, shifts, customers } = createServices(db);
 
   const supplier = suppliers.create({
     name: 'Smoke Xarid Ta\'minotchi',
@@ -249,8 +256,9 @@ try {
     assert.strictEqual(agg.orderedUzs, 95000);
     assert.strictEqual(agg.paidUzs, 50000);
     assert.ok(agg.receivedUzs >= 95000, 'qabul qiymati landed cost bilan');
-    assert.strictEqual(agg.debtUzs, agg.receivedUzs - agg.paidUzs);
-    assert.strictEqual(agg.debtUzs, 45600);
+    // Qarz — hujjat (invoice) qoldig‘i, ombor landed cost emas
+    assert.strictEqual(agg.debtUzs, Math.max(0, agg.orderedUzs - agg.paidUzs));
+    assert.strictEqual(agg.debtUzs, 45000);
   });
 
   runStep('hisobot: getDeliveryDetails', () => {
@@ -620,6 +628,146 @@ try {
     assert.strictEqual(stockOf(inventory, productId), stockBefore + 1);
   });
 
+  runStep('USD createOrder: unit_cost (UZS) alone must NOT be treated as dollars', () => {
+    const fxRate = 12500;
+    const usdSupplier = suppliers.create({
+      name: 'No Double FX Smoke',
+      phone: '+998901555099',
+      settlement_currency: 'USD',
+    });
+    let threw = false;
+    try {
+      purchases.createOrder({
+        supplier_id: usdSupplier.id,
+        order_date: today,
+        status: 'draft',
+        created_by: ADMIN,
+        currency: 'USD',
+        fx_rate: fxRate,
+        items: [
+          {
+            product_id: productId,
+            product_name: 'Phantom COGS bait',
+            ordered_qty: 1,
+            // Intentionally UZS-sized amount without unit_cost_usd — old bug × fx → ~74M
+            unit_cost: 5928,
+            line_total: 5928,
+          },
+        ],
+      });
+    } catch (e) {
+      threw = true;
+      assert.ok(
+        /unit_cost_usd/i.test(String(e?.message || e)),
+        `expected unit_cost_usd error, got ${e?.message || e}`,
+      );
+    }
+    assert.ok(threw, 'createOrder must reject USD lines without unit_cost_usd');
+  });
+
+  runStep('USD createReceipt: bare unit_cost is UZS (÷ fx), not dollars (× fx)', () => {
+    const fxRate = 12500;
+    const uzsCost = 5928;
+    const usdSupplier = suppliers.create({
+      name: 'Receipt UZS-as-cost Smoke',
+      phone: '+998901555098',
+      settlement_currency: 'USD',
+    });
+    const p = products.create({
+      name: `Receipt cost guard ${Date.now()}`,
+      sku: `RCG-${Date.now()}`,
+      sale_price: 214900,
+      purchase_price: uzsCost,
+      unit: 'pcs',
+      track_stock: 1,
+    });
+    purchases.createReceipt({
+      supplier_id: usdSupplier.id,
+      currency: 'USD',
+      exchange_rate: fxRate,
+      status: 'received',
+      received_at: today,
+      created_by: ADMIN,
+      items: [
+        {
+          product_id: p.id,
+          product_name: p.name,
+          received_qty: 1,
+          // Only UZS unit_cost — must NOT become uzsCost * fxRate
+          unit_cost: uzsCost,
+        },
+      ],
+    });
+    const prod = db.prepare('SELECT purchase_price FROM products WHERE id = ?').get(p.id);
+    const stored = Number(prod?.purchase_price || 0);
+    assert.ok(
+      Math.abs(stored - uzsCost) < 1,
+      `purchase_price should stay ~${uzsCost} UZS, got ${stored} (would be ${uzsCost * fxRate} if double-FX)`,
+    );
+    assert.ok(stored < 100_000, `stored cost ${stored} looks like FX-inflated phantom`);
+  });
+
+  runStep('daily sales flags cogs_anomaly when COGS >> revenue', () => {
+    const badCost = 74_103_559;
+    const salePrice = 214_900;
+    const p = products.create({
+      name: `Anomaly COGS ${Date.now()}`,
+      sku: `ACG-${Date.now()}`,
+      sale_price: salePrice,
+      purchase_price: badCost,
+      unit: 'pcs',
+      track_stock: 1,
+    });
+    inventory.adjustStock({
+      warehouse_id: WH,
+      adjustment_type: 'set',
+      reason: 'anomaly seed',
+      created_by: ADMIN,
+      items: [{ product_id: p.id, target_quantity: 5 }],
+    });
+    const shift = shifts.openShift({ user_id: ADMIN });
+    const cust = customers.create({
+      name: 'Credit anomaly',
+      phone: `+99890${String(Date.now()).slice(-7)}`,
+      allow_debt: 1,
+      credit_limit: 10_000_000,
+    });
+    const sale = sales.completePOSOrder(
+      {
+        total_amount: salePrice,
+        currency: 'UZS',
+        shift_id: shift.id,
+        user_id: ADMIN,
+        warehouse_id: WH,
+        sales_channel: 'pos',
+        customer_id: cust.id,
+      },
+      [
+        {
+          product_id: p.id,
+          product_name: p.name,
+          quantity: 1,
+          qty_sale: 1,
+          qty_base: 1,
+          unit_price: salePrice,
+          line_total: salePrice,
+          final_total: salePrice,
+        },
+      ],
+      [],
+    );
+    const report = reports.getDailySalesReportSQL({
+      date_from: today,
+      date_to: today,
+      warehouse_id: WH,
+    });
+    const row = (report.orders || []).find((o) => o.order_number === sale.order_number);
+    assert.ok(row, 'sale in daily report');
+    assert.ok(Number(row.profit) < -50_000_000, `expected huge loss, got ${row.profit}`);
+    assert.strictEqual(row.cogs_anomaly, true, 'cogs_anomaly flag');
+    assert.ok(report.warnings?.cogs_anomaly, 'summary warning');
+  });
+
   runStep('qoralama: qabul qilingandan keyin ordered kamaytirish — omborga ta\'sir qilmaydi', () => {
     const stockBeforePartial = stockOf(inventory, productId);
     const po = purchases.createOrder({
@@ -675,7 +823,128 @@ try {
     assert.ok(receiveFailed, 'ordered < received bo\'lganda qabul bloklanishi kerak');
   });
 
-  runStep('qoralama: qabul qilingan qator payload dan tushsa ham DB da qoladi', () => {
+  runStep('tahrir: qoralama qatordan mahsulot o‘chirish — saqlashdan keyin yo‘qoladi', () => {
+    const keepProduct = products.create({
+      name: 'Smoke Keep Draft Line',
+      sku: `PO-KEEP-DRAFT-${Date.now()}`,
+      sale_price: 8000,
+      purchase_price: 4000,
+      track_stock: 1,
+      current_stock: 0,
+    });
+    const dropProduct = products.create({
+      name: 'Smoke Drop Draft Line',
+      sku: `PO-DROP-DRAFT-${Date.now()}`,
+      sale_price: 5000,
+      purchase_price: 2000,
+      track_stock: 1,
+      current_stock: 0,
+    });
+    const po = purchases.createOrder({
+      supplier_id: supplierId,
+      order_date: today,
+      status: 'draft',
+      created_by: ADMIN,
+      items: [
+        {
+          product_id: keepProduct.id,
+          ordered_qty: 2,
+          unit_cost: 4000,
+          line_total: 8000,
+        },
+        {
+          product_id: dropProduct.id,
+          ordered_qty: 3,
+          unit_cost: 2000,
+          line_total: 6000,
+        },
+      ],
+    });
+    assert.strictEqual(po.items.length, 2);
+    const keepLine = po.items.find((row) => row.product_id === keepProduct.id);
+    assert.ok(keepLine);
+
+    const edited = purchases.updateOrder(
+      po.id,
+      { notes: 'UI: trash → saqlash' },
+      [
+        {
+          id: keepLine.id,
+          product_id: keepProduct.id,
+          ordered_qty: 2,
+          unit_cost: 4000,
+          line_total: 8000,
+        },
+      ],
+    );
+    assert.strictEqual(edited.items.length, 1, 'o‘chirilgan qator DB dan ketishi kerak');
+    assert.strictEqual(edited.items[0].product_id, keepProduct.id);
+
+    const reloaded = purchases.get(po.id);
+    assert.strictEqual(reloaded.items.length, 1);
+    assert.strictEqual(reloaded.items[0].product_id, keepProduct.id);
+    assert.ok(
+      !reloaded.items.some((row) => row.product_id === dropProduct.id),
+      'reload dan keyin o‘chirilgan mahsulot qaytmasligi kerak',
+    );
+  });
+
+  runStep('qisman qabul: qabul qilinmagan qatorni o‘chirish mumkin', () => {
+    const unreceivedProduct = products.create({
+      name: 'Smoke Unreceived Drop',
+      sku: `PO-UNRECV-${Date.now()}`,
+      sale_price: 6000,
+      purchase_price: 3000,
+      track_stock: 1,
+      current_stock: 0,
+    });
+    const po = purchases.createOrder({
+      supplier_id: supplierId,
+      order_date: today,
+      status: 'approved',
+      created_by: ADMIN,
+      items: [
+        {
+          product_id: productId,
+          ordered_qty: 4,
+          unit_cost: 4000,
+          line_total: 16000,
+        },
+        {
+          product_id: unreceivedProduct.id,
+          ordered_qty: 2,
+          unit_cost: 3000,
+          line_total: 6000,
+        },
+      ],
+    });
+    const receivedLine = po.items.find((row) => row.product_id === productId);
+    const dropLine = po.items.find((row) => row.product_id === unreceivedProduct.id);
+    assert.ok(receivedLine && dropLine);
+    purchases.receiveGoods(po.id, {
+      items: [{ item_id: receivedLine.id, product_id: productId, received_qty: 2 }],
+      received_by: ADMIN,
+    });
+
+    const edited = purchases.updateOrder(
+      po.id,
+      { notes: 'unreceived line removed' },
+      [
+        {
+          id: receivedLine.id,
+          product_id: productId,
+          ordered_qty: 4,
+          unit_cost: 4000,
+          line_total: 16000,
+        },
+      ],
+    );
+    assert.strictEqual(edited.items.length, 1);
+    assert.strictEqual(edited.items[0].id, receivedLine.id);
+    assert.strictEqual(Number(edited.items[0].received_qty), 2);
+  });
+
+  runStep('qabul qilingan qator payload dan tushsa — xato (ombor himoyasi)', () => {
     const extraProduct = products.create({
       name: 'Smoke Keep Received Line',
       sku: `PO-KEEP-${Date.now()}`,
@@ -704,23 +973,31 @@ try {
       received_by: ADMIN,
     });
 
-    const edited = purchases.updateOrder(
-      po.id,
-      { notes: 'received qator payload dan olib tashlandi' },
-      [
-        {
-          product_id: extraProduct.id,
-          ordered_qty: 1,
-          unit_cost: 2000,
-          line_total: 2000,
-        },
-      ],
+    let blocked = false;
+    try {
+      purchases.updateOrder(
+        po.id,
+        { notes: 'received qator payload dan olib tashlandi' },
+        [
+          {
+            product_id: extraProduct.id,
+            ordered_qty: 1,
+            unit_cost: 2000,
+            line_total: 2000,
+          },
+        ],
+      );
+    } catch (e) {
+      blocked = true;
+      assert.match(String(e.message || e), /Qabul qilingan mahsulotni o'chirib bo'lmaydi/i);
+    }
+    assert.ok(blocked, 'received qatorni o‘chirish bloklanishi kerak');
+
+    const kept = purchases.get(po.id);
+    assert.ok(
+      kept.items.some((row) => row.id === receivedLineId && Number(row.received_qty) === 2),
+      'qabul qilingan qator DB da qolishi kerak',
     );
-    assert.strictEqual(edited.items.length, 2);
-    const kept = edited.items.find((row) => row.id === receivedLineId);
-    assert.ok(kept, 'qabul qilingan qator saqlanishi kerak');
-    assert.strictEqual(Number(kept.received_qty), 2);
-    assert.strictEqual(Number(kept.ordered_qty), 4);
   });
 
   runStep('tahrir: id siz qator almashtirish — received_qty 0 qoladi', () => {
@@ -760,6 +1037,16 @@ try {
   runStep('hisobot: listSupplierPaymentsDue', () => {
     const dueToday = reports.listSupplierPaymentsDue({ filter: 'today' });
     assert.ok(Array.isArray(dueToday));
+    const openAll = reports.listSupplierPaymentsDue({ filter: 'open' });
+    assert.ok(Array.isArray(openAll));
+    // Smoke seed: po2 still has invoice remaining after partial payment on po1
+    assert.ok(
+      openAll.some((r) => Number(r.amount) > 0),
+      'open filter should include document remaining debt'
+    );
+    for (const r of openAll) {
+      assert.ok(['overdue', 'today', 'upcoming', 'no_due'].includes(String(r.due_status)));
+    }
   });
 
   close();

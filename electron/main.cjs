@@ -14,9 +14,106 @@ const { pathToFileURL } = require('url');
 const { createBackupRunner } = require('./services/backupManager.cjs');
 const { performPendingDbReset, hasResetFlag } = require('./scripts/db-reset-pending.cjs');
 
+// Ensure userData is %APPDATA%/pos-tizimi (not generic Electron/) for dev + scripts.
+try {
+  const pkg = require('../package.json');
+  app.setName(pkg.name || 'pos-tizimi');
+} catch {
+  app.setName('pos-tizimi');
+}
+
 let logFilePath = null;
 /** Max `main.log` size before it is removed on startup (avoids multi-GB logs). */
 const MAX_MAIN_LOG_BYTES = 10 * 1024 * 1024;
+const BOOTSTRAP_LOG_PATH = path.join(require('os').tmpdir(), 'pos-tizimi-startup.log');
+
+function appendBootstrapLog(line) {
+  try {
+    fs.appendFileSync(BOOTSTRAP_LOG_PATH, `[${new Date().toISOString()}] ${line}\n`, 'utf8');
+  } catch {
+    // ignore
+  }
+}
+
+/** Windows packaged apps have no console; writes to closed stdout/stderr raise EPIPE. */
+function isBenignConsolePipeError(error) {
+  if (!error) return false;
+  if (error.code === 'EPIPE' || error.code === 'EINVAL') return true;
+  const msg = error.message || String(error);
+  return /EPIPE|broken pipe/i.test(msg);
+}
+
+function patchConsoleStreams() {
+  for (const stream of [process.stdout, process.stderr]) {
+    if (!stream || typeof stream.write !== 'function') continue;
+
+    stream.on('error', (err) => {
+      if (isBenignConsolePipeError(err)) return;
+    });
+
+    const originalWrite = stream.write.bind(stream);
+    stream.write = function patchedWrite(chunk, encoding, callback) {
+      let enc = encoding;
+      let cb = callback;
+      if (typeof enc === 'function') {
+        cb = enc;
+        enc = undefined;
+      }
+      const wrappedCb =
+        typeof cb === 'function'
+          ? (err) => {
+              if (isBenignConsolePipeError(err)) return;
+              cb(err);
+            }
+          : undefined;
+      try {
+        return originalWrite(chunk, enc, wrappedCb);
+      } catch (err) {
+        if (isBenignConsolePipeError(err)) return true;
+        throw err;
+      }
+    };
+  }
+}
+
+patchConsoleStreams();
+
+function formatStartupError(error) {
+  if (error instanceof Error) {
+    return `${error.message}\n\n${error.stack || ''}`.trim();
+  }
+  return String(error);
+}
+
+function showFatalStartupError(title, error) {
+  const detail = formatStartupError(error);
+  appendBootstrapLog(`FATAL: ${title} — ${detail.replace(/\n/g, ' | ')}`);
+  try {
+    if (logFilePath) {
+      fs.appendFileSync(logFilePath, `[FATAL] ${title}\n${detail}\n`, 'utf8');
+    }
+  } catch {
+    // ignore
+  }
+  console.error('========================================');
+  console.error(title);
+  console.error('========================================');
+  console.error(detail);
+  console.error('========================================');
+  try {
+    const logHint = logFilePath
+      ? `\n\nBatafsil log:\n${logFilePath}\n\nStartup log:\n${BOOTSTRAP_LOG_PATH}`
+      : `\n\nStartup log:\n${BOOTSTRAP_LOG_PATH}`;
+    dialog.showErrorBox(
+      'POS Tizimi — ishga tushmadi',
+      `${title}\n\n${detail.slice(0, 1800)}${logHint}`,
+    );
+  } catch {
+    // ignore (headless / very early crash)
+  }
+}
+
+appendBootstrapLog(`main.cjs loaded | electron=${process.versions?.electron || 'n/a'} | cwd=${process.cwd()}`);
 
 function setupFileLogging() {
   try {
@@ -59,21 +156,21 @@ function setupFileLogging() {
     const origLog = console.log.bind(console);
     const origWarn = console.warn.bind(console);
     const origErr = console.error.bind(console);
-    console.log = (...args) => {
-      write('LOG', args);
-      origLog(...args);
+    const safeConsoleOut = (orig, level, args) => {
+      write(level, args);
+      try {
+        orig(...args);
+      } catch (err) {
+        if (!isBenignConsolePipeError(err)) throw err;
+      }
     };
-    console.warn = (...args) => {
-      write('WARN', args);
-      origWarn(...args);
-    };
-    console.error = (...args) => {
-      write('ERROR', args);
-      origErr(...args);
-    };
+    console.log = (...args) => safeConsoleOut(origLog, 'LOG', args);
+    console.warn = (...args) => safeConsoleOut(origWarn, 'WARN', args);
+    console.error = (...args) => safeConsoleOut(origErr, 'ERROR', args);
 
     console.log('[Logging] File logging enabled:', logFilePath);
     console.log('[Logging] userData:', userData);
+    appendBootstrapLog(`file logging -> ${logFilePath}`);
   } catch (e) {
     // ignore
   }
@@ -103,23 +200,30 @@ protocol.registerSchemesAsPrivileged([
 
 // Uncaught exception handler
 process.on('uncaughtException', (error) => {
+  if (isBenignConsolePipeError(error)) return;
   console.error('========================================');
   console.error('UNCAUGHT EXCEPTION in Electron main process');
   console.error('========================================');
   console.error('Error:', error);
   console.error('Stack:', error.stack);
   console.error('========================================');
-  // Don't exit - let Electron handle it
+  if (app?.isPackaged) {
+    showFatalStartupError('Kutilmagan xato (uncaughtException)', error);
+  }
 });
 
 // Unhandled rejection handler
 process.on('unhandledRejection', (reason, promise) => {
+  if (isBenignConsolePipeError(reason)) return;
   console.error('========================================');
   console.error('UNHANDLED REJECTION in Electron main process');
   console.error('========================================');
   console.error('Reason:', reason);
   console.error('Promise:', promise);
   console.error('========================================');
+  if (app?.isPackaged) {
+    showFatalStartupError('Ilova ishga tushmadi (unhandledRejection)', reason);
+  }
 });
 
 // ============================================================================
@@ -481,10 +585,44 @@ app.on('ready', async () => {
       console.warn('[POSNET] Failed to register appConfig handlers:', e?.message || e);
     }
 
-    // Read HOST/CLIENT mode config
-    const { readConfig } = require('./config/appConfig.cjs');
-    const appConfig = readConfig(app);
+    // Read HOST/CLIENT mode config (userData/pos-config.json — NOT SQLite / .env)
+    const { readConfig, writeConfig, getConfigPath } = require('./config/appConfig.cjs');
+    let appConfig = readConfig(app);
     console.log('[POSNET] Mode:', appConfig?.mode);
+
+    // CLIENT without hostUrl used to hard-crash; offer recovery to local HOST mode.
+    if (appConfig?.mode === 'client') {
+      const hostUrl = String(appConfig?.client?.hostUrl || '')
+        .trim()
+        .replace(/\/+$/, '');
+      if (!hostUrl) {
+        const cfgPath = getConfigPath(app);
+        console.warn('[POSNET] CLIENT mode but client.hostUrl is empty:', cfgPath);
+        const choice = dialog.showMessageBoxSync({
+          type: 'warning',
+          title: 'CLIENT rejim — HOST URL yo‘q',
+          message: 'Tarmoq (CLIENT) rejimi yoqilgan, lekin HOST manzili bo‘sh.',
+          detail:
+            'Bu rejim SQLite faylini serverga "ulash" emas — u LAN orqali boshqa kompyuterdagi HOST ilovaga RPC qiladi.\n\n' +
+            'HOST URL bo‘sh bo‘lsa ilova ishlamaydi.\n\n' +
+            `Sozlama fayli:\n${cfgPath}\n\n` +
+            'Yechim:\n' +
+            '• «Mahalliy rejimga qaytish» — shu kompyuterdagi pos.db bilan ochiladi\n' +
+            '• Yoki Sozlamalar → Maʼlumotlar bazasi manbai → Server URL (masalan http://192.168.1.10:3333) va secret ni to‘ldiring',
+          buttons: ['Mahalliy rejimga qaytish', 'Chiqish'],
+          defaultId: 0,
+          cancelId: 1,
+          noLink: true,
+        });
+        if (choice === 0) {
+          appConfig = writeConfig({ mode: 'host' }, app);
+          console.warn('[POSNET] Fell back to HOST mode (missing client.hostUrl)');
+        } else {
+          app.exit(1);
+          return;
+        }
+      }
+    }
 
     if (appConfig?.mode === 'client') {
       console.log('[POSNET] CLIENT mode: DB will NOT be opened locally; forwarding IPC to HOST...');
@@ -626,6 +764,62 @@ app.on('ready', async () => {
       console.error('[Backup] Failed to start auto-backup:', e);
     }
 
+    try {
+      const { createBatchReconcileScheduler } = require('./services/batchReconcileScheduler.cjs');
+      const batchReconcileScheduler = createBatchReconcileScheduler({
+        getServices,
+        enabled: true,
+      });
+      batchReconcileScheduler.start();
+      const services = getServices();
+      if (services) services.batchReconcileScheduler = batchReconcileScheduler;
+      console.log('[Batch] reconcile scheduler started (daily + startup)');
+    } catch (e) {
+      console.warn('[Batch] reconcile scheduler failed to start:', e?.message || e);
+    }
+
+    try {
+      const { createSupplierPaymentReminderScheduler } = require('./services/supplierPaymentReminderScheduler.cjs');
+      const supplierReminderScheduler = createSupplierPaymentReminderScheduler({
+        getDb,
+        enabled: true,
+      });
+      supplierReminderScheduler.start();
+      const services = getServices();
+      if (services) services.supplierPaymentReminderScheduler = supplierReminderScheduler;
+      console.log('[Supplier] payment reminder scheduler started (daily + startup)');
+    } catch (e) {
+      console.warn('[Supplier] payment reminder scheduler failed to start:', e?.message || e);
+    }
+
+    try {
+      const { createCreditReminderScheduler } = require('./services/creditReminderScheduler.cjs');
+      const creditReminderScheduler = createCreditReminderScheduler({
+        getDb,
+        enabled: true,
+      });
+      creditReminderScheduler.start();
+      const services = getServices();
+      if (services) services.creditReminderScheduler = creditReminderScheduler;
+      console.log('[Credit] due reminder scheduler started (daily + startup)');
+    } catch (e) {
+      console.warn('[Credit] due reminder scheduler failed to start:', e?.message || e);
+    }
+
+    try {
+      const { createReportDigestScheduler } = require('./services/reportDigestScheduler.cjs');
+      const reportDigestScheduler = createReportDigestScheduler({
+        getDb,
+        enabled: true,
+      });
+      reportDigestScheduler.start();
+      const services = getServices();
+      if (services) services.reportDigestScheduler = reportDigestScheduler;
+      console.log('[Reports] Telegram digest scheduler started');
+    } catch (e) {
+      console.warn('[Reports] Telegram digest scheduler failed to start:', e?.message || e);
+    }
+
     // Listen for database wipe completion to reload window
     ipcMain.on('database:wipe:complete', () => {
       console.log('🔄 [Main] Database wipe complete, reloading window...');
@@ -638,13 +832,8 @@ app.on('ready', async () => {
     // Create window
     createWindow();
   } catch (error) {
-    console.error('========================================');
-    console.error('FATAL ERROR DURING APP INITIALIZATION');
-    console.error('========================================');
-    console.error('Error:', error);
-    console.error('Stack:', error.stack);
-    console.error('========================================');
-    app.quit();
+    showFatalStartupError('Ilova ishga tushmadi (initialization)', error);
+    app.exit(1);
   }
 });
 

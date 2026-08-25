@@ -78,6 +78,8 @@ contextBridge.exposeInMainWorld('posApi', {
   products: {
     list: (filters) => invoke('pos:products:list', filters),
     searchScreen: (filters) => invoke('pos:products:searchScreen', filters),
+    listScanIndex: (filters) => invoke('pos:products:listScanIndex', filters),
+    resolveScan: (keys, opts) => invoke('pos:products:resolveScan', keys, opts),
     count: (filters) => invoke('pos:products:count', filters),
     get: (id) => invoke('pos:products:get', id),
     getBySku: (sku) => invoke('pos:products:getBySku', sku),
@@ -134,12 +136,21 @@ contextBridge.exposeInMainWorld('posApi', {
     delete: (id) => invoke('pos:customers:delete', id),
     updateBalance: (customerId, amount, type) => invoke('pos:customers:updateBalance', customerId, amount, type),
     receivePayment: (payload) => invoke('pos:customers:receivePayment', payload),
+    getTotalDebt: () => invoke('pos:customers:getTotalDebt'),
     getPayments: (customerId, filters) => invoke('pos:customers:getPayments', customerId, filters),
     getLedger: (customerId, filters) => invoke('pos:customers:getLedger', customerId, filters),
     getLedgerCount: (payload) => invoke('pos:customers:getLedgerCount', payload),
     exportCsv: (filters) => invoke('pos:customers:exportCsv', filters),
     getBonusLedger: (customerId, filters) => invoke('pos:customers:getBonusLedger', customerId, filters),
     adjustBonusPoints: (payload) => invoke('pos:customers:adjustBonusPoints', payload),
+  },
+  creditReminders: {
+    list: (filters) => invoke('pos:creditReminders:list', filters),
+    listOpenOrders: (filters) => invoke('pos:creditReminders:listOpenOrders', filters),
+    updateDueDate: (payload) => invoke('pos:creditReminders:updateDueDate', payload),
+    send: (payload) => invoke('pos:creditReminders:send', payload),
+    listStaffAlerts: (filters) => invoke('pos:creditReminders:listStaffAlerts', filters),
+    ackStaffAlert: (payload) => invoke('pos:creditReminders:ackStaffAlert', payload),
   },
 
   // Suppliers
@@ -158,6 +169,7 @@ contextBridge.exposeInMainWorld('posApi', {
     createReturn: (payload) => invoke('pos:suppliers:createReturn', payload),
     getReturn: (id) => invoke('pos:suppliers:getReturn', id),
     listReturns: (filters) => invoke('pos:suppliers:listReturns', filters),
+    listReturnableProducts: (filters) => invoke('pos:suppliers:listReturnableProducts', filters),
   },
 
   // Pricing
@@ -196,7 +208,18 @@ contextBridge.exposeInMainWorld('posApi', {
     // Batch mode (partiya)
     getBatchesByProduct: (productId, warehouseId) => invoke('pos:inventory:getBatchesByProduct', productId, warehouseId),
     getBatchReconcile: (productId, warehouseId) => invoke('pos:inventory:getBatchReconcile', productId, warehouseId),
+    getBatchHealth: (productId, warehouseId) => invoke('pos:inventory:getBatchHealth', productId, warehouseId),
+    repairBatchCoverage: (payload) => invoke('pos:inventory:repairBatchCoverage', payload),
     runBatchCutoverSnapshot: (payload) => invoke('pos:inventory:runBatchCutoverSnapshot', payload),
+    createRevision: (payload) => invoke('pos:inventory:createRevision', payload),
+    listRevisions: (filters) => invoke('pos:inventory:listRevisions', filters),
+    getRevision: (revisionId, opts) => invoke('pos:inventory:getRevision', revisionId, opts),
+    updateRevisionItemCount: (payload) => invoke('pos:inventory:updateRevisionItemCount', payload),
+    clearRevisionItemCount: (payload) => invoke('pos:inventory:clearRevisionItemCount', payload),
+    countRevisionByBarcode: (payload) => invoke('pos:inventory:countRevisionByBarcode', payload),
+    bulkSetRevisionItemCounts: (payload) => invoke('pos:inventory:bulkSetRevisionItemCounts', payload),
+    completeRevision: (payload) => invoke('pos:inventory:completeRevision', payload),
+    cancelRevision: (payload) => invoke('pos:inventory:cancelRevision', payload),
   },
 
   // Sales
@@ -312,6 +335,8 @@ contextBridge.exposeInMainWorld('posApi', {
     aging: (filters) => invoke('pos:reports:aging', filters),
     customerAging: () => invoke('pos:reports:customerAging'),
     supplierAging: () => invoke('pos:reports:supplierAging'),
+    agingWarnings: () => invoke('pos:reports:agingWarnings'),
+    supplierPaymentsDue: (filters) => invoke('pos:reports:supplierPaymentsDue', filters),
     
     // CRM Reports
     vipCustomers: (filters) => invoke('pos:reports:vipCustomers', filters),
@@ -325,6 +350,7 @@ contextBridge.exposeInMainWorld('posApi', {
     priceHistory: (filters) => invoke('pos:reports:priceHistory', filters),
     productPriceSummary: (filters) => invoke('pos:reports:productPriceSummary', filters),
     purchasePlanning: (filters) => invoke('pos:reports:purchasePlanning', filters),
+    abcAnalysis: (filters) => invoke('pos:reports:abcAnalysis', filters),
     purchaseSaleSpread: (filters) => invoke('pos:reports:purchaseSaleSpread', filters),
     purchaseVsSold: (filters) => invoke('pos:reports:purchaseVsSold', filters),
     spreadTimeSeries: (filters) => invoke('pos:reports:spreadTimeSeries', filters),
@@ -363,6 +389,10 @@ contextBridge.exposeInMainWorld('posApi', {
     set: (key, value, type, updatedBy) => invoke('pos:settings:set', key, value, type, updatedBy),
     getAll: (filters) => invoke('pos:settings:getAll', filters),
     delete: (key) => invoke('pos:settings:delete', key),
+    testTelegramReport: () => invoke('pos:settings:testTelegramReport'),
+    testTelegramAiAnalysis: () => invoke('pos:settings:testTelegramAiAnalysis'),
+    testTelegramDailyPoster: () => invoke('pos:settings:testTelegramDailyPoster'),
+    openaiStatus: () => invoke('pos:settings:openaiStatus'),
     resetDatabase: (payload) => invoke('pos:settings:resetDatabase', payload),
   },
 
@@ -468,6 +498,7 @@ contextBridge.exposeInMainWorld('posApi', {
       invoke('pos:files:saveProductImage', sourcePath, productIdOrTempId, index),
     saveProductImageBuffer: (buffer, productIdOrTempId, index, extHint) =>
       invoke('pos:files:saveProductImageBuffer', buffer, productIdOrTempId, index, extHint),
+    readFileBuffer: (filePath) => invoke('pos:files:readFileBuffer', filePath),
     pathToFileUrl: (filePath) => invoke('pos:files:pathToFileUrl', filePath),
   },
 

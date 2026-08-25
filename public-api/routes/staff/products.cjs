@@ -4,25 +4,15 @@ const express = require('express');
 const { openTenantDatabase } = require('../../lib/staffDb.cjs');
 const { getPosBundle } = require('../../lib/staffPos.cjs');
 const { mapStaffServiceError } = require('../../lib/staffErrorMap.cjs');
+const { staffCanAccessArea } = require('../../lib/staffRoles.cjs');
 
 function mapServiceError(e, res) {
   mapStaffServiceError(e, res, { logTag: '[staff/products]' });
 }
 
-/**
- * Roles allowed to view cost price (tan narx) and batch (partiya) history.
- *
- * RBAC NOTE: cost price exposes purchase margins to whoever can see it. The
- * product owner explicitly wants sellers to compare market prices, so the
- * default below allows ALL staff roles (admin, manager, sales). To restrict
- * cost/batch visibility to managers only, change this to
- * `new Set(['admin', 'manager'])` — `staffAuth` has already validated the role
- * on `req.staffUser.role`, so no other change is required.
- */
-const COST_VISIBLE_ROLES = new Set(['admin', 'manager', 'sales']);
-
+/** Cost / batch history: admin, manager, sales — not cashier. */
 function canSeeCost(req) {
-  return COST_VISIBLE_ROLES.has(String(req.staffUser?.role || '').toLowerCase());
+  return staffCanAccessArea(req.staffUser?.role, 'cost');
 }
 
 /**

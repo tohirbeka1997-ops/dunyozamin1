@@ -143,7 +143,57 @@ const PUBLIC_CHANNELS = new Set([
   'pos:auth:confirmPasswordReset',
   'pos:health',
   'pos:appConfig:get',
+  'pos:tenants:publicProfile',
+  'pos:master:login',
 ]);
+
+function loginUsernameFromArgs(args) {
+  const firstArg = args?.[0];
+  const rawUname = typeof firstArg === 'string'
+    ? firstArg
+    : (firstArg && typeof firstArg === 'object' ? firstArg.username : '') || '';
+  return String(rawUname).slice(0, 80).toLowerCase();
+}
+
+/**
+ * Pick the rate-limit bucket for an /rpc call. Public pre-auth channels and
+ * login each use dedicated budgets so page-load probes and session restore
+ * cannot exhaust the login gate.
+ */
+function rpcRateGate({ channel, ip, adminBypass, authContext, token, args, limiter }) {
+  // Pre-auth bootstrap channels (health, appConfig, tenant branding, password
+  // reset…) must never exhaust the login gate. They are already scoped to
+  // low-trust bootstrap bearer tokens server-side; skip the public bucket so
+  // a cold login page (React strict-mode double mount + tenant logo probe)
+  // cannot trip 429 before credentials are even submitted.
+  if (channel && PUBLIC_CHANNELS.has(channel) && channel !== 'pos:auth:login') {
+    return {
+      gate: { allowed: true, remaining: 9999, retryAfterMs: 0 },
+      kind: 'public_rpc',
+      key: ip,
+    };
+  }
+
+  if (channel === 'pos:auth:login') {
+    const loginKey = `${ip}|${loginUsernameFromArgs(args)}`;
+    return { gate: limiter.checkLogin(loginKey), kind: 'login', key: loginKey };
+  }
+
+  const hasSessionBearer = !!(token && !adminBypass);
+  const rateKey = adminBypass
+    ? `admin:${ip}`
+    : hasSessionBearer
+      ? `sess:${String(token).slice(0, 32)}`
+      : ip;
+  const gate = adminBypass || hasSessionBearer
+    ? limiter.checkAuthRpc(rateKey)
+    : limiter.checkRpc(ip);
+  return {
+    gate,
+    kind: adminBypass || hasSessionBearer ? 'auth_rpc' : 'rpc',
+    key: rateKey,
+  };
+}
 
 /**
  * Channels a regular authenticated user may NOT call even with a session —
@@ -285,7 +335,14 @@ function startHostServer({
 
       if (method === 'GET' && url === '/health') {
         routeRef.value = 'health';
-        return json(res, 200, { ok: true, status: 'ok', time: new Date().toISOString() }, c);
+        let dbPath = null;
+        try {
+          const { resolvePosDbPath } = require('../lib/resolvePosDbPath.cjs');
+          dbPath = resolvePosDbPath();
+        } catch {
+          // ignore — health still returns ok for liveness
+        }
+        return json(res, 200, { ok: true, status: 'ok', time: new Date().toISOString(), db_path: dbPath }, c);
       }
 
       if (method === 'GET' && url.startsWith('/product-images/')) {
@@ -391,39 +448,6 @@ function startHostServer({
           }
         }
 
-        const rateKey = adminBypass
-          ? `admin:${ip}`
-          : authContext
-            ? `sess:${String(token).slice(0, 32)}`
-            : ip;
-        const gate = adminBypass || authContext
-          ? limiter.checkAuthRpc(rateKey)
-          : limiter.checkRpc(ip);
-        if (!gate.allowed) {
-          try { metrics.rateLimitBlockedTotal.inc({ kind: adminBypass || authContext ? 'auth_rpc' : 'rpc' }); } catch { /* ignore */ }
-          audit.rateLimitBlocked({ key: rateKey, kind: adminBypass || authContext ? 'auth_rpc' : 'rpc', ip });
-          res.setHeader('Retry-After', Math.ceil(gate.retryAfterMs / 1000));
-          return json(
-            res,
-            429,
-            { ok: false, error: { code: 'RATE_LIMITED', message: 'Too many requests' } },
-            c,
-          );
-        }
-
-        if (!token) {
-          return json(res, 401, { ok: false, error: { code: 'AUTH_ERROR', message: 'Unauthorized' } }, c);
-        }
-
-        if (!adminBypass && !authContext) {
-          return json(
-            res,
-            401,
-            { ok: false, error: { code: 'AUTH_ERROR', message: 'Invalid or expired session' } },
-            c,
-          );
-        }
-
         const payload = await readJson(req);
         const channel = payload?.channel;
         // Brauzer/proksi ba'zan `args` ni massiv emas, bitta obyekt yuboradi — [] ga aylantirmaslik kerak
@@ -444,35 +468,42 @@ function startHostServer({
           );
         }
 
-        // ---- Stricter rate limit for pos:auth:login: key = ip|username so
-        // distributed attempts against a single user (credential stuffing) are
-        // throttled even across different IPs, while one IP trying many users
-        // is also bounded. We intentionally DO NOT return a different error
-        // from "invalid credentials" — the attacker learns nothing.
-        //
-        // Supports both positional (`[username, password]`) and object
-        // (`[{ username, password }]`) shapes; older frontends may still send
-        // either.
-        if (channel === 'pos:auth:login') {
-          const firstArg = args?.[0];
-          const rawUname = typeof firstArg === 'string'
-            ? firstArg
-            : (firstArg && typeof firstArg === 'object' ? firstArg.username : '') || '';
-          const uname = String(rawUname).slice(0, 80).toLowerCase();
-          const loginKey = `${ip}|${uname}`;
-          const loginGate = limiter.checkLogin(loginKey);
-          if (!loginGate.allowed) {
-            try { metrics.rateLimitBlockedTotal.inc({ kind: 'login' }); } catch { /* ignore */ }
-            audit.rateLimitBlocked({ key: loginKey, kind: 'login', ip, channel });
+        const { gate, kind, key: rateKey } = rpcRateGate({
+          channel,
+          ip,
+          adminBypass,
+          authContext,
+          token,
+          args,
+          limiter,
+        });
+        if (!gate.allowed) {
+          try { metrics.rateLimitBlockedTotal.inc({ kind }); } catch { /* ignore */ }
+          audit.rateLimitBlocked({ key: rateKey, kind, ip, channel });
+          if (channel === 'pos:auth:login') {
             try { metrics.authLoginsTotal.inc({ outcome: 'rate_limited' }); } catch { /* ignore */ }
-            res.setHeader('Retry-After', Math.ceil(loginGate.retryAfterMs / 1000));
-            return json(
-              res,
-              429,
-              { ok: false, error: { code: 'RATE_LIMITED', message: 'Too many login attempts' } },
-              c,
-            );
           }
+          res.setHeader('Retry-After', Math.ceil(gate.retryAfterMs / 1000));
+          const loginMsg = kind === 'login' ? 'Too many login attempts' : 'Too many requests';
+          return json(
+            res,
+            429,
+            { ok: false, error: { code: 'RATE_LIMITED', message: loginMsg } },
+            c,
+          );
+        }
+
+        if (!token) {
+          return json(res, 401, { ok: false, error: { code: 'AUTH_ERROR', message: 'Unauthorized' } }, c);
+        }
+
+        if (!adminBypass && !authContext) {
+          return json(
+            res,
+            401,
+            { ok: false, error: { code: 'AUTH_ERROR', message: 'Invalid or expired session' } },
+            c,
+          );
         }
 
         // Admin-only channels: reject regular users even if authenticated.

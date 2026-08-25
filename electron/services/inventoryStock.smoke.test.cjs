@@ -31,43 +31,21 @@ function stockOf(inventory, productId) {
 function runConsistencyChecks(db, label) {
   const issues = [];
 
-  const balanceVsMoves = db
+  const balanceVsIm = db
     .prepare(
       `
     SELECT sb.product_id, sb.quantity AS bal,
-           COALESCE((SELECT SUM(sm.quantity) FROM stock_moves sm
-             WHERE sm.product_id = sb.product_id AND sm.warehouse_id = sb.warehouse_id), 0) AS move_sum
+           COALESCE((SELECT SUM(im.quantity) FROM inventory_movements im
+             WHERE im.product_id = sb.product_id AND im.warehouse_id = sb.warehouse_id), 0) AS im_sum
     FROM stock_balances sb
     WHERE sb.warehouse_id = ?
-      AND ABS(sb.quantity - COALESCE((SELECT SUM(sm.quantity) FROM stock_moves sm
-             WHERE sm.product_id = sb.product_id AND sm.warehouse_id = sb.warehouse_id), 0)) > 0.001
+      AND ABS(sb.quantity - COALESCE((SELECT SUM(im.quantity) FROM inventory_movements im
+             WHERE im.product_id = sb.product_id AND im.warehouse_id = sb.warehouse_id), 0)) > 0.001
   `,
     )
     .all(WH);
-  if (balanceVsMoves.length) {
-    issues.push(`${label}: stock_balances vs stock_moves (${balanceVsMoves.length} rows)`);
-  }
-
-  const hasIm = db
-    .prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='inventory_movements'")
-    .get();
-  if (hasIm) {
-    const balanceVsIm = db
-      .prepare(
-        `
-      SELECT sb.product_id, sb.quantity AS bal,
-             COALESCE((SELECT SUM(im.quantity) FROM inventory_movements im
-               WHERE im.product_id = sb.product_id AND (im.warehouse_id = sb.warehouse_id OR im.warehouse_id IS NULL)), 0) AS im_sum
-      FROM stock_balances sb
-      WHERE sb.warehouse_id = ?
-        AND ABS(sb.quantity - COALESCE((SELECT SUM(im.quantity) FROM inventory_movements im
-               WHERE im.product_id = sb.product_id AND (im.warehouse_id = sb.warehouse_id OR im.warehouse_id IS NULL)), 0)) > 0.001
-    `,
-      )
-      .all(WH);
-    if (balanceVsIm.length) {
-      issues.push(`${label}: stock_balances vs inventory_movements (${balanceVsIm.length} rows)`);
-    }
+  if (balanceVsIm.length) {
+    issues.push(`${label}: stock_balances vs inventory_movements (${balanceVsIm.length} rows)`);
   }
 
   const salesNoMove = db
@@ -77,23 +55,23 @@ function runConsistencyChecks(db, label) {
     FROM orders o
     JOIN order_items oi ON oi.order_id = o.id
     JOIN products p ON p.id = oi.product_id AND p.track_stock = 1
-    LEFT JOIN stock_moves sm ON sm.reference_type = 'order' AND sm.reference_id = o.id AND sm.product_id = oi.product_id
+    LEFT JOIN inventory_movements im ON im.reference_type = 'order' AND im.reference_id = o.id AND im.product_id = oi.product_id
     WHERE o.status = 'completed'
     GROUP BY o.id
-    HAVING COUNT(sm.id) = 0
+    HAVING COUNT(im.id) = 0
   `,
     )
     .all();
   if (salesNoMove.length) {
-    issues.push(`${label}: completed orders without stock_moves (${salesNoMove.length})`);
+    issues.push(`${label}: completed orders without inventory_movements (${salesNoMove.length})`);
   }
 
   const signErrors = db
     .prepare(
       `
-    SELECT id, move_type, quantity FROM stock_moves
-    WHERE (move_type = 'sale' AND quantity > 0)
-       OR (move_type = 'return' AND quantity < 0)
+    SELECT id, movement_type, quantity FROM inventory_movements
+    WHERE (movement_type = 'sale' AND quantity > 0)
+       OR (movement_type = 'return' AND quantity < 0)
   `,
     )
     .all();
@@ -295,7 +273,7 @@ try {
   ok('balans ↔ harakatlar ↔ products.current_stock mos');
 
   console.log(`\n=== NATIJA: ${passed} OK, ${failed} FAIL ===\n`);
-  if (failed > 0) process.exit(1);
+  process.exit(failed > 0 ? 1 : 0);
 } catch (e) {
   fail('inventory smoke suite', e);
   console.log(`\n=== NATIJA: ${passed} OK, ${failed} FAIL ===\n`);

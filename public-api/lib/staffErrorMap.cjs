@@ -1,6 +1,7 @@
 'use strict';
 
 const { ERROR_CODES } = require('../../electron/lib/errors.cjs');
+const { logger } = require('./logger.cjs');
 
 /**
  * Map POS service exceptions to stable staff REST JSON errors.
@@ -47,7 +48,7 @@ function mapStaffServiceError(e, res, opts = {}) {
     return;
   }
   if (typeof code === 'string' && code.startsWith('SQLITE_')) {
-    console.error(logTag, 'sqlite', e);
+    logger.error({ err: e, logTag }, 'sqlite error');
     res.status(500).json({
       error: 'database_error',
       message: 'Maʼlumotlar bazasi xatosi. Migratsiyalarni tekshiring (pos.db).',
@@ -55,7 +56,7 @@ function mapStaffServiceError(e, res, opts = {}) {
     return;
   }
 
-  console.error(logTag, e);
+  logger.error({ err: e, logTag }, 'unhandled staff route error');
   res.status(500).json({
     error: 'internal_error',
     message: message && message !== 'Request failed' ? message : 'Ichki xato. Qayta urinib ko‘ring.',

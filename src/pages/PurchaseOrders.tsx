@@ -21,6 +21,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
+import SearchableSupplierCombobox from '@/components/common/SearchableSupplierCombobox';
 import {
   Table,
   TableBody,
@@ -39,7 +40,8 @@ import {
   receiveGoods,
 } from '@/db/api';
 import type { PurchaseOrderWithDetails, SupplierWithBalance } from '@/types/database';
-import { Plus, Search, FileDown, Eye, Edit, Package, X, DollarSign, CheckCircle, Trash2 } from 'lucide-react';
+import { Plus, Search, FileDown, Eye, Edit, Package, X, DollarSign, CheckCircle, Trash2, CalendarClock } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
 import { useToast } from '@/hooks/use-toast';
 import { formatMoneyUZS } from '@/lib/format';
 import { formatMoney } from '@/lib/currency';
@@ -53,6 +55,7 @@ export default function PurchaseOrders() {
   const navigate = useNavigate();
   const location = useLocation();
   const { toast } = useToast();
+  const { t } = useTranslation();
   const { profile, role } = useAuth();
   const { searchParams, updateParams } = useSessionSearchParams({
     storageKey: 'purchase-orders.filters.query',
@@ -61,6 +64,7 @@ export default function PurchaseOrders() {
   const [purchaseOrders, setPurchaseOrders] = useState<PurchaseOrderWithDetails[]>([]);
   const [suppliers, setSuppliers] = useState<SupplierWithBalance[]>([]);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<Error | null>(null);
   const searchTerm = searchParams.get('search') || '';
   const statusFilter = searchParams.get('status') || 'all';
   const supplierFilter = searchParams.get('supplier') || 'all';
@@ -88,6 +92,7 @@ export default function PurchaseOrders() {
   const loadData = async () => {
     try {
       setLoading(true);
+      setError(null);
       const filters: any = {};
       
       if (statusFilter !== 'all') {
@@ -115,12 +120,16 @@ export default function PurchaseOrders() {
         getSuppliers(),
       ]);
       
-      setPurchaseOrders(ordersData);
-      setSuppliers(suppliersData);
-    } catch (error) {
+      setPurchaseOrders(Array.isArray(ordersData) ? ordersData : []);
+      setSuppliers(Array.isArray(suppliersData) ? suppliersData : []);
+    } catch (err) {
+      const loadError = err instanceof Error ? err : new Error("Xarid buyurtmalarini yuklab bo'lmadi");
+      console.error('Error loading purchase orders:', loadError);
+      setError(loadError);
+      setPurchaseOrders([]);
       toast({
         title: 'Xatolik',
-        description: 'Xarid buyurtmalarini yuklab bo\'lmadi',
+        description: loadError.message || "Xarid buyurtmalarini yuklab bo'lmadi",
         variant: 'destructive',
       });
     } finally {
@@ -304,14 +313,6 @@ export default function PurchaseOrders() {
     });
   })();
 
-  if (loading) {
-    return (
-      <div className="flex min-h-[220px] items-center justify-center">
-        <div className="h-7 w-7 animate-spin rounded-full border-2 border-primary border-t-transparent" />
-      </div>
-    );
-  }
-
   return (
     <div className="w-full min-w-0 space-y-4">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
@@ -324,6 +325,17 @@ export default function PurchaseOrders() {
             variant="outline"
             size="sm"
             className="h-8 text-xs"
+            aria-label="To'lanishi kerak hisobotiga o'tish"
+            onClick={() => navigate('/purchase-orders/due', { state: createBackNavigationState(location) })}
+          >
+            <CalendarClock className="mr-2 h-3.5 w-3.5" />
+            To&apos;lanishi kerak
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            className="h-8 text-xs"
+            aria-label="Tovar qabul qilish"
             onClick={() => navigate('/purchase-receipts/new', { state: createBackNavigationState(location) })}
           >
             <Package className="mr-2 h-3.5 w-3.5" />
@@ -332,6 +344,7 @@ export default function PurchaseOrders() {
           <Button
             size="sm"
             className="h-8 text-xs"
+            aria-label="Yangi xarid buyurtmasi"
             onClick={() => navigate('/purchase-orders/new', { state: createBackNavigationState(location) })}
           >
             <Plus className="mr-2 h-3.5 w-3.5" />
@@ -380,19 +393,18 @@ export default function PurchaseOrders() {
                     </Select>
                   </div>
                   <div className="min-w-[10rem] flex-1 sm:max-w-[14rem]">
-                    <Select value={supplierFilter} onValueChange={(value) => updateParams({ supplier: value })}>
-                      <SelectTrigger className="h-8 w-full bg-background text-xs [&_span]:truncate">
-                        <SelectValue placeholder="Yetkazib beruvchi" />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="all">Barcha yetkazib beruvchilar</SelectItem>
-                        {suppliers.map((supplier) => (
-                          <SelectItem key={supplier.id} value={supplier.id}>
-                            {supplier.name}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
+                    <SearchableSupplierCombobox
+                      value={supplierFilter}
+                      onValueChange={(value) => updateParams({ supplier: value })}
+                      suppliers={suppliers}
+                      prefixOptions={[
+                        {
+                          value: 'all',
+                          label: t('combobox.all_suppliers', 'Barcha yetkazib beruvchilar'),
+                        },
+                      ]}
+                      triggerClassName="h-8 bg-background text-xs"
+                    />
                   </div>
                   <div className="min-w-[10rem] flex-1 sm:max-w-[14rem]">
                     <Select value={sortBy} onValueChange={(value) => updateParams({ sortBy: value })}>
@@ -463,16 +475,42 @@ export default function PurchaseOrders() {
           </CardTitle>
         </CardHeader>
         <CardContent className="px-0 pb-3 pt-0">
-          {filteredOrders.length === 0 ? (
+          {loading ? (
+            <div
+              className="mx-4 my-10 flex min-h-[180px] flex-col items-center justify-center gap-3"
+              role="status"
+              aria-label="Yuklanmoqda"
+            >
+              <div className="h-7 w-7 animate-spin rounded-full border-2 border-primary border-t-transparent" />
+              <p className="text-sm text-muted-foreground">Yuklanmoqda...</p>
+            </div>
+          ) : error ? (
+            <div className="mx-4 my-8 rounded-lg border border-destructive/30 bg-destructive/5 py-10 text-center">
+              <p className="mb-1 font-semibold">Xatolik</p>
+              <p className="mb-4 text-sm text-muted-foreground">
+                {error.message || "Xarid buyurtmalarini yuklab bo'lmadi"}
+              </p>
+              <Button
+                variant="outline"
+                size="sm"
+                className="h-8 text-xs"
+                aria-label="Qayta urinish"
+                onClick={() => loadData()}
+              >
+                Qayta urinish
+              </Button>
+            </div>
+          ) : filteredOrders.length === 0 ? (
             <div className="mx-4 my-8 rounded-lg border bg-muted/20 py-10 text-center">
-              <p className="text-sm text-muted-foreground">Xarid buyurtmalari topilmadi</p>
+              <p className="text-sm text-muted-foreground">Hozircha xarid buyurtmalari yo‘q</p>
               <Button
                 size="sm"
                 className="mt-4 h-8 text-xs"
+                aria-label="Yangi xarid buyurtmasi yaratish"
                 onClick={() => navigate('/purchase-orders/new', { state: createBackNavigationState(location) })}
               >
                 <Plus className="mr-2 h-3.5 w-3.5" />
-                Birinchi xarid buyurtmasini yaratish
+                Yangi xarid buyurtmasi
               </Button>
             </div>
           ) : (

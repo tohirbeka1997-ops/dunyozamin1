@@ -5,17 +5,26 @@ const { allocateOrderNumber } = require('../lib/orderNumber.cjs');
 const { getAvailableStock } = require('../lib/stockHelpers.cjs');
 const { buildPaymeCheckoutUrl, buildClickCheckoutUrl } = require('../lib/paymentLinks.cjs');
 const { notifyAdminsNewOrder, notifyOrderCreated, notifyOrderStatusChanged } = require('../lib/telegramNotify.cjs');
+const { notifyStaffNewWebOrder } = require('../lib/staffPush.cjs');
 const { hasShowInMarketplaceColumn } = require('../lib/productVisibility.cjs');
 const { normalizeDeliveryMethod } = require('../lib/webOrderStatusFlow.cjs');
 const { idempotency } = require('../lib/idempotency.cjs');
 const { reserveWebOrderStock, handleWebOrderCancelled } = require('../lib/stockDecrement.cjs');
 const { getPromoDiscount } = require('../lib/marketplacePromo.cjs');
 const { getPointValueSums, redeemPointsForOrder, getBalance } = require('../lib/marketplaceLoyalty.cjs');
+const { validate } = require('../middleware/validate.cjs');
+const {
+  createOrderBodySchema,
+  orderIdParamsSchema,
+  ratingBodySchema,
+} = require('../schemas/orders.schema.cjs');
 const {
   persistMarketplaceCheckoutContact,
   linkMarketplaceCustomerToPos,
   formatPhoneUz,
 } = require('../lib/marketplacePosCustomer.cjs');
+const { logger } = require('../lib/logger.cjs');
+const { allocateOrderDiscountOntoItems } = require('../../electron/lib/allocateOrderDiscount.cjs');
 
 function parseIntParam(v, fallback, min, max) {
   const n = Number.parseInt(String(v ?? ''), 10);
@@ -222,6 +231,14 @@ function createOrder(db, customerId, data) {
 
     const discountAmount = promoDiscount + pointsDiscount;
     const totalAmount = Math.max(0, subtotal - discountAmount);
+    allocateOrderDiscountOntoItems(
+      lines.map((l) => {
+        l.unit_price = l.price_at_order;
+        l.discount_amount = l.discount_amount || 0;
+        return l;
+      }),
+      discountAmount,
+    );
 
     const noteParts = [];
     if (data.note) noteParts.push(String(data.note));
@@ -284,6 +301,31 @@ function createOrder(db, customerId, data) {
       columns.push('sales_channel');
       values.push(normalizeSalesChannel(data.sales_channel || data.channel));
     }
+    if (hasColumn(db, 'web_orders', 'currency')) {
+      columns.push('currency');
+      values.push('UZS');
+    }
+    if (hasColumn(db, 'web_orders', 'fx_rate')) {
+      let fx = data.fx_rate != null ? Number(data.fx_rate) : null;
+      if (!(fx > 0)) {
+        try {
+          const rateRow = db
+            .prepare(
+              `SELECT rate FROM exchange_rates
+               WHERE UPPER(base_currency) = 'USD' AND UPPER(quote_currency) = 'UZS'
+                 AND date(effective_date) <= date('now')
+               ORDER BY date(effective_date) DESC, datetime(updated_at) DESC
+               LIMIT 1`
+            )
+            .get();
+          fx = Number(rateRow?.rate || 0) > 0 ? Number(rateRow.rate) : null;
+        } catch {
+          fx = null;
+        }
+      }
+      columns.push('fx_rate');
+      values.push(fx);
+    }
 
     const placeholders = columns.map(() => '?').join(', ');
     const r = db
@@ -292,12 +334,28 @@ function createOrder(db, customerId, data) {
 
     const orderId = r.lastInsertRowid;
 
-    const insItem = db.prepare(`
-      INSERT INTO web_order_items (order_id, product_id, quantity, price_at_order)
-      VALUES (?, ?, ?, ?)
-    `);
+    const itemColumns = ['order_id', 'product_id', 'quantity', 'price_at_order'];
+    if (hasColumn(db, 'web_order_items', 'discount_amount')) itemColumns.push('discount_amount');
+    if (hasColumn(db, 'web_order_items', 'line_total')) itemColumns.push('line_total');
+    if (hasColumn(db, 'web_order_items', 'final_total')) itemColumns.push('final_total');
+    if (hasColumn(db, 'web_order_items', 'final_unit_price')) itemColumns.push('final_unit_price');
+    const insItem = db.prepare(
+      `INSERT INTO web_order_items (${itemColumns.join(', ')}) VALUES (${itemColumns.map(() => '?').join(', ')})`,
+    );
     for (const l of lines) {
-      insItem.run(orderId, l.product_id, l.quantity, l.price_at_order);
+      const vals = [orderId, l.product_id, l.quantity, l.price_at_order];
+      if (itemColumns.includes('discount_amount')) vals.push(Number(l.discount_amount || 0) || 0);
+      if (itemColumns.includes('line_total')) vals.push(Number(l.line_total ?? l.final_total ?? l.quantity * l.price_at_order));
+      if (itemColumns.includes('final_total')) vals.push(Number(l.final_total ?? l.line_total ?? l.quantity * l.price_at_order));
+      if (itemColumns.includes('final_unit_price')) {
+        vals.push(
+          Number(
+            l.final_unit_price ??
+              (l.quantity ? Number(l.final_total ?? l.line_total ?? l.quantity * l.price_at_order) / l.quantity : l.price_at_order),
+          ),
+        );
+      }
+      insItem.run(...vals);
     }
 
     // Spend the loyalty points now that we have the order id. Same balance we
@@ -367,7 +425,12 @@ function mountOrdersRoutes(dbGetter) {
         )
         .get(orderId);
       const token = process.env.TELEGRAM_BOT_TOKEN;
-      if (!row || !token) return;
+      if (!row) return;
+      notifyStaffNewWebOrder({
+        orderNumber: row.order_number,
+        totalAmount: row.total_amount,
+      });
+      if (!token) return;
       if (row?.telegram_id) {
         void notifyOrderCreated({
           botToken: token,
@@ -403,7 +466,7 @@ function mountOrdersRoutes(dbGetter) {
         items,
       });
     } catch (e) {
-      console.warn('[orders] create notify failed:', e.message || String(e));
+      logger.warn({ err: e.message || String(e) }, '[orders] create notify failed');
     }
   }
 
@@ -433,12 +496,13 @@ function mountOrdersRoutes(dbGetter) {
         deliveryMethod: row.delivery_method,
       });
     } catch (e) {
-      console.warn('[orders] status notify failed:', e.message || String(e));
+      logger.warn({ err: e.message || String(e) }, '[orders] status notify failed');
     }
   }
 
   router.post(
     '/',
+    validate({ body: createOrderBodySchema }),
     idempotency('orders', (req) => req.customerId),
     (req, res) => {
       try {
@@ -454,7 +518,7 @@ function mountOrdersRoutes(dbGetter) {
           });
           linkMarketplaceCustomerToPos(db, customerId);
         } catch (linkErr) {
-          console.warn('[orders] marketplace customer link:', linkErr.message || String(linkErr));
+          logger.warn({ err: linkErr.message || String(linkErr) }, '[orders] marketplace customer link');
         }
         const result = createOrder(db, customerId, data);
         if (result?.order_id != null) {
@@ -466,7 +530,7 @@ function mountOrdersRoutes(dbGetter) {
           res.status(e.status).json({ error: e.code, meta: e.meta });
           return;
         }
-        console.error('[orders] POST /', e);
+        logger.error({ err: e }, '[orders] POST /');
         res.status(500).json({ error: 'internal_error' });
       }
     },
@@ -533,7 +597,7 @@ function mountOrdersRoutes(dbGetter) {
         meta: { page, limit, total, total_pages: Math.max(1, Math.ceil(total / limit)) },
       });
     } catch (e) {
-      console.error('[orders] GET /', e);
+      logger.error({ err: e }, '[orders] GET /');
       res.status(500).json({ error: 'internal_error' });
     }
   });
@@ -603,7 +667,7 @@ function mountOrdersRoutes(dbGetter) {
         res.status(e.status).json({ error: e.code, meta: e.meta });
         return;
       }
-      console.error('[orders] POST /:id/reorder', e);
+      logger.error({ err: e }, '[orders] POST /:id/reorder');
       res.status(500).json({ error: 'internal_error' });
     }
   });
@@ -654,17 +718,17 @@ function mountOrdersRoutes(dbGetter) {
 
       res.json({ ok: true, id, status: 'cancelled' });
     } catch (e) {
-      console.error('[orders] POST /:id/cancel', e);
+      logger.error({ err: e }, '[orders] POST /:id/cancel');
       res.status(500).json({ error: 'internal_error' });
     }
   });
 
-  router.post('/:id/rating', (req, res) => {
+  router.post('/:id/rating', validate({ params: orderIdParamsSchema, body: ratingBodySchema }), (req, res) => {
     try {
       const customerId = req.customerId;
-      const id = Number.parseInt(String(req.params.id), 10);
-      const rating = Number.parseInt(String(req.body?.rating), 10);
-      const feedback = req.body?.feedback == null ? '' : String(req.body.feedback).trim();
+      const id = req.params.id;
+      const rating = req.body.rating;
+      const feedback = req.body.feedback == null ? '' : String(req.body.feedback).trim();
       if (!Number.isFinite(id)) {
         res.status(400).json({ error: 'invalid_id' });
         return;
@@ -714,7 +778,7 @@ function mountOrdersRoutes(dbGetter) {
       }
       res.json({ ok: true, id, rating, feedback: feedback || null, rated_at: now });
     } catch (e) {
-      console.error('[orders] POST /:id/rating', e);
+      logger.error({ err: e }, '[orders] POST /:id/rating');
       res.status(500).json({ error: 'internal_error' });
     }
   });
@@ -782,7 +846,7 @@ function mountOrdersRoutes(dbGetter) {
 
       res.json({ ...order, items });
     } catch (e) {
-      console.error('[orders] GET /:id', e);
+      logger.error({ err: e }, '[orders] GET /:id');
       res.status(500).json({ error: 'internal_error' });
     }
   });

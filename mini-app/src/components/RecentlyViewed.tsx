@@ -42,7 +42,7 @@ export function RecentlyViewed() {
           <Link
             key={p.id}
             to={`/product/${encodeURIComponent(p.id)}`}
-            className="group block w-[110px] flex-shrink-0"
+            className="group block w-[100px] flex-shrink-0"
           >
             <div className="relative aspect-square overflow-hidden rounded-2xl bg-[var(--brand-cream-50)]">
               <LazyImg

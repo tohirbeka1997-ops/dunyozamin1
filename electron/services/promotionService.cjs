@@ -136,7 +136,9 @@ class PromotionService {
     if (!cartItems || cartItems.length === 0) return cartItems;
 
     const cartSubtotal = cartItems.reduce((sum, it) => {
-      const qty = Number(it.quantity ?? it.qty_sale ?? it.qty_base ?? 1);
+      // Prefer qty_sale: after unit switch POS updates qty_sale first; legacy `quantity`
+      // can lag and would reprice the line with the wrong qty (e.g. 134 instead of ~2585).
+      const qty = Number(it.qty_sale ?? it.quantity ?? it.qty_base ?? 1);
       const up = Number(it.unit_price ?? 0);
       return sum + qty * up;
     }, 0);
@@ -145,7 +147,7 @@ class PromotionService {
 
     const result = cartItems.map((item) => {
       const product = item.product || item;
-      const quantity = Number(item.quantity ?? item.qty_sale ?? item.qty_base ?? 1);
+      const quantity = Number(item.qty_sale ?? item.quantity ?? item.qty_base ?? 1);
       const unitPrice = Number(item.unit_price ?? product.sale_price ?? 0);
       const lineSubtotal = quantity * unitPrice;
 

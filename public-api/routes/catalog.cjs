@@ -6,6 +6,8 @@ const { hasCategoryColumn } = require('../lib/categoryCatalog.cjs');
 const { resolveCatalogImageUrl } = require('../lib/productImageUrl.cjs');
 const { getCategorySubtreeIds } = require('../lib/categoryTree.cjs');
 const { rankProductForQuery, expandQueryTokens, normalizeText } = require('../lib/searchRank.cjs');
+const { catalogStockSubquery } = require('../lib/authoritativeStock.cjs');
+const { formatYmdInTimeZone } = require('../../electron/lib/timezone.cjs');
 
 /**
  * DB: JSON [{ name, value }, ...]
@@ -161,15 +163,9 @@ function getTrendingCacheTtlMs() {
   return parseEnvNumber('PUBLIC_API_TRENDING_CACHE_MS', 60_000, 0, 10 * 60 * 1000);
 }
 
-/**
- * Umumiy qoldiq: barcha omborlar bo'yicha available_quantity yig'indisi
- */
-function stockSubquery() {
-  return `
-    SELECT product_id, COALESCE(SUM(available_quantity), 0) AS stock_qty
-    FROM stock_balances
-    GROUP BY product_id
-  `;
+/** Authoritative stock: v_product_stock (inventory_movements) minus active reserve. */
+function stockSubquery(db) {
+  return catalogStockSubquery(db);
 }
 
 /** @param {import('better-sqlite3').Database} db @param {import('express').Request} req */
@@ -226,7 +222,7 @@ function listProducts(db, query, req) {
       COALESCE(sb.stock_qty, 0) AS stock_qty
       ${voSelect}
     FROM products p
-    LEFT JOIN (${stockSubquery()}) sb ON sb.product_id = p.id
+    LEFT JOIN (${stockSubquery(db)}) sb ON sb.product_id = p.id
     ${whereClause}
   `;
 
@@ -331,7 +327,7 @@ function getProductById(db, id, req) {
       COALESCE(sb.stock_qty, 0) AS stock_qty
       ${voSelect}
     FROM products p
-    LEFT JOIN (${stockSubquery()}) sb ON sb.product_id = p.id
+    LEFT JOIN (${stockSubquery(db)}) sb ON sb.product_id = p.id
     WHERE p.id = ? AND p.is_active = 1
       ${mpVis ? 'AND p.show_in_marketplace = 1' : ''}
   `
@@ -397,6 +393,45 @@ function getProductById(db, id, req) {
   };
 }
 
+/**
+ * Drop categories whose ancestor chain is not fully marketplace-visible.
+ *
+ * The query already filters to active + marketplace-visible rows, but that
+ * can leave "orphans": a visible child whose parent was hidden (or made
+ * inactive). The mini-app builds its drill-down tree from `parent_id`, so an
+ * orphan would group under a parent id that isn't in the payload — making it
+ * unreachable from the root (you can never tap the hidden parent to drill in).
+ *
+ * We treat marketplace visibility as cascading: hiding a branch root hides the
+ * whole branch. We iteratively remove any row whose non-null `parent_id` is
+ * absent from the visible set until the set is stable (handles multi-level
+ * cascades, e.g. Santexnika hidden → Fitings dropped → Kran dropped …).
+ *
+ * @param {Array<{ id: string|number, parent_id: string|number|null }>} rows
+ */
+function pruneOrphanCategories(rows) {
+  let kept = rows;
+  const present = new Set(kept.map((r) => String(r.id)));
+  let changed = true;
+  while (changed) {
+    changed = false;
+    const next = kept.filter((r) => {
+      const pid = r.parent_id == null ? '' : String(r.parent_id);
+      // Root rows (no parent) always stay; children stay only if their
+      // parent is still in the visible set.
+      if (!pid) return true;
+      return present.has(pid);
+    });
+    if (next.length !== kept.length) {
+      kept = next;
+      present.clear();
+      for (const r of kept) present.add(String(r.id));
+      changed = true;
+    }
+  }
+  return kept;
+}
+
 /** @param {import('better-sqlite3').Database} db */
 function listCategories(db) {
   const mp = hasCategoryColumn(db, 'show_in_marketplace');
@@ -404,7 +439,7 @@ function listCategories(db) {
   const extra = [img ? 'c.image_url' : '', mp ? 'c.show_in_marketplace' : ''].filter(Boolean).join(', ');
   const extraSql = extra ? `, ${extra}` : '';
   const mpWhere = mp ? 'AND COALESCE(c.show_in_marketplace, 1) = 1' : '';
-  return db
+  const rows = db
     .prepare(
       `
     SELECT c.id, c.parent_id, c.name, c.description, c.color, c.icon, c.sort_order
@@ -416,6 +451,7 @@ function listCategories(db) {
   `
     )
     .all();
+  return pruneOrphanCategories(rows);
 }
 
 /** @param {import('better-sqlite3').Database} db @param {import('express').Request} req */
@@ -491,7 +527,7 @@ function listTrendingProducts(db, query, req) {
       ${voSelect}
     FROM products p
     LEFT JOIN ranked r ON r.product_id = p.id
-    LEFT JOIN (${stockSubquery()}) sb ON sb.product_id = p.id
+    LEFT JOIN (${stockSubquery(db)}) sb ON sb.product_id = p.id
     WHERE p.is_active = 1
       ${mpWhere}
       ${catWhere}
@@ -594,7 +630,10 @@ function listActivePromoBanners(db) {
  */
 function getTodaysDailyDeal(db, req) {
   try {
-    const today = new Date().toISOString().slice(0, 10);
+    // "Today" in the shop timezone (Asia/Tashkent, UTC+5) — MUST match the
+    // admin default in marketplaceContentService.getDailyDeal so both sides
+    // agree on the calendar day around midnight.
+    const today = formatYmdInTimeZone(new Date());
     const row = db
       .prepare(
         `SELECT d.product_id, d.badge_text
@@ -800,4 +839,4 @@ function mountCatalogRoutes(dbGetter) {
   return router;
 }
 
-module.exports = { mountCatalogRoutes, listProducts, getProductById, listCategories };
+module.exports = { mountCatalogRoutes, listProducts, getProductById, listCategories, pruneOrphanCategories };

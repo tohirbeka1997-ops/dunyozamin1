@@ -1,12 +1,14 @@
 const Database = require('better-sqlite3');
 const path = require('path');
 const fs = require('fs');
-const { getAppLike } = require('../lib/runtime.cjs');
+const { getAppLike, isServerMode } = require('../lib/runtime.cjs');
 const {
   getDbPath,
   assertDbPathSafe,
   getUserDataPath,
+  clearCache: clearDbPathCache,
 } = require('./dbPath.cjs');
+const { maybeAdoptLegacyDatabase, maybeAdoptLegacyProductImages } = require('./legacyUserData.cjs');
 
 const app = getAppLike();
 
@@ -42,8 +44,31 @@ function getDbPathInternal() {
   }
   
   // Get canonical path (ALWAYS pos.db)
-  cachedDbPath = getDbPath(app);
-  
+  let targetPath = getDbPath(app);
+
+  // After package rename, adopt pos.db from legacy userData (e.g. miaoda-react-admin).
+  if (app && typeof app.getPath === 'function' && !isServerMode()) {
+    try {
+      const adoption = maybeAdoptLegacyDatabase(app, targetPath);
+      if (adoption.adopted) {
+        clearDbPathCache();
+        cachedDbPath = null;
+        targetPath = getDbPath(app);
+      } else if (adoption.reason === 'target_has_data' && adoption.legacyPath) {
+        console.log('[legacyUserData] Using existing pos.db (legacy copy not needed)');
+      }
+      maybeAdoptLegacyProductImages(app);
+    } catch (adoptError) {
+      console.warn(
+        '[legacyUserData] Could not adopt legacy database:',
+        adoptError?.message || adoptError,
+      );
+      console.warn('[legacyUserData] Close all POS windows and restart to import legacy data.');
+    }
+  }
+
+  cachedDbPath = targetPath;
+
   // Validate path is safe (inside userData) - fail-fast if not
   assertDbPathSafe(cachedDbPath, app);
   

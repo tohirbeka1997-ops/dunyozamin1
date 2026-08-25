@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { AppState, type AppStateStatus } from 'react-native';
 import { fetchQueueCounts } from '@/api/client';
+import { loadUser } from '@/auth/session';
+import { canAccessWebOrders } from '@/lib/staffAccess';
 import { isNotificationsEnabled } from '@/lib/notificationsPref';
 
 const POLL_MS = 60_000;
@@ -8,6 +10,7 @@ const POLL_MS = 60_000;
 /**
  * Poll incoming web-order queue count for tab badge (MVP — no FCM).
  * Pauses when app is backgrounded; respects local notifications toggle.
+ * Cashier roles never see the badge (no web-order access).
  */
 export function useQueueBadge(): number {
   const [badge, setBadge] = useState(0);
@@ -16,6 +19,11 @@ export function useQueueBadge(): number {
 
   const refresh = useCallback(async () => {
     try {
+      const user = await loadUser();
+      if (!canAccessWebOrders(user?.role)) {
+        setBadge(0);
+        return;
+      }
       const enabled = await isNotificationsEnabled();
       if (!enabled) {
         setBadge(0);

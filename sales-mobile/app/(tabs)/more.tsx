@@ -1,37 +1,69 @@
+import { useCallback, useEffect, useState } from 'react';
 import { useRouter } from 'expo-router';
+import { Ionicons } from '@expo/vector-icons';
 import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { loadUser } from '@/auth/session';
 import { t } from '@/i18n';
+import {
+  canAccessExpenses,
+  canAccessPurchasing,
+  canAccessSuppliers,
+  canAccessWebOrders,
+} from '@/lib/staffAccess';
 
 type HubLink = {
   titleKey: string;
   route: string;
-  icon: string;
+  icon: keyof typeof Ionicons.glyphMap;
+  allowed: (role?: string | null) => boolean;
 };
 
 const LINKS: HubLink[] = [
-  { titleKey: 'products', route: '/(tabs)/products', icon: '📦' },
-  { titleKey: 'customers', route: '/(tabs)/customers', icon: '👤' },
-  { titleKey: 'suppliers', route: '/(tabs)/suppliers', icon: '🚚' },
-  { titleKey: 'purchasing', route: '/(tabs)/purchasing', icon: '🛒' },
-  { titleKey: 'expenses', route: '/expenses', icon: '💸' },
-  { titleKey: 'queues', route: '/(tabs)/index', icon: '📋' },
-  { titleKey: 'profile', route: '/(tabs)/profile', icon: '⚙️' },
+  { titleKey: 'products', route: '/(tabs)/products', icon: 'cube-outline', allowed: () => true },
+  { titleKey: 'customers', route: '/(tabs)/customers', icon: 'person-outline', allowed: () => true },
+  {
+    titleKey: 'suppliers',
+    route: '/(tabs)/suppliers',
+    icon: 'bus-outline',
+    allowed: canAccessSuppliers,
+  },
+  {
+    titleKey: 'purchasing',
+    route: '/(tabs)/purchasing',
+    icon: 'basket-outline',
+    allowed: canAccessPurchasing,
+  },
+  { titleKey: 'expenses', route: '/expenses', icon: 'wallet-outline', allowed: canAccessExpenses },
+  { titleKey: 'queues', route: '/(tabs)/index', icon: 'layers-outline', allowed: canAccessWebOrders },
+  { titleKey: 'profile', route: '/(tabs)/profile', icon: 'settings-outline', allowed: () => true },
 ];
 
 export default function MoreScreen() {
   const router = useRouter();
+  const [role, setRole] = useState<string | null>(null);
+
+  useEffect(() => {
+    void loadUser().then((u) => setRole(u?.role ?? null));
+  }, []);
+
+  const visible = LINKS.filter((link) => link.allowed(role));
+
+  const onPress = useCallback(
+    (route: string) => {
+      router.push(route as never);
+    },
+    [router],
+  );
 
   return (
     <ScrollView style={styles.root} contentContainerStyle={styles.content}>
       <Text style={styles.heading}>{t('moreMenu')}</Text>
       <View style={styles.grid}>
-        {LINKS.map((link) => (
-          <Pressable
-            key={link.route}
-            style={styles.card}
-            onPress={() => router.push(link.route as never)}
-          >
-            <Text style={styles.icon}>{link.icon}</Text>
+        {visible.map((link) => (
+          <Pressable key={link.route} style={styles.card} onPress={() => onPress(link.route)}>
+            <View style={styles.iconWrap}>
+              <Ionicons name={link.icon} size={28} color="#166534" />
+            </View>
             <Text style={styles.cardTitle}>{t(link.titleKey)}</Text>
           </Pressable>
         ))}
@@ -56,6 +88,14 @@ const styles = StyleSheet.create({
     minHeight: 100,
     justifyContent: 'center',
   },
-  icon: { fontSize: 28, marginBottom: 8 },
+  iconWrap: {
+    width: 48,
+    height: 48,
+    borderRadius: 12,
+    backgroundColor: '#f0fdf4',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 8,
+  },
   cardTitle: { fontSize: 14, fontWeight: '700', color: '#0f172a', textAlign: 'center' },
 });

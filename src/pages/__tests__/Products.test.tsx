@@ -55,6 +55,10 @@ describe('Products Page', () => {
       products: mockProducts,
       categories: [],
       loading: false,
+      loadingMore: false,
+      hasMore: false,
+      loadMore: vi.fn(),
+      page: 0,
       error: null,
       refetch: vi.fn(),
     });

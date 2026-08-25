@@ -1,12 +1,13 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { apiFetch, loadTokens } from '../lib/api';
-import { cartCount, loadCart } from '../lib/cart';
 import { favoritesCount } from '../lib/favorites';
 import { getTg } from '../lib/telegram';
 import { computeBadges, fetchLoyalty, type LoyaltyState } from '../lib/loyalty';
 import { ReferralCard } from '../components/ReferralCard';
 import { LanguageSwitcher } from '../components/LanguageSwitcher';
+import { ThemeToggle } from '../components/ThemeToggle';
+import { t, useLang } from '../lib/i18n';
 
 type MeResponse = {
   id: number;
@@ -16,6 +17,7 @@ type MeResponse = {
 };
 
 export function ProfilePage() {
+  useLang();
   const tgUser = getTg()?.initDataUnsafe?.user;
   const [me, setMe] = useState<MeResponse | null>(null);
   const [err, setErr] = useState<string | null>(null);
@@ -89,24 +91,23 @@ export function ProfilePage() {
 
   return (
     <div className="space-y-4 dz-animate-in">
-      {/* HERO profile card — minimal with multi-leak */}
-      <section className="relative overflow-hidden rounded-[1.75rem] dz-brand-bg p-5 text-white">
-        <span className="dz-leak dz-leak-accent dz-leak-lg" style={{ top: '-30%', right: '-25%', opacity: 0.3 }} />
-        <span className="dz-leak dz-leak-teal dz-leak-md" style={{ bottom: '-30%', left: '-15%', opacity: 0.3 }} />
-        <div className="relative flex items-center gap-3.5">
-          <div className="flex h-14 w-14 flex-shrink-0 items-center justify-center rounded-2xl bg-[var(--brand-accent)] text-[18px] font-black text-[var(--brand-primary)]">
-            {initials}
+     <div>
+      {/* HERO profile header — green blueprint */}
+      <section className="dz-phead -mx-3 -mt-2 flex items-center gap-4 px-5 pb-7 pt-11">
+        <div className="relative z-[2] flex h-[60px] w-[60px] flex-shrink-0 items-center justify-center rounded-[19px] border-[1.5px] border-white/30 bg-white/[0.16] text-[22px] font-bold text-white">
+          {initials}
+        </div>
+        <div className="relative z-[2] min-w-0 flex-1">
+          <b className="block truncate text-[18px] font-bold tracking-[-0.02em]">{fullName}</b>
+          <div className="mt-1.5 inline-flex items-center gap-1.5 rounded-full bg-white/20 px-2.5 py-1 text-[10.5px] font-semibold">
+            <span aria-hidden>⭐</span>
+            {loyalty?.tier.current.name || t('profile.tier.gold')}
+            {loyalty ? ` · ${loyalty.points_balance.toLocaleString('uz-UZ')} ball` : ''}
           </div>
-          <div className="min-w-0 flex-1">
-            <p className="text-[10px] font-bold uppercase tracking-[0.22em] text-[var(--brand-accent)]/95">
-              👤 Mening profilim
-            </p>
-            <h1 className="mt-0.5 truncate text-[17px] font-extrabold leading-tight">{fullName}</h1>
-            <p className="mt-0.5 truncate text-[11.5px] text-white/80">
-              {tgUser?.username ? `@${tgUser.username}` : tgUser?.id ? `ID: ${tgUser.id}` : 'telegram'}
-              {me?.phone ? ` · ${me.phone}` : ''}
-            </p>
-          </div>
+          <p className="mt-1 truncate text-[11px] text-white/75">
+            {tgUser?.username ? `@${tgUser.username}` : tgUser?.id ? `ID: ${tgUser.id}` : 'telegram'}
+            {me?.phone ? ` · ${me.phone}` : ''}
+          </p>
         </div>
       </section>
 
@@ -114,50 +115,34 @@ export function ProfilePage() {
         <div className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-950">{err}</div>
       ) : null}
 
-      {/* Stats — minimal cards with leaks */}
-      <section className="grid grid-cols-4 gap-2">
-        <div className="dz-card relative p-2.5">
-          <span className="dz-leak dz-leak-teal dz-leak-sm" style={{ top: '-50%', right: '-30%', opacity: 0.22 }} />
-          <p className="relative text-[9px] font-bold uppercase tracking-wide text-[var(--brand-primary)]/55">
-            Buyurtmalar
-          </p>
-          <p className="relative mt-0.5 text-[18px] font-black tabular-nums text-[var(--brand-primary)]">
+      {/* Stats — raised glass tiles overlapping the header */}
+      <section className="dz-stagger relative z-[3] -mt-6 grid grid-cols-3 gap-2.5">
+        <div className="dz-pstat px-2 py-3.5 text-center">
+          <b className="block text-[19px] font-extrabold tabular-nums tracking-[-0.03em] text-[var(--ink)]">
             {loyalty?.stats.total_orders ?? 0}
-          </p>
+          </b>
+          <span className="text-[9px] font-bold uppercase tracking-[0.05em] text-[var(--soft-ink)]">
+            {t('profile.orders')}
+          </span>
         </div>
-        <div className="dz-card relative p-2.5">
-          <span className="dz-leak dz-leak-accent dz-leak-sm" style={{ top: '-50%', right: '-30%', opacity: 0.28 }} />
-          <p className="relative text-[9px] font-bold uppercase tracking-wide text-[var(--brand-primary)]/55">
-            Sarflandi
-          </p>
-          <p className="relative mt-0.5 text-[12px] font-black tabular-nums leading-tight text-[var(--brand-primary)]">
-            {loyalty?.stats.total_spent
-              ? loyalty.stats.total_spent >= 1000
-                ? `${Math.floor(loyalty.stats.total_spent / 1000)}K`
-                : loyalty.stats.total_spent.toLocaleString('uz-UZ')
-              : 0}
-            <span className="ml-0.5 text-[8px] font-bold opacity-60">soʻm</span>
-          </p>
+        <div className="dz-pstat px-2 py-3.5 text-center">
+          <b className="block text-[19px] font-extrabold tabular-nums tracking-[-0.03em] text-[var(--ink)]">
+            {(loyalty?.points_balance ?? 0).toLocaleString('uz-UZ')}
+          </b>
+          <span className="text-[9px] font-bold uppercase tracking-[0.05em] text-[var(--soft-ink)]">
+            {t('cart.bonus')}
+          </span>
         </div>
-        <div className="dz-card relative p-2.5">
-          <span className="dz-leak dz-leak-cream dz-leak-sm" style={{ top: '-50%', right: '-30%', opacity: 0.4 }} />
-          <p className="relative text-[9px] font-bold uppercase tracking-wide text-[var(--brand-primary)]/55">
-            Savatda
-          </p>
-          <p className="relative mt-0.5 text-[18px] font-black tabular-nums text-[var(--brand-primary)]">
-            {cartCount(loadCart())}
-          </p>
-        </div>
-        <div className="dz-card relative p-2.5">
-          <span className="dz-leak dz-leak-accent dz-leak-sm" style={{ top: '-50%', right: '-30%', opacity: 0.25 }} />
-          <p className="relative text-[9px] font-bold uppercase tracking-wide text-[var(--brand-primary)]/55">
-            Sevimli
-          </p>
-          <p className="relative mt-0.5 text-[18px] font-black tabular-nums text-[var(--brand-primary)]">
+        <div className="dz-pstat px-2 py-3.5 text-center">
+          <b className="block text-[19px] font-extrabold tabular-nums tracking-[-0.03em] text-[var(--ink)]">
             {favoritesCount()}
-          </p>
+          </b>
+          <span className="text-[9px] font-bold uppercase tracking-[0.05em] text-[var(--soft-ink)]">
+            {t('profile.favorites')}
+          </span>
         </div>
       </section>
+     </div>
 
       {/* ACHIEVEMENT BADGES — six tiles, locked items are dimmed */}
       {loyalty ? (
@@ -165,10 +150,10 @@ export function ProfilePage() {
           <span className="dz-leak dz-leak-teal dz-leak-md" style={{ top: '-50%', left: '-25%', opacity: 0.18 }} />
           <span className="dz-leak dz-leak-accent dz-leak-sm" style={{ bottom: '-50%', right: '-15%', opacity: 0.22 }} />
           <div className="relative mb-2.5 flex items-end justify-between">
-            <p className="text-[11px] font-bold uppercase tracking-[0.18em] text-[var(--brand-primary)]/65">
+            <p className="dz-section-kicker text-[11px] font-bold uppercase tracking-[0.18em]">
               🏅 Yutuqlar
             </p>
-            <p className="text-[10.5px] font-semibold text-[var(--brand-primary)]/55">
+            <p className="dz-section-meta text-[10.5px] font-semibold">
               {computeBadges(loyalty).filter((b) => b.earned).length}/{computeBadges(loyalty).length}
             </p>
           </div>
@@ -178,8 +163,8 @@ export function ProfilePage() {
                 key={badge.key}
                 className={`flex flex-col items-center justify-center gap-1 rounded-xl px-2 py-2 text-center transition ${
                   badge.earned
-                    ? 'bg-[var(--brand-cream-100)] text-[var(--brand-primary)]'
-                    : 'bg-[var(--brand-cream-50)] text-[var(--brand-primary)]/35 grayscale'
+                    ? 'bg-[var(--brand-cream-100)] text-[var(--brand-ink)]'
+                    : 'bg-[var(--brand-cream-50)] text-[var(--muted)] grayscale'
                 }`}
                 title={badge.hint}
               >
@@ -199,12 +184,12 @@ export function ProfilePage() {
           <div className="relative">
             <div className="flex items-start justify-between gap-3">
               <div className="min-w-0">
-                <p className="flex items-center gap-1 text-[10.5px] font-bold uppercase tracking-[0.18em] text-[var(--brand-primary)]/65">
+                <p className="dz-section-kicker flex items-center gap-1 text-[10.5px] font-bold uppercase tracking-[0.18em]">
                   <span aria-hidden>✦</span> Bonus ball
                 </p>
-                <p className="mt-1 flex items-baseline gap-1.5 text-[28px] font-black leading-none tabular-nums text-[var(--brand-primary)]">
+                <p className="mt-1 flex items-baseline gap-1.5 text-[28px] font-black leading-none tabular-nums text-[var(--brand-ink)]">
                   {loyalty.points_balance.toLocaleString('uz-UZ')}
-                  <span className="text-[12px] font-bold text-[var(--brand-primary)]/60">ball</span>
+                  <span className="text-[12px] font-bold text-[var(--soft-ink)]">ball</span>
                 </p>
                 {loyalty.stats.earned_this_month > 0 ? (
                   <p className="mt-1 text-[11px] text-[var(--brand-teal)]">
@@ -220,7 +205,7 @@ export function ProfilePage() {
                 >
                   {loyalty.tier.current.emoji}
                 </span>
-                <span className="text-[10.5px] font-bold text-[var(--brand-primary)]/75">
+                <span className="text-[10.5px] font-bold text-[var(--brand-deep)]">
                   {loyalty.tier.current.name}
                 </span>
               </div>
@@ -229,7 +214,7 @@ export function ProfilePage() {
             {/* Progress to next tier */}
             {loyalty.tier.next ? (
               <div className="mt-3.5">
-                <div className="flex items-center justify-between text-[10.5px] font-semibold text-[var(--brand-primary)]/70">
+                <div className="flex items-center justify-between text-[10.5px] font-semibold text-[var(--soft-ink)]">
                   <span>{loyalty.tier.current.name}</span>
                   <span>
                     {loyalty.tier.points_to_next > 0
@@ -248,7 +233,7 @@ export function ProfilePage() {
                 </div>
               </div>
             ) : (
-              <div className="mt-3 rounded-xl bg-[var(--brand-accent-100)] px-3 py-2 text-[11.5px] font-bold text-[var(--brand-primary)]">
+              <div className="mt-3 rounded-xl bg-[var(--brand-accent-100)] px-3 py-2 text-[11.5px] font-bold text-[var(--brand-ink)]">
                 💎 Eng yuqori darajadasiz! Rahmat sizga.
               </div>
             )}
@@ -257,10 +242,10 @@ export function ProfilePage() {
             {loyalty.card_code ? (
               <div className="mt-3.5 flex items-center justify-between gap-2 rounded-xl bg-[var(--brand-cream-100)] px-3 py-2">
                 <div className="min-w-0">
-                  <p className="text-[10px] font-bold uppercase tracking-wide text-[var(--brand-primary)]/60">
+                  <p className="text-[10px] font-bold uppercase tracking-wide text-[var(--soft-ink)]">
                     Mening kartam
                   </p>
-                  <p className="mt-0.5 truncate font-mono text-[11.5px] font-bold text-[var(--brand-primary)]">
+                  <p className="mt-0.5 truncate font-mono text-[11.5px] font-bold text-[var(--brand-ink)]">
                     {loyalty.card_code}
                   </p>
                 </div>
@@ -271,7 +256,7 @@ export function ProfilePage() {
                       void navigator.clipboard.writeText(loyalty.card_code || '');
                     }
                   }}
-                  className="rounded-lg bg-white px-2.5 py-1.5 text-[11px] font-bold text-[var(--brand-primary)] transition active:scale-95"
+                  className="rounded-lg bg-white px-2.5 py-1.5 text-[11px] font-bold text-[var(--brand-ink)] transition active:scale-95"
                 >
                   📋
                 </button>
@@ -300,10 +285,10 @@ export function ProfilePage() {
                   return (
                     <li key={i} className="flex items-center justify-between py-2 text-[12px]">
                       <div className="min-w-0">
-                        <p className="truncate font-bold text-[var(--brand-primary)]">
+                        <p className="truncate font-bold text-[var(--brand-ink)]">
                           {row.note || (row.type === 'earn_paid_order' ? 'Buyurtma toʻlandi' : row.type)}
                         </p>
-                        <p className="text-[10.5px] text-[var(--brand-primary)]/55">
+                        <p className="text-[10.5px] text-[var(--soft-ink)]">
                           {dateStr}
                           {row.order_id ? ` · #${row.order_id}` : ''}
                         </p>
@@ -325,7 +310,8 @@ export function ProfilePage() {
         </section>
       ) : null}
 
-      {/* Language switcher */}
+      {/* Appearance + language */}
+      <ThemeToggle />
       <LanguageSwitcher />
 
       {/* Referral — invite a friend, share rewards */}
@@ -350,16 +336,16 @@ export function ProfilePage() {
                 {item.icon}
               </span>
               <div className="min-w-0 flex-1">
-                <p className="text-[13px] font-bold text-[var(--brand-primary)]">{item.label}</p>
-                <p className="truncate text-[11px] text-[var(--dz-soft)]">{item.desc}</p>
+                <p className="text-[13px] font-bold text-[var(--brand-ink)]">{item.label}</p>
+                <p className="truncate text-[11px] text-[var(--soft-ink)]">{item.desc}</p>
               </div>
-              <span className="text-[var(--brand-primary)]/40" aria-hidden>›</span>
+              <span className="text-[var(--soft-ink)]" aria-hidden>›</span>
             </Link>
           ))}
         </div>
       </section>
 
-      <p className="pt-1 text-center text-[10.5px] leading-relaxed text-[var(--dz-soft)]">
+      <p className="pt-1 text-center text-[10.5px] leading-relaxed text-[var(--soft-ink)]">
         🌿 DunyoZamin — sifatli xizmat, har doim siz bilan
       </p>
     </div>

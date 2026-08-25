@@ -1,48 +1,51 @@
 /**
  * Platform-aware secure storage.
  *
- * Native (iOS/Android): uses `expo-secure-store` (Keychain / Keystore).
- * Web: `expo-secure-store` is unavailable, so we fall back to `localStorage`.
+ * Native (iOS/Android): lazy-loads `expo-secure-store` (Keychain / Keystore).
+ * Web: falls back to `localStorage`.
  *
- * The async signatures are kept identical across platforms so callers behave
- * the same regardless of where they run.
- *
- * SECURITY (web only): on the web build this fallback persists values in
- * `localStorage`, including the staff JWTs written by `auth/session.ts`
- * (`dz_staff_access_token` / `dz_staff_refresh_token`). `localStorage` is
- * readable by any JS on the origin, so an XSS bug could exfiltrate these
- * tokens and take over the staff account.
- *
- * Why we keep `localStorage` here instead of `sessionStorage`:
- *   - This helper is shared with values that MUST survive a browser restart,
- *     e.g. the stable device id (`lib/device.ts`), the saved locale
- *     (`i18n/index.ts`) and the biometric-enabled flag (`lib/biometrics.ts`).
- *     Moving the whole web fallback to `sessionStorage` would regenerate the
- *     device id and drop preferences on every new tab.
- *   - The app is mobile-first; the native build keeps tokens in the OS keychain
- *     and relies on persistent login, so the web build matches that UX.
- *
- * `sessionStorage` would only marginally help (it does not stop same-tab XSS
- * reads). The correct fix is backend-owned and out of scope for the frontend:
- * issue the refresh token as an HttpOnly + Secure + SameSite cookie so it is
- * never reachable from JS. Tracked as a backend follow-up.
+ * CRITICAL: never import expo-secure-store at module top-level — a native
+ * module load failure must not blank / crash the cold-start screen.
  */
 
 import { Platform } from 'react-native';
-import * as SecureStore from 'expo-secure-store';
 
 const isWeb = Platform.OS === 'web';
+
+type SecureStoreModule = typeof import('expo-secure-store');
+
+function loadSecureStore(): SecureStoreModule | null {
+  if (isWeb) return null;
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    return require('expo-secure-store') as SecureStoreModule;
+  } catch {
+    return null;
+  }
+}
+
+/** In-memory fallback when SecureStore is unavailable (should be rare). */
+const memory = new Map<string, string>();
 
 export async function setItem(key: string, value: string): Promise<void> {
   if (isWeb) {
     try {
       window.localStorage.setItem(key, value);
     } catch {
-      // ignore (e.g. storage disabled / private mode)
+      // ignore
     }
     return;
   }
-  await SecureStore.setItemAsync(key, value);
+  const SecureStore = loadSecureStore();
+  if (!SecureStore) {
+    memory.set(key, value);
+    return;
+  }
+  try {
+    await SecureStore.setItemAsync(key, value);
+  } catch {
+    memory.set(key, value);
+  }
 }
 
 export async function getItem(key: string): Promise<string | null> {
@@ -53,7 +56,15 @@ export async function getItem(key: string): Promise<string | null> {
       return null;
     }
   }
-  return SecureStore.getItemAsync(key);
+  const SecureStore = loadSecureStore();
+  if (!SecureStore) {
+    return memory.get(key) ?? null;
+  }
+  try {
+    return await SecureStore.getItemAsync(key);
+  } catch {
+    return memory.get(key) ?? null;
+  }
 }
 
 export async function deleteItem(key: string): Promise<void> {
@@ -65,5 +76,12 @@ export async function deleteItem(key: string): Promise<void> {
     }
     return;
   }
-  await SecureStore.deleteItemAsync(key);
+  memory.delete(key);
+  const SecureStore = loadSecureStore();
+  if (!SecureStore) return;
+  try {
+    await SecureStore.deleteItemAsync(key);
+  } catch {
+    // ignore
+  }
 }

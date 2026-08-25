@@ -2,6 +2,8 @@ import { useCallback, useEffect, useState } from 'react';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
+import NumberInput from '@/components/common/NumberInput';
+import { formatNumberDots } from '@/lib/money';
 import { Label } from '@/components/ui/label';
 import {
   Table,
@@ -19,7 +21,7 @@ import { todayYMD } from '@/lib/datetime';
 
 export function ExchangeRatesSettings() {
   const { toast } = useToast();
-  const [rate, setRate] = useState('');
+  const [rate, setRate] = useState<number | null>(null);
   const [effectiveDate, setEffectiveDate] = useState(todayYMD());
   const [latest, setLatest] = useState<any>(null);
   const [history, setHistory] = useState<any[]>([]);
@@ -43,8 +45,8 @@ export function ExchangeRatesSettings() {
       ]);
       setLatest(last);
       setHistory(Array.isArray(rows) ? rows : []);
-      if (last?.rate != null && !rate) {
-        setRate(String(last.rate));
+      if (last?.rate != null && rate == null) {
+        setRate(Number(last.rate));
       }
     } catch (e: any) {
       toast({
@@ -62,7 +64,7 @@ export function ExchangeRatesSettings() {
   }, [load]);
 
   const handleSave = async () => {
-    const r = Number(rate);
+    const r = rate ?? 0;
     if (!Number.isFinite(r) || r <= 0) {
       toast({ title: 'Xatolik', description: 'Kurs musbat son bo‘lishi kerak', variant: 'destructive' });
       return;
@@ -76,7 +78,7 @@ export function ExchangeRatesSettings() {
         effective_date: effectiveDate,
         source: 'manual',
       });
-      toast({ title: 'Saqlandi', description: `1 USD = ${r.toLocaleString('uz-UZ')} UZS` });
+      toast({ title: 'Saqlandi', description: `1 USD = ${formatNumberDots(r)} UZS` });
       await load();
     } catch (e: any) {
       toast({
@@ -112,14 +114,13 @@ export function ExchangeRatesSettings() {
           <div className="space-y-2 sm:col-span-2">
             <Label htmlFor="fx-rate">1 USD = so‘m</Label>
             <div className="flex gap-2">
-              <Input
+              <NumberInput
                 id="fx-rate"
-                type="number"
-                min={1}
-                step="1"
                 value={rate}
-                onChange={(e) => setRate(e.target.value)}
-                placeholder="12800"
+                onValueChange={setRate}
+                min={1}
+                placeholder="12.800"
+                containerClassName="flex-1 space-y-0"
               />
               <Button type="button" variant="outline" size="icon" onClick={() => void load()} disabled={loading}>
                 <RefreshCw className={`h-4 w-4 ${loading ? 'animate-spin' : ''}`} />
@@ -136,7 +137,7 @@ export function ExchangeRatesSettings() {
           <p className="text-sm text-muted-foreground">
             Oxirgi kurs ({formatDate(latest.effective_date)}):{' '}
             <span className="font-medium text-foreground">
-              1 USD = {Number(latest.rate).toLocaleString('uz-UZ')} UZS
+              1 USD = {formatNumberDots(Number(latest.rate))} UZS
             </span>
           </p>
         )}
@@ -164,7 +165,7 @@ export function ExchangeRatesSettings() {
                     <TableRow key={row.id || `${row.effective_date}-${row.rate}`}>
                       <TableCell>{formatDate(row.effective_date)}</TableCell>
                       <TableCell className="text-right font-medium">
-                        {Number(row.rate || 0).toLocaleString('uz-UZ')} UZS
+                        {formatNumberDots(Number(row.rate || 0))} UZS
                       </TableCell>
                       <TableCell className="text-muted-foreground">{row.source || '—'}</TableCell>
                     </TableRow>

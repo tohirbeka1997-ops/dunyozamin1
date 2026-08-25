@@ -4,9 +4,13 @@
  */
 import type { Product } from '@/types/database';
 
+export type ProductScanIndexEntry = Product & {
+  cost_price?: number;
+};
+
 export type ProductScanIndex = {
-  barcode: Map<string, Product>;
-  sku: Map<string, Product>;
+  barcode: Map<string, ProductScanIndexEntry>;
+  sku: Map<string, ProductScanIndexEntry>;
 };
 
 export function createEmptyProductScanIndex(): ProductScanIndex {
@@ -27,7 +31,7 @@ export function collectScanLookupKeys(rawInput: string): string[] {
   return Array.from(keys);
 }
 
-function registerBarcodeKey(index: Map<string, Product>, key: string, product: Product) {
+function registerBarcodeKey(index: Map<string, ProductScanIndexEntry>, key: string, product: ProductScanIndexEntry) {
   const k = String(key || '').trim();
   if (!k) return;
   index.set(k, product);
@@ -39,7 +43,7 @@ function registerBarcodeKey(index: Map<string, Product>, key: string, product: P
   if (digitsOnly && digitsOnly !== k) index.set(digitsOnly, product);
 }
 
-function registerSkuKey(index: Map<string, Product>, key: string, product: Product) {
+function registerSkuKey(index: Map<string, ProductScanIndexEntry>, key: string, product: ProductScanIndexEntry) {
   const k = String(key || '').trim();
   if (!k) return;
   index.set(k, product);
@@ -53,9 +57,9 @@ function registerSkuKey(index: Map<string, Product>, key: string, product: Produ
 
 /** Register one product on shared barcode + SKU indexes (all common key variants). */
 export function registerProductScanIndexes(
-  product: Product,
-  barcodeIndex: Map<string, Product>,
-  skuIndex: Map<string, Product>,
+  product: ProductScanIndexEntry,
+  barcodeIndex: Map<string, ProductScanIndexEntry>,
+  skuIndex: Map<string, ProductScanIndexEntry>,
 ) {
   const sku = String(product.sku || '').trim();
   if (sku) registerSkuKey(skuIndex, sku, product);
@@ -72,7 +76,7 @@ export function registerProductScanIndexes(
 }
 
 /** Build a fresh index from a product list (catalog load / refresh). */
-export function buildProductScanIndex(products: Product[]): ProductScanIndex {
+export function buildProductScanIndex(products: ProductScanIndexEntry[]): ProductScanIndex {
   const index = createEmptyProductScanIndex();
   for (const p of products) {
     registerProductScanIndexes(p, index.barcode, index.sku);
@@ -81,7 +85,7 @@ export function buildProductScanIndex(products: Product[]): ProductScanIndex {
 }
 
 export type ScanLookupHit = {
-  product: Product;
+  product: ProductScanIndexEntry;
   matchKind: 'barcode' | 'sku';
   matchedKey: string;
 };

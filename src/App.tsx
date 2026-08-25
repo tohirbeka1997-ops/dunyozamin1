@@ -9,6 +9,8 @@ import MainLayout from './components/layout/MainLayout';
 import { useSyncEngine } from './hooks/useSyncEngine';
 import { openOfflineDB } from './offline/db';
 import Loading from './components/common/Loading';
+import RpcNotifications from './components/common/RpcNotifications';
+import CreditStaffAlerts from './components/pos/CreditStaffAlerts';
 import { ErrorBoundary } from './components/common/ErrorBoundary';
 import { ConfirmDialogProvider } from './contexts/ConfirmDialogContext';
 import { hasSessionTokenIfRequired } from '@/lib/auth/sessionToken';
@@ -78,6 +80,8 @@ function App() {
       <AuthProvider>
         <Router>
           <Toaster />
+          <RpcNotifications />
+          <CreditStaffAlerts />
           <GlobalErrorOverlay />
           <ConfirmDialogProvider>
             <SyncEngineInitializer />
@@ -234,11 +238,11 @@ function PublicRoute({ children }: { children: ReactNode }) {
     );
   }
 
-  // If logged in as a tenant user, redirect to home (dashboard).
+  // If logged in as a tenant user with a live session token, redirect to POS.
   // Master sessions have no tenant-scoped home — send them to /admin/stores
   // so a stale master token on /login doesn't get dropped into a tenant page.
-  if (user && scope === 'tenant') return <Navigate to="/pos" replace />;
-  if (user && scope === 'master') return <Navigate to="/admin/stores" replace />;
+  if (user && hasSessionTokenIfRequired() && scope === 'tenant') return <Navigate to="/pos" replace />;
+  if (user && hasSessionTokenIfRequired() && scope === 'master') return <Navigate to="/admin/stores" replace />;
 
   return <>{children}</>;
 }

@@ -14,7 +14,7 @@
       "unstable": "unstable",
       "scale_error_title": "Scale error"
     },
-    "search_placeholder": "Search for products by name, SKU, article or barcode... (focus F2, add ENTER)",
+    "search_placeholder": "Name, SKU, barcode… (F2 · Enter)",
     "brand_label": "Brand",
     "article_label": "Article",
     "quick_product_search_placeholder": "Name, SKU, article or barcode...",
@@ -25,10 +25,19 @@
     "marketplace_off": "POS only",
     "stock": "In the warehouse",
     "customer": "Customer",
+    "customer_profile": "Customer profile",
     "select_customer": "Select a customer...",
     "search_customer": "Search by name, phone or ID...",
     "no_customer_found": "No client found.",
     "walk_in_customer": "Walking customer",
+    "bonus_referrer": "Master (bonus)",
+    "bonus_referrer_short": "Master",
+    "select_bonus_referrer": "Select master (optional)...",
+    "search_bonus_referrer": "Search master by name, phone or ID...",
+    "no_bonus_referrer_found": "No master found.",
+    "clear_bonus_referrer": "Clear master",
+    "bonus_referrer_hint": "When selected, sale bonus points go to the master, not the customer.",
+    "bonus_referrer_points": "{{points}} pts",
     "hold_order": "Save the order",
     "holdOrder": {
       "title": "Save the order",
@@ -121,6 +130,12 @@
     "credit_limit": "Nation limit",
     "available_credit": "Existing nation",
     "credit_amount": "National sum (UZS)",
+    "credit_due_date": "Due date",
+    "credit_due_date_default": "Default: today + {{days}} days",
+    "credit_reminder_note": "Reminder note",
+    "credit_reminder_note_placeholder": "e.g. call to remind, will come in the evening...",
+    "credit_reminder_note_hint": "Visible to cashier/admin only. Shown in due-date alerts.",
+    "credit_staff_alert_title": "Credit due date",
     "enter_credit_amount": "Enter the amount to be paid by country. For a full transaction, leave blank or enter the full amount.",
     "order_total": "Order total",
     "remaining_to_pay": "Remaining payment",
@@ -159,7 +174,15 @@
     "shift_opened": "Shift opened successfully",
     "shift_open_failed": "Error opening shift",
     "open_shift_first": "Please open the shift first",
+    "shift_closed_title": "Cash register closed",
+    "shift_closed_hint": "To start selling, please open a new shift.",
     "hold_order_failed": "Error saving order",
+    "order_import": {
+      "amend_banner": "Order edit: {{num}}",
+      "amend_banner_hint": "Checkout reverses the original sale and issues a new receipt.",
+      "hold_banner": "Held order: {{num}}",
+      "hold_banner_hint": "Not an edit — checkout creates a new sale and voids the held order."
+    },
     "exchange": {
       "return_mode": "Return mode",
       "return_mode_short": "Return (F8)",
@@ -289,9 +312,15 @@
     "toast_print": "The print window has opened",
     "cancel": "Cancellation",
     "save": "Save",
-    "create": "Creation",
+    "save_draft": "Save draft",
+    "create": "Create estimate",
+    "select_customer": "Select customer",
+    "select_customer_placeholder": "Search existing customer...",
+    "create_customer": "Save as new customer",
     "toast_saved": "Estimate saved",
+    "toast_draft_saved": "Draft saved",
     "toast_created": "An estimate has been created",
+    "toast_customer_created": "Customer created",
     "toast_updated": "The estimate has been updated",
     "error_min_items": "Add at least one product",
     "error_customer_name": "Enter the customer name",
@@ -418,6 +447,7 @@
     "sales_returns": "Sales returns",
     "customers": "Customers",
     "inventory": "Warehouse",
+    "inventory_revision": "Stocktake",
     "purchase_orders": "Purchase orders",
     "suppliers": "Suppliers",
     "expenses": "Expenses",
@@ -487,6 +517,8 @@
     "product_name_required": "Product name *",
     "sku": "SKU",
     "sku_required": "SKU *",
+    "article": "Article",
+    "brand": "Brand",
     "barcode": "Barcode",
     "category": "Category",
     "unit": "Unity",
@@ -499,7 +531,7 @@
     "general_information": "General information",
     "pricing": "Pricing",
     "inventory": "Warehouse",
-    "search_placeholder": "Search by name, SKU or barcode...",
+    "search_placeholder": "Name, SKU, article, brand or barcode...",
     "all_categories": "All categories",
     "all_statuses": "All cases",
     "all_stock": "All storage",
@@ -679,7 +711,27 @@
     "payment_amount": "Payment amount",
     "payment_method": "Payment method",
     "reference_number": "Reference number",
-    "payment_notes": "Payment reminders"
+    "payment_notes": "Payment reminders",
+    "credit_orders_title": "Credit / Debts",
+    "credit_orders_empty": "No open credit orders",
+    "credit_orders_count": "{{count}} open order(s)",
+    "credit_orders_overdue_count": "{{count}} overdue",
+    "credit_orders_open": "Credit orders ({{count}})",
+    "credit_orders_view": "Debt list",
+    "credit_orders_sheet_desc": "Open credit orders and due dates",
+    "credit_orders_sheet_for": "{{name}} — open credit orders",
+    "credit_remaining": "Remaining debt",
+    "credit_due_date": "Due date",
+    "credit_due_overdue": "Overdue",
+    "credit_send_reminder": "Send reminder",
+    "credit_reminder_sent": "Reminder sent",
+    "credit_reminder_failed": "Could not send reminder",
+    "credit_reminder_error": "Error sending reminder",
+    "credit_reminder_failed_hint": "Check phone / Telegram / SMS_PROVIDER",
+    "credit_due_saved": "Due date saved",
+    "credit_due_save_failed": "Could not save due date",
+    "credit_reminder_note": "Reminder note",
+    "credit_orders_loading": "Loading..."
   },
   "orders": {
     "title": "Orders",
@@ -713,6 +765,8 @@
     "import_order_no_products": "No products could be added to the cart",
     "import_order_success_title": "Order loaded into cart",
     "import_order_success_desc": "{{num}} — {{n}} line(s) added (new sale)",
+    "import_order_success_desc_amend": "{{num}} — {{n}} line(s) loaded for edit",
+    "import_order_success_desc_hold": "{{num}} — {{n}} line(s) loaded from held order",
     "import_order_failed_title": "Could not load order into cart"
   },
   "web_orders": {
@@ -734,6 +788,22 @@
     "report_by_status": "By status",
     "report_by_channel": "By channel",
     "report_count": "Count",
+    "report_days_custom": "Custom",
+    "report_scope_hint": "Based on online (web_orders) orders by Tashkent calendar day; amounts in UZS equivalent. Cancelled / refunded / failed are excluded from KPI totals but still appear in the status table.",
+    "report_avg_order": "Average order",
+    "report_cancelled": "Cancelled / refund",
+    "report_by_payment": "By payment method",
+    "report_desktop_only": "This report is only available in the desktop app.",
+    "report_invalid_range_title": "Date range",
+    "report_invalid_range": "Start was after end — dates were swapped.",
+    "report_export_no_data": "No data to export",
+    "report_export_ok_title": "Success",
+    "report_export_ok": "Exported as {{format}}",
+    "report_export_failed": "Export failed",
+    "payment_payme": "Payme",
+    "payment_click": "Click",
+    "payment_cash": "Cash",
+    "payment_other": "Other",
     "all_incoming": "All new",
     "channel": "Channel",
     "channel_telegram": "Telegram",
@@ -804,7 +874,13 @@
     "enter_description": "Enter a category description",
     "description_placeholder": "Short description (for online catalog)",
     "description_hint": "Empty descriptions look bare in the catalog — one or two sentences help.",
-    "image_url_label": "Category image URL (optional)",
+    "image_label": "Category image",
+    "image_pick": "Choose image",
+    "image_remove": "Remove",
+    "image_optimizing": "Optimizing...",
+    "image_upload_hint": "JPG, PNG or WebP. Shown as the category icon in POS and the online catalog.",
+    "image_upload_failed": "Could not upload image",
+    "image_url_label": "Or paste image URL (optional)",
     "active_in_pos": "Active in POS",
     "show_in_marketplace": "Show in online catalog",
     "duplicate_suffix": "copy",
@@ -941,6 +1017,68 @@
     "in_stock": "It is in stock",
     "out_of_stock": "Out of stock"
   },
+  "inventory_revision": {
+    "title": "Warehouse stocktake",
+    "subtitle": "Count products and align system stock to physical counts",
+    "new_revision": "New stocktake",
+    "creating": "Creating...",
+    "created_title": "Stocktake opened",
+    "created_desc": "{{number}} — {{count}} products snapshotted",
+    "no_revisions": "No stocktakes yet. Start a new one.",
+    "number": "Number",
+    "status": "Status",
+    "progress": "Counted",
+    "variances": "Variances",
+    "created_at": "Created",
+    "filter_all_statuses": "All statuses",
+    "status_draft": "Draft",
+    "status_in_progress": "In progress",
+    "status_completed": "Completed",
+    "status_cancelled": "Cancelled",
+    "detail_title": "Stocktake {{number}}",
+    "summary_line": "Counted: {{counted}}/{{total}} ({{percent}}%) · Variance: {{variance}} · Pending: {{pending}}",
+    "items_title": "Products",
+    "search_placeholder": "Name, SKU or barcode...",
+    "filter_all": "All",
+    "filter_counted": "Counted",
+    "filter_pending": "Not counted",
+    "filter_variance": "Has variance",
+    "badge_counted": "Counted",
+    "badge_pending": "Pending",
+    "badge_variance": "Has variance",
+    "badge_stock_drift": "Stock changed",
+    "product": "Product",
+    "system_qty": "System (snapshot)",
+    "live_qty": "Live",
+    "counted_qty": "Counted",
+    "variance": "Variance",
+    "barcode_placeholder": "Barcode or SKU + Enter",
+    "barcode_hint": "Scan or type — each scan adds +1 (or starts a count).",
+    "scan_ok": "Count updated",
+    "scan_fail": "Product not found",
+    "invalid_qty": "Invalid quantity",
+    "clear_count": "Clear count",
+    "mark_zero": "Mark as zero",
+    "mark_zero_confirm_title": "Set filtered pending items to 0?",
+    "mark_zero_confirm_body": "{{count}} products will be counted as 0.",
+    "mark_zero_done": "{{count}} products marked as 0",
+    "no_items": "No products found",
+    "complete": "Complete",
+    "cancel": "Cancel",
+    "complete_confirm_title": "Complete stocktake?",
+    "complete_confirm_body": "Only counted products will have stock updated. Uncounted products stay unchanged. Completing writes counted qty to stock (set) for every counted item — even when variance vs snapshot is 0 (live stock may have drifted).",
+    "complete_confirm_stats": "Counted: {{counted}}, not counted: {{pending}}, with variance: {{variance}}",
+    "complete_stock_drift_warn": "Warning: stock changed after counting started ({{count}} products). Snapshot differs from live qty — completing still writes the counted qty.",
+    "completed_title": "Stocktake completed",
+    "completed_desc": "{{counted}} counted, {{adjusted}} stock lines written",
+    "cancel_confirm_title": "Cancel stocktake?",
+    "cancel_confirm_body": "No stock movements will be created.",
+    "cancelled_title": "Stocktake cancelled",
+    "already_open_hint": "An open stocktake exists ({{number}}). Finish or cancel it before starting a new one.",
+    "open_banner_title": "Open warehouse stocktake",
+    "open_banner_body": "{{number}} is in progress. Manual stock adjustments are temporarily blocked.",
+    "open_banner_action": "Open stocktake"
+  },
   "purchase_orders": {
     "title": "Purchase orders",
     "subtitle": "Manage purchase orders",
@@ -963,7 +1101,10 @@
     "unit_cost": "Unit price",
     "line_total": "Row total",
     "subtotal": "Subtotal",
-    "tax": "Tax"
+    "tax": "Tax",
+    "validation_error": "Validation error",
+    "qty_below_received_summary": "Total order quantity for each product must not be less than the received quantity",
+    "qty_below_received_inline": "Received: {{received}}, Order: {{ordered}}"
   },
   "suppliers": {
     "title": "Suppliers",
@@ -1080,6 +1221,289 @@
     "inventory_movement": "Warehouse movement",
     "profit_loss": "Profit and loss",
     "payment_methods": "Payment methods",
+    "abc_analysis": {
+      "title": "ABC analysis (by sales)",
+      "subtitle": "Products classified A / B / C by revenue share",
+      "rule_hint": "Rule: products ranked by sales amount (UZS equiv.). A — cumulative ~0–80%, B — ~80–95%, C — ~95–100%.",
+      "scope_hint": "Based on gross completed sales (UZS equiv.). POS cart returns (negative orders) are excluded; formal sales_returns documents are not subtracted.",
+      "filters": {
+        "from": "Start date",
+        "to": "End date",
+        "warehouse": "Warehouse",
+        "category": "Category",
+        "class": "Class",
+        "all_classes": "All",
+        "search": "Search",
+        "search_ph": "Name or SKU..."
+      },
+      "summary": {
+        "total": "Total revenue",
+        "products": "{{count}} products"
+      },
+      "table": {
+        "product": "Product",
+        "sku": "SKU",
+        "qty": "Qty sold",
+        "amount": "Amount",
+        "share": "Share %",
+        "cumulative": "Cumulative %",
+        "class": "Class",
+        "stock": "Stock"
+      },
+      "empty": "No sales found for the selected period",
+      "errors": {
+        "desktop_only": "This report is only available in the desktop app.",
+        "load_failed": "Failed to load data"
+      }
+    },
+    "product_sales_page": {
+      "title": "Product sales reports",
+      "subtitle": "Analyze product sales performance and profitability (revenue in UZS equivalent + USD broken out)",
+      "scope_hint": "Based on gross completed sales (UZS equiv.). POS cart returns (negative orders) are excluded; formal sales_returns documents are not subtracted.",
+      "abc_link": "ABC analysis (revenue share)",
+      "filters": {
+        "from": "Start date",
+        "to": "End date",
+        "warehouse": "Warehouse",
+        "category": "Category",
+        "all_categories": "All categories",
+        "price_tier": "Price type",
+        "all_tiers": "All types",
+        "tier_retail": "Retail",
+        "tier_master": "Master",
+        "tier_wholesale": "Wholesale",
+        "tier_marketplace": "Marketplace",
+        "search": "Search",
+        "search_ph": "Search by name or SKU..."
+      },
+      "summary": {
+        "revenue": "Total revenue",
+        "profit": "Total profit",
+        "cogs_note": "COGS and profit — UZS",
+        "products": "{{count}} products"
+      },
+      "top10": {
+        "title": "Top 10 best-selling products",
+        "empty": "No sales in this period. Try the last 30 days or widen the filters."
+      },
+      "slow": {
+        "title": "Slow-moving products",
+        "empty": "No slow movers — no sales in the period, or all products sold at a similar level.",
+        "sold": "{{count}} sold"
+      },
+      "table": {
+        "product": "Product name",
+        "sku": "SKU",
+        "category": "Category",
+        "qty": "Qty sold",
+        "revenue": "Revenue (UZS/USD)",
+        "retail": "Retail",
+        "master": "Master",
+        "profit": "Profit",
+        "margin": "Margin %",
+        "empty": "No product sales for this period. Widen the date range or change filters."
+      },
+      "export": {
+        "title": "Export",
+        "exporting_to": "Exporting to {{format}}...",
+        "excel": "Excel",
+        "pdf": "PDF"
+      },
+      "errors": {
+        "load_failed": "Failed to load product sales data"
+      }
+    },
+    "customer_sales_page": {
+      "title": "Customer sales reports",
+      "subtitle": "Analyze customer purchasing habits and loyalty",
+      "scope_hint": "Based on gross completed sales (UZS equiv.), including credit sales. POS cart returns are excluded. Outstanding debt is the current customers.balance (ledger) for customers active in the period — not a sum of credit_amount.",
+      "filters": {
+        "from": "Start date",
+        "to": "End date",
+        "warehouse": "Warehouse",
+        "search": "Search customer",
+        "search_ph": "Search by customer name..."
+      },
+      "summary": {
+        "revenue": "Total revenue (UZS equiv.)",
+        "orders": "Total orders",
+        "debt": "Outstanding debt",
+        "debt_usd": "+ {{amount}} USD debt",
+        "customers": "{{count}} customers"
+      },
+      "table": {
+        "customer": "Customer",
+        "purchases": "Total purchases (UZS equiv.)",
+        "orders": "Order count",
+        "avg_order": "Average order (UZS equiv.)",
+        "balance": "Outstanding balance",
+        "balance_usd": "Balance (USD)",
+        "empty": "No customer sales for this period. Default is last 30 days; widen the date range or change the warehouse."
+      },
+      "export": {
+        "title": "Export",
+        "excel": "Excel",
+        "pdf": "PDF",
+        "period": "Period",
+        "no_data": "No data to export",
+        "success_title": "Success",
+        "success": "Exported as {{format}}",
+        "failed": "Export failed"
+      },
+      "errors": {
+        "load_failed": "Failed to load customer sales data"
+      }
+    },
+    "supplier_due_page": {
+      "title": "Payments due",
+      "subtitle": "Supplier payables by due date",
+      "scope_hint": "Debt is document remaining (order − payments), not warehouse landed cost. “Today” only lists items due today; open debt without a due date appears under “All open debt” or “No due date”.",
+      "list_title": "Payment list",
+      "filters": {
+        "open": "All open debt",
+        "today": "Today",
+        "overdue": "Overdue",
+        "upcoming7": "Within 7 days",
+        "upcoming30": "Within 30 days",
+        "no_due": "No due date"
+      },
+      "summary": {
+        "total": "Total (filter)",
+        "overdue": "Overdue",
+        "today": "Today",
+        "no_due": "No due date",
+        "rows": "{{count}} rows"
+      },
+      "status": {
+        "overdue": "Overdue",
+        "today": "Today",
+        "upcoming": "Upcoming",
+        "no_due": "No due date"
+      },
+      "scheme": {
+        "full": "Full (open debt)",
+        "partial": "Partial",
+        "installment": "Installment #{{n}}"
+      },
+      "table": {
+        "po": "PO",
+        "supplier": "Supplier",
+        "scheme": "Scheme",
+        "amount": "Amount",
+        "currency": "Currency",
+        "due": "Due",
+        "status": "Status"
+      },
+      "empty": "No debt found for this filter.",
+      "empty_today": "Nothing due today. Use “All open debt” or “No due date” for open balances.",
+      "export": {
+        "filter": "Filter",
+        "no_data": "No data to export",
+        "success_title": "Success",
+        "success": "Exported as {{format}}",
+        "failed": "Export failed"
+      },
+      "errors": {
+        "load_failed": "Failed to load",
+        "desktop_only": "This report is only available in the desktop app."
+      }
+    },
+    "po_summary_page": {
+      "title": "Purchase orders summary",
+      "subtitle": "Overview of purchase orders",
+      "scope_hint": "Order / paid / debt are in document currency (UZS and USD kept separate). “Warehouse (UZS)” is received inventory value (landed cost) and includes USD POs converted to UZS — so it can exceed “Total ordered”. That is expected, not a bug.",
+      "filters": {
+        "from": "Start date",
+        "to": "End date"
+      },
+      "summary": {
+        "ordered": "Total ordered (document)",
+        "received_doc": "Total received (document currency)",
+        "received_wh": "Warehouse value (UZS)",
+        "received_wh_hint": "All POs (including USD) — landed cost",
+        "paid": "Total paid",
+        "debt": "Total debt (to pay)",
+        "credit": "Overpayment",
+        "count": "{{count}} orders"
+      },
+      "table": {
+        "po_number": "PO number",
+        "supplier": "Supplier",
+        "date": "Date",
+        "currency": "Currency",
+        "ordered": "Order amount",
+        "received_doc": "Received (doc)",
+        "received_wh": "Warehouse (UZS)",
+        "paid": "Paid",
+        "debt": "Debt",
+        "status": "Status",
+        "empty": "No purchase orders in this period. Default is last 30 days."
+      },
+      "status": {
+        "draft": "Draft",
+        "approved": "Approved",
+        "partial": "Partially received",
+        "received": "Received",
+        "cancelled": "Cancelled"
+      },
+      "export": {
+        "excel": "Excel",
+        "pdf": "PDF",
+        "period": "Period",
+        "no_data": "No data to export",
+        "success_title": "Success",
+        "success": "Exported as {{format}}",
+        "failed": "Export failed"
+      },
+      "errors": {
+        "load_failed": "Failed to load purchase order report",
+        "invalid_range_title": "Date range",
+        "invalid_range": "Start was after end — dates were swapped."
+      }
+    },
+    "promotions_page": {
+      "title": "Promotions report",
+      "subtitle": "Promotion usage and discount totals",
+      "scope_hint": "Based on promotion applications on completed orders (UZS equiv.). POS cart returns are excluded. Default period is the last 30 days.",
+      "filters": {
+        "from": "Start",
+        "to": "End",
+        "warehouse": "Warehouse",
+        "search": "Search",
+        "search_ph": "Search by promotion name..."
+      },
+      "summary": {
+        "promotions": "Promotions",
+        "usage": "Total uses",
+        "discount": "Total discount (UZS equiv.)"
+      },
+      "types": {
+        "percent": "Percent discount",
+        "amount": "Amount discount",
+        "fixed": "Fixed price"
+      },
+      "table": {
+        "name": "Promotion name",
+        "type": "Type",
+        "usage": "Usage count",
+        "discount": "Total discount",
+        "empty": "No promotions used in this period. Default is last 30 days; widen the date range or change the warehouse."
+      },
+      "export": {
+        "excel": "Excel",
+        "pdf": "PDF",
+        "period": "Period",
+        "no_data": "No data to export",
+        "success_title": "Success",
+        "success": "Exported as {{format}}",
+        "failed": "Export failed"
+      },
+      "errors": {
+        "load_failed": "Failed to load promotions report",
+        "invalid_range_title": "Date range",
+        "invalid_range": "Start was after end — dates were swapped."
+      }
+    },
     "payment_methods_page": {
       "title": "By payment methods",
       "subtitle": "Distribution of payments in the selected period (cash/card/QR, etc.)",
@@ -1216,7 +1640,7 @@
     "notifications": "Notifications",
     "security": "Security",
     "marketplace": {
-      "tab": "Marketplace tuning",
+      "tab": "Marketplace",
       "title": "Marketplace tuning",
       "description": "Manage search and trending algorithm parameters",
       "searchPrefilterLimit": "Search prefilter limit",
@@ -1246,16 +1670,33 @@
     "error_loading_metric": "Error loading metrics",
     "cards": {
       "total_sales": {
-        "title": "Total sales",
+        "title": "Gross sales",
+        "subtitle": "Gross (before returns)",
         "orders": "order"
+      },
+      "total_collected": {
+        "title": "Cash collected",
+        "subtitle": "Cash and paid portion (gross collected)"
+      },
+      "returns_amount": {
+        "title": "Returned amount",
+        "subtitle": "Returns in period"
+      },
+      "net_sales": {
+        "title": "Net sales",
+        "subtitle": "Gross − returns"
+      },
+      "credit_issued": {
+        "title": "Credit",
+        "subtitle": "Debt issued"
       },
       "total_cogs": {
         "title": "Cost of goods sold",
         "subtitle": "Cost of Sales (COGS)"
       },
       "total_profit": {
-        "title": "Total profit",
-        "subtitle": "Net profit from sales"
+        "title": "Net profit",
+        "subtitle": "After returns and expenses"
       },
       "profit_margin": {
         "title": "Profit margin",
@@ -1427,5 +1868,45 @@
       "invalid_token": "Invalid or expired link"
     },
     "email_confirmation_sent": "A confirmation link has been sent to your email"
+  },
+  "status": {
+    "marketplace_on": "Marketplace",
+    "marketplace_off": "POS only"
+  },
+  "barcodeLabel": {
+    "showSku": "Show SKU",
+    "showSkuPrefix": "SKU prefix",
+    "showCurrency": "Show so'm"
+  },
+  "combobox": {
+    "select_option": "Select...",
+    "select_customer": "Select customer...",
+    "select_supplier": "Select supplier...",
+    "select_employee": "Select employee...",
+    "select_warehouse": "Select warehouse...",
+    "select_category": "Select category...",
+    "select_product": "Select product...",
+    "search_default": "Search...",
+    "search_customer": "Search by name, phone or email...",
+    "search_supplier": "Search by name or phone...",
+    "search_employee": "Search by name or email...",
+    "search_warehouse": "Search by warehouse name...",
+    "search_category": "Search by category name...",
+    "search_product": "Search by name, SKU or barcode...",
+    "all_customers": "All customers",
+    "all_suppliers": "All suppliers",
+    "all_cashiers": "All cashiers",
+    "all_warehouses": "All warehouses",
+    "all_categories": "All categories",
+    "all_products": "All products",
+    "none_customer": "No customer selected",
+    "no_customer": "No customer found",
+    "no_supplier": "No supplier found",
+    "no_employee": "No employee found",
+    "no_warehouse": "No warehouse found",
+    "no_category": "No category found",
+    "no_product": "No product found",
+    "not_found": "Not found",
+    "loading": "Searching..."
   }
 }

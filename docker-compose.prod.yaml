@@ -26,8 +26,23 @@ services:
     # RPC reads the isolated volume (empty web_orders). Bind-mount host data dir.
     volumes:
       - ${POS_HOST_DATA_DIR:-/var/lib/pos}:/var/lib/pos
+      # loadRootEnv() reads /app/.env on Yangilash without container restart
+      - ./.env:/app/.env:ro
 
     # Optional GHCR image override — set POS_IMAGE in .env for CI/CD pulls.
     # When unset, the base docker-compose.yaml `pos-server:latest` build tag is used.
     image: ${POS_IMAGE:-pos-server:latest}
     pull_policy: always
+
+    environment:
+      # loadRootEnv() reads this path on Yangilash (RPC) without container restart
+      POS_ENV_FILE: /app/.env
+      # Explicit pass-through (also in base compose) — internal reports ≠ News channel
+      TELEGRAM_REPORTS_CHAT_ID: ${TELEGRAM_REPORTS_CHAT_ID:-}
+      TELEGRAM_ADMIN_IDS: ${TELEGRAM_ADMIN_IDS:-}
+      TELEGRAM_MARKETING_BOT_TOKEN: ${TELEGRAM_MARKETING_BOT_TOKEN:-}
+      TELEGRAM_MARKETING_CHANNEL_ID: ${TELEGRAM_MARKETING_CHANNEL_ID:-}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      GEMINI_IMAGE_MODEL: ${GEMINI_IMAGE_MODEL:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      DAILY_POSTER_TIME: ${DAILY_POSTER_TIME:-}

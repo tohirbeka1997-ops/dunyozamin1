@@ -11,19 +11,16 @@ import {
   getStoredCustomers,
   getStoredOrderItems,
   getStoredOrders,
-  getStoredPayments,
   hasPosApi,
   ipc,
   saveCustomers,
   saveOrderItems,
   saveOrders,
-  savePayments,
 } from './internal';
 import type {
   Customer,
   Order,
   OrderItem,
-  Payment,
   CustomerPayment,
   CustomerLedgerEntry,
   CustomerBonusLedgerEntry,
@@ -58,6 +55,9 @@ export const createCreditOrder = async (orderData: {
     discount_value?: number;
     final_unit_price?: number;
     final_total?: number;
+    /** POS erkin narx — checkout payload flags (not DB columns). */
+    is_price_overridden?: boolean;
+    manual_price?: boolean;
   }>;
   subtotal: number;
   discount_amount: number;
@@ -69,6 +69,14 @@ export const createCreditOrder = async (orderData: {
   currency?: 'UZS' | 'USD';
   fx_rate?: number | null;
   replaces_order_id?: string | null;
+  /** Checkout idempotency key (reused across retries) → backend `order_uuid`. */
+  order_uuid?: string | null;
+  /** Nasiya qarz qaytarish sanasi (YYYY-MM-DD). */
+  due_date?: string | null;
+  /** Ichki eslatma izohi (kassir/admin uchun). */
+  credit_reminder_note?: string | null;
+  /** Usta/referrer — bonus accrual destination only */
+  bonus_referrer_customer_id?: string | null;
 }): Promise<{ success: boolean; order_id?: string; order_number?: string; new_balance?: number; error?: string }> => {
   // Use Electron IPC if available: route through completePOSOrder so SQLite + ledger + balance are updated.
   if (hasPosApi()) {
@@ -107,17 +115,48 @@ export const createCreditOrder = async (orderData: {
             }
           : {}),
         ...(orderData.replaces_order_id ? { replaces_order_id: orderData.replaces_order_id } : {}),
+        ...(orderData.order_uuid ? { order_uuid: orderData.order_uuid } : {}),
+        ...(orderData.due_date ? { due_date: orderData.due_date } : {}),
+        ...(orderData.credit_reminder_note
+          ? { credit_reminder_note: orderData.credit_reminder_note }
+          : {}),
+        ...(orderData.bonus_referrer_customer_id
+          ? { bonus_referrer_customer_id: orderData.bonus_referrer_customer_id }
+          : {}),
       } as any;
 
-      const items = orderData.items.map((it) => ({
-        product_id: it.product_id,
-        product_name: it.product_name,
-        quantity: it.quantity,
-        unit_price: it.unit_price,
-        subtotal: it.subtotal,
-        discount_amount: it.discount_amount,
-        total: it.total,
-      })) as any;
+      // Pass full line snapshot (erkin narx / final_total) — stripping flags caused
+      // completePOSOrder to re-resolve catalog price and inflate credit + balance.
+      const items = orderData.items.map((it) => {
+        const lineNet = Number(it.final_total ?? it.total ?? 0);
+        const isManual =
+          it.is_price_overridden === true ||
+          it.manual_price === true ||
+          it.price_source === 'manual';
+        return {
+          product_id: it.product_id,
+          product_name: it.product_name,
+          quantity: it.quantity,
+          qty_sale: it.qty_sale ?? it.quantity,
+          qty_base: it.qty_base ?? it.quantity,
+          sale_unit: it.sale_unit,
+          unit_price: it.unit_price,
+          subtotal: it.subtotal,
+          discount_amount: it.discount_amount,
+          total: it.total,
+          line_total: lineNet,
+          final_total: lineNet,
+          final_unit_price: it.final_unit_price,
+          base_price: it.base_price,
+          usta_price: it.usta_price,
+          price_tier: it.price_tier,
+          price_source: isManual ? 'manual' : it.price_source,
+          is_price_overridden: isManual,
+          manual_price: isManual,
+          discount_type: it.discount_type,
+          discount_value: it.discount_value,
+        };
+      }) as any;
 
       // IMPORTANT: Do NOT add a "credit" payment row; credit is derived as (total - paid).
       const res = await completePOSOrder(order, items, []) as { order_id?: string; id?: string; order_number?: string; new_balance?: number };
@@ -165,7 +204,7 @@ export const createCreditOrder = async (orderData: {
     credit_amount: orderData.total_amount,
     change_amount: 0,
     status: 'completed',
-    payment_status: 'unpaid',
+    payment_status: 'on_credit' as any,
     notes: orderData.notes || null,
     created_at: createdAt,
   };
@@ -182,18 +221,8 @@ export const createCreditOrder = async (orderData: {
     discount_amount: item.discount_amount,
     total: item.total,
   }));
-  
-  // Create credit payment
-  const creditPayment: Payment = {
-    id: generateId(),
-    order_id: orderId,
-    payment_number: await generatePaymentNumber(),
-    payment_method: 'credit',
-    amount: orderData.total_amount,
-    reference_number: null,
-    notes: orderData.notes || null,
-    created_at: createdAt,
-  };
+
+  // IMPORTANT: Do NOT add a "credit" payment row; credit is derived as (total - paid).
   
   // Save to localStorage
   const orders = getStoredOrders();
@@ -204,11 +233,7 @@ export const createCreditOrder = async (orderData: {
   existingItems.push(...orderItems);
   saveOrderItems(existingItems);
   
-  const existingPayments = getStoredPayments();
-  existingPayments.push(creditPayment);
-  savePayments(existingPayments);
-  
-  // Update customer balance
+  // Update customer balance (NEGATIVE = debt)
   const customers = getStoredCustomers();
   const customerIndex = customers.findIndex(c => c.id === orderData.customer_id);
   
@@ -217,7 +242,7 @@ export const createCreditOrder = async (orderData: {
     const currentBalance = customer.balance || 0;
     const currentTotalSales = customer.total_sales || 0;
     const currentTotalOrders = customer.total_orders || 0;
-    const newBalance = currentBalance + orderData.total_amount;
+    const newBalance = currentBalance - orderData.total_amount;
     
     customers[customerIndex] = {
       ...customer,
@@ -241,7 +266,7 @@ export const createCreditOrder = async (orderData: {
     success: true,
     order_id: orderId,
     order_number: orderNumber,
-    new_balance: orderData.total_amount,
+    new_balance: -orderData.total_amount,
   };
 };
 
@@ -264,6 +289,9 @@ export const receiveCustomerPayment = async (_paymentData: {
   /** Ochiq smena — smena/kassa hisobiga bogʻlash */
   shift_id?: string | null;
   shiftId?: string | null;
+  /** Client idempotency key — reused across UI retries of the same submit */
+  payment_uuid?: string | null;
+  paymentUuid?: string | null;
 }): Promise<{
   success: boolean;
   payment_number?: string;
@@ -284,6 +312,12 @@ export const receiveCustomerPayment = async (_paymentData: {
     const normalizedMethod = method === 'qr' ? 'other' : method; // backend supports 'other' instead of legacy 'qr'
     const operation = _paymentData.operation || 'payment_in';
     const notes = (_paymentData.notes ?? _paymentData.note ?? null) as any;
+    const paymentUuid =
+      _paymentData.payment_uuid ??
+      _paymentData.paymentUuid ??
+      (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+        ? crypto.randomUUID()
+        : `${Date.now()}-${Math.random().toString(36).slice(2)}`);
 
     // Send canonical payload expected by IPC (and it also accepts payment_method for compatibility)
     return ipc<any>(
@@ -300,6 +334,7 @@ export const receiveCustomerPayment = async (_paymentData: {
         order_id: _paymentData.order_id ?? null,
         source: _paymentData.source ?? null,
         shift_id: _paymentData.shift_id ?? _paymentData.shiftId ?? null,
+        payment_uuid: paymentUuid,
       })
     );
   }
@@ -314,10 +349,18 @@ export const receiveCustomerPayment = async (_paymentData: {
   return { success: true, payment_number: await generatePaymentNumber() };
 };
 
-export const getCustomerPayments = async (_customerId: string): Promise<CustomerPayment[]> => {
+export const getCustomerPayments = async (
+  _customerId: string,
+  _opts?: { limit?: number; offset?: number }
+): Promise<CustomerPayment[]> => {
   if (hasPosApi()) {
     const api = requireElectron();
-    return ipc<CustomerPayment[]>(api.customers.getPayments(_customerId, { limit: 200, offset: 0 }));
+    return ipc<CustomerPayment[]>(
+      api.customers.getPayments(_customerId, {
+        limit: _opts?.limit ?? 200,
+        offset: _opts?.offset ?? 0,
+      })
+    );
   }
   await delay();
   return [];
@@ -376,23 +419,154 @@ export const getCustomerLoyaltyCard = async (customerId: string): Promise<Custom
   return null;
 };
 
+export type OpenCreditOrderRow = {
+  id: string;
+  order_number: string;
+  customer_id: string | null;
+  customer_name?: string | null;
+  customer_phone?: string | null;
+  credit_amount: number;
+  due_date?: string | null;
+  credit_reminder_note?: string | null;
+  payment_status?: string | null;
+  created_at?: string | null;
+};
+
+export type StaffCreditAlertRow = {
+  id: number;
+  order_id: string;
+  alert_type: string;
+  title: string;
+  body: string;
+  created_at?: string | null;
+  read_at?: string | null;
+  order_number?: string | null;
+  credit_amount?: number | null;
+  due_date?: string | null;
+  credit_reminder_note?: string | null;
+  customer_name?: string | null;
+};
+
+export const listOpenCreditOrders = async (filters?: {
+  customerId?: string;
+  missingDueDateOnly?: boolean;
+  limit?: number;
+  offset?: number;
+}): Promise<OpenCreditOrderRow[]> => {
+  if (hasPosApi()) {
+    const api = requireElectron();
+    return ipc<OpenCreditOrderRow[]>(api.creditReminders.listOpenOrders(filters || {}));
+  }
+  await delay();
+  return [];
+};
+
+export const updateOrderDueDate = async (payload: {
+  orderId: string;
+  dueDate: string;
+}): Promise<{ ok: boolean; due_date?: string; error?: string }> => {
+  if (hasPosApi()) {
+    const api = requireElectron();
+    return ipc(api.creditReminders.updateDueDate(payload));
+  }
+  await delay();
+  return { ok: false, error: 'Faqat desktop ilovada mavjud' };
+};
+
+export const listUnreadStaffCreditAlerts = async (filters?: {
+  limit?: number;
+}): Promise<StaffCreditAlertRow[]> => {
+  if (hasPosApi()) {
+    const api = requireElectron();
+    return ipc<StaffCreditAlertRow[]>(api.creditReminders.listStaffAlerts(filters || {}));
+  }
+  await delay();
+  return [];
+};
+
+export const markStaffCreditAlertRead = async (
+  alertId: number,
+): Promise<{ ok: boolean; error?: string }> => {
+  if (hasPosApi()) {
+    const api = requireElectron();
+    return ipc(api.creditReminders.ackStaffAlert({ alertId }));
+  }
+  await delay();
+  return { ok: false, error: 'Faqat desktop ilovada mavjud' };
+};
+
 export const getCustomersWithDebt = async (): Promise<Customer[]> => {
   await delay();
   return [];
 };
 
-export const getTotalCustomerDebt = async (): Promise<number> => {
+export const listCreditReminders = async (filters?: {
+  customerId?: string;
+  orderId?: string;
+  limit?: number;
+  offset?: number;
+}): Promise<
+  Array<{
+    id: number;
+    order_id: string;
+    reminder_type: string;
+    channel: string | null;
+    status: string;
+    provider_id: string | null;
+    sent_at: string;
+    order_number?: string;
+    due_date?: string | null;
+    credit_amount?: number;
+    customer_name?: string | null;
+    customer_phone?: string | null;
+  }>
+> => {
   if (hasPosApi()) {
     const api = requireElectron();
-    const customers = await ipc<Customer[]>(api.customers.list({ status: 'all' }));
-    return (Array.isArray(customers) ? customers : []).reduce(
-      (sum, customer) => sum + Math.max(0, -(Number(customer?.balance || 0))),
-      0
-    );
+    return ipc(api.creditReminders.list(filters || {}));
+  }
+  await delay();
+  return [];
+};
+
+export const sendCreditReminder = async (payload: {
+  customerId?: string;
+  orderId?: string;
+  reminderType?: string;
+}): Promise<{
+  ok: boolean;
+  channel?: string | null;
+  status?: string;
+  error?: string | null;
+  errorCode?: string | null;
+  reason?: string | null;
+}> => {
+  if (hasPosApi()) {
+    const api = requireElectron();
+    return ipc(api.creditReminders.send(payload));
+  }
+  await delay();
+  return { ok: false, error: 'Faqat desktop ilovada mavjud', errorCode: 'desktop_only' };
+};
+
+export const getTotalCustomerDebt = async (): Promise<{ debt_uzs: number; debt_usd: number }> => {
+  if (hasPosApi()) {
+    const api = requireElectron();
+    const row = await ipc<{ debt_uzs?: number; debt_usd?: number }>(api.customers.getTotalDebt());
+    return {
+      debt_uzs: Number(row?.debt_uzs || 0),
+      debt_usd: Number(row?.debt_usd || 0),
+    };
   }
 
   await delay();
   const customers = getStoredCustomers();
   // Debt convention: negative balance = debt
-  return customers.reduce((sum, customer) => sum + Math.max(0, -(customer.balance || 0)), 0);
+  let debt_uzs = 0;
+  let debt_usd = 0;
+  for (const customer of customers) {
+    debt_uzs += Math.max(0, -(Number(customer.balance || 0)));
+    debt_usd += Math.max(0, -(Number((customer as any).balance_usd || 0)));
+  }
+  return { debt_uzs, debt_usd };
 };

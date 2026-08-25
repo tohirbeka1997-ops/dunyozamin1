@@ -34,6 +34,7 @@ import { Clock, User, FileText, RotateCcw, Trash2, Edit2, AlertTriangle } from '
 import { formatDistanceToNow, differenceInMinutes } from 'date-fns';
 import { uz } from 'date-fns/locale';
 import { formatMoneyUZS } from '@/lib/format';
+import { computeHeldOrderTotal } from '@/pages/posTerminalHelpers';
 
 interface WaitingOrdersDialogProps {
   open: boolean;
@@ -56,18 +57,6 @@ export default function WaitingOrdersDialog({
   const [cancelOrderId, setCancelOrderId] = useState<string | null>(null);
   const [renameOrderId, setRenameOrderId] = useState<string | null>(null);
   const [renameName, setRenameName] = useState('');
-
-  const calculateTotal = (order: HeldOrder) => {
-    const itemsTotal = order.items.reduce((sum, item) => sum + item.total, 0);
-    
-    if (!order.discount) return itemsTotal;
-    
-    if (order.discount.type === 'amount') {
-      return itemsTotal - order.discount.value;
-    }
-    
-    return itemsTotal - (itemsTotal * order.discount.value) / 100;
-  };
 
   const getOrderPriority = (order: HeldOrder) => {
     const minutesAgo = differenceInMinutes(new Date(), new Date(order.created_at));
@@ -171,7 +160,13 @@ export default function WaitingOrdersDialog({
                         </div>
                         <div className="text-right">
                           <p className="text-lg font-bold">
-                            {formatMoneyUZS(calculateTotal(order))}
+                            {formatMoneyUZS(
+                              computeHeldOrderTotal(
+                                order.items,
+                                order.discount,
+                                order.total_amount,
+                              ),
+                            )}
                           </p>
                           <p className="text-xs text-muted-foreground">
                             {t('pos.waitingOrders.items', { count: order.items.length })}

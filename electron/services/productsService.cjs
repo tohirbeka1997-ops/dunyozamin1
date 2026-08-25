@@ -340,11 +340,13 @@ class ProductsService {
 
   /** WHERE fragment for product text search (name/sku/barcode/article/brand). */
   _productSearchWhere(raw, params) {
-    const search = `%${String(raw)}%`;
+    const term = String(raw ?? '').trim();
+    if (!term) return '';
+    const search = `%${term}%`;
     const fields = [];
     if (this._hasCol('normalized_name')) {
       fields.push('p.normalized_name LIKE ?');
-      params.push(`%${this._normalizeName(raw)}%`);
+      params.push(`%${this._normalizeName(term)}%`);
     } else {
       fields.push('p.name LIKE ?');
       params.push(search);
@@ -360,6 +362,58 @@ class ProductsService {
       params.push(search);
     }
     return ` AND (${fields.join(' OR ')})`;
+  }
+
+  /**
+   * Relevance CASE for product search (lower = better).
+   * Exact SKU/barcode/article/brand → prefix codes → name prefix → name contains.
+   * Pushes bind params onto `params` and returns SQL expression (or null if empty term).
+   */
+  _productSearchRankExpr(raw, params) {
+    const term = String(raw ?? '').trim();
+    if (!term) return null;
+    const prefixSearch = `${term}%`;
+    const search = `%${term}%`;
+    const exactParts = ['p.sku = ?', 'p.barcode = ?'];
+    params.push(term, term);
+    if (this._hasCol('article')) {
+      exactParts.push('UPPER(COALESCE(p.article, \'\')) = UPPER(?)');
+      params.push(term);
+    }
+    if (this._hasCol('brand')) {
+      exactParts.push('LOWER(COALESCE(p.brand, \'\')) = LOWER(?)');
+      params.push(term);
+    }
+    const prefixParts = ['p.sku LIKE ?', 'p.barcode LIKE ?'];
+    params.push(prefixSearch, prefixSearch);
+    if (this._hasCol('article')) {
+      prefixParts.push('p.article LIKE ?');
+      params.push(prefixSearch);
+    }
+    if (this._hasCol('brand')) {
+      prefixParts.push('p.brand LIKE ?');
+      params.push(prefixSearch);
+    }
+    if (this._hasCol('normalized_name')) {
+      const normalizedPrefix = `${this._normalizeName(term)}%`;
+      const normalized = `%${this._normalizeName(term)}%`;
+      params.push(normalizedPrefix, normalized);
+      return `CASE
+        WHEN ${exactParts.join(' OR ')} THEN 0
+        WHEN ${prefixParts.join(' OR ')} THEN 1
+        WHEN p.normalized_name LIKE ? THEN 2
+        WHEN p.normalized_name LIKE ? THEN 3
+        ELSE 4
+      END`;
+    }
+    params.push(prefixSearch, search);
+    return `CASE
+      WHEN ${exactParts.join(' OR ')} THEN 0
+      WHEN ${prefixParts.join(' OR ')} THEN 1
+      WHEN p.name LIKE ? THEN 2
+      WHEN p.name LIKE ? THEN 3
+      ELSE 4
+    END`;
   }
 
   _hasTable(name) {
@@ -867,8 +921,9 @@ class ProductsService {
       params.push(filters.warehouse_id);
     }
 
-    if (filters.search) {
-      query += this._productSearchWhere(String(filters.search), params);
+    const listSearch = String(filters.search || '').trim();
+    if (listSearch) {
+      query += this._productSearchWhere(listSearch, params);
     }
 
     const catFilter = this._categoryFilterClause(filters);
@@ -923,21 +978,13 @@ class ProductsService {
     })();
 
     // When a search term is given and no explicit sort is requested, rank by relevance
-    if (filters.search && !sortByRaw) {
-      const raw = String(filters.search);
-      const prefixSearch = `${raw}%`;
-      const search = `%${raw}%`;
-      let rankExpr;
-      if (this._hasCol('normalized_name')) {
-        const normalizedPrefix = `${this._normalizeName(raw)}%`;
-        const normalized = `%${this._normalizeName(raw)}%`;
-        rankExpr = `CASE WHEN p.sku = ? OR p.barcode = ? THEN 0 WHEN p.sku LIKE ? OR p.barcode LIKE ? THEN 1 WHEN p.normalized_name LIKE ? THEN 2 WHEN p.normalized_name LIKE ? THEN 3 ELSE 4 END`;
-        params.push(raw, raw, prefixSearch, prefixSearch, normalizedPrefix, normalized);
+    if (listSearch && !sortByRaw) {
+      const rankExpr = this._productSearchRankExpr(listSearch, params);
+      if (rankExpr) {
+        query += ` ORDER BY ${rankExpr} ASC, ${sortBy} ${sortOrder}`;
       } else {
-        rankExpr = `CASE WHEN p.sku = ? OR p.barcode = ? THEN 0 WHEN p.sku LIKE ? OR p.barcode LIKE ? THEN 1 WHEN p.name LIKE ? THEN 2 WHEN p.name LIKE ? THEN 3 ELSE 4 END`;
-        params.push(raw, raw, prefixSearch, prefixSearch, prefixSearch, search);
+        query += ` ORDER BY ${sortBy} ${sortOrder}`;
       }
-      query += ` ORDER BY ${rankExpr} ASC, ${sortBy} ${sortOrder}`;
     } else {
       query += ` ORDER BY ${sortBy} ${sortOrder}`;
     }
@@ -1040,32 +1087,10 @@ class ProductsService {
     }
 
     let searchRankClause = null;
-    if (filters.search) {
-      const raw = String(filters.search);
-      const prefixSearch = `${raw}%`;
-      query += this._productSearchWhere(raw, params);
-      if (this._hasCol('normalized_name')) {
-        const normalizedPrefix = `${this._normalizeName(raw)}%`;
-        const normalized = `%${this._normalizeName(raw)}%`;
-        searchRankClause = `CASE
-          WHEN p.sku = ? OR p.barcode = ? THEN 0
-          WHEN p.sku LIKE ? OR p.barcode LIKE ? THEN 1
-          WHEN p.normalized_name LIKE ? THEN 2
-          WHEN p.normalized_name LIKE ? THEN 3
-          ELSE 4
-        END`;
-        params.push(raw, raw, prefixSearch, prefixSearch, normalizedPrefix, normalized);
-      } else {
-        const search = `%${raw}%`;
-        searchRankClause = `CASE
-          WHEN p.sku = ? OR p.barcode = ? THEN 0
-          WHEN p.sku LIKE ? OR p.barcode LIKE ? THEN 1
-          WHEN p.name LIKE ? THEN 2
-          WHEN p.name LIKE ? THEN 3
-          ELSE 4
-        END`;
-        params.push(raw, raw, prefixSearch, prefixSearch, prefixSearch, search);
-      }
+    const screenSearch = String(filters.search || '').trim();
+    if (screenSearch) {
+      query += this._productSearchWhere(screenSearch, params);
+      searchRankClause = this._productSearchRankExpr(screenSearch, params);
     }
 
     const status = filters.status || 'active';
@@ -1302,8 +1327,9 @@ class ProductsService {
       params.push(filters.warehouse_id);
     }
 
-    if (filters.search) {
-      query += this._productSearchWhere(String(filters.search), params);
+    const countSearch = String(filters.search || '').trim();
+    if (countSearch) {
+      query += this._productSearchWhere(countSearch, params);
     }
 
     const catFilter = this._categoryFilterClause(filters);

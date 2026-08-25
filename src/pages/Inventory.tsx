@@ -19,7 +19,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
-import { getProducts, getCategories } from '@/db/api';
+import { getProducts, getCategories, getOpenInventoryRevision } from '@/db/api';
 import type { ProductWithCategory, Category } from '@/types/database';
 import { useToast } from '@/hooks/use-toast';
 import PageBreadcrumb from '@/components/common/PageBreadcrumb';
@@ -30,11 +30,13 @@ import { formatUnit } from '@/utils/formatters';
 import { formatNumberUZ } from '@/lib/format';
 import { useSessionSearchParams } from '@/hooks/useSessionSearchParams';
 import { createBackNavigationState } from '@/lib/pageState';
+import { useTranslation } from 'react-i18next';
 
 export default function Inventory() {
   const navigate = useNavigate();
   const location = useLocation();
   const { toast } = useToast();
+  const { t } = useTranslation();
   const { searchParams, updateParams } = useSessionSearchParams({
     storageKey: 'inventory.filters.query',
     trackedKeys: ['search', 'category', 'stock', 'sortBy'],
@@ -52,6 +54,10 @@ export default function Inventory() {
   const [hasMore, setHasMore] = useState(false);
   const [adjustmentDialogOpen, setAdjustmentDialogOpen] = useState(false);
   const [selectedProduct, setSelectedProduct] = useState<ProductWithCategory | null>(null);
+  const [openRevision, setOpenRevision] = useState<{
+    id: string;
+    revision_number: string;
+  } | null>(null);
 
   // Helper: Get stock from product data (single source of truth - from IPC)
   // CRITICAL FIX: Use stock_available (real-time from inventory_movements) instead of current_stock
@@ -134,6 +140,21 @@ export default function Inventory() {
     loadData({ append: false, pageOverride: 0 });
   }, [searchDebounced, categoryFilter, stockFilter, sortBy]);
 
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const open = await getOpenInventoryRevision();
+        if (!cancelled) setOpenRevision(open || null);
+      } catch {
+        if (!cancelled) setOpenRevision(null);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [location.pathname]);
+
   // Products are loaded paginated + mostly filtered server-side via getProducts().
   // Keep client-side filtering only for "in_stock" which backend doesn't explicitly support.
   const baseFilteredProducts =
@@ -160,6 +181,16 @@ export default function Inventory() {
   ).length;
 
   const handleAdjustStock = (product: ProductWithCategory) => {
+    if (openRevision) {
+      toast({
+        title: t('inventory_revision.open_banner_title'),
+        description: t('inventory_revision.open_banner_body', {
+          number: openRevision.revision_number,
+        }),
+        variant: 'destructive',
+      });
+      return;
+    }
     setSelectedProduct(product);
     setAdjustmentDialogOpen(true);
   };
@@ -206,18 +237,91 @@ export default function Inventory() {
         </div>
       </div>
 
-      {lowStockCount > 0 && (
-        <Card className="border-yellow-200 bg-yellow-50 py-0 shadow-sm dark:border-yellow-800 dark:bg-yellow-950">
-          <CardContent className="flex items-start gap-2.5 px-3 py-2">
-            <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-yellow-600 dark:text-yellow-400" />
-            <div className="min-w-0 space-y-0.5">
-              <p className="text-sm font-semibold leading-snug text-yellow-900 dark:text-yellow-100">
-                {lowStockCount} ta mahsulot minimal qoldiqdan past
-              </p>
-              <p className="text-xs leading-snug text-yellow-800 dark:text-yellow-300">
-                Ushbu mahsulotlarni tekshiring va qo'shimcha qoldiq qo'shing
-              </p>
+      {openRevision && (
+        <Card className="border-amber-200 bg-amber-50 py-0 shadow-sm dark:border-amber-800 dark:bg-amber-950">
+          <CardContent className="flex flex-wrap items-center justify-between gap-2 px-3 py-2">
+            <div className="flex min-w-0 items-start gap-2">
+              <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-600 dark:text-amber-400" />
+              <div className="min-w-0 space-y-0.5">
+                <p className="text-sm font-semibold text-amber-900 dark:text-amber-100">
+                  {t('inventory_revision.open_banner_title')}
+                </p>
+                <p className="text-xs text-amber-800 dark:text-amber-300">
+                  {t('inventory_revision.open_banner_body', {
+                    number: openRevision.revision_number,
+                  })}
+                </p>
+              </div>
             </div>
+            <Button
+              size="sm"
+              variant="outline"
+              className="h-8"
+              onClick={() => navigate(`/inventory/revisions/${openRevision.id}`)}
+            >
+              {t('inventory_revision.open_banner_action')}
+            </Button>
+          </CardContent>
+        </Card>
+      )}
+
+      {lowStockCount > 0 && (
+        <Card
+          className={`border-yellow-200 bg-yellow-50 py-0 shadow-sm dark:border-yellow-800 dark:bg-yellow-950 ${
+            stockFilter !== 'low' ? 'cursor-pointer transition-colors hover:bg-yellow-100/80 dark:hover:bg-yellow-900/40' : ''
+          }`}
+          role={stockFilter !== 'low' ? 'button' : undefined}
+          tabIndex={stockFilter !== 'low' ? 0 : undefined}
+          onClick={() => {
+            if (stockFilter !== 'low') updateParams({ stock: 'low' });
+          }}
+          onKeyDown={(e) => {
+            if (stockFilter === 'low') return;
+            if (e.key === 'Enter' || e.key === ' ') {
+              e.preventDefault();
+              updateParams({ stock: 'low' });
+            }
+          }}
+        >
+          <CardContent className="flex flex-wrap items-center justify-between gap-2 px-3 py-2">
+            <div className="flex min-w-0 items-start gap-2.5">
+              <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-yellow-600 dark:text-yellow-400" />
+              <div className="min-w-0 space-y-0.5">
+                <p className="text-sm font-semibold leading-snug text-yellow-900 dark:text-yellow-100">
+                  Ushbu ro'yxatda {lowStockCount} ta mahsulot minimal qoldiqdan past
+                </p>
+                <p className="text-xs leading-snug text-yellow-800 dark:text-yellow-300">
+                  {stockFilter === 'low'
+                    ? 'Hozir «Qoldiq kam» filtri yoqilgan. Barcha mahsulotlarni ko\'rish uchun filtrni tozalang.'
+                    : 'Bu son joriy yuklangan ro\'yxatdagi mahsulotlarga tegishli. Bosib «Qoldiq kam» filtrini yoqing. Dashboard\'dagi son — butun katalog bo\'yicha.'}
+                </p>
+              </div>
+            </div>
+            {stockFilter !== 'low' ? (
+              <Button
+                size="sm"
+                variant="outline"
+                className="h-8 shrink-0"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  updateParams({ stock: 'low' });
+                }}
+              >
+                Kamlarini ko&apos;rsat
+              </Button>
+            ) : (
+              <Button
+                size="sm"
+                variant="outline"
+                className="h-8 shrink-0"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  updateParams({ stock: 'all' });
+                }}
+              >
+                Filtrni tozalash
+              </Button>
+            )}
           </CardContent>
         </Card>
       )}
@@ -383,7 +487,11 @@ export default function Inventory() {
                               {formatNumberUZ(currentStock)}
                             </span>
                           </TableCell>
-                          <TableCell className="py-2 text-xs tabular-nums">{formatNumberUZ(product.min_stock_level)}</TableCell>
+                          <TableCell className="py-2 text-xs tabular-nums text-muted-foreground">
+                            {Number(product.min_stock_level) > 0
+                              ? formatNumberUZ(product.min_stock_level)
+                              : '—'}
+                          </TableCell>
                           <TableCell className="py-2">
                             {isOutOfStock ? (
                               <Badge variant="destructive" className="px-1.5 py-0 text-[10px] font-normal sm:text-xs">
@@ -407,6 +515,7 @@ export default function Inventory() {
                               variant="outline"
                               size="sm"
                               className="h-8 px-2 text-xs"
+                              disabled={!!openRevision}
                               onClick={(e) => handleAdjustStockClick(e, product)}
                             >
                               Qoldiqni to'g'rilash

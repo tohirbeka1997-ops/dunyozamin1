@@ -6,6 +6,8 @@
 // `lib/secureStorage.ts`). Recommended backend follow-up: deliver the refresh
 // token as an HttpOnly + Secure + SameSite cookie so it is never exposed to JS.
 import { deleteItem, getItem, setItem } from '@/lib/secureStorage';
+import { clearCart } from '@/store/cart';
+import { router } from 'expo-router';
 import type { StaffTokens, StaffUser } from '@/types/orders';
 
 const KEYS = {
@@ -50,6 +52,17 @@ export async function clearSession(): Promise<void> {
   await deleteItem(KEYS.refresh);
   await deleteItem(KEYS.user);
   await deleteItem(KEYS.tenant);
+}
+
+/** Clear tokens and return to the password login screen. */
+export async function clearSessionAndGoToLogin(): Promise<void> {
+  clearCart();
+  await clearSession();
+  try {
+    router.replace('/(auth)/login');
+  } catch {
+    // Router may not be mounted yet.
+  }
 }
 
 export async function hasSession(): Promise<boolean> {

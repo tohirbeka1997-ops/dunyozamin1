@@ -1,6 +1,7 @@
 import { useCallback, useMemo, useState } from 'react';
 import { useRouter } from 'expo-router';
 import {
+  ActivityIndicator,
   FlatList,
   Pressable,
   StyleSheet,
@@ -11,6 +12,7 @@ import {
 import { searchSuppliers } from '@/api/client';
 import { SearchSpinnerSlot } from '@/components/SearchSpinnerSlot';
 import { useDebouncedSearch } from '@/hooks/useDebouncedSearch';
+import { useRequireStaffAccess } from '@/hooks/useRequireStaffAccess';
 import { t } from '@/i18n';
 import type { SupplierSummary } from '@/types/customers';
 
@@ -22,6 +24,7 @@ function formatMoney(n?: number | null): string {
 }
 
 export default function SuppliersScreen() {
+  const allowed = useRequireStaffAccess('suppliers');
   const router = useRouter();
   const [query, setQuery] = useState('');
   const [error, setError] = useState<string | null>(null);
@@ -37,7 +40,7 @@ export default function SuppliersScreen() {
     }
   }, []);
 
-  const { results, searching } = useDebouncedSearch(query, searchFetcher);
+  const { results, searching } = useDebouncedSearch(allowed ? query : '', searchFetcher);
 
   const listHeader = useMemo(
     () => (
@@ -74,6 +77,14 @@ export default function SuppliersScreen() {
     [router],
   );
 
+  if (!allowed) {
+    return (
+      <View style={styles.gate}>
+        <ActivityIndicator size="large" color="#166534" />
+      </View>
+    );
+  }
+
   return (
     <View style={styles.root}>
       <FlatList
@@ -93,6 +104,7 @@ export default function SuppliersScreen() {
 
 const styles = StyleSheet.create({
   root: { flex: 1, backgroundColor: '#f8fafc' },
+  gate: { flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: '#f8fafc' },
   search: {
     margin: 12,
     backgroundColor: '#fff',

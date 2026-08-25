@@ -2,14 +2,16 @@ import { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
-import { Input } from '@/components/ui/input';
 import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@/components/ui/select';
+  Command,
+  CommandEmpty,
+  CommandGroup,
+  CommandInput,
+  CommandItem,
+  CommandList,
+} from '@/components/ui/command';
+import { Input } from '@/components/ui/input';
+import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import {
   Table,
   TableBody,
@@ -18,8 +20,10 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table';
-import { ArrowLeft, FileDown, RefreshCcw, Users } from 'lucide-react';
+import { ArrowLeft, Check, ChevronsUpDown, FileDown, RefreshCcw, Users } from 'lucide-react';
+import { useDebounce } from '@/hooks/use-debounce';
 import { useToast } from '@/hooks/use-toast';
+import { cn } from '@/lib/utils';
 import { handleIpcResponse, isElectron, requireElectron } from '@/utils/electron';
 import { formatDateYMD, formatOrderDateTime, todayYMD } from '@/lib/datetime';
 import { formatMoneyUZS, formatCustomerBalance } from '@/lib/format';
@@ -110,6 +114,11 @@ export default function CustomerActSverkaReport() {
   // Otherwise the page can get stuck showing a spinner before a customer is selected.
   const [loading, setLoading] = useState(false);
   const [customers, setCustomers] = useState<Customer[]>([]);
+  const [customerPickerOpen, setCustomerPickerOpen] = useState(false);
+  const [customerSearch, setCustomerSearch] = useState('');
+  const debouncedCustomerSearch = useDebounce(customerSearch, 200);
+  const [pickerCustomers, setPickerCustomers] = useState<Customer[]>([]);
+  const [pickerLoading, setPickerLoading] = useState(false);
   const customerId = searchParams.get('customerId') || '';
   const defaultDateFrom = useMemo(() => {
     const d = new Date();
@@ -142,6 +151,43 @@ export default function CustomerActSverkaReport() {
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  useEffect(() => {
+    if (!customerPickerOpen) return;
+    let cancelled = false;
+    (async () => {
+      setPickerLoading(true);
+      try {
+        const list = await getCustomers({
+          searchTerm: debouncedCustomerSearch.trim() || undefined,
+        });
+        if (cancelled) return;
+        setPickerCustomers(Array.isArray(list) ? list : []);
+      } catch {
+        if (!cancelled) setPickerCustomers([]);
+      } finally {
+        if (!cancelled) setPickerLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [customerPickerOpen, debouncedCustomerSearch]);
+
+  const selectedCustomer = useMemo(() => {
+    if (!customerId) return null;
+    const fromList = customers.find((c) => c.id === customerId);
+    if (fromList) return fromList;
+    if (data?.customer?.id === customerId) {
+      return {
+        id: data.customer.id,
+        name: data.customer.name,
+        phone: data.customer.phone ?? null,
+        balance: data.customer.balance,
+      } as Customer;
+    }
+    return pickerCustomers.find((c) => c.id === customerId) || null;
+  }, [customerId, customers, data, pickerCustomers]);
 
   useEffect(() => {
     if (customerId) loadData();
@@ -282,18 +328,84 @@ export default function CustomerActSverkaReport() {
           <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
             <div className="md:col-span-2">
               <label className="text-xs text-muted-foreground">Mijoz</label>
-              <Select value={customerId} onValueChange={(value) => updateParams({ customerId: value })}>
-                <SelectTrigger className="h-8">
-                  <SelectValue placeholder="Mijoz tanlang..." />
-                </SelectTrigger>
-                <SelectContent>
-                  {customers.map((c) => (
-                    <SelectItem key={c.id} value={c.id}>
-                      {c.name} {c.phone ? `(${c.phone})` : ''}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+              <Popover
+                open={customerPickerOpen}
+                onOpenChange={(open) => {
+                  setCustomerPickerOpen(open);
+                  if (!open) setCustomerSearch('');
+                }}
+              >
+                <PopoverTrigger asChild>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    role="combobox"
+                    aria-expanded={customerPickerOpen}
+                    className="h-8 w-full justify-between font-normal"
+                  >
+                    <span className="min-w-0 flex-1 truncate text-left text-sm">
+                      {selectedCustomer ? (
+                        <span className="text-foreground">
+                          {selectedCustomer.name}
+                          {selectedCustomer.phone ? ` — ${selectedCustomer.phone}` : ''}
+                        </span>
+                      ) : customerId ? (
+                        <span className="text-muted-foreground">{customerId.slice(0, 8)}…</span>
+                      ) : (
+                        <span className="text-muted-foreground">Mijoz tanlang...</span>
+                      )}
+                    </span>
+                    <ChevronsUpDown className="ml-1 h-4 w-4 shrink-0 opacity-50" />
+                  </Button>
+                </PopoverTrigger>
+                <PopoverContent className="w-[min(92vw,32rem)] p-0" align="start">
+                  <Command shouldFilter={false}>
+                    <CommandInput
+                      placeholder="Ism yoki telefon bo‘yicha qidirish..."
+                      value={customerSearch}
+                      onValueChange={setCustomerSearch}
+                    />
+                    <CommandList>
+                      {pickerLoading ? (
+                        <p className="p-2 text-xs text-muted-foreground">Qidirilmoqda…</p>
+                      ) : (
+                        <>
+                          <CommandEmpty>Mijoz topilmadi</CommandEmpty>
+                          <CommandGroup>
+                            {pickerCustomers.map((c) => (
+                              <CommandItem
+                                key={c.id}
+                                value={`${c.id}-${c.name}-${c.phone || ''}`}
+                                onSelect={() => {
+                                  updateParams({ customerId: c.id });
+                                  setCustomers((prev) =>
+                                    prev.some((item) => item.id === c.id) ? prev : [...prev, c]
+                                  );
+                                  setCustomerPickerOpen(false);
+                                  setCustomerSearch('');
+                                }}
+                              >
+                                <Check
+                                  className={cn(
+                                    'mr-2 h-4 w-4',
+                                    customerId === c.id ? 'opacity-100' : 'opacity-0'
+                                  )}
+                                />
+                                <div className="min-w-0 text-sm">
+                                  <div className="font-medium leading-tight">{c.name}</div>
+                                  {c.phone && (
+                                    <div className="text-xs text-muted-foreground">{c.phone}</div>
+                                  )}
+                                </div>
+                              </CommandItem>
+                            ))}
+                          </CommandGroup>
+                        </>
+                      )}
+                    </CommandList>
+                  </Command>
+                </PopoverContent>
+              </Popover>
             </div>
             <div>
               <label className="text-xs text-muted-foreground">Boshlanish sana</label>

@@ -2,23 +2,41 @@
   "expo": {
     "name": "DZ Sotuvchi",
     "slug": "dunyozamin-sales",
-    "version": "0.1.0",
+    "version": "1.1.6",
     "orientation": "portrait",
+    "icon": "./assets/icon.png",
     "scheme": "dzsales",
     "userInterfaceStyle": "automatic",
-    "newArchEnabled": true,
+    "newArchEnabled": false,
+    "splash": {
+      "image": "./assets/splash-icon.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#166534"
+    },
     "ios": {
       "supportsTablet": true,
-      "bundleIdentifier": "com.dunyozamin.sales"
+      "bundleIdentifier": "com.dunyozamin.sales",
+      "buildNumber": "8",
+      "infoPlist": {
+        "NSFaceIDUsageDescription": "Unlock the sales app with Face ID after the screen locks."
+      }
     },
     "android": {
+      "package": "com.dunyozamin.sales",
+      "versionCode": 8,
       "adaptiveIcon": {
+        "foregroundImage": "./assets/adaptive-icon.png",
         "backgroundColor": "#166534"
       },
-      "package": "com.dunyozamin.sales"
+      "permissions": [
+        "USE_BIOMETRIC",
+        "USE_FINGERPRINT",
+        "CAMERA"
+      ]
     },
     "web": {
-      "bundler": "metro"
+      "bundler": "metro",
+      "favicon": "./assets/icon.png"
     },
     "plugins": [
       "expo-router",
@@ -29,10 +47,25 @@
         {
           "cameraPermission": "Allow $(PRODUCT_NAME) to access your camera to scan product barcodes."
         }
+      ],
+      [
+        "expo-local-authentication",
+        {
+          "faceIDPermission": "Allow $(PRODUCT_NAME) to use Face ID to unlock the staff app."
+        }
       ]
     ],
     "experiments": {
       "typedRoutes": true
+    },
+    "runtimeVersion": {
+      "policy": "appVersion"
+    },
+    "extra": {
+      "eas": {
+        "projectId": "REPLACE_AFTER_EAS_INIT"
+      },
+      "privacyPolicyUrl": "https://staff.dunyozamin.com/privacy"
     }
   }
 }

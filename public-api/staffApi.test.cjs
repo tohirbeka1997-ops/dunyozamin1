@@ -40,9 +40,7 @@ function withEnv(overrides, fn) {
     });
 }
 
-function sha256(text) {
-  return crypto.createHash('sha256').update(text).digest('hex');
-}
+const { hashPassword } = require('../electron/lib/password.cjs');
 
 test('staff JWT sign and verify', () =>
   withEnv({ STAFF_JWT_SECRET: TEST_SECRET, STAFF_JWT_REFRESH_SECRET: TEST_SECRET + '-r' }, () => {
@@ -57,11 +55,25 @@ test('staff JWT sign and verify', () =>
     assert.equal(rp.jti, jti);
   }));
 
-test('isStaffRoleAllowed accepts admin manager sales only', () => {
+test('isStaffRoleAllowed accepts admin manager sales cashier', () => {
   assert.equal(isStaffRoleAllowed('admin'), true);
   assert.equal(isStaffRoleAllowed('manager'), true);
   assert.equal(isStaffRoleAllowed('sales'), true);
-  assert.equal(isStaffRoleAllowed('cashier'), false);
+  assert.equal(isStaffRoleAllowed('cashier'), true);
+  assert.equal(isStaffRoleAllowed('courier'), false);
+});
+
+const { staffCanAccessArea } = require('./lib/staffRoles.cjs');
+
+test('staffCanAccessArea blocks cashier from web orders and purchasing', () => {
+  assert.equal(staffCanAccessArea('cashier', 'sales'), true);
+  assert.equal(staffCanAccessArea('cashier', 'orders'), false);
+  assert.equal(staffCanAccessArea('cashier', 'purchaseOrders'), false);
+  assert.equal(staffCanAccessArea('cashier', 'suppliers'), false);
+  assert.equal(staffCanAccessArea('cashier', 'expenses'), false);
+  assert.equal(staffCanAccessArea('cashier', 'cost'), false);
+  assert.equal(staffCanAccessArea('sales', 'orders'), true);
+  assert.equal(staffCanAccessArea('sales', 'cost'), true);
 });
 
 test('staff auth login and orders list (integration)', async () => {
@@ -84,7 +96,7 @@ test('staff auth login and orders list (integration)', async () => {
     INSERT INTO users (id, username, full_name, email, password_hash, is_active, created_at, updated_at)
     VALUES (?, 'sales@test.com', 'Sales User', 'sales@test.com', ?, 1, datetime('now'), datetime('now'))
   `,
-  ).run(userId, sha256('secret123'));
+  ).run(userId, hashPassword('secret123'));
 
   db.prepare(
     `

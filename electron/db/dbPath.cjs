@@ -18,6 +18,7 @@
 const path = require('path');
 const fs = require('fs');
 const { getAppLike, isServerMode } = require('../lib/runtime.cjs');
+const { findLegacyDbPath } = require('./legacyUserData.cjs');
 
 let cachedDbPath = null;
 let cachedUserDataPath = null;
@@ -166,10 +167,46 @@ function listDatabaseCandidates(electronApp = null) {
   }
 }
 
+/**
+ * Canonical pos.db in current userData (alias kept for CLI scripts).
+ */
+function getNewDbPath(electronApp = null) {
+  return getDbPath(electronApp);
+}
+
+/**
+ * Legacy pos.db from a prior app name / userData folder (e.g. miaoda-react-admin).
+ * @returns {string|null}
+ */
+function getLegacyDbPath(electronApp = null) {
+  const appInstance = resolveApp(electronApp);
+  if (!appInstance) return null;
+  return findLegacyDbPath(appInstance);
+}
+
+/**
+ * Whether the canonical database has business data (not just schema migrations).
+ */
+function isNewDbInitialized(db) {
+  try {
+    const row = db
+      .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='products'")
+      .get();
+    if (!row) return false;
+    const count = db.prepare('SELECT COUNT(*) AS count FROM products').get().count;
+    return Number(count) > 0;
+  } catch {
+    return false;
+  }
+}
+
 module.exports = {
   getDbPath,
+  getNewDbPath,
+  getLegacyDbPath,
   getUserDataPath,
   assertDbPathSafe,
   listDatabaseCandidates,
+  isNewDbInitialized,
   clearCache,
 };

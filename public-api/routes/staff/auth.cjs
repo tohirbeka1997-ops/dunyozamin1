@@ -12,11 +12,18 @@ const {
 } = require('../../lib/staffJwt.cjs');
 const { openTenantDatabase, normalizeTenantSlug } = require('../../lib/staffDb.cjs');
 const { isStaffRoleAllowed } = require('../../lib/staffRoles.cjs');
+const { validate } = require('../../middleware/validate.cjs');
+const {
+  staffLoginBodySchema,
+  staffRefreshBodySchema,
+  staffLogoutBodySchema,
+} = require('../../schemas/staff.schema.cjs');
+const { logger } = require('../../lib/logger.cjs');
 
 function mountStaffAuthRoutes() {
   const router = express.Router();
 
-  router.post('/login', express.json({ limit: '32kb' }), (req, res) => {
+  router.post('/login', express.json({ limit: '32kb' }), validate({ body: staffLoginBodySchema }), (req, res) => {
     try {
       const tenant = normalizeTenantSlug(req.body?.tenant);
       const username = req.body?.username != null ? String(req.body.username).trim() : '';
@@ -55,7 +62,7 @@ function mountStaffAuthRoutes() {
       if (!isStaffRoleAllowed(role)) {
         res.status(403).json({
           error: 'forbidden',
-          message: 'Account role cannot access staff app (admin, manager, sales only)',
+          message: 'Account role cannot access staff app (admin, manager, sales, cashier)',
         });
         return;
       }
@@ -92,12 +99,12 @@ function mountStaffAuthRoutes() {
         res.status(500).json({ error: 'server_misconfigured' });
         return;
       }
-      console.error('[staff/auth] POST /login', e);
+      logger.error({ err: e }, '[staff/auth] POST /login');
       res.status(500).json({ error: 'internal_error' });
     }
   });
 
-  router.post('/refresh', express.json({ limit: '16kb' }), (req, res) => {
+  router.post('/refresh', express.json({ limit: '16kb' }), validate({ body: staffRefreshBodySchema }), (req, res) => {
     try {
       const refreshToken =
         (req.body && req.body.refresh_token) ||
@@ -197,12 +204,12 @@ function mountStaffAuthRoutes() {
         res.status(500).json({ error: 'server_misconfigured' });
         return;
       }
-      console.error('[staff/auth] POST /refresh', e);
+      logger.error({ err: e }, '[staff/auth] POST /refresh');
       res.status(500).json({ error: 'internal_error' });
     }
   });
 
-  router.post('/logout', express.json({ limit: '16kb' }), (req, res) => {
+  router.post('/logout', express.json({ limit: '16kb' }), validate({ body: staffLogoutBodySchema }), (req, res) => {
     try {
       const header = req.headers.authorization || '';
       const token = header.startsWith('Bearer ') ? header.slice(7) : null;
@@ -246,7 +253,7 @@ function mountStaffAuthRoutes() {
 
       res.json({ ok: true });
     } catch (e) {
-      console.error('[staff/auth] POST /logout', e);
+      logger.error({ err: e }, '[staff/auth] POST /logout');
       res.status(500).json({ error: 'internal_error' });
     }
   });

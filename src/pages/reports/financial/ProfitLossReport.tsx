@@ -21,6 +21,7 @@ import { DualCurrencyAmount } from '@/components/common/DualCurrencyAmount';
 import { todayYMD } from '@/lib/datetime';
 import { useReportAutoRefresh } from '@/hooks/useReportAutoRefresh';
 import { exportProfitLoss } from '@/lib/exportManager';
+import SearchableCombobox from '@/components/common/SearchableCombobox';
 type PriceTier = {
   id: number;
   name: string;
@@ -41,6 +42,17 @@ export default function ProfitLossReport() {
   const [warehouses, setWarehouses] = useState<WarehouseOption[]>([]);
   const [tierFilter, setTierFilter] = useState<string>('all');
   const [warehouseId, setWarehouseId] = useState<string>('all');
+
+  const warehouseOptions = useMemo(
+    () => [
+      { value: 'all', label: t('combobox.all_warehouses', 'Barcha omborlar') },
+      ...warehouses.map((wh) => ({
+        value: String(wh.id),
+        label: wh.name || String(wh.id),
+      })),
+    ],
+    [warehouses, t]
+  );
   const [loading, setLoading] = useState(true);
   const [exporting, setExporting] = useState<null | 'excel' | 'pdf'>(null);
   const [period, setPeriod] = useState<'daily' | 'day' | 'weekly' | 'monthly' | 'custom'>('daily');
@@ -205,7 +217,12 @@ export default function ProfitLossReport() {
         title: t('reports.profit_loss_page.export.title'),
         description: t('reports.profit_loss_page.export.exporting_to', { format: format.toUpperCase() }),
       });
-      await exportProfitLoss(format, { dateFrom: selectedRange.fromYMD, dateTo: selectedRange.toYMD });
+      await exportProfitLoss(format, {
+        dateFrom: selectedRange.fromYMD,
+        dateTo: selectedRange.toYMD,
+        warehouseId: warehouseId !== 'all' ? warehouseId : undefined,
+        priceTierId: tierFilter !== 'all' ? Number(tierFilter) : null,
+      });
     } catch (e) {
       toast({
         title: t('common.error'),
@@ -288,19 +305,14 @@ export default function ProfitLossReport() {
             </div>
             <div>
               <label className="text-sm text-muted-foreground">Ombor</label>
-              <Select value={warehouseId} onValueChange={setWarehouseId}>
-                <SelectTrigger>
-                  <SelectValue placeholder="Barchasi" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="all">Barchasi</SelectItem>
-                  {warehouses.map((wh) => (
-                    <SelectItem key={wh.id} value={String(wh.id)}>
-                      {wh.name || wh.id}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+              <SearchableCombobox
+                value={warehouseId}
+                onValueChange={setWarehouseId}
+                options={warehouseOptions}
+                placeholder={t('combobox.all_warehouses', 'Barcha omborlar')}
+                searchPlaceholder={t('combobox.search_warehouse', "Ombor nomi bo'yicha qidirish...")}
+                emptyMessage={t('combobox.no_warehouse', 'Ombor topilmadi')}
+              />
             </div>
             <div className="md:col-span-4 flex items-end">
               <div className="text-sm text-muted-foreground">

@@ -1,5 +1,38 @@
 import { getPriceTiers, getProductTierPrice, setProductTierPrice } from '@/db/api';
+import { convertAtRate } from '@/lib/currency';
 import { mapWithConcurrency } from '@/lib/tierPriceCache';
+
+/**
+ * Stored USD retail must be distinct from the UZS catalog amount.
+ * Corrupted rows (reconcile bug) often equal the UZS sale_price.
+ */
+export function isPlausibleUsdRetail(
+  usd: number | null | undefined,
+  uzs: number | null | undefined
+): boolean {
+  const u = usd != null ? Number(usd) : NaN;
+  if (!Number.isFinite(u) || u <= 0) return false;
+  const z = uzs != null ? Number(uzs) : NaN;
+  if (!Number.isFinite(z) || z <= 0) return true;
+  if (Math.abs(u - z) <= 0.01) return false;
+  if (u >= z) return false;
+  return true;
+}
+
+/**
+ * USD retail for display / cart: real tier USD, else UZS ÷ fx. Never label raw UZS as USD.
+ */
+export function resolveUsdRetailDisplay(
+  uzsPrice: number | null | undefined,
+  storedUsd: number | null | undefined,
+  fxRate: number | null | undefined
+): number | null {
+  const uzs = Number(uzsPrice ?? 0) || 0;
+  if (isPlausibleUsdRetail(storedUsd, uzs)) return Number(storedUsd);
+  const fx = Number(fxRate || 0);
+  if (fx > 0 && uzs > 0) return convertAtRate(uzs, 'UZS', 'USD', fx);
+  return null;
+}
 
 export async function loadRetailUsdPrice(
   productId: string,

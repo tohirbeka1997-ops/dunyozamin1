@@ -65,6 +65,80 @@ class CustomersService {
     };
   }
 
+  /**
+   * Parse UI / API telegram field: numeric chat id or @username.
+   * Empty clears both columns.
+   * @returns {{ telegram_id: number|null, telegram_username: string|null }}
+   */
+  _resolveTelegramFields(raw) {
+    const s = raw == null ? '' : String(raw).trim();
+    if (!s) {
+      return { telegram_id: null, telegram_username: null };
+    }
+    if (/^-?\d+$/.test(s)) {
+      const n = Number(s);
+      if (!Number.isFinite(n)) {
+        throw createError(ERROR_CODES.VALIDATION_ERROR, 'Telegram ID noto\'g\'ri');
+      }
+      return { telegram_id: n, telegram_username: null };
+    }
+    const username = s.replace(/^@+/, '').trim();
+    if (!/^[A-Za-z][A-Za-z0-9_]{4,31}$/.test(username)) {
+      throw createError(
+        ERROR_CODES.VALIDATION_ERROR,
+        'Telegram: @username (masalan @ali) yoki raqamli chat id kiriting',
+      );
+    }
+    return { telegram_id: null, telegram_username: username };
+  }
+
+  _applyTelegramToRow(row, data) {
+    if (!this._hasCol('telegram_id') && !this._hasCol('telegram_username')) return;
+    let resolved = null;
+    if (data.telegram !== undefined) {
+      resolved = this._resolveTelegramFields(data.telegram);
+    } else if (data.telegram_id !== undefined || data.telegram_username !== undefined) {
+      if (data.telegram_id !== undefined && data.telegram_username === undefined) {
+        const idRaw = data.telegram_id;
+        if (idRaw == null || String(idRaw).trim() === '') {
+          resolved = { telegram_id: null, telegram_username: null };
+        } else if (/^-?\d+$/.test(String(idRaw).trim())) {
+          resolved = { telegram_id: Number(String(idRaw).trim()), telegram_username: null };
+        } else {
+          resolved = this._resolveTelegramFields(idRaw);
+        }
+      } else if (data.telegram_username !== undefined && data.telegram_id === undefined) {
+        resolved = this._resolveTelegramFields(
+          data.telegram_username == null ? '' : `@${String(data.telegram_username).replace(/^@+/, '')}`,
+        );
+      } else {
+        // Both provided — prefer explicit pair after light normalize
+        let telegram_id = null;
+        if (data.telegram_id != null && String(data.telegram_id).trim() !== '') {
+          const n = Number(data.telegram_id);
+          if (!Number.isFinite(n)) {
+            throw createError(ERROR_CODES.VALIDATION_ERROR, 'Telegram ID noto\'g\'ri');
+          }
+          telegram_id = n;
+        }
+        let telegram_username = null;
+        if (data.telegram_username != null && String(data.telegram_username).trim() !== '') {
+          telegram_username = String(data.telegram_username).replace(/^@+/, '').trim() || null;
+          if (telegram_username && !/^[A-Za-z][A-Za-z0-9_]{4,31}$/.test(telegram_username)) {
+            throw createError(
+              ERROR_CODES.VALIDATION_ERROR,
+              'Telegram: @username (masalan @ali) yoki raqamli chat id kiriting',
+            );
+          }
+        }
+        resolved = { telegram_id, telegram_username };
+      }
+    }
+    if (!resolved) return;
+    if (this._hasCol('telegram_id')) row.telegram_id = resolved.telegram_id;
+    if (this._hasCol('telegram_username')) row.telegram_username = resolved.telegram_username;
+  }
+
   _getSettingRaw(key) {
     try {
       const row = this.db.prepare('SELECT value FROM settings WHERE key = ?').get(key);
@@ -329,6 +403,7 @@ class CustomersService {
     if (this._hasCol('phone_normalized')) {
       row.phone_normalized = resolvedPhone.phone_normalized;
     }
+    this._applyTelegramToRow(row, data);
     const cols = Object.keys(row);
     const vals = Object.values(row);
     this.db
@@ -937,6 +1012,26 @@ class CustomersService {
       params.push(Number(data.bonus_points) || 0);
     }
 
+    if (
+      data.telegram !== undefined ||
+      data.telegram_id !== undefined ||
+      data.telegram_username !== undefined
+    ) {
+      const tgRow = {};
+      this._applyTelegramToRow(tgRow, data);
+      if (this._hasCol('telegram_id') && Object.prototype.hasOwnProperty.call(tgRow, 'telegram_id')) {
+        updates.push('telegram_id = ?');
+        params.push(tgRow.telegram_id);
+      }
+      if (
+        this._hasCol('telegram_username') &&
+        Object.prototype.hasOwnProperty.call(tgRow, 'telegram_username')
+      ) {
+        updates.push('telegram_username = ?');
+        params.push(tgRow.telegram_username);
+      }
+    }
+
     if (updates.length === 0) {
       return existing;
     }
@@ -1079,6 +1174,17 @@ class CustomersService {
     const now = nowSqlInTimeZone();
     applyCustomerBalanceDelta(this.db, customerId, delta, cur, now);
 
+    if (delta !== 0) {
+      this._notifyBalanceChange({
+        customerId,
+        delta,
+        balanceAfter: newBalance,
+        currency: cur,
+        reason: type === 'payment' ? 'payment_in' : type,
+        refId: `adjust-${customerId}-${Date.now()}`,
+      });
+    }
+
     return this.getById(customerId);
   }
 
@@ -1182,7 +1288,7 @@ class CustomersService {
         : null;
 
     // Use transaction for atomicity and consistency
-    return this.db.transaction(() => {
+    const result = this.db.transaction(() => {
       const paymentId = randomUUID();
       const paymentNumber = `PAY-${Date.now()}-${paymentId.substring(0, 8).toUpperCase()}`;
       // Idempotency: client payment_uuid (retry-safe) or fresh paymentId — never order_id
@@ -1447,6 +1553,32 @@ class CustomersService {
         operation,
       };
     })();
+
+    if (result && !result.duplicate && Number(result.signed_amount) !== 0) {
+      this._notifyBalanceChange({
+        customerId: result.customer_id,
+        delta: result.signed_amount,
+        balanceAfter: result.new_balance,
+        currency: result.currency,
+        reason: result.operation || 'payment_in',
+        refId: result.payment_id,
+        customerName: null,
+      });
+    }
+
+    return result;
+  }
+
+  /**
+   * Fire-and-forget balance change Telegram/SMS (customer + reports channel).
+   */
+  _notifyBalanceChange(payload) {
+    try {
+      const { fireBalanceChangeNotify } = require('../../public-api/lib/balanceChangeNotify.cjs');
+      fireBalanceChangeNotify(this.db, payload);
+    } catch (e) {
+      console.warn('[customers] balance change notify unavailable:', e?.message || e);
+    }
   }
 
   /**

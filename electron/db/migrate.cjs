@@ -907,6 +907,20 @@ function runMigrations(db) {
             }
           }
           db.exec(sql);
+        } else if (file === '116_customer_telegram.sql') {
+          if (hasTable(db, 'customers')) {
+            if (safeAddColumn(db, 'customers', 'telegram_id', 'INTEGER')) {
+              console.log('    ✓ Added customers.telegram_id');
+            }
+            if (safeAddColumn(db, 'customers', 'telegram_username', 'TEXT')) {
+              console.log('    ✓ Added customers.telegram_username');
+            }
+            db.exec(`
+              CREATE INDEX IF NOT EXISTS idx_customers_telegram_id ON customers(telegram_id);
+              CREATE INDEX IF NOT EXISTS idx_customers_telegram_username ON customers(telegram_username);
+            `);
+          }
+          // Columns added via safeAddColumn; skip raw ALTER to avoid duplicate-column abort before indexes.
         } else if (file === '100_upgrade_legacy_password_hashes.sql') {
           const { hashPassword } = require('../lib/password.cjs');
           const FACTORY_SHA256 =

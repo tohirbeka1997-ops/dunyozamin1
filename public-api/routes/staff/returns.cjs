@@ -4,6 +4,8 @@ const express = require('express');
 const { openTenantDatabase } = require('../../lib/staffDb.cjs');
 const { getPosBundle } = require('../../lib/staffPos.cjs');
 const { mapStaffServiceError } = require('../../lib/staffErrorMap.cjs');
+const { validate } = require('../../middleware/validate.cjs');
+const { staffReturnCreateBodySchema } = require('../../schemas/staff.schema.cjs');
 
 const ALLOWED_REFUND_METHODS = new Set(['cash', 'card', 'credit']);
 
@@ -29,7 +31,7 @@ function mountStaffReturnsRoutes() {
   }
 
   // POST /v1/staff/returns — create and complete an order return (same path as desktop POS)
-  router.post('/', (req, res) => {
+  router.post('/', validate({ body: staffReturnCreateBodySchema }), (req, res) => {
     try {
       const body = req.body || {};
       const orderId = body.order_id != null ? String(body.order_id).trim() : '';

@@ -1,12 +1,13 @@
 import { isElectron, requireElectron, handleIpcResponse } from '@/utils/electron';
-import type { ProductLabelElement } from '@/components/barcodes/ProductLabelLayoutEditor';
+import type { LabelElement } from '@/lib/barcodes/labelModel';
+import { normalizeElements } from '@/lib/barcodes/labelModel';
 
 export type SavedProductLabelDesignV1 = {
   v: 1;
   widthMm: number;
   heightMm: number;
   showBarcodeDigits: boolean;
-  layout: ProductLabelElement[];
+  layout: LabelElement[];
   savedAt: string;
 };
 
@@ -31,6 +32,7 @@ export async function saveProductLabelDesign(
   const payload: SavedProductLabelDesignV1 = {
     v: 1,
     ...input,
+    layout: normalizeElements(input.layout),
     savedAt: new Date().toISOString(),
   };
   const key = productLabelDesignKey(input.widthMm, input.heightMm);
@@ -44,6 +46,8 @@ export async function loadProductLabelDesign(widthMm: number, heightMm: number):
   const val = await handleIpcResponse<any>(api.settings.get(key)).catch(() => null);
   if (!val || typeof val !== 'object') return null;
   if (val.v !== 1) return null;
-  return val as SavedProductLabelDesignV1;
+  return {
+    ...val,
+    layout: normalizeElements(val.layout || []),
+  } as SavedProductLabelDesignV1;
 }
-

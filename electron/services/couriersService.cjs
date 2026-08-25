@@ -6,7 +6,10 @@ function normalizeUsername(raw) {
   const txt = String(raw || '').trim().replace(/^@/, '');
   if (!txt) return null;
   if (!/^[A-Za-z0-9_]{5,32}$/.test(txt)) {
-    throw createError(ERROR_CODES.VALIDATION_ERROR, 'Invalid Telegram username');
+    throw createError(
+      ERROR_CODES.VALIDATION_ERROR,
+      'Telegram username 5–32 belgi bo‘lishi kerak (faqat A–Z, 0–9, _)',
+    );
   }
   return txt;
 }

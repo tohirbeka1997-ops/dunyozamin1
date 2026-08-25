@@ -21,7 +21,10 @@ function createStaffAuth() {
         return;
       }
       if (!isStaffRoleAllowed(role)) {
-        res.status(403).json({ error: 'forbidden', message: 'Staff role required (admin, manager, sales)' });
+        res.status(403).json({
+          error: 'forbidden',
+          message: 'Staff role required (admin, manager, sales, cashier)',
+        });
         return;
       }
 

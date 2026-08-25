@@ -26,10 +26,13 @@ import { getCategories, getWarehouses } from '@/db/api';
 import type { Category, Warehouse } from '@/types/database';
 import type { DaysOption, DeadStockRow, TurnoverRow } from '@/types/inventoryAdvanced';
 import { useReportAutoRefresh } from '@/hooks/useReportAutoRefresh';
+import SearchableCombobox from '@/components/common/SearchableCombobox';
+import { useTranslation } from 'react-i18next';
 
 export default function StockHealthReport() {
   const navigate = useNavigate();
   const { toast } = useToast();
+  const { t } = useTranslation();
   const [days, setDays] = useState<DaysOption>(30);
   const [categoryFilter, setCategoryFilter] = useState<string>('all');
   const [search, setSearch] = useState('');
@@ -39,6 +42,29 @@ export default function StockHealthReport() {
   const [warehouseId, setWarehouseId] = useState<string>('all');
   const [deadRows, setDeadRows] = useState<DeadStockRow[]>([]);
   const [turnoverRows, setTurnoverRows] = useState<TurnoverRow[]>([]);
+
+  const categoryOptions = useMemo(
+    () => [
+      { value: 'all', label: t('combobox.all_categories', 'Barchasi') },
+      ...categories.map((category) => ({
+        value: category.id,
+        label: category.name,
+      })),
+    ],
+    [categories, t]
+  );
+
+  const warehouseOptions = useMemo(
+    () => [
+      { value: 'all', label: t('combobox.all_warehouses', 'Barcha omborlar') },
+      ...warehouses.map((warehouse) => ({
+        value: warehouse.id,
+        label: warehouse.name,
+      })),
+    ],
+    [warehouses, t]
+  );
+
   useReportAutoRefresh(loadData);
 
   useEffect(() => {
@@ -146,35 +172,27 @@ export default function StockHealthReport() {
             </div>
             <div>
               <label className="text-xs text-muted-foreground">Kategoriya</label>
-              <Select value={categoryFilter} onValueChange={setCategoryFilter}>
-                <SelectTrigger className="h-8">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="all">Barchasi</SelectItem>
-                  {categories.map((c) => (
-                    <SelectItem key={c.id} value={c.id}>
-                      {c.name}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+              <SearchableCombobox
+                value={categoryFilter}
+                onValueChange={setCategoryFilter}
+                options={categoryOptions}
+                placeholder={t('combobox.select_category', 'Kategoriyani tanlang...')}
+                searchPlaceholder={t('combobox.search_category', "Kategoriya nomi bo'yicha qidirish...")}
+                emptyMessage={t('combobox.no_category', 'Kategoriya topilmadi')}
+                triggerClassName="h-8"
+              />
             </div>
             <div>
               <label className="text-xs text-muted-foreground">Ombor</label>
-              <Select value={warehouseId} onValueChange={setWarehouseId}>
-                <SelectTrigger className="h-8">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="all">Barcha omborlar</SelectItem>
-                  {warehouses.map((w) => (
-                    <SelectItem key={w.id} value={w.id}>
-                      {w.name}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+              <SearchableCombobox
+                value={warehouseId}
+                onValueChange={setWarehouseId}
+                options={warehouseOptions}
+                placeholder={t('combobox.all_warehouses', 'Barcha omborlar')}
+                searchPlaceholder={t('combobox.search_warehouse', "Ombor nomi bo'yicha qidirish...")}
+                emptyMessage={t('combobox.no_warehouse', 'Ombor topilmadi')}
+                triggerClassName="h-8"
+              />
             </div>
             <div>
               <label className="text-xs text-muted-foreground">Qidirish</label>

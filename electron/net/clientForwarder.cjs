@@ -86,7 +86,10 @@ const BOOTSTRAP_CHANNELS = new Set([
 function registerClientForwarders({ hostUrl, secret }) {
   const base = normalizeHostUrl(hostUrl);
   if (!base) {
-    throw createError(ERROR_CODES.VALIDATION_ERROR, 'client.hostUrl is required');
+    throw createError(
+      ERROR_CODES.VALIDATION_ERROR,
+      'client.hostUrl is required (pos-config.json: mode=client lekin hostUrl bo‘sh). Mahalliy rejim: mode=host qiling yoki hostUrl ni to‘ldiring (masalan http://192.168.x.x:3333).'
+    );
   }
 
   const rpcUrl = `${base}/rpc`;

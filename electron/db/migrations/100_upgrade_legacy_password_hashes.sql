@@ -1,0 +1,3 @@
+-- Migration: 100_upgrade_legacy_password_hashes.sql
+-- Proactively upgrades known factory-default SHA-256 admin hashes to scrypt.
+-- Additional legacy hashes are upgraded transparently on next successful login.

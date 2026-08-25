@@ -277,8 +277,12 @@ try {
   runStep('reportSummary', () => {
     const summary = webOrders.reportSummary({ days: 30 });
     assert.ok(Array.isArray(summary.by_status));
+    assert.ok(Array.isArray(summary.by_channel));
+    assert.ok(Array.isArray(summary.by_payment));
     assert.ok(summary.totals && typeof summary.totals.orders === 'number');
     assert.ok(summary.totals.orders >= 2);
+    assert.ok(Number.isFinite(Number(summary.totals.amount)));
+    assert.ok(summary.date_from && summary.date_to);
   });
 
   runStep('marketplace catalog SQL (faol + ko\'rinadigan)', () => {

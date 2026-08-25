@@ -5,6 +5,8 @@ import { cartCount, loadCart } from './lib/cart';
 import { getTg, initTelegramUi } from './lib/telegram';
 import { BottomNav } from './components/BottomNav';
 import { LoadingScreen } from './components/LoadingScreen';
+import { initTheme } from './theme';
+import { t, useLang } from './lib/i18n';
 import { CartPage } from './pages/CartPage';
 import { CatalogPage } from './pages/CatalogPage';
 import { CheckoutPage } from './pages/CheckoutPage';
@@ -22,12 +24,15 @@ import { hydrateAddressesFromCloud } from './lib/addresses';
 import { hydrateLangFromCloud } from './lib/i18n';
 
 export default function App() {
+  useLang();
   const loc = useLocation();
   const [authReady, setAuthReady] = useState(false);
   const [authError, setAuthError] = useState<string | null>(null);
   const [cartN, setCartN] = useState(() => cartCount(loadCart()));
   const [favN, setFavN] = useState(() => favoritesCount());
   const [userName, setUserName] = useState<string | null>(null);
+
+  useEffect(() => initTheme(), []);
 
   useEffect(() => {
     initTelegramUi();
@@ -78,31 +83,52 @@ export default function App() {
   const isCheckout = loc.pathname === '/checkout';
 
   return (
-    <div className="relative mx-auto flex min-h-dvh max-w-lg flex-col overflow-hidden bg-transparent">
+    <div className="relative mx-auto flex min-h-dvh max-w-[400px] flex-col overflow-hidden bg-transparent">
       <div className="tg-decor pointer-events-none absolute -left-24 -top-24 h-56 w-56 rounded-full bg-[#00a19b]/20 blur-3xl" />
       <div className="tg-decor pointer-events-none absolute -right-24 top-32 h-52 w-52 rounded-full bg-[#e4ddd3]/55 blur-3xl" />
       <div className="tg-decor pointer-events-none absolute bottom-32 -left-20 h-40 w-40 rounded-full bg-[#ccda47]/18 blur-3xl" />
-      <header className="dz-glass sticky top-0 z-10 px-3 pb-2 pt-[max(0.4rem,env(safe-area-inset-top))]">
+      <header className="dz-glass sticky top-0 z-10 px-3.5 pb-2.5 pt-[max(0.55rem,env(safe-area-inset-top))]">
+        <div className="dz-loc mb-2">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden>
+            <path d="M20 10c0 6-8 12-8 12s-8-6-8-12a8 8 0 0 1 16 0z" />
+            <circle cx="12" cy="10" r="2.5" />
+          </svg>
+          <span>
+            {t('home.delivery')} · <b>{t('home.city')}</b>
+          </span>
+        </div>
         <div className="flex items-center justify-between gap-3">
-          <Link to="/" className="flex items-center gap-2">
-            <span className="dz-brand-bg flex h-8 w-8 items-center justify-center rounded-xl text-[12px] font-black text-white">
-              DZ
+          <Link to="/" className="dz-brand-block flex items-center gap-2.5">
+            <span className="dz-logo">
+              <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2" strokeLinejoin="round" aria-hidden>
+                <path d="M3 21V9l9-6 9 6v12" />
+                <path d="M9 21v-6h6v6" />
+              </svg>
             </span>
             <div className="leading-tight">
-              <span className="block text-[14px] font-bold tracking-tight text-[var(--brand-primary)]">
+              <span className="dz-brand-name block text-[16px] font-bold tracking-tight">
                 DunyoZamin
               </span>
-              <span className="block text-[9.5px] font-medium text-[var(--dz-soft)]">
-                Onlayn doʻkoningiz
+              <span className="dz-brand-tagline block text-[10px] font-bold uppercase tracking-[0.02em]">
+                {t('home.brand.tagline')}
               </span>
             </div>
           </Link>
-          {userName ? (
-            <div className="dz-chip-teal dz-chip max-w-[10rem] truncate">
-              <span aria-hidden>👋</span>
-              <span className="truncate">{userName}</span>
-            </div>
-          ) : null}
+          <div className="flex items-center gap-2">
+            {userName ? (
+              <span className="dz-chip-teal dz-chip max-w-[7.5rem] truncate">
+                <span aria-hidden>👋</span>
+                <span className="truncate">{userName}</span>
+              </span>
+            ) : null}
+            <Link to="/orders" className="dz-ibtn" aria-label={t('profile.orders')}>
+              <span className="dz-nd" />
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" aria-hidden>
+                <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9" />
+                <path d="M13.7 21a2 2 0 0 1-3.4 0" />
+              </svg>
+            </Link>
+          </div>
         </div>
       </header>
 

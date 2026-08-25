@@ -19,6 +19,12 @@ output
 
 # Electron packager output (GitHub 100MB limit; build CI/locally)
 release/
+release2/
+release_build/
+release_build2/
+release_build3/
+release_final/
+release-livefixes/
 vite.config.ts.timestamp-*.mjs
 *.local
 # package-lock.json — Docker `npm ci` uchun repoda bo‘lishi kerak
@@ -71,3 +77,16 @@ tmp-query.js
 tmp-audit-returns.cjs
 tmp-*.cjs
 test_pos.db*
+
+# Local cleanup / agent artifacts (do not commit)
+release-*/
+_trash_audit/
+__deltest__/
+/*.tar.gz
+deploy/_eb-*.json
+deploy/database-upload-deploy.tar
+AUDIT_*.md
+FIXES_APPLIED*.md
+LIVE_TEST_*.md
+TZ_*.md
+OPTIMIZATION_*.md

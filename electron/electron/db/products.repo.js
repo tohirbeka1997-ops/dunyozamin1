@@ -16,10 +16,11 @@ function listProducts(params = {}) {
     const conditions = [];
     const values = [];
     // Search filter
-    if (search) {
-        conditions.push('(name LIKE ? OR sku LIKE ? OR barcode LIKE ?)');
-        const searchPattern = `%${search}%`;
-        values.push(searchPattern, searchPattern, searchPattern);
+    const term = String(search || '').trim();
+    if (term) {
+        const searchPattern = `%${term}%`;
+        conditions.push('(name LIKE ? OR sku LIKE ? OR barcode LIKE ? OR IFNULL(article, \'\') LIKE ? OR IFNULL(brand, \'\') LIKE ?)');
+        values.push(searchPattern, searchPattern, searchPattern, searchPattern, searchPattern);
     }
     // Category filter
     if (categoryId) {

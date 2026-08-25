@@ -391,14 +391,15 @@ export default function PaySupplierDialog({
 
           <div className="space-y-2">
             <Label htmlFor="adjust-percent">Foiz (+/-)</Label>
-            <Input
+            <MoneyInput
               id="adjust-percent"
-              type="number"
-              step="0.01"
-              min="-100"
-              max="100"
-              value={safeAdjustPercent}
-              onChange={(e) => setAdjustPercent(Number(e.target.value))}
+              value={safeAdjustPercent !== 0 ? safeAdjustPercent : null}
+              onValueChange={(v) => setAdjustPercent(Number(v ?? 0))}
+              allowDecimals
+              allowZero
+              min={-100}
+              max={100}
+              containerClassName="space-y-0"
               className="text-right"
             />
           </div>

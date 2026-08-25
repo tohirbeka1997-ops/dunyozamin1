@@ -1,4 +1,12 @@
 const { ERROR_CODES, createError } = require('../lib/errors.cjs');
+const { formatYmdInTimeZone } = require('../lib/timezone.cjs');
+
+// Tracks DB handles whose schema bootstrap already ran. The canonical schema
+// lives in migration 077_marketplace_content.sql; this lazy CREATE-IF-NOT-
+// EXISTS is only a dev safety net, so we run it at most once per DB handle
+// instead of on every `new MarketplaceContentService()` (the HTTP admin-panel
+// path constructs one per request).
+const SCHEMA_BOOTSTRAPPED = new WeakSet();
 
 /**
  * Service for admin-managed marketing content shown in the customer-
@@ -21,6 +29,7 @@ class MarketplaceContentService {
    * Production should always run migrations first; this is a safety net.
    */
   _ensureSchema() {
+    if (!this.db || SCHEMA_BOOTSTRAPPED.has(this.db)) return;
     try {
       this.db.exec(`
         CREATE TABLE IF NOT EXISTS marketplace_promo_banners (
@@ -52,6 +61,7 @@ class MarketplaceContentService {
         CREATE INDEX IF NOT EXISTS idx_marketplace_daily_deals_date
           ON marketplace_daily_deals(featured_date);
       `);
+      SCHEMA_BOOTSTRAPPED.add(this.db);
     } catch (e) {
       console.error('[marketplaceContent] schema bootstrap failed', e);
     }
@@ -212,13 +222,35 @@ class MarketplaceContentService {
       title: title.slice(0, 80),
       subtitle: subtitle.slice(0, 120),
       cta_text: input.cta_text ? String(input.cta_text).slice(0, 40) : null,
-      cta_link: input.cta_link ? String(input.cta_link).slice(0, 200) : null,
+      cta_link: this._sanitizeCtaLink(input.cta_link),
       theme,
       sort_order: sortOrder,
       is_active: input.is_active === undefined ? true : !!input.is_active,
       starts_at: input.starts_at ? String(input.starts_at) : null,
       ends_at: input.ends_at ? String(input.ends_at) : null,
     };
+  }
+
+  /**
+   * Validate the banner CTA link. The mini-app renders it inside an
+   * `<a href>`, so an arbitrary string risks `javascript:` / `data:` URIs and
+   * open-redirects (XSS). Only allow:
+   *   - an internal app path beginning with a single "/" (not "//host")
+   *   - an absolute `https://` URL
+   * Anything else is rejected. Empty/missing returns null.
+   */
+  _sanitizeCtaLink(raw) {
+    if (raw === undefined || raw === null || raw === '') return null;
+    const link = String(raw).trim().slice(0, 200);
+    if (!link) return null;
+    // Internal path: must start with a single slash (block protocol-relative "//").
+    if (link.startsWith('/') && !link.startsWith('//')) return link;
+    // Absolute https URL only.
+    if (/^https:\/\/[^\s]+$/i.test(link)) return link;
+    throw createError(
+      ERROR_CODES.VALIDATION_ERROR,
+      "cta_link faqat ichki yo'l (/...) yoki https:// havola bo'lishi mumkin",
+    );
   }
 
   // ─── DAILY DEAL ───────────────────────────────────────────────────────
@@ -229,7 +261,9 @@ class MarketplaceContentService {
    * Returns null if no override is set.
    */
   getDailyDeal(dateISO) {
-    const date = (dateISO || new Date().toISOString()).slice(0, 10);
+    // Default "today" in the shop's timezone (Asia/Tashkent, UTC+5) so the
+    // admin and the public mini-app read the SAME calendar day near midnight.
+    const date = dateISO ? String(dateISO).slice(0, 10) : formatYmdInTimeZone(new Date());
     const row = this.db
       .prepare(
         `SELECT d.id, d.featured_date, d.product_id, d.badge_text,
@@ -262,7 +296,7 @@ class MarketplaceContentService {
    * Pass `product_id = null` to clear the override.
    */
   setDailyDeal({ featured_date, product_id, badge_text } = {}) {
-    const date = String(featured_date || new Date().toISOString().slice(0, 10)).slice(0, 10);
+    const date = String(featured_date || formatYmdInTimeZone(new Date())).slice(0, 10);
     if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
       throw createError(ERROR_CODES.VALIDATION_ERROR, 'featured_date must be YYYY-MM-DD');
     }

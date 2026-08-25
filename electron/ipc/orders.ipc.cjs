@@ -66,7 +66,7 @@ function registerOrdersHandlers(services) {
     const row = sales.db.prepare('SELECT id, status FROM orders WHERE id = ?').get(id);
     if (!row) throw new Error(`Order not found: ${id}`);
     const status = String(row.status || '').toLowerCase();
-    if (!['draft', 'pending', 'on_hold'].includes(status)) {
+    if (!['draft', 'pending', 'on_hold', 'hold'].includes(status)) {
       throw new Error(`Order in status '${status}' cannot be cancelled`);
     }
     const now = new Date().toISOString().replace('T', ' ').replace('Z', '').substring(0, 19);

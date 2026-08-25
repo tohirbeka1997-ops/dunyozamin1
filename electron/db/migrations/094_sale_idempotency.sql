@@ -1,0 +1,15 @@
+-- 094_sale_idempotency.sql
+--
+-- POS sale idempotency hardening (ADDITIVE + IDEMPOTENT).
+--
+-- The POS checkout already carries a per-checkout `order_uuid` (a client
+-- generated UUID) that the frontend now REUSES across retries (slow response
+-- or HTTP 429 re-submits). `salesService.completePOSOrder` treats that uuid as
+-- the sale idempotency key: the same key always maps to exactly one order and
+-- stock is decremented exactly once.
+--
+-- This migration guarantees the UNIQUE index that turns `order_uuid` into a
+-- hard duplicate-order guard exists, even on older databases that predate the
+-- original order_uuid migration or had the index dropped. It is safe to re-run
+-- (IF NOT EXISTS) and never touches existing data.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_orders_order_uuid ON orders(order_uuid);

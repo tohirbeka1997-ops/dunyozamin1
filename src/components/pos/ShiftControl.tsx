@@ -12,6 +12,13 @@ import {
 import { useShiftStore } from '@/store/shiftStore';
 import { useAuth } from '@/contexts/AuthContext';
 import { useToast } from '@/hooks/use-toast';
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from '@/components/ui/tooltip';
+import { cn } from '@/lib/utils';
 import { ArrowDownToLine, ArrowUpFromLine, Lock, Unlock } from 'lucide-react';
 import { formatMoneyUZS } from '@/lib/format';
 import { DualCurrencyAmount } from '@/components/common/DualCurrencyAmount';
@@ -20,7 +27,12 @@ import { formatDateTime, formatTime } from '@/lib/datetime';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 
-export default function ShiftControl() {
+type ShiftControlProps = {
+  /** Compact icon-only toolbar for POS header */
+  compact?: boolean;
+};
+
+export default function ShiftControl({ compact = false }: ShiftControlProps) {
   const { user } = useAuth();
   const { toast } = useToast();
   const { currentShift, openShift, closeShift, addSale, addRefund, sales, refunds, setCurrentShift, syncFromDatabase } =
@@ -512,78 +524,116 @@ export default function ShiftControl() {
     }
   };
 
+  const shiftToolbar = checkingShift ? (
+    <div className="flex items-center gap-1.5">
+      <div className="h-3.5 w-3.5 animate-spin rounded-full border-b-2 border-primary" />
+      {!compact && (
+        <span className="text-sm text-muted-foreground">Smena holati tekshirilmoqda...</span>
+      )}
+    </div>
+  ) : currentShift ? (
+    <>
+      <Badge
+        variant="outline"
+        className={cn(
+          'shrink-0 bg-green-50 text-green-700 border-green-200 dark:bg-green-950 dark:text-green-400 dark:border-green-800',
+          compact && 'h-6 gap-0.5 px-1.5 text-[10px] font-normal',
+        )}
+        title={compact ? `Smena ochiq — ${formatTime(currentShift.opened_at)}` : undefined}
+      >
+        <Unlock className={cn('shrink-0', compact ? 'h-2.5 w-2.5' : 'h-3 w-3 mr-1')} />
+        {compact ? (
+          <span className="tabular-nums">{formatTime(currentShift.opened_at)}</span>
+        ) : (
+          <>Smena: Ochiq</>
+        )}
+      </Badge>
+      {!compact && (
+        <span className="text-sm text-muted-foreground">
+          Ochilgan: {formatTime(currentShift.opened_at)}
+        </span>
+      )}
+      <Button
+        variant="outline"
+        size={compact ? 'icon' : 'sm'}
+        onClick={() => {
+          setMovementDialogOpen('in');
+          setMovementAmount(null);
+          setMovementReason('');
+        }}
+        title="Kassaga naqd kirim"
+        aria-label="Kassaga naqd kirim"
+        className={cn(
+          'border-emerald-300 text-emerald-700 hover:bg-emerald-50 dark:border-emerald-800 dark:text-emerald-400 dark:hover:bg-emerald-950',
+          compact && 'h-7 w-7 shrink-0',
+        )}
+      >
+        <ArrowDownToLine className={cn(compact ? 'h-3.5 w-3.5' : 'h-4 w-4 mr-1')} />
+        {!compact && 'Kirim'}
+      </Button>
+      <Button
+        variant="outline"
+        size={compact ? 'icon' : 'sm'}
+        onClick={() => {
+          setMovementDialogOpen('out');
+          setMovementAmount(null);
+          setMovementReason('');
+        }}
+        title="Kassadan naqd chiqim (inkassatsiya)"
+        aria-label="Kassadan naqd chiqim"
+        className={cn(
+          'border-amber-300 text-amber-700 hover:bg-amber-50 dark:border-amber-800 dark:text-amber-400 dark:hover:bg-amber-950',
+          compact && 'h-7 w-7 shrink-0',
+        )}
+      >
+        <ArrowUpFromLine className={cn(compact ? 'h-3.5 w-3.5' : 'h-4 w-4 mr-1')} />
+        {!compact && 'Chiqim'}
+      </Button>
+      <Button
+        variant="destructive"
+        size={compact ? 'icon' : 'sm'}
+        onClick={() => setCloseDialogOpen(true)}
+        title="Smenani yopish"
+        aria-label="Smenani yopish"
+        className={cn('text-white shrink-0', compact && 'h-7 w-7')}
+      >
+        <Lock className={cn(compact ? 'h-3.5 w-3.5' : 'h-4 w-4 mr-1')} />
+        {!compact && 'Smenani yopish'}
+      </Button>
+    </>
+  ) : (
+    <>
+      <Badge
+        variant="outline"
+        className={cn(
+          'bg-red-50 text-red-700 border-red-200 dark:bg-red-950 dark:text-red-400 dark:border-red-800',
+          compact && 'h-6 px-1.5 text-[10px] font-normal',
+        )}
+      >
+        <Lock className={cn('shrink-0', compact ? 'h-2.5 w-2.5' : 'h-3 w-3 mr-1')} />
+        {compact ? "Yo'q" : "Ochiq smena yo'q"}
+      </Badge>
+      <Button
+        size={compact ? 'sm' : 'sm'}
+        id="open-shift-trigger"
+        onClick={() => setOpenDialogOpen(true)}
+        className={cn(compact && 'h-7 px-2 text-xs')}
+      >
+        <Unlock className={cn(compact ? 'h-3 w-3 mr-1' : 'h-4 w-4 mr-1')} />
+        {compact ? 'Ochish' : 'Smenani ochish'}
+      </Button>
+    </>
+  );
+
   return (
     <>
-      <div className="flex items-center gap-3">
-        {checkingShift ? (
-          <div className="flex items-center gap-2">
-            <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-primary" />
-            <span className="text-sm text-muted-foreground">Smena holati tekshirilmoqda...</span>
-          </div>
-        ) : currentShift ? (
-          <>
-            <Badge variant="outline" className="bg-green-50 text-green-700 border-green-200 dark:bg-green-950 dark:text-green-400 dark:border-green-800">
-              <Unlock className="h-3 w-3 mr-1" />
-              Smena: Ochiq
-            </Badge>
-            <span className="text-sm text-muted-foreground">
-              Ochilgan: {formatTime(currentShift.opened_at)}
-            </span>
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => {
-                setMovementDialogOpen('in');
-                setMovementAmount(null);
-                setMovementReason('');
-              }}
-              title="Kassaga naqd kirim"
-              className="border-emerald-300 text-emerald-700 hover:bg-emerald-50 dark:border-emerald-800 dark:text-emerald-400 dark:hover:bg-emerald-950"
-            >
-              <ArrowDownToLine className="h-4 w-4 mr-1" />
-              Kirim
-            </Button>
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => {
-                setMovementDialogOpen('out');
-                setMovementAmount(null);
-                setMovementReason('');
-              }}
-              title="Kassadan naqd chiqim (inkassatsiya)"
-              className="border-amber-300 text-amber-700 hover:bg-amber-50 dark:border-amber-800 dark:text-amber-400 dark:hover:bg-amber-950"
-            >
-              <ArrowUpFromLine className="h-4 w-4 mr-1" />
-              Chiqim
-            </Button>
-            <Button
-              variant="destructive"
-              size="sm"
-              onClick={() => setCloseDialogOpen(true)}
-              className="text-white"
-            >
-              <Lock className="h-4 w-4 mr-1" />
-              Smenani yopish
-            </Button>
-          </>
-        ) : (
-          <>
-            <Badge variant="outline" className="bg-red-50 text-red-700 border-red-200 dark:bg-red-950 dark:text-red-400 dark:border-red-800">
-              <Lock className="h-3 w-3 mr-1" />
-              Ochiq smena yo‘q
-            </Badge>
-            <Button
-              size="sm"
-              id="open-shift-trigger"
-              onClick={() => setOpenDialogOpen(true)}
-            >
-              <Unlock className="h-4 w-4 mr-1" />
-              Smenani ochish
-            </Button>
-          </>
-        )}
-      </div>
+      {compact ? (
+        <TooltipProvider delayDuration={300}>
+          <div className="flex items-center gap-0.5 shrink-0">{shiftToolbar}</div>
+        </TooltipProvider>
+      ) : (
+        <div className="flex items-center gap-3">{shiftToolbar}</div>
+      )}
 
       {/* Cash Movement Dialog (deposit / withdrawal) */}
       <Dialog
@@ -740,31 +790,31 @@ export default function ShiftControl() {
                     </div>
                     <div className="border-t pt-2 mt-2">
                       <div className="flex items-center justify-between text-sm mb-1">
-                        <span className="text-muted-foreground">Jami savdo (to'lovlar):</span>
+                        <span className="text-muted-foreground">Jami savdo (aylanma):</span>
+                        <span className="font-semibold tabular-nums text-right">
+                          {(shiftSummary as { salesGrossUsd?: number }).salesGrossUsd ? (
+                            <DualCurrencyAmount
+                              uzs={(shiftSummary as { salesGrossUzs?: number }).salesGrossUzs ?? shiftSummary.salesGross}
+                              usd={(shiftSummary as { salesGrossUsd?: number }).salesGrossUsd}
+                            />
+                          ) : (
+                            formatMoneyUZS(shiftSummary.salesGross ?? shiftSummary.totalSales ?? 0)
+                          )}
+                        </span>
+                      </div>
+                      <p className="text-[11px] text-muted-foreground mb-2 leading-snug -mt-0.5">
+                        Yakunlangan buyurtmalar bo&apos;yicha tovar summasi (naqd + karta + nasiya)
+                      </p>
+
+                      <div className="flex items-center justify-between text-sm mb-1">
+                        <span className="text-muted-foreground">Tushum (to&apos;langan):</span>
                         <span className="font-semibold text-green-600 dark:text-green-400">
                           {formatMoneyUZS(shiftSummary.totalSales ?? 0)}
                         </span>
                       </div>
                       <p className="text-[11px] text-muted-foreground mb-2 leading-snug -mt-0.5">
-                        Mijoz to'lagan barcha pul (UZS ekvivalent): naqd + karta + QR + ... <strong>nasiyasiz</strong>
+                        Mijoz to&apos;lagan barcha pul (UZS ekvivalent): naqd + karta + QR + ... <strong>nasiyasiz</strong>
                       </p>
-
-                      {/* Tovar summasi (gross) — agar nasiya bo'lsa, ko'rsatiladi */}
-                      {(shiftSummary.salesGross ?? 0) > (shiftSummary.totalSales ?? 0) + 0.5 && (
-                        <div className="flex items-center justify-between text-xs mb-2 pl-2 text-muted-foreground gap-2">
-                          <span>Tovar summasi (nasiya bilan):</span>
-                          <span className="font-medium tabular-nums text-right">
-                            {(shiftSummary as { salesGrossUsd?: number }).salesGrossUsd ? (
-                              <DualCurrencyAmount
-                                uzs={(shiftSummary as { salesGrossUzs?: number }).salesGrossUzs ?? shiftSummary.salesGross}
-                                usd={(shiftSummary as { salesGrossUsd?: number }).salesGrossUsd}
-                              />
-                            ) : (
-                              formatMoneyUZS(shiftSummary.salesGross ?? 0)
-                            )}
-                          </span>
-                        </div>
-                      )}
 
                       {/* To'lov usullari taqsimoti */}
                       {shiftSummary.paymentsByMethod && (

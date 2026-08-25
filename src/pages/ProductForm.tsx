@@ -32,11 +32,14 @@ import type { Category, Product, ProductUnit, ProductVariantOption } from '@/typ
 import { ArrowLeft, Save, ImagePlus, X, Link, Upload, Plus, Trash2 } from 'lucide-react';
 import { useInventoryStore } from '@/store/inventoryStore';
 import MoneyInput from '@/components/common/MoneyInput';
+import DecimalInput from '@/components/common/DecimalInput';
 import { isElectron, requireElectron, handleIpcResponse } from '@/utils/electron';
 import { getProductImageDisplayUrl, normalizeImportImageUrl } from '@/lib/productImageUrl';
 import { MarketplaceProductPreview } from '@/components/products/MarketplaceProductPreview';
 import { loadRetailUsdPrice, saveRetailUsdPrice } from '@/lib/productPricing';
-import { optimizeProductImageFile } from '@/lib/optimizeProductImage';
+import { readLocalImageFile, uploadProductImage } from '@/lib/uploadProductImage';
+import { formatUnit } from '@/utils/formatters';
+import { formatUnitRatioHint } from '@/pages/posTerminalHelpers';
 
 const MAX_VARIANT_OPTIONS = 16;
 const MAX_BROWSER_IMAGE_BYTES = 8 * 1024 * 1024;
@@ -376,63 +379,13 @@ export default function ProductForm() {
     setImageUrlInput('');
   };
 
-  const saveFileAsProductImage = async (filePath: string, index: number): Promise<string | null> => {
-    if (!isElectron()) return null;
-    const api = requireElectron();
-    const productIdOrTempId = id || `temp-${Date.now()}`;
-    const saved = await handleIpcResponse<{ fileUrl?: string }>(api.files.saveProductImage(filePath, productIdOrTempId, index));
-    return saved?.fileUrl || null;
-  };
-
-  const extFromFileName = (name: string) => {
-    const match = String(name || '').match(/(\.[a-z0-9]+)$/i);
-    return match ? match[1].toLowerCase() : '.jpg';
-  };
-
-  const pathToImageFile = async (filePath: string): Promise<File> => {
-    const api = requireElectron();
-    const fileUrl = await handleIpcResponse<string | null>(api.files.pathToFileUrl(filePath));
-    if (!fileUrl) throw new Error('Fayl topilmadi');
-    const res = await fetch(fileUrl);
-    const blob = await res.blob();
-    const name = filePath.replace(/^.*[/\\]/, '') || 'image.jpg';
-    return new File([blob], name, { type: blob.type || 'image/jpeg' });
-  };
-
   const uploadPreparedImage = async (
     file: File,
     index: number,
     sourcePath?: string | null,
   ): Promise<string | null> => {
     const productIdOrTempId = id || `temp-${Date.now()}`;
-    const api = getElectronApiSafe();
-    const optimized = await optimizeProductImageFile(file);
-    const uploadFile = optimized.file;
-
-    if (typeof api?.files?.uploadProductImage === 'function') {
-      const saved = await handleIpcResponse<{ fileUrl?: string }>(
-        api.files.uploadProductImage(uploadFile, productIdOrTempId, index),
-      );
-      return saved?.fileUrl || null;
-    }
-
-    if (optimized.skipped && sourcePath) {
-      return saveFileAsProductImage(sourcePath, index);
-    }
-
-    if (typeof api?.files?.saveProductImageBuffer === 'function') {
-      const buf = await uploadFile.arrayBuffer();
-      const saved = await handleIpcResponse<{ fileUrl?: string }>(
-        api.files.saveProductImageBuffer(buf, productIdOrTempId, index, extFromFileName(uploadFile.name)),
-      );
-      return saved?.fileUrl || null;
-    }
-
-    if (sourcePath) {
-      return saveFileAsProductImage(sourcePath, index);
-    }
-
-    throw new Error('Rasmni saqlab bo‘lmadi');
+    return uploadProductImage(file, productIdOrTempId, index, sourcePath);
   };
 
   const appendImageUrls = (urls: string[]) => {
@@ -492,7 +445,7 @@ export default function ProductForm() {
         const filePaths = res.filePaths as string[];
         const startIdx = images.length;
         for (let i = 0; i < filePaths.length; i++) {
-          const file = await pathToImageFile(filePaths[i]);
+          const file = await readLocalImageFile(filePaths[i]);
           const saved = await uploadPreparedImage(file, startIdx + i, filePaths[i]);
           if (saved) {
             setImages((prev) => {
@@ -899,6 +852,11 @@ export default function ProductForm() {
   };
 
   const margin = calculateMargin();
+  const stockBaseUnit = String(formData.base_unit || formData.unit || 'pcs').trim().toLowerCase();
+  const stockBaseUnitLabel = formatUnit(stockBaseUnit) || stockBaseUnit;
+  const defaultUnitMisconfigured = productUnits.some(
+    (u) => u.is_default && Math.abs(Number(u.ratio_to_base || 0) - 1) > 1e-9,
+  );
 
   return (
     <div className="space-y-6">
@@ -996,7 +954,7 @@ export default function ProductForm() {
               </div>
 
               <div className="space-y-2">
-                <Label htmlFor="brand">Brend</Label>
+                <Label htmlFor="brand">{t('products.brand')}</Label>
                 <Input
                   id="brand"
                   value={formData.brand}
@@ -1266,6 +1224,18 @@ export default function ProductForm() {
             </Button>
           </CardHeader>
           <CardContent className="space-y-4">
+            <p className="text-xs text-muted-foreground">
+              Ombor hisobi <span className="font-medium">{stockBaseUnitLabel}</span> birligida.
+              Har bir qator: <span className="font-medium">1 sotuv birligi = nisbat × asosiy birlik</span>.
+            </p>
+            {defaultUnitMisconfigured && (
+              <p className="rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-900 dark:border-amber-700 dark:bg-amber-950/40 dark:text-amber-100">
+                Default sotuv birligi asosiy birlik emas va nisbati 1 dan farq qiladi — POS da tez
+                qo&apos;shish miqdori noto&apos;g&apos;ri bo&apos;lishi mumkin. Masalan, 1 metr ≈ 0,046 kg
+                bo&apos;lsa, nisbatni <span className="font-medium">dona (pcs)</span> qatoriga qo&apos;ying,
+                asosiy birlikni <span className="font-medium">kg</span> qiling.
+              </p>
+            )}
             <div className="grid grid-cols-1 md:grid-cols-12 gap-3 items-end">
               <div className="space-y-2 md:col-span-3">
                 <MoneyInput
@@ -1304,19 +1274,19 @@ export default function ProductForm() {
               </div>
               <div className="space-y-2 md:col-span-3">
                 <Label htmlFor="sale_price_usd">Chakana narx (USD, ixtiyoriy)</Label>
-                <Input
+                <MoneyInput
                   id="sale_price_usd"
-                  type="number"
-                  step="0.01"
-                  min="0"
-                  value={formData.sale_price_usd ?? ''}
-                  onChange={(e) =>
+                  value={formData.sale_price_usd}
+                  onValueChange={(val) =>
                     setFormData({
                       ...formData,
-                      sale_price_usd: e.target.value === '' ? null : Number(e.target.value),
+                      sale_price_usd: val,
                     })
                   }
-                  placeholder="0.00"
+                  placeholder="0,00"
+                  allowZero
+                  allowDecimals
+                  min={0}
                   className="text-right"
                 />
                 <p className="text-xs text-muted-foreground">POS da ko&apos;rsatish uchun; sotuv UZS da.</p>
@@ -1353,14 +1323,28 @@ export default function ProductForm() {
                   </Select>
                 </div>
                 <div className="space-y-2 md:col-span-2">
-                  <Label>Nisbat (asosiy)</Label>
-                  <Input
-                    type="number"
-                    step="any"
-                    min="0.0001"
-                    value={u.ratio_to_base}
-                    onChange={(e) => updateProductUnit(index, { ratio_to_base: Number(e.target.value) })}
+                  <Label>
+                    {Number(u.ratio_to_base || 0) === 1 &&
+                    String(u.unit || '').trim().toLowerCase() === stockBaseUnit
+                      ? 'Nisbat (asosiy = 1)'
+                      : 'Nisbat → asosiy'}
+                  </Label>
+                  <DecimalInput
+                    value={Number(u.ratio_to_base || 0) || 0}
+                    onValueChange={(val) => updateProductUnit(index, { ratio_to_base: val })}
+                    min={0.0001}
+                    decimalPlaces={6}
+                    placeholder="1"
                   />
+                  {Number(u.ratio_to_base || 0) > 0 &&
+                    !(
+                      Number(u.ratio_to_base || 0) === 1 &&
+                      String(u.unit || '').trim().toLowerCase() === stockBaseUnit
+                    ) && (
+                      <p className="text-[10px] text-muted-foreground">
+                        {formatUnitRatioHint(u.unit, Number(u.ratio_to_base || 0), stockBaseUnit)}
+                      </p>
+                    )}
                 </div>
                 <div className="space-y-2 md:col-span-3">
                   <MoneyInput
@@ -1399,7 +1383,9 @@ export default function ProductForm() {
               </div>
             ))}
             <p className="text-xs text-muted-foreground">
-              Nisbat asosiy birlikka nisbatan. Masalan: 1 dona = 0.18 kg.
+              Masalan: ombor <span className="font-medium">kg</span> da, 1 metr ≈ 0,046 kg bo&apos;lsa —{' '}
+              <span className="font-medium">dona (pcs)</span> qatorida nisbat{' '}
+              <span className="font-medium">0,046</span>, sotuv narxi metr uchun, default = dona.
             </p>
           </CardContent>
         </Card>

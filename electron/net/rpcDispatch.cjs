@@ -62,6 +62,7 @@ function createRpcDispatcher({ services, db, sessions }) {
       ch.startsWith('pos:categories:') && ch.endsWith(':list') ||
       ch.startsWith('pos:warehouses:') && ch.endsWith(':list') ||
       ch.startsWith('pos:customers:') ||
+      (ch.startsWith('pos:creditReminders:') || ch.startsWith('pos:creditReminder:')) ||
       ch.startsWith('pos:pricing:get') ||
       ch.startsWith('pos:promotions:') && (ch.endsWith(':list') || ch.endsWith(':applyToCart')) ||
       ch.startsWith('pos:inventory:getBalances') ||
@@ -100,6 +101,7 @@ function createRpcDispatcher({ services, db, sessions }) {
       // customers: read-only + receive payment (NO create/update/delete/adjust)
       ch === 'pos:customers:receivePayment' ||
       ch === 'pos:customers:findByPhone' ||
+      (ch.startsWith('pos:creditReminders:') || ch.startsWith('pos:creditReminder:')) ||
       ch.startsWith('pos:customers:') && (ch.includes(':get') || ch.endsWith(':list') || ch.endsWith(':exportCsv')) ||
       // sales completion (POS sell)
       ch.startsWith('pos:sales:') ||
@@ -128,6 +130,11 @@ function createRpcDispatcher({ services, db, sessions }) {
 
   // meta is passed by hostServer; in legacy Electron IPC path meta is undefined.
   const exec = wrapHandler(async (_event, channel, args, meta) => {
+    // Legacy/alternate naming: pos:creditReminder:* → pos:creditReminders:*
+    if (typeof channel === 'string' && channel.startsWith('pos:creditReminder:')) {
+      channel = channel.replace('pos:creditReminder:', 'pos:creditReminders:');
+    }
+
     // POST /rpc ba'zan `args` ni massiv o'rniga bitta obyekt yuboradi — bo'sh massivga
     // aylantirmaslik kerak (masalan getSummary uchun).
     const a =
@@ -189,6 +196,10 @@ function createRpcDispatcher({ services, db, sessions }) {
         return services.products.searchScreen(a[0] || {});
       case 'pos:products:count':
         return services.products.count(a[0] || {});
+      case 'pos:products:listScanIndex':
+        return services.products.listScanIndex(a[0] || {});
+      case 'pos:products:resolveScan':
+        return services.products.resolveScan(a[0] || [], a[1] || {});
       case 'pos:products:get':
         return (services.products.getById || services.products.get).call(services.products, a[0]);
       case 'pos:products:getBySku':
@@ -478,6 +489,8 @@ function createRpcDispatcher({ services, db, sessions }) {
         }
         return services.customers.receivePayment(raw || {});
       }
+      case 'pos:customers:getTotalDebt':
+        return services.customers.getTotalDebt();
       case 'pos:customers:getPayments':
         return services.customers.getPayments(a[0], a[1] || {});
       case 'pos:customers:getLedger':
@@ -495,6 +508,44 @@ function createRpcDispatcher({ services, db, sessions }) {
           a[0]?.deltaPoints,
           a[0]?.note
         );
+      case 'pos:creditReminders:list': {
+        const { listCreditReminders } = require('../../public-api/lib/creditReminder.cjs');
+        return listCreditReminders(services.customers.db, a[0] || {});
+      }
+      case 'pos:creditReminders:listOpenOrders': {
+        const { listOpenCreditOrders } = require('../../public-api/lib/creditReminder.cjs');
+        return listOpenCreditOrders(services.customers.db, a[0] || {});
+      }
+      case 'pos:creditReminders:updateDueDate': {
+        const { updateOrderDueDate } = require('../../public-api/lib/creditReminder.cjs');
+        const payload = a[0] || {};
+        if (!payload.orderId) throw new Error('orderId kerak');
+        return updateOrderDueDate(services.customers.db, payload.orderId, payload.dueDate);
+      }
+      case 'pos:creditReminders:send': {
+        const {
+          sendManualCreditReminder,
+          sendManualCreditReminderForCustomer,
+        } = require('../../public-api/lib/creditReminder.cjs');
+        const payload = a[0] || {};
+        if (payload.orderId) {
+          return sendManualCreditReminder(services.customers.db, payload.orderId, payload);
+        }
+        if (payload.customerId) {
+          return sendManualCreditReminderForCustomer(services.customers.db, payload.customerId, payload);
+        }
+        throw new Error('customerId yoki orderId kerak');
+      }
+      case 'pos:creditReminders:listStaffAlerts': {
+        const { listUnreadStaffCreditAlerts } = require('../../public-api/lib/creditReminder.cjs');
+        return listUnreadStaffCreditAlerts(services.customers.db, a[0] || {});
+      }
+      case 'pos:creditReminders:ackStaffAlert': {
+        const { markStaffCreditAlertRead } = require('../../public-api/lib/creditReminder.cjs');
+        const payload = a[0] || {};
+        if (!payload.alertId) throw new Error('alertId kerak');
+        return markStaffCreditAlertRead(services.customers.db, payload.alertId);
+      }
 
       // Suppliers
       case 'pos:suppliers:list':
@@ -521,6 +572,8 @@ function createRpcDispatcher({ services, db, sessions }) {
         return services.supplierReturns.get(a[0]);
       case 'pos:suppliers:listReturns':
         return services.supplierReturns.list(a[0] || {});
+      case 'pos:suppliers:listReturnableProducts':
+        return services.supplierReturns.listReturnableProducts(a[0] || {});
 
       // Inventory
       case 'pos:inventory:getBalances':
@@ -563,6 +616,7 @@ function createRpcDispatcher({ services, db, sessions }) {
         console.log('[RPC] pos:sales:completePOSOrder', {
           order_uuid: a?.[0]?.order_uuid,
           device_id: a?.[0]?.device_id,
+          bonus_referrer_customer_id: a?.[0]?.bonus_referrer_customer_id ?? null,
           replaces_order_id: a?.[0]?.replaces_order_id ?? null,
           items_count: Array.isArray(a?.[1]) ? a[1].length : 0,
           payments_count: Array.isArray(a?.[2]) ? a[2].length : 0,
@@ -606,8 +660,11 @@ function createRpcDispatcher({ services, db, sessions }) {
         return services.purchases.get(a[0]);
       case 'pos:purchases:createOrder':
         return services.purchases.createOrder(a[0] || {});
-      case 'pos:purchases:updateOrder':
-        return services.purchases.updateOrder(a[0], a[1] || {}, a[2] || []);
+      case 'pos:purchases:updateOrder': {
+        const hdr = a[1] || {};
+        const lines = Array.isArray(a[2]) ? a[2] : Array.isArray(hdr.items) ? hdr.items : [];
+        return services.purchases.updateOrder(a[0], hdr, lines);
+      }
       case 'pos:purchases:approve':
         return services.purchases.approve(a[0], a[1]);
       case 'pos:purchases:receiveGoods':
@@ -755,6 +812,8 @@ function createRpcDispatcher({ services, db, sessions }) {
         return services.reports.getSupplierProductSales(a[0] || {});
       case 'pos:reports:purchasePlanning':
         return services.reports.getPurchasePlanning(a[0] || {});
+      case 'pos:reports:abcAnalysis':
+        return services.reports.getAbcAnalysis(a[0] || {});
       case 'pos:reports:purchaseVsSold':
         return services.reports.getPurchaseVsSold(a[0] || {});
       case 'pos:reports:getLatestPurchaseCosts':
@@ -767,6 +826,10 @@ function createRpcDispatcher({ services, db, sessions }) {
         return services.reports.getAging(a[0] || {});
       case 'pos:reports:paymentMethodsSummary':
         return services.reports.getPaymentMethodsSummary(a[0] || {});
+      case 'pos:reports:bankCashReconciliation':
+        return services.reports.getBankCashReconciliation(a[0] || {});
+      case 'pos:reports:reconcileCustomerLedger':
+        return services.reports.reconcileCustomerLedger(a[0] || {});
       case 'pos:reports:cashierPerformance':
         return services.reports.getCashierPerformance(a[0] || {});
       case 'pos:reports:customerSalesReport':
@@ -787,6 +850,78 @@ function createRpcDispatcher({ services, db, sessions }) {
         return services.settings.getAll(a[0] || {});
       case 'pos:settings:delete':
         return services.settings.delete(a[0]);
+
+      // Telegram reports — test send / AI status (admin). Mirrors settings.ipc.cjs.
+      case 'pos:settings:testTelegramReport': {
+        if (!adminBypass && String(authContext?.role || '').toLowerCase() !== 'admin') {
+          throw createError(ERROR_CODES.PERMISSION_DENIED, 'Admin only');
+        }
+        try {
+          require('../config/loadRootEnv.cjs').loadRootEnv();
+        } catch {
+          /* ignore */
+        }
+        const { sendTestReport } = require('../../public-api/lib/reportNotify.cjs');
+        return sendTestReport(db, {});
+      }
+      case 'pos:settings:testTelegramAiAnalysis': {
+        if (!adminBypass && String(authContext?.role || '').toLowerCase() !== 'admin') {
+          throw createError(ERROR_CODES.PERMISSION_DENIED, 'Admin only');
+        }
+        try {
+          require('../config/loadRootEnv.cjs').loadRootEnv();
+        } catch {
+          /* ignore */
+        }
+        const { sendAiAnalysisNow, resolveOpenAiConfig, resolveGeminiTextConfig } = require('../../public-api/lib/storeAiAnalysis.cjs');
+        const openai = resolveOpenAiConfig({});
+        const gemini = resolveGeminiTextConfig({});
+        return sendAiAnalysisNow(db, {
+          apiKey: openai.apiKey,
+          model: openai.model,
+          geminiApiKey: gemini.apiKey,
+          geminiTextModel: gemini.model,
+        });
+      }
+      case 'pos:settings:testTelegramDailyPoster': {
+        if (!adminBypass && String(authContext?.role || '').toLowerCase() !== 'admin') {
+          throw createError(ERROR_CODES.PERMISSION_DENIED, 'Admin only');
+        }
+        try {
+          require('../config/loadRootEnv.cjs').loadRootEnv();
+        } catch {
+          /* ignore */
+        }
+        const { sendDailyPosterNow } = require('../../public-api/lib/dailyStorePoster.cjs');
+        return sendDailyPosterNow(db, {});
+      }
+      case 'pos:settings:openaiStatus': {
+        if (!adminBypass && String(authContext?.role || '').toLowerCase() !== 'admin') {
+          throw createError(ERROR_CODES.PERMISSION_DENIED, 'Admin only');
+        }
+        try {
+          require('../config/loadRootEnv.cjs').loadRootEnv();
+        } catch {
+          /* ignore */
+        }
+        const { resolveOpenAiConfig, resolveGeminiTextConfig } = require('../../public-api/lib/storeAiAnalysis.cjs');
+        const openai = resolveOpenAiConfig({});
+        const gemini = resolveGeminiTextConfig({});
+        const hasOpenAi = Boolean(openai.hasApiKey);
+        const hasGemini = Boolean(gemini.hasApiKey);
+        const provider = hasOpenAi ? 'openai' : hasGemini ? 'gemini' : null;
+        return {
+          hasApiKey: hasOpenAi || hasGemini,
+          hasOpenAi,
+          hasGemini,
+          provider,
+          model: hasOpenAi
+            ? String(openai.model || '')
+            : hasGemini
+              ? String(gemini.model || '')
+              : null,
+        };
+      }
 
       // Exchange Rates
       case 'pos:exchangeRates:getLatest':
@@ -1261,6 +1396,21 @@ function createRpcDispatcher({ services, db, sessions }) {
           throw createError(ERROR_CODES.INTERNAL_ERROR, 'BatchService not available');
         }
         return services.batches.reconcile(a[0] || null, a[1] || null);
+      case 'pos:inventory:getBatchHealth':
+        if (!services.batches) {
+          throw createError(ERROR_CODES.INTERNAL_ERROR, 'BatchService not available');
+        }
+        return services.batches.getBatchHealth(a[0] || null, a[1] || null);
+      case 'pos:inventory:repairBatchCoverage': {
+        if (!services.batches) {
+          throw createError(ERROR_CODES.INTERNAL_ERROR, 'BatchService not available');
+        }
+        const p = a[0] || {};
+        return services.batches.repairBatchCoverage({
+          warehouseId: p.warehouseId ?? null,
+          dryRun: p.dryRun !== false,
+        });
+      }
       case 'pos:inventory:runBatchCutoverSnapshot': {
         if (!services.batches) {
           throw createError(ERROR_CODES.INTERNAL_ERROR, 'BatchService not available');
@@ -1274,6 +1424,52 @@ function createRpcDispatcher({ services, db, sessions }) {
           force: !!p.force,
         });
       }
+
+      case 'pos:inventory:createRevision':
+        if (!services.inventoryRevisions) {
+          throw createError(ERROR_CODES.INTERNAL_ERROR, 'InventoryRevisionService not available');
+        }
+        return services.inventoryRevisions.createRevision(a[0] || {});
+      case 'pos:inventory:listRevisions':
+        if (!services.inventoryRevisions) {
+          throw createError(ERROR_CODES.INTERNAL_ERROR, 'InventoryRevisionService not available');
+        }
+        return services.inventoryRevisions.listRevisions(a[0] || {});
+      case 'pos:inventory:getRevision':
+        if (!services.inventoryRevisions) {
+          throw createError(ERROR_CODES.INTERNAL_ERROR, 'InventoryRevisionService not available');
+        }
+        return services.inventoryRevisions.getRevision(a[0], a[1] || {});
+      case 'pos:inventory:updateRevisionItemCount':
+        if (!services.inventoryRevisions) {
+          throw createError(ERROR_CODES.INTERNAL_ERROR, 'InventoryRevisionService not available');
+        }
+        return services.inventoryRevisions.updateItemCount(a[0] || {});
+      case 'pos:inventory:clearRevisionItemCount':
+        if (!services.inventoryRevisions) {
+          throw createError(ERROR_CODES.INTERNAL_ERROR, 'InventoryRevisionService not available');
+        }
+        return services.inventoryRevisions.clearItemCount(a[0] || {});
+      case 'pos:inventory:countRevisionByBarcode':
+        if (!services.inventoryRevisions) {
+          throw createError(ERROR_CODES.INTERNAL_ERROR, 'InventoryRevisionService not available');
+        }
+        return services.inventoryRevisions.countByBarcode(a[0] || {});
+      case 'pos:inventory:bulkSetRevisionItemCounts':
+        if (!services.inventoryRevisions) {
+          throw createError(ERROR_CODES.INTERNAL_ERROR, 'InventoryRevisionService not available');
+        }
+        return services.inventoryRevisions.bulkSetItemCounts(a[0] || {});
+      case 'pos:inventory:completeRevision':
+        if (!services.inventoryRevisions) {
+          throw createError(ERROR_CODES.INTERNAL_ERROR, 'InventoryRevisionService not available');
+        }
+        return services.inventoryRevisions.completeRevision(a[0] || {});
+      case 'pos:inventory:cancelRevision':
+        if (!services.inventoryRevisions) {
+          throw createError(ERROR_CODES.INTERNAL_ERROR, 'InventoryRevisionService not available');
+        }
+        return services.inventoryRevisions.cancelRevision(a[0] || {});
 
       // ======================================================================
       // Orders — helpers
@@ -1545,6 +1741,8 @@ function createRpcDispatcher({ services, db, sessions }) {
           days_60_plus: Number(s._60_plus || 0) || 0,
         }));
       }
+      case 'pos:reports:supplierPaymentsDue':
+        return services.reports.listSupplierPaymentsDue(a[0] || {});
       case 'pos:reports:vipCustomers':
         return services.reports.getVIPCustomers(a[0] || {});
       case 'pos:reports:loyaltyPointsSummary':

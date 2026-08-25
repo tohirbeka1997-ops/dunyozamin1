@@ -112,7 +112,16 @@ export function printHtml(title: string, htmlContent: string, pageSize: '58mm' |
             border-color: #999;
           }
           .return-receipt-thermal .text-gray-600 {
-            color: #666;
+            color: #000;
+          }
+          .return-receipt-thermal .text-gray-500 {
+            color: #000;
+          }
+          .return-receipt-thermal .text-muted-foreground {
+            color: #000;
+          }
+          .return-receipt-thermal {
+            font-weight: 700;
           }
           .return-receipt-thermal .text-yellow-800 {
             color: #854d0e;
@@ -534,6 +543,47 @@ export function openPrintWindowLabel(
       printWindow.print();
     }, 250);
   };
+}
+
+/**
+ * Print multi-label A4/A5 sheet layout (Barcode Studio tiling).
+ */
+export function openPrintWindowLabelSheet(
+  htmlContent: string,
+  opts: { paper: 'A4' | 'A5' | 'Roll' }
+): void {
+  const paper = opts.paper === 'A5' ? 'A5' : opts.paper === 'Roll' ? 'A4' : 'A4';
+  const printWindow = window.open('', '_blank', 'width=900,height=700');
+  if (!printWindow) {
+    throw new Error('Pop-up blocked. Please allow pop-ups for this site.');
+  }
+
+  printWindow.document.write(`
+    <!DOCTYPE html>
+    <html>
+      <head>
+        <title>Etiketkalar</title>
+        <meta charset="utf-8">
+        <style>
+          * { margin: 0; padding: 0; box-sizing: border-box; }
+          @media print {
+            @page { size: ${paper}; margin: 0; }
+            html, body {
+              margin: 0; padding: 0; background: #fff; color: #000;
+              -webkit-print-color-adjust: exact;
+              print-color-adjust: exact;
+            }
+          }
+          @media screen {
+            body { font-family: Arial, sans-serif; padding: 16px; background: #eef1ee; }
+          }
+        </style>
+      </head>
+      <body>${htmlContent}</body>
+    </html>
+  `);
+  printWindow.document.close();
+  printWindow.onload = () => setTimeout(() => printWindow.print(), 300);
 }
 
 /**

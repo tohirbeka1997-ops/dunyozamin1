@@ -212,6 +212,11 @@ export function parseMoneyFlexible(input: string, fractionDigits: number = 2): n
  * "500 so'm" -> 500
  * "" -> 0
  */
+/** Strip dot thousand separators and spaces before parsing integers (1.000.000 → 1000000). */
+export function parseIntegerDots(input: string): number {
+  return parseMoneyUZS(input);
+}
+
 export function parseMoneyUZS(input: string): number {
   if (!input || typeof input !== 'string') {
     return 0;

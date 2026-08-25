@@ -9,6 +9,7 @@ import {
   View,
 } from 'react-native';
 import { fetchPurchaseOrders } from '@/api/client';
+import { useRequireStaffAccess } from '@/hooks/useRequireStaffAccess';
 import { poStatusLabel, t } from '@/i18n';
 import type { PurchaseOrder } from '@/types/customers';
 
@@ -18,6 +19,7 @@ function formatMoney(n?: number | null): string {
 }
 
 export default function PurchasingScreen() {
+  const allowed = useRequireStaffAccess('purchasing');
   const router = useRouter();
   const [orders, setOrders] = useState<PurchaseOrder[]>([]);
   const [loading, setLoading] = useState(true);
@@ -38,10 +40,19 @@ export default function PurchasingScreen() {
 
   useFocusEffect(
     useCallback(() => {
+      if (!allowed) return;
       setLoading(true);
       void load();
-    }, [load]),
+    }, [allowed, load]),
   );
+
+  if (!allowed) {
+    return (
+      <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: '#f8fafc' }}>
+        <ActivityIndicator size="large" color="#166534" />
+      </View>
+    );
+  }
 
   return (
     <View style={styles.root}>

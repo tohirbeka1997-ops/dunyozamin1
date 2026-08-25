@@ -33,11 +33,14 @@ WORKDIR /build
 
 # faqat manifestlarni ko'chirib, cache layer qilish
 COPY package.json package-lock.json* ./
+COPY public-api/package.json public-api/package-lock.json* ./public-api/
 
 # Production'da kerak bo'lmagan devDependencies'sis + Electron'siz:
 #   - POSTINSTALL'ni o'chiramiz, chunki `electron-builder install-app-deps`
 #     bu serverda ishlamaydi (electron mavjud emas).
 #   - better-sqlite3 Linux x64 ABI uchun source'dan build bo'ladi.
+#   - public-api/lib (creditReminder, logger, smsGateway) pino va boshqa deps
+#     public-api/package.json dan keladi — root npm ci yetarli emas.
 ENV npm_config_build_from_source=true \
     npm_config_sqlite_debug=false \
     CI=1 \
@@ -48,6 +51,9 @@ RUN npm pkg delete scripts.postinstall \
 
 # better-sqlite3'ni aniq shu Node versiyasi uchun qaytadan kompilyatsiya qilish
 RUN npm rebuild better-sqlite3 --build-from-source
+
+# public-api/lib RPC orqali yuklanadi (creditReminder → logger → pino)
+RUN npm ci --omit=dev --no-audit --no-fund --ignore-scripts --prefix public-api --legacy-peer-deps
 
 
 # -----------------------------------------------------------------------------
@@ -70,6 +76,8 @@ WORKDIR /app
 # build stage'dan kompilyatsiya qilingan node_modules
 COPY --from=deps-builder --chown=pos:pos /build/node_modules ./node_modules
 COPY --from=deps-builder --chown=pos:pos /build/package.json  ./package.json
+COPY --from=deps-builder --chown=pos:pos /build/public-api/node_modules ./public-api/node_modules
+COPY --from=deps-builder --chown=pos:pos /build/public-api/package.json ./public-api/package.json
 
 # faqat server ishlashi uchun kerakli manba fayllar
 COPY --chown=pos:pos electron ./electron

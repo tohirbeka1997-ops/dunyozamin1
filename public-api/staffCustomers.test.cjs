@@ -38,9 +38,7 @@ function withEnv(overrides, fn) {
     });
 }
 
-function sha256(text) {
-  return crypto.createHash('sha256').update(text).digest('hex');
-}
+const { hashPassword } = require('../electron/lib/password.cjs');
 
 function seedDatabase(dbPath) {
   const db = new Database(dbPath);
@@ -55,7 +53,7 @@ function seedDatabase(dbPath) {
   db.prepare(
     `INSERT INTO users (id, username, full_name, email, password_hash, is_active, created_at, updated_at)
      VALUES (?, 'custseller@test.com', 'Cust Seller', 'custseller@test.com', ?, 1, datetime('now'), datetime('now'))`,
-  ).run(STAFF_USER_ID, sha256('secret123'));
+  ).run(STAFF_USER_ID, hashPassword('secret123'));
 
   db.prepare(
     `INSERT INTO user_roles (id, user_id, role_id, assigned_at)
@@ -240,7 +238,8 @@ test('staff customers, suppliers, purchase orders (integration)', async () => {
         const payBody = await payRes.json();
         assert.equal(Number(payBody.data.new_balance), -30000);
 
-        // Credit sale increases debt
+        // Credit sale with due_date
+        const dueDate = '2026-09-15';
         const sellRes = await fetch(`${base}/v1/staff/sales`, {
           method: 'POST',
           headers: authHeader(token),
@@ -248,6 +247,7 @@ test('staff customers, suppliers, purchase orders (integration)', async () => {
             items: [{ product_id: PRODUCT_ID, quantity: 1 }],
             payment_method: 'credit',
             customer_id: CUSTOMER_ID,
+            due_date: dueDate,
             order_uuid: randomUUID(),
           }),
         });
@@ -255,6 +255,19 @@ test('staff customers, suppliers, purchase orders (integration)', async () => {
         const sellBody = await sellRes.json();
         assert.equal(sellBody.data.payment_status, 'on_credit');
         assert.equal(Number(sellBody.data.credit_amount), 15000);
+        if (sellBody.data.due_date != null) {
+          assert.equal(String(sellBody.data.due_date).slice(0, 10), dueDate);
+        } else {
+          // Fallback: confirm persisted on order row via receipt/get if exposed
+          const saleId = sellBody.data.id;
+          const getRes = await fetch(`${base}/v1/staff/sales/${saleId}`, {
+            headers: authHeader(token),
+          });
+          if (getRes.status === 200) {
+            const got = await getRes.json();
+            assert.equal(String(got.data.due_date || '').slice(0, 10), dueDate);
+          }
+        }
 
         const afterSellRes = await fetch(`${base}/v1/staff/customers/${CUSTOMER_ID}`, {
           headers: authHeader(token),

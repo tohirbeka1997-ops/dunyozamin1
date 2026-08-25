@@ -6,6 +6,11 @@ import type { CompanySettings, OrderWithDetails, ReceiptTemplate } from '@/types
 import { formatMoneyUZS, formatNumberUZ } from '@/lib/format';
 import { formatReceiptDateTime } from '@/lib/datetime';
 import { formatQuantity } from '@/utils/quantity';
+import {
+  getReceiptDisplayQty,
+  getReceiptLineTotal,
+  shouldShowOnReceipt,
+} from '@/lib/receipts/receiptLineQty';
 
 interface ReceiptTemplateViewProps {
   template: ReceiptTemplate;
@@ -253,28 +258,14 @@ export default function ReceiptTemplateView({
               </pre>
               <pre className="whitespace-pre">{'-'.repeat(lineWidth)}</pre>
               {order.items
-                ?.filter((item: any) => {
-                  const remaining =
-                    (item.remaining_quantity ?? ((item.qty_sale ?? item.quantity) - (item.returned_quantity || 0))) ||
-                    (item.qty_sale ?? item.quantity) ||
-                    0;
-                  return remaining > 0;
-                })
+                ?.filter((item: any) => shouldShowOnReceipt(item))
                 .map((item: any, index) => {
                   const returned = item.returned_quantity || 0;
                   const unit = (item as any).sale_unit || item.product?.unit || item.unit;
                   const qtySale = (item as any).qty_sale ?? item.quantity;
-                  const remaining =
-                    (item.remaining_quantity ?? (qtySale - returned)) ||
-                    qtySale ||
-                    0;
-                  const baseLineTotal = Number(
-                    item.total ??
-                      item.line_total ??
-                      item.subtotal ??
-                      (Number(item.unit_price || 0) * Number(qtySale || 0))
-                  );
-                  const lineTotal = baseLineTotal * (remaining / Number(qtySale || 1));
+                  const remaining = getReceiptDisplayQty(item);
+                  const lineTotal = getReceiptLineTotal(item, remaining);
+                  const isReturnLine = Number(qtySale ?? 0) < 0;
                   const sku = item.product?.sku || '';
                   const nameLines = wrapText(String(item.product_name || ''), lineWidth);
                   const qtyLine = makeQtyPriceTotalLine(
@@ -286,8 +277,9 @@ export default function ReceiptTemplateView({
                   return (
                     <div key={item.id || index} style={{ marginBottom: 6 * lineSpacing }}>
                       {nameLines.map((line, idx) => (
-                        <pre key={`${item.id || index}-n-${idx}`} className="whitespace-pre font-medium">
+                        <pre key={`${item.id || index}-n-${idx}`} className={`whitespace-pre font-medium${isReturnLine ? ' text-red-600' : ''}`}>
                           {line}
+                          {isReturnLine && idx === nameLines.length - 1 ? ' (Qaytarish)' : ''}
                         </pre>
                       ))}
                       {returned > 0 && (

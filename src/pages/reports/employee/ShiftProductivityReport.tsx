@@ -15,7 +15,7 @@ import { Badge } from '@/components/ui/badge';
 import { ArrowLeft, Clock, TrendingUp, DollarSign, Users, Zap } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 import { handleIpcResponse, isElectron, requireElectron } from '@/utils/electron';
-import { todayYMD, formatDate } from '@/lib/datetime';
+import { todayYMD, ymdShiftMonths, formatDate } from '@/lib/datetime';
 import { formatMoneyUZS } from '@/lib/format';
 import { DualCurrencyAmount } from '@/components/common/DualCurrencyAmount';
 import { useReportAutoRefresh } from '@/hooks/useReportAutoRefresh';
@@ -62,9 +62,7 @@ export default function ShiftProductivityReport() {
   const [loading, setLoading] = useState(true);
   const [shiftRows, setShiftRows] = useState<ShiftProductivity[]>([]);
   const [summaryRows, setSummaryRows] = useState<ProductivitySummary[]>([]);
-  const [dateFrom, setDateFrom] = useState(
-    new Date(new Date().setMonth(new Date().getMonth() - 1)).toISOString().split('T')[0]
-  );
+  const [dateFrom, setDateFrom] = useState(ymdShiftMonths(todayYMD(), -1));
   const [dateTo, setDateTo] = useState(todayYMD());
   const [searchTerm, setSearchTerm] = useState('');
   const [viewMode, setViewMode] = useState<'summary' | 'shifts'>('summary');

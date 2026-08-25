@@ -11,6 +11,8 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
+import SearchableSupplierCombobox from '@/components/common/SearchableSupplierCombobox';
+import { useTranslation } from 'react-i18next';
 import {
   Table,
   TableBody,
@@ -71,6 +73,7 @@ const ALL_SUPPLIERS = 'ALL';
 export default function PurchaseVsSoldReport() {
   const navigate = useNavigate();
   const { toast } = useToast();
+  const { t } = useTranslation();
   const [loading, setLoading] = useState(true);
   const [dateFrom, setDateFrom] = useState(defaultDateFrom);
   const [dateTo, setDateTo] = useState(todayYMD());
@@ -265,19 +268,17 @@ export default function PurchaseVsSoldReport() {
           <div className="grid gap-3 md:grid-cols-[160px_160px_220px_1fr_220px]">
             <Input type="date" value={dateFrom} onChange={(e) => setDateFrom(e.target.value)} />
             <Input type="date" value={dateTo} onChange={(e) => setDateTo(e.target.value)} />
-            <Select value={supplierId} onValueChange={(value) => setSupplierId(value)}>
-              <SelectTrigger>
-                <SelectValue placeholder="Yetkazib beruvchi" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value={ALL_SUPPLIERS}>Barcha yetkazib beruvchilar</SelectItem>
-                {suppliers.map((s) => (
-                  <SelectItem key={s.id} value={s.id}>
-                    {s.name}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
+            <SearchableSupplierCombobox
+              value={supplierId}
+              onValueChange={setSupplierId}
+              suppliers={suppliers}
+              prefixOptions={[
+                {
+                  value: ALL_SUPPLIERS,
+                  label: t('combobox.all_suppliers', 'Barcha yetkazib beruvchilar'),
+                },
+              ]}
+            />
             <div className="relative">
               <Search className="pointer-events-none absolute left-3 top-2.5 h-4 w-4 text-muted-foreground" />
               <Input

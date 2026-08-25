@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
-import { useNavigate, useParams, Link } from 'react-router-dom';
+import { useNavigate, useParams, Link, Navigate } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
@@ -56,7 +56,7 @@ export default function QuoteDetail() {
   );
 
   const load = useCallback(async () => {
-    if (!id) return;
+    if (!id || id === 'new') return;
     setLoading(true);
     setQuote(null);
     try {
@@ -77,6 +77,10 @@ export default function QuoteDetail() {
   useEffect(() => {
     void load();
   }, [load]);
+
+  if (id === 'new') {
+    return <Navigate to="/quotes/new" replace />;
+  }
 
   const handleConvertToPosCart = () => {
     if (!quote) return;

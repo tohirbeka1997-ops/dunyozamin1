@@ -9,6 +9,8 @@ const {
 const { openTenantDatabase } = require('../../lib/staffDb.cjs');
 const { getPosBundle } = require('../../lib/staffPos.cjs');
 const { mapStaffServiceError } = require('../../lib/staffErrorMap.cjs');
+const { validate } = require('../../middleware/validate.cjs');
+const { staffSaleCreateBodySchema, staffSaleHoldBodySchema } = require('../../schemas/staff.schema.cjs');
 
 // Cash/card for full or partial payment; credit requires a real customer (not walk-in).
 const ALLOWED_PAYMENT_METHODS = new Set(['cash', 'card', 'credit']);
@@ -174,7 +176,7 @@ function mountStaffSalesRoutes() {
   });
 
   // POST /v1/staff/sales — complete a sale
-  router.post('/', (req, res) => {
+  router.post('/', validate({ body: staffSaleCreateBodySchema }), (req, res) => {
     try {
       const body = req.body || {};
       const rawItems = Array.isArray(body.items) ? body.items : [];
@@ -279,6 +281,9 @@ function mountStaffSalesRoutes() {
           : randomUUID(),
         sales_channel: 'staff_mobile',
         channel: 'staff_mobile',
+        ...(body.due_date != null && String(body.due_date).trim()
+          ? { due_date: String(body.due_date).trim().slice(0, 10) }
+          : {}),
         ...(prepaidToApply > 0 ? { prepaid_applied: prepaidToApply } : {}),
       };
 
@@ -325,6 +330,124 @@ function mountStaffSalesRoutes() {
         receipt,
         ...(prepaidToApply > 0 ? { meta: { prepaid_applied: prepaidToApply, cash_due: cashDue } } : {}),
       });
+    } catch (e) {
+      mapServiceError(e, res);
+    }
+  });
+
+  // POST /v1/staff/sales/hold — park cart for desktop cashier (no payment, no stock move)
+  router.post('/hold', validate({ body: staffSaleHoldBodySchema }), (req, res) => {
+    try {
+      const body = req.body || {};
+      const rawItems = Array.isArray(body.items) ? body.items : [];
+      if (rawItems.length === 0) {
+        res.status(400).json({ error: 'validation_error', message: 'items required' });
+        return;
+      }
+
+      const { db, bundle } = ctxForReq(req);
+
+      const customerId = body.customer_id != null && String(body.customer_id).trim()
+        ? String(body.customer_id).trim()
+        : null;
+
+      if (customerId) {
+        const customerExists = db.prepare('SELECT id FROM customers WHERE id = ?').get(customerId);
+        if (!customerExists) {
+          res.status(404).json({ error: 'not_found', message: 'Mijoz topilmadi' });
+          return;
+        }
+      }
+
+      const shiftId = body.shift_id != null && String(body.shift_id).trim()
+        ? String(body.shift_id).trim()
+        : null;
+
+      const sellerLabel =
+        String(req.staffUser.full_name || req.staffUser.username || req.staffUser.id || '').trim();
+      const deviceId = body.device_id != null ? String(body.device_id).trim() : '';
+      const noteParts = [
+        body.notes != null ? String(body.notes).trim() : '',
+        sellerLabel ? `Mobil sotuvchi: ${sellerLabel}` : '',
+        deviceId ? `Qurilma: ${deviceId}` : '',
+      ].filter(Boolean);
+      const notes = noteParts.join(' | ').slice(0, 500) || null;
+
+      const draft = bundle.sales.createDraftOrder({
+        user_id: req.staffUser.id,
+        cashier_id: req.staffUser.id,
+        customer_id: customerId,
+        shift_id: shiftId,
+        notes,
+        order_uuid: body.order_uuid != null && String(body.order_uuid).trim()
+          ? String(body.order_uuid).trim()
+          : randomUUID(),
+        sales_channel: 'staff_mobile',
+        channel: 'staff_mobile',
+        device_id: deviceId || undefined,
+      });
+
+      let order = draft;
+      for (const raw of rawItems) {
+        const productId = raw?.product_id != null ? String(raw.product_id) : '';
+        const quantity = Number(raw?.quantity);
+        if (!productId || !Number.isFinite(quantity) || quantity <= 0) {
+          res
+            .status(400)
+            .json({ error: 'validation_error', message: 'each item needs product_id and quantity > 0' });
+          return;
+        }
+        const discountAmount = Number(raw?.discount_amount || 0) || 0;
+        order = bundle.sales.addItem(order.id, {
+          product_id: productId,
+          quantity,
+          discount_amount: discountAmount > 0 ? discountAmount : 0,
+        });
+      }
+
+      res.status(201).json({ data: order });
+    } catch (e) {
+      mapServiceError(e, res);
+    }
+  });
+
+  // GET /v1/staff/sales/credit-open — open nasiya orders (for due-date management)
+  router.get('/credit-open', (req, res) => {
+    try {
+      const { db } = ctxForReq(req);
+      const { listOpenCreditOrders } = require('../../lib/creditReminder.cjs');
+      const limit = req.query.limit != null ? Number(req.query.limit) : 100;
+      const customerId =
+        req.query.customer_id != null ? String(req.query.customer_id).trim() : undefined;
+      const data = listOpenCreditOrders(db, {
+        limit,
+        customerId: customerId || undefined,
+        missingDueDateOnly:
+          req.query.missing_due_date === '1' || req.query.missing_due_date === 'true',
+      });
+      res.json({ data });
+    } catch (e) {
+      mapServiceError(e, res);
+    }
+  });
+
+  // PATCH /v1/staff/sales/:id/due-date — set qarz qaytarish sanasi
+  router.patch('/:id/due-date', express.json({ limit: '8kb' }), (req, res) => {
+    try {
+      const { db } = ctxForReq(req);
+      const { updateOrderDueDate } = require('../../lib/creditReminder.cjs');
+      const dueDate = req.body?.due_date != null ? String(req.body.due_date).trim() : '';
+      if (!dueDate) {
+        res.status(400).json({ error: 'validation_error', message: 'due_date required' });
+        return;
+      }
+      const out = updateOrderDueDate(db, req.params.id, dueDate);
+      if (!out.ok) {
+        const status = out.error === 'order_not_found' ? 404 : 400;
+        res.status(status).json({ error: out.error, message: out.error });
+        return;
+      }
+      res.json({ data: out });
     } catch (e) {
       mapServiceError(e, res);
     }

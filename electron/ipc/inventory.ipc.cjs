@@ -16,7 +16,7 @@ if (typeof wrapHandler !== 'function') {
  * Channels: pos:inventory:*
  */
 function registerInventoryHandlers(services) {
-  const { inventory, batches } = services;
+  const { inventory, batches, inventoryRevisions } = services;
 
   // Remove fallback handlers before registering real ones
   ipcMain.removeHandler('pos:inventory:getBalances');
@@ -102,6 +102,22 @@ function registerInventoryHandlers(services) {
     return batches.reconcile(productId || null, warehouseId || null);
   }));
 
+  ipcMain.removeHandler('pos:inventory:getBatchHealth');
+  ipcMain.handle('pos:inventory:getBatchHealth', wrapHandler(async (_event, productId, warehouseId) => {
+    if (!batches) throw new Error('BatchService not available');
+    return batches.getBatchHealth(productId || null, warehouseId || null);
+  }));
+
+  ipcMain.removeHandler('pos:inventory:repairBatchCoverage');
+  ipcMain.handle('pos:inventory:repairBatchCoverage', wrapHandler(async (_event, payload) => {
+    if (!batches) throw new Error('BatchService not available');
+    const p = payload || {};
+    return batches.repairBatchCoverage({
+      warehouseId: p.warehouseId ?? null,
+      dryRun: p.dryRun !== false,
+    });
+  }));
+
   ipcMain.removeHandler('pos:inventory:runBatchCutoverSnapshot');
   ipcMain.handle('pos:inventory:runBatchCutoverSnapshot', wrapHandler(async (_event, payload) => {
     if (!batches) throw new Error('BatchService not available');
@@ -113,6 +129,57 @@ function registerInventoryHandlers(services) {
       updatedBy: p.updatedBy || null,
       force: !!p.force,
     });
+  }));
+
+  // Inventory revision (ombor reviziyasi)
+  const requireRevisions = () => {
+    if (!inventoryRevisions) throw new Error('InventoryRevisionService not available');
+    return inventoryRevisions;
+  };
+
+  ipcMain.removeHandler('pos:inventory:createRevision');
+  ipcMain.handle('pos:inventory:createRevision', wrapHandler(async (_event, payload) => {
+    return requireRevisions().createRevision(payload || {});
+  }));
+
+  ipcMain.removeHandler('pos:inventory:listRevisions');
+  ipcMain.handle('pos:inventory:listRevisions', wrapHandler(async (_event, filters) => {
+    return requireRevisions().listRevisions(filters || {});
+  }));
+
+  ipcMain.removeHandler('pos:inventory:getRevision');
+  ipcMain.handle('pos:inventory:getRevision', wrapHandler(async (_event, revisionId, opts) => {
+    return requireRevisions().getRevision(revisionId, opts || {});
+  }));
+
+  ipcMain.removeHandler('pos:inventory:updateRevisionItemCount');
+  ipcMain.handle('pos:inventory:updateRevisionItemCount', wrapHandler(async (_event, payload) => {
+    return requireRevisions().updateItemCount(payload || {});
+  }));
+
+  ipcMain.removeHandler('pos:inventory:clearRevisionItemCount');
+  ipcMain.handle('pos:inventory:clearRevisionItemCount', wrapHandler(async (_event, payload) => {
+    return requireRevisions().clearItemCount(payload || {});
+  }));
+
+  ipcMain.removeHandler('pos:inventory:countRevisionByBarcode');
+  ipcMain.handle('pos:inventory:countRevisionByBarcode', wrapHandler(async (_event, payload) => {
+    return requireRevisions().countByBarcode(payload || {});
+  }));
+
+  ipcMain.removeHandler('pos:inventory:bulkSetRevisionItemCounts');
+  ipcMain.handle('pos:inventory:bulkSetRevisionItemCounts', wrapHandler(async (_event, payload) => {
+    return requireRevisions().bulkSetItemCounts(payload || {});
+  }));
+
+  ipcMain.removeHandler('pos:inventory:completeRevision');
+  ipcMain.handle('pos:inventory:completeRevision', wrapHandler(async (_event, payload) => {
+    return requireRevisions().completeRevision(payload || {});
+  }));
+
+  ipcMain.removeHandler('pos:inventory:cancelRevision');
+  ipcMain.handle('pos:inventory:cancelRevision', wrapHandler(async (_event, payload) => {
+    return requireRevisions().cancelRevision(payload || {});
   }));
   
   console.log('✅ Inventory handlers registered (real DB)');

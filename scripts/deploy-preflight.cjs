@@ -76,4 +76,6 @@ for (const r of results) {
   console.log(`  ${r.status.padEnd(5)} ${r.name}${r.ms ? ` (${(r.ms / 1000).toFixed(1)}s)` : ''}`);
 }
 console.log('\nPreflight PASSED. Keyingi: deploy checklist va server health.\n');
+console.log('Serverda tavsiya: node scripts/deploy-db-unity-check.cjs');
+console.log('  (bind-mount, yagona :3333 egasi, /health version)\n');
 process.exit(0);

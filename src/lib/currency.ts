@@ -316,17 +316,76 @@ export function convertAtRate(
   return value;
 }
 
-/** Sum supplier balances split by settlement currency (do not add across currencies). */
-/** Inventory received value (always stored in UZS on PO line items). */
+/** Inventory received value (always stored in UZS on PO line items — may include landed cost). */
 export function calculatePoReceivedAmountUzs(
-  items: Array<{ received_qty?: number | null; unit_cost?: number | null }> | null | undefined
+  items: Array<{
+    received_qty?: number | null;
+    unit_cost?: number | null;
+    landed_unit_cost?: number | null;
+  }> | null | undefined
 ): number {
   if (!items?.length) return 0;
   return items.reduce((sum, item) => {
     const rq = Number(item.received_qty) || 0;
-    const uc = Number(item.unit_cost) || 0;
+    // Prefer explicit landed cost when present; else unit_cost (often already landed after expenses).
+    const uc = Number(item.landed_unit_cost ?? item.unit_cost) || 0;
     return sum + rq * uc;
   }, 0);
+}
+
+/**
+ * Received goods valued in the PO invoice currency (not warehouse UZS).
+ * USD lines use unit_cost_usd; UZS lines prorate line_total by received/ordered qty.
+ */
+export function calculatePoReceivedDocAmount(
+  po: { currency?: string | null },
+  items: Array<{
+    ordered_qty?: number | null;
+    received_qty?: number | null;
+    unit_cost?: number | null;
+    unit_cost_usd?: number | null;
+    line_total?: number | null;
+    line_total_usd?: number | null;
+  }> | null | undefined
+): number {
+  if (!items?.length) return 0;
+  const cur = getPoLedgerCurrency(po);
+  return items.reduce((sum, item) => {
+    const rq = Number(item.received_qty) || 0;
+    if (rq <= 0) return sum;
+    const oq = Number(item.ordered_qty) || 0;
+    if (cur === 'USD') {
+      const unitUsd = Number(item.unit_cost_usd);
+      if (Number.isFinite(unitUsd) && Math.abs(unitUsd) > 0) return sum + rq * unitUsd;
+      const ltUsd = Number(item.line_total_usd ?? NaN);
+      if (Number.isFinite(ltUsd) && oq > 0) return sum + ltUsd * (rq / oq);
+      return sum;
+    }
+    const lt = Number(item.line_total) || 0;
+    if (oq > 0 && Math.abs(lt) > 0) return sum + lt * (rq / oq);
+    return sum + rq * (Number(item.unit_cost) || 0);
+  }, 0);
+}
+
+/** Signed remaining (negative = overpayment / credit). Prefer backend remaining_* when present. */
+export function getPoRemainingAmountSigned(po: {
+  currency?: string | null;
+  total_amount?: number | null;
+  total_usd?: number | null;
+  paid_amount?: number | null;
+  paid_amount_usd?: number | null;
+  remaining_amount?: number | null;
+  remaining_amount_usd?: number | null;
+}): number {
+  const cur = getPoLedgerCurrency(po);
+  if (cur === 'USD') {
+    const rem = po?.remaining_amount_usd ?? po?.remaining_amount;
+    if (rem != null && Number.isFinite(Number(rem))) return Number(rem);
+    return getPoLedgerAmount(po) - getPoPaidAmount(po);
+  }
+  const rem = po?.remaining_amount;
+  if (rem != null && Number.isFinite(Number(rem))) return Number(rem);
+  return getPoLedgerAmount(po) - getPoPaidAmount(po);
 }
 
 export type PoAggregateTotals = {
@@ -335,9 +394,18 @@ export type PoAggregateTotals = {
   orderedUsd: number;
   paidUzs: number;
   paidUsd: number;
+  /** Warehouse inventory value in UZS (all POs; may include landed costs). */
   receivedUzs: number;
+  /** Invoice-currency received (UZS POs only). */
+  receivedDocUzs: number;
+  /** Invoice-currency received (USD POs only). */
+  receivedDocUsd: number;
+  /** Amount still owed (invoice currency; never negative). */
   debtUzs: number;
   debtUsd: number;
+  /** Overpayment credit (absolute values). */
+  creditUzs: number;
+  creditUsd: number;
 };
 
 /** Sum PO metrics split by invoice currency (do not mix UZS + USD). */
@@ -345,7 +413,19 @@ export function aggregatePurchaseOrders(
   orders: Array<
     Parameters<typeof getPoLedgerAmount>[0] & {
       status?: string | null;
-      items?: Array<{ received_qty?: number | null; unit_cost?: number | null }> | null;
+      paid_amount?: number | null;
+      paid_amount_usd?: number | null;
+      remaining_amount?: number | null;
+      remaining_amount_usd?: number | null;
+      items?: Array<{
+        ordered_qty?: number | null;
+        received_qty?: number | null;
+        unit_cost?: number | null;
+        unit_cost_usd?: number | null;
+        line_total?: number | null;
+        line_total_usd?: number | null;
+        landed_unit_cost?: number | null;
+      }> | null;
     }
   >
 ): PoAggregateTotals {
@@ -357,25 +437,35 @@ export function aggregatePurchaseOrders(
   let paidUzs = 0;
   let paidUsd = 0;
   let receivedUzs = 0;
+  let receivedDocUzs = 0;
+  let receivedDocUsd = 0;
   let debtUzs = 0;
   let debtUsd = 0;
+  let creditUzs = 0;
+  let creditUsd = 0;
 
   for (const po of active) {
     const cur = getPoLedgerCurrency(po);
     const ordered = getPoLedgerAmount(po);
     const paid = getPoPaidAmount(po);
-    const received = calculatePoReceivedAmountUzs(po.items);
+    const receivedWh = calculatePoReceivedAmountUzs(po.items);
+    const receivedDoc = calculatePoReceivedDocAmount(po, po.items);
+    const remaining = getPoRemainingAmountSigned(po);
 
     if (cur === 'USD') {
       orderedUsd += ordered;
       paidUsd += paid;
-      debtUsd += Math.max(0, getPoRemainingAmount(po));
+      receivedDocUsd += receivedDoc;
+      if (remaining > 0) debtUsd += remaining;
+      else if (remaining < 0) creditUsd += Math.abs(remaining);
     } else {
       orderedUzs += ordered;
       paidUzs += paid;
-      debtUzs += Math.max(0, received - paid);
+      receivedDocUzs += receivedDoc;
+      if (remaining > 0) debtUzs += remaining;
+      else if (remaining < 0) creditUzs += Math.abs(remaining);
     }
-    receivedUzs += received;
+    receivedUzs += receivedWh;
   }
 
   return {
@@ -385,8 +475,12 @@ export function aggregatePurchaseOrders(
     paidUzs,
     paidUsd,
     receivedUzs,
+    receivedDocUzs,
+    receivedDocUsd,
     debtUzs,
     debtUsd,
+    creditUzs,
+    creditUsd,
   };
 }
 

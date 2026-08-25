@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
@@ -22,7 +22,7 @@ import { getDailySalesReportSQL, getPriceTiers, getProfiles, getSetting, updateS
 import type { OrderWithDetails, Profile, SalesReturnWithDetails } from '@/types/database';
 type PriceTier = { id: number; name: string; code?: string };
 type Warehouse = { id: string; name: string; is_default?: number | boolean; is_active?: number | boolean };
-import { FileDown, ArrowLeft } from 'lucide-react';
+import { FileDown, ArrowLeft, AlertTriangle } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 import { useNavigate } from 'react-router-dom';
 import { formatMoneyUZS } from '@/lib/format';
@@ -30,12 +30,16 @@ import { aggregateSalesOrders, formatOrderMoney, getOrderSaleCurrency } from '@/
 import { DualCurrencyAmount } from '@/components/common/DualCurrencyAmount';
 import { exportDailySalesToExcel, exportDailySalesToPDF } from '@/lib/export';
 import { formatOrderDateTime, todayYMD } from '@/lib/datetime';
+import { calculateOrderProfit } from '@/lib/reportProfit';
 import { useReportAutoRefresh } from '@/hooks/useReportAutoRefresh';
 import { useSessionSearchParams } from '@/hooks/useSessionSearchParams';
+import SearchableCombobox from '@/components/common/SearchableCombobox';
+import { useTranslation } from 'react-i18next';
 
 export default function DailySalesReport() {
   const navigate = useNavigate();
   const { toast } = useToast();
+  const { t } = useTranslation();
   const { searchParams, updateParams } = useSessionSearchParams({
     storageKey: 'report.daily-sales.filters.query',
     trackedKeys: ['dateFrom', 'dateTo', 'cashier', 'payment', 'status', 'tier'],
@@ -52,11 +56,36 @@ export default function DailySalesReport() {
   const [isExporting, setIsExporting] = useState(false);
   const [totalReturns, setTotalReturns] = useState(0);
   const [returnsProfitImpact, setReturnsProfitImpact] = useState(0);
+  const [netProfitUzsFromApi, setNetProfitUzsFromApi] = useState(0);
   const [salesReturns, setSalesReturns] = useState<SalesReturnWithDetails[]>([]);
   const [priceTiers, setPriceTiers] = useState<PriceTier[]>([]);
   const [warnings, setWarnings] = useState<any>(null);
   const [warehouses, setWarehouses] = useState<Warehouse[]>([]);
   const [warehouseSelection, setWarehouseSelection] = useState<string>('AUTO');
+
+  const warehouseOptions = useMemo(
+    () => [
+      { value: 'AUTO', label: 'Auto (Default ombor)' },
+      { value: 'ALL', label: t('combobox.all_warehouses', 'Barcha omborlar') },
+      ...warehouses.map((wh) => ({
+        value: wh.id,
+        label: `${wh.name}${wh.is_default ? ' (Default)' : ''}`,
+      })),
+    ],
+    [warehouses, t]
+  );
+
+  const cashierOptions = useMemo(
+    () => [
+      { value: 'all', label: t('combobox.all_cashiers', 'Barcha kassirlar') },
+      ...cashiers.map((cashier) => ({
+        value: cashier.id,
+        label: cashier.username || cashier.full_name || cashier.email || cashier.id,
+        keywords: [cashier.full_name, cashier.email].filter(Boolean).join(' '),
+      })),
+    ],
+    [cashiers, t]
+  );
 
   useReportAutoRefresh(loadData);
 
@@ -96,6 +125,12 @@ export default function DailySalesReport() {
       setSalesReturns((report?.returns || []) as any);
       setTotalReturns(Number(report?.summary?.total_returns || 0) || 0);
       setReturnsProfitImpact(Number(report?.summary?.returns_profit_impact || 0) || 0);
+      setNetProfitUzsFromApi(
+        Number(
+          report?.summary?.net_profit ??
+            (Number(report?.summary?.total_profit || 0) - Number(report?.summary?.returns_profit_impact || 0)),
+        ) || 0,
+      );
       setCashiers(profilesData);
       setPriceTiers(tiers || []);
       setWarnings(report?.warnings || null);
@@ -148,17 +183,7 @@ export default function DailySalesReport() {
     }
   };
 
-  const calculateProfit = (order: OrderWithDetails) => {
-    const explicit = (order as any).profit;
-    if (explicit != null) return Number(explicit) || 0;
-    const items = order.items || [];
-    const totalCost = items.reduce((sum, item) => {
-      const qty = Number((item as any).quantity || 0);
-      const unitCost = Number((item as any).cost_price ?? 0) || 0;
-      return sum + unitCost * qty;
-    }, 0);
-    return Number(order.total_amount) - totalCost;
-  };
+  const calculateProfit = (order: OrderWithDetails) => calculateOrderProfit(order as any);
 
   const getPaymentType = (order: OrderWithDetails) => {
     const explicit = (order as any).payment_method;
@@ -204,7 +229,7 @@ export default function DailySalesReport() {
       { uzs: 0, usd: 0 }
     );
 
-  const netProfitUzs = profitByCurrency.uzs - returnsProfitImpact;
+  const netProfitUzs = netProfitUzsFromApi;
   const netProfitUsd = profitByCurrency.usd;
   const avgUzs =
     salesAgg.countUzs > 0 ? salesAgg.totalUzs / salesAgg.countUzs : 0;
@@ -305,6 +330,18 @@ export default function DailySalesReport() {
           </Button>
         </div>
       ) : null}
+      {warnings?.cogs_anomaly ? (
+        <div className="rounded-md border border-amber-500/40 bg-amber-500/10 px-4 py-2 text-sm text-amber-900 dark:text-amber-100">
+          <span className="inline-flex items-center gap-2 font-medium">
+            <AlertTriangle className="h-4 w-4 shrink-0" />
+            Tannarx anomaliyasi: {Number(warnings.cogs_anomaly_count || 0)} ta sotuv
+          </span>
+          <p className="mt-1 text-muted-foreground">
+            {(warnings as any).cogs_anomaly_hint ||
+              'Daromaddan ancha katta COGS — ko‘pincha USD maydoniga UZS kiritib kursga ko‘paytirilgan. order_items.cost_price / partiya unit_cost ni tekshiring.'}
+          </p>
+        </div>
+      ) : null}
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-4">
           <Button variant="ghost" size="icon" onClick={() => navigate('/reports/sales')}>
@@ -353,39 +390,53 @@ export default function DailySalesReport() {
         </div>
       </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+      <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-5 gap-4">
         <Card>
           <CardHeader className="pb-3">
             <CardTitle className="text-sm font-medium text-muted-foreground">
-              Jami sotuv
+              Jami savdo (Gross)
             </CardTitle>
           </CardHeader>
           <CardContent>
             <div className="text-2xl font-bold">
               <DualCurrencyAmount uzs={salesAgg.totalUzs} usd={salesAgg.totalUsd} />
             </div>
+            <p className="mt-1 text-xs text-muted-foreground">Qaytarishdan oldingi</p>
           </CardContent>
         </Card>
         <Card>
           <CardHeader className="pb-3">
             <CardTitle className="text-sm font-medium text-muted-foreground">
-              Jami foyda
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="text-2xl font-bold text-success">
-              <DualCurrencyAmount uzs={netProfitUzs} usd={netProfitUsd} />
-            </div>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardHeader className="pb-3">
-            <CardTitle className="text-sm font-medium text-muted-foreground">
-              Qaytarilganlar
+              Qaytarilgan summa
             </CardTitle>
           </CardHeader>
           <CardContent>
             <div className="text-2xl font-bold text-destructive">{formatMoneyUZS(totalReturns)}</div>
+          </CardContent>
+        </Card>
+        <Card>
+          <CardHeader className="pb-3">
+            <CardTitle className="text-sm font-medium text-muted-foreground">
+              Sof savdo
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="text-2xl font-bold">
+              {formatMoneyUZS(Math.max(0, salesAgg.totalUzs - totalReturns))}
+            </div>
+            <p className="mt-1 text-xs text-muted-foreground">Net tushum (yalpi − qaytarish)</p>
+          </CardContent>
+        </Card>
+        <Card>
+          <CardHeader className="pb-3">
+            <CardTitle className="text-sm font-medium text-muted-foreground">
+              Sof foyda
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className={`text-2xl font-bold ${netProfitUzs >= 0 ? 'text-success' : 'text-destructive'}`}>
+              <DualCurrencyAmount uzs={netProfitUzs} usd={netProfitUsd} />
+            </div>
           </CardContent>
         </Card>
         <Card>
@@ -423,37 +474,25 @@ export default function DailySalesReport() {
             </div>
             <div>
               <label className="text-sm text-muted-foreground">Ombor</label>
-              <Select value={warehouseSelection} onValueChange={handleWarehouseChange}>
-                <SelectTrigger>
-              <SelectValue placeholder="Auto (Default ombor)" />
-                </SelectTrigger>
-                <SelectContent>
-                <SelectItem value="AUTO">Auto (Default ombor)</SelectItem>
-                  <SelectItem value="ALL">Barcha omborlar</SelectItem>
-                  {warehouses.map((wh) => (
-                    <SelectItem key={wh.id} value={wh.id}>
-                      {wh.name}
-                      {wh.is_default ? ' (Default)' : ''}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+              <SearchableCombobox
+                value={warehouseSelection}
+                onValueChange={handleWarehouseChange}
+                options={warehouseOptions}
+                placeholder="Auto (Default ombor)"
+                searchPlaceholder={t('combobox.search_warehouse', "Ombor nomi bo'yicha qidirish...")}
+                emptyMessage={t('combobox.no_warehouse', 'Ombor topilmadi')}
+              />
             </div>
             <div>
               <label className="text-sm text-muted-foreground">Kassir</label>
-              <Select value={cashierFilter} onValueChange={(value) => updateParams({ cashier: value })}>
-                <SelectTrigger>
-                  <SelectValue placeholder="Barcha kassirlar" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="all">Barcha kassirlar</SelectItem>
-                  {cashiers.map((cashier) => (
-                    <SelectItem key={cashier.id} value={cashier.id}>
-                      {cashier.username}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+              <SearchableCombobox
+                value={cashierFilter}
+                onValueChange={(value) => updateParams({ cashier: value })}
+                options={cashierOptions}
+                placeholder={t('combobox.all_cashiers', 'Barcha kassirlar')}
+                searchPlaceholder={t('combobox.search_employee', "Nom yoki email bo'yicha qidirish...")}
+                emptyMessage={t('combobox.no_employee', 'Xodim topilmadi')}
+              />
             </div>
             <div>
               <label className="text-sm text-muted-foreground">To'lov turi</label>
@@ -520,16 +559,27 @@ export default function DailySalesReport() {
                   <TableHead>Kassir</TableHead>
                   <TableHead>To'lov turi</TableHead>
                   <TableHead className="text-right">Jami sotuv</TableHead>
-                  <TableHead className="text-right">Foyda</TableHead>
+                  <TableHead className="text-right">Foyda (UZS)</TableHead>
                   <TableHead>Holat</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
                 {orders.map((order) => {
                   const profit = calculateProfit(order);
+                  const cogsAnomaly = !!(order as any).cogs_anomaly;
                   return (
-                    <TableRow key={order.id}>
-                      <TableCell className="font-medium">{order.order_number}</TableCell>
+                    <TableRow key={order.id} className={cogsAnomaly ? 'bg-amber-500/5' : undefined}>
+                      <TableCell className="font-medium">
+                        <span className="inline-flex items-center gap-1.5">
+                          {order.order_number}
+                          {cogsAnomaly ? (
+                            <AlertTriangle
+                              className="h-3.5 w-3.5 text-amber-600"
+                              title="Tannarx anomaliyasi (COGS >> daromad)"
+                            />
+                          ) : null}
+                        </span>
+                      </TableCell>
                       <TableCell>
                         {formatOrderDateTime(order.created_at)}
                       </TableCell>
@@ -542,7 +592,8 @@ export default function DailySalesReport() {
                         {formatOrderMoney(order, order.total_amount)}
                       </TableCell>
                       <TableCell className={`text-right ${profit >= 0 ? 'text-success' : 'text-destructive'}`}>
-                        {formatOrderMoney(order, profit)}
+                        {/* Backend profit is always UZS (revenue×fx − COGS) */}
+                        {formatMoneyUZS(profit)}
                       </TableCell>
                       <TableCell>{getStatusBadge(order.status)}</TableCell>
                     </TableRow>

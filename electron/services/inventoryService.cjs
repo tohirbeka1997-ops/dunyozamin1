@@ -10,6 +10,8 @@ class InventoryService {
   constructor(db, batchService = null) {
     this.db = db;
     this.batchService = batchService;
+    /** @type {null | { findOpenRevision?: (warehouseId: string) => any }} */
+    this.inventoryRevisions = null;
   }
 
   /**
@@ -35,6 +37,51 @@ class InventoryService {
     } catch (_e) {
       return false;
     }
+  }
+
+  _isTruthySetting(key) {
+    try {
+      const row = this.db.prepare('SELECT value FROM settings WHERE key = ?').get(key);
+      const v = String(row?.value ?? '').trim().toLowerCase();
+      return v === '1' || v === 'true' || v === 'yes';
+    } catch {
+      return false;
+    }
+  }
+
+  _isFifoValuationEnabled() {
+    if (!this._hasTable('inventory_batches')) return false;
+    if (this.batchService && typeof this.batchService.isBatchModeEnabled === 'function') {
+      return !!this.batchService.isBatchModeEnabled();
+    }
+    return (
+      this._isTruthySetting('inventory.batch_mode_enabled') ||
+      this._isTruthySetting('inventory.fifo_enabled') ||
+      this._isTruthySetting('batch_mode_enabled')
+    );
+  }
+
+  _batchRemainingSnapshot(productId, warehouseId = null) {
+    if (!this._hasTable('inventory_batches')) return { qty: 0, value: 0 };
+    const cols = new Set(
+      (this.db.prepare(`PRAGMA table_info(inventory_batches)`).all() || []).map((c) => c.name)
+    );
+    const costExpr = cols.has('cost_price_uzs')
+      ? 'COALESCE(cost_price_uzs, unit_cost, 0)'
+      : 'COALESCE(unit_cost, 0)';
+    const sql = warehouseId
+      ? `SELECT COALESCE(SUM(remaining_qty), 0) AS q, COALESCE(SUM(remaining_qty * ${costExpr}), 0) AS v
+         FROM inventory_batches WHERE product_id = ? AND warehouse_id = ?`
+      : `SELECT COALESCE(SUM(remaining_qty), 0) AS q, COALESCE(SUM(remaining_qty * ${costExpr}), 0) AS v
+         FROM inventory_batches WHERE product_id = ?`;
+    const row = warehouseId
+      ? this.db.prepare(sql).get(productId, warehouseId)
+      : this.db.prepare(sql).get(productId);
+    return { qty: Number(row?.q || 0) || 0, value: Number(row?.v || 0) || 0 };
+  }
+
+  _batchRemainingValue(productId, warehouseId = null) {
+    return this._batchRemainingSnapshot(productId, warehouseId).value;
   }
 
   _ymd(date) {
@@ -139,56 +186,60 @@ class InventoryService {
    * Get stock moves (history) with filters
    */
   getMoves(filters = {}) {
+    if (!this._hasTable('inventory_movements')) {
+      return [];
+    }
+
     let query = `
       SELECT 
-        sm.id,
-        sm.move_number AS movement_number,
-        sm.product_id,
-        sm.move_type AS movement_type,
-        sm.quantity,
-        sm.before_quantity,
-        sm.after_quantity,
-        sm.reference_type,
-        sm.reference_id,
-        sm.reason,
-        sm.notes,
-        sm.created_by,
-        sm.created_at,
+        im.id,
+        im.movement_number AS movement_number,
+        im.product_id,
+        im.movement_type AS movement_type,
+        im.quantity,
+        im.before_quantity,
+        im.after_quantity,
+        im.reference_type,
+        im.reference_id,
+        im.reason,
+        im.notes,
+        im.created_by,
+        im.created_at,
         json_object('id', p.id, 'name', p.name, 'sku', p.sku) as product,
         json_object('id', u.id, 'username', u.username, 'full_name', u.full_name) as user,
         w.name as warehouse_name
-      FROM stock_moves sm
-      INNER JOIN products p ON sm.product_id = p.id
-      INNER JOIN warehouses w ON sm.warehouse_id = w.id
-      LEFT JOIN users u ON sm.created_by = u.id
+      FROM inventory_movements im
+      INNER JOIN products p ON im.product_id = p.id
+      LEFT JOIN warehouses w ON im.warehouse_id = w.id
+      LEFT JOIN users u ON im.created_by = u.id
       WHERE 1=1
     `;
     const params = [];
 
     if (filters.product_id) {
-      query += ' AND sm.product_id = ?';
+      query += ' AND im.product_id = ?';
       params.push(filters.product_id);
     }
 
     if (filters.warehouse_id) {
-      query += ' AND sm.warehouse_id = ?';
+      query += ' AND im.warehouse_id = ?';
       params.push(filters.warehouse_id);
     }
 
     if (filters.move_type) {
-      query += ' AND sm.move_type = ?';
+      query += ' AND im.movement_type = ?';
       params.push(filters.move_type);
     }
 
     if (filters.reference_type && filters.reference_id) {
-      query += ' AND sm.reference_type = ? AND sm.reference_id = ?';
+      query += ' AND im.reference_type = ? AND im.reference_id = ?';
       params.push(filters.reference_type, filters.reference_id);
     }
 
     if (filters.date_from) {
       const d = this._ymd(filters.date_from);
       if (d) {
-        query += ` AND ${this._tzDateExpr('sm.created_at')} >= date(?)`;
+        query += ` AND ${this._tzDateExpr('im.created_at')} >= date(?)`;
         params.push(d);
       }
     }
@@ -196,12 +247,12 @@ class InventoryService {
     if (filters.date_to) {
       const d = this._ymd(filters.date_to);
       if (d) {
-        query += ` AND ${this._tzDateExpr('sm.created_at')} <= date(?)`;
+        query += ` AND ${this._tzDateExpr('im.created_at')} <= date(?)`;
         params.push(d);
       }
     }
 
-    query += ' ORDER BY sm.created_at DESC';
+    query += ' ORDER BY im.created_at DESC';
 
     if (filters.limit) {
       query += ' LIMIT ?';
@@ -236,6 +287,19 @@ class InventoryService {
 
     if (!adjustmentData.reason || !adjustmentData.reason.trim()) {
       throw createError(ERROR_CODES.VALIDATION_ERROR, 'Adjustment reason is required');
+    }
+
+    // Soft-lock: block manual adjustments while a warehouse revision is open.
+    // Revision complete passes allow_during_open_revision: true.
+    // Sales/purchases/returns do not go through adjustStock and are not blocked.
+    if (!adjustmentData.allow_during_open_revision && this.inventoryRevisions?.findOpenRevision) {
+      const open = this.inventoryRevisions.findOpenRevision(adjustmentData.warehouse_id);
+      if (open) {
+        throw createError(
+          ERROR_CODES.VALIDATION_ERROR,
+          `Ochiq ombor reviziyasi bor (${open.revision_number}). Qo'lda qoldiq to'g'rilash bloklangan — avval reviziyani yakunlang yoki bekor qiling.`
+        );
+      }
     }
 
     // Use transaction for multi-step operation
@@ -411,8 +475,8 @@ class InventoryService {
 
     // Insert inventory movement (ledger)
     // This drives v_product_stock and all stock displays in the app
+    const movementId = randomUUID();
     try {
-      const movementId = randomUUID();
       const movementNumber = `MOV-${Date.now()}-${movementId.substring(0, 8)}`;
       this.db.prepare(`
         INSERT INTO inventory_movements (
@@ -485,33 +549,7 @@ class InventoryService {
     
     console.log(`📦 Updated products.current_stock for ${productId}: ${totalQuantity} (warehouse ${warehouseId}: ${afterQuantity})`);
 
-    // Create stock move record
-    const moveId = randomUUID();
-    const moveNumber = `MOV-${Date.now()}-${moveId.substring(0, 8)}`;
-    this.db.prepare(`
-      INSERT INTO stock_moves (
-        id, move_number, product_id, warehouse_id, move_type, quantity,
-        before_quantity, after_quantity, reference_type, reference_id,
-        reason, created_by, created_at
-      )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(
-      moveId,
-      moveNumber,
-      productId,
-      warehouseId,
-      moveType,
-      quantityChange,
-      beforeQuantity,
-      afterQuantity,
-      referenceType || null,
-      referenceId || null,
-      reason || null,
-      createdBy || null,
-      now
-    );
-
-    return { beforeQuantity, afterQuantity, moveId };
+    return { beforeQuantity, afterQuantity, moveId: movementId };
     })();
   }
 
@@ -663,8 +701,13 @@ class InventoryService {
         // Use product.purchase_price as fallback
       }
       
-      // Calculate stock value with safe defaults
-      const stockValue = currentStock * latestPurchasePrice;
+      // FIFO: remaining batches × unit_cost + leftover warehouse qty × purchase_price
+      const fifoOn = this._isFifoValuationEnabled();
+      const batchSnap = fifoOn ? this._batchRemainingSnapshot(resolvedProductId) : { qty: 0, value: 0 };
+      const leftoverQty = Math.max(0, currentStock - Number(batchSnap.qty || 0));
+      const stockValue = fifoOn
+        ? Number(batchSnap.value || 0) + leftoverQty * latestPurchasePrice
+        : currentStock * latestPurchasePrice;
 
       // Get category name
       const category = product.category_id 
@@ -692,7 +735,6 @@ class InventoryService {
           `;
           movements = this.db.prepare(movementsQuery).all(resolvedProductId);
         } else {
-          // Fallback to stock_moves if inventory_movements doesn't exist
           movements = this.getMoves({ product_id: resolvedProductId, limit: 100 });
         }
       } catch (error) {

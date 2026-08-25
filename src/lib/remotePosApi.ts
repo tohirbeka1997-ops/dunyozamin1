@@ -13,8 +13,277 @@
  *     is dispatched so the app can redirect to /login.
  */
 
+import {
+  readSessionValue,
+  writeSessionValue,
+  removeSessionValue,
+} from '@/lib/auth/sessionPersistence';
+import { downloadBlob } from '@/lib/exportHelpers';
+
+const DB_UPLOAD_CONFIRM_TEXT = 'TASDIQLAYMAN';
+
+type RpcEnvelope<T = unknown> =
+  | { success: true; data: T }
+  | { success: false; error: { code: string; message: string; details?: unknown } };
+
+type DbUploadProgress = { percent?: number; bytesSent?: number; totalBytes?: number };
+
+const dbUploadProgressListeners = new Set<(progress: DbUploadProgress) => void>();
+
+function notifyDbUploadProgress(progress: DbUploadProgress) {
+  for (const listener of dbUploadProgressListeners) {
+    try {
+      listener(progress);
+    } catch {
+      // ignore listener errors
+    }
+  }
+}
+
+function pad2(n: number): string {
+  return String(n).padStart(2, '0');
+}
+
+function defaultBackupFileName(): string {
+  const d = new Date();
+  const ts =
+    String(d.getFullYear()) +
+    pad2(d.getMonth() + 1) +
+    pad2(d.getDate()) +
+    '-' +
+    pad2(d.getHours()) +
+    pad2(d.getMinutes()) +
+    pad2(d.getSeconds());
+  return `pos-backup-${ts}.db`;
+}
+
+function bufferFromExportData(data: unknown): Uint8Array {
+  if (data instanceof ArrayBuffer) return new Uint8Array(data);
+  if (ArrayBuffer.isView(data)) {
+    return new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
+  }
+  if (data && typeof data === 'object') {
+    const obj = data as { type?: string; data?: number[] | string };
+    if (obj.type === 'Buffer' && Array.isArray(obj.data)) {
+      return new Uint8Array(obj.data);
+    }
+    if (typeof obj.data === 'string') {
+      return base64ToUint8Array(obj.data);
+    }
+  }
+  if (typeof data === 'string') {
+    return base64ToUint8Array(data);
+  }
+  throw new Error('Invalid backup data from server');
+}
+
+function base64ToUint8Array(b64: string): Uint8Array {
+  const binary = atob(b64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i += 1) {
+    bytes[i] = binary.charCodeAt(i);
+  }
+  return bytes;
+}
+
+function arrayBufferToBase64(buffer: ArrayBuffer): string {
+  const bytes = new Uint8Array(buffer);
+  let binary = '';
+  const chunkLen = 0x8000;
+  for (let i = 0; i < bytes.length; i += chunkLen) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + chunkLen));
+  }
+  return btoa(binary);
+}
+
+function pickDbFile(): Promise<File | null> {
+  return new Promise((resolve) => {
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = '.db,application/octet-stream';
+    input.style.display = 'none';
+    const cleanup = () => {
+      input.remove();
+    };
+    input.addEventListener('change', () => {
+      resolve(input.files?.[0] ?? null);
+      cleanup();
+    });
+    document.body.appendChild(input);
+    input.click();
+    window.setTimeout(() => {
+      if (input.isConnected && !input.files?.length) {
+        resolve(null);
+        cleanup();
+      }
+    }, 60_000);
+  });
+}
+
+async function downloadDatabaseToPcOverRpc(
+  baseUrl: string,
+  secret: string,
+): Promise<RpcEnvelope<{ canceled?: boolean; filePath?: string; fileName?: string; size?: number }>> {
+  try {
+    const res = await remoteInvoke(baseUrl, secret, 'pos:database:export', 'manual');
+    if (!res.success) return res;
+
+    const exportData = res.data as {
+      ok?: boolean;
+      fileName?: string;
+      size?: number;
+      data?: unknown;
+      error?: string;
+    };
+    if (!exportData?.ok) {
+      return {
+        success: false,
+        error: {
+          code: 'INTERNAL_ERROR',
+          message: exportData?.error || "Serverdan zaxira olib bo'lmadi",
+        },
+      };
+    }
+
+    const bytes = bufferFromExportData(exportData.data);
+    const fileName = exportData.fileName || defaultBackupFileName();
+    downloadBlob(new Blob([new Uint8Array(bytes)], { type: 'application/octet-stream' }), fileName);
+
+    return {
+      success: true,
+      data: {
+        canceled: false,
+        fileName,
+        size: bytes.length,
+      },
+    };
+  } catch (error: unknown) {
+    return {
+      success: false,
+      error: {
+        code: 'INTERNAL_ERROR',
+        message: error instanceof Error ? error.message : String(error),
+      },
+    };
+  }
+}
+
+async function uploadDatabaseToServerOverRpc(
+  baseUrl: string,
+  secret: string,
+  payload?: { confirmText?: string },
+): Promise<
+  RpcEnvelope<{
+    canceled?: boolean;
+    fileName?: string;
+    size?: number;
+    restartRequired?: boolean;
+    relaunchScheduled?: boolean;
+  }>
+> {
+  const confirmText = String(payload?.confirmText || '').trim();
+  if (confirmText !== DB_UPLOAD_CONFIRM_TEXT) {
+    return {
+      success: false,
+      error: {
+        code: 'VALIDATION_ERROR',
+        message: `"${DB_UPLOAD_CONFIRM_TEXT}" deb yozib tasdiqlang`,
+      },
+    };
+  }
+
+  const file = await pickDbFile();
+  if (!file) {
+    return { success: true, data: { canceled: true } };
+  }
+  if (file.size <= 0) {
+    return {
+      success: false,
+      error: { code: 'VALIDATION_ERROR', message: "Tanlangan fayl bo'sh yoki noto'g'ri" },
+    };
+  }
+
+  try {
+    const beginRes = await remoteInvoke(baseUrl, secret, 'pos:database:uploadBegin', [
+      { fileName: file.name || 'pos-upload.db', totalSize: file.size },
+    ]);
+    if (!beginRes.success) return beginRes;
+
+    const beginData = beginRes.data as { uploadId?: string; chunkSize?: number; maxBytes?: number };
+    const uploadId = String(beginData?.uploadId || '').trim();
+    if (!uploadId) {
+      return {
+        success: false,
+        error: { code: 'INTERNAL_ERROR', message: 'Server upload session boshlanmadi' },
+      };
+    }
+
+    const chunkSize = Math.max(256 * 1024, Number(beginData?.chunkSize) || 3 * 1024 * 1024);
+    const fileBuffer = await file.arrayBuffer();
+    let offset = 0;
+    let index = 0;
+
+    while (offset < file.size) {
+      const end = Math.min(offset + chunkSize, file.size);
+      const chunk = fileBuffer.slice(offset, end);
+      const chunkRes = await remoteInvoke(baseUrl, secret, 'pos:database:uploadChunk', [
+        {
+          uploadId,
+          index,
+          data: arrayBufferToBase64(chunk),
+        },
+      ]);
+      if (!chunkRes.success) return chunkRes;
+
+      offset = end;
+      index += 1;
+      notifyDbUploadProgress({
+        percent: Math.min(99, Math.round((offset / file.size) * 100)),
+        bytesSent: offset,
+        totalBytes: file.size,
+      });
+    }
+
+    const finalizeRes = await remoteInvoke(baseUrl, secret, 'pos:database:uploadFinalize', [
+      { uploadId },
+    ]);
+    if (!finalizeRes.success) return finalizeRes;
+
+    notifyDbUploadProgress({
+      percent: 100,
+      bytesSent: file.size,
+      totalBytes: file.size,
+    });
+
+    const finalizeData = finalizeRes.data as {
+      restartRequired?: boolean;
+      relaunchScheduled?: boolean;
+    };
+
+    return {
+      success: true,
+      data: {
+        canceled: false,
+        fileName: file.name,
+        size: file.size,
+        restartRequired: !!finalizeData?.restartRequired,
+        relaunchScheduled: !!finalizeData?.relaunchScheduled,
+      },
+    };
+  } catch (error: unknown) {
+    return {
+      success: false,
+      error: {
+        code: 'INTERNAL_ERROR',
+        message: error instanceof Error ? error.message : String(error),
+      },
+    };
+  }
+}
+
 const STORAGE_KEY = 'pos_session_token';
 const STORAGE_EXP_KEY = 'pos_session_expires_at';
+const STORAGE_USER_KEY = 'auth_user';
 // Multi-tenant additions (Bosqich 16):
 //   * pos_tenant_slug     — tenant the current session is pinned to (informational;
 //                           server enforces tenant binding via the token itself).
@@ -54,15 +323,14 @@ const MASTER_CHANNELS = new Set<string>([
 
 export function getSessionToken(): string | null {
   try {
-    if (typeof localStorage === 'undefined') return null;
-    const token = localStorage.getItem(STORAGE_KEY);
+    const token = readSessionValue(STORAGE_KEY);
     if (!token) return null;
-    const expAt = localStorage.getItem(STORAGE_EXP_KEY);
+    const expAt = readSessionValue(STORAGE_EXP_KEY);
     if (expAt) {
       const ms = Date.parse(String(expAt).replace(' ', 'T') + 'Z');
       if (Number.isFinite(ms) && ms > 0 && ms <= Date.now()) {
-        localStorage.removeItem(STORAGE_KEY);
-        localStorage.removeItem(STORAGE_EXP_KEY);
+        removeSessionValue(STORAGE_KEY);
+        removeSessionValue(STORAGE_EXP_KEY);
         return null;
       }
     }
@@ -72,21 +340,47 @@ export function getSessionToken(): string | null {
   }
 }
 
+/** True when the renderer is using HTTP RPC (browser / Telegram WebView). */
+export function isRemoteRpcMode(): boolean {
+  try {
+    if (typeof window === 'undefined') return false;
+    const api = (window as Window & { posApi?: { _session?: { hasToken?: () => boolean } } }).posApi;
+    return !!(api?._session && typeof api._session.hasToken === 'function');
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Drop any cached web session before the login form runs RPC. Prevents stale
+ * `pos_session_token` from being sent on authenticated channels while the
+ * operator is trying to sign in again.
+ */
+export function clearRemoteSessionForLogin(): void {
+  setSessionToken(null);
+  removeSessionValue(STORAGE_USER_KEY);
+}
+
 export function setSessionToken(token: string | null, expiresAt?: string | null): void {
   try {
-    if (typeof localStorage === 'undefined') return;
     if (token) {
-      localStorage.setItem(STORAGE_KEY, token);
-      if (expiresAt) localStorage.setItem(STORAGE_EXP_KEY, String(expiresAt));
-      else localStorage.removeItem(STORAGE_EXP_KEY);
+      writeSessionValue(STORAGE_KEY, token);
+      if (expiresAt) writeSessionValue(STORAGE_EXP_KEY, String(expiresAt));
+      else removeSessionValue(STORAGE_EXP_KEY);
     } else {
-      localStorage.removeItem(STORAGE_KEY);
-      localStorage.removeItem(STORAGE_EXP_KEY);
+      removeSessionValue(STORAGE_KEY);
+      removeSessionValue(STORAGE_EXP_KEY);
       // When the session is cleared (logout, 401) tenant + scope become
       // stale. Drop them together so no UI can reach back to stale admin
-      // views without a fresh login.
-      localStorage.removeItem(STORAGE_TENANT_KEY);
-      localStorage.removeItem(STORAGE_SCOPE_KEY);
+      // views without a fresh login. These are UI hints kept in localStorage.
+      try {
+        if (typeof localStorage !== 'undefined') {
+          localStorage.removeItem(STORAGE_TENANT_KEY);
+          localStorage.removeItem(STORAGE_SCOPE_KEY);
+        }
+      } catch {
+        // ignore
+      }
     }
   } catch {
     // ignore
@@ -165,6 +459,31 @@ function dispatchAuthRequired(reason: string) {
   }
 }
 
+/**
+ * Centralized, user-facing RPC notice. Dispatched for TRANSPORT-level problems
+ * (rate-limit / network / 5xx) so the operator is never left staring at a dead
+ * button. A React listener (`RpcNotifications`) turns these into toasts. We do
+ * NOT emit these for ordinary business errors (validation/not-found/forbidden)
+ * or auth-required — those are handled by the calling screen / auth flow.
+ */
+export type RpcNoticeDetail = {
+  code: string;
+  message: string;
+  /** 'info' while auto-retrying, 'error' for a final failure. */
+  level: 'info' | 'error';
+  channel: string;
+};
+
+function notifyRpc(detail: RpcNoticeDetail) {
+  try {
+    if (typeof window !== 'undefined' && typeof window.dispatchEvent === 'function') {
+      window.dispatchEvent(new CustomEvent('pos:rpc:notice', { detail }));
+    }
+  } catch {
+    // ignore
+  }
+}
+
 function sleepMs(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -186,7 +505,17 @@ async function remoteInvoke(
   //     shared secret as a fallback so single-user / legacy installs keep
   //     working (admin-only channels are blocked server-side anyway).
   const sessionToken = getSessionToken();
-  const bearer = PUBLIC_CHANNELS.has(channel) ? bootstrapSecret : (sessionToken || bootstrapSecret);
+  if (!PUBLIC_CHANNELS.has(channel) && !sessionToken) {
+    return {
+      success: false,
+      error: {
+        code: 'AUTH_ERROR',
+        message: 'Not signed in',
+        details: null,
+      },
+    };
+  }
+  const bearer = PUBLIC_CHANNELS.has(channel) ? bootstrapSecret : sessionToken!;
 
   // Multi-tenant payload field. Rules:
   //   * pos:auth:login — tenant MUST be in the payload (server can't guess).
@@ -223,7 +552,11 @@ async function remoteInvoke(
   const body: Record<string, unknown> = { channel, args };
   if (payloadTenant) body.tenant = payloadTenant;
 
-  const maxAttempts = channel === 'pos:auth:login' ? 1 : 3;
+  // Login is never auto-retried (avoid lockout churn); everything else gets a
+  // few attempts so transient network blips and HTTP 429 back-pressure recover
+  // on their own. Retrying writes is SAFE because the POS sale path carries a
+  // stable idempotency key (`order_uuid`) — the server dedups duplicates.
+  const maxAttempts = channel === 'pos:auth:login' ? 1 : 4;
 
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
     const controller = new AbortController();
@@ -247,15 +580,62 @@ async function remoteInvoke(
         dispatchAuthRequired('expired_or_invalid');
       }
 
-      if (res.status === 429 && attempt < maxAttempts - 1) {
-        const retryAfterSec = Number.parseInt(String(res.headers.get('Retry-After') || '1'), 10);
-        const waitMs = Math.min(Number.isFinite(retryAfterSec) ? retryAfterSec : 1, 5) * 1000;
-        await sleepMs(waitMs);
-        continue;
+      if (res.status === 429) {
+        const retryAfter = res.headers.get('Retry-After');
+        const retryAfterMs =
+          retryAfter && Number.isFinite(Number(retryAfter))
+            ? Math.max(0, Math.round(Number(retryAfter) * 1000))
+            : 0;
+        const canRetry = channel !== 'pos:auth:login' && attempt < maxAttempts - 1;
+
+        // Auto-retry with backoff (0.5s, 1s, 2s ...) honoring Retry-After.
+        if (canRetry) {
+          notifyRpc({
+            code: 'RATE_LIMITED',
+            level: 'info',
+            channel,
+            message: "Juda ko'p so'rov yuborildi, bir lahzadan keyin qayta urinilmoqda",
+          });
+          const backoff = retryAfterMs || 500 * 2 ** attempt;
+          await sleepMs(backoff);
+          continue;
+        }
+
+        const waitHint = retryAfter ? ` ${retryAfter}s` : '';
+        const rateMsg =
+          channel === 'pos:auth:login'
+            ? `Juda ko'p kirish urinishi. Biroz kutib, qayta urinib ko'ring.${waitHint}`
+            : `Server band (429). Biroz kutib, qayta urinib ko'ring.${waitHint}`;
+        // Login surfaces its own toast; for everything else the retries are
+        // exhausted — make the final failure visible (never silent).
+        if (channel !== 'pos:auth:login') {
+          notifyRpc({ code: 'RATE_LIMITED', level: 'error', channel, message: rateMsg });
+        }
+        return {
+          success: false,
+          error: {
+            code: 'RATE_LIMITED',
+            message: rateMsg,
+            details: { status: res.status, retryAfter },
+          },
+        };
       }
 
       const json = (await res.json().catch(() => null)) as Record<string, unknown> | null;
       if (!json || typeof json !== 'object') {
+        // Retry transient server hiccups (5xx / proxy errors) before failing.
+        if (res.status >= 500 && attempt < maxAttempts - 1) {
+          notifyRpc({
+            code: 'INTERNAL_ERROR',
+            level: 'info',
+            channel,
+            message: 'Server javob bermadi, qayta urinilmoqda...',
+          });
+          await sleepMs(500 * 2 ** attempt);
+          continue;
+        }
+        const invalidMsg = `Server bilan aloqa xatosi (HTTP ${res.status}). Qayta urinib ko'ring.`;
+        notifyRpc({ code: 'INTERNAL_ERROR', level: 'error', channel, message: invalidMsg });
         return {
           success: false,
           error: {
@@ -267,13 +647,36 @@ async function remoteInvoke(
       }
       if (json.ok === false && json.error && typeof json.error === 'object') {
         const e = json.error as { code?: string; message?: string; details?: unknown };
-        if (e.code === 'RATE_LIMITED' && attempt < maxAttempts - 1) {
-          await sleepMs(1000 * (attempt + 1));
-          continue;
+        // Bootstrap secret mismatch on login looks like an expired session server-side.
+        if (
+          res.status === 401 &&
+          PUBLIC_CHANNELS.has(channel) &&
+          e.code === 'AUTH_ERROR' &&
+          channel === 'pos:auth:login'
+        ) {
+          return {
+            success: false,
+            error: {
+              code: 'AUTH_ERROR',
+              message: 'Tizim sozlamasi xato (RPC kaliti mos emas). Administratorga murojaat qiling.',
+              details: { status: res.status },
+            },
+          };
         }
         if (e.code === 'AUTH_ERROR' && !PUBLIC_CHANNELS.has(channel)) {
           setSessionToken(null);
           dispatchAuthRequired('auth_error');
+        }
+        // Surface genuine SERVER errors (5xx) so they're never silent. Business
+        // errors (4xx: validation / not-found / forbidden) are intentionally
+        // left to the calling screen, which renders contextual messages.
+        if (res.status >= 500) {
+          notifyRpc({
+            code: String(e.code || 'INTERNAL_ERROR'),
+            level: 'error',
+            channel,
+            message: String(e.message || `Server xatosi (HTTP ${res.status})`),
+          });
         }
         return {
           success: false,
@@ -334,6 +737,16 @@ async function remoteInvoke(
         continue;
       }
       const msg = e instanceof Error ? e.message : String(e);
+      // Final transport failure — make it visible (never silent). Login keeps
+      // its own form-level error handling.
+      if (channel !== 'pos:auth:login') {
+        notifyRpc({
+          code: 'NETWORK_ERROR',
+          level: 'error',
+          channel,
+          message: "Server bilan aloqa yo'q. Internet/ulanishni tekshirib, qayta urinib ko'ring.",
+        });
+      }
       return {
         success: false,
         error: { code: 'NETWORK_ERROR', message: msg, details: null },
@@ -446,6 +859,10 @@ export function createRemotePosApi(baseUrl: string, secret: string) {
       create: inv('pos:products:create'),
       update: inv('pos:products:update'),
       delete: inv('pos:products:delete'),
+      bulkAdjustPrices: inv('pos:products:bulkAdjustPrices'),
+      undoBulkPriceUpdate: inv('pos:products:undoBulkPriceUpdate'),
+      listScanIndex: inv('pos:products:listScanIndex'),
+      resolveScan: inv('pos:products:resolveScan'),
       exportScaleRongtaTxt: inv('pos:products:exportScaleRongtaTxt'),
       exportScaleSharqTxt: inv('pos:products:exportScaleSharqTxt'),
       exportScaleCsv3: inv('pos:products:exportScaleCsv3'),
@@ -480,12 +897,21 @@ export function createRemotePosApi(baseUrl: string, secret: string) {
       delete: inv('pos:customers:delete'),
       updateBalance: inv('pos:customers:updateBalance'),
       receivePayment: inv('pos:customers:receivePayment'),
+      getTotalDebt: inv('pos:customers:getTotalDebt'),
       getPayments: inv('pos:customers:getPayments'),
       getLedger: inv('pos:customers:getLedger'),
       getLedgerCount: inv('pos:customers:getLedgerCount'),
       exportCsv: inv('pos:customers:exportCsv'),
       getBonusLedger: inv('pos:customers:getBonusLedger'),
       adjustBonusPoints: inv('pos:customers:adjustBonusPoints'),
+    },
+    creditReminders: {
+      list: inv('pos:creditReminders:list'),
+      listOpenOrders: inv('pos:creditReminders:listOpenOrders'),
+      updateDueDate: inv('pos:creditReminders:updateDueDate'),
+      send: inv('pos:creditReminders:send'),
+      listStaffAlerts: inv('pos:creditReminders:listStaffAlerts'),
+      ackStaffAlert: inv('pos:creditReminders:ackStaffAlert'),
     },
     suppliers: {
       list: inv('pos:suppliers:list'),
@@ -501,6 +927,7 @@ export function createRemotePosApi(baseUrl: string, secret: string) {
       createReturn: inv('pos:suppliers:createReturn'),
       getReturn: inv('pos:suppliers:getReturn'),
       listReturns: inv('pos:suppliers:listReturns'),
+      listReturnableProducts: inv('pos:suppliers:listReturnableProducts'),
     },
     pricing: {
       getTiers: inv('pos:pricing:getTiers'),
@@ -531,7 +958,18 @@ export function createRemotePosApi(baseUrl: string, secret: string) {
       getReorderSuggestions: inv('pos:inventory:getReorderSuggestions'),
       getBatchesByProduct: inv('pos:inventory:getBatchesByProduct'),
       getBatchReconcile: inv('pos:inventory:getBatchReconcile'),
+      getBatchHealth: inv('pos:inventory:getBatchHealth'),
+      repairBatchCoverage: inv('pos:inventory:repairBatchCoverage'),
       runBatchCutoverSnapshot: inv('pos:inventory:runBatchCutoverSnapshot'),
+      createRevision: inv('pos:inventory:createRevision'),
+      listRevisions: inv('pos:inventory:listRevisions'),
+      getRevision: inv('pos:inventory:getRevision'),
+      updateRevisionItemCount: inv('pos:inventory:updateRevisionItemCount'),
+      clearRevisionItemCount: inv('pos:inventory:clearRevisionItemCount'),
+      countRevisionByBarcode: inv('pos:inventory:countRevisionByBarcode'),
+      bulkSetRevisionItemCounts: inv('pos:inventory:bulkSetRevisionItemCounts'),
+      completeRevision: inv('pos:inventory:completeRevision'),
+      cancelRevision: inv('pos:inventory:cancelRevision'),
     },
     sales: {
       createDraftOrder: inv('pos:sales:createDraftOrder'),
@@ -629,6 +1067,7 @@ export function createRemotePosApi(baseUrl: string, secret: string) {
       customerSalesReport: inv('pos:reports:customerSalesReport'),
       customerAging: inv('pos:reports:customerAging'),
       supplierAging: inv('pos:reports:supplierAging'),
+      supplierPaymentsDue: inv('pos:reports:supplierPaymentsDue'),
       vipCustomers: inv('pos:reports:vipCustomers'),
       loyaltyPointsSummary: inv('pos:reports:loyaltyPointsSummary'),
       lostCustomers: inv('pos:reports:lostCustomers'),
@@ -638,6 +1077,7 @@ export function createRemotePosApi(baseUrl: string, secret: string) {
       priceHistory: inv('pos:reports:priceHistory'),
       productPriceSummary: inv('pos:reports:productPriceSummary'),
       purchasePlanning: inv('pos:reports:purchasePlanning'),
+      abcAnalysis: inv('pos:reports:abcAnalysis'),
       purchaseSaleSpread: inv('pos:reports:purchaseSaleSpread'),
       purchaseVsSold: inv('pos:reports:purchaseVsSold'),
       spreadTimeSeries: inv('pos:reports:spreadTimeSeries'),
@@ -665,11 +1105,24 @@ export function createRemotePosApi(baseUrl: string, secret: string) {
       set: inv('pos:settings:set'),
       getAll: inv('pos:settings:getAll'),
       delete: inv('pos:settings:delete'),
+      testTelegramReport: inv('pos:settings:testTelegramReport'),
+      testTelegramAiAnalysis: inv('pos:settings:testTelegramAiAnalysis'),
+      testTelegramDailyPoster: inv('pos:settings:testTelegramDailyPoster'),
+      openaiStatus: inv('pos:settings:openaiStatus'),
       resetDatabase: inv('pos:settings:resetDatabase'),
     },
     database: {
-      downloadToPc: inv('pos:database:downloadToPc'),
-      uploadToServer: inv('pos:database:uploadToServer'),
+      // Electron-only IPC channels — over web RPC we proxy to export/chunked upload.
+      downloadToPc: () => downloadDatabaseToPcOverRpc(baseUrl, secret),
+      uploadToServer: (payload?: { confirmText?: string }) =>
+        uploadDatabaseToServerOverRpc(baseUrl, secret, payload),
+      onUploadProgress: (callback: (progress: DbUploadProgress) => void) => {
+        if (typeof callback !== 'function') return () => {};
+        dbUploadProgressListeners.add(callback);
+        return () => {
+          dbUploadProgressListeners.delete(callback);
+        };
+      },
     },
     exchangeRates: {
       getLatest: inv('pos:exchangeRates:getLatest'),
@@ -727,6 +1180,11 @@ export function createRemotePosApi(baseUrl: string, secret: string) {
       getByCustomer: inv('pos:orders:getByCustomer'),
       cancel: inv('pos:orders:cancel'),
     },
+    couriers: {
+      list: inv('pos:couriers:list'),
+      upsert: inv('pos:couriers:upsert'),
+      setActive: inv('pos:couriers:setActive'),
+    },
     webOrders: {
       // Backward compatibility: some older server builds expose a legacy
       // channel name without the second colon.
@@ -738,6 +1196,18 @@ export function createRemotePosApi(baseUrl: string, secret: string) {
       dispatchToCourier: invokeWithFallback('pos:webOrders:dispatchToCourier', 'pos:webOrdersDispatchToCourier'),
       countsByQueue: invokeWithFallback('pos:webOrders:countsByQueue', 'pos:webOrdersCountsByQueue'),
       reportSummary: invokeWithFallback('pos:webOrders:reportSummary', 'pos:webOrdersReportSummary'),
+    },
+    // Admin-managed mini-app home content (promo banners + daily deal). The
+    // page (src/pages/MarketplaceContent.tsx) calls these via the same nested
+    // shape as Electron preload — channel names MUST match rpcDispatch.cjs.
+    marketplaceContent: {
+      listBanners: inv('pos:marketplaceContent:listBanners'),
+      saveBanner: inv('pos:marketplaceContent:saveBanner'),
+      deleteBanner: inv('pos:marketplaceContent:deleteBanner'),
+      reorderBanners: inv('pos:marketplaceContent:reorderBanners'),
+      getDailyDeal: inv('pos:marketplaceContent:getDailyDeal'),
+      setDailyDeal: inv('pos:marketplaceContent:setDailyDeal'),
+      dailyDealHistory: inv('pos:marketplaceContent:dailyDealHistory'),
     },
     files: {
       selectSavePath: inv('pos:files:selectSavePath'),

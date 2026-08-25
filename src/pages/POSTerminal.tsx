@@ -62,9 +62,9 @@ import { cn } from '@/lib/utils';
 import { useTranslation } from 'react-i18next';
 import { useShiftStore } from '@/store/shiftStore';
 import { useInventoryStore } from '@/store/inventoryStore';
-import { formatMoney, getCustomerBalances } from '@/lib/currency';
+import { convertAtRate, formatMoney, getCustomerBalances } from '@/lib/currency';
 import { formatCustomerBalance, formatMoneyUZS } from '@/lib/format';
-import { loadRetailUsdPricesForProducts } from '@/lib/productPricing';
+import { loadRetailUsdPricesForProducts, resolveUsdRetailDisplay, isPlausibleUsdRetail } from '@/lib/productPricing';
 import { clearTierPriceCache } from '@/lib/tierPriceCache';
 import { orderCurrencyFields, toShiftUzsAmount, type PosSaleCurrency } from '@/lib/posSaleCurrency';
 import { fetchUzsPerUsdRate } from '@/lib/fxRate';
@@ -200,11 +200,15 @@ import {
   normalizeSearchTerm,
   normalizeSku,
   classifyQuery,
+  productMatchesPosTextFilter,
+  formatPosProductCodeMeta,
   getSaleUnitConfig,
+  getBaseUnit,
   toBaseQty,
   getMaxSaleQty,
   getMaxSaleQtyForCartLine,
   getProbeSaleQtyForUnitPrice,
+  recalcCartLineForSaleUnitChange,
   readPosReplacesOrderId,
   persistPosReplacesOrderId,
   resolveReplacesOrderIdForCheckout,
@@ -1497,6 +1501,7 @@ export default function POSTerminal() {
     barcode: string;
     nameLower: string;
     normArticle: string;
+    brandLower: string;
   };
   const searchIndex = useMemo<PosSearchEntry[]>(
     () =>
@@ -1508,6 +1513,7 @@ export default function POSTerminal() {
         normArticle: String(product.article ?? '')
           .toLowerCase()
           .replace(/[\s\-_]/g, ''),
+        brandLower: String(product.brand ?? '').trim().toLowerCase(),
       })),
     [allProducts],
   );
@@ -1515,7 +1521,7 @@ export default function POSTerminal() {
   const productsFuse = useMemo(
     () =>
       new Fuse(allProducts, {
-        keys: ['name', 'sku', 'article'],
+        keys: ['name', 'sku', 'article', 'brand'],
         threshold: 0.4,
         includeScore: true,
         minMatchCharLength: 2,
@@ -1530,7 +1536,7 @@ export default function POSTerminal() {
 
     const scored = searchIndex
       .filter((e) => productMatchesCategoryFilter(e.product.category_id, categoryId, categories))
-      .map(({ product, skuNormalized, barcode, nameLower, normArticle }) => {
+      .map(({ product, skuNormalized, barcode, nameLower, normArticle, brandLower }) => {
         const normTerm = query.lower.replace(/[\s\-_]/g, '');
 
         let score = 0;
@@ -1564,6 +1570,19 @@ export default function POSTerminal() {
             matched = true;
           } else if (normArticle.includes(normTerm)) {
             score += 200;
+            matched = true;
+          }
+        }
+
+        if (brandLower) {
+          if (brandLower === query.lower) {
+            score += 600;
+            matched = true;
+          } else if (brandLower.startsWith(query.lower)) {
+            score += 350;
+            matched = true;
+          } else if (brandLower.includes(query.lower) || tokens.some((token) => brandLower.includes(token))) {
+            score += 180;
             matched = true;
           }
         }
@@ -2017,13 +2036,18 @@ export default function POSTerminal() {
   const cartDisplay = useMemo(() => {
     const start = perfEnabled ? performance.now() : 0;
     const items = effectiveCart.map((item, index) => {
-      const costPrice = Number(item.product.purchase_price || 0);
+      // purchase_price is always stored in UZS; convert when cart is in USD
+      const costPriceUzs = Number(item.product.purchase_price || 0);
+      const costPrice =
+        saleCurrency === 'USD'
+          ? convertAtRate(costPriceUzs, 'UZS', 'USD', saleFxRate)
+          : costPriceUzs;
       const qtyForCost = Number(item.qty_sale ?? item.quantity ?? 0) || 0;
       const finalPricePerUnit =
         qtyForCost !== 0 ? item.total / qtyForCost : Number(item.unit_price || 0);
       const isBelowCost = qtyForCost > 0 && finalPricePerUnit < costPrice;
       const unit = item.sale_unit || item.product.unit;
-      const baseUnit = (item.product as any)?.base_unit || item.product.unit;
+      const baseUnit = getBaseUnit(item.product) || (item.product as any)?.base_unit || item.product.unit;
       const quantityStep = getQuantityStep(unit);
       const quantityMin = getQuantityMin(unit);
       const inputMode: 'decimal' | 'numeric' = isFractionalUnit(unit) ? 'decimal' : 'numeric';
@@ -2051,7 +2075,7 @@ export default function POSTerminal() {
       console.debug(`[POS PERF] cart compute ${items.length} items → ${ms}ms`);
     }
     return items;
-  }, [effectiveCart, editingQuantity, selectedCartIndex, perfEnabled]);
+  }, [effectiveCart, editingQuantity, selectedCartIndex, perfEnabled, saleCurrency, saleFxRate]);
 
   // Recalculate cart prices when customer/tier/sale currency changes
   useEffect(() => {
@@ -2108,12 +2132,19 @@ export default function POSTerminal() {
                 baseUnitPrice = baseUnitPrice / fx;
               }
             } else if (effectiveTier === 'retail') {
-              let usd =
+              const uzsForCompare =
+                Number(uzsUnitPriceRaw ?? (item.product as any)?.sale_price ?? 0) || 0;
+              const storedUsd =
                 usdRetailByProductId[item.product.id] ??
                 priceCacheRef.current.get(`${item.product.id}::retail::${saleUnit}::USD`) ??
                 null;
-              if (usd == null || usd <= 0) {
-                if (fx > 0) baseUnitPrice = baseUnitPrice / fx;
+              const resolved = resolveUsdRetailDisplay(baseUnitPrice, storedUsd, fx);
+              if (resolved != null && resolved > 0) {
+                baseUnitPrice = resolved;
+              } else if (fx > 0) {
+                baseUnitPrice = baseUnitPrice / fx;
+              }
+              if (!isPlausibleUsdRetail(storedUsd, uzsForCompare)) {
                 void getProductTierPrice({
                   product_id: item.product.id,
                   tier_code: 'retail',
@@ -2121,15 +2152,13 @@ export default function POSTerminal() {
                   unit: saleUnit,
                 }).then((fetched) => {
                   const exact = fetched != null ? Number(fetched) : 0;
-                  if (exact > 0) {
+                  if (isPlausibleUsdRetail(exact, uzsForCompare)) {
                     priceCacheRef.current.set(`${item.product.id}::retail::${saleUnit}::USD`, exact);
                     setUsdRetailByProductId((prev) =>
                       prev[item.product.id] === exact ? prev : { ...prev, [item.product.id]: exact }
                     );
                   }
                 });
-              } else {
-                baseUnitPrice = usd;
               }
             } else {
               const tierKey = `${item.product.id}::${effectiveTier}::${saleUnit}::${saleCurrency}`;
@@ -2438,11 +2467,11 @@ export default function POSTerminal() {
         }
       } else if (effectiveTier === 'retail') {
         const usdCacheKey = `${product.id}::retail::${resolvedUnit}::USD`;
-        let usd =
+        const storedUsd =
           usdRetailByProductId[product.id] ?? priceCacheRef.current.get(usdCacheKey) ?? null;
-        if (usd == null || usd <= 0) {
-          // Fast path: derive from UZS so scans are not blocked on tier-price IPC.
-          unitSalePrice = sale_price / fx;
+        const resolved = resolveUsdRetailDisplay(sale_price, storedUsd, fx);
+        unitSalePrice = resolved != null && resolved > 0 ? resolved : sale_price / fx;
+        if (!isPlausibleUsdRetail(storedUsd, sale_price)) {
           void getProductTierPrice({
             product_id: product.id,
             tier_code: 'retail',
@@ -2450,15 +2479,13 @@ export default function POSTerminal() {
             unit: resolvedUnit,
           }).then((fetched) => {
             const exact = fetched != null ? Number(fetched) : 0;
-            if (exact > 0) {
+            if (isPlausibleUsdRetail(exact, sale_price)) {
               priceCacheRef.current.set(usdCacheKey, exact);
               setUsdRetailByProductId((prev) =>
                 prev[product.id] === exact ? prev : { ...prev, [product.id]: exact }
               );
             }
           });
-        } else {
-          unitSalePrice = usd;
         }
       } else {
         const tierKey = `${product.id}::${effectiveTier}::${resolvedUnit}::${saleCurrency}`;
@@ -3293,6 +3320,7 @@ export default function POSTerminal() {
             return {
               ...item,
               product,
+              quantity: qty,
               sale_unit: item.sale_unit || saleUnit,
               qty_sale: qty,
               qty_base: qtyBase,
@@ -3969,15 +3997,6 @@ export default function POSTerminal() {
     const prevQtySale = Number(cartItem.qty_sale ?? cartItem.quantity ?? 0) || 0;
     const prevRatio = Number(cartItem.ratio_to_base ?? 1) || 1;
     const prevQtyBaseRaw = Number(cartItem.qty_base);
-    const prevQtyBase =
-      Number.isFinite(prevQtyBaseRaw) && prevQtyBaseRaw !== 0
-        ? prevQtyBaseRaw
-        : toBaseQty(prevQtySale, prevRatio);
-    const nextRatio = Number(nextConfig.ratio_to_base ?? 1) || 1;
-    let qtySale =
-      nextRatio > 0 ? prevQtyBase / nextRatio : prevQtySale;
-    qtySale = clampSignedQuantityForUnit(qtySale, nextConfig.saleUnit);
-    const qtyBase = toBaseQty(qtySale, nextRatio);
     const effectiveTier = ((selectedCustomer as any)?.pricing_tier || currentTierCode || 'retail') as string;
     if (effectiveTier !== 'retail' && effectiveTier !== 'master' && saleCurrency !== 'USD') {
       const fetched = await fetchTierPrice(cartItem.product, effectiveTier, nextUnit);
@@ -3992,32 +4011,44 @@ export default function POSTerminal() {
     } else if (effectiveTier !== 'retail' && effectiveTier !== 'master') {
       void fetchTierPrice(cartItem.product, effectiveTier, nextUnit);
     }
+    // Probe pricing with preserved stock qty (same as recalcCartLineForSaleUnitChange).
+    const prevQtyBase =
+      Number.isFinite(prevQtyBaseRaw) && prevQtyBaseRaw !== 0
+        ? prevQtyBaseRaw
+        : toBaseQty(prevQtySale, prevRatio);
+    const nextRatio = Number(nextConfig.ratio_to_base ?? 1) || 1;
+    const probeSale =
+      nextRatio > 0 ? prevQtyBase / nextRatio : prevQtySale;
+    const probeQtyBase = toBaseQty(
+      clampSignedQuantityForUnit(probeSale, nextConfig.saleUnit),
+      nextRatio,
+    );
     const { unitPrice, priceTier } = getLinePricing(
       cartItem.product,
-      qtyBase,
+      probeQtyBase,
       selectedCustomer,
       nextConfig.sale_price,
       nextConfig.ratio_to_base,
       nextUnit
     );
-    const subtotal = unitPrice * qtySale;
-    const lineDiscount = qtySale < 0 ? 0 : Math.min(cartItem.discount_amount || 0, subtotal);
+    const linePatch = recalcCartLineForSaleUnitChange({
+      prevQtySale,
+      prevQtyBase: prevQtyBaseRaw,
+      prevRatioToBase: prevRatio,
+      nextSaleUnit: nextConfig.saleUnit,
+      nextRatioToBase: nextConfig.ratio_to_base,
+      nextUnitPrice: unitPrice,
+      discountAmount: cartItem.discount_amount,
+    });
     setCart(
       cart.map((item) =>
         item.product.id === productId
           ? {
               ...item,
-              sale_unit: nextConfig.saleUnit,
-              ratio_to_base: nextConfig.ratio_to_base,
-              qty_sale: qtySale,
-              qty_base: qtyBase,
-              unit_price: unitPrice,
+              ...linePatch,
               price_tier: priceTier,
               price_source: 'tier',
               is_price_overridden: false,
-              subtotal,
-              discount_amount: lineDiscount,
-              total: subtotal - lineDiscount,
             }
           : item
       )
@@ -5780,17 +5811,10 @@ export default function POSTerminal() {
   }, [visibleProducts]);
 
   const quickProductCandidates = useMemo(() => {
-    const term = quickProductSearch.trim().toLowerCase();
+    const term = quickProductSearch.trim();
     const source = term ? allProducts : favoriteProducts;
     return source
-      .filter((product) => {
-        if (!term) return true;
-        return (
-          product.name.toLowerCase().includes(term) ||
-          String(product.sku || '').toLowerCase().includes(term) ||
-          String((product as any).barcode || '').toLowerCase().includes(term)
-        );
-      })
+      .filter((product) => productMatchesPosTextFilter(product, term))
       .slice(0, 30);
   }, [allProducts, favoriteProducts, quickProductSearch]);
 
@@ -5834,8 +5858,8 @@ export default function POSTerminal() {
   return (
     <>
       {/* Split View: flex-1 + min-h-0 — mahsulot va savat viewport bo‘yicha cho‘ziladi */}
-      {/* Chap/yuqori/pastki: layout paddingini yutish; o‘ng tomonda padding yo‘q */}
-      <div className="-mb-4 -ml-4 -mr-4 -mt-4 flex h-full min-h-0 w-full min-w-0 max-w-none flex-1 flex-col self-stretch overflow-x-hidden xl:-mb-6 xl:-ml-6 xl:-mr-6 xl:-mt-6">
+      {/* Chap/yuqori/pastki: layout paddingini yutish; o‘ng tomonda padding yo‘q (main !pr-0) — rail chekkaga */}
+      <div className="-mb-4 -ml-4 -mt-4 flex h-full min-h-0 w-full min-w-0 max-w-none flex-1 flex-col self-stretch overflow-x-hidden xl:-mb-6 xl:-ml-6 xl:-mt-6">
         {/* xl: mahsulot | savat+rail — savat kengligi barqaror, rail o‘ng chetga */}
         <div className="flex min-h-0 min-w-0 w-full max-w-none flex-1 flex-col gap-2 pl-2 pt-2 pb-0 pr-0 sm:gap-3 md:gap-4 md:pl-3 md:pt-3 md:pb-0 md:pr-0 xl:flex-row xl:flex-nowrap xl:items-stretch xl:gap-0 xl:pl-3 xl:pt-3 xl:pb-0 xl:pr-0">
           {/* Left Column - Product Catalog */}
@@ -6021,6 +6045,7 @@ export default function POSTerminal() {
                 maxDisplay={MAX_DISPLAY}
                 searchTerm={searchTerm}
                 saleCurrency={saleCurrency}
+                saleFxRate={saleFxRate}
                 usdRetailByProductId={usdRetailByProductId}
                 formatCurrency={formatCurrency}
                 formatMoney={formatMoney}
@@ -6166,6 +6191,7 @@ export default function POSTerminal() {
                 <div className="divide-y divide-gray-100 dark:divide-gray-700 flex-1 min-h-0">
                 {cartDisplay.map(({ item, index, isSelected, costPrice, isBelowCost, unit, baseUnit, quantityStep, quantityMin, inputMode, displayQuantity }) => {
                   const isRecent = item.product.id === recentCartItemId;
+                  const codeMeta = formatPosProductCodeMeta(item.product);
                   return (
                     <div key={`${item.product.id}-${index}`} className="group relative">
                       {/* Main Row */}
@@ -6181,8 +6207,8 @@ export default function POSTerminal() {
                       >
                         {/* Left Side - Product Info */}
                         <div className="flex flex-col flex-1 min-w-0 mr-2">
-                          <div className="flex items-center gap-1.5 flex-wrap">
-                            <p className="truncate text-[11px] font-medium leading-tight md:text-xs">{item.product.name}</p>
+                          <div className="flex items-center gap-1.5 min-w-0">
+                            <p className="min-w-0 truncate text-[11px] font-medium leading-tight md:text-xs">{item.product.name}</p>
                             {(item.qty_sale ?? item.quantity) < 0 && (
                               <span className="shrink-0 text-[9px] text-destructive">
                                 {t('pos.exchange.line_badge_return')}
@@ -6194,6 +6220,11 @@ export default function POSTerminal() {
                               </span>
                             )}
                           </div>
+                          {codeMeta ? (
+                            <p className="mt-0.5 truncate text-[10px] leading-tight text-muted-foreground" title={codeMeta}>
+                              {codeMeta}
+                            </p>
+                          ) : null}
                           <div className="mt-0.5 flex flex-wrap items-center gap-x-1.5 gap-y-0.5">
                             {(item.promotion_name || item.price_source === 'promo') ? (
                               <p className="text-[10px] text-muted-foreground">
@@ -6332,7 +6363,8 @@ export default function POSTerminal() {
                                 className="h-7 min-h-0 min-w-7 touch-manipulation px-1 text-[10px] md:h-5 md:min-w-6"
                                 onClick={(e) => {
                                   e.stopPropagation();
-                                  updateQuantity(item.product.id, (item.qty_sale ?? item.quantity) - quantityStep);
+                                  // Labeled ±1 / +5 always step by whole sale units (not 0.001 for m/kg).
+                                  updateQuantity(item.product.id, (item.qty_sale ?? item.quantity) - 1);
                                 }}
                               >
                                 -1
@@ -6344,7 +6376,7 @@ export default function POSTerminal() {
                                 className="h-7 min-h-0 min-w-7 touch-manipulation px-1 text-[10px] md:h-5 md:min-w-6"
                                 onClick={(e) => {
                                   e.stopPropagation();
-                                  updateQuantity(item.product.id, (item.qty_sale ?? item.quantity) + quantityStep);
+                                  updateQuantity(item.product.id, (item.qty_sale ?? item.quantity) + 1);
                                 }}
                               >
                                 +1
@@ -6358,7 +6390,7 @@ export default function POSTerminal() {
                                   e.stopPropagation();
                                   updateQuantity(
                                     item.product.id,
-                                    (item.qty_sale ?? item.quantity) + quantityStep * 5
+                                    (item.qty_sale ?? item.quantity) + 5
                                   );
                                 }}
                               >
@@ -6369,7 +6401,15 @@ export default function POSTerminal() {
                               <p className="hidden text-[9px] text-muted-foreground md:block">
                                 {formatQuantity(item.qty_sale ?? item.quantity, unit)} {formatUnit(unit)} =
                                 {` `}
-                                {formatQuantity(item.qty_base ?? item.quantity, baseUnit)} {formatUnit(baseUnit)}
+                                {formatQuantity(
+                                  Number(item.qty_base) ||
+                                    toBaseQty(
+                                      Number(item.qty_sale ?? item.quantity ?? 0) || 0,
+                                      Number(item.ratio_to_base ?? 1) || 1,
+                                    ),
+                                  baseUnit,
+                                )}{' '}
+                                {formatUnit(baseUnit)}
                               </p>
                             )}
                           </div>
@@ -6620,10 +6660,15 @@ export default function POSTerminal() {
                 
                 {/* Cost Price and Profit Summary */}
                 {showCostPrice && cart.length > 0 && (() => {
-                  const totalCost = cart.reduce((sum, item) => {
-                    const costPrice = Number(item.product.purchase_price || 0);
-                    return sum + (costPrice * (item.qty_base ?? item.quantity));
+                  // purchase_price is UZS; convert to sale currency so profit uses one unit
+                  const totalCostUzs = cart.reduce((sum, item) => {
+                    const costPriceUzs = Number(item.product.purchase_price || 0);
+                    return sum + costPriceUzs * (item.qty_base ?? item.quantity);
                   }, 0);
+                  const totalCost =
+                    saleCurrency === 'USD'
+                      ? convertAtRate(totalCostUzs, 'UZS', 'USD', saleFxRate)
+                      : totalCostUzs;
                   const profit = total - totalCost;
                   const profitMargin = total > 0 ? ((profit / total) * 100) : 0;
                   
@@ -7038,8 +7083,18 @@ export default function POSTerminal() {
                       >
                         <td className="py-2.5 pr-2 text-muted-foreground">{idx + 1}</td>
                         <td className="py-2.5 pr-2 font-medium">
-                          <div className="flex flex-col gap-0.5">
-                            <span>{item.product.name}</span>
+                          <div className="flex min-w-0 flex-col gap-0.5">
+                            <span className="truncate">{item.product.name}</span>
+                            {(() => {
+                              const article = String(item.product.article ?? '').trim();
+                              const brand = String(item.product.brand ?? '').trim();
+                              const sub = [article, brand].filter(Boolean).join(' · ');
+                              return sub ? (
+                                <span className="truncate text-[11px] font-normal text-muted-foreground" title={sub}>
+                                  {sub}
+                                </span>
+                              ) : null;
+                            })()}
                             <div className="flex flex-wrap gap-1">
                               {qtySale < 0 && (
                                 <Badge variant="destructive" className="h-5 text-[10px] px-1.5">
@@ -7755,7 +7810,9 @@ export default function POSTerminal() {
                   </div>
                 ) : (
                   <div className="grid min-h-0 flex-1 grid-cols-1 gap-2 overflow-y-auto pb-4 pr-1">
-                    {quickProductCandidates.map((product, index) => (
+                    {quickProductCandidates.map((product, index) => {
+                      const codeMeta = formatPosProductCodeMeta(product);
+                      return (
                       <button
                         key={product.id}
                         type="button"
@@ -7768,8 +7825,9 @@ export default function POSTerminal() {
                         <div className="flex items-start justify-between gap-3">
                           <div className="min-w-0">
                             <p className="truncate text-sm font-medium">{product.name}</p>
-                            <p className="mt-1 text-xs text-muted-foreground">
-                              SKU: {product.sku || '-'}{index < 8 ? ` · Alt+${index + 1}` : ''}
+                            <p className="mt-1 truncate text-xs text-muted-foreground" title={codeMeta || undefined}>
+                              {codeMeta || '—'}
+                              {index < 8 ? ` · Alt+${index + 1}` : ''}
                             </p>
                           </div>
                           <div className="shrink-0 text-right">
@@ -7782,7 +7840,8 @@ export default function POSTerminal() {
                           </div>
                         </div>
                       </button>
-                    ))}
+                      );
+                    })}
                   </div>
                 )}
               </section>

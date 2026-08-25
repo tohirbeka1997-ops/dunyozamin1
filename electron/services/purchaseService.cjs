@@ -897,7 +897,20 @@ class PurchaseService {
       const discountPercent = Number(it.discount_percent ?? 0);
       const discountAmount = Number(it.discount_amount ?? 0);
       if (isUSD) {
-        const unitUsd = Number(it.unit_cost_usd ?? it.unit_price_usd ?? it.unit_cost);
+        // Prefer explicit USD fields. Falling back to unit_cost (UZS) caused fx×UZS
+        // phantom costs (tens of millions so'm) on sales reports.
+        const hasExplicitUsd =
+          (it.unit_cost_usd != null && it.unit_cost_usd !== '') ||
+          (it.unit_price_usd != null && it.unit_price_usd !== '');
+        if (!hasExplicitUsd && hasItemUsd) {
+          throw createError(
+            ERROR_CODES.VALIDATION_ERROR,
+            'USD xarid uchun unit_cost_usd majburiy (UZS unit_cost ni dollar deb ko‘paytirib bo‘lmaydi)',
+          );
+        }
+        const unitUsd = Number(
+          hasExplicitUsd ? (it.unit_cost_usd ?? it.unit_price_usd) : it.unit_cost,
+        );
         if (!Number.isFinite(unitUsd) || unitUsd < 0) {
           throw createError(ERROR_CODES.VALIDATION_ERROR, 'unit_cost_usd must be >= 0 for USD purchase');
         }
@@ -1353,7 +1366,16 @@ class PurchaseService {
     let lineUsd = null;
 
     if (isUSD) {
-      unitUsd = Number(item.unit_cost_usd ?? item.unit_price_usd ?? item.unit_cost);
+      const hasExplicitUsd =
+        (item.unit_cost_usd != null && item.unit_cost_usd !== '') ||
+        (item.unit_price_usd != null && item.unit_price_usd !== '');
+      if (!hasExplicitUsd) {
+        throw createError(
+          ERROR_CODES.VALIDATION_ERROR,
+          'USD xarid uchun unit_cost_usd majburiy (UZS unit_cost ni dollar deb ko‘paytirib bo‘lmaydi)',
+        );
+      }
+      unitUsd = Number(item.unit_cost_usd ?? item.unit_price_usd);
       if (!Number.isFinite(unitUsd) || unitUsd < 0) {
         throw createError(ERROR_CODES.VALIDATION_ERROR, 'unit_cost_usd must be >= 0 for USD purchase');
       }
@@ -1478,8 +1500,10 @@ class PurchaseService {
       if (keptIds.has(row.id)) continue;
       const rq = Number(row.received_qty || 0);
       if (rq > 0) {
-        // Draft edits may omit received lines — keep row to preserve receipt history.
-        continue;
+        throw createError(
+          ERROR_CODES.VALIDATION_ERROR,
+          `Qabul qilingan mahsulotni o'chirib bo'lmaydi: ${row.product_name || row.product_id}. Omborga kirgan tovar uchun qaytarish amalidan foydalaning.`
+        );
       }
       deleteItem.run(row.id);
     }
@@ -1522,7 +1546,7 @@ class PurchaseService {
 
   /**
    * Update PO line items when some goods were already received: match rows by product_id (FIFO),
-   * preserve received_qty and row ids; disallow removing received lines.
+   * preserve received_qty and row ids; delete unreceived omitted lines; reject omitting received lines.
    */
   _mergePurchaseOrderItemsKeepReceipts(purchaseOrderId, items, ctx) {
     const {
@@ -1661,8 +1685,10 @@ class PurchaseService {
       if (updatedIds.has(row.id)) continue;
       const rq = Number(row.received_qty || 0);
       if (rq > 0) {
-        // Draft edits may omit received lines — keep row to preserve receipt history.
-        continue;
+        throw createError(
+          ERROR_CODES.VALIDATION_ERROR,
+          `Qabul qilingan mahsulotni o'chirib bo'lmaydi: ${row.product_name || row.product_id}. Omborga kirgan tovar uchun qaytarish amalidan foydalaning.`
+        );
       }
       deleteItem.run(row.id);
     }
@@ -1672,6 +1698,7 @@ class PurchaseService {
    * Update purchase order header and/or line items.
    * Blocked only for cancelled. Line items: full replace when nothing received yet;
    * merge (preserve received_qty per row) when any goods were received — including fully received POs.
+   * Omitting a line with received_qty > 0 is rejected (stock already posted).
    */
   updateOrder(purchaseOrderId, data, items) {
     if (!purchaseOrderId) {
@@ -1765,7 +1792,18 @@ class PurchaseService {
             throw createError(ERROR_CODES.VALIDATION_ERROR, 'ordered_qty must be > 0');
           }
           if (isUSD) {
-            const unitUsd = Number(it.unit_cost_usd ?? it.unit_price_usd ?? it.unit_cost);
+            const hasExplicitUsd =
+              (it.unit_cost_usd != null && it.unit_cost_usd !== '') ||
+              (it.unit_price_usd != null && it.unit_price_usd !== '');
+            if (!hasExplicitUsd && hasItemUsd) {
+              throw createError(
+                ERROR_CODES.VALIDATION_ERROR,
+                'USD xarid uchun unit_cost_usd majburiy (UZS unit_cost ni dollar deb ko‘paytirib bo‘lmaydi)',
+              );
+            }
+            const unitUsd = Number(
+              hasExplicitUsd ? (it.unit_cost_usd ?? it.unit_price_usd) : it.unit_cost,
+            );
             if (!Number.isFinite(unitUsd) || unitUsd < 0) {
               throw createError(ERROR_CODES.VALIDATION_ERROR, 'unit_cost_usd must be >= 0 for USD purchase');
             }
@@ -2014,12 +2052,15 @@ class PurchaseService {
         this._assertOrderQtyCoversReceived(purchaseOrderId);
       }
 
-      // Currency rules: USD suppliers must use USD receipts with exchange rate
-      const currency = String(data.currency || 'USD').toUpperCase() === 'USD' ? 'USD' : 'UZS';
+      // Currency rules: USD suppliers must use USD receipts with exchange rate.
+      // Default UZS (local inventory currency) — never assume USD when omitted
+      // (UZS unit_cost × fx_rate was a common ~70M+ phantom COGS source).
+      const currencyRaw = data.currency ?? po?.currency ?? 'UZS';
+      const currency = String(currencyRaw).toUpperCase() === 'USD' ? 'USD' : 'UZS';
       if (settlementCurrency === 'USD' && currency !== 'USD') {
         throw createError(ERROR_CODES.VALIDATION_ERROR, 'USD supplier receipt must be in USD');
       }
-      const exchangeRate = currency === 'USD' ? Number(data.exchange_rate) : null;
+      const exchangeRate = currency === 'USD' ? Number(data.exchange_rate ?? po?.fx_rate) : null;
       if (currency === 'USD' && (!Number.isFinite(exchangeRate) || exchangeRate <= 0)) {
         throw createError(ERROR_CODES.VALIDATION_ERROR, 'exchange_rate is required for USD receipt');
       }
@@ -2058,10 +2099,17 @@ class PurchaseService {
         const landedUnitFromPo = poiId ? Number(landedByPoiId.get(poiId)) : NaN;
         const hasLanded = Number.isFinite(landedUnitFromPo) && landedUnitFromPo >= 0;
 
-        let unitUsd = currency === 'USD' ? Number(item.unit_cost_usd ?? item.unit_cost ?? 0) : null;
+        // USD receipts: never treat item.unit_cost as USD (it is often already UZS).
+        // Prefer explicit unit_cost_usd; else derive USD from landed/UZS ÷ fx.
+        let unitUsd = null;
         if (currency === 'USD') {
-          if (hasLanded) {
-            unitUsd = Number(exchangeRate) > 0 ? landedUnitFromPo / Number(exchangeRate) : unitUsd;
+          if (hasLanded && Number(exchangeRate) > 0) {
+            unitUsd = landedUnitFromPo / Number(exchangeRate);
+          } else if (item.unit_cost_usd != null && item.unit_cost_usd !== '') {
+            unitUsd = Number(item.unit_cost_usd);
+          } else if (item.unit_cost != null && item.unit_cost !== '' && Number(exchangeRate) > 0) {
+            // unit_cost alone on a USD receipt = inventory UZS amount, not dollars
+            unitUsd = Number(item.unit_cost) / Number(exchangeRate);
           }
           if (!Number.isFinite(unitUsd) || unitUsd < 0) {
             throw createError(ERROR_CODES.VALIDATION_ERROR, 'unit_cost_usd must be >= 0 for USD receipt');

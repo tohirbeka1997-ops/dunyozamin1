@@ -34,9 +34,7 @@ function withEnv(overrides, fn) {
     });
 }
 
-function sha256(text) {
-  return crypto.createHash('sha256').update(text).digest('hex');
-}
+const { hashPassword } = require('../electron/lib/password.cjs');
 
 const SALES_USER_ID = 'staff-products-001';
 const PRODUCT_ID = 'prod-cost-001';
@@ -57,7 +55,7 @@ function seedDatabase(dbPath) {
   db.prepare(
     `INSERT INTO users (id, username, full_name, email, password_hash, is_active, created_at, updated_at)
      VALUES (?, 'coster@test.com', 'Cost Seller', 'coster@test.com', ?, 1, datetime('now'), datetime('now'))`,
-  ).run(SALES_USER_ID, sha256('secret123'));
+  ).run(SALES_USER_ID, hashPassword('secret123'));
 
   db.prepare(
     `INSERT INTO user_roles (id, user_id, role_id, assigned_at)
@@ -183,7 +181,7 @@ test('staff products: cost price + batch history (RBAC + ordering + amounts)', a
         assert.equal(batchesBody.summary.batch_count, 2);
         assert.equal(Number(batchesBody.summary.avg_cost), 7000);
 
-        // 4. RBAC at the app boundary: a non-staff role is rejected by staffAuth (403).
+        // 4. Cashier may auth, but cost/batch history stays forbidden.
         const cashierToken = signStaffAccessToken(SALES_USER_ID, 'cashier', 'default');
         const cashierRes = await fetch(`${base}/v1/staff/products/${PRODUCT_ID}/batches`, {
           headers: authHeader(cashierToken),

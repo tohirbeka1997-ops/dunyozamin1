@@ -248,4 +248,65 @@ export function todayYMD(): string {
   return formatDateYMD(new Date(), { timeZone: DEFAULT_TZ });
 }
 
+/**
+ * Shift a `YYYY-MM-DD` calendar date by N days (local YMD arithmetic; no toISOString).
+ */
+export function ymdShiftDays(base: string, days: number): string {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(base || '').trim());
+  if (!m) return String(base || '');
+  const y = Number(m[1]);
+  const mo = Number(m[2]);
+  const d = Number(m[3]);
+  // UTC noon calendar math avoids DST edge cases while staying timezone-agnostic on YMD.
+  const dt = new Date(Date.UTC(y, mo - 1, d, 12, 0, 0));
+  dt.setUTCDate(dt.getUTCDate() + days);
+  return `${dt.getUTCFullYear()}-${pad2(dt.getUTCMonth() + 1)}-${pad2(dt.getUTCDate())}`;
+}
+
+/**
+ * Shift a `YYYY-MM-DD` calendar date by N months (clamps day to month length).
+ */
+export function ymdShiftMonths(base: string, months: number): string {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(base || '').trim());
+  if (!m) return String(base || '');
+  const y = Number(m[1]);
+  const mo = Number(m[2]);
+  const d = Number(m[3]);
+  const dt = new Date(Date.UTC(y, mo - 1 + months, 1, 12, 0, 0));
+  const lastDay = new Date(Date.UTC(dt.getUTCFullYear(), dt.getUTCMonth() + 1, 0)).getUTCDate();
+  const day = Math.min(d, lastDay);
+  return `${dt.getUTCFullYear()}-${pad2(dt.getUTCMonth() + 1)}-${pad2(day)}`;
+}
+
+// Uzbekistan is UTC+5 year-round (no DST). Keep this aligned with
+// electron/lib/timezone.cjs (UZBEKISTAN_TZ_HOURS_OFFSET).
+const UZ_OFFSET_HOURS = 5;
+
+/**
+ * Convert a `<input type="datetime-local">` wall-clock string
+ * (`YYYY-MM-DDTHH:mm`, optionally with seconds), interpreted as Asia/Tashkent
+ * local time, into a canonical UTC ISO string (`...Z`). Returns null for
+ * empty/invalid input so callers can store NULL.
+ */
+export function tashkentLocalToUtcIso(local: string | null | undefined): string | null {
+  const m = String(local || '').match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2}))?$/);
+  if (!m) return null;
+  const [, y, mo, d, h, mi, s] = m;
+  return new Date(
+    Date.UTC(Number(y), Number(mo) - 1, Number(d), Number(h) - UZ_OFFSET_HOURS, Number(mi), s ? Number(s) : 0),
+  ).toISOString();
+}
+
+/**
+ * Inverse of {@link tashkentLocalToUtcIso}: take a stored UTC ISO (or any
+ * parseable DB timestamp) and render the Asia/Tashkent wall-clock string
+ * (`YYYY-MM-DDTHH:mm`) for binding back into a datetime-local input.
+ */
+export function utcIsoToTashkentLocal(iso: DbDateInput): string {
+  const d = parseDbDate(iso);
+  if (Number.isNaN(d.getTime())) return '';
+  const shifted = new Date(d.getTime() + UZ_OFFSET_HOURS * 60 * 60 * 1000);
+  return `${shifted.getUTCFullYear()}-${pad2(shifted.getUTCMonth() + 1)}-${pad2(shifted.getUTCDate())}T${pad2(shifted.getUTCHours())}:${pad2(shifted.getUTCMinutes())}`;
+}
+
 

@@ -3,13 +3,6 @@ import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@/components/ui/select';
-import {
   Table,
   TableBody,
   TableCell,
@@ -28,6 +21,8 @@ import { useReportAutoRefresh } from '@/hooks/useReportAutoRefresh';
 import { handleIpcResponse, isElectron, requireElectron } from '@/utils/electron';
 import { useTableSort } from '@/hooks/useTableSort';
 import { compareScalar } from '@/lib/tableSort';
+import SearchableCombobox from '@/components/common/SearchableCombobox';
+import { useTranslation } from 'react-i18next';
 import { SortableTableHead } from '@/components/reports/SortableTableHead';
 
 interface ActRow {
@@ -96,6 +91,7 @@ interface HistoryRow {
 export default function ProductActSverkaReport() {
   const navigate = useNavigate();
   const { toast } = useToast();
+  const { t } = useTranslation();
   const [loading, setLoading] = useState(true);
   const [payload, setPayload] = useState<ActPayload | null>(null);
   const [categories, setCategories] = useState<Category[]>([]);
@@ -113,6 +109,43 @@ export default function ProductActSverkaReport() {
   const [searchTerm, setSearchTerm] = useState('');
   const [historyRows, setHistoryRows] = useState<HistoryRow[]>([]);
   const [historyLoading, setHistoryLoading] = useState(false);
+
+  const warehouseOptions = useMemo(
+    () => [
+      { value: 'all', label: t('combobox.all_warehouses', 'Barcha omborlar') },
+      ...warehouses.map((warehouse) => ({
+        value: warehouse.id,
+        label: warehouse.name,
+      })),
+    ],
+    [warehouses, t]
+  );
+
+  const categoryOptions = useMemo(
+    () => [
+      { value: 'all', label: t('combobox.all_categories', 'Hammasi') },
+      ...categories.map((category) => ({
+        value: category.id,
+        label: category.name,
+      })),
+    ],
+    [categories, t]
+  );
+
+  const productPickerOptions = useMemo(
+    () => [
+      { value: 'all', label: t('combobox.all_products', 'Hammasi') },
+      ...productOptions
+        .slice()
+        .sort((a, b) => (a.name || '').localeCompare(b.name || ''))
+        .map((product) => ({
+          value: product.id,
+          label: `${product.name} (${product.sku})`,
+          keywords: [product.sku, product.barcode].filter(Boolean).join(' '),
+        })),
+    ],
+    [productOptions, t]
+  );
 
   const { sortKey, sortOrder, toggleSort } = useTableSort<SortKey>('net_revenue', 'desc');
 
@@ -281,7 +314,7 @@ export default function ProductActSverkaReport() {
       return s;
     };
     const lines = [headers.join(','), ...sortedForTable.map((r) => headers.map((h) => escape((r as any)[h])).join(','))];
-    const t = new Date().toISOString().slice(0, 10);
+    const t = todayYMD();
     await api.files.saveTextFile({
       defaultFileName: `product-act-sverka-${t}.csv`,
       content: lines.join('\n'),
@@ -398,54 +431,39 @@ export default function ProductActSverkaReport() {
             </div>
             <div>
               <label className="text-xs text-muted-foreground">Ombor (ixtiyoriy)</label>
-              <Select value={warehouseId} onValueChange={setWarehouseId}>
-                <SelectTrigger className="mt-1 h-8">
-                  <SelectValue placeholder="Barcha omborlar" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="all">Barcha omborlar</SelectItem>
-                  {warehouses.map((w) => (
-                    <SelectItem key={w.id} value={w.id}>
-                      {w.name}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+              <SearchableCombobox
+                value={warehouseId}
+                onValueChange={setWarehouseId}
+                options={warehouseOptions}
+                placeholder={t('combobox.all_warehouses', 'Barcha omborlar')}
+                searchPlaceholder={t('combobox.search_warehouse', "Ombor nomi bo'yicha qidirish...")}
+                emptyMessage={t('combobox.no_warehouse', 'Ombor topilmadi')}
+                triggerClassName="mt-1 h-8"
+              />
             </div>
             <div>
               <label className="text-xs text-muted-foreground">Kategoriya</label>
-              <Select value={categoryFilter} onValueChange={setCategoryFilter}>
-                <SelectTrigger className="mt-1 h-8">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="all">Hammasi</SelectItem>
-                  {categories.map((c) => (
-                    <SelectItem key={c.id} value={c.id}>
-                      {c.name}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+              <SearchableCombobox
+                value={categoryFilter}
+                onValueChange={setCategoryFilter}
+                options={categoryOptions}
+                placeholder={t('combobox.select_category', 'Kategoriyani tanlang...')}
+                searchPlaceholder={t('combobox.search_category', "Kategoriya nomi bo'yicha qidirish...")}
+                emptyMessage={t('combobox.no_category', 'Kategoriya topilmadi')}
+                triggerClassName="mt-1 h-8"
+              />
             </div>
             <div>
               <label className="text-xs text-muted-foreground">Mahsulot (ixtiyoriy)</label>
-              <Select value={productId} onValueChange={setProductId}>
-                <SelectTrigger className="mt-1 h-8">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="all">Hammasi</SelectItem>
-                  {productOptions
-                    .slice()
-                    .sort((a, b) => (a.name || '').localeCompare(b.name || ''))
-                    .map((p) => (
-                      <SelectItem key={p.id} value={p.id}>
-                        {p.name} ({p.sku})
-                      </SelectItem>
-                    ))}
-                </SelectContent>
-              </Select>
+              <SearchableCombobox
+                value={productId}
+                onValueChange={setProductId}
+                options={productPickerOptions}
+                placeholder={t('combobox.select_product', 'Mahsulotni tanlang...')}
+                searchPlaceholder={t('combobox.search_product', "Nom, SKU yoki shtrix-kod bo'yicha qidirish...")}
+                emptyMessage={t('combobox.no_product', 'Mahsulot topilmadi')}
+                triggerClassName="mt-1 h-8"
+              />
             </div>
             <div>
               <label className="text-xs text-muted-foreground">Qidirish (mahsulot, SKU, kategoriya)</label>

@@ -31,7 +31,7 @@ import {
   Clock,
   Globe,
 } from 'lucide-react';
-import { searchProducts, getCustomers } from '@/db/api';
+import { searchProducts, getCustomers, getOrdersPage } from '@/db/api';
 import type { ProductWithCategory, Customer } from '@/types/database';
 import { highlightMatch } from '@/utils/searchHighlight';
 import { getRecentSearches, addRecentSearch } from '@/utils/recentSearches';
@@ -58,6 +58,13 @@ const NAV_ITEMS = [
   { name: 'Smeta', path: '/quotes', icon: <FileText className="h-4 w-4" />, keywords: 'quotes smeta' },
 ];
 
+type OrderSearchHit = {
+  id: string;
+  order_number?: string | null;
+  customer_name?: string | null;
+  total_amount?: number | null;
+};
+
 interface GlobalSearchProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -71,7 +78,9 @@ export default function GlobalSearch({ open, onOpenChange }: GlobalSearchProps) 
 
   const [products, setProducts] = useState<ProductWithCategory[]>([]);
   const [customers, setCustomers] = useState<Customer[]>([]);
+  const [orders, setOrders] = useState<OrderSearchHit[]>([]);
   const [searching, setSearching] = useState(false);
+  const [searchError, setSearchError] = useState<string | null>(null);
   const seqRef = useRef(0);
 
   const recentSearches = getRecentSearches('global');
@@ -91,6 +100,8 @@ export default function GlobalSearch({ open, onOpenChange }: GlobalSearchProps) 
       setQuery('');
       setProducts([]);
       setCustomers([]);
+      setOrders([]);
+      setSearchError(null);
     }
   }, [open]);
 
@@ -99,26 +110,51 @@ export default function GlobalSearch({ open, onOpenChange }: GlobalSearchProps) 
     if (!term || term.length < 2) {
       setProducts([]);
       setCustomers([]);
+      setOrders([]);
       setSearching(false);
+      setSearchError(null);
       return;
     }
 
     const seq = ++seqRef.current;
     setSearching(true);
+    setSearchError(null);
 
-    Promise.all([
-      searchProducts(term).catch(() => [] as ProductWithCategory[]),
-      getCustomers({ searchTerm: term }).catch(() => [] as Customer[]),
-    ]).then(([prods, custs]) => {
+    Promise.allSettled([
+      searchProducts(term),
+      getCustomers({ searchTerm: term }),
+      getOrdersPage({ search: term, limit: 5, sort_by: 'created_at', sort_order: 'DESC' }),
+    ]).then((results) => {
       if (seqRef.current !== seq) return;
+
+      const prods =
+        results[0].status === 'fulfilled' && Array.isArray(results[0].value)
+          ? (results[0].value as ProductWithCategory[])
+          : [];
+      const custs =
+        results[1].status === 'fulfilled' && Array.isArray(results[1].value)
+          ? (results[1].value as Customer[])
+          : [];
+      const ords =
+        results[2].status === 'fulfilled' && Array.isArray(results[2].value)
+          ? (results[2].value as OrderSearchHit[])
+          : [];
+
+      const failed = results.filter((r) => r.status === 'rejected').length;
+      if (failed > 0 && prods.length + custs.length + ords.length === 0) {
+        setSearchError(t('common.error', 'Qidiruvda xatolik'));
+        console.error('Global search failed', results.filter((r) => r.status === 'rejected'));
+      }
+
       setProducts(prods.slice(0, 5));
       setCustomers(custs.slice(0, 4));
+      setOrders(ords.slice(0, 5));
       setSearching(false);
-      if (prods.length + custs.length > 0) {
+      if (prods.length + custs.length + ords.length > 0) {
         addRecentSearch('global', term);
       }
     });
-  }, [debouncedQuery]);
+  }, [debouncedQuery, t]);
 
   const handleSelect = useCallback(
     (path: string) => {
@@ -130,20 +166,23 @@ export default function GlobalSearch({ open, onOpenChange }: GlobalSearchProps) 
 
   const isEmpty =
     !searching &&
+    !searchError &&
     query.trim().length >= 2 &&
     products.length === 0 &&
     customers.length === 0 &&
+    orders.length === 0 &&
     filteredNav.length === 0;
 
   return (
     <CommandDialog
       open={open}
       onOpenChange={onOpenChange}
+      shouldFilter={false}
       title="Global qidiruv"
-      description="Mahsulot, mijoz yoki sahifa qidiring"
+      description="Mahsulot, mijoz, buyurtma yoki sahifa qidiring"
     >
       <CommandInput
-        placeholder="Mahsulot, mijoz yoki sahifa nomi..."
+        placeholder="Mahsulot, SKU, barkod, mijoz, telefon yoki buyurtma..."
         value={query}
         onValueChange={setQuery}
       />
@@ -154,6 +193,7 @@ export default function GlobalSearch({ open, onOpenChange }: GlobalSearchProps) 
             {recentSearches.slice(0, 5).map((s) => (
               <CommandItem
                 key={s}
+                value={`recent ${s}`}
                 onSelect={() => setQuery(s)}
                 className="gap-2"
               >
@@ -170,6 +210,7 @@ export default function GlobalSearch({ open, onOpenChange }: GlobalSearchProps) 
             {NAV_ITEMS.slice(0, 6).map((item) => (
               <CommandItem
                 key={item.path}
+                value={`nav ${item.name} ${item.keywords} ${item.path}`}
                 onSelect={() => handleSelect(item.path)}
                 className="gap-2"
               >
@@ -184,37 +225,43 @@ export default function GlobalSearch({ open, onOpenChange }: GlobalSearchProps) 
         {/* Products */}
         {products.length > 0 && (
           <CommandGroup heading="Mahsulotlar">
-            {products.map((p) => (
-              <CommandItem
-                key={p.id}
-                onSelect={() => handleSelect(`/products/${p.id}`)}
-                className="gap-3"
-              >
-                <Package className="h-4 w-4 shrink-0 text-blue-500" />
-                <div className="flex-1 min-w-0">
-                  <div className="font-medium text-sm truncate">
-                    {highlightMatch(p.name, query)}
+            {products.map((p) => {
+              const barcode = String((p as any).barcode || '').trim();
+              return (
+                <CommandItem
+                  key={p.id}
+                  value={`product ${p.name} ${p.sku || ''} ${barcode}`}
+                  onSelect={() => handleSelect(`/products/${p.id}`)}
+                  className="gap-3"
+                >
+                  <Package className="h-4 w-4 shrink-0 text-blue-500" />
+                  <div className="min-w-0 flex-1">
+                    <div className="truncate text-sm font-medium">
+                      {highlightMatch(p.name, query)}
+                    </div>
+                    <div className="text-xs text-muted-foreground">
+                      SKU: {highlightMatch(p.sku || '—', query)}
+                      {barcode ? <> · Barkod: {highlightMatch(barcode, query)}</> : null}
+                      {(p as any).category_name ? ` · ${(p as any).category_name}` : ''}
+                    </div>
                   </div>
-                  <div className="text-xs text-muted-foreground">
-                    SKU: {highlightMatch(p.sku, query)}
-                    {(p as any).category_name ? ` · ${(p as any).category_name}` : ''}
-                  </div>
-                </div>
-                <span className="shrink-0 text-sm font-semibold text-blue-600 dark:text-blue-400">
-                  {formatMoneyUZS(Number(p.sale_price))}
-                </span>
-              </CommandItem>
-            ))}
+                  <span className="shrink-0 text-sm font-semibold text-blue-600 dark:text-blue-400">
+                    {formatMoneyUZS(Number(p.sale_price))}
+                  </span>
+                </CommandItem>
+              );
+            })}
             <CommandItem
+              value={`products all ${query}`}
               onSelect={() => handleSelect(`/products?search=${encodeURIComponent(query)}`)}
-              className="text-xs text-muted-foreground justify-center"
+              className="justify-center text-xs text-muted-foreground"
             >
               Barcha mahsulotlarda ko'rish →
             </CommandItem>
           </CommandGroup>
         )}
 
-        {products.length > 0 && customers.length > 0 && <CommandSeparator />}
+        {products.length > 0 && (customers.length > 0 || orders.length > 0) && <CommandSeparator />}
 
         {/* Customers */}
         {customers.length > 0 && (
@@ -222,12 +269,13 @@ export default function GlobalSearch({ open, onOpenChange }: GlobalSearchProps) 
             {customers.map((c) => (
               <CommandItem
                 key={c.id}
+                value={`customer ${c.name} ${c.phone || ''}`}
                 onSelect={() => handleSelect(`/customers/${c.id}`)}
                 className="gap-3"
               >
                 <Users className="h-4 w-4 shrink-0 text-green-500" />
-                <div className="flex-1 min-w-0">
-                  <div className="font-medium text-sm truncate">
+                <div className="min-w-0 flex-1">
+                  <div className="truncate text-sm font-medium">
                     {highlightMatch(c.name, query)}
                   </div>
                   {c.phone && (
@@ -239,10 +287,51 @@ export default function GlobalSearch({ open, onOpenChange }: GlobalSearchProps) 
               </CommandItem>
             ))}
             <CommandItem
+              value={`customers all ${query}`}
               onSelect={() => handleSelect(`/customers?search=${encodeURIComponent(query)}`)}
-              className="text-xs text-muted-foreground justify-center"
+              className="justify-center text-xs text-muted-foreground"
             >
               Barcha mijozlarda ko'rish →
+            </CommandItem>
+          </CommandGroup>
+        )}
+
+        {(products.length > 0 || customers.length > 0) && orders.length > 0 && <CommandSeparator />}
+
+        {/* Orders */}
+        {orders.length > 0 && (
+          <CommandGroup heading="Buyurtmalar">
+            {orders.map((o) => (
+              <CommandItem
+                key={o.id}
+                value={`order ${o.order_number || ''} ${o.customer_name || ''} ${o.id}`}
+                onSelect={() => handleSelect(`/orders/${o.id}`)}
+                className="gap-3"
+              >
+                <Receipt className="h-4 w-4 shrink-0 text-amber-500" />
+                <div className="min-w-0 flex-1">
+                  <div className="truncate text-sm font-medium">
+                    {highlightMatch(String(o.order_number || o.id), query)}
+                  </div>
+                  {o.customer_name ? (
+                    <div className="text-xs text-muted-foreground">
+                      {highlightMatch(o.customer_name, query)}
+                    </div>
+                  ) : null}
+                </div>
+                {o.total_amount != null ? (
+                  <span className="shrink-0 text-sm font-semibold">
+                    {formatMoneyUZS(Number(o.total_amount) || 0)}
+                  </span>
+                ) : null}
+              </CommandItem>
+            ))}
+            <CommandItem
+              value={`orders all ${query}`}
+              onSelect={() => handleSelect(`/orders?search=${encodeURIComponent(query)}`)}
+              className="justify-center text-xs text-muted-foreground"
+            >
+              Barcha buyurtmalarda ko'rish →
             </CommandItem>
           </CommandGroup>
         )}
@@ -250,11 +339,12 @@ export default function GlobalSearch({ open, onOpenChange }: GlobalSearchProps) 
         {/* Navigation matches */}
         {filteredNav.length > 0 && (
           <>
-            {(products.length > 0 || customers.length > 0) && <CommandSeparator />}
+            {(products.length > 0 || customers.length > 0 || orders.length > 0) && <CommandSeparator />}
             <CommandGroup heading="Sahifalar">
               {filteredNav.map((item) => (
                 <CommandItem
                   key={item.path}
+                  value={`page ${item.name} ${item.keywords} ${item.path}`}
                   onSelect={() => handleSelect(item.path)}
                   className="gap-2"
                 >
@@ -268,17 +358,17 @@ export default function GlobalSearch({ open, onOpenChange }: GlobalSearchProps) 
 
         {/* Searching indicator */}
         {searching && (
-          <div className="py-4 text-center text-sm text-muted-foreground animate-pulse">
+          <div className="animate-pulse py-4 text-center text-sm text-muted-foreground">
             Qidirilmoqda...
           </div>
         )}
 
-        {/* Empty state */}
-        {isEmpty && (
-          <CommandEmpty>
-            "{query}" bo'yicha hech narsa topilmadi
-          </CommandEmpty>
+        {searchError && !searching && (
+          <div className="py-6 text-center text-sm text-destructive">{searchError}</div>
         )}
+
+        {/* Empty state */}
+        {isEmpty && <CommandEmpty>Hech narsa topilmadi</CommandEmpty>}
       </CommandList>
     </CommandDialog>
   );

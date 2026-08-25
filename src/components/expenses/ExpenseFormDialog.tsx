@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import {
   Dialog,
   DialogContent,
@@ -28,6 +28,8 @@ import MoneyInput from '@/components/common/MoneyInput';
 import { invalidateDashboardQueries } from '@/utils/dashboard';
 import { todayYMD } from '@/lib/datetime';
 import { formatMoney, type AppCurrency } from '@/lib/currency';
+import SearchableCombobox from '@/components/common/SearchableCombobox';
+import { useTranslation } from 'react-i18next';
 import { isElectron } from '@/utils/electron';
 
 const EXPENSE_CATEGORIES: ExpenseCategory[] = [
@@ -62,6 +64,7 @@ export default function ExpenseFormDialog({
 }: ExpenseFormDialogProps) {
   const { toast } = useToast();
   const { profile } = useAuth();
+  const { t } = useTranslation();
   const queryClient = useQueryClient();
   
   // Safety check - ensure we have queryClient
@@ -81,6 +84,17 @@ export default function ExpenseFormDialog({
   const [expenseFxRate, setExpenseFxRate] = useState<number | null>(null);
   const [expenseFxLoading, setExpenseFxLoading] = useState(false);
   const [errors, setErrors] = useState<Record<string, string>>({});
+
+  const employeeOptions = useMemo(
+    () =>
+      employees
+        .filter((emp) => emp?.id)
+        .map((emp) => ({
+          value: emp.id,
+          label: emp.name || "Noma'lum",
+        })),
+    [employees]
+  );
 
   // Load employees
   useEffect(() => {
@@ -416,24 +430,17 @@ export default function ExpenseFormDialog({
 
           <div className="space-y-2">
             <Label htmlFor="employeeId">Mas'ul xodim</Label>
-            <Select 
-              value={employeeId && typeof employeeId === 'string' && employeeId.trim() !== '' ? employeeId : undefined} 
-              onValueChange={(value) => setEmployeeId(value && typeof value === 'string' && value.trim() !== '' ? value : undefined)}
-            >
-              <SelectTrigger id="employeeId">
-                <SelectValue placeholder="Xodimni tanlang (ixtiyoriy)" />
-              </SelectTrigger>
-              <SelectContent>
-                {employees?.map((emp) => {
-                  if (!emp || !emp.id) return null;
-                  return (
-                    <SelectItem key={emp.id} value={emp.id}>
-                      {emp.name || 'Noma\'lum'}
-                    </SelectItem>
-                  );
-                })}
-              </SelectContent>
-            </Select>
+            <SearchableCombobox
+              id="employeeId"
+              value={employeeId && employeeId.trim() !== '' ? employeeId : ''}
+              onValueChange={(value) =>
+                setEmployeeId(value && value.trim() !== '' ? value : undefined)
+              }
+              options={employeeOptions}
+              placeholder={t('combobox.select_employee', 'Xodimni tanlang (ixtiyoriy)')}
+              searchPlaceholder={t('combobox.search_employee', "Nom yoki email bo'yicha qidirish...")}
+              emptyMessage={t('combobox.no_employee', 'Xodim topilmadi')}
+            />
           </div>
 
           <div className="space-y-2">

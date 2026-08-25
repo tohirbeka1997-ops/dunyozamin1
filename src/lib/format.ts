@@ -16,7 +16,14 @@
  * 10000 -> 10.000
  */
 
-import { formatMoneyUZS as formatMoneyUZSFromMoney } from './money';
+import {
+  formatMoneyUZS as formatMoneyUZSFromMoney,
+  parseIntegerDots,
+  parseMoneyUZS,
+  parseMoneyFlexible,
+} from './money';
+
+export { parseIntegerDots, parseMoneyUZS, parseMoneyFlexible };
 import { formatMoney } from './currency';
 
 export {
@@ -35,9 +42,12 @@ export {
   type ExpenseAggregateTotals,
   getPoPaidAmount,
   getPoRemainingAmount,
+  getPoRemainingAmountSigned,
+  getPoLedgerCurrency,
   normalizeCurrency,
   aggregatePurchaseOrders,
   calculatePoReceivedAmountUzs,
+  calculatePoReceivedDocAmount,
   type AppCurrency,
   type PoAggregateTotals,
   getCustomerBalances,
@@ -157,5 +167,17 @@ export function formatCustomerBalance(
     label: isUsd ? '0.00 USD' : "0 so'm",
     color: 'text-muted-foreground',
     variant: 'outline',
+  };
+}
+
+/** Split signed customer_ledger.amount into kirim/chiqim columns (act sverka convention). */
+export function splitCustomerLedgerAmount(amount: number | null | undefined): {
+  inAmount: number;
+  outAmount: number;
+} {
+  const amt = Number(amount || 0);
+  return {
+    inAmount: amt > 0 ? amt : 0,
+    outAmount: amt < 0 ? Math.abs(amt) : 0,
   };
 }

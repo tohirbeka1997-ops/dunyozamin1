@@ -30,6 +30,8 @@ class SalesService {
     this.costService = costService;
     this.pricingService = pricingService;
     this.promotionService = promotionService;
+    /** @type {null | { findOpenRevision?: (warehouseId: string) => any }} */
+    this.inventoryRevisions = null;
     this._orderItemsColumns = null;
     this._orderColumns = null;
   }
@@ -196,6 +198,80 @@ class SalesService {
       return row?.value != null ? String(row.value) : null;
     } catch {
       return null;
+    }
+  }
+
+  _isTruthySetting(key, defaultTrue = false) {
+    const raw = (this._getSettingRaw(key) || '').trim().toLowerCase();
+    if (!raw) return defaultTrue;
+    if (raw === '0' || raw === 'false' || raw === 'no' || raw === 'off') return false;
+    if (raw === '1' || raw === 'true' || raw === 'yes' || raw === 'on') return true;
+    return defaultTrue;
+  }
+
+  /**
+   * Soft-lock twin of InventoryService.adjustStock: block stock-affecting POS
+   * completion while a warehouse revision is draft/in_progress.
+   * Setting inventory.revision_block_sales=false disables the hard block.
+   */
+  _assertNoOpenRevisionBlockingSales(warehouseId) {
+    if (!this._isTruthySetting('inventory.revision_block_sales', true)) return;
+    const findOpen = this.inventoryRevisions?.findOpenRevision;
+    if (typeof findOpen !== 'function') return;
+    const open = findOpen.call(this.inventoryRevisions, warehouseId || 'main-warehouse-001');
+    if (!open) return;
+    throw createError(
+      ERROR_CODES.VALIDATION_ERROR,
+      `Ochiq ombor reviziyasi bor (${open.revision_number}). Sotuv bloklangan — avval reviziyani yakunlang yoki bekor qiling.`
+    );
+  }
+
+  /**
+   * Server-side nasiya gate (POS UI is not enough).
+   * - credit_limit > 0 → projected |debt| must not exceed limit (always)
+   * - allow_debt / allow_credit: when sales.credit.require_allow_debt=true,
+   *   at least one flag OR a positive credit_limit is required
+   */
+  _assertCustomerCreditAllowed(customerId, creditAmount, saleCurrency) {
+    const credit = Number(creditAmount) || 0;
+    if (!(credit > 0.009)) return;
+
+    const hasUsd = hasCustomerBalanceUsd(this.db);
+    const row = this.db
+      .prepare(
+        `SELECT id, name, credit_limit, allow_debt, allow_credit, balance${
+          hasUsd ? ', balance_usd' : ''
+        } FROM customers WHERE id = ?`
+      )
+      .get(customerId);
+    if (!row) {
+      throw createError(
+        ERROR_CODES.NOT_FOUND,
+        `Customer not found: ${customerId}. Cannot process credit sale.`
+      );
+    }
+
+    const allowDebt = Number(row.allow_debt) === 1 || Number(row.allow_credit) === 1;
+    const limit = Number(row.credit_limit) || 0;
+    const requireAllowFlag = this._isTruthySetting('sales.credit.require_allow_debt', false);
+    if (requireAllowFlag && !allowDebt && !(limit > 0)) {
+      throw createError(
+        ERROR_CODES.VALIDATION_ERROR,
+        `Nasiya ruxsat etilmagan: "${row.name}" uchun allow_debt/allow_credit yoqilmagan va kredit limiti belgilanmagan.`
+      );
+    }
+
+    if (!(limit > 0)) return;
+
+    const currency = normalizeCustomerCurrency(saleCurrency);
+    const bal = readBalanceInCurrency(this.db, customerId, currency);
+    const projected = bal - credit;
+    if (projected < -0.009 && Math.abs(projected) > limit + 0.02) {
+      const curLabel = currency === 'USD' ? 'USD' : "so'm";
+      throw createError(
+        ERROR_CODES.VALIDATION_ERROR,
+        `Kredit limiti oshib ketdi (${row.name}). Limit: ${limit} ${curLabel}. Yangi qarz: ${Math.abs(projected).toFixed(2)} ${curLabel}.`
+      );
     }
   }
 
@@ -841,7 +917,8 @@ class SalesService {
     const unitCost = hasCostPrice && this.costService
       ? this.costService.resolveCostForSale(product.id, qtyBase, order.warehouse_id, null)
       : 0;
-    const lineProfit = lineTotal - (Number(unitCost) || 0) * Math.abs(Number(qtyBase || qtySale || 0));
+    const signedQty = Number(qtyBase || qtySale || 0);
+    const lineProfit = lineTotal - (Number(unitCost) || 0) * signedQty;
 
     const cols = [
       'id',
@@ -1050,6 +1127,11 @@ class SalesService {
       throw createError(ERROR_CODES.VALIDATION_ERROR, 'Payment information is required');
     }
 
+    const orderPreview = this.db.prepare('SELECT warehouse_id, status FROM orders WHERE id = ?').get(orderId);
+    if (orderPreview?.status === 'hold') {
+      this._assertNoOpenRevisionBlockingSales(orderPreview.warehouse_id || 'main-warehouse-001');
+    }
+
     // Use transaction for atomicity and concurrency safety
     // better-sqlite3's transaction() provides serializable isolation
     return this.db.transaction(() => {
@@ -1234,6 +1316,21 @@ class SalesService {
       const changeAmount = totalPaid > order.total_amount ? totalPaid - order.total_amount : 0;
       const creditAmount = computeSaleCreditAmount(order.total_amount, totalPaid, 0, 0.02);
       assertCreditAmountAligned(order.total_amount, totalPaid, creditAmount, 0, 0.02);
+
+      if (creditAmount > 0.009) {
+        const KNOWN_DEFAULT_CUSTOMER = 'default-customer-001';
+        if (!order.customer_id || order.customer_id === KNOWN_DEFAULT_CUSTOMER) {
+          throw createError(
+            ERROR_CODES.VALIDATION_ERROR,
+            'Credit sales require a registered customer. Please select a customer.'
+          );
+        }
+        this._assertCustomerCreditAllowed(
+          order.customer_id,
+          creditAmount,
+          order.currency || 'UZS'
+        );
+      }
 
       // Determine payment status
       let paymentStatus = 'paid';
@@ -1448,6 +1545,9 @@ class SalesService {
     // Always use main warehouse (ignore any provided warehouseId)
     warehouseId = MAIN_WAREHOUSE_ID;
     console.log('📦 [SalesService.completePOSOrder] Using main warehouse:', warehouseId);
+
+    // Soft-lock: open inventory revision blocks stock-affecting sales (see adjustStock).
+    this._assertNoOpenRevisionBlockingSales(warehouseId);
 
     // CRITICAL FIX: ALWAYS find and link active shift before creating order
     // This ensures all sales are linked to shifts for proper shift closing calculations
@@ -1804,6 +1904,11 @@ class SalesService {
         throw createError(ERROR_CODES.VALIDATION_ERROR, 
           'Credit sales are not allowed for walk-in customers. Please select a registered customer.');
       }
+
+      const saleCurrencyForCredit = normalizeCustomerCurrency(
+        orderData.currency || orderData.sale_currency || 'UZS'
+      );
+      this._assertCustomerCreditAllowed(orderData.customer_id, creditAmount, saleCurrencyForCredit);
       
       console.log('✅ Credit sale validated:', {
         customer_id: orderData.customer_id,
@@ -2086,8 +2191,8 @@ class SalesService {
           hasCostPrice && this.costService && qtyBase > 0
             ? this.costService.resolveCostForSale(product.id, qtyBase, warehouseId, itemId)
             : 0;
-        const lineProfit =
-          lineTotal - (Number(unitCost) || 0) * Math.abs(Number(qtyBase || qtySale || 0));
+        const signedQty = Number(qtyBase || qtySale || 0);
+        const lineProfit = lineTotal - (Number(unitCost) || 0) * signedQty;
         const cols = [
           'id',
           'order_id',
@@ -2823,12 +2928,39 @@ class SalesService {
 
       // Return order details (include customer new_balance when credit sale happened)
       let new_balance;
+      let balanceNotifyDelta = 0;
+      let balanceNotifyCurrency = 'UZS';
       if (orderData.customer_id) {
         try {
-          const customerAfter = this.db.prepare('SELECT balance FROM customers WHERE id = ?').get(orderData.customer_id);
-          if (customerAfter && customerAfter.balance !== undefined) {
-            new_balance = Number(customerAfter.balance) || 0;
+          const hasFinCurrency = this._hasOrderCol('currency');
+          const orderFinCur = this.db
+            .prepare(
+              `SELECT ${hasFinCurrency ? 'currency, ' : ''}total_amount FROM orders WHERE id = ?`,
+            )
+            .get(orderId);
+          balanceNotifyCurrency = normalizeCustomerCurrency(
+            hasFinCurrency ? orderFinCur?.currency : 'UZS',
+          );
+          const customerAfter = this.db
+            .prepare(
+              `SELECT balance${hasCustomerBalanceUsd(this.db) ? ', balance_usd' : ''} FROM customers WHERE id = ?`,
+            )
+            .get(orderData.customer_id);
+          if (customerAfter) {
+            new_balance =
+              balanceNotifyCurrency === 'USD' && customerAfter.balance_usd != null
+                ? Number(customerAfter.balance_usd) || 0
+                : Number(customerAfter.balance) || 0;
           }
+          // Recompute delta for notify (same formula as ledger path)
+          const balanceCreditIn =
+            Number(debtPaidFromOverpay || 0) +
+            (orderTotalAfterRecalc < -payEps &&
+            payoutPayments.some((p) => isRefundBalancePayout(p.payment_method))
+              ? Math.abs(orderTotalAfterRecalc)
+              : 0);
+          const prepaidConsumed = Math.max(0, Number(orderData.prepaid_applied || 0) || 0);
+          balanceNotifyDelta = -finalCreditAmount + balanceCreditIn - prepaidConsumed;
         } catch (_e) {
           // ignore
         }
@@ -2837,7 +2969,11 @@ class SalesService {
       return {
         order_id: orderId,
         order_number: orderNumber,
+        customer_id: orderData.customer_id || null,
+        balance_delta: balanceNotifyDelta,
+        currency: balanceNotifyCurrency,
         ...(new_balance !== undefined ? { new_balance } : {}),
+        credit_amount: typeof finalCreditAmount === 'number' ? finalCreditAmount : 0,
       };
     });
 
@@ -2853,7 +2989,10 @@ class SalesService {
     // by returning the already-committed order instead of surfacing a confusing
     // duplicate-key error to the cashier.
     try {
-      return __runSaleTx();
+      const saleResult = __runSaleTx();
+      this._notifyCreditSaleReport(saleResult);
+      this._notifyBalanceChangeFromSale(saleResult);
+      return saleResult;
     } catch (txErr) {
       const msg = String(txErr && txErr.message ? txErr.message : txErr);
       if (
@@ -3129,7 +3268,7 @@ class SalesService {
     );
     for (const item of items) {
       const qty = Number(item.qty_sale ?? item.quantity ?? 0) || 0;
-      const qtyBase = Math.abs(Number(item.qty_base ?? qty) || 0);
+      const qtyBase = Number(item.qty_base ?? qty) || 0;
       const revenue =
         hasFinalTotal && Number(item.final_total || 0) !== 0
           ? Number(item.final_total)
@@ -3885,6 +4024,44 @@ class SalesService {
     }
 
     return result;
+  }
+
+  /**
+   * Fire-and-forget Telegram report for nasiya (credit) sales. Never throws into checkout.
+   */
+  _notifyCreditSaleReport(saleResult) {
+    try {
+      const orderId = saleResult?.order_id || saleResult?.id;
+      if (!orderId) return;
+      const { notifyCreditSale } = require('../../public-api/lib/reportNotify.cjs');
+      void notifyCreditSale(this.db, orderId).catch((e) => {
+        console.warn('[sales] credit_sale telegram notify failed:', e?.message || e);
+      });
+    } catch (e) {
+      console.warn('[sales] credit_sale telegram notify unavailable:', e?.message || e);
+    }
+  }
+
+  /**
+   * Fire-and-forget customer+staff notify when sale changes customer balance.
+   */
+  _notifyBalanceChangeFromSale(saleResult) {
+    try {
+      const delta = Number(saleResult?.balance_delta || 0);
+      const customerId = saleResult?.customer_id;
+      if (!customerId || !Number.isFinite(delta) || delta === 0) return;
+      const { fireBalanceChangeNotify } = require('../../public-api/lib/balanceChangeNotify.cjs');
+      fireBalanceChangeNotify(this.db, {
+        customerId,
+        delta,
+        balanceAfter: saleResult?.new_balance,
+        currency: saleResult?.currency || 'UZS',
+        reason: Number(saleResult?.credit_amount || 0) > 0 ? 'credit_sale' : 'sale',
+        refId: saleResult?.order_id || saleResult?.id,
+      });
+    } catch (e) {
+      console.warn('[sales] balance change notify unavailable:', e?.message || e);
+    }
   }
 }
 

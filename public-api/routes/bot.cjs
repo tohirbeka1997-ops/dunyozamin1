@@ -411,6 +411,14 @@ function upsertRegistration(db, telegramId, payload) {
   `,
   ).run(marketplaceCustomerId, posCustomerId, loyaltyCardCode, qrPayload);
 
+  try {
+    const CustomersService = require('../../electron/services/customersService.cjs');
+    const customers = new CustomersService(db);
+    customers.ensureLoyaltyCard(posCustomerId, { preferredCode: loyaltyCardCode });
+  } catch (e) {
+    console.warn('[bot] ensureLoyaltyCard failed:', e?.message || e);
+  }
+
   return {
     marketplace_customer_id: marketplaceCustomerId,
     pos_customer_id: posCustomerId,
@@ -1099,6 +1107,122 @@ function mountBotRoutes(dbGetter) {
         .all(today);
       const total = rows.reduce((sum, r) => sum + Number(r.credit_amount || 0), 0);
       res.json({ ok: true, report_type: reportType, date: today, total_credit: total, rows });
+    } catch (e) {
+      res.status(500).json({ error: 'internal_error', reason: e.message || String(e) });
+    }
+  });
+
+  /**
+   * Admin store reports for Telegram reply/inline keyboard:
+   * daily | ai | dead_stock | debt | profit | marketing
+   */
+  router.get('/admin/store-reports/:kind', async (req, res) => {
+    try {
+      const db = dbGetter();
+      const {
+        normalizeReportKind,
+        isBotButtonsEnabled,
+        buildStoreReport,
+        buildReportInlineKeyboardRows,
+        buildReportReplyKeyboardRows,
+        REPORT_MENU,
+      } = require('../lib/botStoreReports.cjs');
+      const rawKind = String(req.params.kind || '').trim().toLowerCase();
+      const kind = normalizeReportKind(rawKind);
+      if (!kind) {
+        res.status(400).json({ error: 'invalid_report_kind' });
+        return;
+      }
+      // Client signs the path kind as sent (e.g. marketing or assortiment).
+      const payloadHash = hashJsonPayload({ kind: rawKind });
+      const actorTelegramId = requireAdminPayload(req, res, 'admin_store_report', payloadHash);
+      if (actorTelegramId == null) return;
+
+      if (kind === 'menu') {
+        res.json({
+          ok: true,
+          kind: 'menu',
+          buttons_enabled: isBotButtonsEnabled(db),
+          menu: REPORT_MENU,
+          reply_keyboard: buildReportReplyKeyboardRows(db),
+          inline_keyboard: buildReportInlineKeyboardRows(db),
+        });
+        return;
+      }
+
+      const out = await buildStoreReport(db, kind, (() => {
+        try {
+          require('../../electron/config/loadRootEnv.cjs').loadRootEnv();
+        } catch {
+          // ignore
+        }
+        try {
+          const { resolveOpenAiConfig } = require('../lib/storeAiAnalysis.cjs');
+          const { apiKey, model } = resolveOpenAiConfig({});
+          return { apiKey, model };
+        } catch {
+          return {};
+        }
+      })());
+      if (!out.ok) {
+        res.status(400).json({ error: out.reason || 'build_failed' });
+        return;
+      }
+      res.json({
+        ok: true,
+        kind: out.kind,
+        text: out.text,
+        texts: out.texts,
+        mode: out.mode || null,
+        fallbackReason: out.fallbackReason || null,
+        parseMode: out.parseMode || null,
+        replyMarkup: out.replyMarkup || null,
+      });
+    } catch (e) {
+      res.status(500).json({ error: 'internal_error', reason: e.message || String(e) });
+    }
+  });
+
+  /**
+   * Admin: send credit reminder to a customer (Telegram/SMS via creditReminder).
+   * Used by bot inline "Eslatma yuborish" on debt/marketing reports.
+   */
+  router.post('/admin/customers/:customerId/credit-reminder', async (req, res) => {
+    try {
+      const db = dbGetter();
+      const customerId = String(req.params.customerId || '').trim();
+      if (!customerId || customerId.length > 64) {
+        res.status(400).json({ error: 'invalid_customer_id' });
+        return;
+      }
+      const payloadHash = hashJsonPayload({ customer_id: customerId });
+      const actorTelegramId = requireAdminPayload(req, res, 'admin_credit_remind', payloadHash);
+      if (actorTelegramId == null) return;
+
+      const {
+        sendManualCreditReminderForCustomer,
+        humanizeCreditReminderError,
+      } = require('../lib/creditReminder.cjs');
+      const out = await sendManualCreditReminderForCustomer(db, customerId, {
+        botToken: String(process.env.TELEGRAM_BOT_TOKEN || '').trim(),
+        reminderType: 'due_today',
+      });
+      if (!out?.ok) {
+        res.status(400).json({
+          ok: false,
+          error: out?.reason || 'send_failed',
+          message: humanizeCreditReminderError
+            ? humanizeCreditReminderError(out?.reason || 'send_failed')
+            : out?.reason || 'send_failed',
+        });
+        return;
+      }
+      res.json({
+        ok: true,
+        channel: out.channel || null,
+        status: out.status || 'sent',
+        customer_id: customerId,
+      });
     } catch (e) {
       res.status(500).json({ error: 'internal_error', reason: e.message || String(e) });
     }

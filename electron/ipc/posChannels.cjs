@@ -12,6 +12,8 @@ module.exports = {
     // Products
     'pos:products:list',
     'pos:products:searchScreen',
+    'pos:products:listScanIndex',
+    'pos:products:resolveScan',
     'pos:products:get',
     'pos:products:getBySku',
     'pos:products:getByBarcode',
@@ -71,6 +73,7 @@ module.exports = {
     'pos:customers:delete',
     'pos:customers:updateBalance',
     'pos:customers:receivePayment',
+    'pos:customers:getTotalDebt',
     'pos:customers:getPayments',
     'pos:customers:getLedger',
     'pos:customers:getLedgerCount',
@@ -92,6 +95,7 @@ module.exports = {
     'pos:suppliers:createReturn',
     'pos:suppliers:getReturn',
     'pos:suppliers:listReturns',
+    'pos:suppliers:listReturnableProducts',
 
     // Inventory
     'pos:inventory:getBalances',
@@ -104,7 +108,18 @@ module.exports = {
     'pos:inventory:getCurrentStock',
     'pos:inventory:getBatchesByProduct',
     'pos:inventory:getBatchReconcile',
+    'pos:inventory:getBatchHealth',
+    'pos:inventory:repairBatchCoverage',
     'pos:inventory:runBatchCutoverSnapshot',
+    'pos:inventory:createRevision',
+    'pos:inventory:listRevisions',
+    'pos:inventory:getRevision',
+    'pos:inventory:updateRevisionItemCount',
+    'pos:inventory:clearRevisionItemCount',
+    'pos:inventory:countRevisionByBarcode',
+    'pos:inventory:bulkSetRevisionItemCounts',
+    'pos:inventory:completeRevision',
+    'pos:inventory:cancelRevision',
 
     // Sales
     'pos:sales:createDraftOrder',
@@ -194,6 +209,8 @@ module.exports = {
     'pos:reports:customerSalesReport',
     'pos:reports:customerAging',
     'pos:reports:supplierAging',
+    'pos:reports:agingWarnings',
+    'pos:reports:supplierPaymentsDue',
     'pos:reports:vipCustomers',
     'pos:reports:loyaltyPointsSummary',
     'pos:reports:lostCustomers',

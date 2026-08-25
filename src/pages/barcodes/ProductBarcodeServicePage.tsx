@@ -31,10 +31,7 @@ import { useConfirmDialog } from '@/contexts/ConfirmDialogContext';
 import { checkDuplicateBarcode, validateProductBarcode } from '@/lib/barcodes/productBarcode';
 import { Checkbox } from '@/components/ui/checkbox';
 import { formatMoneyUZS } from '@/lib/format';
-import {
-  defaultProductLabelLayout,
-  type ProductLabelElement,
-} from '@/components/barcodes/ProductLabelLayoutEditor';
+import { defaultProductLabelLayout, type LabelElement } from '@/lib/barcodes/labelModel';
 import ProductLabelLayoutPrint from '@/components/barcodes/ProductLabelLayoutPrint';
 import { openPrintWindowLabel } from '@/lib/print';
 
@@ -101,7 +98,7 @@ export default function ProductBarcodeServicePage() {
   const [labelPriceText, setLabelPriceText] = useState('');
   const [labelFieldsTouched, setLabelFieldsTouched] = useState(false);
 
-  const [layoutElements, setLayoutElements] = useState<ProductLabelElement[]>(() =>
+  const [layoutElements, setLayoutElements] = useState<LabelElement[]>(() =>
     defaultProductLabelLayout(39, 20)
   );
   const [showBarcodeDigits] = useState(false);

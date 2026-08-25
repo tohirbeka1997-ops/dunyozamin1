@@ -46,6 +46,98 @@ function registerSettingsHandlers(services) {
     return settings.delete(key);
   }));
 
+  // Telegram business reports — test send (admin)
+  ipcMain.removeHandler('pos:settings:testTelegramReport');
+  ipcMain.handle(
+    'pos:settings:testTelegramReport',
+    wrapHandler(async () => {
+      requireAdmin(getDb());
+      const db = getDb();
+      const { sendTestReport } = require('../../public-api/lib/reportNotify.cjs');
+      return sendTestReport(db, {});
+    }),
+  );
+
+  // Telegram AI store analysis — on-demand send (admin)
+  ipcMain.removeHandler('pos:settings:testTelegramAiAnalysis');
+  ipcMain.handle(
+    'pos:settings:testTelegramAiAnalysis',
+    wrapHandler(async () => {
+      requireAdmin(getDb());
+      const db = getDb();
+      // Re-read root `.env` so OPENAI_* edits apply without full OS relaunch
+      try {
+        require('../config/loadRootEnv.cjs').loadRootEnv();
+      } catch {
+        // ignore
+      }
+      const {
+        sendAiAnalysisNow,
+        resolveOpenAiConfig,
+        resolveGeminiTextConfig,
+      } = require('../../public-api/lib/storeAiAnalysis.cjs');
+      const openai = resolveOpenAiConfig({});
+      const gemini = resolveGeminiTextConfig({});
+      return sendAiAnalysisNow(db, {
+        apiKey: openai.apiKey,
+        model: openai.model,
+        geminiApiKey: gemini.apiKey,
+        geminiTextModel: gemini.model,
+      });
+    }),
+  );
+
+  // Telegram daily marketing poster — on-demand send (admin)
+  ipcMain.removeHandler('pos:settings:testTelegramDailyPoster');
+  ipcMain.handle(
+    'pos:settings:testTelegramDailyPoster',
+    wrapHandler(async () => {
+      requireAdmin(getDb());
+      const db = getDb();
+      try {
+        require('../config/loadRootEnv.cjs').loadRootEnv();
+      } catch {
+        // ignore
+      }
+      const { sendDailyPosterNow } = require('../../public-api/lib/dailyStorePoster.cjs');
+      return sendDailyPosterNow(db, {});
+    }),
+  );
+
+  // OPENAI / GEMINI keys loaded? (yes/no only — never return the key)
+  ipcMain.removeHandler('pos:settings:openaiStatus');
+  ipcMain.handle(
+    'pos:settings:openaiStatus',
+    wrapHandler(async () => {
+      requireAdmin(getDb());
+      try {
+        require('../config/loadRootEnv.cjs').loadRootEnv();
+      } catch {
+        // ignore
+      }
+      const {
+        resolveOpenAiConfig,
+        resolveGeminiTextConfig,
+      } = require('../../public-api/lib/storeAiAnalysis.cjs');
+      const openai = resolveOpenAiConfig({});
+      const gemini = resolveGeminiTextConfig({});
+      const hasOpenAi = Boolean(openai.hasApiKey);
+      const hasGemini = Boolean(gemini.hasApiKey);
+      const provider = hasOpenAi ? 'openai' : hasGemini ? 'gemini' : null;
+      return {
+        hasApiKey: hasOpenAi || hasGemini,
+        hasOpenAi,
+        hasGemini,
+        provider,
+        model: hasOpenAi
+          ? String(openai.model || '')
+          : hasGemini
+            ? String(gemini.model || '')
+            : null,
+      };
+    }),
+  );
+
   // Reset local SQLite database (HOST only) — admin-only
   ipcMain.removeHandler('pos:settings:resetDatabase');
   ipcMain.handle(

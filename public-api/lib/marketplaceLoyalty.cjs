@@ -1,5 +1,7 @@
 'use strict';
 
+const { randomUUID } = require('crypto');
+
 function ensureLoyaltySchema(db) {
   db.exec(`
     CREATE TABLE IF NOT EXISTS marketplace_loyalty_accounts (
@@ -24,13 +26,81 @@ function ensureLoyaltySchema(db) {
   `);
 }
 
+function hasTable(db, name) {
+  try {
+    return !!db.prepare(`SELECT name FROM sqlite_master WHERE type='table' AND name=?`).get(name);
+  } catch {
+    return false;
+  }
+}
+
+function hasCustomersCol(db, col) {
+  try {
+    if (!hasTable(db, 'customers')) return false;
+    return db.prepare(`PRAGMA table_info(customers)`).all().some((c) => c.name === col);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * marketplace_customers.id → bound POS customers.id
+ */
+function resolvePosCustomerId(db, marketplaceCustomerId) {
+  const mcId = Number.parseInt(String(marketplaceCustomerId), 10);
+  if (!Number.isFinite(mcId) || mcId <= 0) return null;
+  if (!hasTable(db, 'marketplace_customer_bindings')) return null;
+  const row = db
+    .prepare(
+      `SELECT pos_customer_id FROM marketplace_customer_bindings WHERE marketplace_customer_id = ? LIMIT 1`,
+    )
+    .get(mcId);
+  return row?.pos_customer_id || null;
+}
+
+function readPosBonusPoints(db, posCustomerId) {
+  if (!posCustomerId || !hasCustomersCol(db, 'bonus_points')) return 0;
+  const row = db.prepare('SELECT bonus_points FROM customers WHERE id = ?').get(posCustomerId);
+  return Math.floor(Number(row?.bonus_points) || 0);
+}
+
+function writePosBonusPoints(db, posCustomerId, nextBalance) {
+  if (!posCustomerId || !hasCustomersCol(db, 'bonus_points')) return;
+  db.prepare(
+    `UPDATE customers SET bonus_points = ?, updated_at = datetime('now') WHERE id = ?`,
+  ).run(Math.floor(Number(nextBalance) || 0), posCustomerId);
+}
+
+function insertPosBonusLedger(db, { posCustomerId, type, points, orderId, note }) {
+  if (!posCustomerId || !hasTable(db, 'customer_bonus_ledger')) return;
+  try {
+    db.prepare(
+      `
+      INSERT INTO customer_bonus_ledger (id, customer_id, type, points, order_id, note, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, datetime('now'))
+    `,
+    ).run(randomUUID(), posCustomerId, type, points, orderId != null ? String(orderId) : null, note || null);
+  } catch (e) {
+    console.warn('[marketplaceLoyalty] customer_bonus_ledger insert skip:', e?.message || e);
+  }
+}
+
 function getPointsPerChunk() {
   const n = Number.parseInt(String(process.env.MARKETPLACE_LOYALTY_POINTS_PER_1000 || '1'), 10);
   return Number.isFinite(n) && n > 0 ? n : 1;
 }
 
+/**
+ * Unified balance: customers.bonus_points on the bound POS customer.
+ * @param {object} db
+ * @param {number} customerId marketplace_customers.id
+ */
 function getBalance(db, customerId) {
   ensureLoyaltySchema(db);
+  const posId = resolvePosCustomerId(db, customerId);
+  if (posId) return readPosBonusPoints(db, posId);
+
+  // Legacy fallback before binding exists.
   const row = db
     .prepare('SELECT points_balance FROM marketplace_loyalty_accounts WHERE customer_id = ?')
     .get(customerId);
@@ -55,6 +125,7 @@ function listLedger(db, customerId, limit = 20) {
 
 function awardPaidOrderPoints(db, { customerId, orderId, totalAmount }) {
   ensureLoyaltySchema(db);
+  const mcId = Number.parseInt(String(customerId), 10);
   const sums = Math.max(0, Number(totalAmount) || 0);
   const pointsPerChunk = getPointsPerChunk();
   const earned = Math.floor(sums / 1000) * pointsPerChunk;
@@ -75,48 +146,50 @@ function awardPaidOrderPoints(db, { customerId, orderId, totalAmount }) {
       return { earned_points: 0, balance: getBalance(db, customerId), inserted: false };
     }
 
-    const current = getBalance(db, customerId);
+    const posId = resolvePosCustomerId(db, mcId);
+    const current = posId ? readPosBonusPoints(db, posId) : getBalance(db, mcId);
     const next = current + earned;
-    db.prepare(
-      `
-      INSERT INTO marketplace_loyalty_accounts (customer_id, points_balance, updated_at)
-      VALUES (?, ?, datetime('now'))
-      ON CONFLICT(customer_id) DO UPDATE SET
-        points_balance = excluded.points_balance,
-        updated_at = excluded.updated_at
-    `,
-    ).run(customerId, next);
+
+    if (posId) {
+      writePosBonusPoints(db, posId, next);
+      insertPosBonusLedger(db, {
+        posCustomerId: posId,
+        type: 'earn',
+        points: earned,
+        orderId,
+        note: `Onlayn buyurtma #${orderId}`,
+      });
+    } else {
+      db.prepare(
+        `
+        INSERT INTO marketplace_loyalty_accounts (customer_id, points_balance, updated_at)
+        VALUES (?, ?, datetime('now'))
+        ON CONFLICT(customer_id) DO UPDATE SET
+          points_balance = excluded.points_balance,
+          updated_at = excluded.updated_at
+      `,
+      ).run(mcId, next);
+    }
 
     db.prepare(
       `
       INSERT INTO marketplace_loyalty_ledger (customer_id, type, points_delta, order_id, note)
       VALUES (?, 'earn_paid_order', ?, ?, ?)
     `,
-    ).run(customerId, earned, orderId, 'Order paid');
+    ).run(mcId, earned, orderId, 'Order paid');
 
     return { earned_points: earned, balance: next, inserted: true };
   })();
 }
 
-/**
- * Sums value of one loyalty point when redeemed at checkout.
- * Redemption is DISABLED unless the operator sets a positive value, so no
- * surprise discounts appear in production before the business configures it.
- */
 function getPointValueSums() {
   const n = Number.parseInt(String(process.env.MARKETPLACE_LOYALTY_POINT_VALUE_SUMS || '0'), 10);
   return Number.isFinite(n) && n > 0 ? n : 0;
 }
 
-/**
- * Redeem (spend) loyalty points against an order. Deducts from the balance and
- * writes a negative ledger row. MUST be called inside the caller's transaction
- * (uses plain statements, never opens a nested transaction). Idempotent per
- * order via UNIQUE(order_id, type). Clamps to the available balance.
- * @returns {{ redeemed: number }}
- */
 function redeemPointsForOrder(db, { customerId, orderId, points }) {
   ensureLoyaltySchema(db);
+  const mcId = Number.parseInt(String(customerId), 10);
   const want = Math.max(0, Math.floor(Number(points) || 0));
   if (want <= 0) return { redeemed: 0 };
 
@@ -125,36 +198,43 @@ function redeemPointsForOrder(db, { customerId, orderId, points }) {
     .get(orderId);
   if (existing) return { redeemed: Math.abs(Number(existing.points_delta) || 0) };
 
-  const current = getBalance(db, customerId);
+  const posId = resolvePosCustomerId(db, mcId);
+  const current = posId ? readPosBonusPoints(db, posId) : getBalance(db, mcId);
   const redeem = Math.min(want, current);
   if (redeem <= 0) return { redeemed: 0 };
 
-  db.prepare(
-    `
-    INSERT INTO marketplace_loyalty_accounts (customer_id, points_balance, updated_at)
-    VALUES (?, ?, datetime('now'))
-    ON CONFLICT(customer_id) DO UPDATE SET
-      points_balance = excluded.points_balance,
-      updated_at = excluded.updated_at
-  `,
-  ).run(customerId, current - redeem);
+  const next = current - redeem;
+  if (posId) {
+    writePosBonusPoints(db, posId, next);
+    insertPosBonusLedger(db, {
+      posCustomerId: posId,
+      type: 'redeem',
+      points: -redeem,
+      orderId,
+      note: `Onlayn buyurtma #${orderId} ball ishlatildi`,
+    });
+  } else {
+    db.prepare(
+      `
+      INSERT INTO marketplace_loyalty_accounts (customer_id, points_balance, updated_at)
+      VALUES (?, ?, datetime('now'))
+      ON CONFLICT(customer_id) DO UPDATE SET
+        points_balance = excluded.points_balance,
+        updated_at = excluded.updated_at
+    `,
+    ).run(mcId, next);
+  }
 
   db.prepare(
     `
     INSERT INTO marketplace_loyalty_ledger (customer_id, type, points_delta, order_id, note)
     VALUES (?, 'redeem_order', ?, ?, ?)
   `,
-  ).run(customerId, -redeem, orderId, 'Points redeemed at checkout');
+  ).run(mcId, -redeem, orderId, 'Points redeemed at checkout');
 
   return { redeemed: redeem };
 }
 
-/**
- * Refund points that were redeemed for an order (on cancel/expiry). Idempotent:
- * only refunds once, guarded by a `refund_redeem` ledger row. Uses plain
- * statements so it is safe to call from inside or outside a transaction.
- * @returns {{ refunded: number }}
- */
 function refundOrderRedemption(db, orderId) {
   ensureLoyaltySchema(db);
   const redeemRow = db
@@ -173,30 +253,45 @@ function refundOrderRedemption(db, orderId) {
   const pts = Math.abs(Number(redeemRow.points_delta) || 0);
   if (pts <= 0) return { refunded: 0 };
 
-  const customerId = redeemRow.customer_id;
-  const current = getBalance(db, customerId);
-  db.prepare(
-    `
-    INSERT INTO marketplace_loyalty_accounts (customer_id, points_balance, updated_at)
-    VALUES (?, ?, datetime('now'))
-    ON CONFLICT(customer_id) DO UPDATE SET
-      points_balance = excluded.points_balance,
-      updated_at = excluded.updated_at
-  `,
-  ).run(customerId, current + pts);
+  const mcId = redeemRow.customer_id;
+  const posId = resolvePosCustomerId(db, mcId);
+  const current = posId ? readPosBonusPoints(db, posId) : getBalance(db, mcId);
+  const next = current + pts;
+
+  if (posId) {
+    writePosBonusPoints(db, posId, next);
+    insertPosBonusLedger(db, {
+      posCustomerId: posId,
+      type: 'adjust',
+      points: pts,
+      orderId,
+      note: `Onlayn buyurtma #${orderId} ball qaytarildi`,
+    });
+  } else {
+    db.prepare(
+      `
+      INSERT INTO marketplace_loyalty_accounts (customer_id, points_balance, updated_at)
+      VALUES (?, ?, datetime('now'))
+      ON CONFLICT(customer_id) DO UPDATE SET
+        points_balance = excluded.points_balance,
+        updated_at = excluded.updated_at
+    `,
+    ).run(mcId, next);
+  }
 
   db.prepare(
     `
     INSERT INTO marketplace_loyalty_ledger (customer_id, type, points_delta, order_id, note)
     VALUES (?, 'refund_redeem', ?, ?, ?)
   `,
-  ).run(customerId, pts, orderId, 'Points refunded (order cancelled)');
+  ).run(mcId, pts, orderId, 'Points refunded (order cancelled)');
 
   return { refunded: pts };
 }
 
 module.exports = {
   ensureLoyaltySchema,
+  resolvePosCustomerId,
   getBalance,
   listLedger,
   awardPaidOrderPoints,

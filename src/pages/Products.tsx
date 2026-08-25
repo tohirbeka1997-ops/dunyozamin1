@@ -26,17 +26,16 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table';
-import { Badge } from '@/components/ui/badge';
 import { createProduct, deleteProduct, getProducts, updateProduct, productUpdateEmitter } from '@/db/api';
 import { useProducts } from '@/hooks/useProducts';
 import type { ProductWithCategory } from '@/types/database';
-import { Plus, Search, Pencil, Trash2, Eye, AlertTriangle, Package, FileDown, ChevronDown, RotateCcw, Percent } from 'lucide-react';
-import { highlightMatch } from '@/utils/searchHighlight';
+import { Plus, Search, Package, FileDown, ChevronDown, Percent } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 import { useNavigate, useSearchParams } from 'react-router-dom';
-import { formatUnit } from '@/utils/formatters';
 import { formatMoneyUZS, formatNumberUZ } from '@/lib/format';
-import { getProductImageDisplayUrl, normalizeImportImageUrl } from '@/lib/productImageUrl';
+import { normalizeImportImageUrl } from '@/lib/productImageUrl';
+import { formatUnit } from '@/utils/formatters';
+import { productShowInMarketplace } from '@/lib/productMarketplace';
 import { handleIpcResponse, isElectron, requireElectron } from '@/utils/electron';
 import VirtualizedProductsTable from '@/components/products/VirtualizedProductsTable';
 import { useConfirmDialog } from '@/contexts/ConfirmDialogContext';
@@ -52,9 +51,9 @@ import {
 } from '@/components/ui/dropdown-menu';
 import MoneyInput from '@/components/common/MoneyInput';
 import { Sheet, SheetContent } from '@/components/ui/sheet';
-import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
-import { productShowInMarketplace } from '@/lib/productMarketplace';
+import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import BulkPriceUpdateDialog from '@/components/products/BulkPriceUpdateDialog';
+import { useDebounce } from '@/hooks/use-debounce';
 
 export default function Products() {
   const { t } = useTranslation();
@@ -74,24 +73,40 @@ export default function Products() {
   const storedQueryKey = useProductsListStore((state) => state.queryKey);
   const storedFiltersQuery = useProductsListStore((state) => state.filtersQuery);
   const storedPage = useProductsListStore((state) => state.page);
-  const storedScrollTop = useProductsListStore((state) => state.scrollTop);
   const setStoredPage = useProductsListStore((state) => state.setPage);
+  // Do NOT subscribe to scrollTop — writing it on every scroll would re-render the whole page.
   const setStoredScrollTop = useProductsListStore((state) => state.setScrollTop);
   const setStoredFiltersQuery = useProductsListStore((state) => state.setFiltersQuery);
   const setStoredPageSize = useProductsListStore((state) => state.setPageSize);
   const setLastFocusedProductId = useProductsListStore((state) => state.setLastFocusedProductId);
   const resetForQuery = useProductsListStore((state) => state.resetForQuery);
   const [restoreDone, setRestoreDone] = useState(false);
+  const [restoreScrollTop, setRestoreScrollTop] = useState(0);
   const PAGE_SIZE = 200;
   
   // Read filters from URL query params (persistent across navigation)
   const searchTerm = searchParams.get('search') || '';
+  const [searchInput, setSearchInput] = useState(searchTerm);
+  const debouncedSearchTerm = useDebounce(searchInput, 250);
   const categoryFilter = searchParams.get('category') || 'all';
   const statusFilter = searchParams.get('status') || 'active';
   const stockFilter = searchParams.get('stock') || 'all';
   const marketplaceFilter = (searchParams.get('marketplace') || 'all') as 'all' | 'online' | 'pos_only';
   const sortBy = (searchParams.get('sortBy') || 'name') as 'name' | 'sku' | 'created_at' | 'current_stock' | 'sale_price';
   const sortOrder = (searchParams.get('sortOrder') || 'asc') as 'asc' | 'desc';
+
+  useEffect(() => {
+    setSearchInput(searchTerm);
+  }, [searchTerm]);
+
+  useEffect(() => {
+    const trimmed = debouncedSearchTerm.trim();
+    if (trimmed === searchTerm) return;
+    const newParams = new URLSearchParams(searchParams);
+    if (!trimmed) newParams.delete('search');
+    else newParams.set('search', trimmed);
+    setSearchParams(newParams, { replace: true });
+  }, [debouncedSearchTerm, searchTerm, searchParams, setSearchParams]);
   
   useEffect(() => {
     if (storedQueryKey !== listQueryKey) {
@@ -101,6 +116,7 @@ export default function Products() {
 
   useEffect(() => {
     setRestoreDone(false);
+    setRestoreScrollTop(0);
   }, [listQueryKey]);
 
   useEffect(() => {
@@ -179,7 +195,7 @@ export default function Products() {
 
   // Keep initial load light to avoid UI stalls on open; infinite scroll can load more.
   const { products, categories, loading, loadingMore, error, refetch, loadMore, hasMore, page } = useProducts(true, {
-    searchTerm: searchTerm || undefined,
+    searchTerm: debouncedSearchTerm || undefined,
     categoryId: categoryFilter !== 'all' ? categoryFilter : undefined,
     status: statusFilter === 'all' ? 'all' : (statusFilter as 'active' | 'inactive'),
     stockStatus: stockFilter === 'all' ? 'all' : (stockFilter as 'low' | 'out'),
@@ -210,54 +226,16 @@ export default function Products() {
       void loadMore();
       return;
     }
+    setRestoreScrollTop(
+      storedQueryKey === listQueryKey ? useProductsListStore.getState().scrollTop : 0
+    );
     setRestoreDone(true);
-  }, [restoreDone, loading, loadingMore, page, targetPage, hasMore, loadMore]);
+  }, [restoreDone, loading, loadingMore, page, targetPage, hasMore, loadMore, storedQueryKey, listQueryKey]);
 
   useEffect(() => {
     if (storedQueryKey !== listQueryKey) return;
     setStoredPage(page);
   }, [page, storedQueryKey, listQueryKey, setStoredPage]);
-
-  // Infinite scroll sentinel
-  const loadMoreRef = useRef<HTMLDivElement | null>(null);
-  const observerRef = useRef<IntersectionObserver | null>(null);
-
-  useEffect(() => {
-    const el = loadMoreRef.current;
-    if (!el) return;
-    if (!hasMore) return;
-
-    // Disconnect previous observer
-    if (observerRef.current) {
-      observerRef.current.disconnect();
-      observerRef.current = null;
-    }
-
-    observerRef.current = new IntersectionObserver(
-      (entries) => {
-        const entry = entries[0];
-        if (!entry?.isIntersecting) return;
-        if (loading || loadingMore) return;
-        if (!hasMore) return;
-        // Fire and forget (useProducts has its own internal guards/debounce)
-        void loadMore();
-      },
-      {
-        root: null, // viewport
-        rootMargin: '200px', // start loading a bit before reaching the bottom
-        threshold: 0,
-      }
-    );
-
-    observerRef.current.observe(el);
-
-    return () => {
-      if (observerRef.current) {
-        observerRef.current.disconnect();
-        observerRef.current = null;
-      }
-    };
-  }, [hasMore, loading, loadingMore, loadMore]);
 
   // Show error toast if loading fails
   useEffect(() => {
@@ -365,6 +343,7 @@ export default function Products() {
       const headers = [
         'Nomi',
         'SKU',
+        'Artikul',
         'Shtrix-kod',
         'Kategoriya',
         'Birlik',
@@ -389,6 +368,7 @@ export default function Products() {
         return [
           p?.name || '',
           p?.sku || '',
+          p?.article || '',
           p?.barcode || '',
           categoryName,
           unit ? formatUnit(unit) : '',
@@ -533,6 +513,7 @@ export default function Products() {
     const headers = [
       'Nomi',
       'SKU',
+      'Artikul',
       'Shtrix-kod',
       'Kategoriya',
       'Birlik',
@@ -550,6 +531,7 @@ export default function Products() {
       [
         'Sut 1L',
         'MILK-1L-001',
+        'SUT-1L',
         '4780123456789',
         'Sut mahsulotlari',
         'pcs',
@@ -566,6 +548,7 @@ export default function Products() {
       [
         'Guruch 1kg',
         'RICE-1KG-001',
+        '',
         '',
         'Bakaleya',
         'kg',
@@ -751,6 +734,7 @@ export default function Products() {
       // Support BOTH Uzbek template/export headers and legacy English template headers
       const iName = findHeaderIndex(headers, ['nomi', 'name']);
       const iSku = findHeaderIndex(headers, ['sku']);
+      const iArticle = findHeaderIndex(headers, ['artikul', 'article', 'article_number', 'vendor_code']);
       const iBarcode = findHeaderIndex(headers, ['shtrix-kod', 'barcode']);
       const iCategory = findHeaderIndex(headers, ['kategoriya', 'category']);
       const iUnit = findHeaderIndex(headers, ['birlik', 'unit']);
@@ -833,9 +817,11 @@ export default function Products() {
           continue;
         }
 
+        const articleRaw = iArticle >= 0 ? String(row[iArticle] || '').trim() : '';
         const payload: any = {
           name,
           sku,
+          article: articleRaw ? articleRaw.toUpperCase() : null,
           barcode: iBarcode >= 0 ? (String(row[iBarcode] || '').trim() || null) : null,
           description: iDesc >= 0 ? String(row[iDesc] || '').trim() || null : null,
           category_id: categoryId,
@@ -918,58 +904,9 @@ export default function Products() {
     }
   };
 
-  const getStockStatus = (product: ProductWithCategory) => {
-    if (product.current_stock <= 0) {
-      return { label: t('products.out_of_stock_label'), color: 'bg-destructive text-destructive-foreground' };
-    }
-    if (product.current_stock <= product.min_stock_level) {
-      return { label: t('products.low_stock_label'), color: 'bg-warning text-warning-foreground' };
-    }
-    return { label: t('products.in_stock_label'), color: 'bg-success text-success-foreground' };
-  };
-
-  // Products are already filtered and sorted by useProducts hook based on filters passed to it
+  // Always virtualize — non-virtual path re-rendered hundreds of rows on every scroll store write.
   const filteredProducts = products;
-  const useVirtualized = filteredProducts.length > 500;
   const detailOpen = Boolean(detailId);
-
-  const getScrollContainer = () => document.querySelector('main') as HTMLElement | null;
-
-  useEffect(() => {
-    if (useVirtualized) return;
-    let ticking = false;
-    const handleScroll = (event?: Event) => {
-      if (ticking) return;
-      ticking = true;
-      requestAnimationFrame(() => {
-        const target = (event?.currentTarget || event?.target) as HTMLElement | null;
-        const scrollTop = target?.scrollTop ?? getScrollContainer()?.scrollTop ?? window.scrollY ?? 0;
-        setStoredScrollTop(scrollTop);
-        ticking = false;
-      });
-    };
-    const scrollEl = getScrollContainer();
-    if (scrollEl) {
-      scrollEl.addEventListener('scroll', handleScroll, { passive: true });
-      return () => scrollEl.removeEventListener('scroll', handleScroll);
-    }
-    window.addEventListener('scroll', handleScroll, { passive: true });
-    return () => window.removeEventListener('scroll', handleScroll);
-  }, [useVirtualized, setStoredScrollTop]);
-
-  useEffect(() => {
-    if (!restoreDone) return;
-    if (useVirtualized) return;
-    if (storedScrollTop <= 0) return;
-    requestAnimationFrame(() => {
-      const scrollEl = getScrollContainer();
-      if (scrollEl) {
-        scrollEl.scrollTop = storedScrollTop;
-        return;
-      }
-      window.scrollTo(0, storedScrollTop);
-    });
-  }, [restoreDone, useVirtualized, storedScrollTop]);
 
   const openDetail = (id: string) => {
     const params = new URLSearchParams(searchParams);
@@ -984,19 +921,11 @@ export default function Products() {
   };
 
   const handleView = (id: string) => {
-    if (!useVirtualized) {
-      const scrollTop = getScrollContainer()?.scrollTop ?? window.scrollY ?? 0;
-      setStoredScrollTop(scrollTop);
-    }
     setLastFocusedProductId(id);
     openDetail(id);
   };
 
   const handleEdit = (id: string) => {
-    if (!useVirtualized) {
-      const scrollTop = getScrollContainer()?.scrollTop ?? window.scrollY ?? 0;
-      setStoredScrollTop(scrollTop);
-    }
     navigate(`/products/${id}/edit`);
   };
 
@@ -1077,8 +1006,8 @@ export default function Products() {
                 <Search className="absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
                 <Input
                   placeholder={t('products.search_placeholder')}
-                  value={searchTerm}
-                  onChange={(e) => updateFilter('search', e.target.value)}
+                  value={searchInput}
+                  onChange={(e) => setSearchInput(e.target.value)}
                   className="h-8 py-1 pl-8 text-xs sm:text-sm"
                 />
               </div>
@@ -1182,194 +1111,22 @@ export default function Products() {
               )}
             </div>
           ) : (
-            <div className="overflow-x-auto space-y-3">
-              {useVirtualized ? (
-                <VirtualizedProductsTable
-                  products={filteredProducts}
-                  t={t}
-                  hasMore={hasMore}
-                  loadingMore={loadingMore}
-                  loadMore={loadMore}
-                  onView={handleView}
-                  onEdit={handleEdit}
-                  onDelete={(id, name) => void handleDelete(id, name)}
-                  onRestore={handleRestore}
-                  showRestore={statusFilter === 'inactive'}
-                  initialScrollTop={restoreDone && storedQueryKey === listQueryKey ? storedScrollTop : 0}
-                  onScrollTopChange={setStoredScrollTop}
-                />
-              ) : (
-                <>
-                  <Table>
-                    <TableHeader>
-                      <TableRow>
-                        <TableHead>{t('products.product_name')}</TableHead>
-                        <TableHead>{t('products.sku')} / {t('products.barcode')}</TableHead>
-                        <TableHead>{t('products.category')}</TableHead>
-                        <TableHead>{t('products.unit')}</TableHead>
-                        <TableHead className="text-right">{t('products.purchase_price')}</TableHead>
-                        <TableHead className="text-right">{t('products.sale_price')}</TableHead>
-                        <TableHead className="text-right">{t('pos.stock')}</TableHead>
-                        <TableHead>{t('common.status')}</TableHead>
-                        <TableHead>{t('productForm.marketplace_catalog')}</TableHead>
-                        <TableHead className="text-right">{t('common.actions')}</TableHead>
-                      </TableRow>
-                    </TableHeader>
-                    <TableBody>
-                      {filteredProducts.map((product) => {
-                        const stockStatus = getStockStatus(product);
-                        return (
-                          <TableRow key={product.id}>
-                            <TableCell className="whitespace-normal align-top max-w-[min(100%,36rem)]">
-                              <div className="flex items-start gap-3 min-w-0">
-                                <div className="h-10 w-10 shrink-0 rounded bg-muted flex items-center justify-center overflow-hidden">
-                                  {product.image_url ? (
-                                    <img
-                                      src={getProductImageDisplayUrl(product.image_url) || product.image_url}
-                                      alt={product.name}
-                                      className="h-full w-full object-cover rounded"
-                                      loading="lazy"
-                                      decoding="async"
-                                    />
-                                  ) : (
-                                    <Package className="h-5 w-5 text-muted-foreground" />
-                                  )}
-                                </div>
-                                <div className="min-w-0 flex-1">
-                                  <p className="font-medium break-words">
-                                    {searchTerm ? highlightMatch(product.name, searchTerm) : product.name}
-                                  </p>
-                                </div>
-                              </div>
-                            </TableCell>
-                            <TableCell>
-                              <div className="text-sm">
-                                <p className="font-mono">
-                                  {searchTerm ? highlightMatch(product.sku, searchTerm) : product.sku}
-                                </p>
-                                {product.barcode && (
-                                  <p className="text-xs text-muted-foreground font-mono">
-                                    {searchTerm ? highlightMatch(product.barcode, searchTerm) : product.barcode}
-                                  </p>
-                                )}
-                              </div>
-                            </TableCell>
-                            <TableCell>
-                              {product.category?.name || (product as any).category_name ? (
-                                <Badge variant="outline">
-                                  {product.category?.name || (product as any).category_name}
-                                </Badge>
-                              ) : (
-                                <span className="text-muted-foreground text-sm">-</span>
-                              )}
-                            </TableCell>
-                            <TableCell>{formatUnit(product.unit)}</TableCell>
-                            <TableCell className="text-right">
-                              {formatMoneyUZS(product.purchase_price)}
-                            </TableCell>
-                            <TableCell className="text-right font-medium">
-                              {formatMoneyUZS(product.sale_price)}
-                            </TableCell>
-                            <TableCell className="text-right">
-                              <div className="flex items-center justify-end gap-2">
-                                {product.current_stock <= product.min_stock_level && (
-                                  <AlertTriangle className="h-4 w-4 text-warning" />
-                                )}
-                                <span className="font-medium">{formatNumberUZ(product.current_stock)}</span>
-                                <span className="text-xs text-muted-foreground">{formatUnit(product.unit)}</span>
-                              </div>
-                            </TableCell>
-                            <TableCell>
-                              <div className="flex flex-col gap-1">
-                                <Badge variant={product.is_active ? 'default' : 'secondary'}>
-                                  {product.is_active ? t('common.active') : t('common.inactive')}
-                                </Badge>
-                                <Badge className={stockStatus.color} variant="secondary">
-                                  {stockStatus.label}
-                                </Badge>
-                              </div>
-                            </TableCell>
-                            <TableCell>
-                              <Badge
-                                variant={productShowInMarketplace(product) ? 'default' : 'outline'}
-                                className={
-                                  productShowInMarketplace(product)
-                                    ? 'bg-emerald-600 hover:bg-emerald-600'
-                                    : ''
-                                }
-                              >
-                                {productShowInMarketplace(product)
-                                  ? t('status.marketplace_on')
-                                  : t('status.marketplace_off')}
-                              </Badge>
-                            </TableCell>
-                            <TableCell className="text-right">
-                              <div className="flex items-center justify-end gap-1">
-                                <Button
-                                  variant="ghost"
-                                  size="icon"
-                                  onClick={() => handleView(product.id)}
-                                >
-                                  <Eye className="h-4 w-4" />
-                                </Button>
-                                <Button
-                                  variant="ghost"
-                                  size="icon"
-                                  onClick={() => handleEdit(product.id)}
-                                >
-                                  <Pencil className="h-4 w-4" />
-                                </Button>
-                                {statusFilter === 'inactive' ? (
-                                  <Button
-                                    variant="ghost"
-                                    size="icon"
-                                    onClick={() => handleRestore(product.id)}
-                                    title={t('products.restore')}
-                                  >
-                                    <RotateCcw className="h-4 w-4" />
-                                  </Button>
-                                ) : (
-                                  <Button
-                                    variant="ghost"
-                                    size="icon"
-                                    onClick={() => handleDelete(product.id, product.name)}
-                                  >
-                                    <Trash2 className="h-4 w-4" />
-                                  </Button>
-                                )}
-                              </div>
-                            </TableCell>
-                          </TableRow>
-                        );
-                      })}
-                    </TableBody>
-                  </Table>
-
-                  {/* Pagination / Load more */}
-                  <div className="flex items-center justify-between gap-3 pt-2">
-                    <p className="text-xs text-muted-foreground">
-                      Yuklangan: <span className="font-medium">{products.length}</span>
-                    </p>
-                    {hasMore ? (
-                      <Button variant="outline" onClick={() => loadMore()} disabled={loadingMore}>
-                        {loadingMore ? (
-                          <>
-                            <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-primary mr-2" />
-                            Yuklanmoqda...
-                          </>
-                        ) : (
-                          'Yana yuklash'
-                        )}
-                      </Button>
-                    ) : (
-                      <span className="text-xs text-muted-foreground">Barchasi yuklandi</span>
-                    )}
-                  </div>
-
-                  {/* Infinite scroll sentinel (auto-load) */}
-                  <div ref={loadMoreRef} className="h-1 w-full" />
-                </>
-              )}
+            <div className="space-y-3">
+              <VirtualizedProductsTable
+                products={filteredProducts}
+                t={t}
+                statusFilter={statusFilter}
+                hasMore={hasMore}
+                loadingMore={loadingMore}
+                loadMore={loadMore}
+                onView={handleView}
+                onEdit={handleEdit}
+                onDelete={(id, name) => void handleDelete(id, name)}
+                onRestore={handleRestore}
+                showRestore={statusFilter === 'inactive'}
+                initialScrollTop={restoreDone ? restoreScrollTop : undefined}
+                onScrollTopChange={setStoredScrollTop}
+              />
             </div>
           )}
         </CardContent>

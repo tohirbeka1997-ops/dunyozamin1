@@ -34,7 +34,7 @@ import MoneyInput from '@/components/common/MoneyInput';
 import { Switch } from '@/components/ui/switch';
 import { handleIpcResponse, isElectron, requireElectron } from '@/utils/electron';
 import { getProductImageDisplayUrl } from '@/lib/productImageUrl';
-import { optimizeProductImageFile } from '@/lib/optimizeProductImage';
+import { readLocalImageFile, uploadProductImage } from '@/lib/uploadProductImage';
 import { MarketplaceProductPreview } from '@/components/products/MarketplaceProductPreview';
 import { ImagePlus } from 'lucide-react';
 
@@ -42,6 +42,11 @@ interface CreateProductModalProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   onCreated: (product: ProductWithCategory) => void;
+  /** Prefill name (e.g. from PO scan search). */
+  initialName?: string;
+  /** When USD, purchase price field is entered in USD and stored as UZS via fxRate. */
+  purchaseCostCurrency?: 'UZS' | 'USD';
+  fxRate?: number | null;
 }
 
 const UNIT_OPTIONS = [
@@ -60,6 +65,9 @@ export default function CreateProductModal({
   open,
   onOpenChange,
   onCreated,
+  initialName = '',
+  purchaseCostCurrency = 'UZS',
+  fxRate = null,
 }: CreateProductModalProps) {
   const { t } = useTranslation();
   const { toast } = useToast();
@@ -96,7 +104,7 @@ export default function CreateProductModal({
   useEffect(() => {
     if (open) {
       getCategories().then(setCategories).catch(() => setCategories([]));
-      setName('');
+      setName(String(initialName || '').trim());
       setSku('');
       setBarcode('');
       setUnit('pcs');
@@ -115,7 +123,7 @@ export default function CreateProductModal({
       setImageUrl(null);
       generateSKU().then(setSku).catch(() => setSku(''));
     }
-  }, [open]);
+  }, [open, initialName]);
 
   const resetForm = () => {
     setName('');
@@ -137,40 +145,9 @@ export default function CreateProductModal({
     setImageUrl(null);
   };
 
-  const extFromFileName = (name: string) => {
-    const match = String(name || '').match(/(\.[a-z0-9]+)$/i);
-    return match ? match[1].toLowerCase() : '.jpg';
-  };
-
   const uploadImageFile = async (file: File, sourcePath?: string | null): Promise<string | null> => {
-    const api = requireElectron();
     const tempId = `temp-${Date.now()}`;
-    const optimized = await optimizeProductImageFile(file);
-    const uploadFile = optimized.file;
-
-    if (typeof api?.files?.uploadProductImage === 'function') {
-      const saved = await handleIpcResponse<{ fileUrl?: string }>(
-        api.files.uploadProductImage(uploadFile, tempId, 0),
-      );
-      return saved?.fileUrl || null;
-    }
-
-    if (optimized.skipped && sourcePath && typeof api?.files?.saveProductImage === 'function') {
-      const saved = await handleIpcResponse<{ fileUrl?: string }>(
-        api.files.saveProductImage(sourcePath, tempId, 0),
-      );
-      return saved?.fileUrl || null;
-    }
-
-    if (typeof api?.files?.saveProductImageBuffer === 'function') {
-      const buf = await uploadFile.arrayBuffer();
-      const saved = await handleIpcResponse<{ fileUrl?: string }>(
-        api.files.saveProductImageBuffer(buf, tempId, 0, extFromFileName(uploadFile.name)),
-      );
-      return saved?.fileUrl || null;
-    }
-
-    throw new Error('Rasmni saqlab bo‘lmadi');
+    return uploadProductImage(file, tempId, 0, sourcePath);
   };
 
   const handlePickImage = async () => {
@@ -182,11 +159,7 @@ export default function CreateProductModal({
         setImageOptimizing(true);
         try {
           const filePath = res.filePaths[0];
-          const fileUrl = await handleIpcResponse<string | null>(api.files.pathToFileUrl(filePath));
-          if (!fileUrl) throw new Error('Fayl topilmadi');
-          const blob = await (await fetch(fileUrl)).blob();
-          const name = filePath.replace(/^.*[/\\]/, '') || 'image.jpg';
-          const file = new File([blob], name, { type: blob.type || 'image/jpeg' });
+          const file = await readLocalImageFile(filePath);
           const saved = await uploadImageFile(file, filePath);
           if (saved) setImageUrl(saved);
         } finally {
@@ -275,7 +248,12 @@ export default function CreateProductModal({
       return;
     }
 
-    const purchase = purchasePrice ?? 0;
+    const costEntered = purchasePrice ?? 0;
+    const rate = Number(fxRate || 0);
+    const purchase =
+      purchaseCostCurrency === 'USD' && Number.isFinite(rate) && rate > 0
+        ? Math.round(costEntered * rate)
+        : costEntered;
     const sale = salePrice ?? purchase;
     if (sale < purchase) {
       const ok = await confirmDialog({
@@ -482,15 +460,31 @@ export default function CreateProductModal({
           </div>
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <div className="space-y-2">
-              <Label>{t('productForm.purchase_price_label')}</Label>
-              <MoneyInput
-                value={purchasePrice}
-                onValueChange={setPurchasePrice}
-                placeholder="0"
-                allowZero
-                allowDecimals
-                min={0}
-              />
+              <Label>
+                {purchaseCostCurrency === 'USD'
+                  ? `${t('productForm.purchase_price_label')} (USD)`
+                  : t('productForm.purchase_price_label')}
+              </Label>
+              {purchaseCostCurrency === 'USD' ? (
+                <MoneyInput
+                  value={purchasePrice}
+                  onValueChange={setPurchasePrice}
+                  placeholder="0"
+                  allowZero
+                  allowDecimals
+                  min={0}
+                  className="text-right"
+                />
+              ) : (
+                <MoneyInput
+                  value={purchasePrice}
+                  onValueChange={setPurchasePrice}
+                  placeholder="0"
+                  allowZero
+                  allowDecimals
+                  min={0}
+                />
+              )}
             </div>
             <div className="space-y-2">
               <Label>Usta narxi</Label>
@@ -524,7 +518,11 @@ export default function CreateProductModal({
             </div>
           </div>
           <div className="space-y-2">
-            <Label>{t('productForm.sale_price_label')}</Label>
+            <Label>
+              {purchaseCostCurrency === 'USD'
+                ? `${t('productForm.sale_price_label')} (UZS)`
+                : t('productForm.sale_price_label')}
+            </Label>
             <MoneyInput
               value={salePrice}
               onValueChange={setSalePrice}

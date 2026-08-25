@@ -29,11 +29,29 @@ class AuthService {
       return { success: false, error: 'Password is required' };
     }
 
-    const trimmedUsername = username.trim().toLowerCase();
+    let trimmedUsername = username.trim().toLowerCase();
     const trimmedPassword = password.trim();
 
+    // Common bootstrap aliases for the seeded admin account.
+    const ADMIN_LOGIN_ALIASES = new Set(['admin', 'administrator']);
+    const isAdminAlias = ADMIN_LOGIN_ALIASES.has(trimmedUsername);
+    if (isAdminAlias) {
+      trimmedUsername = 'admin@pos.com';
+    }
+
     const stmt1 = this.db.prepare('SELECT * FROM users WHERE LOWER(username) = ? OR LOWER(email) = ?');
-    const user = stmt1.get(trimmedUsername, trimmedUsername);
+    let user = stmt1.get(trimmedUsername, trimmedUsername);
+
+    // Backward-compatible admin lookup:
+    // older/migrated installations may still keep the admin user as
+    // `username='admin'` or `email='admin@postizimi.local'`.
+    if (!user && isAdminAlias) {
+      const legacyAdminCandidates = ['admin', 'admin@postizimi.local'];
+      for (const candidate of legacyAdminCandidates) {
+        user = stmt1.get(candidate, candidate);
+        if (user) break;
+      }
+    }
 
     if (!user) {
       return { success: false, error: 'Invalid credentials' };
@@ -61,15 +79,30 @@ class AuthService {
       return { success: false, error: 'Invalid credentials' };
     }
 
-    // Transparently upgrade legacy SHA-256 hashes to scrypt after a successful
-    // login. Best-effort: never block login if the rehash write fails.
+    const passwordExpiredFlag =
+      user.password_expired === 1 ||
+      user.password_expired === true ||
+      String(user.password_expired || '') === '1';
+    if (passwordExpiredFlag) {
+      return {
+        success: false,
+        error: 'Password reset required for security. Please use the password reset flow.',
+        password_expired: true,
+      };
+    }
+
+    // Transparently upgrade legacy SHA-256 hashes after a successful verify.
     if (needsUpgrade(user.password_hash)) {
+      const upgraded = hashPassword(trimmedPassword);
       try {
-        this.db
-          .prepare('UPDATE users SET password_hash = ?, updated_at = ? WHERE id = ?')
-          .run(hashPassword(trimmedPassword), new Date().toISOString(), user.id);
-      } catch (rehashError) {
-        console.error('[auth] Failed to upgrade password hash:', rehashError.message);
+        const userCols = this.db.prepare(`PRAGMA table_info(users)`).all().map((c) => c.name);
+        const hasPasswordExpired = userCols.includes('password_expired');
+        const updateSql = hasPasswordExpired
+          ? `UPDATE users SET password_hash = ?, password_expired = 0, updated_at = datetime('now') WHERE id = ?`
+          : `UPDATE users SET password_hash = ?, updated_at = datetime('now') WHERE id = ?`;
+        this.db.prepare(updateSql).run(upgraded, user.id);
+      } catch (upgradeErr) {
+        console.error('[auth] Failed to upgrade legacy password hash:', upgradeErr.message);
       }
     }
 
@@ -155,6 +188,8 @@ class AuthService {
     }
 
     const trimmed = identifier.trim().toLowerCase();
+    const ADMIN_LOGIN_ALIASES = new Set(['admin', 'administrator']);
+    const lookupId = ADMIN_LOGIN_ALIASES.has(trimmed) ? 'admin@pos.com' : trimmed;
 
     // Match login lookup: username, email, or phone (case-insensitive for username/email).
     const user = this.db.prepare(`
@@ -162,7 +197,7 @@ class AuthService {
       FROM users 
       WHERE LOWER(username) = ? OR LOWER(COALESCE(email, '')) = ? OR phone = ?
       LIMIT 1
-    `).get(trimmed, trimmed, identifier.trim());
+    `).get(lookupId, lookupId, identifier.trim());
 
     if (!user) {
       throw createError(ERROR_CODES.NOT_FOUND, 'User not found');
@@ -276,8 +311,14 @@ class AuthService {
       // Hash new password with scrypt (trim to match login, which trims input).
       const passwordHash = hashPassword(String(new_password).trim());
 
+      const userCols = this.db.prepare(`PRAGMA table_info(users)`).all().map((c) => c.name);
+      const hasPasswordExpired = userCols.includes('password_expired');
+      const updateSql = hasPasswordExpired
+        ? 'UPDATE users SET password_hash = ?, password_expired = 0, updated_at = ? WHERE id = ?'
+        : 'UPDATE users SET password_hash = ?, updated_at = ? WHERE id = ?';
+
       // Update user password
-      this.db.prepare('UPDATE users SET password_hash = ?, updated_at = ? WHERE id = ?').run(
+      this.db.prepare(updateSql).run(
         passwordHash,
         new Date().toISOString(),
         token.user_id

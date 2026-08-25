@@ -438,7 +438,7 @@ class ShiftsService {
       notes
     });
 
-    return this.db.transaction(() => {
+    const result = this.db.transaction(() => {
       // DEBUGGING: Check what shifts exist
       const allShifts = this.db.prepare('SELECT id, status, user_id, cashier_id FROM shifts ORDER BY opened_at DESC LIMIT 5').all();
       console.log('[SHIFT] Recent shifts in DB:', allShifts);
@@ -601,6 +601,12 @@ class ShiftsService {
         cashPayments: cashTotal
       });
 
+      try {
+        this.batchService?.runReconcileCheck?.({ source: 'shift_close' });
+      } catch (reconcileErr) {
+        console.warn('[SHIFT] batch reconcile on shift close failed:', reconcileErr?.message || reconcileErr);
+      }
+
       return {
         success: true,
         shiftId,
@@ -619,6 +625,32 @@ class ShiftsService {
         debtRepaidCash: custRoll.debtRepaidCash
       };
     })();
+
+    this._notifyShiftClosedReport(result);
+    return result;
+  }
+
+  /**
+   * Fire-and-forget Telegram report when a shift is closed.
+   */
+  _notifyShiftClosedReport(result) {
+    try {
+      if (!result?.success || !result?.shiftId) return;
+      const { notifyShiftClosed } = require('../../public-api/lib/reportNotify.cjs');
+      void notifyShiftClosed(this.db, {
+        shiftId: result.shiftId,
+        closingCash: result.closingCash,
+        expectedCash: result.expectedCash,
+        cashDifference: result.cashDifference,
+        totalPayments: result.totalPayments,
+        cashPayments: result.cashPayments,
+        creditDebtIssued: result.creditDebtIssued,
+      }).catch((e) => {
+        console.warn('[SHIFT] telegram report notify failed:', e?.message || e);
+      });
+    } catch (e) {
+      console.warn('[SHIFT] telegram report notify unavailable:', e?.message || e);
+    }
   }
 
   /**

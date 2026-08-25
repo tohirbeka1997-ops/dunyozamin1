@@ -25,6 +25,7 @@ import { useNavigate } from 'react-router-dom';
 import { formatMoneyUZS, formatNumberUZ } from '@/lib/format';
 import { useReportAutoRefresh } from '@/hooks/useReportAutoRefresh';
 import { handleIpcResponse, isElectron, requireElectron } from '@/utils/electron';
+import { todayYMD } from '@/lib/datetime';
 
 interface BatchReconciliation {
   product_id: string;
@@ -163,7 +164,7 @@ export default function ActSverkaReport() {
       ];
 
       const content = lines.join('\n');
-      const today = new Date().toISOString().slice(0, 10);
+      const today = todayYMD();
 
       await api.files.saveTextFile({
         defaultFileName: `act-sverka-${today}.csv`,

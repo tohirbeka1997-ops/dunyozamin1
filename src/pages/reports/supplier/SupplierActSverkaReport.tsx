@@ -3,13 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@/components/ui/select';
+import SearchableSupplierCombobox from '@/components/common/SearchableSupplierCombobox';
 import {
   Table,
   TableBody,
@@ -21,7 +15,7 @@ import {
 import { ArrowLeft, FileDown, RefreshCcw, Truck } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 import { handleIpcResponse, isElectron, requireElectron } from '@/utils/electron';
-import { todayYMD } from '@/lib/datetime';
+import { todayYMD, ymdShiftMonths } from '@/lib/datetime';
 import { formatMoneyUZS } from '@/lib/format';
 import { useReportAutoRefresh } from '@/hooks/useReportAutoRefresh';
 import { getSuppliers } from '@/db/api';
@@ -105,8 +99,7 @@ export default function SupplierActSverkaReport() {
   const [suppliers, setSuppliers] = useState<SupplierWithBalance[]>([]);
   const supplierId = searchParams.get('supplierId') || '';
   const dateFrom =
-    searchParams.get('dateFrom') ||
-    new Date(new Date().setMonth(new Date().getMonth() - 1)).toISOString().split('T')[0];
+    searchParams.get('dateFrom') || ymdShiftMonths(todayYMD(), -1);
   const dateTo = searchParams.get('dateTo') || todayYMD();
 
   const [data, setData] = useState<ActResponse | null>(null);
@@ -239,18 +232,11 @@ export default function SupplierActSverkaReport() {
           <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
             <div className="md:col-span-2">
               <label className="text-sm text-muted-foreground">Yetkazib beruvchi</label>
-              <Select value={supplierId} onValueChange={(value) => updateParams({ supplierId: value })}>
-                <SelectTrigger>
-                  <SelectValue placeholder="Yetkazib beruvchi tanlang..." />
-                </SelectTrigger>
-                <SelectContent>
-                  {suppliers.map((s) => (
-                    <SelectItem key={s.id} value={s.id}>
-                      {s.name} {s.phone ? `(${s.phone})` : ''}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+              <SearchableSupplierCombobox
+                value={supplierId}
+                onValueChange={(value) => updateParams({ supplierId: value })}
+                suppliers={suppliers}
+              />
             </div>
             <div>
               <label className="text-sm text-muted-foreground">Boshlanish sana</label>

@@ -8,13 +8,15 @@ import {
   Text,
   View,
 } from 'react-native';
-import { searchProducts } from '@/api/client';
 import { BarcodeScanModal } from '@/components/BarcodeScanModal';
 import { SearchSpinnerSlot } from '@/components/SearchSpinnerSlot';
 import { SearchWithScan } from '@/components/SearchWithScan';
 import { useDebouncedSearch } from '@/hooks/useDebouncedSearch';
 import { t } from '@/i18n';
-import { lookupProductByCode } from '@/lib/barcodeLookup';
+import {
+  lookupProductByCodeWithCache,
+  searchProductsWithCache,
+} from '@/lib/productSearch';
 import type { PosProduct } from '@/types/sales';
 
 const LIST_SCROLL_CONFIG = { minIndexForVisible: 0, autoscrollToTopThreshold: 10 };
@@ -33,7 +35,7 @@ export default function ProductsScreen() {
 
   const searchFetcher = useCallback(async (q: string) => {
     try {
-      const rows = await searchProducts(q, 30);
+      const rows = await searchProductsWithCache(q, 30);
       setError(null);
       return rows;
     } catch (e) {
@@ -48,7 +50,7 @@ export default function ProductsScreen() {
     async (code: string) => {
       setScanBusy(true);
       try {
-        const product = await lookupProductByCode(code);
+        const product = await lookupProductByCodeWithCache(code);
         if (!product) {
           Alert.alert(t('scanBarcode'), t('barcodeNotFound'));
           return;

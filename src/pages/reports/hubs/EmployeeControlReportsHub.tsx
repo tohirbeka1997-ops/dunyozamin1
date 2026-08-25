@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { useAuth } from '@/contexts/AuthContext';
-import { ArrowLeft, ChevronDown, ChevronUp, UserCheck, Zap, XCircle, Activity, Shield } from 'lucide-react';
+import { ArrowLeft, ChevronDown, ChevronUp, UserCheck, Zap, XCircle, Activity, Shield, ClipboardList } from 'lucide-react';
 
 type ReportLink = { title: string; description: string; path: string; icon: React.ReactNode };
 
@@ -37,6 +37,12 @@ export default function EmployeeControlReportsHub() {
         description: 'Smena unumdorligi va tahlil',
         path: '/reports/employee/shift-productivity',
         icon: <Zap className="h-4 w-4 opacity-90" />,
+      },
+      {
+        title: 'Smena yopilishlari',
+        description: 'Smena yopilish va kassa hisobotlari',
+        path: '/reports/employee/shift-closings',
+        icon: <ClipboardList className="h-4 w-4 opacity-90" />,
       },
       {
         title: 'Xatolar',

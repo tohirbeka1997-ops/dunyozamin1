@@ -103,7 +103,22 @@ const MENU = {
   courier: '🚚 Kuryer panel',
   admin: '🛠 Admin panel',
   help: 'ℹ️ Yordam',
+  hisobot: '📊 Hisobotlar',
 };
+
+const {
+  REPORT_MENU,
+  REPORT_CALLBACK_PREFIX,
+  CREDIT_REMIND_CALLBACK_PREFIX,
+  matchReportKindFromText,
+  matchReportKindFromCallback,
+  matchCreditRemindCustomerId,
+  buildReportReplyKeyboardRows,
+  buildReportInlineKeyboardRows,
+  isBotButtonsEnabled,
+  isAuthorizedReportAdmin,
+  normalizeReportKind,
+} = require('../public-api/lib/botStoreReports.cjs');
 
 // ─────────────────────────────────────────────────────────────
 // Brend: ranglar #0A3625 (to'q yashil) + #CCDA47 (sariq-yashil)
@@ -190,6 +205,32 @@ function isAdminUser(ctx) {
   return Number.isFinite(id) && adminIds().has(id);
 }
 
+function botButtonsOnForAdmin(ctx) {
+  if (!isAdminUser(ctx)) return false;
+  try {
+    const db = require('../public-api/lib/db.cjs').getDb();
+    return isBotButtonsEnabled(db);
+  } catch {
+    // If DB unavailable, still allow admins in TELEGRAM_ADMIN_IDS
+    return isAuthorizedReportAdmin(ctx?.from?.id);
+  }
+}
+
+function adminHisobotKeyboard() {
+  // Always include 📣 Marketing tavsiya on the admin hisobot reply keyboard.
+  const rows = [
+    ...buildReportReplyKeyboardRows(null),
+    [MENU.shop, MENU.admin],
+    [MENU.help],
+  ];
+  return Markup.keyboard(rows).resize();
+}
+
+function adminHisobotInlineKeyboard() {
+  // Always include 📣 Marketing tavsiya on the admin hisobot inline keyboard.
+  return Markup.inlineKeyboard(buildReportInlineKeyboardRows(null));
+}
+
 function isCourierUser(ctx) {
   const from = ctx?.from || {};
   const username = String(from.username || '').trim().toLowerCase();
@@ -218,8 +259,28 @@ function mainMenuKeyboard(ctx = null) {
     [MENU.orders, MENU.card],
     [MENU.contact],
   ];
+  // Sync path: env allowlist only. Prefer mainMenuKeyboardAsync when possible
+  // so DB-registered couriers also get the courier button.
   if (isCourierUser(ctx)) rows.push([MENU.courier]);
-  if (isAdminUser(ctx)) rows.push([MENU.admin]);
+  if (isAdminUser(ctx)) {
+    rows.push([MENU.admin]);
+    if (botButtonsOnForAdmin(ctx)) rows.push([MENU.hisobot]);
+  }
+  rows.push([MENU.help]);
+  return Markup.keyboard(rows).resize();
+}
+
+async function mainMenuKeyboardAsync(ctx = null) {
+  const rows = [
+    [MENU.shop, MENU.search],
+    [MENU.orders, MENU.card],
+    [MENU.contact],
+  ];
+  if (ctx && (await isCourierUserAsync(ctx))) rows.push([MENU.courier]);
+  if (isAdminUser(ctx)) {
+    rows.push([MENU.admin]);
+    if (botButtonsOnForAdmin(ctx)) rows.push([MENU.hisobot]);
+  }
   rows.push([MENU.help]);
   return Markup.keyboard(rows).resize();
 }
@@ -405,6 +466,34 @@ async function callBotAdminReport({ actorTelegramId, reportType }) {
   const safeType = String(reportType || '').toLowerCase();
   return callBotApi(`/admin/reports/${encodeURIComponent(safeType)}?actor_telegram_id=${actorTelegramId}`, {
     headers: adminPayloadSignature({ actorTelegramId, action: 'admin_report', payload: { report_type: safeType } }),
+  });
+}
+
+async function callBotAdminStoreReport({ actorTelegramId, kind }) {
+  // Always request canonical kind (marketing), never alias strings.
+  const safeKind = normalizeReportKind(kind) || String(kind || '').toLowerCase();
+  return callBotApi(
+    `/admin/store-reports/${encodeURIComponent(safeKind)}?actor_telegram_id=${actorTelegramId}`,
+    {
+      headers: adminPayloadSignature({
+        actorTelegramId,
+        action: 'admin_store_report',
+        payload: { kind: safeKind },
+      }),
+    },
+  );
+}
+
+async function callBotAdminCreditRemind({ actorTelegramId, customerId }) {
+  const safeId = String(customerId || '').trim();
+  return callBotApi(`/admin/customers/${encodeURIComponent(safeId)}/credit-reminder`, {
+    method: 'POST',
+    headers: adminPayloadSignature({
+      actorTelegramId,
+      action: 'admin_credit_remind',
+      payload: { customer_id: safeId },
+    }),
+    body: JSON.stringify({ actor_telegram_id: actorTelegramId }),
   });
 }
 
@@ -636,6 +725,110 @@ async function sendAdminReport(ctx, reportType) {
   await safeReplyHTML(ctx, formatAdminReport(out), adminReportsKeyboard());
 }
 
+async function sendAdminHisobotMenu(ctx, { greetName = '' } = {}) {
+  if (!isAdminUser(ctx)) {
+    await safeReply(ctx, 'Hisobotlar faqat admin uchun (TELEGRAM_ADMIN_IDS).');
+    return;
+  }
+  const hello = greetName
+    ? `Assalomu alaykum, <b>${esc(greetName)}</b>!\n`
+    : '';
+  await safeReplyHTML(
+    ctx,
+    `📊 <b>Admin hisobot menyusi</b>\n${BRAND.divider}\n` +
+      hello +
+      `${BRAND.bullet} Kunlik, AI, muzlab, qarz, foyda, marketing — tugmani bosing.\n` +
+      `${BRAND.spark} Yoki buyruq: <code>/hisobot</code> · <code>/tahlil</code> · <code>/marketing</code>\n` +
+      `${BRAND.softDivider}\n` +
+      `Doʻkon uchun: <code>/shop</code> yoki <b>${esc(MENU.shop)}</b> tugmasi`,
+    adminHisobotKeyboard(),
+  );
+  await safeReplyHTML(
+    ctx,
+    `${BRAND.spark} <b>Tezkor hisobot</b>`,
+    adminHisobotInlineKeyboard(),
+  );
+}
+
+async function sendShopOpen(ctx) {
+  if (!(await ensureRegisteredOrStart(ctx, { forceStart: true }))) return;
+  await safeReplyHTML(
+    ctx,
+    `${BRAND.bullet} <b>Doʻkonni ochish</b>\n${BRAND.softDivider}\n` +
+      `<i>Mini App tugmasini bosing va xaridingizni boshlang:</i>`,
+    Markup.inlineKeyboard([[Markup.button.webApp(MENU.shop, webAppUrl)]]),
+  );
+}
+
+async function sendHelp(ctx) {
+  if (isAdminUser(ctx)) {
+    await safeReplyHTML(
+      ctx,
+      `ℹ️ <b>Admin yordam</b>\n${BRAND.divider}\n` +
+        `${BRAND.bullet} <b>📊 Kunlik / AI / Haftalik / Muzlab / Qarz / Foyda / Marketing</b> — doʻkon hisobotlari\n` +
+        `${BRAND.bullet} <b>${esc(MENU.admin)}</b> — buyurtmalar va kuryerlar paneli\n` +
+        `${BRAND.bullet} <b>${esc(MENU.shop)}</b> — onlayn doʻkon (Mini App)\n` +
+        `${BRAND.softDivider}\n` +
+        `${BRAND.spark} <b>Buyruqlar:</b>\n` +
+        `<code>/start</code> — hisobot menyusi\n` +
+        `<code>/hisobot</code> — hisobot tugmalari\n` +
+        `<code>/tahlil</code> · <code>/ai</code> — AI tahlil\n` +
+        `<code>/marketing</code> — marketing / assortiment\n` +
+        `<code>/admin</code> — admin panel\n` +
+        `<code>/shop</code> — doʻkon\n` +
+        `<code>/help</code>`,
+      adminHisobotKeyboard(),
+    );
+    return;
+  }
+  await safeReplyHTML(
+    ctx,
+    `ℹ️ <b>Yordam</b>\n${BRAND.divider}\n` +
+      `${BRAND.bullet} <b>${esc(MENU.shop)}</b> — onlayn doʻkonni ochadi\n` +
+      `${BRAND.bullet} <b>${esc(MENU.search)}</b> — mahsulot qidiradi\n` +
+      `${BRAND.bullet} <b>${esc(MENU.orders)}</b> — soʻnggi buyurtmalaringiz\n` +
+      `${BRAND.bullet} <b>${esc(MENU.card)}</b> — nakopitel karta va ball\n` +
+      `${BRAND.bullet} <b>${esc(MENU.contact)}</b> — aloqa maʼlumotlari\n` +
+      `${BRAND.bullet} <b>${esc(MENU.courier)}</b> — kuryer panel (faqat kuryer)\n` +
+      `${BRAND.softDivider}\n` +
+      `${BRAND.spark} <b>Buyruqlar:</b>\n` +
+      `<code>/start  /shop  /search  /orders  /card  /help</code>`,
+    await mainMenuKeyboardAsync(ctx),
+  );
+}
+
+async function sendAdminStoreReport(ctx, kind) {
+  if (!isAdminUser(ctx)) {
+    await safeReply(ctx, 'Hisobotlar faqat admin uchun (TELEGRAM_ADMIN_IDS).');
+    return;
+  }
+  const actorTelegramId = ctx.from?.id;
+  if (tooFrequent(ctx)) return;
+  try {
+    await safeReply(ctx, '⏳ Hisobot tayyorlanmoqda…');
+    const out = await callBotAdminStoreReport({ actorTelegramId, kind });
+    const parts = Array.isArray(out?.texts) && out.texts.length
+      ? out.texts
+      : [String(out?.text || 'Hisobot boʻsh.')];
+    const useHtml =
+      String(out?.parseMode || '').toUpperCase() === 'HTML' ||
+      kind === 'ai' ||
+      kind === 'marketing' ||
+      parts.some((p) => /<\/?[a-z][\s\S]*>/i.test(String(p || '')));
+    const replyMarkup = out?.replyMarkup || null;
+    for (let i = 0; i < parts.length; i += 1) {
+      const part = parts[i];
+      const isLast = i === parts.length - 1;
+      const extra = isLast && replyMarkup?.inline_keyboard?.length ? { reply_markup: replyMarkup } : undefined;
+      // eslint-disable-next-line no-await-in-loop
+      if (useHtml) await safeReplyHTML(ctx, part, extra);
+      else await safeReply(ctx, part, extra);
+    }
+  } catch (e) {
+    await safeReply(ctx, `Hisobot olinmadi.\n(${e.message})`);
+  }
+}
+
 async function sendAdminCouriers(ctx) {
   if (!isAdminUser(ctx)) {
     await safeReply(ctx, 'Bu boʻlim faqat admin uchun.');
@@ -737,6 +930,7 @@ function adminPanelKeyboard() {
   return Markup.inlineKeyboard([
     [Markup.button.callback('📊 Bugungi holat', 'admin_summary')],
     [Markup.button.callback('📈 Hisobotlar', 'admin_reports')],
+    [Markup.button.callback('📊 Doʻkon hisobot / AI', 'admin_hisobot')],
     [Markup.button.callback('🆕 Yangi', 'admin_orders:new'), Markup.button.callback('💳 Toʻlangan', 'admin_orders:paid')],
     [Markup.button.callback("🧺 Yigʻilmoqda", 'admin_orders:processing'), Markup.button.callback('✅ Tayyor', 'admin_orders:ready')],
     [Markup.button.callback("🚚 Yoʻldagi", 'admin_orders:out_for_delivery'), Markup.button.callback('📂 Ochiq hammasi', 'admin_orders:open')],
@@ -1159,25 +1353,21 @@ bot.start(async (ctx) => {
     return;
   }
   resetRegistrationState(ctx.from?.id);
-  const showCourier = await isCourierUserAsync(ctx);
+
+  // Admins: reports-first — no long marketplace customer welcome.
+  if (isAdminUser(ctx)) {
+    await sendAdminHisobotMenu(ctx, { greetName: name });
+    return;
+  }
+
+  // Customers: marketplace shop /start only (no admin report UI).
   const greetingText =
     `${BRAND.bullet} <b>Assalomu alaykum${name ? ', ' + esc(name) : ''}!</b>\n` +
     `${BRAND.divider}\n` +
     `${BRAND.leaf} <b>${esc(BRAND.name)}</b> onlayn doʻkoniga xush kelibsiz!\n` +
     `${BRAND.spark} <i>Yangi mahsulotlar, qulay yetkazib berish va bonus ball.</i>\n\n` +
     `<code>v${esc(BOT_RUNTIME_VERSION)}</code>`;
-  await safeReplyHTML(
-    ctx,
-    greetingText,
-    showCourier || isAdminUser(ctx) ? Markup.keyboard([
-      [MENU.shop, MENU.search],
-      [MENU.orders, MENU.card],
-      [MENU.contact],
-      ...(showCourier ? [[MENU.courier]] : []),
-      ...(isAdminUser(ctx) ? [[MENU.admin]] : []),
-      [MENU.help],
-    ]).resize() : mainMenuKeyboard(ctx),
-  );
+  await safeReplyHTML(ctx, greetingText, await mainMenuKeyboardAsync(ctx));
   await safeReplyHTML(
     ctx,
     `${BRAND.spark} <b>Tezkor amallar</b>\n${BRAND.softDivider}\nKerakli boʻlimni tanlang:`,
@@ -1288,6 +1478,64 @@ bot.action('admin_reports', async (ctx) => {
     `📈 <b>Hisobotlar</b>\n${BRAND.divider}\n${BRAND.bullet} Kerakli hisobotni tanlang:`,
     adminReportsKeyboard(),
   );
+});
+
+bot.action('admin_hisobot', async (ctx) => {
+  await ctx.answerCbQuery();
+  await sendAdminHisobotMenu(ctx);
+});
+
+bot.action(
+  new RegExp(
+    `^${REPORT_CALLBACK_PREFIX}(daily|ai|dead_stock|debt|profit|marketing|assortiment|assortment)$`,
+  ),
+  async (ctx) => {
+    const kind = matchReportKindFromCallback(ctx.callbackQuery?.data);
+    await ctx.answerCbQuery();
+    if (!kind) {
+      await safeReply(ctx, 'Nomaʼlum hisobot.');
+      return;
+    }
+    await sendAdminStoreReport(ctx, kind);
+  },
+);
+
+bot.action(new RegExp(`^${CREDIT_REMIND_CALLBACK_PREFIX}`), async (ctx) => {
+  const customerId = matchCreditRemindCustomerId(ctx.callbackQuery?.data);
+  if (!isAdminUser(ctx)) {
+    await ctx.answerCbQuery('Faqat admin', { show_alert: true });
+    return;
+  }
+  if (!customerId) {
+    await ctx.answerCbQuery('Mijoz ID xato', { show_alert: true });
+    return;
+  }
+  if (tooFrequent(ctx)) {
+    await ctx.answerCbQuery('Biroz kuting…');
+    return;
+  }
+  try {
+    await ctx.answerCbQuery('Eslatma yuborilmoqda…');
+    const out = await callBotAdminCreditRemind({
+      actorTelegramId: ctx.from?.id,
+      customerId,
+    });
+    if (out?.ok) {
+      await safeReply(
+        ctx,
+        `✅ Eslatma yuborildi${out.channel ? ` (${out.channel})` : ''}.`,
+      );
+    } else {
+      await safeReply(ctx, `❌ Eslatma yuborilmadi.\n(${out?.message || out?.error || 'xato'})`);
+    }
+  } catch (e) {
+    try {
+      await ctx.answerCbQuery('Xato', { show_alert: true });
+    } catch {
+      // ignore
+    }
+    await safeReply(ctx, `❌ Eslatma yuborilmadi.\n(${e.message})`);
+  }
 });
 
 bot.action(/^admin_report:(today_sales|out_stock|low_stock|top_products|credit_sales)$/, async (ctx) => {
@@ -1460,13 +1708,11 @@ bot.action('contact_info', async (ctx) => {
 });
 
 bot.hears(MENU.shop, async (ctx) => {
-  if (!(await ensureRegisteredOrStart(ctx, { forceStart: true }))) return;
-  await safeReplyHTML(
-    ctx,
-    `${BRAND.bullet} <b>Doʻkonni ochish</b>\n${BRAND.softDivider}\n` +
-      `<i>Mini App tugmasini bosing va xaridingizni boshlang:</i>`,
-    Markup.inlineKeyboard([[Markup.button.webApp(MENU.shop, webAppUrl)]]),
-  );
+  await sendShopOpen(ctx);
+});
+
+bot.command('shop', async (ctx) => {
+  await sendShopOpen(ctx);
 });
 
 bot.hears(MENU.search, async (ctx) => {
@@ -1508,6 +1754,23 @@ bot.hears(MENU.admin, async (ctx) => {
   await sendAdminPanel(ctx);
 });
 
+bot.hears(MENU.hisobot, async (ctx) => {
+  await sendAdminHisobotMenu(ctx);
+});
+
+bot.hears(
+  new RegExp(
+    `^(${Object.values(REPORT_MENU)
+      .map((s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
+      .join('|')})$`,
+  ),
+  async (ctx) => {
+    const kind = matchReportKindFromText(ctx.message?.text);
+    if (!kind) return;
+    await sendAdminStoreReport(ctx, kind);
+  },
+);
+
 bot.command('courier', async (ctx) => {
   await sendCourierPanel(ctx);
 });
@@ -1516,21 +1779,20 @@ bot.command('admin', async (ctx) => {
   await sendAdminPanel(ctx);
 });
 
+bot.command('hisobot', async (ctx) => {
+  await sendAdminHisobotMenu(ctx);
+});
+
+bot.command(['tahlil', 'ai'], async (ctx) => {
+  await sendAdminStoreReport(ctx, 'ai');
+});
+
+bot.command(['marketing', 'assortiment'], async (ctx) => {
+  await sendAdminStoreReport(ctx, 'marketing');
+});
+
 bot.hears(MENU.help, async (ctx) => {
-  await safeReplyHTML(
-    ctx,
-    `ℹ️ <b>Yordam</b>\n${BRAND.divider}\n` +
-      `${BRAND.bullet} <b>${esc(MENU.shop)}</b> — onlayn doʻkonni ochadi\n` +
-      `${BRAND.bullet} <b>${esc(MENU.search)}</b> — mahsulot qidiradi\n` +
-      `${BRAND.bullet} <b>${esc(MENU.orders)}</b> — soʻnggi buyurtmalaringiz\n` +
-      `${BRAND.bullet} <b>${esc(MENU.card)}</b> — nakopitel karta va ball\n` +
-      `${BRAND.bullet} <b>${esc(MENU.contact)}</b> — aloqa maʼlumotlari\n` +
-      `${BRAND.bullet} <b>${esc(MENU.courier)}</b> — kuryer panel\n` +
-      `${BRAND.bullet} <b>${esc(MENU.admin)}</b> — admin panel\n` +
-      `${BRAND.softDivider}\n` +
-      `${BRAND.spark} <b>Buyruqlar:</b>\n` +
-      `<code>/start  /search  /orders  /card  /courier  /admin  /help</code>`,
-  );
+  await sendHelp(ctx);
 });
 
 bot.command('orders', async (ctx) => {
@@ -1545,25 +1807,7 @@ bot.command('card', async (ctx) => {
 });
 
 bot.command('help', async (ctx) => {
-  await safeReplyHTML(
-    ctx,
-    `ℹ️ <b>Buyruqlar</b>\n${BRAND.divider}\n` +
-      `<code>/start</code>\n` +
-      `<code>/search</code> &lt;matn&gt;\n` +
-      `<code>/orders</code>\n` +
-      `<code>/card</code>\n` +
-      `<code>/courier</code>\n` +
-      `<code>/admin</code>\n` +
-      `<code>/help</code>\n` +
-      `${BRAND.softDivider}\n` +
-      `<code>/cancel_edit</code>\n` +
-      `<code>/cancel_register</code>\n` +
-      `<code>/cancel_search</code>\n` +
-      `<code>/cancel_admin</code>\n` +
-      `${BRAND.softDivider}\n` +
-      `🌐 <b>Web App:</b> <a href="${esc(webAppUrl)}">${esc(webAppUrl)}</a>`,
-    mainMenuKeyboard(ctx),
-  );
+  await sendHelp(ctx);
 });
 
 bot.command('search', async (ctx) => {
@@ -1590,21 +1834,21 @@ bot.command('cancel_register', async (ctx) => {
   const tgId = ctx.from?.id;
   if (tgId == null) return;
   resetRegistrationState(tgId);
-  await safeReply(ctx, "Ro'yxatdan o'tish bekor qilindi.", mainMenuKeyboard(ctx));
+  await safeReply(ctx, "Ro'yxatdan o'tish bekor qilindi.", await mainMenuKeyboardAsync(ctx));
 });
 
 bot.command('cancel_search', async (ctx) => {
   const tgId = ctx.from?.id;
   if (tgId == null) return;
   searchState.delete(tgId);
-  await safeReply(ctx, 'Qidiruv bekor qilindi.', mainMenuKeyboard(ctx));
+  await safeReply(ctx, 'Qidiruv bekor qilindi.', await mainMenuKeyboardAsync(ctx));
 });
 
 bot.command('cancel_admin', async (ctx) => {
   const tgId = ctx.from?.id;
   if (tgId == null) return;
   adminState.delete(tgId);
-  await safeReply(ctx, 'Admin amal bekor qilindi.', mainMenuKeyboard(ctx));
+  await safeReply(ctx, 'Admin amal bekor qilindi.', await mainMenuKeyboardAsync(ctx));
 });
 
 bot.on('contact', async (ctx) => {
@@ -1635,7 +1879,7 @@ bot.on('contact', async (ctx) => {
         `✅ <b>Roʻyxatdan oʻtdingiz!</b>\n${BRAND.softDivider}\n` +
           `${BRAND.bullet} Xush kelibsiz, <b>${esc(out?.data?.first_name || '')}</b>.\n` +
           `${BRAND.spark} <i>Endi xaridlardan bonus ball yigʻa olasiz.</i>`,
-        mainMenuKeyboard(ctx),
+        await mainMenuKeyboardAsync(ctx),
       );
       await sendLoyaltyQrCard(ctx, out?.data || {});
       return;
@@ -1690,7 +1934,7 @@ bot.on('text', async (ctx, next) => {
         await safeReply(
           ctx,
           `✅ Kuryer saqlandi\nUsername: ${c.username ? '@' + c.username : '-'}\nTelegram ID: ${c.telegram_id || '-'}\nIsm: ${c.display_name || '-'}`,
-          mainMenuKeyboard(ctx),
+          await mainMenuKeyboardAsync(ctx),
         );
         await sendAdminCouriers(ctx);
       } catch (e) {
@@ -1725,8 +1969,28 @@ bot.on('text', async (ctx, next) => {
     return;
   }
   if (t.startsWith('/')) {
-    const cmd = t.slice(1).split(' ')[0].toLowerCase();
-    if (!['start', 'search', 'orders', 'card', 'courier', 'admin', 'help', 'cancel_edit', 'cancel_register', 'cancel_search', 'cancel_admin'].includes(cmd)) {
+    // Strip @BotUsername so /marketing@MyBot still matches known commands.
+    const cmd = t.slice(1).split(/[\s@]/)[0].toLowerCase();
+    if (
+      ![
+        'start',
+        'search',
+        'orders',
+        'card',
+        'courier',
+        'admin',
+        'hisobot',
+        'tahlil',
+        'ai',
+        'marketing',
+        'assortiment',
+        'help',
+        'cancel_edit',
+        'cancel_register',
+        'cancel_search',
+        'cancel_admin',
+      ].includes(cmd)
+    ) {
       await safeReply(ctx, "Buyruq topilmadi. /help ni bosing.");
       return;
     }
@@ -1753,10 +2017,6 @@ function logNetworkError(prefix, err) {
     '  Tekshiring: internet, DNS, antivirus/firewall (api.telegram.org), provayder Telegram ni bloklamayaptimi — kerak bo‘lsa VPN.',
   );
   console.error('  Qo‘lda: curl https://api.telegram.org yoki brauzerda shu manzil.');
-}
-
-async function startPollingMode() {
-  await bot.launch({ dropPendingUpdates: true });
 }
 
 async function startWebhookMode() {
@@ -1804,7 +2064,64 @@ bot.use(async (ctx, next) => {
   return next();
 });
 
+async function configureBotMenu() {
+  await bot.telegram
+    .setMyCommands([
+      { command: 'start', description: "Bot menyusini ochish" },
+      { command: 'search', description: "Mahsulot qidirish" },
+      { command: 'orders', description: "So'nggi buyurtmalar" },
+      { command: 'card', description: 'Nakopitel karta va ball' },
+      { command: 'courier', description: 'Kuryer panel' },
+      { command: 'admin', description: 'Admin panel' },
+      { command: 'hisobot', description: 'Admin: kunlik / AI / haftalik / qarz / marketing' },
+      { command: 'tahlil', description: 'Admin: AI tahlil' },
+      { command: 'marketing', description: 'Admin: Marketing tavsiya' },
+      { command: 'help', description: "Yordam va ko'rsatma" },
+      { command: 'cancel_edit', description: 'Buyurtma tahririni bekor qilish' },
+      { command: 'cancel_register', description: "Ro'yxatdan o'tishni bekor qilish" },
+      { command: 'cancel_search', description: 'Qidiruv bekor qilish' },
+      { command: 'cancel_admin', description: 'Admin amalni bekor qilish' },
+    ])
+    .catch(() => {});
+  await bot.telegram
+    .setChatMenuButton({
+      menu_button: {
+        type: 'web_app',
+        text: "🛍 Do'kon",
+        web_app: { url: webAppUrl },
+      },
+    })
+    .catch(() => {});
+}
+
+function handleBootError(err) {
+  const code = err?.response?.error_code;
+  if (code === 409) {
+    console.error(
+      '[telegram:bot] 409 Conflict: shu bot boshqa joyda ham ishlayapti (yana bir terminal, Cursor fon, yoki boshqa PC).',
+    );
+    console.error('  Hammasini to‘xtating: boshqa terminalda Ctrl+C, Task Manager → node.exe, keyin qayta: npm run telegram:bot');
+  } else if (err?.response?.description) {
+    console.error('[telegram:bot] API:', err.response.description);
+  } else {
+    logNetworkError('[telegram:bot] Telegram serveriga ulanib bo‘lmadi (getMe):', err);
+  }
+  process.exit(1);
+}
+
 async function boot() {
+  // Prove token works before launch; helps diagnose silent /start failures.
+  try {
+    const me = await bot.telegram.getMe();
+    console.log(
+      `[telegram:bot] getMe OK @${me.username || '?'} id=${me.id} admins=${adminIds().size} api=${publicApiUrl}`,
+    );
+  } catch (e) {
+    handleBootError(e);
+    return;
+  }
+
+  await configureBotMenu();
   if (botMode === 'webhook') {
     try {
       await startWebhookMode();
@@ -1812,51 +2129,29 @@ async function boot() {
       return;
     } catch (e) {
       console.warn(`[telegram:bot] webhook start failed (${e.message}), polling fallback...`);
-      await startPollingMode();
-      return;
     }
   }
-  await startPollingMode();
+
+  // Clear any stale webhook so polling is the only consumer (avoids 409 / silent /start).
+  try {
+    await bot.telegram.deleteWebhook({ drop_pending_updates: true });
+  } catch (e) {
+    console.warn('[telegram:bot] deleteWebhook:', e?.message || e);
+  }
+
+  // launch() resolves only on stop — do not await (see telegram/staffBot.cjs).
+  void bot
+    .launch({ dropPendingUpdates: true })
+    .then(() => {
+      console.log('[telegram:bot] polling stopped');
+    })
+    .catch(handleBootError);
+  console.log(
+    `[telegram:bot] running (polling) — /start javob berishi kerak. Ctrl+C bilan to‘xtating`,
+  );
 }
 
-boot()
-  .then(async () => {
-    await bot.telegram.setMyCommands([
-      { command: 'start', description: "Bot menyusini ochish" },
-      { command: 'search', description: "Mahsulot qidirish" },
-      { command: 'orders', description: "So'nggi buyurtmalar" },
-      { command: 'card', description: 'Nakopitel karta va ball' },
-      { command: 'courier', description: 'Kuryer panel' },
-      { command: 'admin', description: 'Admin panel' },
-      { command: 'help', description: "Yordam va ko'rsatma" },
-      { command: 'cancel_edit', description: 'Buyurtma tahririni bekor qilish' },
-      { command: 'cancel_register', description: "Ro'yxatdan o'tishni bekor qilish" },
-      { command: 'cancel_search', description: 'Qidiruvni bekor qilish' },
-      { command: 'cancel_admin', description: 'Admin amalni bekor qilish' },
-    ]).catch(() => {});
-    await bot.telegram.setChatMenuButton({
-      menu_button: {
-        type: 'web_app',
-        text: "🛍 Do'kon",
-        web_app: { url: webAppUrl },
-      },
-    }).catch(() => {});
-    console.log(`[telegram:bot] running (${botMode}) — Ctrl+C bilan to‘xtating`);
-  })
-  .catch((err) => {
-    const code = err?.response?.error_code;
-    if (code === 409) {
-      console.error(
-        '[telegram:bot] 409 Conflict: shu bot boshqa joyda ham ishlayapti (yana bir terminal, Cursor fon, yoki boshqa PC).',
-      );
-      console.error('  Hammasini to‘xtating: boshqa terminalda Ctrl+C, Task Manager → node.exe, keyin qayta: npm run telegram:bot');
-    } else if (err?.response?.description) {
-      console.error('[telegram:bot] API:', err.response.description);
-    } else {
-      logNetworkError('[telegram:bot] Telegram serveriga ulanib bo‘lmadi (getMe):', err);
-    }
-    process.exit(1);
-  });
+boot().catch(handleBootError);
 
 process.once('SIGINT', () => bot.stop('SIGINT'));
 process.once('SIGTERM', () => bot.stop('SIGTERM'));

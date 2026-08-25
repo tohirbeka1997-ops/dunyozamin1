@@ -1,10 +1,11 @@
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useMemo, useCallback } from 'react';
 import { useLocation, useNavigate, useParams, useSearchParams } from 'react-router-dom';
+import { useTranslation } from 'react-i18next';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Label } from '@/components/ui/label';
-import { Input } from '@/components/ui/input';
+import NumberInput from '@/components/common/NumberInput';
 import { Textarea } from '@/components/ui/textarea';
 import {
   Dialog,
@@ -47,17 +48,23 @@ import type {
   CustomerBonusLedgerEntry,
   CustomerLoyaltyCard,
 } from '@/types/database';
-import { ArrowLeft, Edit, Mail, Phone, MapPin, Building2, FileText, ShoppingCart, DollarSign, History, RefreshCw, Gift, AlertTriangle } from 'lucide-react';
+import { ArrowLeft, Edit, Mail, Phone, MapPin, Building2, FileText, ShoppingCart, DollarSign, History, RefreshCw, Gift, AlertTriangle, Loader2, ChevronRight } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 import { useAuth } from '@/contexts/AuthContext';
 import { isElectron } from '@/utils/electron';
 import ReceivePaymentModal from '@/components/customers/ReceivePaymentModal';
-import { formatMoneyUZS, formatCustomerBalance } from '@/lib/format';
+import { formatMoneyUZS, formatCustomerBalance, splitCustomerLedgerAmount } from '@/lib/format';
 import { formatOrderMoney, getCustomerBalances, formatMoney, normalizeCurrency } from '@/lib/currency';
 import { DualCurrencyAmount } from '@/components/common/DualCurrencyAmount';
-import { formatDate, formatDateTime, parseDbDate } from '@/lib/datetime';
+import { formatDate, formatDateTime, parseDbDate, todayYMD } from '@/lib/datetime';
 import { createBackNavigationState, navigateBackTo, resolveBackTarget } from '@/lib/pageState';
 import QRCodeDataUrl from '@/components/ui/qrcodedataurl';
+import { listOpenCreditOrders, type OpenCreditOrderRow } from '@/db/customerCredit.api';
+import CustomerCreditOrdersSheet from '@/components/customers/CustomerCreditOrdersSheet';
+import { fetchUzsPerUsdRate } from '@/lib/fxRate';
+
+const PAYMENTS_PAGE_SIZE = 200;
+const LEDGER_PAGE_SIZE = 100;
 
 function isActiveOrderForStats(order: { status?: string } | null | undefined) {
   const s = String(order?.status || '').toLowerCase();
@@ -70,6 +77,7 @@ export default function CustomerDetail() {
   const location = useLocation();
   const [searchParams, setSearchParams] = useSearchParams();
   const { toast } = useToast();
+  const { t } = useTranslation();
   const { profile } = useAuth();
   const [customer, setCustomer] = useState<Customer | null>(null);
   const [orders, setOrders] = useState<OrderWithDetails[]>([]);
@@ -80,16 +88,24 @@ export default function CustomerDetail() {
   const [ordersError, setOrdersError] = useState<string | null>(null);
   const [paymentsLoading, setPaymentsLoading] = useState(true);
   const [ledgerLoading, setLedgerLoading] = useState(true);
+  const [paymentsHasMore, setPaymentsHasMore] = useState(false);
+  const [ledgerHasMore, setLedgerHasMore] = useState(false);
+  const [paymentsLoadingMore, setPaymentsLoadingMore] = useState(false);
+  const [ledgerLoadingMore, setLedgerLoadingMore] = useState(false);
+  const [usdRate, setUsdRate] = useState<number | null>(null);
   const [bonusLedger, setBonusLedger] = useState<CustomerBonusLedgerEntry[]>([]);
   const [bonusLedgerLoading, setBonusLedgerLoading] = useState(true);
   const [loyaltyCard, setLoyaltyCard] = useState<CustomerLoyaltyCard | null>(null);
   const [loyaltyCardLoading, setLoyaltyCardLoading] = useState(true);
   const [receivePaymentOpen, setReceivePaymentOpen] = useState(false);
   const [bonusAdjustOpen, setBonusAdjustOpen] = useState(false);
-  const [bonusAdjustDelta, setBonusAdjustDelta] = useState('');
+  const [bonusAdjustDelta, setBonusAdjustDelta] = useState<number | null>(null);
   const [bonusAdjustNote, setBonusAdjustNote] = useState('');
   const [bonusAdjustSaving, setBonusAdjustSaving] = useState(false);
   const [ledgerOrder, setLedgerOrder] = useState<'newest' | 'oldest'>('newest');
+  const [openCreditOrders, setOpenCreditOrders] = useState<OpenCreditOrderRow[]>([]);
+  const [creditOrdersLoading, setCreditOrdersLoading] = useState(true);
+  const [creditOrdersSheetOpen, setCreditOrdersSheetOpen] = useState(false);
   const activeTab = searchParams.get('tab') || 'info';
   const canAdjustBonus = profile?.role === 'admin' || profile?.role === 'manager';
   const backTo = resolveBackTarget(location, '/customers');
@@ -136,6 +152,22 @@ export default function CustomerDetail() {
       : activeOrders.length;
   const ordersCountIsFallback = !!ordersError || ordersLoading;
 
+  const creditOrdersSummary = useMemo(() => {
+    let totalRemaining = 0;
+    let overdueCount = 0;
+    const today = todayYMD();
+    for (const row of openCreditOrders) {
+      totalRemaining += Number(row.credit_amount || 0) || 0;
+      const due = row.due_date ? String(row.due_date).slice(0, 10) : '';
+      if (due.length === 10 && due < today) overdueCount += 1;
+    }
+    return { totalRemaining, overdueCount };
+  }, [openCreditOrders]);
+
+  useEffect(() => {
+    void fetchUzsPerUsdRate().then((r) => setUsdRate(r && r > 0 ? r : null));
+  }, []);
+
   useEffect(() => {
     if (id) {
       loadCustomer();
@@ -145,22 +177,6 @@ export default function CustomerDetail() {
       loadBonusLedger();
       loadLoyaltyCard();
     }
-  }, [id]);
-
-  // Refresh when user returns to this tab (e.g. after making credit sale in POS)
-  useEffect(() => {
-    const handleVisibilityChange = () => {
-      if (document.visibilityState === 'visible' && id) {
-        loadCustomer();
-        loadOrders();
-        loadPayments();
-        loadLedger();
-        loadBonusLedger();
-        loadLoyaltyCard();
-      }
-    };
-    document.addEventListener('visibilitychange', handleVisibilityChange);
-    return () => document.removeEventListener('visibilitychange', handleVisibilityChange);
   }, [id]);
 
   const loadCustomer = async () => {
@@ -204,31 +220,43 @@ export default function CustomerDetail() {
     }
   };
 
-  const loadPayments = async () => {
+  const loadPayments = async (opts?: { append?: boolean }) => {
     if (!id) return;
+    const append = !!opts?.append;
 
     try {
-      setPaymentsLoading(true);
-      const data = await getCustomerPayments(id);
-      setPayments(data);
+      if (append) setPaymentsLoadingMore(true);
+      else setPaymentsLoading(true);
+      const offset = append ? payments.length : 0;
+      const data = await getCustomerPayments(id, { limit: PAYMENTS_PAGE_SIZE, offset });
+      const rows = Array.isArray(data) ? data : [];
+      setPayments((prev) => (append ? [...prev, ...rows] : rows));
+      setPaymentsHasMore(rows.length === PAYMENTS_PAGE_SIZE);
     } catch (error) {
       console.error('Failed to load payments:', error);
     } finally {
-      setPaymentsLoading(false);
+      if (append) setPaymentsLoadingMore(false);
+      else setPaymentsLoading(false);
     }
   };
 
-  const loadLedger = async () => {
+  const loadLedger = async (opts?: { append?: boolean }) => {
     if (!id) return;
+    const append = !!opts?.append;
 
     try {
-      setLedgerLoading(true);
-      const data = await getCustomerLedger(id, { limit: 100 });
-      setLedger(Array.isArray(data) ? data : []);
+      if (append) setLedgerLoadingMore(true);
+      else setLedgerLoading(true);
+      const offset = append ? ledger.length : 0;
+      const data = await getCustomerLedger(id, { limit: LEDGER_PAGE_SIZE, offset });
+      const rows = Array.isArray(data) ? data : [];
+      setLedger((prev) => (append ? [...prev, ...rows] : rows));
+      setLedgerHasMore(rows.length === LEDGER_PAGE_SIZE);
     } catch (error) {
       console.error('Failed to load ledger:', error);
     } finally {
-      setLedgerLoading(false);
+      if (append) setLedgerLoadingMore(false);
+      else setLedgerLoading(false);
     }
   };
 
@@ -269,11 +297,47 @@ export default function CustomerDetail() {
     }
   };
 
+  const loadOpenCreditOrders = useCallback(async () => {
+    if (!id) return;
+    try {
+      setCreditOrdersLoading(true);
+      const data = await listOpenCreditOrders({ customerId: id, limit: 100 });
+      setOpenCreditOrders(Array.isArray(data) ? data : []);
+    } catch (error) {
+      console.error('Failed to load open credit orders:', error);
+      setOpenCreditOrders([]);
+    } finally {
+      setCreditOrdersLoading(false);
+    }
+  }, [id]);
+
+  useEffect(() => {
+    if (id) void loadOpenCreditOrders();
+  }, [id, loadOpenCreditOrders]);
+
+  // Refresh when user returns to this tab (e.g. after making credit sale in POS)
+  useEffect(() => {
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible' && id) {
+        loadCustomer();
+        loadOrders();
+        loadPayments();
+        loadLedger();
+        loadBonusLedger();
+        loadLoyaltyCard();
+        loadOpenCreditOrders();
+      }
+    };
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    return () => document.removeEventListener('visibilitychange', handleVisibilityChange);
+  }, [id, loadOpenCreditOrders]);
+
   const handlePaymentSuccess = () => {
     loadCustomer();
     loadPayments();
     loadLedger(); // Refresh ledger after payment
     loadBonusLedger();
+    loadOpenCreditOrders();
   };
 
   const handleRefresh = () => {
@@ -283,11 +347,12 @@ export default function CustomerDetail() {
     loadLedger();
     loadBonusLedger();
     loadLoyaltyCard();
+    loadOpenCreditOrders();
   };
 
   const handleBonusAdjust = async () => {
     if (!id || !profile?.id) return;
-    const delta = Number(bonusAdjustDelta);
+    const delta = bonusAdjustDelta ?? 0;
     if (!Number.isFinite(delta) || delta === 0) {
       toast({ title: 'Xatolik', description: 'Nol dan farqli ball kiriting', variant: 'destructive' });
       return;
@@ -302,7 +367,7 @@ export default function CustomerDetail() {
       });
       setCustomer(updated);
       setBonusAdjustOpen(false);
-      setBonusAdjustDelta('');
+      setBonusAdjustDelta(null);
       setBonusAdjustNote('');
       await loadBonusLedger();
       toast({ title: 'Saqlandi', description: 'Bonus balansi yangilandi' });
@@ -526,7 +591,7 @@ export default function CustomerDetail() {
                   </span>
                 </div>
               )}
-            {hasUzsDebt && customer.credit_limit > 0 && (
+            {customer.credit_limit > 0 && (hasUzsDebt || hasUsdDebt) && (
               <>
                 <div className="flex justify-between items-center">
                   <span className="text-sm text-muted-foreground">Nasiya limiti (UZS):</span>
@@ -535,11 +600,15 @@ export default function CustomerDetail() {
                 <div className="flex justify-between items-center">
                   <span className="text-sm text-muted-foreground">Qolgan limit (UZS):</span>
                   {(() => {
-                    const currentDebt = Math.max(0, -b.uzs);
+                    const currentDebt =
+                      Math.max(0, -b.uzs) + Math.max(0, -b.usd) * (usdRate || 0);
                     const remaining = Math.max(0, (customer.credit_limit || 0) - currentDebt);
+                    const usdNote =
+                      hasUsdDebt && !usdRate ? ' (USD hisobga olinmagan)' : '';
                     return (
                       <span className={`text-lg font-semibold ${remaining > 0 ? 'text-success' : 'text-destructive'}`}>
                         {formatMoneyUZS(remaining)}
+                        {usdNote}
                       </span>
                     );
                   })()}
@@ -560,6 +629,45 @@ export default function CustomerDetail() {
         </Card>
         );
       })()}
+
+      <Card>
+        <CardContent className="flex flex-wrap items-center justify-between gap-3 py-4">
+          <div className="min-w-0 space-y-1">
+            <p className="text-sm font-medium">{t('customers.credit_orders_title')}</p>
+            {creditOrdersLoading ? (
+              <div className="flex items-center text-sm text-muted-foreground">
+                <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" />
+                {t('customers.credit_orders_loading')}
+              </div>
+            ) : openCreditOrders.length === 0 ? (
+              <p className="text-sm text-muted-foreground">{t('customers.credit_orders_empty')}</p>
+            ) : (
+              <div className="flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
+                <span>{t('customers.credit_orders_count', { count: openCreditOrders.length })}</span>
+                {creditOrdersSummary.overdueCount > 0 && (
+                  <Badge variant="destructive" className="text-xs">
+                    {t('customers.credit_orders_overdue_count', { count: creditOrdersSummary.overdueCount })}
+                  </Badge>
+                )}
+                <span className="font-semibold text-destructive tabular-nums">
+                  {formatMoneyUZS(creditOrdersSummary.totalRemaining)}
+                </span>
+              </div>
+            )}
+          </div>
+          <Button
+            variant={openCreditOrders.length > 0 ? 'default' : 'outline'}
+            size="sm"
+            disabled={creditOrdersLoading}
+            onClick={() => setCreditOrdersSheetOpen(true)}
+          >
+            {openCreditOrders.length > 0
+              ? t('customers.credit_orders_open', { count: openCreditOrders.length })
+              : t('customers.credit_orders_view')}
+            <ChevronRight className="ml-1 h-4 w-4" />
+          </Button>
+        </CardContent>
+      </Card>
 
       <Tabs
         value={activeTab}
@@ -816,6 +924,7 @@ export default function CustomerDetail() {
                   <p className="text-muted-foreground">To‘lovlar tarixi yo‘q</p>
                 </div>
               ) : (
+                <>
                 <Table>
                   <TableHeader>
                     <TableRow>
@@ -861,6 +970,19 @@ export default function CustomerDetail() {
                     ))}
                   </TableBody>
                 </Table>
+                {paymentsHasMore && (
+                  <div className="flex justify-center pt-3">
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      disabled={paymentsLoadingMore}
+                      onClick={() => void loadPayments({ append: true })}
+                    >
+                      {paymentsLoadingMore ? 'Yuklanmoqda...' : 'Yana yuklash'}
+                    </Button>
+                  </div>
+                )}
+                </>
               )}
             </CardContent>
           </Card>
@@ -897,13 +1019,15 @@ export default function CustomerDetail() {
                   <p className="text-muted-foreground">Hisob tarixi yo'q</p>
                 </div>
               ) : (
+                <>
                 <Table>
                   <TableHeader>
                     <TableRow>
                       <TableHead>Sana/vaqt</TableHead>
                       <TableHead>Tur</TableHead>
                       <TableHead>Izoh</TableHead>
-                      <TableHead className="text-right">Summa</TableHead>
+                      <TableHead className="text-right">Kirim</TableHead>
+                      <TableHead className="text-right">Chiqim</TableHead>
                       <TableHead>Usul</TableHead>
                       <TableHead className="text-right">Balans</TableHead>
                     </TableRow>
@@ -974,9 +1098,31 @@ export default function CustomerDetail() {
                               '-'
                             )}
                           </TableCell>
-                          <TableCell className={`text-right font-medium ${entry.amount >= 0 ? 'text-green-600' : 'text-destructive'}`}>
-                            {entry.amount >= 0 ? '+' : ''}
-                            {formatMoney(entry.amount, normalizeCurrency(entry.currency, 'UZS'))}
+                          <TableCell className="text-right font-medium">
+                            {(() => {
+                              const entryCur = normalizeCurrency(entry.currency, 'UZS');
+                              const { inAmount } = splitCustomerLedgerAmount(entry.amount);
+                              const fmt = (n: number) =>
+                                entryCur === 'USD' ? formatMoney(n, 'USD') : formatMoneyUZS(n);
+                              return (
+                                <span className="text-green-600">
+                                  {inAmount > 0 ? fmt(inAmount) : '-'}
+                                </span>
+                              );
+                            })()}
+                          </TableCell>
+                          <TableCell className="text-right font-medium">
+                            {(() => {
+                              const entryCur = normalizeCurrency(entry.currency, 'UZS');
+                              const { outAmount } = splitCustomerLedgerAmount(entry.amount);
+                              const fmt = (n: number) =>
+                                entryCur === 'USD' ? formatMoney(n, 'USD') : formatMoneyUZS(n);
+                              return (
+                                <span className="text-destructive">
+                                  {outAmount > 0 ? fmt(outAmount) : '-'}
+                                </span>
+                              );
+                            })()}
                           </TableCell>
                           <TableCell>
                             {entry.method ? (
@@ -1003,6 +1149,19 @@ export default function CustomerDetail() {
                     })}
                   </TableBody>
                 </Table>
+                {ledgerHasMore && (
+                  <div className="flex justify-center pt-3">
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      disabled={ledgerLoadingMore}
+                      onClick={() => void loadLedger({ append: true })}
+                    >
+                      {ledgerLoadingMore ? 'Yuklanmoqda...' : 'Yana yuklash'}
+                    </Button>
+                  </div>
+                )}
+                </>
               )}
             </CardContent>
           </Card>
@@ -1092,11 +1251,10 @@ export default function CustomerDetail() {
           <div className="space-y-3 py-2">
             <div className="space-y-1">
               <Label>Ball (±)</Label>
-              <Input
-                type="number"
-                step="1"
+              <NumberInput
                 value={bonusAdjustDelta}
-                onChange={(e) => setBonusAdjustDelta(e.target.value)}
+                onValueChange={setBonusAdjustDelta}
+                min={-999999999}
                 placeholder="Masalan: 100 yoki -50"
               />
             </div>
@@ -1128,6 +1286,16 @@ export default function CustomerDetail() {
         source="customers"
         onSuccess={handlePaymentSuccess}
       />
+
+      {id && (
+        <CustomerCreditOrdersSheet
+          open={creditOrdersSheetOpen}
+          onOpenChange={setCreditOrdersSheetOpen}
+          customerId={id}
+          customerName={customer.name}
+          onUpdated={loadOpenCreditOrders}
+        />
+      )}
     </div>
   );
 }

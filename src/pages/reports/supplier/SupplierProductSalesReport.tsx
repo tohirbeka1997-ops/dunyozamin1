@@ -3,13 +3,8 @@ import { useNavigate } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@/components/ui/select';
+import SearchableSupplierCombobox from '@/components/common/SearchableSupplierCombobox';
+import { useTranslation } from 'react-i18next';
 import {
   Table,
   TableBody,
@@ -31,6 +26,7 @@ import type { SupplierProductSalesRow } from '@/types/financialReports';
 export default function SupplierProductSalesReport() {
   const navigate = useNavigate();
   const { toast } = useToast();
+  const { t } = useTranslation();
 
   const [dateFrom, setDateFrom] = useState(todayYMD());
   const [dateTo, setDateTo] = useState(todayYMD());
@@ -177,19 +173,13 @@ export default function SupplierProductSalesReport() {
             </div>
             <div>
               <label className="text-xs text-muted-foreground">Yetkazib beruvchi</label>
-              <Select value={supplierId} onValueChange={setSupplierId}>
-                <SelectTrigger className="h-8">
-                  <SelectValue placeholder="Barchasi" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="all">Barchasi</SelectItem>
-                  {suppliers.map((s) => (
-                    <SelectItem key={s.id} value={s.id}>
-                      {s.name}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+              <SearchableSupplierCombobox
+                value={supplierId}
+                onValueChange={setSupplierId}
+                suppliers={suppliers}
+                prefixOptions={[{ value: 'all', label: t('combobox.all_suppliers', 'Barcha yetkazib beruvchilar') }]}
+                triggerClassName="h-8"
+              />
             </div>
           </div>
         </CardContent>

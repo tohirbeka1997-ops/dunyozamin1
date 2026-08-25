@@ -22,7 +22,7 @@ import { Badge } from '@/components/ui/badge';
 import { ArrowLeft, TrendingUp, TrendingDown, Minus, LineChart } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 import { handleIpcResponse, isElectron, requireElectron } from '@/utils/electron';
-import { todayYMD, formatDate } from '@/lib/datetime';
+import { todayYMD, ymdShiftMonths, formatDate } from '@/lib/datetime';
 import { formatMoneyUZS } from '@/lib/format';
 import { useReportAutoRefresh } from '@/hooks/useReportAutoRefresh';
 
@@ -62,9 +62,7 @@ export default function PriceHistoryReport() {
   const [loading, setLoading] = useState(true);
   const [historyRows, setHistoryRows] = useState<PriceHistory[]>([]);
   const [summaryRows, setSummaryRows] = useState<ProductPriceSummary[]>([]);
-  const [dateFrom, setDateFrom] = useState(
-    new Date(new Date().setMonth(new Date().getMonth() - 6)).toISOString().split('T')[0]
-  );
+  const [dateFrom, setDateFrom] = useState(ymdShiftMonths(todayYMD(), -6));
   const [dateTo, setDateTo] = useState(todayYMD());
   const [searchTerm, setSearchTerm] = useState('');
   const [selectedProduct, setSelectedProduct] = useState<string>('');

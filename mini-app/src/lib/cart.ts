@@ -91,6 +91,13 @@ export function setQuantity(productId: string, quantity: number): CartLine[] {
   return cur;
 }
 
+/** Empties the whole cart. Mirrors the storage-write + event pattern of saveCart. */
+export function clearCart(): CartLine[] {
+  saveCart([]);
+  haptic.impact('medium');
+  return [];
+}
+
 export function setLineNote(productId: string, note: string): CartLine[] {
   const cur = loadCart();
   const i = cur.findIndex((x) => x.product_id === productId);

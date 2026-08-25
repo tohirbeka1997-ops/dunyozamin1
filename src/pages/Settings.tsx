@@ -32,7 +32,7 @@ import {
   CreditCard,
   Receipt,
   Package,
-  Hash,
+  ListOrdered,
   Shield,
   Globe,
   Coins,
@@ -50,6 +50,9 @@ import {
   Upload,
   X,
   Download,
+  Bell,
+  MessageSquare,
+  type LucideIcon,
 } from 'lucide-react';
 import { getSettingsByCategory, bulkUpdateSettings } from '@/db/api';
 import { notifyPosSettingsChanged } from '@/hooks/usePosTerminalSettings';
@@ -75,6 +78,8 @@ import type {
 } from '@/types/database';
 import PageBreadcrumb from '@/components/common/PageBreadcrumb';
 import { ExchangeRatesSettings } from '@/components/settings/ExchangeRatesSettings';
+import { CreditReminderSettings } from '@/components/settings/CreditReminderSettings';
+import { TelegramReportsSettings } from '@/components/settings/TelegramReportsSettings';
 
 const MARKETPLACE_TUNING_DEFAULTS = {
   search_prefilter_limit: 500,
@@ -83,6 +88,88 @@ const MARKETPLACE_TUNING_DEFAULTS = {
   trending_margin_divisor: 1000,
   trending_margin_cap: 80,
 };
+
+/** Settings section ids (TabsContent values) — keep stable for deep-links / unsaved-tab flow. */
+type SettingsTabId =
+  | 'company'
+  | 'pos'
+  | 'payment'
+  | 'receipt'
+  | 'inventory'
+  | 'numbering'
+  | 'security'
+  | 'localization'
+  | 'currency'
+  | 'offline'
+  | 'marketplace'
+  | 'couriers'
+  | 'creditReminders'
+  | 'telegramReports'
+  | 'network'
+  | 'reset';
+
+type SettingsNavItem = {
+  value: SettingsTabId;
+  labelKey: string;
+  icon: LucideIcon;
+  adminOnly?: boolean;
+  databaseOnly?: boolean;
+  destructive?: boolean;
+};
+
+type SettingsNavGroup = {
+  id: string;
+  labelKey: string;
+  items: SettingsNavItem[];
+};
+
+/** Logical nav order: Biznes → POS → Ombor → Marketplace → Tizim */
+const SETTINGS_NAV_GROUPS: SettingsNavGroup[] = [
+  {
+    id: 'business',
+    labelKey: 'settings.groups.business',
+    items: [
+      { value: 'company', labelKey: 'settings.tabs.company', icon: Building2 },
+      { value: 'localization', labelKey: 'settings.tabs.localization', icon: Globe },
+      { value: 'currency', labelKey: 'settings.tabs.currency', icon: Coins, adminOnly: true },
+    ],
+  },
+  {
+    id: 'pos',
+    labelKey: 'settings.groups.pos',
+    items: [
+      { value: 'pos', labelKey: 'settings.tabs.pos', icon: Monitor },
+      { value: 'payment', labelKey: 'settings.tabs.payment', icon: CreditCard },
+      { value: 'creditReminders', labelKey: 'settings.tabs.creditReminders', icon: Bell },
+      { value: 'telegramReports', labelKey: 'settings.tabs.telegramReports', icon: MessageSquare, adminOnly: true },
+      { value: 'receipt', labelKey: 'settings.tabs.receipt', icon: Receipt },
+      { value: 'numbering', labelKey: 'settings.tabs.numbering', icon: ListOrdered },
+    ],
+  },
+  {
+    id: 'inventory',
+    labelKey: 'settings.groups.inventory',
+    items: [{ value: 'inventory', labelKey: 'settings.tabs.inventory', icon: Package }],
+  },
+  {
+    id: 'marketplace',
+    labelKey: 'settings.groups.marketplace',
+    items: [
+      { value: 'marketplace', labelKey: 'settings.tabs.marketplace', icon: SlidersHorizontal, adminOnly: true },
+      { value: 'couriers', labelKey: 'settings.tabs.couriers', icon: Truck, adminOnly: true },
+    ],
+  },
+  {
+    id: 'system',
+    labelKey: 'settings.groups.system',
+    items: [
+      { value: 'security', labelKey: 'settings.tabs.security', icon: Shield },
+      { value: 'offline', labelKey: 'settings.tabs.local', icon: HardDrive },
+      { value: 'network', labelKey: 'settings.tabs.database', icon: Database, databaseOnly: true },
+      { value: 'reset', labelKey: 'settings.tabs.systemReset', icon: AlertTriangle, adminOnly: true, destructive: true },
+    ],
+  },
+];
 
 type CourierRow = {
   id: number;
@@ -302,7 +389,21 @@ export default function Settings() {
     enabled: boolean;
     cutoverAt: string | null;
     costMode: string | null;
-  }>({ enabled: false, cutoverAt: null, costMode: null });
+    strictBlock: boolean;
+    revisionBlockSales: boolean;
+  }>({
+    enabled: false,
+    cutoverAt: null,
+    costMode: null,
+    strictBlock: false,
+    revisionBlockSales: true,
+  });
+  const [batchHealth, setBatchHealth] = useState<{
+    drift_count: number;
+    no_batch_stock_count: number;
+    zero_cost_batch_count: number;
+  } | null>(null);
+  const [batchHealthLoading, setBatchHealthLoading] = useState(false);
 
   // HOST/CLIENT network mode config (local file in userData)
   const [posNetConfig, setPosNetConfig] = useState<any>(null);
@@ -343,7 +444,14 @@ export default function Settings() {
   const [paymentSettings, setPaymentSettings] = useState<PaymentSettings>({
     methods: ['cash', 'card', 'qr', 'credit'],
     method_labels: {},
+    fee_rates: {
+      card: { percent: 0, fixed: 0 },
+      click: { percent: 0, fixed: 0 },
+      payme: { percent: 0, fixed: 0 },
+    },
   });
+
+  const PAYMENT_FEE_METHODS = ['card', 'click', 'payme'] as const;
 
   const [taxSettings, setTaxSettings] = useState<TaxSettings>({
     enabled: false,
@@ -407,8 +515,11 @@ export default function Settings() {
   const [masterLoyaltyEnabled, setMasterLoyaltyEnabled] = useState(false);
   const [masterLoyaltyPointsPerUzs, setMasterLoyaltyPointsPerUzs] = useState(1000);
   const [generalLoyaltyEnabled, setGeneralLoyaltyEnabled] = useState(false);
-  const [loyaltyEarnScope, setLoyaltyEarnScope] = useState<'master_only' | 'all_registered' | 'exclude_walk_in'>(
-    'master_only'
+  const [loyaltyEarnScope, setLoyaltyEarnScope] = useState<
+    'off' | 'master_only' | 'all_customers' | 'all_registered' | 'exclude_walk_in'
+  >('all_customers');
+  const [customerPhoneMode, setCustomerPhoneMode] = useState<'optional' | 'recommend' | 'required'>(
+    'recommend',
   );
   const [loyaltyEarnPointsPerUzs, setLoyaltyEarnPointsPerUzs] = useState(1000);
   const [loyaltyMinOrderUzs, setLoyaltyMinOrderUzs] = useState(0);
@@ -445,13 +556,44 @@ export default function Settings() {
       const costMode = await handleIpcResponse<any>(api.settings.get('inventory.batch_opening_cost_mode')).catch(
         () => 'last_received_po_cost'
       );
+      const strictBlock = await handleIpcResponse<any>(api.settings.get('inventory.batch_strict_block')).catch(() => false);
+      const revisionBlockSales = await handleIpcResponse<any>(
+        api.settings.get('inventory.revision_block_sales')
+      ).catch(() => true);
       setBatchCfg({
         enabled: !!enabled,
         cutoverAt: cutoverAt ? String(cutoverAt) : null,
         costMode: costMode ? String(costMode) : null,
+        strictBlock: !!strictBlock,
+        revisionBlockSales: revisionBlockSales === false || revisionBlockSales === 'false' || revisionBlockSales === 0 || revisionBlockSales === '0'
+          ? false
+          : true,
       });
+      if (enabled) {
+        await loadBatchHealth();
+      } else {
+        setBatchHealth(null);
+      }
     } finally {
       setBatchCfgLoading(false);
+    }
+  };
+
+  const loadBatchHealth = async () => {
+    if (!isElectron()) return;
+    try {
+      setBatchHealthLoading(true);
+      const api = requireElectron();
+      const health = await handleIpcResponse<any>(api.inventory.getBatchHealth(null, null));
+      setBatchHealth({
+        drift_count: Number(health?.drift_count || 0),
+        no_batch_stock_count: Number(health?.no_batch_stock_count || 0),
+        zero_cost_batch_count: Number(health?.zero_cost_batch_count || 0),
+      });
+    } catch {
+      setBatchHealth(null);
+    } finally {
+      setBatchHealthLoading(false);
     }
   };
 
@@ -732,6 +874,29 @@ export default function Settings() {
         }
         return { ...prev, methods, method_labels: labels } as PaymentSettings;
       });
+
+      // payment_fees.* live as top-level settings keys (not under payment. category prefix)
+      if (isElectron()) {
+        try {
+          const api = requireElectron();
+          const feeRates: Record<string, { percent: number; fixed: number }> = {};
+          for (const method of PAYMENT_FEE_METHODS) {
+            const percentRaw = await handleIpcResponse<any>(
+              api.settings.get(`payment_fees.${method}.percent`)
+            ).catch(() => 0);
+            const fixedRaw = await handleIpcResponse<any>(
+              api.settings.get(`payment_fees.${method}.fixed`)
+            ).catch(() => 0);
+            feeRates[method] = {
+              percent: Number(percentRaw) || 0,
+              fixed: Number(fixedRaw) || 0,
+            };
+          }
+          setPaymentSettings((prev) => ({ ...prev, fee_rates: feeRates }));
+        } catch {
+          /* ignore fee load */
+        }
+      }
       setTaxSettings(tax as unknown as TaxSettings);
       setReceiptSettings((prev) => {
         const r = { ...(receipt as Record<string, unknown>) };
@@ -882,9 +1047,13 @@ export default function Settings() {
 
       const gen = salesRec['loyalty.general.enabled'];
       setGeneralLoyaltyEnabled(gen === true || gen === 1 || gen === '1' || String(gen).toLowerCase() === 'true');
-      const scopeRaw = String(salesRec['loyalty.earn.scope'] || 'master_only').toLowerCase();
-      if (scopeRaw === 'all_registered' || scopeRaw === 'exclude_walk_in') {
-        setLoyaltyEarnScope(scopeRaw);
+      const scopeRaw = String(salesRec['loyalty.earn.scope'] || 'all_customers').toLowerCase();
+      if (scopeRaw === 'all_customers' || scopeRaw === 'all_registered') {
+        setLoyaltyEarnScope('all_customers');
+      } else if (scopeRaw === 'exclude_walk_in') {
+        setLoyaltyEarnScope('exclude_walk_in');
+      } else if (scopeRaw === 'off' || scopeRaw === 'disabled' || scopeRaw === 'none') {
+        setLoyaltyEarnScope('off');
       } else {
         setLoyaltyEarnScope('master_only');
       }
@@ -901,6 +1070,13 @@ export default function Settings() {
       setLoyaltyRedeemMinPoints(Number.isFinite(rmin) && rmin > 0 ? Math.floor(rmin) : 1);
       const rmax = Number(salesRec['loyalty.redeem.max_percent_of_order']);
       setLoyaltyRedeemMaxPercent(Number.isFinite(rmax) && rmax > 0 ? Math.min(100, rmax) : 50);
+
+      const phoneModeRaw = String(salesRec['customers.phone.mode'] || 'recommend').toLowerCase();
+      if (phoneModeRaw === 'required' || phoneModeRaw === 'optional') {
+        setCustomerPhoneMode(phoneModeRaw);
+      } else {
+        setCustomerPhoneMode('recommend');
+      }
 
       const mpRec = marketplace as Record<string, unknown>;
       const prefilter = Number(mpRec['search_prefilter_limit']);
@@ -934,13 +1110,22 @@ export default function Settings() {
     try {
       setCouriersLoading(true);
       const api = requireElectron();
+      if (typeof api.couriers?.list !== 'function') {
+        setCouriers([]);
+        toast({
+          title: t('settings.offline.toastErrTitle'),
+          description: t('settings.marketplace.apiMissing'),
+          variant: 'destructive',
+        });
+        return;
+      }
       const rows = await handleIpcResponse<CourierRow[]>(
         api.couriers.list({ includeInactive: true })
       );
       setCouriers(Array.isArray(rows) ? rows : []);
     } catch (error) {
       console.error('Error loading couriers:', error);
-      const raw = error instanceof Error ? error.message : 'Kuryerlar yuklanmadi';
+      const raw = error instanceof Error ? error.message : t('settings.marketplace.loadErr');
       const description =
         /database connection is not open|database is not available/i.test(raw)
           ? 'Server bazasi hozir mavjud emas. pos-server ni qayta ishga tushiring yoki biroz kutib qayta urinib ko\'ring.'
@@ -960,16 +1145,17 @@ export default function Settings() {
     if (!identifier) {
       toast({
         title: t('settings.offline.toastErrTitle'),
-        description: 'Telegram username yoki ID kiriting',
+        description: t('settings.marketplace.needIdentifier'),
         variant: 'destructive',
       });
       return;
     }
     const isNumericId = /^-?\d+$/.test(identifier);
-    if (!isNumericId && !/^@?[A-Za-z0-9_]{3,32}$/.test(identifier)) {
+    // Telegram usernames are 5–32 chars (same rule as couriersService / bot API).
+    if (!isNumericId && !/^@?[A-Za-z0-9_]{5,32}$/.test(identifier)) {
       toast({
         title: t('settings.offline.toastErrTitle'),
-        description: 'Username 3-32 ta belgi, faqat A-Z, 0-9, _ ruxsat etiladi',
+        description: t('settings.marketplace.badUsername'),
         variant: 'destructive',
       });
       return;
@@ -978,7 +1164,7 @@ export default function Settings() {
     if (phone && !/^\+?[0-9\s\-()]{7,20}$/.test(phone)) {
       toast({
         title: t('settings.offline.toastErrTitle'),
-        description: 'Telefon raqam noto‘g‘ri formatda',
+        description: t('settings.marketplace.badPhone'),
         variant: 'destructive',
       });
       return;
@@ -986,6 +1172,9 @@ export default function Settings() {
     try {
       setCourierSaving(true);
       const api = requireElectron();
+      if (typeof api.couriers?.upsert !== 'function') {
+        throw new Error(t('settings.marketplace.apiMissing'));
+      }
       const payload: Record<string, unknown> = {
         display_name: newCourierName.trim().slice(0, 64) || undefined,
         phone: phone || undefined,
@@ -994,7 +1183,7 @@ export default function Settings() {
       if (isNumericId) {
         const n = Number.parseInt(identifier, 10);
         if (!Number.isSafeInteger(n) || Math.abs(n) > 1e15) {
-          throw new Error('Telegram ID juda katta');
+          throw new Error(t('settings.marketplace.badTelegramId'));
         }
         payload.telegram_id = n;
       } else {
@@ -1007,12 +1196,12 @@ export default function Settings() {
       await loadCouriers();
       toast({
         title: t('settings.toast.savedTitle'),
-        description: 'Kuryer saqlandi',
+        description: t('settings.marketplace.saved'),
       });
     } catch (error) {
       toast({
         title: t('settings.offline.toastErrTitle'),
-        description: error instanceof Error ? error.message : 'Kuryer saqlanmadi',
+        description: error instanceof Error ? error.message : t('settings.marketplace.saveErr'),
         variant: 'destructive',
       });
     } finally {
@@ -1024,12 +1213,15 @@ export default function Settings() {
     try {
       setCourierSaving(true);
       const api = requireElectron();
+      if (typeof api.couriers?.setActive !== 'function') {
+        throw new Error(t('settings.marketplace.apiMissing'));
+      }
       await handleIpcResponse(api.couriers.setActive(courier.id, active));
       await loadCouriers();
     } catch (error) {
       toast({
         title: t('settings.offline.toastErrTitle'),
-        description: error instanceof Error ? error.message : 'Kuryer holati yangilanmadi',
+        description: error instanceof Error ? error.message : t('settings.marketplace.statusErr'),
         variant: 'destructive',
       });
     } finally {
@@ -1117,78 +1309,51 @@ export default function Settings() {
         <p className="text-muted-foreground">{t('settings.header.subtitle')}</p>
       </div>
 
-      <Tabs value={activeTab} onValueChange={handleTabChange} className="space-y-6">
-        <TabsList className={`flex w-full flex-wrap gap-1 overflow-x-auto ${profile?.role === 'admin' ? 'xl:flex-nowrap' : ''}`}>
-          <TabsTrigger value="company" className="gap-2">
-            <Building2 className="h-4 w-4" />
-            <span className="hidden xl:inline">{t('settings.tabs.company')}</span>
-          </TabsTrigger>
-          <TabsTrigger value="pos" className="gap-2">
-            <Monitor className="h-4 w-4" />
-            <span className="hidden xl:inline">{t('settings.tabs.pos')}</span>
-          </TabsTrigger>
-          <TabsTrigger value="payment" className="gap-2">
-            <CreditCard className="h-4 w-4" />
-            <span className="hidden xl:inline">{t('settings.tabs.payment')}</span>
-          </TabsTrigger>
-          <TabsTrigger value="receipt" className="gap-2">
-            <Receipt className="h-4 w-4" />
-            <span className="hidden xl:inline">{t('settings.tabs.receipt')}</span>
-          </TabsTrigger>
-          <TabsTrigger value="inventory" className="gap-2">
-            <Package className="h-4 w-4" />
-            <span className="hidden xl:inline">{t('settings.tabs.inventory')}</span>
-          </TabsTrigger>
-          <TabsTrigger value="numbering" className="gap-2">
-            <Hash className="h-4 w-4" />
-            <span className="hidden xl:inline">{t('settings.tabs.numbering')}</span>
-          </TabsTrigger>
-          <TabsTrigger value="security" className="gap-2">
-            <Shield className="h-4 w-4" />
-            <span className="hidden xl:inline">{t('settings.tabs.security')}</span>
-          </TabsTrigger>
-          <TabsTrigger value="localization" className="gap-2">
-            <Globe className="h-4 w-4" />
-            <span className="hidden xl:inline">{t('settings.tabs.localization')}</span>
-          </TabsTrigger>
-          {profile?.role === 'admin' && (
-            <TabsTrigger value="currency" className="gap-2">
-              <Coins className="h-4 w-4" />
-              <span className="hidden xl:inline">Valyuta</span>
-            </TabsTrigger>
-          )}
-          <TabsTrigger value="offline" className="gap-2">
-            <HardDrive className="h-4 w-4" />
-            <span className="hidden xl:inline">{t('settings.tabs.local')}</span>
-          </TabsTrigger>
-          {profile?.role === 'admin' && (
-            <TabsTrigger value="marketplace" className="gap-2 shrink-0">
-              <SlidersHorizontal className="h-4 w-4 shrink-0" />
-              <span className="hidden xl:inline truncate max-w-[9rem]">{t('settings.marketplace.tab')}</span>
-            </TabsTrigger>
-          )}
-          {profile?.role === 'admin' && (
-            <TabsTrigger value="couriers" className="gap-2 shrink-0">
-              <Truck className="h-4 w-4 shrink-0" />
-              <span className="hidden xl:inline truncate max-w-[9rem]">{t('settings.marketplace.delivery')}</span>
-            </TabsTrigger>
-          )}
-          {canManageDatabase && (
-            <TabsTrigger value="network" className="gap-2">
-              <Database className="h-4 w-4" />
-              <span className="hidden xl:inline">{t('settings.tabs.database')}</span>
-            </TabsTrigger>
-          )}
-          {profile?.role === 'admin' && (
-            <TabsTrigger value="reset" className="gap-2 text-destructive">
-              <AlertTriangle className="h-4 w-4" />
-              <span className="hidden xl:inline">{t('settings.tabs.systemReset')}</span>
-            </TabsTrigger>
-          )}
-        </TabsList>
+      <Tabs
+        value={activeTab}
+        onValueChange={handleTabChange}
+        orientation="vertical"
+        className="flex flex-col gap-6 lg:flex-row lg:items-start lg:gap-8"
+      >
+        <aside className="w-full shrink-0 lg:sticky lg:top-4 lg:w-56">
+          <TabsList className="flex h-auto w-full flex-row flex-wrap gap-1 overflow-x-auto rounded-lg bg-muted/60 p-1.5 lg:flex-col lg:flex-nowrap lg:items-stretch lg:gap-0 lg:overflow-visible lg:bg-transparent lg:p-0">
+            {SETTINGS_NAV_GROUPS.map((group) => {
+              const visibleItems = group.items.filter((item) => {
+                if (item.adminOnly && profile?.role !== 'admin') return false;
+                if (item.databaseOnly && !canManageDatabase) return false;
+                return true;
+              });
+              if (visibleItems.length === 0) return null;
+              return (
+                <div key={group.id} className="contents lg:mb-3 lg:block lg:last:mb-0">
+                  <p className="mb-1 hidden px-2 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground lg:block">
+                    {t(group.labelKey)}
+                  </p>
+                  <div className="contents gap-1 lg:flex lg:flex-col lg:gap-0.5">
+                    {visibleItems.map((item) => {
+                      const Icon = item.icon;
+                      return (
+                        <TabsTrigger
+                          key={item.value}
+                          value={item.value}
+                          className={`h-auto shrink-0 justify-start gap-2 px-2.5 py-2 text-left lg:w-full lg:flex-none ${
+                            item.destructive ? 'text-destructive data-[state=active]:text-destructive' : ''
+                          }`}
+                        >
+                          <Icon className="h-4 w-4 shrink-0" />
+                          <span className="truncate">{t(item.labelKey)}</span>
+                        </TabsTrigger>
+                      );
+                    })}
+                  </div>
+                </div>
+              );
+            })}
+          </TabsList>
+        </aside>
 
         {/* Company Profile Tab */}
-        <TabsContent value="company">
+        <TabsContent value="company" className="mt-0 min-w-0 flex-1 space-y-6 data-[state=inactive]:hidden">
           <Card>
             <CardHeader>
               <CardTitle>{t('settings.company.title')}</CardTitle>
@@ -1477,7 +1642,7 @@ export default function Settings() {
         </TabsContent>
 
         {/* POS Terminal Tab */}
-        <TabsContent value="pos">
+        <TabsContent value="pos" className="mt-0 min-w-0 flex-1 data-[state=inactive]:hidden">
           <Card>
             <CardHeader>
               <CardTitle>{t('settings.pos.title')}</CardTitle>
@@ -1705,7 +1870,7 @@ export default function Settings() {
                   <Label>{t('settings.loyalty.earnScope')}</Label>
                   <Select
                     value={loyaltyEarnScope}
-                    onValueChange={(v: 'master_only' | 'all_registered' | 'exclude_walk_in') => {
+                    onValueChange={(v: 'off' | 'master_only' | 'all_customers' | 'exclude_walk_in') => {
                       setLoyaltyEarnScope(v);
                       setHasUnsavedChanges(true);
                     }}
@@ -1714,11 +1879,32 @@ export default function Settings() {
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
+                      <SelectItem value="all_customers">{t('settings.loyalty.scopeAll')}</SelectItem>
                       <SelectItem value="master_only">{t('settings.loyalty.scopeMasterOnly')}</SelectItem>
-                      <SelectItem value="all_registered">{t('settings.loyalty.scopeAll')}</SelectItem>
                       <SelectItem value="exclude_walk_in">{t('settings.loyalty.scopeExcludeWalkIn')}</SelectItem>
+                      <SelectItem value="off">{t('settings.loyalty.scopeOff')}</SelectItem>
                     </SelectContent>
                   </Select>
+                </div>
+                <div className="space-y-2 max-w-md">
+                  <Label>{t('settings.loyalty.phoneMode')}</Label>
+                  <Select
+                    value={customerPhoneMode}
+                    onValueChange={(v: 'optional' | 'recommend' | 'required') => {
+                      setCustomerPhoneMode(v);
+                      setHasUnsavedChanges(true);
+                    }}
+                  >
+                    <SelectTrigger>
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="optional">{t('settings.loyalty.phoneOptional')}</SelectItem>
+                      <SelectItem value="recommend">{t('settings.loyalty.phoneRecommend')}</SelectItem>
+                      <SelectItem value="required">{t('settings.loyalty.phoneRequired')}</SelectItem>
+                    </SelectContent>
+                  </Select>
+                  <p className="text-sm text-muted-foreground">{t('settings.loyalty.phoneModeDesc')}</p>
                 </div>
                 <div className="space-y-2 max-w-md">
                   <Label htmlFor="loyalty_earn_ppu">{t('settings.loyalty.earnPpu')}</Label>
@@ -1836,6 +2022,7 @@ export default function Settings() {
                       'loyalty.master.points_per_uzs': masterLoyaltyPointsPerUzs,
                       'loyalty.general.enabled': generalLoyaltyEnabled,
                       'loyalty.earn.scope': loyaltyEarnScope,
+                      'customers.phone.mode': customerPhoneMode,
                       'loyalty.earn.points_per_uzs': loyaltyEarnPointsPerUzs,
                       'loyalty.earn.min_order_uzs': loyaltyMinOrderUzs,
                       'loyalty.redeem.enabled': loyaltyRedeemEnabled,
@@ -1855,7 +2042,7 @@ export default function Settings() {
         </TabsContent>
 
         {/* Payment & Tax Tab */}
-        <TabsContent value="payment">
+        <TabsContent value="payment" className="mt-0 min-w-0 flex-1 data-[state=inactive]:hidden">
           <div className="space-y-6">
             <Card>
               <CardHeader>
@@ -1929,6 +2116,69 @@ export default function Settings() {
                   {t('settings.payment.mixedNote')}
                 </p>
 
+                <div className="space-y-3 border-t pt-4">
+                  <div>
+                    <Label className="text-base">{t('settings.payment.feesTitle')}</Label>
+                    <p className="text-xs text-muted-foreground mt-1">
+                      {t('settings.payment.feesDescription')}
+                    </p>
+                  </div>
+                  {PAYMENT_FEE_METHODS.map((method) => {
+                    const rates = paymentSettings.fee_rates?.[method] || { percent: 0, fixed: 0 };
+                    return (
+                      <div
+                        key={`fee-${method}`}
+                        className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_7rem_7rem] items-end"
+                      >
+                        <Label className="sm:pb-2">
+                          {t(`settings.payment.feeMethod_${method}`)}
+                        </Label>
+                        <div className="space-y-1">
+                          <p className="text-xs text-muted-foreground">{t('settings.payment.feePercent')}</p>
+                          <Input
+                            type="number"
+                            min={0}
+                            max={100}
+                            step={0.01}
+                            value={rates.percent}
+                            onChange={(e) => {
+                              const n = Math.max(0, Math.min(100, Number(e.target.value) || 0));
+                              setPaymentSettings({
+                                ...paymentSettings,
+                                fee_rates: {
+                                  ...(paymentSettings.fee_rates || {}),
+                                  [method]: { ...rates, percent: n },
+                                },
+                              });
+                              setHasUnsavedChanges(true);
+                            }}
+                          />
+                        </div>
+                        <div className="space-y-1">
+                          <p className="text-xs text-muted-foreground">{t('settings.payment.feeFixed')}</p>
+                          <Input
+                            type="number"
+                            min={0}
+                            step={1}
+                            value={rates.fixed}
+                            onChange={(e) => {
+                              const n = Math.max(0, Number(e.target.value) || 0);
+                              setPaymentSettings({
+                                ...paymentSettings,
+                                fee_rates: {
+                                  ...(paymentSettings.fee_rates || {}),
+                                  [method]: { ...rates, fixed: n },
+                                },
+                              });
+                              setHasUnsavedChanges(true);
+                            }}
+                          />
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+
                 <div className="flex justify-end gap-3 border-t pt-6">
                   <Button variant="outline" onClick={() => loadAllSettings({ silent: true })}>
                     {t('settings.common.cancel')}
@@ -1958,9 +2208,16 @@ export default function Settings() {
                           if (trimmed.length > 0) cleanLabels[m] = trimmed;
                         }
                       }
+                      const feePayload: Record<string, unknown> = {};
+                      for (const method of PAYMENT_FEE_METHODS) {
+                        const rates = paymentSettings.fee_rates?.[method] || { percent: 0, fixed: 0 };
+                        feePayload[`payment_fees.${method}.percent`] = Number(rates.percent) || 0;
+                        feePayload[`payment_fees.${method}.fixed`] = Number(rates.fixed) || 0;
+                      }
                       const normalized: Record<string, unknown> = {
                         methods,
                         method_labels: cleanLabels,
+                        ...feePayload,
                       };
                       handleSave('payment', normalized);
                     }}
@@ -2058,8 +2315,16 @@ export default function Settings() {
           </div>
         </TabsContent>
 
+        <TabsContent value="creditReminders" className="mt-0 min-w-0 flex-1 data-[state=inactive]:hidden">
+          <CreditReminderSettings />
+        </TabsContent>
+
+        <TabsContent value="telegramReports" className="mt-0 min-w-0 flex-1 data-[state=inactive]:hidden">
+          <TelegramReportsSettings />
+        </TabsContent>
+
         {/* Receipt Tab */}
-        <TabsContent value="receipt">
+        <TabsContent value="receipt" className="mt-0 min-w-0 flex-1 data-[state=inactive]:hidden">
           <Card>
             <CardHeader>
               <CardTitle>{t('settings.receipt.title')}</CardTitle>
@@ -2245,7 +2510,7 @@ export default function Settings() {
         </TabsContent>
 
         {/* Inventory Tab */}
-        <TabsContent value="inventory">
+        <TabsContent value="inventory" className="mt-0 min-w-0 flex-1 data-[state=inactive]:hidden">
           <Card>
             <CardHeader>
               <CardTitle>{t('settings.inventory.title')}</CardTitle>
@@ -2343,6 +2608,139 @@ export default function Settings() {
                     <AlertTitle>{t('settings.inventory.batchAlertTitle')}</AlertTitle>
                     <AlertDescription className="text-xs">{t('settings.inventory.batchAlertText')}</AlertDescription>
                   </Alert>
+
+                  <div className="flex items-center justify-between rounded-md border p-3">
+                    <div className="space-y-1">
+                      <Label>{t('settings.inventory.batchStrictBlock')}</Label>
+                      <p className="text-xs text-muted-foreground">{t('settings.inventory.batchStrictBlockDesc')}</p>
+                    </div>
+                    <Switch
+                      checked={batchCfg.strictBlock}
+                      disabled={batchCfgLoading}
+                      onCheckedChange={async (checked) => {
+                        if (!isElectron()) return;
+                        try {
+                          const api = requireElectron();
+                          await handleIpcResponse(
+                            api.settings.set(
+                              'inventory.batch_strict_block',
+                              checked,
+                              'boolean',
+                              profile?.id || null
+                            )
+                          );
+                          setBatchCfg((prev) => ({ ...prev, strictBlock: checked }));
+                        } catch (e) {
+                          toast({
+                            title: t('settings.offline.toastErrTitle'),
+                            description: e instanceof Error ? e.message : t('settings.inventory.batchErr'),
+                            variant: 'destructive',
+                          });
+                        }
+                      }}
+                    />
+                  </div>
+
+                  <div className="flex items-center justify-between rounded-md border p-3">
+                    <div className="space-y-1">
+                      <Label>{t('settings.inventory.revisionBlockSales')}</Label>
+                      <p className="text-xs text-muted-foreground">
+                        {t('settings.inventory.revisionBlockSalesDesc')}
+                      </p>
+                    </div>
+                    <Switch
+                      checked={batchCfg.revisionBlockSales}
+                      disabled={batchCfgLoading}
+                      onCheckedChange={async (checked) => {
+                        if (!isElectron()) return;
+                        try {
+                          const api = requireElectron();
+                          await handleIpcResponse(
+                            api.settings.set(
+                              'inventory.revision_block_sales',
+                              checked,
+                              'boolean',
+                              profile?.id || null
+                            )
+                          );
+                          setBatchCfg((prev) => ({ ...prev, revisionBlockSales: checked }));
+                        } catch (e) {
+                          toast({
+                            title: t('settings.offline.toastErrTitle'),
+                            description: e instanceof Error ? e.message : t('settings.inventory.batchErr'),
+                            variant: 'destructive',
+                          });
+                        }
+                      }}
+                    />
+                  </div>
+
+                  {batchCfg.enabled && (
+                    <div className="space-y-3 rounded-lg border p-4">
+                      <div className="flex items-center justify-between gap-2">
+                        <div>
+                          <p className="text-sm font-medium">{t('settings.inventory.batchHealthTitle')}</p>
+                          <p className="text-xs text-muted-foreground">{t('settings.inventory.batchHealthDesc')}</p>
+                        </div>
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          disabled={batchHealthLoading}
+                          onClick={() => void loadBatchHealth()}
+                        >
+                          {t('settings.inventory.batchHealthRefresh')}
+                        </Button>
+                      </div>
+                      <div className="grid gap-3 md:grid-cols-3">
+                        <div className="rounded-md border p-3">
+                          <p className="text-xs text-muted-foreground">{t('settings.inventory.batchHealthDrift')}</p>
+                          <p className="text-lg font-semibold">{batchHealth?.drift_count ?? '—'}</p>
+                        </div>
+                        <div className="rounded-md border p-3">
+                          <p className="text-xs text-muted-foreground">{t('settings.inventory.batchHealthNoBatch')}</p>
+                          <p className="text-lg font-semibold">{batchHealth?.no_batch_stock_count ?? '—'}</p>
+                        </div>
+                        <div className="rounded-md border p-3">
+                          <p className="text-xs text-muted-foreground">{t('settings.inventory.batchHealthZeroCost')}</p>
+                          <p className="text-lg font-semibold">{batchHealth?.zero_cost_batch_count ?? '—'}</p>
+                        </div>
+                      </div>
+                      <div className="flex justify-end">
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          disabled={batchHealthLoading}
+                          onClick={async () => {
+                            if (!isElectron()) return;
+                            const ok = confirm(t('settings.inventory.batchHealthRepairConfirm'));
+                            if (!ok) return;
+                            try {
+                              const api = requireElectron();
+                              const result = await handleIpcResponse<any>(
+                                api.inventory.repairBatchCoverage({ dryRun: false, warehouseId: null })
+                              );
+                              toast({
+                                title: t('settings.inventory.batchToastTitle'),
+                                description: t('settings.inventory.batchHealthRepairDone', {
+                                  created: result?.created ?? 0,
+                                  reduced: result?.reduced ?? 0,
+                                }),
+                              });
+                              await loadBatchHealth();
+                            } catch (e) {
+                              toast({
+                                title: t('settings.offline.toastErrTitle'),
+                                description: e instanceof Error ? e.message : t('settings.inventory.batchErr'),
+                                variant: 'destructive',
+                              });
+                            }
+                          }}
+                        >
+                          {t('settings.inventory.batchHealthRepair')}
+                        </Button>
+                      </div>
+                    </div>
+                  )}
 
                   {batchCfg.enabled && batchCfg.cutoverAt && (
                     <div className="flex justify-end">
@@ -2532,7 +2930,7 @@ export default function Settings() {
         </TabsContent>
 
         {/* Numbering Tab */}
-        <TabsContent value="numbering">
+        <TabsContent value="numbering" className="mt-0 min-w-0 flex-1 data-[state=inactive]:hidden">
           <Card>
             <CardHeader>
               <CardTitle>{t('settings.numbering.title')}</CardTitle>
@@ -2703,7 +3101,7 @@ export default function Settings() {
         </TabsContent>
 
         {/* Security Tab */}
-        <TabsContent value="security">
+        <TabsContent value="security" className="mt-0 min-w-0 flex-1 data-[state=inactive]:hidden">
           <Card>
             <CardHeader>
               <CardTitle>{t('settings.security.title')}</CardTitle>
@@ -2863,7 +3261,7 @@ export default function Settings() {
         </TabsContent>
 
         {/* Localization Tab */}
-        <TabsContent value="localization">
+        <TabsContent value="localization" className="mt-0 min-w-0 flex-1 data-[state=inactive]:hidden">
           <Card>
             <CardHeader>
               <CardTitle>{t('settings.localization.title')}</CardTitle>
@@ -3028,19 +3426,19 @@ export default function Settings() {
         </TabsContent>
 
         {profile?.role === 'admin' && (
-          <TabsContent value="currency">
+          <TabsContent value="currency" className="mt-0 min-w-0 flex-1 data-[state=inactive]:hidden">
             <ExchangeRatesSettings />
           </TabsContent>
         )}
 
         {/* Offline & Sync Tab */}
-        <TabsContent value="offline">
+        <TabsContent value="offline" className="mt-0 min-w-0 flex-1 data-[state=inactive]:hidden">
           <OfflineSettingsTab />
         </TabsContent>
 
         {/* POS Network (HOST/CLIENT) - Admin only */}
         {profile?.role === 'admin' && (
-          <TabsContent value="marketplace">
+          <TabsContent value="marketplace" className="mt-0 min-w-0 flex-1 data-[state=inactive]:hidden">
             <Card>
               <CardHeader>
                 <CardTitle className="flex items-center gap-2">
@@ -3181,47 +3579,45 @@ export default function Settings() {
 
         {/* Telegram Couriers - Admin only */}
         {profile?.role === 'admin' && (
-          <TabsContent value="couriers">
+          <TabsContent value="couriers" className="mt-0 min-w-0 flex-1 data-[state=inactive]:hidden">
             <Card>
               <CardHeader>
                 <CardTitle className="flex items-center gap-2">
                   <Truck className="h-5 w-5" />
                   {t('settings.marketplace.delivery')}
                 </CardTitle>
-                <CardDescription>
-                  Telegram bot kuryer paneliga kira oladigan foydalanuvchilarni boshqaring.
-                </CardDescription>
+                <CardDescription>{t('settings.marketplace.couriersDesc')}</CardDescription>
               </CardHeader>
               <CardContent className="space-y-6">
                 <div className="grid gap-4 rounded-lg border p-4 xl:grid-cols-[1fr_1fr_1fr_auto]">
                   <div className="space-y-2">
-                    <Label>Telegram username yoki ID</Label>
+                    <Label>{t('settings.marketplace.identifierLabel')}</Label>
                     <Input
                       value={newCourierIdentifier}
                       onChange={(e) => setNewCourierIdentifier(e.target.value)}
-                      placeholder="@TOHIR3 yoki 123456789"
+                      placeholder={t('settings.marketplace.identifierPh')}
                     />
                   </div>
                   <div className="space-y-2">
-                    <Label>Ism</Label>
+                    <Label>{t('settings.marketplace.nameLabel')}</Label>
                     <Input
                       value={newCourierName}
                       onChange={(e) => setNewCourierName(e.target.value)}
-                      placeholder="Tohirbek Abdullajonov"
+                      placeholder={t('settings.marketplace.namePh')}
                     />
                   </div>
                   <div className="space-y-2">
-                    <Label>Telefon</Label>
+                    <Label>{t('settings.marketplace.phoneLabel')}</Label>
                     <Input
                       value={newCourierPhone}
                       onChange={(e) => setNewCourierPhone(e.target.value)}
-                      placeholder="+998901234567"
+                      placeholder={t('settings.marketplace.phonePh')}
                     />
                   </div>
                   <div className="flex items-end">
                     <Button onClick={handleAddCourier} disabled={courierSaving || !newCourierIdentifier.trim()}>
                       {courierSaving ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Save className="mr-2 h-4 w-4" />}
-                      Qo'shish
+                      {t('settings.marketplace.add')}
                     </Button>
                   </div>
                 </div>
@@ -3229,19 +3625,19 @@ export default function Settings() {
                 <div className="rounded-lg border">
                   <div className="flex items-center justify-between border-b p-4">
                     <div>
-                      <h3 className="font-semibold">Kuryerlar ro'yxati</h3>
-                      <p className="text-sm text-muted-foreground">Aktiv kuryerlar botdan buyurtma statusini o'zgartira oladi.</p>
+                      <h3 className="font-semibold">{t('settings.marketplace.listTitle')}</h3>
+                      <p className="text-sm text-muted-foreground">{t('settings.marketplace.listHint')}</p>
                     </div>
                     <Button variant="outline" size="sm" onClick={loadCouriers} disabled={couriersLoading}>
                       <RefreshCw className={`mr-2 h-4 w-4 ${couriersLoading ? 'animate-spin' : ''}`} />
-                      Yangilash
+                      {t('settings.marketplace.refresh')}
                     </Button>
                   </div>
                   <div className="divide-y">
                     {couriersLoading ? (
-                      <div className="p-4 text-sm text-muted-foreground">Yuklanmoqda...</div>
+                      <div className="p-4 text-sm text-muted-foreground">{t('settings.marketplace.loading')}</div>
                     ) : couriers.length === 0 ? (
-                      <div className="p-4 text-sm text-muted-foreground">Kuryerlar yo'q.</div>
+                      <div className="p-4 text-sm text-muted-foreground">{t('settings.marketplace.empty')}</div>
                     ) : (
                       couriers.map((courier) => (
                         <div key={courier.id} className="flex items-center justify-between gap-4 p-4">
@@ -3250,7 +3646,10 @@ export default function Settings() {
                               {courier.display_name || courier.username || courier.telegram_id || `#${courier.id}`}
                             </div>
                             <div className="text-sm text-muted-foreground">
-                              {courier.username ? `@${courier.username}` : 'Username yo‘q'} · ID: {courier.telegram_id || 'hali bog‘lanmagan'}
+                              {courier.username
+                                ? `@${courier.username}`
+                                : t('settings.marketplace.noUsername')}{' '}
+                              · ID: {courier.telegram_id || t('settings.marketplace.idUnbound')}
                             </div>
                             {courier.phone && (
                               <div className="text-sm text-muted-foreground">Tel: {courier.phone}</div>
@@ -3258,7 +3657,9 @@ export default function Settings() {
                           </div>
                           <div className="flex items-center gap-3">
                             <span className={Number(courier.active) ? 'text-sm text-emerald-600' : 'text-sm text-muted-foreground'}>
-                              {Number(courier.active) ? 'Aktiv' : 'Noaktiv'}
+                              {Number(courier.active)
+                                ? t('settings.marketplace.active')
+                                : t('settings.marketplace.inactive')}
                             </span>
                             <Switch
                               checked={!!Number(courier.active)}
@@ -3278,7 +3679,7 @@ export default function Settings() {
 
         {/* Database backup + network config */}
         {canManageDatabase && (
-          <TabsContent value="network">
+          <TabsContent value="network" className="mt-0 min-w-0 flex-1 data-[state=inactive]:hidden">
             <Card>
               <CardHeader>
                 <CardTitle className="flex items-center gap-2">
@@ -3367,13 +3768,26 @@ export default function Settings() {
                         }}
                         onReload={loadPosNetConfig}
                         onTest={testHostConnection}
-                        onSave={() =>
-                          savePosNetConfig({
+                        onSave={() => {
+                          if (posNetConfig.mode === 'client') {
+                            const url = String(posNetConfig?.client?.hostUrl || '')
+                              .trim()
+                              .replace(/\/+$/, '');
+                            if (!url) {
+                              toast({
+                                title: t('settings.offline.toastErrTitle'),
+                                description: t('settings.network.errEmptyUrl'),
+                                variant: 'destructive',
+                              });
+                              return;
+                            }
+                          }
+                          return savePosNetConfig({
                             mode: posNetConfig.mode,
                             host: posNetConfig.host,
                             client: posNetConfig.client,
-                          })
-                        }
+                          });
+                        }}
                       />
                     ) : null}
                   </>
@@ -3385,7 +3799,7 @@ export default function Settings() {
 
         {/* System Reset (Danger Zone) - Admin only */}
         {profile?.role === 'admin' && (
-          <TabsContent value="reset">
+          <TabsContent value="reset" className="mt-0 min-w-0 flex-1 data-[state=inactive]:hidden">
             <Card className="border-destructive">
               <CardHeader>
                 <CardTitle className="flex items-center gap-2 text-destructive">

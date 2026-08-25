@@ -88,7 +88,8 @@ export default function QuickCustomerCreate({ onCreated, showLabel = false, clas
         notes: null,
         bonus_points: 0,
         credit_limit: 0,
-        allow_debt: false,
+        // Server nasiya gate: allow_debt/allow_credit OR credit_limit>0
+        allow_debt: true,
       });
       toast({
         title: 'Muvaffaqiyatli',

@@ -18,6 +18,24 @@ import type {
 
 const customersListInFlight = new Map<string, Promise<Customer[]>>();
 
+/** Parse "@user" or numeric chat id for localStorage fallback path. */
+function parseTelegramLocal(raw: string | null | undefined): {
+  telegram_id: number | null;
+  telegram_username: string | null;
+} {
+  const s = raw == null ? '' : String(raw).trim();
+  if (!s) return { telegram_id: null, telegram_username: null };
+  if (/^-?\d+$/.test(s)) {
+    const n = Number(s);
+    return Number.isFinite(n) ? { telegram_id: n, telegram_username: null } : { telegram_id: null, telegram_username: null };
+  }
+  const username = s.replace(/^@+/, '').trim();
+  if (/^[A-Za-z][A-Za-z0-9_]{4,31}$/.test(username)) {
+    return { telegram_id: null, telegram_username: username };
+  }
+  return { telegram_id: null, telegram_username: null };
+}
+
 function customersListCacheKey(filters?: {
   searchTerm?: string;
   type?: string;
@@ -196,6 +214,11 @@ export const createCustomer = async (customer: {
   notes?: string | null;
   status?: 'active' | 'inactive';
   bonus_points?: number;
+  /** Numeric chat id, or pass via `telegram` / telegram_username. */
+  telegram_id?: number | null;
+  telegram_username?: string | null;
+  /** Convenience: "@username" or numeric chat id. */
+  telegram?: string | null;
 }) => {
   if (hasPosApi()) {
     const api = requireElectron();
@@ -205,6 +228,15 @@ export const createCustomer = async (customer: {
   
   // Read existing customers
   const customers = getStoredCustomers();
+  const fromTelegram =
+    customer.telegram !== undefined
+      ? parseTelegramLocal(customer.telegram)
+      : {
+          telegram_id: customer.telegram_id ?? null,
+          telegram_username: customer.telegram_username
+            ? String(customer.telegram_username).replace(/^@+/, '')
+            : null,
+        };
   
   // Create new customer object
   const newCustomer: Customer = {
@@ -226,9 +258,12 @@ export const createCustomer = async (customer: {
     status: customer.status || 'active',
     type: customer.type || 'individual',
     pricing_tier: customer.pricing_tier || 'retail',
+    telegram_id: fromTelegram.telegram_id,
+    telegram_username: fromTelegram.telegram_username,
     created_at: new Date().toISOString(),
     updated_at: new Date().toISOString(),
   };
+  delete (newCustomer as { telegram?: string | null }).telegram;
   
   // Append to array and save
   customers.push(newCustomer);
@@ -252,9 +287,16 @@ export const updateCustomer = async (id: string, updates: Partial<Customer>): Pr
   }
   
   // Update customer
+  const patch = { ...updates } as Partial<Customer> & { telegram?: string | null };
+  if (patch.telegram !== undefined) {
+    const parsed = parseTelegramLocal(patch.telegram);
+    patch.telegram_id = parsed.telegram_id;
+    patch.telegram_username = parsed.telegram_username;
+    delete patch.telegram;
+  }
   const updatedCustomer: Customer = {
     ...customers[index],
-    ...updates,
+    ...patch,
     id,
     updated_at: new Date().toISOString(),
   };

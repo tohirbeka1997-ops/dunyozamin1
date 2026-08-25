@@ -4,13 +4,7 @@ import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@/components/ui/select';
+import SearchableSupplierCombobox from '@/components/common/SearchableSupplierCombobox';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { useToast } from '@/hooks/use-toast';
 import {
@@ -51,7 +45,7 @@ export default function PurchaseReceiptForm() {
   const [po, setPo] = useState<PurchaseOrderWithDetails | null>(null);
 
   const [supplierId, setSupplierId] = useState('');
-  const [currency, setCurrency] = useState<'USD' | 'UZS'>('USD');
+  const [currency, setCurrency] = useState<'USD' | 'UZS'>('UZS');
   const [receivedAt, setReceivedAt] = useState(todayYMD());
   const [invoiceNumber, setInvoiceNumber] = useState('');
   const [notes, setNotes] = useState('');
@@ -66,7 +60,7 @@ export default function PurchaseReceiptForm() {
   useEffect(() => {
     if (!supplierId) return;
     const supplier = suppliers.find((s) => s.id === supplierId) as any;
-    const nextCurrency = String(supplier?.settlement_currency || 'USD').toUpperCase() === 'UZS' ? 'UZS' : 'USD';
+    const nextCurrency = String(supplier?.settlement_currency || 'UZS').toUpperCase() === 'USD' ? 'USD' : 'UZS';
     setCurrency(nextCurrency);
     if (nextCurrency === 'UZS') {
       setFxRate(null);
@@ -104,7 +98,7 @@ export default function PurchaseReceiptForm() {
         const poData = await getPurchaseOrderById(fromPoId);
         setPo(poData);
         setSupplierId(poData.supplier_id || '');
-        const poCurrency = String((poData as any)?.currency || 'USD').toUpperCase() === 'UZS' ? 'UZS' : 'USD';
+        const poCurrency = String((poData as any)?.currency || 'UZS').toUpperCase() === 'USD' ? 'USD' : 'UZS';
         setCurrency(poCurrency);
         if (poCurrency === 'USD') {
           const rate = Number((poData as any).fx_rate ?? 0);
@@ -128,28 +122,29 @@ export default function PurchaseReceiptForm() {
         } else {
           setFxRate(null);
         }
-        const rate = Number((poData as any).fx_rate ?? 0);
+        const rate = Number((poData as any).fx_rate ?? fxRate ?? 0);
         const mapped = (poData.items || []).map((it) => {
           const qtyToReceive = Math.max(0, Number(it.ordered_qty) - Number(it.received_qty || 0));
+          // USD PO: unit_cost is UZS inventory cost — never treat it as dollars.
+          // Prefer unit_cost_usd; else derive dollars from UZS ÷ fx.
+          const unitCostUzs = Number((it as any).landed_unit_cost ?? it.unit_cost ?? 0) || 0;
+          const explicitUsd = Number((it as any).unit_cost_usd);
           const baseCost =
             poCurrency === 'USD'
-              ? Number((it as any).unit_cost_usd ?? it.unit_cost ?? 0)
-              : Number(it.unit_cost ?? 0);
-          const landedCostUzs = Number((it as any).landed_unit_cost ?? 0) || 0;
-          const landedCost =
-            poCurrency === 'USD'
-              ? rate > 0 && landedCostUzs > 0
-                ? landedCostUzs / rate
-                : baseCost
-              : landedCostUzs || baseCost;
+              ? Number.isFinite(explicitUsd) && explicitUsd > 0
+                ? explicitUsd
+                : rate > 0 && unitCostUzs > 0
+                  ? unitCostUzs / rate
+                  : 0
+              : unitCostUzs;
           return {
             purchase_order_item_id: it.id,
             product_id: it.product_id,
             product_name: it.product_name,
             ordered_qty: it.ordered_qty,
             received_qty: qtyToReceive,
-            unit_cost: landedCost,
-            line_total: qtyToReceive * landedCost,
+            unit_cost: baseCost,
+            line_total: qtyToReceive * baseCost,
           };
         });
         setItems(mapped.filter((m) => m.received_qty > 0));
@@ -329,18 +324,11 @@ export default function PurchaseReceiptForm() {
             {fromPoId ? (
               <Input value={suppliers.find((s) => s.id === supplierId)?.name || ''} readOnly />
             ) : (
-              <Select value={supplierId} onValueChange={setSupplierId}>
-                <SelectTrigger>
-                  <SelectValue placeholder="Yetkazib beruvchini tanlang" />
-                </SelectTrigger>
-                <SelectContent>
-                  {suppliers.map((s) => (
-                    <SelectItem key={s.id} value={s.id}>
-                      {s.name}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+              <SearchableSupplierCombobox
+                value={supplierId}
+                onValueChange={setSupplierId}
+                suppliers={suppliers}
+              />
             )}
           </div>
           <div className="space-y-2">

@@ -49,6 +49,38 @@ test('normalizePhoneUz canonicalizes +998 / 998 / 9-digit local formats', () => 
   assert.equal(normalizePhoneUz('912828308'), CANONICAL);
 });
 
+test('normalizePhoneUz accepts all UZ operator prefixes (88/77/33/55/20)', () => {
+  const cases = [
+    ['+998881234567', '998881234567'],
+    ['998771234567', '998771234567'],
+    ['331234567', '998331234567'],
+    ['551234567', '998551234567'],
+    ['201234567', '998201234567'],
+    ['8 88 123 45 67', '998881234567'],
+  ];
+  for (const [input, expected] of cases) {
+    assert.equal(normalizePhoneUz(input), expected, `failed for ${input}`);
+  }
+});
+
+test('create deduplicates 88-prefix numbers across formats', () => {
+  const db = createTestDb();
+  const svc = new CustomersService(db);
+  const first = svc.create({ name: 'Beeline', phone: '+998881112233' });
+
+  for (const phone of ['998881112233', '881112233', '8 88 111 22 33']) {
+    assert.throws(
+      () => svc.create({ name: 'Duplicate', phone }),
+      (err) => {
+        assert.equal(err.code, ERROR_CODES.DUPLICATE_PHONE);
+        assert.equal(err.details?.existing_id, first.id);
+        return true;
+      },
+    );
+  }
+  assert.equal(db.prepare(`SELECT COUNT(*) AS c FROM customers`).get().c, 1);
+});
+
 test('create throws DUPLICATE_PHONE for manual duplicate', () => {
   const db = createTestDb();
   const svc = new CustomersService(db);

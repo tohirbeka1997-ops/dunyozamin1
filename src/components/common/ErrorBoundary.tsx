@@ -55,7 +55,7 @@ export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundarySt
                 <CardTitle>Xatolik yuz berdi</CardTitle>
               </div>
               <CardDescription>
-                Xarajat oynasini ochib bo'lmadi
+                Sahifani yuklashda xatolik yuz berdi. Iltimos, qayta urinib ko'ring yoki brauzer keshini tozalang.
               </CardDescription>
             </CardHeader>
             <CardContent className="space-y-4">

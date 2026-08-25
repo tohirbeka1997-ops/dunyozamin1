@@ -154,6 +154,31 @@ test('payme PerformTransaction twice decrements stock once and marks paid once',
   assert.equal(row.payment_provider, 'payme');
 });
 
+test('payme CancelTransaction after capture marks refunded and cancelled', () => {
+  const db = createTestDb();
+  const orderId = insertPayableOrder(db, 'payme');
+  const amount = sumsToTiyin(5000);
+  handlePaycomRpc(db, paymeReq(), performTransactionBody(orderId, amount), {
+    merchantId: PAYME_MID,
+    apiKey: PAYME_KEY,
+  });
+  const cancel = handlePaycomRpc(
+    db,
+    paymeReq(),
+    {
+      jsonrpc: '2.0',
+      id: 43,
+      method: 'CancelTransaction',
+      params: { id: 'payme-tx-1', account: { order_id: String(orderId) } },
+    },
+    { merchantId: PAYME_MID, apiKey: PAYME_KEY },
+  );
+  assert.equal(cancel.body.result.state, -1);
+  const row = db.prepare(`SELECT status, payment_status FROM web_orders WHERE id = ?`).get(orderId);
+  assert.equal(row.status, 'cancelled');
+  assert.equal(row.payment_status, 'refunded');
+});
+
 // --- Click ---------------------------------------------------------------
 
 const CLICK_SERVICE = '900';

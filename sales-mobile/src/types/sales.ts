@@ -56,6 +56,8 @@ export interface ProductBatchesResponse {
 export interface CartLine {
   product: PosProduct;
   quantity: number;
+  /** Line discount in UZS (absolute), capped at unit_price * quantity on checkout. */
+  discount_amount?: number;
 }
 
 export interface SaleItemInput {
@@ -71,6 +73,21 @@ export interface CompleteSalePayload {
   amount_tendered?: number;
   notes?: string;
   order_uuid?: string;
+  /** YYYY-MM-DD — credit repayment due date (optional). */
+  due_date?: string;
+}
+
+export interface HoldSalePayload {
+  items: SaleItemInput[];
+  customer_id?: string;
+  notes?: string;
+  order_uuid?: string;
+  shift_id?: string;
+  device_id?: string;
+}
+
+export interface HoldSaleResponse {
+  data: SaleOrder;
 }
 
 export interface SaleOrderItem {

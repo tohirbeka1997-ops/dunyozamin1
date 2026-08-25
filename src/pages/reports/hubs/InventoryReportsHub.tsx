@@ -45,6 +45,12 @@ export default function InventoryReportsHub() {
         icon: <BarChart3 className="h-4 w-4 opacity-90" />,
       },
       {
+        title: 'ABC tahlil (sotuv bo‘yicha)',
+        description: 'Mahsulotlar A/B/C — daromad ulushi (80% / 95%)',
+        path: '/reports/inventory/abc-analysis',
+        icon: <BarChart3 className="h-4 w-4 opacity-90" />,
+      },
+      {
         title: 'Ombor harakatlari',
         description: 'Kirim/chiqim harakatlar tarixi',
         path: '/reports/inventory/movements',

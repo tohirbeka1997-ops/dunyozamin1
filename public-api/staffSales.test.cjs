@@ -34,9 +34,7 @@ function withEnv(overrides, fn) {
     });
 }
 
-function sha256(text) {
-  return crypto.createHash('sha256').update(text).digest('hex');
-}
+const { hashPassword } = require('../electron/lib/password.cjs');
 
 const SALES_USER_ID = 'staff-sales-001';
 const PRODUCT_ID = 'prod-sell-001';
@@ -55,7 +53,7 @@ function seedDatabase(dbPath) {
   db.prepare(
     `INSERT INTO users (id, username, full_name, email, password_hash, is_active, created_at, updated_at)
      VALUES (?, 'seller@test.com', 'Seller User', 'seller@test.com', ?, 1, datetime('now'), datetime('now'))`,
-  ).run(SALES_USER_ID, sha256('secret123'));
+  ).run(SALES_USER_ID, hashPassword('secret123'));
 
   db.prepare(
     `INSERT INTO user_roles (id, user_id, role_id, assigned_at)
@@ -129,14 +127,20 @@ test('staff POS: shift open → product search → sell → receipt → close + 
         const token = login.access_token;
         assert.equal(login.user.role, 'sales');
 
-        // 2. RBAC: a cashier token must be rejected by staffAuth (403)
+        // 2. Cashier may authenticate and attempt sales (needs open shift → 409, not 403).
+        //    Web orders remain forbidden for cashier.
         const cashierToken = signStaffAccessToken(SALES_USER_ID, 'cashier', 'default');
-        const rbacRes = await fetch(`${base}/v1/staff/sales`, {
+        const cashierSaleRes = await fetch(`${base}/v1/staff/sales`, {
           method: 'POST',
           headers: authHeader(cashierToken),
           body: JSON.stringify({ items: [{ product_id: PRODUCT_ID, quantity: 1 }], payment_method: 'cash' }),
         });
-        assert.equal(rbacRes.status, 403);
+        assert.equal(cashierSaleRes.status, 409);
+
+        const cashierOrdersRes = await fetch(`${base}/v1/staff/orders/queues`, {
+          headers: authHeader(cashierToken),
+        });
+        assert.equal(cashierOrdersRes.status, 403);
 
         // 3. Selling before opening a shift fails (shift required)
         const noShiftRes = await fetch(`${base}/v1/staff/sales`, {
@@ -162,6 +166,32 @@ test('staff POS: shift open → product search → sell → receipt → close + 
         assert.equal(curRes.status, 200);
         const curBody = await curRes.json();
         assert.ok(curBody.data && curBody.data.shift && curBody.data.shift.id === openBody.data.id);
+
+        // 5b. Hold sale — no payment, stock unchanged until cashier completes
+        const stockBeforeHold = stockOf(dbPath, PRODUCT_ID);
+        const holdRes = await fetch(`${base}/v1/staff/sales/hold`, {
+          method: 'POST',
+          headers: authHeader(token),
+          body: JSON.stringify({
+            items: [{ product_id: PRODUCT_ID, quantity: 1 }],
+            shift_id: openBody.data.id,
+            order_uuid: randomUUID(),
+            device_id: 'test-mobile-device',
+            notes: 'Mobil test',
+          }),
+        });
+        assert.equal(holdRes.status, 201);
+        const holdBody = await holdRes.json();
+        assert.equal(String(holdBody.data.status).toLowerCase(), 'hold');
+        assert.equal(holdBody.data.sales_channel, 'staff_mobile');
+        assert.equal(stockOf(dbPath, PRODUCT_ID), stockBeforeHold);
+
+        const holdListRes = await fetch(`${base}/v1/staff/sales?status=hold&limit=20`, {
+          headers: authHeader(token),
+        });
+        assert.equal(holdListRes.status, 200);
+        const holdListBody = await holdListRes.json();
+        assert.ok(holdListBody.data.some((o) => o.id === holdBody.data.id));
 
         // 6. Product search
         const searchRes = await fetch(`${base}/v1/staff/products/search?q=SKU-SELL-1`, {

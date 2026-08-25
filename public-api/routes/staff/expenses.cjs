@@ -5,6 +5,8 @@ const { formatYmdInTimeZone } = require('../../../electron/lib/timezone.cjs');
 const { openTenantDatabase } = require('../../lib/staffDb.cjs');
 const { getPosBundle } = require('../../lib/staffPos.cjs');
 const { mapStaffServiceError } = require('../../lib/staffErrorMap.cjs');
+const { validate } = require('../../middleware/validate.cjs');
+const { staffExpenseCreateBodySchema } = require('../../schemas/staff.schema.cjs');
 
 function mapServiceError(e, res) {
   mapStaffServiceError(e, res, { logTag: '[staff/expenses]' });
@@ -46,7 +48,7 @@ function mountStaffExpensesRoutes() {
   });
 
   // POST /v1/staff/expenses
-  router.post('/', (req, res) => {
+  router.post('/', validate({ body: staffExpenseCreateBodySchema }), (req, res) => {
     try {
       const body = req.body || {};
       const categoryId = String(body.category_id || '').trim();

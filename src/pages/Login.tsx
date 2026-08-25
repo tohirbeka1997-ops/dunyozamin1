@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -8,8 +8,10 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { useToast } from '@/hooks/use-toast';
 import { useAuth } from '@/contexts/AuthContext';
+import { clearRemoteSessionForLogin, isRemoteRpcMode } from '@/lib/remotePosApi';
 import { handleIpcResponse } from '@/utils/electron';
 import { loadRememberedLogin, saveRememberedLogin } from '@/lib/auth/rememberLogin';
+import { setRememberMeEnabled } from '@/lib/auth/sessionPersistence';
 import {
   detectAppEntryMode,
   loadPreferredEntryMode,
@@ -87,6 +89,14 @@ export default function Login() {
   });
 
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const submittingRef = useRef(false);
+
+  // Web: drop any stale session before login RPC runs (prevents 401 on auth.me
+  // and accidental redirect to /pos with an expired token).
+  useEffect(() => {
+    if (!isRemoteRpcMode()) return;
+    clearRemoteSessionForLogin();
+  }, []);
 
   /** Loaded from pos:tenants:publicProfile when tenant slug is valid (MT only). */
   const [tenantVisual, setTenantVisual] = useState<{
@@ -146,6 +156,10 @@ export default function Login() {
   const handleSignIn = async (e: React.FormEvent) => {
     e.preventDefault();
 
+    if (submittingRef.current || isSubmitting || loading) {
+      return;
+    }
+
     if (!signInData.email || !signInData.password) {
       toast({
         title: 'Xatolik',
@@ -191,9 +205,15 @@ export default function Login() {
       return;
     }
 
+    submittingRef.current = true;
     setIsSubmitting(true);
     try {
       console.log('🔐 Login attempt:', { identifier: trimmedId, tenant: trimmedTenant || undefined });
+      // Set the remember-me intent BEFORE signing in so the session token +
+      // cached profile are written to the correct store (localStorage when
+      // remembered → survives new tabs / restart; sessionStorage otherwise →
+      // survives same-tab F5 only).
+      setRememberMeEnabled(rememberLogin);
       await signIn(trimmedId, signInData.password, trimmedTenant || null);
       saveRememberedLogin(rememberLogin, trimmedId, trimmedTenant || null);
       console.log('✅ Login successful');
@@ -211,6 +231,7 @@ export default function Login() {
         variant: 'destructive',
       });
     } finally {
+      submittingRef.current = false;
       setIsSubmitting(false);
     }
   };

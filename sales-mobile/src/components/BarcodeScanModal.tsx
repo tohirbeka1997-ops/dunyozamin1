@@ -7,24 +7,31 @@ import {
   Text,
   View,
 } from 'react-native';
-import { CameraView, useCameraPermissions } from 'expo-camera';
+import { CameraView, useCameraPermissions, type PermissionResponse } from 'expo-camera';
 import {
   BarcodeScanModalProps,
   ManualBarcodeForm,
   scanModalStyles,
 } from '@/components/BarcodeScanModal.shared';
+import {
+  hasCameraPermissionRequestStarted,
+  isCameraGrantedInSession,
+  markCameraGrantedInSession,
+  markCameraPermissionRequestStarted,
+} from '@/lib/cameraPermission';
 import { t } from '@/i18n';
 
 function NativeCameraScanner({
+  permission,
   onScan,
   onManual,
   busy,
 }: {
+  permission: PermissionResponse | null;
   onScan: (code: string) => void;
   onManual: () => void;
   busy?: boolean;
 }) {
-  const [permission, requestPermission] = useCameraPermissions();
   const scannedRef = useRef(false);
 
   useEffect(() => {
@@ -42,7 +49,9 @@ function NativeCameraScanner({
     [busy, onScan],
   );
 
-  if (!permission) {
+  const granted = Boolean(permission?.granted || isCameraGrantedInSession());
+
+  if (!permission && !granted) {
     return (
       <View style={nativeStyles.centered}>
         <ActivityIndicator size="large" color="#166534" />
@@ -50,13 +59,15 @@ function NativeCameraScanner({
     );
   }
 
-  if (!permission.granted) {
+  if (!granted) {
+    const pending =
+      !permission || (permission.canAskAgain && hasCameraPermissionRequestStarted());
     return (
       <View style={nativeStyles.centered}>
         <Text style={scanModalStyles.hint}>{t('scanHint')}</Text>
-        <Pressable style={scanModalStyles.primaryBtn} onPress={() => void requestPermission()}>
-          <Text style={scanModalStyles.primaryBtnText}>{t('scanBarcode')}</Text>
-        </Pressable>
+        <Text style={nativeStyles.waitText}>
+          {pending ? t('cameraStarting') : t('cameraPermissionDenied')}
+        </Text>
         <Pressable style={nativeStyles.linkBtn} onPress={onManual}>
           <Text style={nativeStyles.linkBtnText}>{t('enterBarcodeManually')}</Text>
         </Pressable>
@@ -88,10 +99,25 @@ function NativeCameraScanner({
 /** Native: camera barcode scan with manual fallback. */
 export function BarcodeScanModal({ visible, onClose, onScan, busy }: BarcodeScanModalProps) {
   const [manualOnly, setManualOnly] = useState(false);
+  const [permission, requestPermission] = useCameraPermissions();
 
   useEffect(() => {
     if (visible) setManualOnly(false);
   }, [visible]);
+
+  useEffect(() => {
+    if (!visible) return;
+    if (permission?.granted) {
+      markCameraGrantedInSession();
+      return;
+    }
+    if (!permission || !permission.canAskAgain || hasCameraPermissionRequestStarted()) return;
+
+    markCameraPermissionRequestStarted();
+    void requestPermission().then((result) => {
+      if (result?.granted) markCameraGrantedInSession();
+    });
+  }, [visible, permission, requestPermission]);
 
   const handleClose = useCallback(() => {
     setManualOnly(false);
@@ -116,6 +142,7 @@ export function BarcodeScanModal({ visible, onClose, onScan, busy }: BarcodeScan
           />
         ) : (
           <NativeCameraScanner
+            permission={permission}
             onScan={(code) => void onScan(code)}
             onManual={() => setManualOnly(true)}
             busy={busy}
@@ -128,6 +155,7 @@ export function BarcodeScanModal({ visible, onClose, onScan, busy }: BarcodeScan
 
 const nativeStyles = StyleSheet.create({
   centered: { flex: 1, justifyContent: 'center', alignItems: 'center', padding: 24 },
+  waitText: { color: '#94a3b8', fontSize: 13, marginTop: 8, textAlign: 'center' },
   linkBtn: { marginTop: 16 },
   linkBtnText: { color: '#94a3b8', fontSize: 14 },
   cameraWrap: { flex: 1 },

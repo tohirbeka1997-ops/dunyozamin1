@@ -18,6 +18,7 @@ import {
 } from '@/api/client';
 import { SearchSpinnerSlot } from '@/components/SearchSpinnerSlot';
 import { useDebouncedSearch } from '@/hooks/useDebouncedSearch';
+import { useRequireStaffAccess } from '@/hooks/useRequireStaffAccess';
 import { t } from '@/i18n';
 import type { SupplierSummary } from '@/types/customers';
 import type { PosProduct } from '@/types/sales';
@@ -35,6 +36,7 @@ function isUsdSupplier(s: SupplierSummary | null): boolean {
 }
 
 export default function CreatePurchaseOrderScreen() {
+  const allowed = useRequireStaffAccess('purchasing');
   const router = useRouter();
   const [supplierQuery, setSupplierQuery] = useState('');
   const [suppliers, setSuppliers] = useState<SupplierSummary[]>([]);
@@ -328,6 +330,14 @@ export default function CreatePurchaseOrderScreen() {
     ),
     [saving, canSave],
   );
+
+  if (!allowed) {
+    return (
+      <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: '#f8fafc' }}>
+        <ActivityIndicator size="large" color="#166534" />
+      </View>
+    );
+  }
 
   return (
     <View style={styles.root}>

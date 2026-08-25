@@ -1,3 +1,4 @@
+import { Alert } from 'react-native';
 import { useCallback, useState } from 'react';
 import { useFocusEffect, useLocalSearchParams, useRouter } from 'expo-router';
 import {
@@ -8,7 +9,8 @@ import {
   Text,
   View,
 } from 'react-native';
-import { dispatchCourier, fetchOrder, updateOrderStatus } from '@/api/client';
+import { cancelOrder, dispatchCourier, fetchOrder, updateOrderStatus } from '@/api/client';
+import { useRequireStaffAccess } from '@/hooks/useRequireStaffAccess';
 import { statusLabel, t } from '@/i18n';
 import type { WebOrderDetail, WebOrderStatus } from '@/types/orders';
 
@@ -26,6 +28,7 @@ const ACTION_LABELS: Partial<Record<WebOrderStatus, string>> = {
 };
 
 export default function OrderDetailScreen() {
+  const allowed = useRequireStaffAccess('orders');
   const { id } = useLocalSearchParams<{ id: string }>();
   const router = useRouter();
   const [order, setOrder] = useState<WebOrderDetail | null>(null);
@@ -48,17 +51,43 @@ export default function OrderDetailScreen() {
 
   useFocusEffect(
     useCallback(() => {
+      if (!allowed) return;
       setLoading(true);
       void load();
-    }, [load]),
+    }, [allowed, load]),
   );
 
   async function applyStatus(status: WebOrderStatus) {
     if (!id || acting) return;
+    if (status === 'cancelled') {
+      Alert.alert(t('cancelOrderTitle'), t('cancelOrderConfirm'), [
+        { text: t('cancel'), style: 'cancel' },
+        {
+          text: t('confirmCancel'),
+          style: 'destructive',
+          onPress: () => void runCancel(),
+        },
+      ]);
+      return;
+    }
     setActing(true);
     setError(null);
     try {
       const updated = await updateOrderStatus(id, status);
+      setOrder(updated);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Xatolik');
+    } finally {
+      setActing(false);
+    }
+  }
+
+  async function runCancel() {
+    if (!id || acting) return;
+    setActing(true);
+    setError(null);
+    try {
+      const updated = await cancelOrder(id);
       setOrder(updated);
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Xatolik');
@@ -81,7 +110,7 @@ export default function OrderDetailScreen() {
     }
   }
 
-  if (loading && !order) {
+  if (!allowed || (loading && !order)) {
     return (
       <View style={styles.center}>
         <ActivityIndicator size="large" color="#166534" />

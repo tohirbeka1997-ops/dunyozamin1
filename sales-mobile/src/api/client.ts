@@ -38,6 +38,8 @@ import type {
   CloseShiftResult,
   CompleteSalePayload,
   CompleteSaleResponse,
+  HoldSalePayload,
+  HoldSaleResponse,
   CurrentShiftResponse,
   DailyReport,
   PosProduct,
@@ -110,24 +112,36 @@ export async function staffLogin(payload: LoginPayload): Promise<LoginResponse> 
   return res.json() as Promise<LoginResponse>;
 }
 
-async function refreshAccessToken(): Promise<string | null> {
-  const refresh = await loadRefreshToken();
-  if (!refresh) return null;
+let refreshInFlight: Promise<string | null> | null = null;
 
-  const res = await fetch(staffApiUrl('/v1/staff/auth/refresh'), {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ refresh_token: refresh }),
+async function refreshAccessToken(): Promise<string | null> {
+  // Coalesce concurrent 401/missing-token refreshes onto one in-flight request
+  // so rotated refresh jti is not invalidated by parallel callers.
+  if (refreshInFlight) return refreshInFlight;
+
+  refreshInFlight = (async () => {
+    const refresh = await loadRefreshToken();
+    if (!refresh) return null;
+
+    const res = await fetch(staffApiUrl('/v1/staff/auth/refresh'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ refresh_token: refresh }),
+    });
+
+    if (!res.ok) {
+      await clearSession();
+      return null;
+    }
+
+    const body = (await res.json()) as StaffTokens;
+    await updateTokens(body);
+    return body.access_token;
+  })().finally(() => {
+    refreshInFlight = null;
   });
 
-  if (!res.ok) {
-    await clearSession();
-    return null;
-  }
-
-  const body = (await res.json()) as StaffTokens;
-  await updateTokens(body);
-  return body.access_token;
+  return refreshInFlight;
 }
 
 /** Clear session and send the user back to the login screen. */
@@ -233,6 +247,16 @@ export async function updateOrderStatus(id: number | string, status: string): Pr
   return body.data;
 }
 
+/** Dedicated cancel (desktop parity) — restores stock / adjusts payment_status. */
+export async function cancelOrder(id: number | string): Promise<WebOrderDetail> {
+  const res = await staffFetch(`/v1/staff/orders/${id}/cancel`, {
+    method: 'POST',
+    body: '{}',
+  });
+  const body = await parseJson<{ data: WebOrderDetail }>(res);
+  return body.data;
+}
+
 export async function dispatchCourier(id: number | string): Promise<WebOrderDetail> {
   const res = await staffFetch(`/v1/staff/orders/${id}/dispatch-courier`, { method: 'POST', body: '{}' });
   const body = await parseJson<{ data: WebOrderDetail }>(res);
@@ -290,6 +314,14 @@ export async function completeSale(payload: CompleteSalePayload): Promise<Comple
     body: JSON.stringify(payload),
   });
   return parseJson<CompleteSaleResponse>(res);
+}
+
+export async function holdSale(payload: HoldSalePayload): Promise<HoldSaleResponse> {
+  const res = await staffFetch('/v1/staff/sales/hold', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+  return parseJson<HoldSaleResponse>(res);
 }
 
 export async function fetchPosSales(

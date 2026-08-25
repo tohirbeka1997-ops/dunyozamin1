@@ -17,6 +17,7 @@ import { loadTokens } from '../lib/api';
 import { recordRecentlyViewed } from '../lib/recentlyViewed';
 import { SimilarProducts } from '../components/SimilarProducts';
 import { ProductReviews } from '../components/ProductReviews';
+import { t, useLang } from '../lib/i18n';
 
 type Product = {
   id: string;
@@ -33,6 +34,7 @@ type Product = {
 };
 
 export function ProductPage({ onCartChange }: { onCartChange: () => void }) {
+  useLang();
   const { id } = useParams();
   const [p, setP] = useState<Product | null>(null);
   const [err, setErr] = useState<string | null>(null);
@@ -279,33 +281,58 @@ export function ProductPage({ onCartChange }: { onCartChange: () => void }) {
         ) : null}
       </div>
 
-      {/* Title + price card — minimal with leak */}
+      {/* Title + brand + rating + specs + stock + price + delivery */}
       <div className="dz-card relative p-4">
         <span className="dz-leak dz-leak-cream dz-leak-md" style={{ top: '-50%', right: '-20%', opacity: 0.5 }} />
-        <span className="dz-leak dz-leak-teal dz-leak-sm" style={{ bottom: '-30%', left: '-15%', opacity: 0.18 }} />
-        <div className="relative space-y-2">
-          <h1 className="text-[19px] font-extrabold leading-snug tracking-tight text-[var(--dz-text)]">
+        <div className="relative flex flex-col gap-3">
+          {p.options && p.options.length > 0 ? (
+            <div className="flex items-center gap-2">
+              <span className="dz-brtag">{p.options[0].value}</span>
+            </div>
+          ) : null}
+          <h1 className="text-[20px] font-bold leading-[1.2] tracking-[-0.035em] text-[var(--ink)]">
             {p.name}
           </h1>
-          <div className="flex items-baseline justify-between gap-3">
-            <div className="flex items-baseline gap-1.5">
-              <span className="text-[24px] font-black tabular-nums text-[var(--brand-primary)]">
-                {p.price_uzs.toLocaleString('uz-UZ')}
-              </span>
-              <span className="text-[13px] font-bold text-[var(--dz-soft)]">soʻm</span>
+          {p.options && p.options.length > 0 ? (
+            <div className="flex flex-wrap gap-1.5">
+              {p.options.slice(0, 4).map((o, i) => (
+                <span key={`${p.id}-spec-${i}`} className="dz-spec">
+                  {o.value}
+                </span>
+              ))}
             </div>
-            {p.track_stock ? (
-              <span
-                className={`inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-[10.5px] font-bold ${
-                  (p.stock_quantity ?? 0) > 0
-                    ? 'bg-[var(--brand-teal-50)] text-[var(--brand-teal-600)]'
-                    : 'bg-red-50 text-red-700'
-                }`}
-              >
-                <span aria-hidden>📦</span>
-                {(p.stock_quantity ?? 0) > 0 ? `${p.stock_quantity} dona` : 'Yoʻq'}
+          ) : null}
+          {p.track_stock ? (
+            (p.stock_quantity ?? 0) > 0 ? (
+              <span className="dz-stock">
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" aria-hidden>
+                  <path d="M20 6 9 17l-5-5" />
+                </svg>
+                {t('product.stockCount').replace('{n}', String(p.stock_quantity))}
               </span>
-            ) : null}
+            ) : (
+              <span className="dz-stock" style={{ background: '#fdecec', color: '#c0392b' }}>
+                {t('product.outOfStock')}
+              </span>
+            )
+          ) : null}
+          <div className="flex items-baseline gap-2.5">
+            <b className="text-[27px] font-extrabold tracking-[-0.035em] tabular-nums text-[var(--ink)]">
+              {p.price_uzs.toLocaleString('uz-UZ')}
+              <small className="ml-1 text-[12px] font-medium text-[var(--muted)]">{t('common.som')}</small>
+            </b>
+          </div>
+          <div className="dz-deliv">
+            <div className="dz-di">
+              <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden>
+                <rect x="1" y="3" width="15" height="13" rx="1" />
+                <path d="M16 8h4l3 3v5h-7" />
+              </svg>
+            </div>
+            <div>
+              <b className="block text-[11.5px] font-bold text-[var(--ink)]">{t('product.delivery.title')}</b>
+              <p className="mt-0.5 text-[10px] font-medium text-[var(--muted)]">{t('product.delivery.sub')}</p>
+            </div>
           </div>
         </div>
       </div>
@@ -451,62 +478,56 @@ export function ProductPage({ onCartChange }: { onCartChange: () => void }) {
           {/* Sticky bottom CTA. Inside Telegram only the quantity selector
               is shown; the native MainButton at the bottom handles the
               actual add-to-cart action (with live total in its label). */}
-          <div className="sticky bottom-[calc(5rem+env(safe-area-inset-bottom))] z-10 dz-glass relative overflow-hidden rounded-2xl p-2 shadow-[var(--dz-card-shadow)]">
-            <span className="dz-leak dz-leak-accent dz-leak-sm" style={{ top: '-60%', right: '-10%', opacity: 0.25 }} />
-            <span className="dz-leak dz-leak-teal dz-leak-sm" style={{ bottom: '-60%', left: '-10%', opacity: 0.18 }} />
-            <div className="relative flex items-stretch gap-2">
-              <div className="flex items-center gap-0.5 rounded-xl bg-[var(--brand-cream-100)] p-1">
-                <button
-                  type="button"
-                  onClick={() => setQty((q) => Math.max(1, q - 1))}
-                  className="flex h-9 w-9 items-center justify-center rounded-lg text-lg font-bold text-[var(--brand-primary)] transition hover:bg-white"
-                  aria-label="Kamaytirish"
-                >
-                  −
-                </button>
-                <span className="min-w-[1.75rem] text-center text-[14px] font-extrabold tabular-nums text-[var(--brand-primary)]">
-                  {qty}
-                </span>
-                <button
-                  type="button"
-                  onClick={() => setQty((q) => q + 1)}
-                  className="flex h-9 w-9 items-center justify-center rounded-lg text-lg font-bold text-[var(--brand-primary)] transition hover:bg-white"
-                  aria-label="Koʻpaytirish"
-                >
-                  +
-                </button>
-              </div>
-              {inTg ? (
-                <div className="flex flex-1 flex-col items-center justify-center rounded-xl bg-[var(--brand-cream-100)] px-3 py-1 text-[var(--brand-primary)]">
-                  <span className="text-[10.5px] font-semibold leading-tight opacity-65">
-                    Jami
-                  </span>
-                  <span className="text-[14px] font-black tabular-nums leading-tight">
-                    {totalPrice.toLocaleString('uz-UZ')} soʻm
-                  </span>
-                </div>
-              ) : (
-                <button
-                  type="button"
-                  className="flex flex-1 flex-col items-center justify-center rounded-xl bg-[var(--brand-accent)] px-3 py-1 text-[var(--brand-primary)] transition active:scale-[0.98] hover:bg-[var(--brand-accent-500)]"
-                  onClick={() => {
-                    addToCart({
-                      product_id: p.id,
-                      name: p.name,
-                      price_uzs: p.price_uzs,
-                      quantity: qty,
-                    });
-                    onCartChange();
-                    setToast(qty > 1 ? `${qty} dona savatga qoʻshildi` : 'Savatga qoʻshildi');
-                  }}
-                >
-                  <span className="text-[12.5px] font-extrabold leading-tight">🛒 Savatga qoʻshish</span>
-                  <span className="text-[10.5px] font-bold tabular-nums leading-tight opacity-80">
-                    {totalPrice.toLocaleString('uz-UZ')} soʻm
-                  </span>
-                </button>
-              )}
+          <div className="dz-buybar sticky bottom-[calc(5rem+env(safe-area-inset-bottom))] z-10 flex items-center gap-3 rounded-2xl p-2.5">
+            <div className="dz-qty">
+              <button
+                type="button"
+                onClick={() => setQty((q) => Math.max(1, q - 1))}
+                aria-label="Kamaytirish"
+              >
+                −
+              </button>
+              <span>{qty}</span>
+              <button
+                type="button"
+                onClick={() => setQty((q) => q + 1)}
+                aria-label="Koʻpaytirish"
+              >
+                +
+              </button>
             </div>
+            {inTg ? (
+              <div className="dz-buy h-[46px] flex-1 text-[13.5px]">
+                <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden>
+                  <circle cx="9" cy="21" r="1.5" />
+                  <circle cx="19" cy="21" r="1.5" />
+                  <path d="M2 2h3l2.6 13.4a2 2 0 0 0 2 1.6h8.4a2 2 0 0 0 2-1.6L23 6H6" />
+                </svg>
+                <span className="tabular-nums">{t('product.addToCart')} · {totalPrice.toLocaleString('uz-UZ')}</span>
+              </div>
+            ) : (
+              <button
+                type="button"
+                className="dz-buy h-[46px] flex-1 text-[13.5px]"
+                onClick={() => {
+                  addToCart({
+                    product_id: p.id,
+                    name: p.name,
+                    price_uzs: p.price_uzs,
+                    quantity: qty,
+                  });
+                  onCartChange();
+                  setToast(qty > 1 ? `${qty} dona savatga qoʻshildi` : 'Savatga qoʻshildi');
+                }}
+              >
+                <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden>
+                  <circle cx="9" cy="21" r="1.5" />
+                  <circle cx="19" cy="21" r="1.5" />
+                  <path d="M2 2h3l2.6 13.4a2 2 0 0 0 2 1.6h8.4a2 2 0 0 0 2-1.6L23 6H6" />
+                </svg>
+                <span className="tabular-nums">{t('product.addToCart')} · {totalPrice.toLocaleString('uz-UZ')}</span>
+              </button>
+            )}
           </div>
         </>
       )}

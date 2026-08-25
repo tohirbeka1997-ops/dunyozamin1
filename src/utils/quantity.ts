@@ -27,7 +27,25 @@ const FRACTIONAL_UNIT_SET = new Set<string>(FRACTIONAL_UNITS);
 const FRACTIONAL_DECIMALS = 3;
 const FRACTIONAL_MIN = 0.001;
 
-const normalizeUnit = (unit?: string): string => String(unit || '').trim().toLowerCase();
+const UNIT_ALIASES: Record<string, string> = {
+  l: 'l',
+  ml: 'ml',
+  m: 'm',
+  kg: 'kg',
+  g: 'g',
+  pcs: 'pcs',
+  pack: 'pack',
+  box: 'box',
+  dozen: 'dozen',
+};
+
+const normalizeUnit = (unit?: string): string => {
+  const trimmed = String(unit || '').trim();
+  if (!trimmed) return '';
+  const lower = trimmed.toLowerCase();
+  if (UNIT_ALIASES[lower]) return UNIT_ALIASES[lower];
+  return lower;
+};
 
 const roundTo = (value: number, decimals: number): number => {
   if (!isFinite(value)) return 0;
@@ -86,14 +104,27 @@ export const normalizeQuantityInput = (value: string): string => {
   return value.replace(',', '.');
 };
 
+export const isValidDecimalInput = (value: string, decimalPlaces: number = FRACTIONAL_DECIMALS): boolean => {
+  if (value === '') return true;
+  const normalized = normalizeQuantityInput(value);
+  const match = normalized.match(/^\d*(?:\.(\d*))?$/);
+  if (!match) return false;
+  const decimals = match[1]?.length ?? 0;
+  return decimals <= decimalPlaces;
+};
+
+export const parseDecimalInput = (value: string): number | null => {
+  const normalized = normalizeQuantityInput(String(value || '').trim());
+  if (normalized === '' || normalized === '.') return null;
+  const parsed = Number(normalized);
+  return Number.isFinite(parsed) ? parsed : null;
+};
+
 export const isValidQuantityInput = (value: string, unit?: string): boolean => {
   if (value === '') return true;
   const normalized = normalizeQuantityInput(value);
   if (isFractionalUnit(unit)) {
-    const match = normalized.match(/^\d*(?:\.(\d*))?$/);
-    if (!match) return false;
-    const decimals = match[1]?.length ?? 0;
-    return decimals <= FRACTIONAL_DECIMALS;
+    return isValidDecimalInput(normalized, FRACTIONAL_DECIMALS);
   }
   return /^\d*$/.test(normalized);
 };

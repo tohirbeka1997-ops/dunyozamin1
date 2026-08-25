@@ -295,9 +295,13 @@ async function main() {
       windowMs: parseIntEnv('POS_RATE_LIMIT_AUTH_RPC_WINDOW_MS', 60_000),
       max: parseIntEnv('POS_RATE_LIMIT_AUTH_RPC_MAX', 3000),
     },
+    publicRpc: {
+      windowMs: parseIntEnv('POS_RATE_LIMIT_PUBLIC_RPC_WINDOW_MS', 60_000),
+      max: parseIntEnv('POS_RATE_LIMIT_PUBLIC_RPC_MAX', 5000),
+    },
     login: {
       windowMs: parseIntEnv('POS_RATE_LIMIT_LOGIN_WINDOW_MS', 15 * 60_000),
-      max: parseIntEnv('POS_RATE_LIMIT_LOGIN_MAX', 10),
+      max: parseIntEnv('POS_RATE_LIMIT_LOGIN_MAX', 60),
     },
   };
   const auditEnabled = parseBoolEnv('POS_AUDIT_ENABLED', true);
@@ -311,6 +315,7 @@ async function main() {
     `[server] security: trustProxy=${trustProxy} ` +
     `rpcLimit=${rateLimit.rpc.max}/${rateLimit.rpc.windowMs}ms ` +
     `authRpcLimit=${rateLimit.authRpc.max}/${rateLimit.authRpc.windowMs}ms ` +
+    `publicRpcLimit=${rateLimit.publicRpc.max}/${rateLimit.publicRpc.windowMs}ms ` +
     `loginLimit=${rateLimit.login.max}/${rateLimit.login.windowMs}ms ` +
     `audit=${auditEnabled ? auditLogPath : 'OFF'}`,
   );
@@ -365,10 +370,70 @@ async function main() {
     console.log('[server] backup runner: DISABLED');
   }
 
+  let batchReconcileScheduler = null;
+  if (services) {
+    try {
+      const { createBatchReconcileScheduler } = require('./services/batchReconcileScheduler.cjs');
+      batchReconcileScheduler = createBatchReconcileScheduler({
+        getServices: () => services,
+        enabled: true,
+      });
+      batchReconcileScheduler.start();
+      services.batchReconcileScheduler = batchReconcileScheduler;
+      console.log('[server] batch reconcile scheduler: daily + startup');
+    } catch (e) {
+      console.warn('[server] batch reconcile scheduler failed to start:', e?.message || e);
+    }
+
+    try {
+      const { createSupplierPaymentReminderScheduler } = require('./services/supplierPaymentReminderScheduler.cjs');
+      const supplierReminderScheduler = createSupplierPaymentReminderScheduler({
+        getDb: () => db,
+        enabled: true,
+      });
+      supplierReminderScheduler.start();
+      services.supplierPaymentReminderScheduler = supplierReminderScheduler;
+      console.log('[server] supplier payment reminder scheduler: daily + startup');
+    } catch (e) {
+      console.warn('[server] supplier payment reminder scheduler failed to start:', e?.message || e);
+    }
+
+    try {
+      const { createCreditReminderScheduler } = require('./services/creditReminderScheduler.cjs');
+      const creditReminderScheduler = createCreditReminderScheduler({
+        getDb: () => db,
+        enabled: true,
+      });
+      creditReminderScheduler.start();
+      services.creditReminderScheduler = creditReminderScheduler;
+      console.log('[server] credit due reminder scheduler: daily + startup');
+    } catch (e) {
+      console.warn('[server] credit due reminder scheduler failed to start:', e?.message || e);
+    }
+
+    try {
+      const { createReportDigestScheduler } = require('./services/reportDigestScheduler.cjs');
+      const reportDigestScheduler = createReportDigestScheduler({
+        getDb: () => db,
+        enabled: true,
+      });
+      reportDigestScheduler.start();
+      services.reportDigestScheduler = reportDigestScheduler;
+      console.log('[server] telegram report digest scheduler: started');
+    } catch (e) {
+      console.warn('[server] telegram report digest scheduler failed to start:', e?.message || e);
+    }
+  }
+
   const shutdown = async (sig) => {
     console.log(`[server] ${sig} received — shutting down…`);
     try {
       if (backupRunner && typeof backupRunner.stop === 'function') backupRunner.stop();
+    } catch (_e) {
+      // ignore
+    }
+    try {
+      batchReconcileScheduler?.stop?.();
     } catch (_e) {
       // ignore
     }

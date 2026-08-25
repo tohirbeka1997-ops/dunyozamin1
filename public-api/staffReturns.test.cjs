@@ -33,9 +33,7 @@ function withEnv(overrides, fn) {
     });
 }
 
-function sha256(text) {
-  return crypto.createHash('sha256').update(text).digest('hex');
-}
+const { hashPassword } = require('../electron/lib/password.cjs');
 
 const SALES_USER_ID = 'staff-sales-001';
 const PRODUCT_ID = 'prod-sell-001';
@@ -54,7 +52,7 @@ function seedDatabase(dbPath) {
   db.prepare(
     `INSERT INTO users (id, username, full_name, email, password_hash, is_active, created_at, updated_at)
      VALUES (?, 'seller@test.com', 'Seller User', 'seller@test.com', ?, 1, datetime('now'), datetime('now'))`,
-  ).run(SALES_USER_ID, sha256('secret123'));
+  ).run(SALES_USER_ID, hashPassword('secret123'));
 
   db.prepare(
     `INSERT INTO user_roles (id, user_id, role_id, assigned_at)

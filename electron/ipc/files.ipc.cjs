@@ -306,6 +306,8 @@ function registerFilesHandlers() {
         payload = buffer;
       } else if (buffer instanceof ArrayBuffer) {
         payload = Buffer.from(buffer);
+      } else if (ArrayBuffer.isView(buffer)) {
+        payload = Buffer.from(buffer.buffer, buffer.byteOffset, buffer.byteLength);
       } else if (buffer && typeof buffer === 'object' && buffer.type === 'Buffer' && Array.isArray(buffer.data)) {
         payload = Buffer.from(buffer.data);
       } else {
@@ -329,6 +331,16 @@ function registerFilesHandlers() {
       await fs.promises.writeFile(destPath, payload);
       const publicPath = `/product-images/${destFileName}`;
       return { path: destPath, fileUrl: publicPath, legacyUrl: `product-image://${destFileName}` };
+    })
+  );
+
+  // Read a blessed/local file as raw bytes (for product image pick without file:// fetch)
+  ipcMain.removeHandler('pos:files:readFileBuffer');
+  ipcMain.handle(
+    'pos:files:readFileBuffer',
+    wrapHandler(async (_event, filePath) => {
+      const fp = assertPathAllowed(filePath);
+      return fs.promises.readFile(fp);
     })
   );
 

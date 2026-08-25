@@ -52,6 +52,11 @@ export function activeStepIndex(status: string, deliveryMethod?: string | null):
   return steps.findIndex((step) => step.key === s);
 }
 
+export function isOrderInProgress(status: string): boolean {
+  const s = String(status || '').toLowerCase();
+  return ['new', 'paid', 'processing', 'ready', 'out_for_delivery'].includes(s);
+}
+
 /**
  * Statuses where the buyer is allowed to cancel from the WebApp.
  * Aligned with `public-api/routes/orders.cjs` which only allows

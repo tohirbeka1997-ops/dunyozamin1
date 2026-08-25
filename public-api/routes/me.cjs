@@ -1,7 +1,7 @@
 'use strict';
 
 const express = require('express');
-const { ensureLoyaltySchema, getBalance, listLedger } = require('../lib/marketplaceLoyalty.cjs');
+const { ensureLoyaltySchema, getBalance, listLedger, resolvePosCustomerId } = require('../lib/marketplaceLoyalty.cjs');
 const {
   formatPhoneUz,
   syncPosCustomerFromMarketplace,
@@ -76,19 +76,37 @@ function mountMeRoutes(dbGetter) {
       const tier = tierFromPoints(points);
 
       let binding = null;
+      let cardCode = null;
+      let qrPayload = null;
       try {
         binding = db
           .prepare(
             `
-            SELECT loyalty_card_code, qr_payload
+            SELECT loyalty_card_code, qr_payload, pos_customer_id
             FROM marketplace_customer_bindings
             WHERE marketplace_customer_id = ?
           `,
           )
           .get(customer.id) || null;
+        if (binding?.pos_customer_id) {
+          const posCols = db.prepare(`PRAGMA table_info(customers)`).all().map((c) => c.name);
+          if (posCols.includes('loyalty_card_code')) {
+            const posCard = db
+              .prepare(
+                `SELECT loyalty_card_code, loyalty_qr_payload FROM customers WHERE id = ?`,
+              )
+              .get(binding.pos_customer_id);
+            cardCode = posCard?.loyalty_card_code || binding.loyalty_card_code || null;
+            qrPayload =
+              posCard?.loyalty_qr_payload ||
+              binding.qr_payload ||
+              (cardCode ? `LOYALTY:${cardCode}` : null);
+          } else {
+            cardCode = binding.loyalty_card_code || null;
+            qrPayload = binding.qr_payload || null;
+          }
+        }
       } catch (e) {
-        // Bindings table might not exist yet on a freshly migrated DB —
-        // surface no card rather than 500.
         binding = null;
       }
 
@@ -137,8 +155,9 @@ function mountMeRoutes(dbGetter) {
       res.json({
         ok: true,
         points_balance: points,
-        card_code: binding?.loyalty_card_code || null,
-        qr_payload: binding?.qr_payload || null,
+        card_code: cardCode,
+        qr_payload: qrPayload,
+        pos_customer_id: binding?.pos_customer_id || resolvePosCustomerId(db, customer.id) || null,
         tier,
         stats: {
           earned_total: Number(earned?.s || 0),

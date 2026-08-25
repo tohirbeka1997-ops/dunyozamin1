@@ -56,6 +56,7 @@ import {
   Copy,
   ChevronUp,
   ChevronDown,
+  ImagePlus,
 } from 'lucide-react';
 import { Checkbox } from '@/components/ui/checkbox';
 import { ScrollArea } from '@/components/ui/scroll-area';
@@ -63,6 +64,8 @@ import { Switch } from '@/components/ui/switch';
 import { useToast } from '@/hooks/use-toast';
 import { formatDate } from '@/lib/datetime';
 import { getProductImageDisplayUrl } from '@/lib/productImageUrl';
+import { readLocalImageFile, uploadCategoryImage } from '@/lib/uploadCategoryImage';
+import { getElectronAPI, handleIpcResponse, isElectron, requireElectron } from '@/utils/electron';
 import { getMarketplaceCategories, formatCategoryPath, getCategoryDescendantIds } from '@/lib/categoryTree';
 
 function buildCategoryTreeOptions(cats: Category[]): { id: string; label: string }[] {
@@ -175,6 +178,12 @@ export default function Categories() {
   const [assignSelectedIds, setAssignSelectedIds] = useState<string[]>([]);
   const [assignTargetCategoryId, setAssignTargetCategoryId] = useState('none');
   const [assignSubmitting, setAssignSubmitting] = useState(false);
+  const [imageOptimizing, setImageOptimizing] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+
+  const isRemotePosApi = () => isElectron() && !!(getElectronAPI()?._session);
+
+  const categoryIdOrTemp = () => editingCategory?.id || `temp-${Date.now()}`;
 
   useEffect(() => {
     loadCategories();
@@ -309,6 +318,64 @@ export default function Categories() {
     const sibs = categories.filter((c) => (c.parent_id || null) === (parentId || null));
     const max = sibs.reduce((m, c) => Math.max(m, Number(c.sort_order) || 0), 0);
     return max + 1;
+  };
+
+  const handleBrowserCategoryImage = async (file: File) => {
+    if (!/^image\//.test(file.type || '')) return;
+    setImageOptimizing(true);
+    try {
+      const saved = await uploadCategoryImage(file, categoryIdOrTemp());
+      if (saved) {
+        setFormData((prev) => ({ ...prev, image_url: saved }));
+      }
+    } catch (error) {
+      toast({
+        title: t('common.error'),
+        description: error instanceof Error ? error.message : t('categories.image_upload_failed'),
+        variant: 'destructive',
+      });
+    } finally {
+      setImageOptimizing(false);
+    }
+  };
+
+  const handlePickCategoryImage = async () => {
+    if (isRemotePosApi()) {
+      fileInputRef.current?.click();
+      return;
+    }
+    if (!isElectron()) {
+      fileInputRef.current?.click();
+      return;
+    }
+    try {
+      const api = requireElectron();
+      if (typeof api?.files?.selectImageFile === 'function' && !api?._session) {
+        const res = await handleIpcResponse<{ canceled?: boolean; filePaths?: string[] }>(
+          api.files.selectImageFile(),
+        );
+        if (res?.canceled || !res?.filePaths?.length) return;
+        setImageOptimizing(true);
+        try {
+          const filePath = res.filePaths[0];
+          const file = await readLocalImageFile(filePath);
+          const saved = await uploadCategoryImage(file, categoryIdOrTemp(), filePath);
+          if (saved) {
+            setFormData((prev) => ({ ...prev, image_url: saved }));
+          }
+        } finally {
+          setImageOptimizing(false);
+        }
+        return;
+      }
+      fileInputRef.current?.click();
+    } catch (error) {
+      toast({
+        title: t('common.error'),
+        description: error instanceof Error ? error.message : t('categories.image_upload_failed'),
+        variant: 'destructive',
+      });
+    }
   };
 
   const handleOpenDialog = (category?: Category) => {
@@ -1175,12 +1242,59 @@ export default function Categories() {
               </div>
 
               <div className="space-y-2">
-                <Label htmlFor="image_url">{t('categories.image_url_label')}</Label>
+                <Label>{t('categories.image_label')}</Label>
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  accept="image/*"
+                  className="hidden"
+                  onChange={(e) => {
+                    const f = e.target.files?.[0];
+                    if (f) void handleBrowserCategoryImage(f);
+                    e.target.value = '';
+                  }}
+                />
+                <div className="flex items-center gap-3">
+                  {formData.image_url ? (
+                    <img
+                      src={getProductImageDisplayUrl(formData.image_url) || formData.image_url}
+                      alt=""
+                      className="h-14 w-14 rounded object-cover border"
+                    />
+                  ) : (
+                    <div className="h-14 w-14 rounded border bg-muted flex items-center justify-center">
+                      <ImagePlus className="h-5 w-5 text-muted-foreground" />
+                    </div>
+                  )}
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    disabled={imageOptimizing}
+                    onClick={() => void handlePickCategoryImage()}
+                  >
+                    {imageOptimizing ? t('categories.image_optimizing') : t('categories.image_pick')}
+                  </Button>
+                  {formData.image_url ? (
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => setFormData({ ...formData, image_url: '' })}
+                    >
+                      {t('categories.image_remove')}
+                    </Button>
+                  ) : null}
+                </div>
+                <p className="text-xs text-muted-foreground">{t('categories.image_upload_hint')}</p>
+                <Label htmlFor="image_url" className="text-xs text-muted-foreground">
+                  {t('categories.image_url_label')}
+                </Label>
                 <Input
                   id="image_url"
                   value={formData.image_url}
                   onChange={(e) => setFormData({ ...formData, image_url: e.target.value })}
-                  placeholder="https://..."
+                  placeholder="https://... yoki /product-images/..."
                   className="font-mono text-sm"
                 />
               </div>

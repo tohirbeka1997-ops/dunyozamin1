@@ -22,9 +22,19 @@ export const sidebarNavGroups: SidebarNavGroupConfig[] = [
   {
     id: 'main',
     labelKey: 'navigation.group_main',
-    routeNames: ['Dashboard', 'POS Terminal'],
+    // Mahsulotlar ASOSIY da (KATALOG da emas — dublikat chalkashmasin).
+    routeNames: [
+      'Dashboard',
+      'Products',
+      'POS Terminal',
+      'Customers',
+      'Sales Returns',
+      'Purchase Orders',
+      'Orders',
+    ],
     defaultOpen: true,
   },
+
   {
     id: 'sales',
     labelKey: 'navigation.group_sales',
@@ -46,12 +56,13 @@ export const sidebarNavGroups: SidebarNavGroupConfig[] = [
   {
     id: 'catalog',
     labelKey: 'navigation.group_catalog',
-    routeNames: ['Products', 'Categories', 'Promotions', 'Mini-app Content'],
+    routeNames: ['Categories', 'Promotions', 'Mini-app Content'],
   },
+
   {
     id: 'warehouse',
     labelKey: 'navigation.group_warehouse',
-    routeNames: ['Inventory', 'Suppliers', 'Purchase Orders', 'Expenses'],
+    routeNames: ['Inventory', 'Inventory Revision', 'Suppliers', 'Purchase Orders', 'Expenses'],
   },
   {
     id: 'reports',
@@ -71,6 +82,14 @@ export function isNavRouteActive(route: RouteConfig, pathname: string): boolean 
     return pathname === '/' || pathname === '';
   }
   if (pathname === path) return true;
+  // Inventory list vs revision: avoid highlighting both under /inventory/*
+  if (path === '/inventory') {
+    if (pathname.startsWith('/inventory/revisions')) return false;
+    return pathname.startsWith('/inventory/');
+  }
+  if (path === '/inventory/revisions') {
+    return pathname.startsWith('/inventory/revisions');
+  }
   const sectionRoots = [
     '/reports',
     '/products',
@@ -83,7 +102,6 @@ export function isNavRouteActive(route: RouteConfig, pathname: string): boolean 
     '/quotes',
     '/courier',
     '/expenses',
-    '/inventory',
     '/purchase-orders',
     '/suppliers',
     '/barcodes',

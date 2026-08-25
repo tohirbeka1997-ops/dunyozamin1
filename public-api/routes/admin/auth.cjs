@@ -12,6 +12,13 @@ const {
 } = require('../../lib/staffJwt.cjs');
 const { ensureStaffSchema } = require('../../lib/staffDb.cjs');
 const { isAdminRoleAllowed } = require('../../lib/adminRoles.cjs');
+const { validate } = require('../../middleware/validate.cjs');
+const {
+  adminLoginBodySchema,
+  adminRefreshBodySchema,
+  adminLogoutBodySchema,
+} = require('../../schemas/admin.schema.cjs');
+const { logger } = require('../../lib/logger.cjs');
 
 // Admin panel auth. Public-api'ning YAGONA bazasini (dbGetter) ishlatadi —
 // mini-app/POS bilan bir xil baza. Tokenlar staff_refresh_tokens jadvalida
@@ -27,12 +34,12 @@ function mountAdminAuthRoutes(dbGetter) {
     try {
       ensureStaffSchema(db);
     } catch (e) {
-      console.error('[admin/auth] ensureStaffSchema', e.message);
+      logger.error({ err: e.message }, '[admin/auth] ensureStaffSchema');
     }
     return db;
   }
 
-  router.post('/login', express.json({ limit: '32kb' }), (req, res) => {
+  router.post('/login', express.json({ limit: '32kb' }), validate({ body: adminLoginBodySchema }), (req, res) => {
     try {
       const username = req.body?.username != null ? String(req.body.username).trim() : '';
       const password = req.body?.password != null ? String(req.body.password) : '';
@@ -86,12 +93,12 @@ function mountAdminAuthRoutes(dbGetter) {
         res.status(500).json({ error: 'server_misconfigured', message: e.message });
         return;
       }
-      console.error('[admin/auth] POST /login', e);
+      logger.error({ err: e }, '[admin/auth] POST /login');
       res.status(500).json({ error: 'internal_error', message: e?.message || 'Internal error' });
     }
   });
 
-  router.post('/refresh', express.json({ limit: '16kb' }), (req, res) => {
+  router.post('/refresh', express.json({ limit: '16kb' }), validate({ body: adminRefreshBodySchema }), (req, res) => {
     try {
       const refreshToken =
         (req.body && req.body.refresh_token) ||
@@ -175,12 +182,12 @@ function mountAdminAuthRoutes(dbGetter) {
         res.status(500).json({ error: 'server_misconfigured', message: e.message });
         return;
       }
-      console.error('[admin/auth] POST /refresh', e);
+      logger.error({ err: e }, '[admin/auth] POST /refresh');
       res.status(500).json({ error: 'internal_error', message: e?.message || 'Internal error' });
     }
   });
 
-  router.post('/logout', express.json({ limit: '16kb' }), (req, res) => {
+  router.post('/logout', express.json({ limit: '16kb' }), validate({ body: adminLogoutBodySchema }), (req, res) => {
     try {
       const header = req.headers.authorization || '';
       const token = header.startsWith('Bearer ') ? header.slice(7) : null;
@@ -211,7 +218,7 @@ function mountAdminAuthRoutes(dbGetter) {
       }
       res.json({ ok: true });
     } catch (e) {
-      console.error('[admin/auth] POST /logout', e);
+      logger.error({ err: e }, '[admin/auth] POST /logout');
       res.status(500).json({ error: 'internal_error', message: e?.message || 'Internal error' });
     }
   });

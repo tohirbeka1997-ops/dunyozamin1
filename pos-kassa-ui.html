@@ -1,0 +1,253 @@
+<!DOCTYPE html>
+<html lang="uz">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>POS Kassa — yangi UI</title>
+<style>
+  :root{
+    --green:#15a06f;--green-d:#0e7a54;--green-50:#e9f7f1;--green-100:#cdeee1;
+    --ink:#1d2127;--muted:#6b7280;--hint:#9aa1ab;--line:#e6e8eb;--bg:#eef1f4;
+    --danger:#dc2626;--amber:#d97706;--card:#fff;--r:14px;--r-sm:10px;
+  }
+  *{box-sizing:border-box;}
+  body{margin:0;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Arial,sans-serif;background:var(--bg);color:var(--ink);height:100vh;overflow:hidden;}
+  .app{display:flex;height:100vh;}
+  .rail{width:58px;background:var(--green);display:flex;flex-direction:column;align-items:center;gap:20px;padding:14px 0;flex-shrink:0;}
+  .rail .logo{width:34px;height:34px;border-radius:9px;background:rgba(255,255,255,.2);display:flex;align-items:center;justify-content:center;color:#fff;font-weight:700;font-size:13px;}
+  .rail svg{width:22px;height:22px;stroke:rgba(255,255,255,.65);}
+  .rail .on svg{stroke:#fff;}
+  .rail .sp{margin-top:auto;}
+  .main{flex:1;min-width:0;display:flex;flex-direction:column;}
+  /* topbar */
+  .top{display:flex;align-items:center;gap:10px;padding:10px 16px;background:#fff;border-bottom:1px solid var(--line);flex-wrap:wrap;}
+  .pill{display:inline-flex;align-items:center;gap:6px;font-size:13px;padding:6px 12px;border-radius:999px;background:#f1f3f5;color:var(--muted);border:none;cursor:pointer;}
+  .pill.ok{background:var(--green-50);color:var(--green-d);font-weight:600;}
+  .pill.warn{background:#fff5e6;color:var(--amber);}
+  .pill.red{background:#fdecec;color:var(--danger);}
+  .top .sp{margin-left:auto;}
+  .seg{display:inline-flex;border:1px solid var(--line);border-radius:999px;overflow:hidden;}
+  .seg button{border:none;background:#fff;padding:6px 14px;cursor:pointer;font-size:13px;color:var(--muted);}
+  .seg button.act{background:var(--green);color:#fff;font-weight:600;}
+  /* body: catalog + cart */
+  .body{flex:1;display:grid;grid-template-columns:1fr 380px;min-height:0;}
+  .catalog{display:flex;flex-direction:column;min-height:0;padding:12px 16px;gap:10px;}
+  .scan{display:flex;gap:10px;align-items:center;}
+  .scan .box{flex:1;display:flex;align-items:center;gap:10px;background:var(--green-50);border:1px solid var(--green-100);border-radius:var(--r);padding:0 14px;height:52px;}
+  .scan .box svg{width:22px;height:22px;stroke:var(--green-d);}
+  .scan input{flex:1;border:none;background:none;outline:none;font-size:16px;height:50px;color:var(--ink);}
+  .cats{display:flex;gap:8px;overflow-x:auto;padding-bottom:2px;}
+  .cat{flex-shrink:0;padding:8px 16px;border-radius:999px;border:1px solid var(--line);background:#fff;cursor:pointer;font-size:14px;color:var(--muted);white-space:nowrap;}
+  .cat.act{background:var(--green);color:#fff;border-color:var(--green);font-weight:600;}
+  .grid{flex:1;overflow-y:auto;display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:10px;align-content:start;padding-right:4px;}
+  .tile{background:#fff;border:1px solid var(--line);border-radius:var(--r);padding:12px;cursor:pointer;display:flex;flex-direction:column;gap:6px;min-height:104px;transition:.08s;position:relative;}
+  .tile:hover{border-color:var(--green);background:var(--green-50);}
+  .tile:active{transform:scale(.97);}
+  .tile .nm{font-size:14px;font-weight:600;line-height:1.25;}
+  .tile .sk{font-size:11px;color:var(--hint);font-family:ui-monospace,monospace;}
+  .tile .pr{font-size:16px;font-weight:700;color:var(--green-d);margin-top:auto;}
+  .tile .st{position:absolute;top:8px;right:8px;font-size:11px;padding:2px 7px;border-radius:999px;background:#eef6f1;color:var(--green-d);}
+  .tile .st.low{background:#fff5e6;color:var(--amber);}
+  .tile .st.zero{background:#fdecec;color:var(--danger);}
+  /* cart */
+  .cart{background:#fff;border-left:1px solid var(--line);display:flex;flex-direction:column;min-height:0;}
+  .cart .hd{padding:12px 16px;border-bottom:1px solid var(--line);}
+  .cust{display:flex;align-items:center;gap:8px;border:1px solid var(--line);border-radius:var(--r-sm);padding:9px 12px;cursor:pointer;color:var(--muted);font-size:14px;}
+  .cust svg{width:18px;height:18px;stroke:var(--muted);}
+  .lines{flex:1;overflow-y:auto;padding:6px 10px;}
+  .empty{height:100%;display:flex;flex-direction:column;align-items:center;justify-content:center;color:var(--hint);gap:8px;text-align:center;padding:20px;}
+  .empty svg{width:40px;height:40px;stroke:var(--line);}
+  .line{display:flex;align-items:center;gap:10px;padding:9px 6px;border-bottom:1px solid var(--line);}
+  .line .info{flex:1;min-width:0;}
+  .line .nm{font-size:14px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+  .line .pu{font-size:12px;color:var(--muted);}
+  .qty{display:flex;align-items:center;border:1px solid var(--line);border-radius:8px;}
+  .qty button{border:none;background:none;width:30px;height:34px;font-size:18px;cursor:pointer;color:var(--ink);}
+  .qty button:hover{background:#f1f3f5;}
+  .qty .v{min-width:30px;text-align:center;font-weight:600;}
+  .line .lt{font-weight:700;font-variant-numeric:tabular-nums;min-width:78px;text-align:right;font-size:14px;}
+  .line .rm{border:none;background:none;color:var(--hint);cursor:pointer;font-size:16px;}
+  .line .rm:hover{color:var(--danger);}
+  .foot{border-top:1px solid var(--line);padding:12px 16px;background:#fff;}
+  .frow{display:flex;justify-content:space-between;font-size:14px;color:var(--muted);padding:3px 0;}
+  .frow .v{color:var(--ink);font-variant-numeric:tabular-nums;}
+  .total{display:flex;justify-content:space-between;align-items:baseline;padding:8px 0;margin:4px 0;border-top:1px solid var(--line);}
+  .total .l{font-size:16px;font-weight:600;}
+  .total .a{font-size:28px;font-weight:800;color:var(--green-d);font-variant-numeric:tabular-nums;}
+  .pays{display:flex;gap:6px;margin:8px 0;}
+  .pay{flex:1;padding:9px 0;border:1px solid var(--line);border-radius:var(--r-sm);background:#fff;cursor:pointer;font-size:13px;color:var(--muted);text-align:center;}
+  .pay.act{background:var(--green-50);border-color:var(--green);color:var(--green-d);font-weight:600;}
+  .checkout{width:100%;height:56px;background:var(--green);color:#fff;border:none;border-radius:var(--r);font-size:18px;font-weight:700;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:10px;}
+  .checkout:hover{background:var(--green-d);}
+  .checkout:disabled{background:#c7d2cc;cursor:not-allowed;}
+  .hintbar{font-size:12px;color:var(--hint);text-align:center;margin-top:8px;display:flex;gap:14px;justify-content:center;}
+  kbd{font-family:ui-monospace,monospace;font-size:11px;background:#f1f3f5;border:1px solid var(--line);border-radius:4px;padding:1px 6px;}
+  #toast{position:fixed;bottom:20px;left:50%;transform:translateX(-50%);display:flex;flex-direction:column;gap:8px;z-index:50;align-items:center;}
+  .t{background:#11271f;color:#fff;padding:10px 16px;border-radius:8px;font-size:14px;opacity:0;transition:.2s;}
+  .t.show{opacity:1;}
+  .t.err{background:#7a1d1d;}
+</style>
+</head>
+<body>
+<div class="app">
+  <nav class="rail">
+    <div class="logo">DZ</div>
+    <a class="on" title="Kassa"><svg viewBox="0 0 24 24" fill="none" stroke-width="2"><rect x="3" y="4" width="18" height="14" rx="2"/><path d="M3 10h18M7 18v2M17 18v2"/></svg></a>
+    <a title="Mahsulot"><svg viewBox="0 0 24 24" fill="none" stroke-width="2"><path d="M21 16V8l-9-5-9 5v8l9 5 9-5z"/></svg></a>
+    <a title="Buyurtma"><svg viewBox="0 0 24 24" fill="none" stroke-width="2"><path d="M9 5h10M9 12h10M9 19h10M5 5h.01M5 12h.01M5 19h.01"/></svg></a>
+    <a title="Hisobot"><svg viewBox="0 0 24 24" fill="none" stroke-width="2"><path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/></svg></a>
+    <a class="sp" title="Sozlama"><svg viewBox="0 0 24 24" fill="none" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3"/></svg></a>
+  </nav>
+
+  <div class="main">
+    <header class="top">
+      <span class="pill ok">● Smena: Ochiq · 01:37</span>
+      <button class="pill">⤓ Kirim</button>
+      <button class="pill">⤒ Chiqim</button>
+      <button class="pill red">Smenani yopish</button>
+      <span class="sp"></span>
+      <span class="pill ok">⌁ Online</span>
+      <button class="pill">👤 Mijozlar</button>
+      <div class="seg"><button class="act">UZS</button><button>USD</button></div>
+      <span class="pill warn">⎙ Printer ⚠</span>
+    </header>
+
+    <div class="body">
+      <!-- catalog -->
+      <section class="catalog">
+        <div class="scan">
+          <div class="box">
+            <svg viewBox="0 0 24 24" fill="none" stroke-width="2"><path d="M3 5v14M7 5v14M11 5v14M15 5v14M19 5v14"/></svg>
+            <input id="scan" placeholder="Skanerlang yoki nom / SKU bo‘yicha qidiring…  (F2)" autofocus />
+          </div>
+          <button class="pill" style="height:52px;padding:0 16px;" id="numpadBtn">⌨ Numpad</button>
+        </div>
+        <div class="cats" id="cats"></div>
+        <div class="grid" id="grid"></div>
+      </section>
+
+      <!-- cart -->
+      <aside class="cart">
+        <div class="hd">
+          <div class="cust"><svg viewBox="0 0 24 24" fill="none" stroke-width="2"><circle cx="12" cy="8" r="4"/><path d="M4 20c0-4 4-6 8-6s8 2 8 6"/></svg> Mijozni tanlang (ixtiyoriy)</div>
+        </div>
+        <div class="lines" id="lines"></div>
+        <div class="foot">
+          <div class="frow"><span>Oraliq summa</span><span class="v" id="sub">0</span></div>
+          <div class="frow"><span>Chegirma</span><span class="v" id="disc">0</span></div>
+          <div class="total"><span class="l">Jami</span><span class="a" id="grand">0 so‘m</span></div>
+          <div class="pays">
+            <button class="pay act" data-p="Naqd">Naqd</button>
+            <button class="pay" data-p="Karta">Karta</button>
+            <button class="pay" data-p="QR">QR</button>
+            <button class="pay" data-p="Nasiya">Nasiya</button>
+          </div>
+          <button class="checkout" id="checkout" disabled>$ TO‘LASH · HISOB-KITOB <kbd style="background:rgba(255,255,255,.2);color:#fff;border:none;">F9</kbd></button>
+          <div class="hintbar"><span><kbd>F2</kbd> qidiruv</span><span><kbd>F9</kbd> to‘lash</span><span><kbd>↑↓</kbd> savat</span></div>
+        </div>
+      </aside>
+    </div>
+  </div>
+</div>
+<div id="toast"></div>
+
+<script>
+const CATS = ['Barchasi','Plafon','Kabel','Kraska','Rozetka','Lampa'];
+const CATALOG = [
+  {n:'004 Hi-Tech Plafon',sku:'Dh3-004',bc:'3008694958123',p:220000,u:'dona',st:4,c:'Plafon'},
+  {n:'006 Hi-Tech Plafon',sku:'DH1-006',bc:'3008475700156',p:195000,u:'dona',st:1,c:'Plafon'},
+  {n:'014 Hi-Tech Plafon',sku:'DH1-014',bc:'3006064151068',p:195000,u:'dona',st:4,c:'Plafon'},
+  {n:'020 Hi-Tech Plafon',sku:'Dh1-020',bc:'3002945903580',p:195000,u:'dona',st:5,c:'Plafon'},
+  {n:'1/1 sm rozetka',sku:'1603',bc:'3006768549703',p:8000,u:'dona',st:1,c:'Rozetka'},
+  {n:'107 7W 6500K KVADRAT',sku:'1840',bc:'4780115659503',p:28000,u:'dona',st:7,c:'Lampa'},
+  {n:'115 Belaya 3D 1kg',sku:'1666',bc:'3004713570734',p:55000,u:'dona',st:5,c:'Kraska'},
+  {n:'12w Kulchatr',sku:'2188',bc:'3001129971162',p:2000,u:'dona',st:88,c:'Lampa'},
+  {n:'12w Kulchatr yashil',sku:'2189',bc:'3007578153630',p:7000,u:'dona',st:0,c:'Lampa'},
+  {n:'12w Tilla kulchatr',sku:'2190',bc:'3008757448486',p:4000,u:'dona',st:8,c:'Lampa'},
+  {n:'20 S/S jim',sku:'0446',bc:'3009...024',p:5000,u:'metr',st:0,c:'Kabel'},
+  {n:'207 14W KVADRAT',sku:'1841',bc:'4780115659510',p:50000,u:'dona',st:9,c:'Lampa'},
+  {n:'Kabel 2×2.5 mm',sku:'KB-25',bc:'4780111000025',p:8500,u:'metr',st:340,c:'Kabel'},
+  {n:'Kraska oq 5kg',sku:'KR-09',bc:'1112223334445',p:62000,u:'litr',st:12,c:'Kraska'},
+];
+let cart=[],cat='Barchasi',pay='Naqd';
+const fmt=n=>Math.round(n).toLocaleString('ru-RU').replace(/,/g,' ');
+const $=id=>document.getElementById(id);
+
+function renderCats(){
+  $('cats').innerHTML=CATS.map(c=>`<button class="cat ${c===cat?'act':''}" onclick="setCat('${c}')">${c}</button>`).join('');
+}
+window.setCat=c=>{cat=c;renderCats();renderGrid();};
+
+function renderGrid(q){
+  q=(q||'').trim().toLowerCase();
+  const items=CATALOG.filter(p=>{
+    if(cat!=='Barchasi'&&p.c!==cat)return false;
+    if(q&&!(p.n.toLowerCase().includes(q)||String(p.sku).toLowerCase().includes(q)||p.bc.includes(q)))return false;
+    return true;
+  });
+  $('grid').innerHTML=items.map((p,i)=>{
+    const cls=p.st===0?'zero':p.st<=2?'low':'';
+    const idx=CATALOG.indexOf(p);
+    return `<div class="tile" onclick="add(${idx})">
+      <span class="st ${cls}">${p.st} ${p.u}</span>
+      <div class="nm">${p.n}</div>
+      <div class="sk">${p.sku}</div>
+      <div class="pr">${fmt(p.p)}</div>
+    </div>`;
+  }).join('')|| '<div style="color:var(--hint);padding:20px;">Topilmadi</div>';
+}
+
+function add(idx){
+  const p=CATALOG[idx];
+  const ex=cart.find(c=>c.sku===p.sku);
+  if(ex)ex.q++;else cart.unshift({...p,q:1});
+  toast(p.n+' qo‘shildi');
+  renderCart();
+}
+window.add=add;
+window.bump=(i,d)=>{cart[i].q=Math.max(0,cart[i].q+d);if(cart[i].q===0)cart.splice(i,1);renderCart();};
+window.rm=i=>{cart.splice(i,1);renderCart();};
+
+function renderCart(){
+  const L=$('lines');
+  if(!cart.length){
+    L.innerHTML=`<div class="empty"><svg viewBox="0 0 24 24" fill="none" stroke-width="1.5"><path d="M6 6h15l-1.5 9h-12z"/><circle cx="9" cy="20" r="1.5"/><circle cx="18" cy="20" r="1.5"/></svg><div>Savat bo‘sh</div><div style="font-size:13px;">Mahsulot plitkasини bosing yoki skanerlang</div></div>`;
+  } else {
+    L.innerHTML=cart.map((c,i)=>`<div class="line">
+      <div class="info"><div class="nm">${c.n}</div><div class="pu">${fmt(c.p)} · ${c.u}</div></div>
+      <div class="qty"><button onclick="bump(${i},-1)">−</button><span class="v">${c.q}</span><button onclick="bump(${i},1)">+</button></div>
+      <div class="lt">${fmt(c.p*c.q)}</div>
+      <button class="rm" onclick="rm(${i})">✕</button></div>`).join('');
+  }
+  const sub=cart.reduce((s,c)=>s+c.p*c.q,0);
+  $('sub').textContent=fmt(sub);
+  $('grand').textContent=fmt(sub)+' so‘m';
+  $('checkout').disabled=cart.length===0;
+}
+
+document.querySelectorAll('.pay').forEach(b=>b.onclick=()=>{
+  document.querySelectorAll('.pay').forEach(x=>x.classList.remove('act'));
+  b.classList.add('act');pay=b.dataset.p;
+});
+$('checkout').onclick=()=>{ if(cart.length){ toast('Sotuv yakunlandi · '+pay+' · '+fmt(cart.reduce((s,c)=>s+c.p*c.q,0))+' so‘m'); cart=[];renderCart(); $('scan').focus(); } };
+$('numpadBtn').onclick=()=>toast('Numpad — miqdor/og‘irlik kiritish (demo)');
+
+$('scan').addEventListener('input',e=>renderGrid(e.target.value));
+$('scan').addEventListener('keydown',e=>{
+  if(e.key==='Enter'){
+    const q=$('scan').value.trim().toLowerCase();
+    const p=CATALOG.find(x=>x.bc===q)||CATALOG.find(x=>String(x.sku).toLowerCase()===q)||CATALOG.find(x=>x.n.toLowerCase().includes(q));
+    if(p){add(CATALOG.indexOf(p));$('scan').value='';renderGrid('');}
+    else toast('Topilmadi: '+q,true);
+  }
+});
+document.addEventListener('keydown',e=>{
+  if(e.key==='F2'){e.preventDefault();$('scan').focus();}
+  if(e.key==='F9'){e.preventDefault();$('checkout').click();}
+});
+let tid;function toast(m,err){const d=document.createElement('div');d.className='t'+(err?' err':'');d.textContent=m;$('toast').appendChild(d);requestAnimationFrame(()=>d.classList.add('show'));setTimeout(()=>{d.classList.remove('show');setTimeout(()=>d.remove(),250);},1800);}
+
+renderCats();renderGrid();renderCart();
+</script>
+</body>
+</html>

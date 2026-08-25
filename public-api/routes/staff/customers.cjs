@@ -5,6 +5,11 @@ const { readCustomerBalances } = require('../../../electron/lib/customerBalance.
 const { openTenantDatabase } = require('../../lib/staffDb.cjs');
 const { getPosBundle } = require('../../lib/staffPos.cjs');
 const { mapStaffServiceError } = require('../../lib/staffErrorMap.cjs');
+const { validate } = require('../../middleware/validate.cjs');
+const {
+  staffCustomerCreateBodySchema,
+  staffCustomerPatchBodySchema,
+} = require('../../schemas/staff.schema.cjs');
 
 function mapServiceError(e, res) {
   mapStaffServiceError(e, res, { logTag: '[staff/customers]' });
@@ -28,7 +33,7 @@ function mountStaffCustomersRoutes() {
   }
 
   // POST /v1/staff/customers — create (name required, phone optional)
-  router.post('/', (req, res) => {
+  router.post('/', validate({ body: staffCustomerCreateBodySchema }), (req, res) => {
     try {
       const body = req.body || {};
       const name = body.name != null ? String(body.name).trim() : '';
@@ -75,7 +80,7 @@ function mountStaffCustomersRoutes() {
   });
 
   // PATCH /v1/staff/customers/:id — update name/phone/notes
-  router.patch('/:id', (req, res) => {
+  router.patch('/:id', validate({ body: staffCustomerPatchBodySchema }), (req, res) => {
     try {
       const body = req.body || {};
       const patch = {};
@@ -133,6 +138,7 @@ function mountStaffCustomersRoutes() {
         shift_id: body.shift_id != null ? String(body.shift_id) : null,
         currency: body.currency != null ? String(body.currency) : 'UZS',
         fx_rate: body.fx_rate != null ? Number(body.fx_rate) : null,
+        payment_uuid: body.payment_uuid != null ? String(body.payment_uuid) : body.paymentUuid != null ? String(body.paymentUuid) : null,
       });
       res.status(201).json({ data: result });
     } catch (e) {

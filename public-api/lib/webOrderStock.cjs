@@ -38,6 +38,44 @@ function webItemRef(webItemId) {
   return `web_item:${webItemId}`;
 }
 
+let _CostService = null;
+let _costLoadFailed = false;
+function getCostService(db) {
+  if (_costLoadFailed) return null;
+  if (!_CostService) {
+    try {
+      _CostService = require('../../electron/services/costService.cjs');
+    } catch (e) {
+      _costLoadFailed = true;
+      console.warn('[webOrderStock] CostService unavailable — web cost_price skipped:', e?.message || e);
+      return null;
+    }
+  }
+  try {
+    return new _CostService(db);
+  } catch {
+    return null;
+  }
+}
+
+function freezeWebItemCost(db, webItemId, productId, qty) {
+  if (!hasColumn(db, 'web_order_items', 'cost_price')) return;
+  const q = Number(qty) || 0;
+  if (!(q > 0)) return;
+  let unitCost = 0;
+  try {
+    const cs = getCostService(db);
+    if (cs && typeof cs.resolveCostForSale === 'function') {
+      unitCost = Number(cs.resolveCostForSale(productId, q, MAIN_WAREHOUSE_ID, webItemRef(webItemId))) || 0;
+    }
+  } catch (e) {
+    console.warn(`[webOrderStock] cost_price resolve failed for item ${webItemId}:`, e?.message || e);
+  }
+  if (unitCost > 0) {
+    db.prepare(`UPDATE web_order_items SET cost_price = ? WHERE id = ?`).run(unitCost, webItemId);
+  }
+}
+
 /**
  * Best-effort FIFO batch consumption for an online sale line. No-op when batch
  * mode is off or batch tables are missing; never throws (stock quantity already
@@ -48,7 +86,7 @@ function allocateWebSaleBatches(db, webItemId, productId, qty) {
   try {
     const bs = getBatchService(db);
     if (!bs || typeof bs.shouldEnforceAt !== 'function' || !bs.shouldEnforceAt(nowSqlLike())) return;
-    bs.allocateFIFOForOrderItem({
+    bs.allocateFIFOWithFallback({
       orderItemId: webItemRef(webItemId),
       productId,
       warehouseId: MAIN_WAREHOUSE_ID,
@@ -352,6 +390,7 @@ function fulfillWebOrderStock(db, orderId, options = {}) {
       // no-op when batch mode is off). Inside the same transaction as the
       // stock movement, per BatchService contract.
       allocateWebSaleBatches(db, it.id, it.product_id, dec);
+      freezeWebItemCost(db, it.id, it.product_id, dec);
     }
     markOrderStockFulfilled(db, orderId);
   });
@@ -361,7 +400,15 @@ function fulfillWebOrderStock(db, orderId, options = {}) {
 
 /** @deprecated use fulfillWebOrderStock */
 function decrementStockForPaidWebOrder(db, orderId) {
-  return fulfillWebOrderStock(db, orderId, { reason: 'Online payment confirmed' });
+  const result = fulfillWebOrderStock(db, orderId, { reason: 'Online payment confirmed' });
+  try {
+    const { recordWebOrderPaymentFee } = require('../../electron/lib/paymentFee.cjs');
+    const row = db.prepare(`SELECT * FROM web_orders WHERE id = ?`).get(orderId);
+    recordWebOrderPaymentFee(db, row);
+  } catch (e) {
+    console.warn('[webOrderStock] payment fee skipped:', e?.message || e);
+  }
+  return result;
 }
 
 /**

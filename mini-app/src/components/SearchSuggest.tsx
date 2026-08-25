@@ -101,10 +101,13 @@ export function SearchSuggest({
         className="relative"
       >
         <span
-          className="pointer-events-none absolute left-3.5 top-1/2 -translate-y-1/2 text-[15px] text-[var(--brand-teal)]"
+          className="pointer-events-none absolute left-4 top-1/2 -translate-y-1/2 text-[var(--brand-deep)]"
           aria-hidden
         >
-          🔍
+          <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round">
+            <circle cx="11" cy="11" r="7" />
+            <path d="m21 21-3.5-3.5" />
+          </svg>
         </span>
         <input
           type="search"
@@ -112,7 +115,7 @@ export function SearchSuggest({
           onChange={(e) => setValue(e.target.value)}
           onFocus={() => setOpen(true)}
           placeholder={placeholder}
-          className="w-full rounded-2xl border border-transparent bg-white/95 py-2.5 pl-9 pr-10 text-[13px] font-medium text-[var(--brand-primary)] shadow-[var(--dz-card-shadow-soft)] backdrop-blur-md placeholder:font-normal placeholder:text-[var(--brand-primary)]/45 focus:border-[var(--brand-teal)] focus:outline-none focus:ring-2 focus:ring-[var(--brand-teal)]/25"
+          className="dz-glass w-full rounded-2xl py-3 pl-11 pr-11 text-[13.5px] font-medium text-[var(--ink)] placeholder:font-normal placeholder:text-[var(--muted)] focus:outline-none focus:ring-2 focus:ring-[var(--brand)]/25"
         />
         {value ? (
           <button
@@ -122,7 +125,7 @@ export function SearchSuggest({
               setOpen(true);
               haptic.selection();
             }}
-            className="absolute right-2.5 top-1/2 -translate-y-1/2 inline-flex h-6 w-6 items-center justify-center rounded-full bg-[var(--brand-cream-100)] text-[11px] font-bold text-[var(--brand-primary)] active:scale-90"
+            className="absolute right-3 top-1/2 -translate-y-1/2 inline-flex h-6 w-6 items-center justify-center rounded-full bg-[var(--steel)] text-[11px] font-bold text-[var(--soft-ink)] active:scale-90"
             aria-label="Tozalash"
           >
             ✕
@@ -158,11 +161,14 @@ export function SearchSuggest({
                 commit(trimmed);
               }
             }}
-            className="absolute right-2 top-1/2 -translate-y-1/2 inline-flex h-7 w-7 items-center justify-center rounded-full bg-[var(--brand-teal-50)] text-[14px] text-[var(--brand-teal)] active:scale-90"
+            className="absolute right-2.5 top-1/2 -translate-y-1/2 inline-flex h-7 w-7 items-center justify-center rounded-lg bg-[var(--mint)] text-[var(--brand-deep)] active:scale-90"
             aria-label="QR skaner"
             title="QR skaner"
           >
-            ⌑
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden>
+              <path d="M3 7V5a2 2 0 0 1 2-2h2M17 3h2a2 2 0 0 1 2 2v2M21 17v2a2 2 0 0 1-2 2h-2M7 21H5a2 2 0 0 1-2-2v-2" />
+              <path d="M7 12h10" />
+            </svg>
           </button>
         ) : null}
       </form>

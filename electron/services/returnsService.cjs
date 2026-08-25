@@ -3,9 +3,11 @@ const { randomUUID } = require('crypto');
 const {
   hasCustomerBalanceUsd,
   hasCustomerLedgerCurrency,
+  hasCustomerLedgerRef,
   normalizeCustomerCurrency,
   readCustomerBalances,
   readBalanceInCurrency,
+  applyCustomerBalanceDeltaOnce,
 } = require('../lib/customerBalance.cjs');
 
 /**
@@ -129,6 +131,164 @@ class ReturnsService {
     return method === 'credit' || method === 'customer_account';
   }
 
+  _hasBonusLedgerTable() {
+    try {
+      return !!this.db
+        .prepare(`SELECT 1 AS ok FROM sqlite_master WHERE type='table' AND name='customer_bonus_ledger' LIMIT 1`)
+        .get()?.ok;
+    } catch {
+      return false;
+    }
+  }
+
+  _hasCustomersCol(name) {
+    try {
+      return !!this.db.prepare(`SELECT 1 AS ok FROM pragma_table_info('customers') WHERE name = ? LIMIT 1`).get(name)?.ok;
+    } catch {
+      return false;
+    }
+  }
+
+  _insertBonusLedgerRow({ customerId, type, points, orderId, note, createdBy, now }) {
+    if (!this._hasBonusLedgerTable() || !customerId) return;
+    try {
+      const tableInfo = this.db.prepare(`PRAGMA table_info(customer_bonus_ledger)`).all();
+      const hasOrderId = tableInfo.some((c) => c.name === 'order_id');
+      const ledgerId = randomUUID();
+      const cols = ['id', 'customer_id', 'type', 'points', 'note', 'created_by', 'created_at'];
+      const vals = [ledgerId, customerId, type, points, note || null, createdBy || null, now];
+      if (hasOrderId) {
+        cols.splice(3, 0, 'order_id');
+        vals.splice(3, 0, orderId || null);
+      }
+      this.db
+        .prepare(`INSERT INTO customer_bonus_ledger (${cols.join(', ')}) VALUES (${cols.map(() => '?').join(', ')})`)
+        .run(...vals);
+    } catch (e) {
+      console.warn('[RETURNS] bonus ledger insert skip:', e?.message || e);
+    }
+  }
+
+  /**
+   * Qaytarishda bonus ballarni proporsional bekor qilish (earn) yoki qaytarish (redeem).
+   * Idempotent: har bir return_id uchun bir marta.
+   */
+  _reverseLoyaltyForReturn({ orderId, returnId, refundAmount, orderTotal, userId, now }) {
+    if (!this._hasBonusLedgerTable() || !this._hasCustomersCol('bonus_points') || !orderId || !returnId) return;
+    if (!Number(refundAmount || 0) || !Number(orderTotal || 0)) return;
+
+    const idempotencyNote = `Qaytarish:${returnId}`;
+    const existing = this.db
+      .prepare(
+        `SELECT 1 FROM customer_bonus_ledger
+         WHERE order_id = ? AND type = 'adjust' AND note = ? LIMIT 1`,
+      )
+      .get(orderId, idempotencyNote);
+    if (existing) return;
+
+    const ratio = Math.min(1, Math.max(0, Number(refundAmount) / Number(orderTotal)));
+    if (ratio <= 0) return;
+
+    const rows = this.db
+      .prepare(
+        `SELECT customer_id, type, points FROM customer_bonus_ledger
+         WHERE order_id = ? AND type IN ('earn', 'redeem')`,
+      )
+      .all(orderId);
+
+    for (const row of rows) {
+      const pts = Math.floor(Math.abs(Number(row.points) || 0) * ratio);
+      if (pts <= 0 || !row.customer_id) continue;
+
+      if (row.type === 'earn') {
+        this.db
+          .prepare(
+            `UPDATE customers
+             SET bonus_points = CASE
+               WHEN COALESCE(bonus_points, 0) - ? < 0 THEN 0
+               ELSE COALESCE(bonus_points, 0) - ?
+             END,
+             updated_at = ?
+             WHERE id = ?`,
+          )
+          .run(pts, pts, now, row.customer_id);
+        this._insertBonusLedgerRow({
+          customerId: row.customer_id,
+          type: 'adjust',
+          points: -pts,
+          orderId,
+          note: idempotencyNote,
+          createdBy: userId,
+          now,
+        });
+      } else if (row.type === 'redeem') {
+        this.db
+          .prepare('UPDATE customers SET bonus_points = COALESCE(bonus_points, 0) + ?, updated_at = ? WHERE id = ?')
+          .run(pts, now, row.customer_id);
+        this._insertBonusLedgerRow({
+          customerId: row.customer_id,
+          type: 'adjust',
+          points: pts,
+          orderId,
+          note: `${idempotencyNote}:redeem`,
+          createdBy: userId,
+          now,
+        });
+      }
+    }
+  }
+
+  _recordCashRefundMovement({ returnId, returnNumber, shiftId, amount, userId, now }) {
+    if (!returnId || !Number(amount || 0)) return;
+    if (!shiftId) return;
+    try {
+      const hasCashMovements = !!this.db
+        .prepare(`SELECT 1 AS ok FROM sqlite_master WHERE type='table' AND name='cash_movements' LIMIT 1`)
+        .get()?.ok;
+      if (!hasCashMovements) return;
+
+      const existing = this.db
+        .prepare(
+          `SELECT 1 FROM cash_movements
+           WHERE reference_type = 'return' AND reference_id = ? LIMIT 1`,
+        )
+        .get(returnId);
+      if (existing) return;
+
+      const shiftOk = this.db.prepare('SELECT id FROM shifts WHERE id = ?').get(String(shiftId));
+      if (!shiftOk?.id) return;
+
+      const userOk = userId ? this.db.prepare('SELECT id FROM users WHERE id = ?').get(String(userId)) : null;
+      const createdBy = userOk?.id || userId || 'default-admin-001';
+
+      const cashMovementId = randomUUID();
+      const cashMovementNumber = `RET-CASH-${Date.now()}-${cashMovementId.slice(0, 8)}`;
+      this.db
+        .prepare(
+          `
+          INSERT INTO cash_movements (
+            id, movement_number, shift_id, movement_type, amount,
+            reference_type, reference_id, created_by, created_at
+          )
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `,
+        )
+        .run(
+          cashMovementId,
+          cashMovementNumber,
+          shiftId,
+          'refund',
+          Number(amount),
+          'return',
+          returnId,
+          createdBy,
+          now,
+        );
+    } catch (e) {
+      console.warn('[RETURNS] cash refund movement skip (non-critical):', e?.message || e);
+    }
+  }
+
   _applyCustomerRefund(customerId, refundAmount, meta = {}) {
     if (!customerId || !Number(refundAmount || 0)) return null;
     const customer = this.db.prepare('SELECT * FROM customers WHERE id = ?').get(customerId);
@@ -138,27 +298,37 @@ class ReturnsService {
     const cur = normalizeCustomerCurrency(meta.currency);
     const curLabel = cur === 'USD' ? 'USD' : "so'm";
     const oldBalance = readBalanceInCurrency(this.db, customerId, cur);
-    const newBalance = oldBalance + amount;
     const now = meta.createdAt || new Date().toISOString().replace('T', ' ').substring(0, 19);
+    const ledgerRefId = meta.returnId || null;
 
-    if (hasCustomerBalanceUsd(this.db)) {
-      const uzsDelta = cur === 'UZS' ? amount : 0;
-      const usdDelta = cur === 'USD' ? amount : 0;
-      this.db
+    if (ledgerRefId && hasCustomerLedgerRef(this.db, ledgerRefId)) {
+      const row = this.db
         .prepare(
-          `UPDATE customers SET balance = balance + ?, balance_usd = balance_usd + ?, updated_at = ? WHERE id = ?`
+          `SELECT amount, balance_after FROM customer_ledger WHERE ref_id = ? AND type = 'refund' LIMIT 1`
         )
-        .run(uzsDelta, usdDelta, now, customerId);
-    } else {
-      this.db.prepare(`UPDATE customers SET balance = balance + ?, updated_at = ? WHERE id = ?`).run(
-        amount,
-        now,
-        customerId
-      );
+        .get(ledgerRefId);
+      if (row) {
+        return {
+          customer,
+          currency: cur,
+          oldBalance: Number(row.balance_after) - Number(row.amount),
+          newBalance: Number(row.balance_after),
+          balancesAfter: readCustomerBalances(this.db, customerId),
+        };
+      }
     }
 
-    const balancesAfter = readCustomerBalances(this.db, customerId);
+    const { applied, balances: balancesAfter } = applyCustomerBalanceDeltaOnce(
+      this.db,
+      customerId,
+      amount,
+      cur,
+      ledgerRefId,
+      now
+    );
+    const newBalance = readBalanceInCurrency(this.db, customerId, cur);
 
+    if (applied) {
     try {
       const tableExists = this.db.prepare(`
         SELECT name FROM sqlite_master
@@ -215,7 +385,24 @@ class ReturnsService {
           .run(...ledgerVals);
       }
     } catch (ledgerError) {
-      console.error('❌ Failed to insert ledger entry for refund (non-critical):', ledgerError.message);
+      console.error('❌ Failed to insert ledger entry for refund (critical, rolling back):', ledgerError.message);
+      throw createError(
+        ERROR_CODES.DB_ERROR,
+        `Failed to record customer ledger for refund: ${ledgerError.message || ledgerError}`
+      );
+    }
+    }
+
+    if (applied && Number(amount) !== 0) {
+      this._notifyBalanceChange({
+        customerId,
+        delta: amount,
+        balanceAfter: newBalance,
+        currency: cur,
+        reason: 'refund',
+        refId: meta.returnId || null,
+        customerName: customer?.name,
+      });
     }
 
     return {
@@ -224,7 +411,18 @@ class ReturnsService {
       oldBalance,
       newBalance,
       balancesAfter,
+      applied,
+      delta: amount,
     };
+  }
+
+  _notifyBalanceChange(payload) {
+    try {
+      const { fireBalanceChangeNotify } = require('../../public-api/lib/balanceChangeNotify.cjs');
+      fireBalanceChangeNotify(this.db, payload);
+    } catch (e) {
+      console.warn('[returns] balance change notify unavailable:', e?.message || e);
+    }
   }
 
   _revertCustomerRefund(customerId, returnId, fallbackAmount = 0) {
@@ -810,7 +1008,10 @@ class ReturnsService {
               id: returnItemId,
               order_item_id: item.order_item_id,
               product_id: orderItem.product_id,
+              product_name: orderItem.product_name || product.name,
               quantity: returnQty,
+              qty_sale: returnQty,
+              sale_unit: saleUnit,
               unit_price: netUnitPrice,
               line_total: lineTotal,
             });
@@ -889,7 +1090,33 @@ class ReturnsService {
               );
             }
           } catch (customerError) {
-            console.warn('⚠️ Failed to update customer balance (non-critical):', customerError.message);
+            throw createError(
+              ERROR_CODES.DB_ERROR,
+              `Failed to update customer balance for return: ${customerError.message || customerError}`
+            );
+          }
+        }
+
+        if (!asDraft) {
+          this._reverseLoyaltyForReturn({
+            orderId: data.order_id,
+            returnId,
+            refundAmount,
+            orderTotal: totalOnOrder,
+            userId: cashierId || userId,
+            now,
+          });
+
+          const refundMethodNorm = String(data.refund_method || 'cash').toLowerCase();
+          if ((refundMethodNorm === 'cash' || refundMethodNorm === 'naqd') && refundAmount > 0) {
+            this._recordCashRefundMovement({
+              returnId,
+              returnNumber,
+              shiftId,
+              amount: refundAmount,
+              userId: cashierId || userId,
+              now,
+            });
           }
         }
 
@@ -1492,7 +1719,10 @@ class ReturnsService {
                   : undefined,
             });
           } catch (customerError) {
-            console.warn('⚠️ Failed to update customer balance on completeReturn (non-critical):', customerError.message);
+            throw createError(
+              ERROR_CODES.DB_ERROR,
+              `Failed to update customer balance on return completion: ${customerError.message || customerError}`
+            );
           }
         }
 
@@ -1760,12 +1990,10 @@ class ReturnsService {
       })),
     });
     
-    // Check for NULL order_item_id
+    // Warn (do not block read/print) when order_item_id is missing — receipt must still list return_items.
     const itemsWithNullOrderItemId = returnItemsCheck.filter(ri => !ri.order_item_id);
     if (!isManualReturn && itemsWithNullOrderItemId.length > 0) {
-      console.error('[RETURNS] ⚠️ CRITICAL: Found return_items with NULL order_item_id:', itemsWithNullOrderItemId);
-      throw createError(ERROR_CODES.VALIDATION_ERROR, 
-        `Return has ${itemsWithNullOrderItemId.length} items with missing order_item_id. Cannot edit return.`);
+      console.warn('[RETURNS] Found return_items with NULL order_item_id (receipt will use return_items row):', itemsWithNullOrderItemId);
     }
     
     // Query 2: Verify order_item_id links exist
@@ -1853,7 +2081,7 @@ class ReturnsService {
                 AND sr2.id != ?
             ), 0) as returned_quantity
           FROM return_items ri
-          INNER JOIN order_items oi ON oi.id = ri.order_item_id
+          LEFT JOIN order_items oi ON oi.id = ri.order_item_id
           LEFT JOIN products p ON ri.product_id = p.id
           WHERE ri.return_id = ?
           ORDER BY ri.created_at ASC
@@ -1969,12 +2197,14 @@ class ReturnsService {
           already_returned_quantity: returnedQty,
           max_allowed_quantity: maxAllowedQty,
           // For compatibility
-          product: item.product_name_from_product ? {
-            id: item.product_id,
-            name: item.product_name_from_product,
-            sku: item.product_sku,
-            unit: item.product_unit || null,
-          } : null,
+          product: item.product_id && (item.product_name_from_product || item.product_name)
+            ? {
+                id: item.product_id,
+                name: item.product_name_from_product || item.product_name,
+                sku: item.product_sku,
+                unit: item.product_unit || item.sale_unit || null,
+              }
+            : null,
         };
       }),
     };

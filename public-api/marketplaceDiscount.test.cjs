@@ -16,15 +16,29 @@ const {
 function freshDb() {
   const db = new Database(':memory:');
   ensureLoyaltySchema(db);
+  db.exec(`
+    CREATE TABLE customers (
+      id TEXT PRIMARY KEY,
+      bonus_points REAL DEFAULT 0,
+      loyalty_card_code TEXT,
+      updated_at TEXT
+    );
+    CREATE TABLE marketplace_customer_bindings (
+      marketplace_customer_id INTEGER PRIMARY KEY,
+      pos_customer_id TEXT NOT NULL,
+      loyalty_card_code TEXT,
+      qr_payload TEXT
+    );
+  `);
   return db;
 }
 
-function seedBalance(db, customerId, points) {
+function seedBalance(db, marketplaceCustomerId, points, posCustomerId = 'pos-1') {
+  db.prepare(`INSERT INTO customers (id, bonus_points) VALUES (?, ?)`).run(posCustomerId, points);
   db.prepare(
-    `INSERT INTO marketplace_loyalty_accounts (customer_id, points_balance, updated_at)
-     VALUES (?, ?, datetime('now'))
-     ON CONFLICT(customer_id) DO UPDATE SET points_balance = excluded.points_balance`,
-  ).run(customerId, points);
+    `INSERT INTO marketplace_customer_bindings (marketplace_customer_id, pos_customer_id, loyalty_card_code, qr_payload)
+     VALUES (?, ?, 'LC-TEST', 'LOYALTY:LC-TEST')`,
+  ).run(marketplaceCustomerId, posCustomerId);
 }
 
 function seedPromo(db, row) {

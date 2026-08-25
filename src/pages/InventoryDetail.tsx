@@ -38,9 +38,10 @@ import {
   getProductPurchaseHistory,
   getProductSalesHistory,
   createStockAdjustment,
+  getOpenInventoryRevision,
 } from '@/db/api';
 import type { Product, InventoryMovementWithDetails } from '@/types/database';
-import { ArrowLeft, Package, TrendingUp, TrendingDown, Edit } from 'lucide-react';
+import { ArrowLeft, Package, TrendingUp, TrendingDown, Edit, AlertTriangle } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 import { formatUnit } from '@/utils/formatters';
 import { formatMoneyUZS } from '@/lib/format';
@@ -56,6 +57,7 @@ import {
   normalizeQuantityInput,
 } from '@/utils/quantity';
 import { navigateBackTo, resolveBackTarget } from '@/lib/pageState';
+import { useTranslation } from 'react-i18next';
 
 // Fetch product detail using React Query
 const fetchProductDetail = async (productId: string) => {
@@ -125,16 +127,36 @@ export default function InventoryDetail() {
   const location = useLocation();
   const [searchParams, setSearchParams] = useSearchParams();
   const { toast } = useToast();
+  const { t } = useTranslation();
   const queryClient = useQueryClient();
   const activeTab = searchParams.get('tab') || 'movements';
   const backTo = resolveBackTarget(location, '/inventory');
   const [adjustmentOpen, setAdjustmentOpen] = useState(false);
+  const [openRevision, setOpenRevision] = useState<{
+    id: string;
+    revision_number: string;
+  } | null>(null);
   const [adjustmentForm, setAdjustmentForm] = useState({
     type: 'increase',
     quantity: '',
     reason: '',
     notes: '',
   });
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const open = await getOpenInventoryRevision();
+        if (!cancelled) setOpenRevision(open || null);
+      } catch {
+        if (!cancelled) setOpenRevision(null);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [id]);
 
   // Use React Query to fetch product detail with automatic refetch
   const { 
@@ -400,9 +422,24 @@ export default function InventoryDetail() {
             <p className="text-muted-foreground">SKU: {product.sku}</p>
           </div>
         </div>
-        <Dialog open={adjustmentOpen} onOpenChange={setAdjustmentOpen}>
+        <Dialog
+          open={adjustmentOpen}
+          onOpenChange={(open) => {
+            if (open && openRevision) {
+              toast({
+                title: t('inventory_revision.open_banner_title'),
+                description: t('inventory_revision.open_banner_body', {
+                  number: openRevision.revision_number,
+                }),
+                variant: 'destructive',
+              });
+              return;
+            }
+            setAdjustmentOpen(open);
+          }}
+        >
           <DialogTrigger asChild>
-            <Button>
+            <Button disabled={!!openRevision}>
               <Edit className="h-4 w-4 mr-2" />
               Qoldiqni to'g'rilash
             </Button>
@@ -481,6 +518,34 @@ export default function InventoryDetail() {
           </DialogContent>
         </Dialog>
       </div>
+
+      {openRevision && (
+        <Card className="border-amber-200 bg-amber-50 py-0 shadow-sm dark:border-amber-800 dark:bg-amber-950">
+          <CardContent className="flex flex-wrap items-center justify-between gap-2 px-3 py-2">
+            <div className="flex min-w-0 items-start gap-2">
+              <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-600 dark:text-amber-400" />
+              <div className="min-w-0 space-y-0.5">
+                <p className="text-sm font-semibold text-amber-900 dark:text-amber-100">
+                  {t('inventory_revision.open_banner_title')}
+                </p>
+                <p className="text-xs text-amber-800 dark:text-amber-300">
+                  {t('inventory_revision.open_banner_body', {
+                    number: openRevision.revision_number,
+                  })}
+                </p>
+              </div>
+            </div>
+            <Button
+              size="sm"
+              variant="outline"
+              className="h-8"
+              onClick={() => navigate(`/inventory/revisions/${openRevision.id}`)}
+            >
+              {t('inventory_revision.open_banner_action')}
+            </Button>
+          </CardContent>
+        </Card>
+      )}
 
       <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
         <Card>

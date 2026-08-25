@@ -23,14 +23,24 @@ export function useMainScrollRestoration({
   anchorRef,
 }: Options) {
   const restoredRef = useRef(false);
+  const persistRafRef = useRef(0);
 
   useEffect(() => {
     if (!enabled) return;
     const root = getMainScrollContainer(anchorRef?.current ?? null);
     if (!root) return;
-    const onScroll = () => setScrollTop(root.scrollTop);
+    const onScroll = () => {
+      if (persistRafRef.current) return;
+      persistRafRef.current = requestAnimationFrame(() => {
+        persistRafRef.current = 0;
+        setScrollTop(root.scrollTop);
+      });
+    };
     root.addEventListener('scroll', onScroll, { passive: true });
-    return () => root.removeEventListener('scroll', onScroll);
+    return () => {
+      root.removeEventListener('scroll', onScroll);
+      if (persistRafRef.current) cancelAnimationFrame(persistRafRef.current);
+    };
   }, [enabled, setScrollTop, anchorRef]);
 
   useLayoutEffect(() => {

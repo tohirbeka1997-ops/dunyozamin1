@@ -1,35 +1,70 @@
 'use strict';
 
 const { createError, ERROR_CODES } = require('../lib/errors.cjs');
-let notifyOrderStatusChanged = async () => {};
-let notifyCourierGroupOrder = async () => ({ ok: false, reason: 'not_loaded' });
-try {
-  ({ notifyOrderStatusChanged, notifyCourierGroupOrder } = require('../../public-api/lib/telegramNotify.cjs'));
-} catch {
-  // In containerized pos-server builds we may not ship public-api sources.
-  // Keep web order status updates functional without hard-failing service load.
+
+function requirePublicApiLib(modulePath, fallback) {
+  try {
+    return require(modulePath);
+  } catch (error) {
+    console.warn(
+      `[WebOrdersService] ${modulePath} unavailable — web-order helpers disabled:`,
+      error?.message || error,
+    );
+    return fallback;
+  }
 }
+
+const statusFlowFallback = {
+  allowedNextStatuses: () => [],
+  isValidTransition: () => false,
+  normalizeDeliveryMethod: (raw) => (String(raw || '').trim().toLowerCase() === 'pickup' ? 'pickup' : 'courier'),
+};
+const queueFallback = {
+  WEB_ORDER_QUEUES: {},
+  resolveQueueStatuses: () => [],
+  normalizeSalesChannel: (raw) => String(raw || 'marketplace').trim().toLowerCase() || 'marketplace',
+  VALID_SALES_CHANNELS: new Set(['telegram', 'website', 'uzum', 'yandex', 'other', 'marketplace']),
+};
+const stockFallback = {
+  fulfillWebOrderStock: async () => ({ ok: false, reason: 'public_api_unavailable' }),
+  handleWebOrderCancelled: async () => ({ ok: false, reason: 'public_api_unavailable' }),
+  markCashPaymentOnDelivered: async () => ({ ok: false, reason: 'public_api_unavailable' }),
+  isOrderStockFulfilled: () => false,
+};
+const customerFallback = {
+  syncPosCustomerFromMarketplace: async () => null,
+  recordWebOrderCustomerSale: async () => ({ ok: false, reason: 'public_api_unavailable' }),
+};
+const telegramFallback = {
+  notifyOrderStatusChanged: async () => {},
+  notifyCourierGroupOrder: async () => ({ ok: false, reason: 'not_loaded' }),
+};
+
+const {
+  notifyOrderStatusChanged,
+  notifyCourierGroupOrder,
+} = requirePublicApiLib('../../public-api/lib/telegramNotify.cjs', telegramFallback);
 const {
   allowedNextStatuses,
   isValidTransition,
   normalizeDeliveryMethod,
-} = require('../../public-api/lib/webOrderStatusFlow.cjs');
+} = requirePublicApiLib('../../public-api/lib/webOrderStatusFlow.cjs', statusFlowFallback);
 const {
   WEB_ORDER_QUEUES,
   resolveQueueStatuses,
   normalizeSalesChannel,
   VALID_SALES_CHANNELS,
-} = require('../../public-api/lib/webOrderQueues.cjs');
+} = requirePublicApiLib('../../public-api/lib/webOrderQueues.cjs', queueFallback);
 const {
   fulfillWebOrderStock,
   handleWebOrderCancelled,
   markCashPaymentOnDelivered,
   isOrderStockFulfilled,
-} = require('../../public-api/lib/webOrderStock.cjs');
+} = requirePublicApiLib('../../public-api/lib/webOrderStock.cjs', stockFallback);
 const {
   syncPosCustomerFromMarketplace,
   recordWebOrderCustomerSale,
-} = require('../../public-api/lib/marketplacePosCustomer.cjs');
+} = requirePublicApiLib('../../public-api/lib/marketplacePosCustomer.cjs', customerFallback);
 
 const VALID_STATUSES = new Set(['new', 'paid', 'processing', 'ready', 'out_for_delivery', 'delivered', 'cancelled']);
 
@@ -83,6 +118,45 @@ class WebOrdersService {
     } catch {
       return false;
     }
+  }
+
+  _latestUsdUzsRate(onDate = null) {
+    try {
+      const hasTable = this.db
+        .prepare(`SELECT 1 FROM sqlite_master WHERE type='table' AND name='exchange_rates'`)
+        .get();
+      if (!hasTable) return null;
+      const params = ['USD', 'UZS'];
+      let where = `WHERE UPPER(base_currency) = ? AND UPPER(quote_currency) = ?`;
+      if (onDate) {
+        where += ` AND date(effective_date) <= date(?)`;
+        params.push(String(onDate).slice(0, 10));
+      } else {
+        where += ` AND date(effective_date) <= date('now')`;
+      }
+      const row = this.db
+        .prepare(
+          `SELECT rate FROM exchange_rates ${where}
+           ORDER BY date(effective_date) DESC, datetime(updated_at) DESC LIMIT 1`
+        )
+        .get(...params);
+      const rate = Number(row?.rate || 0);
+      return rate > 0 ? rate : null;
+    } catch {
+      return null;
+    }
+  }
+
+  _ensureWebOrderFxRate(orderId) {
+    if (!this._hasColumn('web_orders', 'fx_rate')) return;
+    const row = this.db
+      .prepare(`SELECT fx_rate, created_at FROM web_orders WHERE id = ?`)
+      .get(orderId);
+    if (!row) return;
+    if (Number(row.fx_rate || 0) > 0) return;
+    const rate = this._latestUsdUzsRate(row.created_at);
+    if (!(rate > 0)) return;
+    this.db.prepare(`UPDATE web_orders SET fx_rate = ? WHERE id = ?`).run(rate, orderId);
   }
 
   _buildListWhere(filters = {}) {
@@ -176,62 +250,176 @@ class WebOrdersService {
 
   reportSummary(filters = {}) {
     if (!this._hasWebOrdersTable()) {
-      return { by_status: [], by_channel: [], totals: { orders: 0, amount: 0 } };
+      return {
+        days: 30,
+        date_from: null,
+        date_to: null,
+        by_status: [],
+        by_channel: [],
+        by_payment: [],
+        totals: { orders: 0, amount: 0, cancelled_orders: 0 },
+      };
     }
+
+    const { formatYmdInTimeZone, UZBEKISTAN_TZ_SQLITE_OFFSET } = require('../lib/timezone.cjs');
+    const { webOrderAmountUzsSql } = require('../lib/orderAmount.cjs');
+
     const days = Math.min(365, Math.max(1, Number.parseInt(String(filters.days || '30'), 10) || 30));
-    const channel = filters.sales_channel
-      ? normalizeSalesChannel(filters.sales_channel)
-      : null;
-    let where = `datetime(wo.created_at) >= datetime('now', '-${days} days')`;
+    const ymd = (d) => {
+      if (!d) return null;
+      if (typeof d === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(d)) return d;
+      return formatYmdInTimeZone(d);
+    };
+
+    let dateFrom = filters.date_from ? ymd(filters.date_from) : null;
+    let dateTo = filters.date_to ? ymd(filters.date_to) : null;
+    if (!dateFrom && !dateTo) {
+      dateTo = formatYmdInTimeZone(new Date());
+      const from = new Date();
+      from.setDate(from.getDate() - (days - 1));
+      dateFrom = formatYmdInTimeZone(from);
+    }
+    if (dateFrom && dateTo && dateFrom > dateTo) {
+      const tmp = dateFrom;
+      dateFrom = dateTo;
+      dateTo = tmp;
+    }
+
+    // Align to Uzbekistan business day (same as other sales reports)
+    const tzDate = (col) =>
+      `date(datetime(replace(replace(${col}, 'T', ' '), 'Z', ''), '${UZBEKISTAN_TZ_SQLITE_OFFSET}'))`;
+
+    const channelRaw = filters.sales_channel ? String(filters.sales_channel).trim().toLowerCase() : '';
+    const channel =
+      channelRaw && channelRaw !== 'all' && VALID_SALES_CHANNELS.has(channelRaw) ? channelRaw : null;
+
     const params = [];
-    if (channel && VALID_SALES_CHANNELS.has(channel) && this._hasColumn('web_orders', 'sales_channel')) {
-      where += ' AND wo.sales_channel = ?';
+    let where = '1=1';
+    if (dateFrom) {
+      where += ` AND ${tzDate('wo.created_at')} >= date(?)`;
+      params.push(dateFrom);
+    }
+    if (dateTo) {
+      where += ` AND ${tzDate('wo.created_at')} <= date(?)`;
+      params.push(dateTo);
+    }
+    if (channel && this._hasColumn('web_orders', 'sales_channel')) {
+      where += ' AND LOWER(TRIM(COALESCE(wo.sales_channel, \'\'))) = ?';
       params.push(channel);
     }
+
+    // Sales KPIs: exclude cancelled + refunded/failed payments (still listed in by_status)
+    const salesWhere = `${where}
+      AND LOWER(TRIM(COALESCE(wo.status, ''))) != 'cancelled'
+      AND LOWER(TRIM(COALESCE(wo.payment_status, ''))) NOT IN ('refunded', 'failed')`;
+
+    const amountUzs = webOrderAmountUzsSql(this.db, 'wo');
 
     const byStatus = this.db
       .prepare(
         `
-      SELECT wo.status, COUNT(*) AS count, COALESCE(SUM(wo.total_amount), 0) AS amount
+      SELECT
+        wo.status AS status,
+        COUNT(*) AS count,
+        COALESCE(SUM(${amountUzs}), 0) AS amount
       FROM web_orders wo
       WHERE ${where}
       GROUP BY wo.status
       ORDER BY count DESC
     `,
       )
-      .all(...params);
+      .all(...params)
+      .map((r) => ({
+        status: r.status,
+        count: Number(r.count) || 0,
+        amount: Number(r.amount) || 0,
+      }));
 
     const byChannel = this._hasColumn('web_orders', 'sales_channel')
       ? this.db
           .prepare(
             `
-      SELECT wo.sales_channel AS channel, COUNT(*) AS count, COALESCE(SUM(wo.total_amount), 0) AS amount
+      SELECT
+        COALESCE(NULLIF(TRIM(wo.sales_channel), ''), 'telegram') AS channel,
+        COUNT(*) AS count,
+        COALESCE(SUM(${amountUzs}), 0) AS amount
       FROM web_orders wo
-      WHERE ${where}
-      GROUP BY wo.sales_channel
+      WHERE ${salesWhere}
+      GROUP BY COALESCE(NULLIF(TRIM(wo.sales_channel), ''), 'telegram')
       ORDER BY count DESC
     `,
           )
           .all(...params)
+          .map((r) => ({
+            channel: r.channel,
+            count: Number(r.count) || 0,
+            amount: Number(r.amount) || 0,
+          }))
+      : [];
+
+    const byPayment = this._hasColumn('web_orders', 'payment_method')
+      ? this.db
+          .prepare(
+            `
+      SELECT
+        COALESCE(NULLIF(TRIM(wo.payment_method), ''), 'other') AS method,
+        COUNT(*) AS count,
+        COALESCE(SUM(${amountUzs}), 0) AS amount
+      FROM web_orders wo
+      WHERE ${salesWhere}
+      GROUP BY COALESCE(NULLIF(TRIM(wo.payment_method), ''), 'other')
+      ORDER BY count DESC
+    `,
+          )
+          .all(...params)
+          .map((r) => ({
+            method: r.method,
+            count: Number(r.count) || 0,
+            amount: Number(r.amount) || 0,
+          }))
       : [];
 
     const totals = this.db
       .prepare(
         `
-      SELECT COUNT(*) AS orders, COALESCE(SUM(wo.total_amount), 0) AS amount
+      SELECT
+        COUNT(*) AS orders,
+        COALESCE(SUM(${amountUzs}), 0) AS amount
       FROM web_orders wo
-      WHERE ${where}
+      WHERE ${salesWhere}
     `,
       )
       .get(...params);
 
+    const cancelled = this.db
+      .prepare(
+        `
+      SELECT COUNT(*) AS orders
+      FROM web_orders wo
+      WHERE ${where}
+        AND (
+          LOWER(TRIM(COALESCE(wo.status, ''))) = 'cancelled'
+          OR LOWER(TRIM(COALESCE(wo.payment_status, ''))) IN ('refunded', 'failed')
+        )
+    `,
+      )
+      .get(...params);
+
+    const orders = Number(totals?.orders || 0);
+    const amount = Number(totals?.amount || 0);
+
     return {
       days,
+      date_from: dateFrom,
+      date_to: dateTo,
       by_status: byStatus,
       by_channel: byChannel,
+      by_payment: byPayment,
       totals: {
-        orders: Number(totals?.orders || 0),
-        amount: Number(totals?.amount || 0),
+        orders,
+        amount,
+        avg_order: orders > 0 ? amount / orders : 0,
+        cancelled_orders: Number(cancelled?.orders || 0),
       },
     };
   }
@@ -490,6 +678,7 @@ class WebOrdersService {
       }
     });
     applyStock();
+    this._ensureWebOrderFxRate(wid);
     const token = String(process.env.TELEGRAM_BOT_TOKEN || '').trim();
     if (token && row?.telegram_id) {
       void notifyOrderStatusChanged({
@@ -626,6 +815,7 @@ class WebOrdersService {
       }
     });
     updateTx();
+    this._ensureWebOrderFxRate(wid);
 
     return this.get(wid);
   }

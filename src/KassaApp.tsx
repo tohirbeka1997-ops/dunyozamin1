@@ -7,6 +7,8 @@ import { Toaster } from './components/ui/toaster';
 import kassaRoutes from './routes.kassa';
 import KassaLayout from './components/layout/KassaLayout';
 import Loading from './components/common/Loading';
+import RpcNotifications from './components/common/RpcNotifications';
+import CreditStaffAlerts from './components/pos/CreditStaffAlerts';
 import { ErrorBoundary } from './components/common/ErrorBoundary';
 import { ConfirmDialogProvider } from './contexts/ConfirmDialogContext';
 
@@ -33,6 +35,8 @@ export default function KassaApp() {
       <AuthProvider>
         <Router>
           <Toaster />
+          <RpcNotifications />
+          <CreditStaffAlerts />
           <ConfirmDialogProvider>
             <KassaAppContent />
           </ConfirmDialogProvider>

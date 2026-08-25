@@ -37,9 +37,7 @@ function withEnv(overrides, fn) {
     });
 }
 
-function sha256(text) {
-  return crypto.createHash('sha256').update(text).digest('hex');
-}
+const { hashPassword } = require('../electron/lib/password.cjs');
 
 function seedDatabase(dbPath) {
   const db = new Database(dbPath);
@@ -54,7 +52,7 @@ function seedDatabase(dbPath) {
   db.prepare(
     `INSERT INTO users (id, username, full_name, email, password_hash, is_active, created_at, updated_at)
      VALUES (?, 'seller@test.com', 'Seller User', 'seller@test.com', ?, 1, datetime('now'), datetime('now'))`,
-  ).run(STAFF_USER, sha256('secret123'));
+  ).run(STAFF_USER, hashPassword('secret123'));
 
   db.prepare(
     `INSERT INTO user_roles (id, user_id, role_id, assigned_at)

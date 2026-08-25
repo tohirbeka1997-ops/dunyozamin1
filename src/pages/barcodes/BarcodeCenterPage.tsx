@@ -60,10 +60,17 @@ export default function BarcodeCenterPage() {
 
       <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
         <ServiceCard
+          title="Barcode Studio"
+          description="Professional etiketka dizayneri: 25 shablon, drag-drop, A4 chop."
+          status="active"
+          icon={<Tag className="h-5 w-5 text-primary" />}
+          onOpen={() => navigate('/barcodes/studio')}
+        />
+        <ServiceCard
           title="Barcode Designer — Pro Mode"
           description="Erkin layout: drag, resize, font, align, show/hide."
           status="active"
-          icon={<Tag className="h-5 w-5 text-primary" />}
+          icon={<Sticker className="h-5 w-5 text-primary" />}
           onOpen={() => navigate('/tools/barcode-designer')}
         />
         {isAdmin && (

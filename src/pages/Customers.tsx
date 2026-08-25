@@ -39,8 +39,10 @@ import {
   AlertDialogTrigger,
 } from '@/components/ui/alert-dialog';
 import { getCustomers, deleteCustomer } from '@/db/api';
+import { sendCreditReminder } from '@/db/customerCredit.api';
 import { useAuth } from '@/contexts/AuthContext';
 import type { Customer } from '@/types/database';
+import { fetchUzsPerUsdRate } from '@/lib/fxRate';
 import {
   Search,
   Plus,
@@ -54,6 +56,7 @@ import {
   AlertTriangle,
   Users,
   ShoppingCart,
+  Bell,
 } from 'lucide-react';
 import { highlightMatch } from '@/utils/searchHighlight';
 import { useToast } from '@/hooks/use-toast';
@@ -135,12 +138,15 @@ export default function Customers() {
         sortOrder,
       });
       
-      // Client-side sorting for balance (biggest debt first)
+      // Client-side sorting for balance (biggest debt first), including USD via FX rate
       let filteredData = data;
       if (sortBy === 'balance') {
+        const usdRate = (await fetchUzsPerUsdRate()) || 0;
         filteredData = [...filteredData].sort((a, b) => {
-          const balanceA = Number(a.balance || 0);
-          const balanceB = Number(b.balance || 0);
+          const balanceA =
+            Number(a.balance || 0) + Number((a as any).balance_usd || 0) * usdRate;
+          const balanceB =
+            Number(b.balance || 0) + Number((b as any).balance_usd || 0) * usdRate;
           if (sortOrder === 'desc') {
             // Biggest debt first (most negative)
             return balanceA - balanceB;
@@ -206,6 +212,32 @@ export default function Customers() {
   const handleReceivePayment = (customer: Customer) => {
     setSelectedCustomerForPayment(customer);
     setPaymentDialogOpen(true);
+  };
+
+  const handleSendReminder = async (customer: Customer) => {
+    try {
+      const out = await sendCreditReminder({ customerId: customer.id });
+      if (out.ok) {
+        toast({
+          title: 'Eslatma yuborildi',
+          description: `${customer.name} — ${out.channel || 'kanal'}`,
+        });
+      } else {
+        toast({
+          title: 'Eslatma yuborilmadi',
+          description:
+            out.error ||
+            'Kanal topilmadi: telefon / Telegram / SMS_PROVIDER ni tekshiring',
+          variant: 'destructive',
+        });
+      }
+    } catch (e: unknown) {
+      toast({
+        title: 'Eslatma yuborishda xatolik',
+        description: e instanceof Error ? e.message : String(e),
+        variant: 'destructive',
+      });
+    }
   };
 
   const handlePaymentSuccess = () => {
@@ -614,6 +646,15 @@ export default function Customers() {
                                     >
                                       <DollarSign className="h-4 w-4 mr-2" />
                                       Qarz to'lovini qabul qilish
+                                    </DropdownMenuItem>
+                                    <DropdownMenuItem
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        void handleSendReminder(customer);
+                                      }}
+                                    >
+                                      <Bell className="h-4 w-4 mr-2" />
+                                      Eslatma yuborish
                                     </DropdownMenuItem>
                                     <DropdownMenuSeparator />
                                   </>

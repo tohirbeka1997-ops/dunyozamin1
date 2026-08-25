@@ -1,0 +1,599 @@
+<!DOCTYPE html>
+<html lang="uz">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>DunyoZamin · Qurilish Marketplace</title>
+<style>
+  :root{
+    --bg:#f7f8f5;
+    --ink:#19231d;
+    --soft-ink:#586059;
+    --muted:#959e95;
+    --line:#ebeee9;
+    --brand:#10a45a;
+    --brand-deep:#0c7d43;
+    --brand-ink:#0a5b32;
+    --amber:#f2a416;
+    --amber-deep:#d98a05;
+    --amber-soft:#fdf2da;
+    --mint:#e9f6ee;
+    --sand:#f4eee2;
+    --sand-2:#faf6ed;
+    --clay:#fbeee6;
+    --sky:#eaf2fa;
+    --steel:#eef1f4;
+    --r:24px;
+    --grid:rgba(16,120,70,.045);
+    --sh:0 14px 34px -18px rgba(16,90,50,.22);
+    font-family:'SF Pro Display',-apple-system,BlinkMacSystemFont,'Segoe UI',Inter,sans-serif;
+  }
+  *{box-sizing:border-box;margin:0;padding:0;-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility;}
+  body{
+    background:
+      linear-gradient(#eef2ee,#e9ede8),
+      linear-gradient(90deg,var(--grid) 1px,transparent 1px) 0 0/26px 26px,
+      linear-gradient(var(--grid) 1px,transparent 1px) 0 0/26px 26px;
+    color:var(--ink);min-height:100vh;padding:46px 20px 70px;letter-spacing:-.01em;position:relative;overflow-x:hidden;
+  }
+  .blob{position:fixed;border-radius:50%;filter:blur(70px);opacity:.45;z-index:0;pointer-events:none;animation:drift 20s ease-in-out infinite;}
+  .blob.b1{width:360px;height:360px;background:#86e4b1;top:-80px;left:-60px;}
+  .blob.b2{width:320px;height:320px;background:#ffd98a;bottom:60px;right:-80px;animation-delay:-7s;opacity:.4;}
+  .blob.b3{width:280px;height:280px;background:#bcd6f2;top:42%;left:45%;animation-delay:-13s;opacity:.32;}
+  @keyframes drift{0%,100%{transform:translate(0,0) scale(1);}33%{transform:translate(46px,-34px) scale(1.08);}66%{transform:translate(-34px,46px) scale(.94);}}
+
+  @keyframes fadeUp{from{opacity:0;transform:translateY(16px);}to{opacity:1;transform:translateY(0);}}
+  @keyframes floaty{0%,100%{transform:translateY(0);}50%{transform:translateY(-6px);}}
+  @keyframes sheen{0%{transform:translateX(-130%) skewX(-18deg);}55%,100%{transform:translateX(360%) skewX(-18deg);}}
+  @keyframes pulseDot{0%,100%{transform:scale(1);opacity:1;}50%{transform:scale(1.3);opacity:.55;}}
+  @keyframes spinSlow{to{transform:rotate(360deg);}}
+  @keyframes ticktock{0%,100%{transform:scale(1);}50%{transform:scale(1.07);}}
+  .stagger>*{opacity:0;animation:fadeUp .6s cubic-bezier(.22,.9,.3,1) forwards;}
+  .stagger>*:nth-child(1){animation-delay:.04s;}.stagger>*:nth-child(2){animation-delay:.1s;}
+  .stagger>*:nth-child(3){animation-delay:.16s;}.stagger>*:nth-child(4){animation-delay:.22s;}
+  .stagger>*:nth-child(5){animation-delay:.28s;}.stagger>*:nth-child(6){animation-delay:.34s;}
+  .stagger>*:nth-child(7){animation-delay:.4s;}.stagger>*:nth-child(8){animation-delay:.46s;}
+  .prod,.cat,.crow,.brand-chip,.add,.cta,.buy,.checkout,.ibtn,.pitem,.citem,.deal,.trust,.qj{transition:transform .28s cubic-bezier(.22,.9,.3,1),box-shadow .28s,background .28s;}
+  .prod:hover,.cat:hover,.crow:hover,.deal:hover,.pitem:hover,.qj:hover{transform:translateY(-3px);box-shadow:0 16px 34px -16px rgba(16,80,48,.28);}
+  .add:active,.cta:active,.buy:active,.checkout:active{transform:scale(.92);}
+  .add:hover{transform:rotate(90deg) scale(1.1);}
+  @media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important;}}
+
+  .head{max-width:1320px;margin:0 auto 40px;text-align:center;position:relative;z-index:2;}
+  .head .kicker{font-size:11px;letter-spacing:.32em;text-transform:uppercase;color:var(--brand-deep);font-weight:600;}
+  .head h1{font-size:34px;font-weight:700;letter-spacing:-.035em;margin:13px 0 9px;line-height:1.05;}
+  .head p{color:var(--muted);font-size:14px;max-width:460px;margin:0 auto;line-height:1.6;font-weight:450;}
+  .pills{display:flex;gap:7px;justify-content:center;margin-top:18px;flex-wrap:wrap;}
+  .pill{display:flex;align-items:center;gap:7px;background:#fff;border:1px solid var(--line);padding:6px 13px;border-radius:100px;font-size:11.5px;color:var(--soft-ink);font-weight:600;}
+  .dot{width:11px;height:11px;border-radius:50%;}
+
+  .stage{max-width:1320px;margin:0 auto;display:grid;grid-template-columns:repeat(auto-fit,minmax(304px,1fr));gap:38px;justify-items:center;position:relative;z-index:2;}
+
+  .phone{width:330px;background:#fff;border-radius:46px;padding:10px;box-shadow:0 44px 80px -34px rgba(16,70,42,.34),0 0 0 1px rgba(16,70,42,.05);position:relative;}
+  .screen{background:
+      linear-gradient(180deg,#f8faf6,#f4f7f1),
+      linear-gradient(90deg,var(--grid) 1px,transparent 1px) 0 0/24px 24px,
+      linear-gradient(var(--grid) 1px,transparent 1px) 0 0/24px 24px;
+    border-radius:37px;overflow:hidden;height:716px;display:flex;flex-direction:column;position:relative;}
+  .label{position:absolute;top:-13px;left:50%;transform:translateX(-50%);background:var(--ink);color:#fff;font-size:10.5px;font-weight:600;letter-spacing:.06em;padding:5px 15px;border-radius:100px;z-index:30;}
+
+  .sb{display:flex;justify-content:space-between;align-items:center;padding:13px 22px 4px;font-size:12px;font-weight:600;}
+  .sb .r{display:flex;gap:6px;align-items:center;font-size:11px;opacity:.6;}
+  .scroll{flex:1;overflow:hidden;display:flex;flex-direction:column;}
+  .body{flex:1;overflow:hidden;padding:6px 16px 14px;display:flex;flex-direction:column;gap:17px;}
+
+  /* glass */
+  .glass{background:rgba(255,255,255,.6);backdrop-filter:blur(18px) saturate(1.4);-webkit-backdrop-filter:blur(18px) saturate(1.4);border:1px solid rgba(255,255,255,.72);box-shadow:inset 0 1px 0 rgba(255,255,255,.6);}
+
+  /* top bar: location + brand + bell */
+  .topbar{padding:8px 18px 0;}
+  .loc{display:flex;align-items:center;gap:5px;font-size:11px;color:var(--muted);font-weight:600;margin-bottom:8px;}
+  .loc b{color:var(--soft-ink);font-weight:700;}
+  .appbar{display:flex;align-items:center;justify-content:space-between;}
+  .brand{display:flex;align-items:center;gap:11px;}
+  .logo{width:42px;height:42px;border-radius:14px;background:linear-gradient(150deg,var(--brand),var(--brand-ink));display:flex;align-items:center;justify-content:center;position:relative;overflow:hidden;box-shadow:0 8px 18px -6px rgba(12,125,67,.6);}
+  .logo svg{position:relative;z-index:2;}
+  .logo:after{content:"";position:absolute;inset:0;background:linear-gradient(120deg,transparent,rgba(255,255,255,.35),transparent);transform:translateX(-120%) skewX(-18deg);animation:sheen 5s ease-in-out 1s infinite;}
+  .brand b{font-size:16.5px;font-weight:700;letter-spacing:-.025em;display:block;line-height:1.05;}
+  .brand small{font-size:10.5px;color:var(--amber-deep);font-weight:700;letter-spacing:.02em;}
+  .ibtn{width:42px;height:42px;border-radius:13px;background:rgba(255,255,255,.6);backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px);border:1px solid rgba(255,255,255,.72);display:flex;align-items:center;justify-content:center;color:var(--soft-ink);position:relative;}
+  .ibtn .nd{position:absolute;top:9px;right:10px;width:7px;height:7px;border-radius:50%;background:var(--amber);box-shadow:0 0 0 2px #fff;}
+
+  .search{display:flex;align-items:center;gap:10px;background:rgba(255,255,255,.62);backdrop-filter:blur(18px) saturate(1.4);-webkit-backdrop-filter:blur(18px) saturate(1.4);border:1px solid rgba(255,255,255,.74);border-radius:16px;padding:13px 14px;color:var(--muted);font-size:13.5px;font-weight:450;box-shadow:inset 0 1px 0 rgba(255,255,255,.6);}
+  .search .scan{margin-left:auto;width:26px;height:26px;border-radius:8px;background:var(--mint);color:var(--brand-deep);display:flex;align-items:center;justify-content:center;}
+
+  /* hero carousel */
+  .hero{border-radius:var(--r);padding:22px;color:#fff;position:relative;overflow:hidden;background:linear-gradient(135deg,#12b063 0%,#0a5b32 100%);box-shadow:0 18px 36px -16px rgba(12,90,50,.6);}
+  .hero:before{content:"";position:absolute;inset:0;background-image:linear-gradient(rgba(255,255,255,.07) 1px,transparent 1px),linear-gradient(90deg,rgba(255,255,255,.07) 1px,transparent 1px);background-size:22px 22px;mask:linear-gradient(120deg,#000,transparent 70%);}
+  .hero .sheen{position:absolute;top:0;left:0;width:55%;height:100%;background:linear-gradient(100deg,transparent,rgba(255,255,255,.28),transparent);transform:translateX(-130%) skewX(-18deg);animation:sheen 5s ease-in-out 1.4s infinite;}
+  .hero .tag{display:inline-flex;align-items:center;gap:5px;background:rgba(255,255,255,.18);border:1px solid rgba(255,255,255,.3);padding:4px 10px;border-radius:100px;font-size:10px;font-weight:700;letter-spacing:.04em;text-transform:uppercase;}
+  .hero h2{font-size:24px;font-weight:700;line-height:1.08;letter-spacing:-.03em;margin:11px 0 5px;}
+  .hero h2 i{font-style:normal;color:#ffd98a;}
+  .hero p{font-size:11.5px;opacity:.82;font-weight:450;}
+  .hero .cta{margin-top:15px;display:inline-flex;align-items:center;gap:6px;background:#fff;color:var(--brand-deep);font-weight:700;font-size:12px;padding:9px 16px;border-radius:100px;}
+  .hero .cog{position:absolute;right:-22px;bottom:-22px;opacity:.16;animation:spinSlow 24s linear infinite;}
+  .hdots{position:absolute;bottom:13px;right:18px;display:flex;gap:5px;}
+  .hdots i{width:5px;height:5px;border-radius:50%;background:#fff;opacity:.4;}
+  .hdots i.on{opacity:1;width:15px;border-radius:4px;}
+
+  /* trust strip */
+  .trusts{display:flex;gap:8px;overflow:hidden;}
+  .trust{flex:0 0 auto;display:flex;align-items:center;gap:7px;background:rgba(255,255,255,.6);backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px);border:1px solid rgba(255,255,255,.72);border-radius:13px;padding:9px 12px;font-size:11px;font-weight:600;color:var(--soft-ink);}
+  .trust svg{color:var(--brand-deep);}
+
+  /* section header with ruler ticks */
+  .row{display:flex;align-items:center;justify-content:space-between;}
+  .row h3{font-size:17px;font-weight:700;letter-spacing:-.025em;display:flex;align-items:center;gap:8px;}
+  .row h3:before{content:"";width:4px;height:17px;border-radius:3px;background:linear-gradient(var(--brand),var(--amber));}
+  .row a{font-size:11.5px;color:var(--brand-deep);font-weight:700;}
+
+  /* category grid */
+  .cats{display:grid;grid-template-columns:repeat(4,1fr);gap:9px;}
+  .cat{background:rgba(255,255,255,.62);backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px);border:1px solid rgba(255,255,255,.72);border-radius:16px;padding:11px 5px 9px;text-align:center;box-shadow:inset 0 1px 0 rgba(255,255,255,.6);}
+  .cat .ci{width:36px;height:36px;border-radius:12px;display:flex;align-items:center;justify-content:center;margin:0 auto 6px;}
+  .cat span{font-size:9.5px;font-weight:600;color:var(--soft-ink);line-height:1.15;display:block;letter-spacing:-.01em;}
+
+  /* brand chips */
+  .brands{display:flex;gap:8px;overflow:hidden;}
+  .brand-chip{flex:0 0 auto;display:flex;align-items:center;gap:7px;background:rgba(255,255,255,.62);backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px);border:1px solid rgba(255,255,255,.72);border-radius:12px;padding:8px 13px;font-size:12px;font-weight:700;color:var(--ink);letter-spacing:-.01em;}
+  .brand-chip .bl{width:22px;height:22px;border-radius:7px;display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:800;color:#fff;}
+
+  /* flash deals */
+  .flashhead{display:flex;align-items:center;justify-content:space-between;}
+  .flashhead .ttl{font-size:17px;font-weight:700;letter-spacing:-.025em;display:flex;align-items:center;gap:7px;}
+  .flame{color:var(--amber);}
+  .timer{display:flex;align-items:center;gap:4px;background:var(--ink);color:#fff;font-size:11px;font-weight:700;padding:5px 9px;border-radius:9px;letter-spacing:.03em;}
+  .timer b{animation:ticktock 1s ease-in-out infinite;display:inline-block;}
+  .deals{display:flex;gap:11px;overflow:hidden;}
+  .deal{flex:0 0 150px;background:rgba(255,255,255,.64);backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px);border:1px solid rgba(255,255,255,.74);border-radius:18px;overflow:hidden;box-shadow:inset 0 1px 0 rgba(255,255,255,.6);}
+  .deal .dimg{height:84px;position:relative;display:flex;align-items:center;justify-content:center;color:#c0d3c8;}
+  .deal .off{position:absolute;top:8px;left:8px;background:var(--amber);color:#fff;font-size:10px;font-weight:800;padding:3px 8px;border-radius:8px;}
+  .deal .di{padding:10px 11px 12px;}
+  .deal .nm{font-size:11.5px;font-weight:600;line-height:1.25;height:29px;overflow:hidden;letter-spacing:-.01em;}
+  .deal .pp{display:flex;align-items:baseline;gap:6px;margin-top:5px;}
+  .deal .pp .nw{font-size:14px;font-weight:800;color:var(--brand-deep);letter-spacing:-.02em;}
+  .deal .pp .od{font-size:10.5px;color:#bcc6bf;text-decoration:line-through;font-weight:600;}
+  .bar{height:5px;border-radius:3px;background:#e8ece7;margin-top:9px;overflow:hidden;}
+  .bar i{display:block;height:100%;border-radius:3px;background:linear-gradient(90deg,var(--amber),var(--amber-deep));}
+  .deal .sold{font-size:9px;color:var(--muted);font-weight:600;margin-top:4px;}
+
+  /* product grid */
+  .prods{display:grid;grid-template-columns:1fr 1fr;gap:12px;}
+  .prod{background:rgba(255,255,255,.64);backdrop-filter:blur(16px) saturate(1.3);-webkit-backdrop-filter:blur(16px) saturate(1.3);border:1px solid rgba(255,255,255,.74);border-radius:19px;overflow:hidden;box-shadow:inset 0 1px 0 rgba(255,255,255,.6);}
+  .pimg{height:100px;display:flex;align-items:center;justify-content:center;position:relative;color:#c2d4ca;}
+  .heart{position:absolute;top:9px;right:9px;width:26px;height:26px;border-radius:50%;background:rgba(255,255,255,.85);backdrop-filter:blur(6px);display:flex;align-items:center;justify-content:center;color:#cdd6d0;}
+  .pbadge{position:absolute;top:9px;left:9px;background:rgba(255,255,255,.85);backdrop-filter:blur(6px);color:var(--amber-deep);font-size:9.5px;font-weight:800;padding:3px 8px;border-radius:100px;}
+  .pinfo{padding:11px 12px 13px;}
+  .pinfo .br{font-size:9px;font-weight:800;color:var(--amber-deep);letter-spacing:.05em;text-transform:uppercase;}
+  .pinfo .nm{font-size:12.5px;font-weight:600;line-height:1.3;letter-spacing:-.01em;height:32px;overflow:hidden;margin-top:2px;}
+  .pinfo .sub{display:flex;align-items:center;gap:5px;font-size:9.5px;color:var(--muted);font-weight:600;margin-top:5px;}
+  .pinfo .sub .st{color:var(--amber);}
+  .pinfo .pr{display:flex;align-items:center;justify-content:space-between;margin-top:9px;}
+  .pinfo .pr b{font-size:14.5px;font-weight:800;letter-spacing:-.02em;}
+  .pinfo .pr b small{font-size:9.5px;color:var(--muted);font-weight:500;}
+  .add{width:29px;height:29px;border-radius:10px;background:linear-gradient(135deg,var(--brand),var(--brand-deep));color:#fff;display:flex;align-items:center;justify-content:center;font-size:17px;line-height:1;font-weight:300;cursor:pointer;box-shadow:0 6px 14px -5px rgba(12,125,67,.6);}
+
+  .loyal{position:relative;overflow:hidden;border-radius:var(--r);padding:16px 18px;display:flex;align-items:center;gap:14px;background:linear-gradient(120deg,#fdf2da,#fbeee6);border:1px solid rgba(255,255,255,.6);}
+  .loyal:before{content:"";position:absolute;right:-20px;top:-20px;width:90px;height:90px;border-radius:50%;background:rgba(242,164,22,.18);}
+  .loyal .bi{width:42px;height:42px;border-radius:13px;background:#fff;display:flex;align-items:center;justify-content:center;color:var(--amber-deep);flex:0 0 auto;box-shadow:var(--sh);}
+  .loyal b{font-size:13px;font-weight:700;display:block;letter-spacing:-.01em;}
+  .loyal p{font-size:10.5px;color:var(--soft-ink);margin-top:2px;font-weight:500;}
+
+  /* bottom nav */
+  .tabbar{background:rgba(255,255,255,.64);backdrop-filter:blur(26px) saturate(1.5);-webkit-backdrop-filter:blur(26px) saturate(1.5);border-top:1px solid rgba(255,255,255,.7);display:flex;justify-content:space-around;padding:9px 6px 15px;box-shadow:0 -6px 22px rgba(16,70,42,.06);position:relative;}
+  .tab{display:flex;flex-direction:column;align-items:center;gap:4px;color:#aeb7af;font-size:9.5px;font-weight:600;position:relative;flex:1;letter-spacing:-.01em;}
+  .tab.on{color:var(--brand-deep);}
+  .tab.on:before{content:"";position:absolute;top:-9px;width:24px;height:3px;border-radius:3px;background:linear-gradient(var(--brand),var(--amber));}
+  .tk{width:23px;height:23px;display:flex;align-items:center;justify-content:center;}
+  .cnt{position:absolute;top:-3px;right:50%;margin-right:-19px;background:var(--amber);color:#fff;font-size:8.5px;font-weight:800;min-width:14px;height:14px;border-radius:50%;display:flex;align-items:center;justify-content:center;animation:pulseDot 2.2s ease-in-out infinite;}
+  svg{display:block;}
+
+  /* catalog */
+  .ctitle{padding:8px 20px 0;font-size:22px;font-weight:700;letter-spacing:-.035em;}
+  .catlist{display:flex;flex-direction:column;gap:9px;}
+  .crow{background:rgba(255,255,255,.64);backdrop-filter:blur(16px) saturate(1.3);-webkit-backdrop-filter:blur(16px) saturate(1.3);border:1px solid rgba(255,255,255,.74);border-radius:17px;padding:12px 14px;display:flex;align-items:center;gap:13px;box-shadow:inset 0 1px 0 rgba(255,255,255,.55);}
+  .crow .ci{width:44px;height:44px;border-radius:13px;display:flex;align-items:center;justify-content:center;flex:0 0 auto;}
+  .crow b{font-size:13.5px;font-weight:700;letter-spacing:-.01em;}
+  .crow p{font-size:10.5px;color:var(--muted);margin-top:1px;font-weight:500;}
+  .crow .cnt2{margin-left:auto;font-size:10px;font-weight:700;color:var(--soft-ink);background:var(--steel);padding:4px 9px;border-radius:100px;}
+
+  /* product detail */
+  .gallery{height:252px;background:radial-gradient(120% 90% at 50% 18%,#f4faf6,#e3efe8);position:relative;display:flex;align-items:center;justify-content:center;color:#c0d2c8;overflow:hidden;}
+  .gallery:before{content:"";position:absolute;inset:0;background-image:linear-gradient(var(--grid) 1px,transparent 1px),linear-gradient(90deg,var(--grid) 1px,transparent 1px);background-size:22px 22px;}
+  .gallery>svg{animation:floaty 5s ease-in-out infinite;position:relative;z-index:2;}
+  .gallery .back,.gallery .fav{position:absolute;top:18px;width:38px;height:38px;border-radius:13px;background:rgba(255,255,255,.7);backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);display:flex;align-items:center;justify-content:center;z-index:3;}
+  .gallery .back{left:18px;color:var(--ink);}
+  .gallery .fav{right:18px;color:#e3859e;}
+  .gallery .off2{position:absolute;left:18px;bottom:16px;background:var(--amber);color:#fff;font-size:11px;font-weight:800;padding:5px 11px;border-radius:9px;z-index:3;}
+  .gallery .dots{position:absolute;bottom:16px;left:50%;transform:translateX(-50%);display:flex;gap:5px;z-index:3;}
+  .gallery .dots i{width:6px;height:6px;border-radius:50%;background:var(--brand);opacity:.25;}
+  .gallery .dots i.on{opacity:1;width:18px;border-radius:5px;}
+  .pd{padding:18px 18px 0;display:flex;flex-direction:column;gap:12px;}
+  .pd .brrow{display:flex;align-items:center;gap:8px;}
+  .pd .brtag{font-size:10px;font-weight:800;color:#fff;background:var(--brand-deep);padding:3px 9px;border-radius:7px;letter-spacing:.03em;}
+  .pd .rate{display:flex;align-items:center;gap:6px;font-size:11.5px;color:var(--muted);font-weight:600;}
+  .pd .rate .st{color:var(--amber);letter-spacing:1px;}
+  .pd h2{font-size:20px;font-weight:700;letter-spacing:-.035em;line-height:1.2;}
+  .specs{display:flex;gap:7px;flex-wrap:wrap;}
+  .spec{font-size:10.5px;font-weight:600;color:var(--soft-ink);background:var(--steel);padding:5px 10px;border-radius:100px;display:flex;align-items:center;gap:5px;}
+  .stock{display:inline-flex;align-items:center;gap:6px;background:var(--mint);color:var(--brand-deep);font-size:11.5px;font-weight:700;padding:6px 12px;border-radius:100px;width:fit-content;}
+  .price{display:flex;align-items:baseline;gap:10px;margin-top:2px;}
+  .price b{font-size:27px;font-weight:800;letter-spacing:-.035em;}
+  .price b small{font-size:12px;color:var(--muted);font-weight:500;}
+  .price .was{font-size:12.5px;color:#c4ccc7;text-decoration:line-through;font-weight:500;}
+  .deliv{display:flex;align-items:center;gap:9px;background:rgba(255,255,255,.6);backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px);border:1px solid rgba(255,255,255,.72);border-radius:14px;padding:11px 13px;}
+  .deliv .di{width:32px;height:32px;border-radius:10px;background:var(--sky);color:#4d86bd;display:flex;align-items:center;justify-content:center;flex:0 0 auto;}
+  .deliv b{font-size:11.5px;font-weight:700;display:block;}
+  .deliv p{font-size:10px;color:var(--muted);margin-top:1px;font-weight:500;}
+  .buybar{margin-top:auto;background:rgba(255,255,255,.72);backdrop-filter:blur(20px) saturate(1.4);-webkit-backdrop-filter:blur(20px) saturate(1.4);border-top:1px solid rgba(255,255,255,.7);padding:13px 16px 17px;display:flex;gap:11px;align-items:center;}
+  .qty{display:flex;align-items:center;border:1px solid var(--line);border-radius:12px;overflow:hidden;background:#fff;}
+  .qty button{width:35px;height:44px;background:transparent;border:none;font-size:16px;color:var(--soft-ink);font-weight:500;}
+  .qty span{width:28px;text-align:center;font-weight:800;font-size:13.5px;}
+  .buy{flex:1;height:46px;border-radius:13px;background:linear-gradient(135deg,var(--brand),var(--brand-deep));color:#fff;font-weight:700;font-size:13.5px;display:flex;align-items:center;justify-content:center;gap:8px;position:relative;overflow:hidden;box-shadow:0 10px 22px -8px rgba(12,125,67,.6);cursor:pointer;}
+  .buy:before{content:"";position:absolute;top:0;left:0;width:50%;height:100%;background:linear-gradient(100deg,transparent,rgba(255,255,255,.4),transparent);transform:translateX(-130%) skewX(-18deg);animation:sheen 4.5s ease-in-out 1.5s infinite;}
+
+  /* cart */
+  .cart{padding:6px 16px;display:flex;flex-direction:column;gap:11px;flex:1;overflow:hidden;}
+  .citem{background:rgba(255,255,255,.64);backdrop-filter:blur(16px) saturate(1.3);-webkit-backdrop-filter:blur(16px) saturate(1.3);border:1px solid rgba(255,255,255,.74);border-radius:18px;padding:11px;display:flex;gap:12px;align-items:center;box-shadow:inset 0 1px 0 rgba(255,255,255,.55);}
+  .citem .cimg{width:58px;height:58px;border-radius:14px;flex:0 0 auto;}
+  .citem .br{font-size:8.5px;font-weight:800;color:var(--amber-deep);letter-spacing:.04em;text-transform:uppercase;}
+  .citem .cn{font-size:12.5px;font-weight:600;line-height:1.3;letter-spacing:-.01em;margin-top:1px;}
+  .citem .cmeta{font-size:10px;color:var(--muted);margin-top:3px;font-weight:500;}
+  .citem .cb{font-size:13.5px;font-weight:800;color:var(--ink);margin-top:5px;letter-spacing:-.02em;}
+  .citem .qty{margin-left:auto;border-radius:11px;}
+  .citem .qty button{width:29px;height:32px;font-size:14px;}
+  .citem .qty span{width:22px;font-size:12px;}
+  .promo{display:flex;align-items:center;gap:9px;background:rgba(255,255,255,.6);backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px);border:1px dashed var(--brand);border-radius:13px;padding:11px 13px;font-size:12px;color:var(--brand-deep);font-weight:600;}
+  .promo .ap{margin-left:auto;font-weight:800;}
+  .summary{background:rgba(255,255,255,.72);backdrop-filter:blur(20px);-webkit-backdrop-filter:blur(20px);border-top:1px solid rgba(255,255,255,.7);padding:15px 18px 17px;}
+  .sl{display:flex;justify-content:space-between;font-size:12.5px;color:var(--muted);font-weight:500;margin-bottom:8px;}
+  .sl.total{color:var(--ink);font-weight:800;font-size:17px;margin:12px 0 14px;letter-spacing:-.03em;}
+  .checkout{height:50px;border-radius:14px;background:linear-gradient(135deg,var(--brand),var(--brand-deep));color:#fff;font-weight:700;font-size:14px;display:flex;align-items:center;justify-content:center;gap:8px;position:relative;overflow:hidden;box-shadow:0 12px 22px -8px rgba(12,125,67,.6);cursor:pointer;}
+  .checkout:before{content:"";position:absolute;top:0;left:0;width:50%;height:100%;background:linear-gradient(100deg,transparent,rgba(255,255,255,.4),transparent);transform:translateX(-130%) skewX(-18deg);animation:sheen 4.5s ease-in-out 1.5s infinite;}
+
+  /* profile */
+  .phead{position:relative;overflow:hidden;background:linear-gradient(140deg,#12b063,#0a5b32);padding:44px 22px 26px;color:#fff;display:flex;align-items:center;gap:15px;}
+  .phead:before{content:"";position:absolute;inset:0;background-image:linear-gradient(rgba(255,255,255,.07) 1px,transparent 1px),linear-gradient(90deg,rgba(255,255,255,.07) 1px,transparent 1px);background-size:22px 22px;mask:linear-gradient(160deg,#000,transparent 75%);}
+  .phead .av{width:60px;height:60px;border-radius:19px;background:rgba(255,255,255,.16);display:flex;align-items:center;justify-content:center;font-size:23px;font-weight:700;border:1.5px solid rgba(255,255,255,.28);position:relative;z-index:2;}
+  .phead .pi{position:relative;z-index:2;}
+  .phead b{font-size:18px;font-weight:700;letter-spacing:-.02em;}
+  .phead .tier{display:inline-flex;align-items:center;gap:5px;font-size:10.5px;background:rgba(255,255,255,.2);padding:3px 9px;border-radius:100px;margin-top:5px;font-weight:600;}
+  .pstats{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;padding:16px;margin-top:-24px;position:relative;z-index:3;}
+  .pstat{background:rgba(255,255,255,.7);backdrop-filter:blur(18px) saturate(1.4);-webkit-backdrop-filter:blur(18px) saturate(1.4);border:1px solid rgba(255,255,255,.78);border-radius:17px;padding:13px 8px;text-align:center;box-shadow:0 8px 20px rgba(16,70,42,.08),inset 0 1px 0 rgba(255,255,255,.6);}
+  .pstat b{font-size:19px;font-weight:800;color:var(--ink);display:block;letter-spacing:-.03em;}
+  .pstat span{font-size:9px;color:var(--muted);font-weight:700;letter-spacing:.05em;}
+  .plist{padding:2px 16px;display:flex;flex-direction:column;}
+  .pitem{display:flex;align-items:center;gap:14px;padding:14px 4px;border-bottom:1px solid var(--line);}
+  .pitem:last-child{border-bottom:none;}
+  .pii{width:38px;height:38px;border-radius:12px;display:flex;align-items:center;justify-content:center;}
+  .pitem b{font-size:13.5px;font-weight:500;flex:1;letter-spacing:-.01em;}
+  .pitem .arr{color:#d2dad5;}
+
+  .foot{max-width:1320px;margin:42px auto 0;text-align:center;color:var(--muted);font-size:12px;line-height:1.7;font-weight:450;position:relative;z-index:2;}
+
+  /* tints */
+  .t-mint{background:var(--mint);} .c-mint{color:var(--brand-deep);}
+  .t-amber{background:var(--amber-soft);} .c-amber{color:var(--amber-deep);}
+  .t-sand{background:var(--sand);} .c-sand{color:#a8843e;}
+  .t-clay{background:var(--clay);} .c-clay{color:#c9714a;}
+  .t-sky{background:var(--sky);} .c-sky{color:#4d86bd;}
+  .t-steel{background:var(--steel);} .c-steel{color:#6b7a86;}
+  .img-mint{background:linear-gradient(140deg,#eff8f2,#e3efe8);}
+  .img-sand{background:linear-gradient(140deg,#faf5ea,#f1e8d6);}
+  .img-sky{background:linear-gradient(140deg,#eef5fb,#e1ecf7);}
+  .img-clay{background:linear-gradient(140deg,#fbf1ea,#f5e3d8);}
+
+  /* ===================== THEME TOGGLE ===================== */
+  .themebar{position:fixed;top:18px;right:20px;z-index:50;display:flex;align-items:center;gap:8px;background:rgba(255,255,255,.7);backdrop-filter:blur(16px);-webkit-backdrop-filter:blur(16px);border:1px solid rgba(255,255,255,.7);border-radius:100px;padding:6px 7px 6px 14px;box-shadow:0 8px 24px -10px rgba(16,70,42,.3);font-size:12px;font-weight:700;color:var(--soft-ink);cursor:pointer;user-select:none;transition:all .3s;}
+  .themebar .tg{width:44px;height:24px;border-radius:100px;background:#dfe5df;position:relative;transition:background .3s;}
+  .themebar .tg i{position:absolute;top:3px;left:3px;width:18px;height:18px;border-radius:50%;background:#fff;display:flex;align-items:center;justify-content:center;color:var(--amber-deep);transition:left .3s,color .3s;box-shadow:0 2px 5px rgba(0,0,0,.18);}
+  .themebar .tg i svg{width:11px;height:11px;}
+
+  /* ===================== DARK MODE ===================== */
+  body.dark{
+    --bg:#0c130f;
+    --ink:#e9efea;
+    --soft-ink:#aab4ad;
+    --muted:#727c75;
+    --line:rgba(255,255,255,.09);
+    --brand:#1fc274;
+    --brand-deep:#26d07f;
+    --brand-ink:#16a661;
+    --amber:#ffb733;
+    --amber-deep:#ffc658;
+    --amber-soft:rgba(242,164,22,.16);
+    --mint:rgba(31,194,116,.16);
+    --sand:rgba(168,132,62,.18);
+    --sand-2:rgba(168,132,62,.12);
+    --clay:rgba(201,113,74,.18);
+    --sky:rgba(77,134,189,.2);
+    --steel:rgba(255,255,255,.08);
+    --grid:rgba(120,220,170,.05);
+    --sh:0 14px 34px -18px rgba(0,0,0,.6);
+  }
+  body.dark{background:linear-gradient(#0a100d,#0c130f),linear-gradient(90deg,var(--grid) 1px,transparent 1px) 0 0/26px 26px,linear-gradient(var(--grid) 1px,transparent 1px) 0 0/26px 26px;}
+  body.dark .blob{opacity:.22;}
+  body.dark .pill{background:rgba(255,255,255,.05);border-color:rgba(255,255,255,.1);color:var(--soft-ink);}
+  body.dark .phone{background:#161d18;box-shadow:0 44px 80px -34px rgba(0,0,0,.7),0 0 0 1px rgba(255,255,255,.05);}
+  body.dark .screen{background:linear-gradient(180deg,#10171300,#0e1410),linear-gradient(180deg,#121a15,#0d130f),linear-gradient(90deg,var(--grid) 1px,transparent 1px) 0 0/24px 24px,linear-gradient(var(--grid) 1px,transparent 1px) 0 0/24px 24px;}
+  body.dark .label{background:#000;}
+  /* glass surfaces → dark frosted */
+  body.dark .glass,
+  body.dark .search,body.dark .ibtn,body.dark .trust,body.dark .cat,body.dark .brand-chip,
+  body.dark .deal,body.dark .prod,body.dark .crow,body.dark .citem,body.dark .pstat,
+  body.dark .deliv,body.dark .promo,body.dark .tabbar,body.dark .buybar,body.dark .summary,
+  body.dark .gallery .back,body.dark .gallery .fav,body.dark .themebar{
+    background:rgba(255,255,255,.055);
+    border-color:rgba(255,255,255,.1);
+    box-shadow:inset 0 1px 0 rgba(255,255,255,.06);
+  }
+  body.dark .pbadge,body.dark .heart{background:rgba(20,28,23,.7);}
+  body.dark .heart{color:#8a948d;}
+  body.dark .qty{background:rgba(255,255,255,.05);border-color:rgba(255,255,255,.1);}
+  body.dark .qty button{color:var(--soft-ink);}
+  body.dark .crow .cnt2{background:rgba(255,255,255,.08);color:var(--soft-ink);}
+  body.dark .spec{background:rgba(255,255,255,.07);color:var(--soft-ink);}
+  body.dark .timer{background:#000;}
+  body.dark .promo{border-style:dashed;border-color:var(--brand);}
+  body.dark .bar{background:rgba(255,255,255,.1);}
+  body.dark .gallery{background:radial-gradient(120% 90% at 50% 18%,#16201a,#0e1511);}
+  body.dark .deal .pp .od,body.dark .price .was,body.dark .deal .nm{color:#7a847d;}
+  body.dark .pinfo .pr b,body.dark .citem .cb,body.dark .price b,body.dark .pstat b,body.dark .sl.total{color:var(--ink);}
+  /* dark image placeholders */
+  body.dark .img-mint{background:linear-gradient(140deg,#16241c,#101a15);}
+  body.dark .img-sand{background:linear-gradient(140deg,#241f15,#191510);}
+  body.dark .img-sky{background:linear-gradient(140deg,#15202b,#101720);}
+  body.dark .img-clay{background:linear-gradient(140deg,#251a14,#1a120d);}
+  body.dark .pimg,body.dark .deal .dimg,body.dark .gallery>svg{color:#3a463f;}
+  body.dark .themebar .tg{background:rgba(255,255,255,.16);}
+  body.dark .themebar .tg i{left:23px;color:#1b2520;}
+  body.dark .head h1,body.dark .ctitle{color:var(--ink);}
+</style>
+</head>
+<body>
+
+<div class="themebar" onclick="toggleTheme()">
+  <span id="tlabel">Dark</span>
+  <span class="tg"><i id="ticon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M2 12h2M20 12h2M5 5l1.4 1.4M17.6 17.6 19 19M19 5l-1.4 1.4M6.4 17.6 5 19"/></svg></i></span>
+</div>
+
+<div class="blob b1"></div><div class="blob b2"></div><div class="blob b3"></div>
+
+<div class="head">
+  <div class="kicker">DunyoZamin · Qurilish Marketplace</div>
+  <h1>Qurilish bozori — cho‘ntakда</h1>
+  <p>Blueprint estetikasи, liquid-glass va jonli animatsiyалар bilan qurilган qurilish mollари marketplace konsepsияsи.</p>
+  <div class="pills">
+    <div class="pill"><span class="dot" style="background:#10a45a"></span> Emerald</div>
+    <div class="pill"><span class="dot" style="background:#f2a416"></span> Safety Amber</div>
+    <div class="pill"><span class="dot" style="background:#f4eee2;border:1px solid #e6dcc8"></span> Sand</div>
+    <div class="pill"><span class="dot" style="background:#eaf2fa;border:1px solid #d8e6f3"></span> Steel</div>
+  </div>
+</div>
+
+<div class="stage">
+
+  <!-- HOME -->
+  <div class="phone">
+    <span class="label">Asosiy</span>
+    <div class="screen">
+      <div class="sb"><span>9:41</span><span class="r">5G · 100%</span></div>
+      <div class="scroll">
+        <div class="topbar">
+          <div class="loc"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 10c0 6-8 12-8 12s-8-6-8-12a8 8 0 0 1 16 0z"/><circle cx="12" cy="10" r="2.5"/></svg> Yetkazib berish · <b>Toshkent</b></div>
+          <div class="appbar">
+            <div class="brand">
+              <div class="logo"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2" stroke-linejoin="round"><path d="M3 21V9l9-6 9 6v12"/><path d="M9 21v-6h6v6"/></svg></div>
+              <div><b>DunyoZamin</b><small>QURILISH MARKETPLACE</small></div>
+            </div>
+            <div class="ibtn"><span class="nd"></span><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.7 21a2 2 0 0 1-3.4 0"/></svg></div>
+          </div>
+        </div>
+        <div class="body stagger">
+          <div class="search">
+            <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m21 21-3.5-3.5"/></svg>
+            Kabel, avtomat, asbob...
+            <div class="scan"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 7V5a2 2 0 0 1 2-2h2M17 3h2a2 2 0 0 1 2 2v2M21 17v2a2 2 0 0 1-2 2h-2M7 21H5a2 2 0 0 1-2-2v-2"/><path d="M7 12h10"/></svg></div>
+          </div>
+          <div class="hero">
+            <div class="sheen"></div>
+            <svg class="cog" width="150" height="150" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="1"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-2.82 1.17V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.6 15H4a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 6 9.4l.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 12 3.6V4a2 2 0 0 1 4 0v.09A1.65 1.65 0 0 0 19 6l.06-.06"/></svg>
+            <span class="tag">🔨 Mavsumiy aksiya</span>
+            <h2>Qurilish mavsumи<br><i>−30% gacha</i></h2>
+            <p>Elektrика, asbob va montaj mollари</p>
+            <div class="cta">Aksияni ko‘rish →</div>
+            <div class="hdots"><i class="on"></i><i></i><i></i></div>
+          </div>
+          <div class="trusts">
+            <div class="trust"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="1" y="3" width="15" height="13" rx="1"/><path d="M16 8h4l3 3v5h-7M5.5 18.5a2 2 0 1 0 0 .01M18.5 18.5a2 2 0 1 0 0 .01"/></svg> Bepul yetkazish</div>
+            <div class="trust"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2 4 5v6c0 5 8 11 8 11s8-6 8-11V5z"/><path d="m9 12 2 2 4-4"/></svg> Original · Kafolat</div>
+            <div class="trust"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="5" width="20" height="14" rx="2"/><path d="M2 10h20"/></svg> Bo‘lib to‘lash</div>
+          </div>
+          <div class="row"><h3>Kategoriyalar</h3><a>Barchasi</a></div>
+          <div class="cats">
+            <div class="cat"><div class="ci t-amber c-amber"><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M13 2 3 14h7l-1 8 10-12h-7z"/></svg></div><span>Elektrika</span></div>
+            <div class="cat"><div class="ci t-steel c-steel"><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M14 7l5 5-9 9-5-5z"/><path d="m14 7 2-2a2.8 2.8 0 0 1 4 4l-2 2"/></svg></div><span>Asboblar</span></div>
+            <div class="cat"><div class="ci t-sky c-sky"><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 12h4l3-9 4 18 3-9h4"/></svg></div><span>Santexnika</span></div>
+            <div class="cat"><div class="ci t-clay c-clay"><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M19 3 5 17l-2 4 4-2L21 5z"/><path d="M14 6l4 4"/></svg></div><span>Bo‘yoqlar</span></div>
+            <div class="cat"><div class="ci t-mint c-mint"><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="3"/><path d="M12 2v4M12 18v4M2 12h4M18 12h4M5 5l3 3M16 16l3 3M19 5l-3 3M8 16l-3 3"/></svg></div><span>Yoritish</span></div>
+            <div class="cat"><div class="ci t-sand c-sand"><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="3"/><path d="M12 3v3M12 18v3M3 12h3M18 12h3"/><circle cx="12" cy="12" r="8"/></svg></div><span>Mahkamlash</span></div>
+            <div class="cat"><div class="ci t-sky c-sky"><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M9 21V9"/></svg></div><span>Plitka</span></div>
+            <div class="cat"><div class="ci t-amber c-amber"><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 2a7 7 0 0 0-4 12.7V17h8v-2.3A7 7 0 0 0 12 2z"/><path d="M9 21h6M10 17v4M14 17v4"/></svg></div><span>Xavfsizlik</span></div>
+          </div>
+          <div class="row"><h3>Brendlar</h3><a>Barchasi</a></div>
+          <div class="brands">
+            <div class="brand-chip"><span class="bl" style="background:#0c7d43">A</span> Akfix</div>
+            <div class="brand-chip"><span class="bl" style="background:#d98a05">C</span> CHINT</div>
+            <div class="brand-chip"><span class="bl" style="background:#4d86bd">D</span> Dusel</div>
+            <div class="brand-chip"><span class="bl" style="background:#c9714a">E</span> Epa</div>
+          </div>
+          <div class="flashhead">
+            <div class="ttl"><span class="flame">🔥</span> Chegirmalar</div>
+            <div class="timer"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg> <b>01:30:52</b></div>
+          </div>
+          <div class="deals">
+            <div class="deal">
+              <div class="dimg img-sand"><span class="off">−24%</span><svg width="34" height="34" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.2"><path d="M14 7l5 5-9 9-5-5z"/><path d="m14 7 2-2a2.8 2.8 0 0 1 4 4l-2 2"/></svg></div>
+              <div class="di"><div class="nm">Bosch shurupovert GSR</div><div class="pp"><span class="nw">890.000</span><span class="od">1.170.000</span></div><div class="bar"><i style="width:62%"></i></div><div class="sold">Sotildi 18/30</div></div>
+            </div>
+            <div class="deal">
+              <div class="dimg img-sky"><span class="off">−15%</span><svg width="34" height="34" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.2"><rect x="3" y="3" width="18" height="18" rx="3"/><path d="m3 16 5-5 4 4 3-3 6 6"/></svg></div>
+              <div class="di"><div class="nm">CHINT 2Pls 25A avtomat</div><div class="pp"><span class="nw">28.000</span><span class="od">33.000</span></div><div class="bar"><i style="width:80%"></i></div><div class="sold">Sotildi 40/50</div></div>
+            </div>
+          </div>
+          <div class="row"><h3>Ommabop</h3><a>Barchasi</a></div>
+          <div class="prods">
+            <div class="prod">
+              <div class="pimg img-mint"><span class="pbadge">★ TOP</span><div class="heart"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M20.8 4.6a5.5 5.5 0 0 0-7.8 0L12 5.6l-1-1a5.5 5.5 0 1 0-7.8 7.8l1 1L12 21l7.8-7.6 1-1a5.5 5.5 0 0 0 0-7.8z"/></svg></div><svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.3"><path d="M3 12h4l3-9 4 18 3-9h4"/></svg></div>
+              <div class="pinfo"><div class="br">Akfix</div><div class="nm">Gofra Kabel 25mm</div><div class="sub"><span class="st">★</span> 4.8 · omborda 124</div><div class="pr"><b>2.000<small> so‘m</small></b><div class="add">+</div></div></div>
+            </div>
+            <div class="prod">
+              <div class="pimg img-sky"><div class="heart"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M20.8 4.6a5.5 5.5 0 0 0-7.8 0L12 5.6l-1-1a5.5 5.5 0 1 0-7.8 7.8l1 1L12 21l7.8-7.6 1-1a5.5 5.5 0 0 0 0-7.8z"/></svg></div><svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.3"><rect x="3" y="3" width="18" height="18" rx="3"/><path d="m3 16 5-5 4 4 3-3 6 6"/></svg></div>
+              <div class="pinfo"><div class="br">CHINT</div><div class="nm">CHINT 2Pls 25A</div><div class="sub"><span class="st">★</span> 4.9 · omborda 56</div><div class="pr"><b>28.000<small> so‘m</small></b><div class="add">+</div></div></div>
+            </div>
+          </div>
+          <div class="loyal">
+            <div class="bi"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><polygon points="12 2 15 9 22 9.5 17 14 18.5 21 12 17.5 5.5 21 7 14 2 9.5 9 9"/></svg></div>
+            <div><b>Bonus dasturи</b><p>Har 1.000 so‘m = 1 ball · 248 ball yig‘ilgan</p></div>
+          </div>
+        </div>
+      </div>
+      <div class="tabbar">
+        <div class="tab on"><div class="tk"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="m3 9 9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg></div>Asosiy</div>
+        <div class="tab"><div class="tk"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg></div>Katalog</div>
+        <div class="tab"><div class="tk"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M20.8 4.6a5.5 5.5 0 0 0-7.8 0L12 5.6l-1-1a5.5 5.5 0 1 0-7.8 7.8l1 1L12 21l7.8-7.6 1-1a5.5 5.5 0 0 0 0-7.8z"/></svg></div>Sevimli</div>
+        <div class="tab"><div class="tk"><span class="cnt">2</span><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="9" cy="21" r="1.5"/><circle cx="19" cy="21" r="1.5"/><path d="M2 2h3l2.6 13.4a2 2 0 0 0 2 1.6h8.4a2 2 0 0 0 2-1.6L23 6H6"/></svg></div>Savat</div>
+        <div class="tab"><div class="tk"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="8" r="4"/><path d="M4 21c0-4 4-6 8-6s8 2 8 6"/></svg></div>Profil</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- CATALOG -->
+  <div class="phone">
+    <span class="label">Katalog</span>
+    <div class="screen">
+      <div class="sb"><span>9:41</span><span class="r">5G · 100%</span></div>
+      <div class="scroll">
+        <div class="ctitle">Katalog</div>
+        <div class="body" style="padding-top:13px;">
+          <div class="search"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m21 21-3.5-3.5"/></svg> Kategoriya qidirish<div class="scan"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18M7 12h10M5 18h14"/></svg></div></div>
+          <div class="catlist stagger">
+            <div class="crow"><div class="ci t-amber c-amber"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M13 2 3 14h7l-1 8 10-12h-7z"/></svg></div><div><b>Elektrika</b><p>Avtomatlar · kabel · rozetka</p></div><div class="cnt2">312</div></div>
+            <div class="crow"><div class="ci t-steel c-steel"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M14 7l5 5-9 9-5-5z"/><path d="m14 7 2-2a2.8 2.8 0 0 1 4 4l-2 2"/></svg></div><div><b>Asboblar</b><p>Shurupovert · bolg‘a · arra</p></div><div class="cnt2">189</div></div>
+            <div class="crow"><div class="ci t-sky c-sky"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 12h4l3-9 4 18 3-9h4"/></svg></div><div><b>Santexnika</b><p>Quvur · kran · fitting</p></div><div class="cnt2">147</div></div>
+            <div class="crow"><div class="ci t-clay c-clay"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M19 3 5 17l-2 4 4-2L21 5z"/><path d="M14 6l4 4"/></svg></div><div><b>Bo‘yoqlar</b><p>Emal · gruntovka · valik</p></div><div class="cnt2">98</div></div>
+            <div class="crow"><div class="ci t-mint c-mint"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="3"/><path d="M12 2v4M12 18v4M2 12h4M18 12h4"/></svg></div><div><b>Yoritish</b><p>LED · svetilnik · lenta</p></div><div class="cnt2">76</div></div>
+            <div class="crow"><div class="ci t-sand c-sand"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="8"/><path d="M12 3v3M12 18v3M3 12h3M18 12h3"/></svg></div><div><b>Mahkamlash</b><p>Sayoz · bolt · dyubel</p></div><div class="cnt2">64</div></div>
+            <div class="crow"><div class="ci t-sky c-sky"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M9 21V9"/></svg></div><div><b>Plitka · g‘isht</b><p>Keramika · gips · sement</p></div><div class="cnt2">53</div></div>
+          </div>
+        </div>
+      </div>
+      <div class="tabbar">
+        <div class="tab"><div class="tk"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="m3 9 9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg></div>Asosiy</div>
+        <div class="tab on"><div class="tk"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg></div>Katalog</div>
+        <div class="tab"><div class="tk"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M20.8 4.6a5.5 5.5 0 0 0-7.8 0L12 5.6l-1-1a5.5 5.5 0 1 0-7.8 7.8l1 1L12 21l7.8-7.6 1-1a5.5 5.5 0 0 0 0-7.8z"/></svg></div>Sevimli</div>
+        <div class="tab"><div class="tk"><span class="cnt">2</span><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="9" cy="21" r="1.5"/><circle cx="19" cy="21" r="1.5"/><path d="M2 2h3l2.6 13.4a2 2 0 0 0 2 1.6h8.4a2 2 0 0 0 2-1.6L23 6H6"/></svg></div>Savat</div>
+        <div class="tab"><div class="tk"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="8" r="4"/><path d="M4 21c0-4 4-6 8-6s8 2 8 6"/></svg></div>Profil</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- PRODUCT -->
+  <div class="phone">
+    <span class="label">Mahsulot</span>
+    <div class="screen">
+      <div class="scroll">
+        <div class="gallery">
+          <div class="back"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="m15 18-6-6 6-6"/></svg></div>
+          <div class="fav"><svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M20.8 4.6a5.5 5.5 0 0 0-7.8 0L12 5.6l-1-1a5.5 5.5 0 1 0-7.8 7.8l1 1L12 21l7.8-7.6 1-1a5.5 5.5 0 0 0 0-7.8z"/></svg></div>
+          <svg width="78" height="78" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1"><rect x="3" y="3" width="18" height="18" rx="3"/><path d="m3 16 5-5 4 4 3-3 6 6"/><circle cx="8.5" cy="8.5" r="1.5"/></svg>
+          <span class="off2">−15%</span>
+          <div class="dots"><i class="on"></i><i></i><i></i></div>
+        </div>
+        <div class="pd">
+          <div class="brrow"><span class="brtag">CHINT</span><span class="rate"><span class="st">★★★★★</span> 4.9 · 37 sotuv</span></div>
+          <h2>CHINT 2Pls 25A avtomat ulagich</h2>
+          <div class="specs"><span class="spec">⚡ 25A</span><span class="spec">2 polyus</span><span class="spec">Kafolat 12 oy</span></div>
+          <div class="stock"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M20 6 9 17l-5-5"/></svg> Omborda 56 dona</div>
+          <div class="price"><b>28.000<small> so‘m</small></b><span class="was">33.000</span></div>
+          <div class="deliv"><div class="di"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="1" y="3" width="15" height="13" rx="1"/><path d="M16 8h4l3 3v5h-7"/></svg></div><div><b>Ertaga yetkazib berish</b><p>300.000 so‘mдан yuqori — bepul</p></div></div>
+        </div>
+      </div>
+      <div class="buybar">
+        <div class="qty"><button>−</button><span>1</span><button>+</button></div>
+        <div class="buy"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="9" cy="21" r="1.5"/><circle cx="19" cy="21" r="1.5"/><path d="M2 2h3l2.6 13.4a2 2 0 0 0 2 1.6h8.4a2 2 0 0 0 2-1.6L23 6H6"/></svg> Savatga · 28.000</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- CART -->
+  <div class="phone">
+    <span class="label">Savat</span>
+    <div class="screen">
+      <div class="sb"><span>9:41</span><span class="r">5G · 100%</span></div>
+      <div class="scroll">
+        <div class="ctitle">Savat</div>
+        <div class="cart stagger">
+          <div class="citem"><div class="cimg img-sky"></div><div><div class="br">CHINT</div><div class="cn">2Pls 25A avtomat</div><div class="cmeta">Dona</div><div class="cb">28.000 so‘m</div></div><div class="qty"><button>−</button><span>1</span><button>+</button></div></div>
+          <div class="citem"><div class="cimg img-mint"></div><div><div class="br">Akfix</div><div class="cn">Gofra Kabel 25mm</div><div class="cmeta">Pachka</div><div class="cb">2.000 so‘m</div></div><div class="qty"><button>−</button><span>3</span><button>+</button></div></div>
+          <div class="citem"><div class="cimg img-clay"></div><div><div class="br">Akfix</div><div class="cn">705 montaj qopi</div><div class="cmeta">Dona</div><div class="cb">19.000 so‘m</div></div><div class="qty"><button>−</button><span>2</span><button>+</button></div></div>
+          <div class="promo"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 12V8H6a2 2 0 0 1 0-4h12v4"/><path d="M4 6v12a2 2 0 0 0 2 2h14v-4"/><path d="M18 12a2 2 0 0 0 0 4h4v-4z"/></svg> Promokod kiritish <span class="ap">Qo‘llash</span></div>
+        </div>
+      </div>
+      <div class="summary">
+        <div class="sl"><span>Mahsulot · 6</span><span>72.000</span></div>
+        <div class="sl"><span>Yetkazish</span><span style="color:var(--brand-deep);font-weight:700">Bepul</span></div>
+        <div class="sl"><span>Bonus ball</span><span style="color:var(--amber-deep);font-weight:700">+72</span></div>
+        <div class="sl total"><span>Jami</span><span>72.000 so‘m</span></div>
+        <div class="checkout">Buyurtmani rasmiylashtirish →</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- PROFILE -->
+  <div class="phone">
+    <span class="label">Profil</span>
+    <div class="screen">
+      <div class="scroll">
+        <div class="phead">
+          <div class="av">M</div>
+          <div class="pi"><b>Multik</b><div class="tier">⭐ Oltin mijoz · 248 ball</div></div>
+        </div>
+        <div class="pstats stagger">
+          <div class="pstat"><b>12</b><span>BUYURTMA</span></div>
+          <div class="pstat"><b>248</b><span>BALL</span></div>
+          <div class="pstat"><b>5</b><span>SEVIMLI</span></div>
+        </div>
+        <div class="plist stagger">
+          <div class="pitem"><div class="pii t-mint c-mint"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M6 2 3 6v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V6l-3-4z"/><path d="M3 6h18M16 10a4 4 0 0 1-8 0"/></svg></div><b>Buyurtmalarim</b><div class="arr"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="m9 18 6-6-6-6"/></svg></div></div>
+          <div class="pitem"><div class="pii t-clay c-clay"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M20.8 4.6a5.5 5.5 0 0 0-7.8 0L12 5.6l-1-1a5.5 5.5 0 1 0-7.8 7.8l1 1L12 21l7.8-7.6 1-1a5.5 5.5 0 0 0 0-7.8z"/></svg></div><b>Sevimlilar</b><div class="arr"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="m9 18 6-6-6-6"/></svg></div></div>
+          <div class="pitem"><div class="pii t-amber c-amber"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><polygon points="12 2 15 9 22 9.5 17 14 18.5 21 12 17.5 5.5 21 7 14 2 9.5 9 9"/></svg></div><b>Bonus ballar</b><div class="arr"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="m9 18 6-6-6-6"/></svg></div></div>
+          <div class="pitem"><div class="pii t-sky c-sky"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M20 10c0 6-8 12-8 12s-8-6-8-12a8 8 0 0 1 16 0z"/><circle cx="12" cy="10" r="2.5"/></svg></div><b>Manzillar</b><div class="arr"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="m9 18 6-6-6-6"/></svg></div></div>
+          <div class="pitem"><div class="pii t-steel c-steel"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-2.82 1.17V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.6 15H4a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 6 9.4l.06-.06a2 2 0 1 1 2.83-2.83"/></svg></div><b>Sozlamalar</b><div class="arr"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="m9 18 6-6-6-6"/></svg></div></div>
+        </div>
+      </div>
+      <div class="tabbar">
+        <div class="tab"><div class="tk"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="m3 9 9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg></div>Asosiy</div>
+        <div class="tab"><div class="tk"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg></div>Katalog</div>
+        <div class="tab"><div class="tk"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M20.8 4.6a5.5 5.5 0 0 0-7.8 0L12 5.6l-1-1a5.5 5.5 0 1 0-7.8 7.8l1 1L12 21l7.8-7.6 1-1a5.5 5.5 0 0 0 0-7.8z"/></svg></div>Sevimli</div>
+        <div class="tab"><div class="tk"><span class="cnt">2</span><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="9" cy="21" r="1.5"/><circle cx="19" cy="21" r="1.5"/><path d="M2 2h3l2.6 13.4a2 2 0 0 0 2 1.6h8.4a2 2 0 0 0 2-1.6L23 6H6"/></svg></div>Savat</div>
+        <div class="tab on"><div class="tk"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="8" r="4"/><path d="M4 21c0-4 4-6 8-6s8 2 8 6"/></svg></div>Profil</div>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<div class="foot">DunyoZamin · Qurilish Marketplace · 5 ekran · liquid-glass + blueprint · light / dark · sonlar “.” bilan</div>
+
+<script>
+  var SUN='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M2 12h2M20 12h2M5 5l1.4 1.4M17.6 17.6 19 19M19 5l-1.4 1.4M6.4 17.6 5 19"/></svg>';
+  var MOON='<svg viewBox="0 0 24 24" fill="currentColor" stroke="none"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>';
+  function toggleTheme(){
+    var d=document.body.classList.toggle('dark');
+    document.getElementById('tlabel').textContent=d?'Light':'Dark';
+    document.getElementById('ticon').innerHTML=d?MOON:SUN;
+  }
+</script>
+</body>
+</html>

@@ -5,6 +5,9 @@ const WebOrdersService = require('../../../electron/services/webOrdersService.cj
 const { ERROR_CODES } = require('../../../electron/lib/errors.cjs');
 const { allowedNextStatuses } = require('../../lib/webOrderStatusFlow.cjs');
 const { normalizeQueueId } = require('../../lib/webOrderQueues.cjs');
+const { validate } = require('../../middleware/validate.cjs');
+const { adminOrderStatusPatchBodySchema } = require('../../schemas/admin.schema.cjs');
+const { logger } = require('../../lib/logger.cjs');
 
 function mapErr(e, res) {
   const code = e?.code || e?.name;
@@ -12,7 +15,7 @@ function mapErr(e, res) {
   if (code === ERROR_CODES.NOT_FOUND) return res.status(404).json({ error: 'not_found', message });
   if (code === ERROR_CODES.VALIDATION_ERROR) return res.status(400).json({ error: 'validation_error', message });
   if (code === ERROR_CODES.PERMISSION_DENIED) return res.status(403).json({ error: 'forbidden', message });
-  console.error('[admin/orders]', e);
+  logger.error({ err: e }, '[admin/orders]');
   return res.status(500).json({ error: 'internal_error', message: 'Internal error' });
 }
 
@@ -58,10 +61,9 @@ function mountAdminOrdersRoutes(dbGetter) {
     }
   });
 
-  router.patch('/:id/status', (req, res) => {
+  router.patch('/:id/status', validate({ body: adminOrderStatusPatchBodySchema }), (req, res) => {
     try {
-      const status = req.body?.status != null ? String(req.body.status).trim() : '';
-      if (!status) return res.status(400).json({ error: 'validation_error', message: 'status required' });
+      const status = String(req.body.status).trim();
       const updated = new WebOrdersService(dbFor(req)).updateStatus(req.params.id, status);
       res.json({ data: enrich(updated) });
     } catch (e) {

@@ -10,6 +10,7 @@ import {
   View,
 } from 'react-native';
 import { fetchPurchaseOrder, receivePurchaseOrder } from '@/api/client';
+import { useRequireStaffAccess } from '@/hooks/useRequireStaffAccess';
 import { poStatusLabel, t } from '@/i18n';
 import type { PurchaseOrder, PurchaseOrderItem } from '@/types/customers';
 
@@ -25,6 +26,7 @@ function remainingQty(item: PurchaseOrderItem): number {
 type ReceiveQtyMap = Record<string, number>;
 
 export default function PurchaseOrderDetailScreen() {
+  const allowed = useRequireStaffAccess('purchasing');
   const { id } = useLocalSearchParams<{ id: string }>();
   const router = useRouter();
   const [po, setPo] = useState<PurchaseOrder | null>(null);
@@ -53,13 +55,21 @@ export default function PurchaseOrderDetailScreen() {
 
   useFocusEffect(
     useCallback(() => {
+      if (!allowed) return;
       setLoading(true);
       void load();
-    }, [load]),
+    }, [allowed, load]),
   );
 
   const canReceive = po != null && po.status !== 'cancelled' && po.status !== 'received';
 
+  if (!allowed) {
+    return (
+      <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: '#f8fafc' }}>
+        <ActivityIndicator size="large" color="#166534" />
+      </View>
+    );
+  }
   const selectedItems = useMemo(() => {
     if (!po?.items) return [];
     return po.items

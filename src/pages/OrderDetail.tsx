@@ -42,7 +42,12 @@ import { invalidateDashboardQueries } from '@/utils/dashboard';
 import { formatOrderDateTime, formatReceiptDateTime } from '@/lib/datetime';
 import { navigateBackTo, resolveBackTarget } from '@/lib/pageState';
 
-function canEditOrderInPos(o: { status?: string } | null | undefined) {
+function isWebOrderRow(o: { order_source?: string; id?: string } | null | undefined) {
+  return o?.order_source === 'web' || String(o?.id || '').startsWith('web:');
+}
+
+function canEditOrderInPos(o: { status?: string; order_source?: string; id?: string } | null | undefined) {
+  if (isWebOrderRow(o)) return false;
   const s = String(o?.status || '').toLowerCase();
   return s !== 'voided' && s !== 'refunded' && s !== 'returned' && s !== 'amended';
 }

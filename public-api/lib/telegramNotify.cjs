@@ -3,7 +3,39 @@
 const { setTimeout: sleep } = require('node:timers/promises');
 const { allowedNextStatuses, normalizeDeliveryMethod, statusLabel } = require('./webOrderStatusFlow.cjs');
 
-async function sendTelegramText({ botToken, telegramId, text, replyMarkup = null }) {
+/**
+ * Turn Telegram API error body into a short, UI-safe reason (no tokens).
+ * @param {string} raw
+ * @param {number} [status]
+ */
+function formatTelegramApiReason(raw, status) {
+  const t = String(raw || '').trim();
+  if (!t) return status ? `HTTP_${status}` : 'telegram_error';
+  try {
+    const j = JSON.parse(t);
+    const desc = String(j?.description || j?.error_description || '').trim();
+    const code = j?.error_code != null ? Number(j.error_code) : status;
+    if (desc) {
+      const lower = desc.toLowerCase();
+      if (lower.includes('chat not found')) return 'chat_not_found';
+      if (lower.includes('bot was blocked')) return 'bot_blocked';
+      if (lower.includes('not enough rights') || lower.includes('need administrator')) {
+        return 'bot_not_admin';
+      }
+      if (lower.includes('unauthorized') || lower.includes('invalid token')) {
+        return 'invalid_bot_token';
+      }
+      if (lower.includes('group chat was upgraded')) return 'chat_upgraded_to_supergroup';
+      return desc.slice(0, 160);
+    }
+    if (code) return `telegram_${code}`;
+  } catch {
+    // not JSON
+  }
+  return t.slice(0, 160) || (status ? `HTTP_${status}` : 'telegram_error');
+}
+
+async function sendTelegramText({ botToken, telegramId, text, replyMarkup = null, parseMode = null }) {
   if (!botToken || telegramId == null) return { ok: false, reason: 'no_token_or_chat' };
   const url = `https://api.telegram.org/bot${encodeURIComponent(botToken)}/sendMessage`;
   const body = {
@@ -11,6 +43,10 @@ async function sendTelegramText({ botToken, telegramId, text, replyMarkup = null
     text,
     disable_web_page_preview: true,
   };
+  const mode = String(parseMode || '').trim();
+  if (mode === 'HTML' || mode === 'Markdown' || mode === 'MarkdownV2') {
+    body.parse_mode = mode;
+  }
   if (replyMarkup && typeof replyMarkup === 'object') {
     body.reply_markup = replyMarkup;
   }
@@ -30,7 +66,7 @@ async function sendTelegramText({ botToken, telegramId, text, replyMarkup = null
       clearTimeout(timer);
       if (r.ok) return { ok: true };
       const t = await r.text();
-      lastReason = t.slice(0, 200) || `HTTP_${r.status}`;
+      lastReason = formatTelegramApiReason(t, r.status);
     } catch (e) {
       clearTimeout(timer);
       lastReason = e?.message || String(e);
@@ -39,6 +75,88 @@ async function sendTelegramText({ botToken, telegramId, text, replyMarkup = null
       // Small linear backoff to smooth Telegram transient errors.
       // eslint-disable-next-line no-await-in-loop
       await sleep(250 * (i + 1));
+    }
+  }
+  return { ok: false, reason: lastReason };
+}
+
+/**
+ * sendPhoto — photoUrl (http/https) OR photoBuffer (Buffer) + filename.
+ * Caption max ~1024; caller should truncate.
+ */
+async function sendTelegramPhoto({
+  botToken,
+  telegramId,
+  photoUrl = null,
+  photoBuffer = null,
+  filename = 'poster.jpg',
+  caption = null,
+  parseMode = null,
+  replyMarkup = null,
+}) {
+  if (!botToken || telegramId == null) return { ok: false, reason: 'no_token_or_chat' };
+  const hasUrl = typeof photoUrl === 'string' && /^https?:\/\//i.test(photoUrl.trim());
+  const hasBuf = Buffer.isBuffer(photoBuffer) && photoBuffer.length > 0;
+  if (!hasUrl && !hasBuf) return { ok: false, reason: 'no_photo' };
+
+  const apiUrl = `https://api.telegram.org/bot${encodeURIComponent(botToken)}/sendPhoto`;
+  const attempts = Math.max(1, Number.parseInt(String(process.env.TELEGRAM_NOTIFY_RETRY_COUNT || '3'), 10) || 3);
+  const timeoutMs = Math.max(
+    3000,
+    Number.parseInt(String(process.env.TELEGRAM_NOTIFY_TIMEOUT_MS || '20000'), 10) || 20000,
+  );
+  let lastReason = 'unknown_error';
+
+  for (let i = 0; i < attempts; i += 1) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      let r;
+      if (hasBuf) {
+        const form = new FormData();
+        form.append('chat_id', String(telegramId));
+        const blob = new Blob([photoBuffer], { type: 'image/jpeg' });
+        form.append('photo', blob, String(filename || 'poster.jpg'));
+        if (caption) form.append('caption', String(caption).slice(0, 1024));
+        const mode = String(parseMode || '').trim();
+        if (mode === 'HTML' || mode === 'Markdown' || mode === 'MarkdownV2') {
+          form.append('parse_mode', mode);
+        }
+        if (replyMarkup && typeof replyMarkup === 'object') {
+          form.append('reply_markup', JSON.stringify(replyMarkup));
+        }
+        r = await fetch(apiUrl, { method: 'POST', body: form, signal: controller.signal });
+      } else {
+        const body = {
+          chat_id: telegramId,
+          photo: String(photoUrl).trim(),
+        };
+        if (caption) body.caption = String(caption).slice(0, 1024);
+        const mode = String(parseMode || '').trim();
+        if (mode === 'HTML' || mode === 'Markdown' || mode === 'MarkdownV2') {
+          body.parse_mode = mode;
+        }
+        if (replyMarkup && typeof replyMarkup === 'object') {
+          body.reply_markup = replyMarkup;
+        }
+        r = await fetch(apiUrl, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+          signal: controller.signal,
+        });
+      }
+      clearTimeout(timer);
+      if (r.ok) return { ok: true };
+      const t = await r.text();
+      lastReason = formatTelegramApiReason(t, r.status);
+    } catch (e) {
+      clearTimeout(timer);
+      lastReason = e?.message || String(e);
+    }
+    if (i < attempts - 1) {
+      // eslint-disable-next-line no-await-in-loop
+      await sleep(400 * (i + 1));
     }
   }
   return { ok: false, reason: lastReason };
@@ -279,6 +397,35 @@ async function notifyOrderStatusChanged({ botToken, telegramId, orderNumber, sta
   return sendTelegramText({ botToken, telegramId, text });
 }
 
+async function notifyCreditDueReminder({
+  botToken,
+  telegramId,
+  customerName = null,
+  amount = 0,
+  dueDate = null,
+  orderNumber = null,
+  storeName = null,
+  reminderType = 'due_today',
+}) {
+  if (!botToken || telegramId == null) return { ok: false, reason: 'no_token_or_chat' };
+  const summa = Number(amount || 0).toLocaleString('uz-UZ');
+  const sana = dueDate ? String(dueDate).slice(0, 10).split('-').reverse().join('.') : '';
+  const lines = [`Hurmatli ${customerName || 'mijoz'}!`];
+  if (reminderType === 'due_minus_1') {
+    lines.push(`Ertaga (${sana}) ${summa} so'm qarz qaytarish kuni.`);
+  } else if (reminderType === 'overdue_3') {
+    lines.push(`${summa} so'm qarzingiz muddati ${sana} da edi.`);
+  } else if (reminderType === 'daily_debt' || String(reminderType || '').startsWith('daily_')) {
+    lines.push(`Sizda ${summa} so'm qarz bor.`);
+  } else {
+    lines.push(`${summa} so'm qarzingiz muddati bugun (${sana}).`);
+  }
+  lines.push("Iltimos to'lovni amalga oshiring.");
+  if (orderNumber) lines.push(`Buyurtma: ${orderNumber}`);
+  if (storeName) lines.push(storeName);
+  return sendTelegramText({ botToken, telegramId, text: lines.join('\n') });
+}
+
 async function notifyPaymentReminder({
   botToken,
   telegramId,
@@ -311,8 +458,10 @@ module.exports = {
   notifyOrderCreated,
   notifyOrderStatusChanged,
   notifyPaymentReminder,
+  notifyCreditDueReminder,
   notifyAdminsNewOrder,
   notifyCourierGroupOrder,
   statusMessage,
   sendTelegramText,
+  sendTelegramPhoto,
 };

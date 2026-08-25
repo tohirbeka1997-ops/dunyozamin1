@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
+import { useTranslation } from 'react-i18next';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
@@ -14,23 +15,23 @@ import {
   Table,
   TableBody,
   TableCell,
-  TableHead,
   TableHeader,
   TableRow,
 } from '@/components/ui/table';
-import { getCategories, getProductSalesReport } from '@/db/api';
-import type { Category } from '@/types/database';
-import { FileDown, ArrowLeft, TrendingUp, TrendingDown } from 'lucide-react';
+import { getCategories, getProductSalesReport, getWarehouses } from '@/db/api';
+import type { Category, Warehouse } from '@/types/database';
+import { FileDown, ArrowLeft, TrendingUp, TrendingDown, ExternalLink } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 import { useNavigate } from 'react-router-dom';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
 import { formatMoneyUZS } from '@/lib/format';
 import { DualCurrencyAmount } from '@/components/common/DualCurrencyAmount';
-import { formatDateYMD, todayYMD } from '@/lib/datetime';
+import { todayYMD } from '@/lib/datetime';
 import { useReportAutoRefresh } from '@/hooks/useReportAutoRefresh';
 import { useTableSort } from '@/hooks/useTableSort';
 import { compareScalar } from '@/lib/tableSort';
 import { SortableTableHead } from '@/components/reports/SortableTableHead';
+import SearchableCombobox from '@/components/common/SearchableCombobox';
 
 interface ProductSalesData {
   product_id: string;
@@ -59,14 +60,26 @@ type ProductSalesSortKey =
   | 'profit'
   | 'profit_margin';
 
+function daysAgoYmd(days: number): string {
+  const d = new Date();
+  d.setDate(d.getDate() - (days - 1));
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+}
+
 export default function ProductSalesReport() {
   const navigate = useNavigate();
   const { toast } = useToast();
+  const { t } = useTranslation();
   const [productSales, setProductSales] = useState<ProductSalesData[]>([]);
   const [categories, setCategories] = useState<Category[]>([]);
+  const [warehouses, setWarehouses] = useState<Warehouse[]>([]);
   const [loading, setLoading] = useState(true);
-  const [dateFrom, setDateFrom] = useState(todayYMD());
-  const [dateTo, setDateTo] = useState(todayYMD());
+  const [dateFrom, setDateFrom] = useState(() => daysAgoYmd(30));
+  const [dateTo, setDateTo] = useState(() => todayYMD());
+  const [warehouseId, setWarehouseId] = useState<string>('all');
   const [categoryFilter, setCategoryFilter] = useState<string>('all');
   const [tierFilter, setTierFilter] = useState<string>('all');
   const [searchTerm, setSearchTerm] = useState('');
@@ -75,18 +88,41 @@ export default function ProductSalesReport() {
     'desc'
   );
 
+  const warehouseOptions = useMemo(
+    () => [
+      { value: 'all', label: t('combobox.all_warehouses', 'Barcha omborlar') },
+      ...warehouses.map((warehouse) => ({
+        value: warehouse.id,
+        label: warehouse.name,
+      })),
+    ],
+    [warehouses, t]
+  );
+
+  const categoryOptions = useMemo(
+    () => [
+      {
+        value: 'all',
+        label: t('reports.product_sales_page.filters.all_categories', 'Barcha kategoriyalar'),
+      },
+      ...categories.map((category) => ({
+        value: category.id,
+        label: category.name,
+      })),
+    ],
+    [categories, t]
+  );
+
   const loadData = useCallback(async () => {
     try {
       setLoading(true);
-      const [rows, categoriesData] = await Promise.all([
-        getProductSalesReport({
-          date_from: dateFrom,
-          date_to: dateTo,
-          category_id: categoryFilter === 'all' ? null : categoryFilter,
-          price_tier: tierFilter === 'all' ? null : tierFilter,
-        }),
-        getCategories(),
-      ]);
+      const rows = await getProductSalesReport({
+        date_from: dateFrom,
+        date_to: dateTo,
+        category_id: categoryFilter === 'all' ? null : categoryFilter,
+        warehouse_id: warehouseId === 'all' ? undefined : warehouseId,
+        price_tier: tierFilter === 'all' ? null : tierFilter,
+      });
 
       const salesData: ProductSalesData[] = (rows || []).map((r: any) => ({
         product_id: r.product_id,
@@ -105,27 +141,38 @@ export default function ProductSalesReport() {
       }));
 
       setProductSales(salesData);
-      setCategories(categoriesData);
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error);
       toast({
-        title: 'Xatolik',
-        description: `Mahsulotlar bo'yicha sotuv ma'lumotlarini yuklab bo'lmadi. ${msg ? `(${msg})` : ''}`,
+        title: t('common.error', 'Xatolik'),
+        description: `${t(
+          'reports.product_sales_page.errors.load_failed',
+          "Mahsulotlar bo'yicha sotuv ma'lumotlarini yuklab bo'lmadi"
+        )}${msg ? ` (${msg})` : ''}`,
         variant: 'destructive',
       });
     } finally {
       setLoading(false);
     }
-  }, [dateFrom, dateTo, categoryFilter, tierFilter, toast]);
+  }, [dateFrom, dateTo, categoryFilter, warehouseId, tierFilter, toast, t]);
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const [c, w] = await Promise.all([getCategories(), getWarehouses()]);
+        setCategories(c || []);
+        setWarehouses((w as Warehouse[]) || []);
+      } catch {
+        // ignore lookup failures
+      }
+    })();
+  }, []);
 
   useReportAutoRefresh(loadData);
 
-  // Initial load + reload when filters change
   useEffect(() => {
-    loadData();
+    void loadData();
   }, [loadData]);
-
-  // (auto-refresh handled by useReportAutoRefresh)
 
   const filteredProducts = useMemo(() => {
     return productSales.filter((product) => {
@@ -144,7 +191,13 @@ export default function ProductSalesReport() {
   }, [filteredProducts]);
 
   const topProducts = byQuantityDesc.slice(0, 10);
-  const slowMoving = [...byQuantityDesc].slice(-10).reverse();
+  /** Eng past sotuvlar; top-10 bilan takrorlanmasin (yetarli mahsulot bo‘lsa) */
+  const slowMoving = useMemo(() => {
+    if (byQuantityDesc.length === 0) return [];
+    const pool =
+      byQuantityDesc.length > 10 ? byQuantityDesc.slice(10) : [...byQuantityDesc];
+    return [...pool].sort((a, b) => a.quantity_sold - b.quantity_sold).slice(0, 5);
+  }, [byQuantityDesc]);
 
   const sortedForTable = useMemo(() => {
     const list = [...filteredProducts];
@@ -198,8 +251,10 @@ export default function ProductSalesReport() {
 
   const handleExport = (format: 'excel' | 'pdf') => {
     toast({
-      title: 'Eksport',
-      description: `${format.toUpperCase()} formatiga eksport qilinmoqda...`,
+      title: t('reports.product_sales_page.export.title', 'Eksport'),
+      description: t('reports.product_sales_page.export.exporting_to', '{{format}} formatiga eksport qilinmoqda...', {
+        format: format.toUpperCase(),
+      }),
     });
   };
 
@@ -219,29 +274,50 @@ export default function ProductSalesReport() {
             <ArrowLeft className="h-4 w-4" />
           </Button>
           <div>
-            <h1 className="page-heading">Mahsulotlar bo'yicha sotuv hisobotlari</h1>
+            <h1 className="page-heading">
+              {t('reports.product_sales_page.title', "Mahsulotlar bo'yicha sotuv hisobotlari")}
+            </h1>
             <p className="text-muted-foreground">
-              Mahsulotlarning sotuv samaradorligi va foydaliligini tahlil qilish (daromad UZS ekvivalent + USD ajratilgan)
+              {t(
+                'reports.product_sales_page.subtitle',
+                "Mahsulotlarning sotuv samaradorligi va foydaliligini tahlil qilish (daromad UZS ekvivalent + USD ajratilgan)"
+              )}
             </p>
           </div>
         </div>
         <div className="flex gap-2">
           <Button variant="outline" onClick={() => handleExport('excel')}>
             <FileDown className="h-4 w-4 mr-2" />
-            Excel
+            {t('reports.product_sales_page.export.excel', 'Excel')}
           </Button>
           <Button variant="outline" onClick={() => handleExport('pdf')}>
             <FileDown className="h-4 w-4 mr-2" />
-            PDF
+            {t('reports.product_sales_page.export.pdf', 'PDF')}
           </Button>
         </div>
       </div>
 
       <Card>
-        <CardContent className="pt-6">
-          <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+        <CardContent className="pt-6 space-y-3">
+          <p className="text-sm text-muted-foreground">
+            {t(
+              'reports.product_sales_page.scope_hint',
+              'Hisob: yakunlangan sotuvlarning gross summasi (UZS ekv.). POS savat qaytarishlari (manfiy buyurtmalar) chiqarib tashlanadi; alohida sales_returns hujjatlari ayirilmaydi.'
+            )}
+          </p>
+          <button
+            type="button"
+            className="inline-flex items-center gap-1.5 text-sm text-primary hover:underline"
+            onClick={() => navigate('/reports/inventory/abc-analysis')}
+          >
+            <ExternalLink className="h-3.5 w-3.5" />
+            {t('reports.product_sales_page.abc_link', 'ABC tahlil (daromad ulushi)')}
+          </button>
+          <div className="grid grid-cols-1 md:grid-cols-3 lg:grid-cols-6 gap-4">
             <div>
-              <label className="text-sm text-muted-foreground">Boshlanish sanasi</label>
+              <label className="text-sm text-muted-foreground">
+                {t('reports.product_sales_page.filters.from', 'Boshlanish sanasi')}
+              </label>
               <Input
                 type="date"
                 value={dateFrom}
@@ -249,7 +325,9 @@ export default function ProductSalesReport() {
               />
             </div>
             <div>
-              <label className="text-sm text-muted-foreground">Tugash sanasi</label>
+              <label className="text-sm text-muted-foreground">
+                {t('reports.product_sales_page.filters.to', 'Tugash sanasi')}
+              </label>
               <Input
                 type="date"
                 value={dateTo}
@@ -257,40 +335,72 @@ export default function ProductSalesReport() {
               />
             </div>
             <div>
-              <label className="text-sm text-muted-foreground">Kategoriya</label>
-              <Select value={categoryFilter} onValueChange={setCategoryFilter}>
-                <SelectTrigger>
-                  <SelectValue placeholder="Barcha kategoriyalar" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="all">Barcha kategoriyalar</SelectItem>
-                  {categories.map((category) => (
-                    <SelectItem key={category.id} value={category.id}>
-                      {category.name}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+              <label className="text-sm text-muted-foreground">
+                {t('reports.product_sales_page.filters.warehouse', 'Ombor')}
+              </label>
+              <SearchableCombobox
+                value={warehouseId}
+                onValueChange={setWarehouseId}
+                options={warehouseOptions}
+                placeholder={t('combobox.all_warehouses', 'Barcha omborlar')}
+                searchPlaceholder={t('combobox.search_warehouse', "Ombor nomi bo'yicha qidirish...")}
+                emptyMessage={t('combobox.no_warehouse', 'Ombor topilmadi')}
+              />
             </div>
             <div>
-              <label className="text-sm text-muted-foreground">Narx turi</label>
+              <label className="text-sm text-muted-foreground">
+                {t('reports.product_sales_page.filters.category', 'Kategoriya')}
+              </label>
+              <SearchableCombobox
+                value={categoryFilter}
+                onValueChange={setCategoryFilter}
+                options={categoryOptions}
+                placeholder={t(
+                  'reports.product_sales_page.filters.all_categories',
+                  'Barcha kategoriyalar'
+                )}
+                searchPlaceholder={t('combobox.search_category', "Kategoriya nomi bo'yicha qidirish...")}
+                emptyMessage={t('combobox.no_category', 'Kategoriya topilmadi')}
+              />
+            </div>
+            <div>
+              <label className="text-sm text-muted-foreground">
+                {t('reports.product_sales_page.filters.price_tier', 'Narx turi')}
+              </label>
               <Select value={tierFilter} onValueChange={setTierFilter}>
                 <SelectTrigger>
-                  <SelectValue placeholder="Barcha tierlar" />
+                  <SelectValue
+                    placeholder={t('reports.product_sales_page.filters.all_tiers', 'Barcha turlar')}
+                  />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="all">Barcha tierlar</SelectItem>
-                  <SelectItem value="retail">Retail</SelectItem>
-                  <SelectItem value="master">Master/Usta</SelectItem>
-                  <SelectItem value="wholesale">Wholesale</SelectItem>
-                  <SelectItem value="marketplace">Marketplace</SelectItem>
+                  <SelectItem value="all">
+                    {t('reports.product_sales_page.filters.all_tiers', 'Barcha turlar')}
+                  </SelectItem>
+                  <SelectItem value="retail">
+                    {t('reports.product_sales_page.filters.tier_retail', 'Oddiy (retail)')}
+                  </SelectItem>
+                  <SelectItem value="master">
+                    {t('reports.product_sales_page.filters.tier_master', 'Usta (master)')}
+                  </SelectItem>
+                  <SelectItem value="wholesale">
+                    {t('reports.product_sales_page.filters.tier_wholesale', 'Ulgurji (wholesale)')}
+                  </SelectItem>
+                  <SelectItem value="marketplace">
+                    {t('reports.product_sales_page.filters.tier_marketplace', 'Marketplace')}
+                  </SelectItem>
                 </SelectContent>
               </Select>
             </div>
             <div>
-              <label className="text-sm text-muted-foreground">Qidirish</label>
+              <label className="text-sm text-muted-foreground">
+                {t('reports.product_sales_page.filters.search', 'Qidirish')}
+              </label>
               <Input
-                placeholder="Nomi yoki SKU bo'yicha qidirish..."
+                placeholder={t(
+                  'reports.product_sales_page.filters.search_ph',
+                  "Nomi yoki SKU bo'yicha qidirish..."
+                )}
                 value={searchTerm}
                 onChange={(e) => setSearchTerm(e.target.value)}
               />
@@ -302,16 +412,26 @@ export default function ProductSalesReport() {
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
         <Card>
           <CardContent className="pt-6">
-            <p className="text-sm text-muted-foreground">Jami daromad</p>
+            <p className="text-sm text-muted-foreground">
+              {t('reports.product_sales_page.summary.revenue', 'Jami daromad')}
+            </p>
             <div className="text-2xl font-bold mt-1">
               <DualCurrencyAmount uzs={salesTotals.revenue_uzs} usd={salesTotals.revenue_usd} className="items-start" />
             </div>
-            <p className="text-xs text-muted-foreground mt-1">COGS va foyda — UZS</p>
+            <p className="text-xs text-muted-foreground mt-1">
+              {t('reports.product_sales_page.summary.cogs_note', 'COGS va foyda — UZS')}
+              {' · '}
+              {t('reports.product_sales_page.summary.products', '{{count}} ta mahsulot', {
+                count: filteredProducts.length,
+              })}
+            </p>
           </CardContent>
         </Card>
         <Card>
           <CardContent className="pt-6">
-            <p className="text-sm text-muted-foreground">Jami foyda</p>
+            <p className="text-sm text-muted-foreground">
+              {t('reports.product_sales_page.summary.profit', 'Jami foyda')}
+            </p>
             <p className="text-2xl font-bold mt-1">{formatMoneyUZS(salesTotals.profit)}</p>
           </CardContent>
         </Card>
@@ -322,19 +442,30 @@ export default function ProductSalesReport() {
           <CardHeader>
             <CardTitle className="flex items-center gap-2">
               <TrendingUp className="h-5 w-5 text-success" />
-              Eng ko'p sotilgan 10 ta mahsulot
+              {t('reports.product_sales_page.top10.title', "Eng ko'p sotilgan 10 ta mahsulot")}
             </CardTitle>
           </CardHeader>
           <CardContent>
-            <ResponsiveContainer width="100%" height={300}>
-              <BarChart data={chartData}>
-                <CartesianGrid strokeDasharray="3 3" />
-                <XAxis dataKey="name" angle={-45} textAnchor="end" height={100} />
-                <YAxis />
-                <Tooltip />
-                <Bar dataKey="quantity" fill="hsl(var(--primary))" />
-              </BarChart>
-            </ResponsiveContainer>
+            {chartData.length === 0 ? (
+              <div className="flex h-[300px] items-center justify-center rounded-md border border-dashed px-6 text-center">
+                <p className="text-sm text-muted-foreground">
+                  {t(
+                    'reports.product_sales_page.top10.empty',
+                    'Tanlangan davrda sotuv yo‘q. Oxirgi 30 kunni tekshiring yoki filtrni kengaytiring.'
+                  )}
+                </p>
+              </div>
+            ) : (
+              <ResponsiveContainer width="100%" height={300}>
+                <BarChart data={chartData}>
+                  <CartesianGrid strokeDasharray="3 3" />
+                  <XAxis dataKey="name" angle={-45} textAnchor="end" height={100} />
+                  <YAxis />
+                  <Tooltip />
+                  <Bar dataKey="quantity" fill="hsl(var(--primary))" />
+                </BarChart>
+              </ResponsiveContainer>
+            )}
           </CardContent>
         </Card>
 
@@ -342,21 +473,42 @@ export default function ProductSalesReport() {
           <CardHeader>
             <CardTitle className="flex items-center gap-2">
               <TrendingDown className="h-5 w-5 text-warning" />
-              Sezilarli sotilmayotgan mahsulotlar
+              {t(
+                'reports.product_sales_page.slow.title',
+                'Sezilarli sotilmayotgan mahsulotlar'
+              )}
             </CardTitle>
           </CardHeader>
           <CardContent>
-            <div className="space-y-2">
-              {slowMoving.slice(0, 5).map((product) => (
-                <div key={product.product_id} className="flex justify-between items-center p-2 rounded-lg bg-muted">
-                  <div>
-                    <p className="font-medium">{product.product_name}</p>
-                    <p className="text-sm text-muted-foreground">{product.sku}</p>
+            {slowMoving.length === 0 ? (
+              <div className="flex min-h-[200px] items-center justify-center rounded-md border border-dashed px-6 text-center">
+                <p className="text-sm text-muted-foreground">
+                  {t(
+                    'reports.product_sales_page.slow.empty',
+                    'Kam sotilgan mahsulotlar yo‘q — davrda sotuv bo‘lmagan yoki barcha mahsulotlar bir xil darajada sotilgan.'
+                  )}
+                </p>
+              </div>
+            ) : (
+              <div className="space-y-2">
+                {slowMoving.map((product) => (
+                  <div
+                    key={product.product_id}
+                    className="flex justify-between items-center p-2 rounded-lg bg-muted"
+                  >
+                    <div>
+                      <p className="font-medium">{product.product_name}</p>
+                      <p className="text-sm text-muted-foreground">{product.sku}</p>
+                    </div>
+                    <Badge variant="outline">
+                      {t('reports.product_sales_page.slow.sold', '{{count}} sotilgan', {
+                        count: product.quantity_sold,
+                      })}
+                    </Badge>
                   </div>
-                  <Badge variant="outline">{product.quantity_sold} sotilgan</Badge>
-                </div>
-              ))}
-            </div>
+                ))}
+              </div>
+            )}
           </CardContent>
         </Card>
       </div>
@@ -364,8 +516,13 @@ export default function ProductSalesReport() {
       <Card>
         <CardContent className="p-0">
           {sortedForTable.length === 0 ? (
-            <div className="text-center py-12">
-              <p className="text-muted-foreground">Mahsulotlar bo'yicha sotuv maʼlumotlari topilmadi</p>
+            <div className="text-center py-12 px-6">
+              <p className="text-muted-foreground">
+                {t(
+                  'reports.product_sales_page.table.empty',
+                  "Tanlangan davrda mahsulot sotuvi topilmadi. Sana oralig‘ini kengaytiring yoki filtrni o‘zgartiring."
+                )}
+              </p>
             </div>
           ) : (
             <Table>
@@ -378,7 +535,7 @@ export default function ProductSalesReport() {
                     onSort={toggleSort}
                     kind="string"
                   >
-                    Mahsulot nomi
+                    {t('reports.product_sales_page.table.product', 'Mahsulot nomi')}
                   </SortableTableHead>
                   <SortableTableHead<ProductSalesSortKey>
                     columnKey="sku"
@@ -387,7 +544,7 @@ export default function ProductSalesReport() {
                     onSort={toggleSort}
                     kind="string"
                   >
-                    SKU
+                    {t('reports.product_sales_page.table.sku', 'SKU')}
                   </SortableTableHead>
                   <SortableTableHead<ProductSalesSortKey>
                     columnKey="category"
@@ -396,7 +553,7 @@ export default function ProductSalesReport() {
                     onSort={toggleSort}
                     kind="string"
                   >
-                    Kategoriya
+                    {t('reports.product_sales_page.table.category', 'Kategoriya')}
                   </SortableTableHead>
                   <SortableTableHead<ProductSalesSortKey>
                     columnKey="quantity_sold"
@@ -406,7 +563,7 @@ export default function ProductSalesReport() {
                     kind="number"
                     align="right"
                   >
-                    Sotilgan miqdor
+                    {t('reports.product_sales_page.table.qty', 'Sotilgan miqdor')}
                   </SortableTableHead>
                   <SortableTableHead<ProductSalesSortKey>
                     columnKey="revenue"
@@ -416,7 +573,7 @@ export default function ProductSalesReport() {
                     kind="number"
                     align="right"
                   >
-                    Daromad (UZS/USD)
+                    {t('reports.product_sales_page.table.revenue', 'Daromad (UZS/USD)')}
                   </SortableTableHead>
                   <SortableTableHead<ProductSalesSortKey>
                     columnKey="retail_revenue"
@@ -426,7 +583,7 @@ export default function ProductSalesReport() {
                     kind="number"
                     align="right"
                   >
-                    Oddiy
+                    {t('reports.product_sales_page.table.retail', 'Oddiy')}
                   </SortableTableHead>
                   <SortableTableHead<ProductSalesSortKey>
                     columnKey="master_revenue"
@@ -436,7 +593,7 @@ export default function ProductSalesReport() {
                     kind="number"
                     align="right"
                   >
-                    Usta
+                    {t('reports.product_sales_page.table.master', 'Usta')}
                   </SortableTableHead>
                   <SortableTableHead<ProductSalesSortKey>
                     columnKey="profit"
@@ -446,7 +603,7 @@ export default function ProductSalesReport() {
                     kind="number"
                     align="right"
                   >
-                    Foyda
+                    {t('reports.product_sales_page.table.profit', 'Foyda')}
                   </SortableTableHead>
                   <SortableTableHead<ProductSalesSortKey>
                     columnKey="profit_margin"
@@ -456,7 +613,7 @@ export default function ProductSalesReport() {
                     kind="number"
                     align="right"
                   >
-                    Foyda foizi
+                    {t('reports.product_sales_page.table.margin', 'Foyda foizi')}
                   </SortableTableHead>
                 </TableRow>
               </TableHeader>
@@ -479,7 +636,7 @@ export default function ProductSalesReport() {
                       {formatMoneyUZS(product.profit)}
                     </TableCell>
                     <TableCell className="text-right">
-                      <Badge 
+                      <Badge
                         className={
                           product.profit_margin >= 20
                             ? 'bg-success text-white'

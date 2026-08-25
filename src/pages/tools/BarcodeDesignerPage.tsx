@@ -26,11 +26,9 @@ import { openPrintWindowLabel } from '@/lib/print';
 import { validateProductBarcode } from '@/lib/barcodes/productBarcode';
 import ProductLabelLayoutEditor, {
   defaultProductLabelLayout,
-  type ProductLabelElement,
-  type ProductLabelElementId,
-  type ProductLabelBarcodeType,
 } from '@/components/barcodes/ProductLabelLayoutEditor';
 import ProductLabelLayoutPrint from '@/components/barcodes/ProductLabelLayoutPrint';
+import type { LabelElement, LabelPreviewData } from '@/lib/barcodes/labelModel';
 import { cn } from '@/lib/utils';
 import { ArrowUp, ArrowDown, Lock, Unlock, Printer, Save, Trash2, Check, ChevronsUpDown } from 'lucide-react';
 import type { ProductWithCategory } from '@/types/database';
@@ -40,10 +38,9 @@ import { formatNumberUZ } from '@/lib/format';
 type LabelPreset = '39x20' | '50x30' | '58x40' | '70x35';
 type SizeMode = 'preset' | 'custom';
 
-type DesignerElement = ProductLabelElement & {
-  visible: boolean;
-  locked: boolean;
-};
+type ProductLabelBarcodeType = 'EAN13' | 'CODE128' | 'QR';
+
+type DesignerElement = LabelElement;
 
 const PRESETS: Record<LabelPreset, { w: number; h: number; label: string }> = {
   '39x20': { w: 39, h: 20, label: '39×20' },
@@ -97,13 +94,13 @@ export default function BarcodeDesignerPage() {
   const [selectedProduct, setSelectedProduct] = useState<ProductWithCategory | null>(null);
 
   const [elements, setElements] = useState<DesignerElement[]>(() => initDesignerElements(39, 20));
-  const [selectedId, setSelectedId] = useState<ProductLabelElementId | null>(null);
+  const [selectedId, setSelectedId] = useState<string | null>(null);
   const [copies, setCopies] = useState(1);
 
   const [templateName, setTemplateName] = useState('');
   const [templates, setTemplates] = useState<Array<{ name: string; payload: any }>>([]);
   const [selectedTemplate, setSelectedTemplate] = useState<string>('');
-  const [dragLayerId, setDragLayerId] = useState<ProductLabelElementId | null>(null);
+  const [dragLayerId, setDragLayerId] = useState<string | null>(null);
 
   const labelSize = useMemo(() => {
     const presetSize = PRESETS[preset];
@@ -158,6 +155,19 @@ export default function BarcodeDesignerPage() {
     [headerText, nameText, skuText, priceText]
   );
 
+  const previewData = useMemo(
+    (): LabelPreviewData => ({
+      store_name: headerText,
+      product_name: nameText,
+      sku: skuText,
+      price: Number(String(priceText).replace(/\D/g, '')) || 0,
+      barcode_value: barcodeValue,
+      unit: 'dona',
+      date: new Date().toLocaleDateString('uz-UZ'),
+    }),
+    [headerText, nameText, skuText, priceText, barcodeValue]
+  );
+
   const productOptionLabel = (p: ProductWithCategory) => {
     const sku = p.sku ? ` (${p.sku})` : '';
     return `${p.name}${sku}`;
@@ -178,11 +188,11 @@ export default function BarcodeDesignerPage() {
     }
   }, [barcodeType, barcodeValue]);
 
-  const updateElement = (id: ProductLabelElementId, patch: Partial<DesignerElement>) => {
+  const updateElement = (id: string, patch: Partial<DesignerElement>) => {
     setElements((prev) => prev.map((el) => (el.id === id ? { ...el, ...patch } : el)));
   };
 
-  const handleLayerMove = (id: ProductLabelElementId, dir: -1 | 1) => {
+  const handleLayerMove = (id: string, dir: -1 | 1) => {
     setElements((prev) => {
       const idx = prev.findIndex((el) => el.id === id);
       if (idx < 0) return prev;
@@ -195,7 +205,7 @@ export default function BarcodeDesignerPage() {
     });
   };
 
-  const handleLayerDrop = (id: ProductLabelElementId, targetId: ProductLabelElementId) => {
+  const handleLayerDrop = (id: string, targetId: string) => {
     if (id === targetId) return;
     setElements((prev) => {
       const next = [...prev];
@@ -212,7 +222,7 @@ export default function BarcodeDesignerPage() {
     return elements
       .filter((el) => {
         if (!el.visible) return false;
-        return el.xMm <= 0.1 || el.yMm <= 0.1 || el.xMm + el.wMm >= labelSize.w - 0.1 || el.yMm + el.hMm >= labelSize.h - 0.1;
+        return el.x <= 0.1 || el.y <= 0.1 || el.x + el.w >= labelSize.w - 0.1 || el.y + el.h >= labelSize.h - 0.1;
       })
       .map((el) => el.id);
   }, [elements, labelSize.w, labelSize.h]);
@@ -486,6 +496,70 @@ export default function BarcodeDesignerPage() {
                       />
                       <Label htmlFor="uppercase" className="cursor-pointer text-sm">Uppercase</Label>
                     </div>
+                    {(selectedEl.data === 'price' || selectedEl.id === 'price') && (
+                      <>
+                        <div>
+                          <Label>Narx formati</Label>
+                          <Select
+                            value={selectedEl.priceFormat || 'dot_som'}
+                            onValueChange={(v) =>
+                              updateElement(selectedEl.id, { priceFormat: v as LabelElement['priceFormat'] })
+                            }
+                          >
+                            <SelectTrigger><SelectValue /></SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="dot_som">1.234.567 (nuqta bilan)</SelectItem>
+                              <SelectItem value="dot">1.234.567 (so&apos;msiz)</SelectItem>
+                              <SelectItem value="plain">Oddiy raqam</SelectItem>
+                            </SelectContent>
+                          </Select>
+                        </div>
+                        {(selectedEl.priceFormat || 'dot_som') === 'dot_som' && (
+                          <div className="flex items-center gap-2">
+                            <Checkbox
+                              id="show-currency"
+                              checked={selectedEl.showCurrency !== false}
+                              onCheckedChange={(v) =>
+                                updateElement(selectedEl.id, { showCurrency: Boolean(v) })
+                              }
+                            />
+                            <Label htmlFor="show-currency" className="cursor-pointer text-sm">
+                              So&apos;m ko&apos;rsatish
+                            </Label>
+                          </div>
+                        )}
+                      </>
+                    )}
+                    {(selectedEl.data === 'sku' || selectedEl.id === 'sku') && (
+                      <>
+                        <div className="flex items-center gap-2">
+                          <Checkbox
+                            id="show-sku"
+                            checked={selectedEl.visible !== false}
+                            onCheckedChange={(v) =>
+                              updateElement(selectedEl.id, { visible: Boolean(v) })
+                            }
+                          />
+                          <Label htmlFor="show-sku" className="cursor-pointer text-sm">
+                            SKU ko&apos;rsatish
+                          </Label>
+                        </div>
+                        {selectedEl.visible !== false && (
+                          <div className="flex items-center gap-2">
+                            <Checkbox
+                              id="show-sku-prefix"
+                              checked={selectedEl.showSkuPrefix !== false}
+                              onCheckedChange={(v) =>
+                                updateElement(selectedEl.id, { showSkuPrefix: Boolean(v) })
+                              }
+                            />
+                            <Label htmlFor="show-sku-prefix" className="cursor-pointer text-sm">
+                              SKU: prefiksi
+                            </Label>
+                          </div>
+                        )}
+                      </>
+                    )}
                   </>
                 ) : (
                   <>
@@ -648,13 +722,7 @@ export default function BarcodeDesignerPage() {
                 <ProductLabelLayoutEditor
                   widthMm={labelSize.w}
                   heightMm={labelSize.h}
-                  barcodeType={barcodeType}
-                  barcodeValue={barcodeValue}
-                  texts={texts}
-                  showPrice
-                  showBarcodeDigits={barcodeShowDigits}
-                  barcodeRotateDeg={barcodeRotateDeg}
-                  barcodeQuietZoneMm={barcodeQuietZoneMm}
+                  previewData={previewData}
                   showGrid={showGrid}
                   gridSizeMm={gridSizeMm}
                   snapToGrid={snapToGrid}
@@ -672,10 +740,9 @@ export default function BarcodeDesignerPage() {
                   }}
                   selectedId={selectedId}
                   onSelect={setSelectedId}
-                  lockedIds={lockedIds}
                 />
               </div>
-              {!elements.find((el) => el.id === 'barcode')?.visible && (
+              {!elements.some((el) => (el.kind === 'barcode' || el.kind === 'qr') && el.visible !== false) && (
                 <div className="text-xs text-muted-foreground mt-2">Barcode layer yashirilgan (Layers).</div>
               )}
             </CardContent>

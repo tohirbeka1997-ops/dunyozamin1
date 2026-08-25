@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { addToCart, loadCart } from '../lib/cart';
 import { isFavorite, toggleFavorite } from '../lib/favorites';
+import { t, useLang } from '../lib/i18n';
 import { LazyImg } from './LazyImg';
 
 export type ProductCardProps = {
@@ -17,6 +18,8 @@ export type ProductCardProps = {
   onQuickAdd?: () => void;
 };
 
+const IMG_TINTS = ['dz-img-mint', 'dz-img-sky', 'dz-img-sand', 'dz-img-clay'];
+
 export function ProductCard({
   id,
   name,
@@ -29,6 +32,7 @@ export function ProductCard({
   stock_quantity,
   onQuickAdd,
 }: ProductCardProps) {
+  useLang();
   const [favorite, setFavorite] = useState(() => isFavorite(id));
   const [bumping, setBumping] = useState(false);
 
@@ -42,27 +46,29 @@ export function ProductCard({
     return () => window.removeEventListener('favorites:change', onFavChanged);
   }, [id]);
 
-  const desc = description?.trim();
-  const optLine = useMemo(() => {
-    if (!options || options.length === 0) return '';
-    return options
-      .slice(0, 2)
-      .map((o) => `${o.name}: ${o.value}`)
-      .join(' · ');
-  }, [options]);
+  // Amber "brand"-style label: the first product option value when present
+  // (e.g. material/brand). Purely a display of existing data — no new fetch.
+  const brandLabel = options && options.length > 0 ? options[0].value : '';
   const stockLimit = track_stock ? Math.max(0, Number(stock_quantity ?? 0)) : null;
   const cartQty = useMemo(() => loadCart().find((x) => x.product_id === id)?.quantity || 0, [id]);
   const canAdd = is_available && (stockLimit == null || cartQty < stockLimit);
 
-  // Pick a leak hue based on id-hash for visual variety
-  const leakHue = useMemo(() => {
+  // Deterministic tint per product for visual variety
+  const tint = useMemo(() => {
     let h = 0;
     for (let i = 0; i < id.length; i++) h = (h * 31 + id.charCodeAt(i)) >>> 0;
-    return h % 3;
+    return IMG_TINTS[h % IMG_TINTS.length];
   }, [id]);
-  const leakClass = ['dz-leak-teal', 'dz-leak-cream', 'dz-leak-accent'][leakHue];
+
+  // Truthful meta line: stock count when tracked, else availability.
+  const metaText = stockLimit != null
+    ? `${t('product.inStock')} ${stockLimit.toLocaleString('uz-UZ')}`
+    : is_available
+      ? ''
+      : t('product.outOfStock');
 
   const handleAdd = () => {
+    if (!canAdd) return;
     addToCart({ product_id: id, name, price_uzs, quantity: 1 });
     onQuickAdd?.();
     setBumping(true);
@@ -70,31 +76,19 @@ export function ProductCard({
   };
 
   return (
-    <article className="dz-card group flex flex-col">
+    <article className="dz-prod flex flex-col">
       <Link to={`/product/${encodeURIComponent(id)}`} className="block">
-        {/* Image area with soft leak */}
-        <div className="relative aspect-square w-full overflow-hidden bg-[var(--brand-cream-50)]">
-          {/* Color leak */}
-          <span
-            className={`dz-leak ${leakClass} dz-leak-md`}
-            style={{ top: '-30%', right: '-20%', opacity: 0.32 }}
-          />
-          <span
-            className="dz-leak dz-leak-cream dz-leak-sm"
-            style={{ bottom: '-20%', left: '-10%', opacity: 0.5 }}
-          />
-
-          <LazyImg
-            src={image_url}
-            alt={name}
-            className="absolute inset-0"
-            imgClassName={`transition duration-300 group-hover:scale-[1.03] ${
-              !is_available ? 'opacity-60 grayscale' : ''
-            }`}
-            fallback={<span className="text-4xl text-[color-mix(in_srgb,var(--brand-primary)_18%,transparent)]">🛒</span>}
-          />
-
-          {/* Favorite — minimal */}
+        <div className={`dz-pimg ${tint}`}>
+          {is_available && stockLimit !== null && stockLimit <= 3 && stockLimit > 0 ? (
+            <span className="dz-pbadge" style={{ color: 'var(--amber-deep)' }}>
+              {t('product.lowStock')}
+            </span>
+          ) : null}
+          {!is_available ? (
+            <span className="dz-pbadge" style={{ left: '9px' }}>
+              {t('product.outOfStock')}
+            </span>
+          ) : null}
           <button
             type="button"
             aria-label={favorite ? 'Sevimlidan olib tashlash' : 'Sevimliga qoʻshish'}
@@ -103,67 +97,67 @@ export function ProductCard({
               e.stopPropagation();
               setFavorite(toggleFavorite(id));
             }}
-            className={`absolute right-2 top-2 inline-flex h-7 w-7 items-center justify-center rounded-full text-[13px] transition ${
-              favorite
-                ? 'bg-[var(--brand-teal)] text-white shadow-[var(--dz-glow-teal)]'
-                : 'bg-white/80 text-[var(--brand-primary)] backdrop-blur-md hover:bg-white'
-            }`}
+            className="dz-heart"
+            style={favorite ? { color: '#e3859e' } : undefined}
           >
-            {favorite ? '♥' : '♡'}
+            <svg
+              width="13"
+              height="13"
+              viewBox="0 0 24 24"
+              fill={favorite ? 'currentColor' : 'none'}
+              stroke="currentColor"
+              strokeWidth="1.8"
+            >
+              <path d="M20.8 4.6a5.5 5.5 0 0 0-7.8 0L12 5.6l-1-1a5.5 5.5 0 1 0-7.8 7.8l1 1L12 21l7.8-7.6 1-1a5.5 5.5 0 0 0 0-7.8z" />
+            </svg>
           </button>
-
-          {/* Out of stock — minimal pill at bottom */}
-          {!is_available ? (
-            <span className="absolute bottom-2 left-2 rounded-full bg-white/85 px-2 py-0.5 text-[9.5px] font-bold uppercase tracking-wider text-[var(--brand-primary)] backdrop-blur-md">
-              Tugagan
-            </span>
-          ) : stockLimit != null && stockLimit <= 3 ? (
-            <span className="absolute bottom-2 left-2 rounded-full bg-[var(--brand-accent)]/95 px-2 py-0.5 text-[9.5px] font-bold text-[var(--brand-primary)] backdrop-blur-md">
-              Kam · {stockLimit}
-            </span>
-          ) : null}
+          <LazyImg
+            src={image_url}
+            alt={name}
+            className="absolute inset-0"
+            imgClassName={`object-cover transition duration-300 ${!is_available ? 'opacity-60 grayscale' : ''}`}
+            fallback={
+              <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.3" aria-hidden>
+                <rect x="3" y="3" width="18" height="18" rx="3" />
+                <path d="m3 16 5-5 4 4 3-3 6 6" />
+                <circle cx="8.5" cy="8.5" r="1.5" />
+              </svg>
+            }
+          />
         </div>
-
-        {/* Body — minimal padding & text */}
-        <div className="flex min-h-0 flex-1 flex-col px-2.5 pt-2 pb-1.5">
-          <div className="line-clamp-2 min-h-[2.25rem] text-[12.5px] font-semibold leading-snug text-[var(--dz-text)]">
+        <div className="px-3 pb-1 pt-2.5">
+          {brandLabel ? (
+            <div className="truncate text-[9px] font-extrabold uppercase tracking-[0.05em] text-[var(--amber-deep)]">
+              {brandLabel}
+            </div>
+          ) : null}
+          <div className="mt-0.5 line-clamp-2 h-[2rem] text-[12.5px] font-semibold leading-[1.3] tracking-tight text-[var(--ink)]">
             {name}
           </div>
-          {optLine ? (
-            <p className="mt-0.5 line-clamp-1 text-[10px] font-medium leading-snug text-[var(--dz-soft)]">
-              {optLine}
-            </p>
-          ) : desc ? (
-            <p className="mt-0.5 line-clamp-1 text-[10px] leading-snug text-[var(--dz-soft)]">{desc}</p>
-          ) : null}
-          <div className="mt-1.5 flex items-baseline gap-1">
-            <span className="text-[14.5px] font-extrabold tabular-nums text-[var(--brand-primary)]">
-              {price_uzs.toLocaleString('uz-UZ')}
-            </span>
-            <span className="text-[10px] font-semibold text-[var(--dz-soft)]">soʻm</span>
-          </div>
+          {metaText ? (
+            <div className="mt-1.5 flex items-center gap-1 text-[9.5px] font-semibold text-[var(--muted)]">
+              <span className="text-[var(--amber)]" aria-hidden>★</span>
+              {metaText}
+            </div>
+          ) : (
+            <div className="mt-1.5 h-[14px]" />
+          )}
         </div>
       </Link>
-
-      {/* CTA — minimal, no shadow */}
-      <div className="px-2.5 pb-2.5">
+      <div className="flex items-center justify-between px-3 pb-3 pt-1">
+        <b className="text-[14.5px] font-extrabold tabular-nums tracking-tight text-[var(--ink)]">
+          {price_uzs.toLocaleString('uz-UZ')}
+          <small className="ml-0.5 text-[9.5px] font-medium text-[var(--muted)]">{t('common.som')}</small>
+        </b>
         <button
           type="button"
           disabled={!canAdd}
           onClick={handleAdd}
-          className={`flex w-full items-center justify-center gap-1 rounded-xl py-2 text-[11.5px] font-bold transition active:scale-[0.97] disabled:cursor-not-allowed disabled:opacity-45 ${
-            cartQty > 0
-              ? 'bg-[var(--brand-accent)] text-[var(--brand-primary)]'
-              : 'bg-[var(--brand-primary)] text-white hover:bg-[var(--brand-primary-600)]'
-          } ${bumping ? 'animate-pulse' : ''}`}
+          aria-label={t('product.addToCart')}
+          className={`dz-add ${bumping ? 'dz-pulse' : ''}`}
+          style={cartQty > 0 ? { background: 'linear-gradient(135deg, var(--amber), var(--amber-deep))' } : undefined}
         >
-          {!canAdd
-            ? stockLimit === 0
-              ? 'Tugagan'
-              : 'Maks.'
-            : cartQty > 0
-              ? `✓ ${cartQty} ta · yana`
-              : '＋ Savatga'}
+          {cartQty > 0 ? <span className="text-[11px] font-extrabold">{cartQty}</span> : '+'}
         </button>
       </div>
     </article>

@@ -11,6 +11,7 @@ import {
   View,
 } from 'react-native';
 import { fetchSupplier, fetchSupplierLedger, paySupplier } from '@/api/client';
+import { useRequireStaffAccess } from '@/hooks/useRequireStaffAccess';
 import { ledgerTypeLabel, t } from '@/i18n';
 import type { SupplierLedgerEntry, SupplierSummary } from '@/types/customers';
 
@@ -31,6 +32,7 @@ function ledgerAmount(entry: SupplierLedgerEntry, currency: string): string {
 }
 
 export default function SupplierDetailScreen() {
+  const allowed = useRequireStaffAccess('suppliers');
   const { id } = useLocalSearchParams<{ id: string }>();
   const router = useRouter();
   const [supplier, setSupplier] = useState<SupplierSummary | null>(null);
@@ -59,9 +61,18 @@ export default function SupplierDetailScreen() {
 
   useFocusEffect(
     useCallback(() => {
+      if (!allowed) return;
       void load();
-    }, [load]),
+    }, [allowed, load]),
   );
+
+  if (!allowed) {
+    return (
+      <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: '#f8fafc' }}>
+        <ActivityIndicator size="large" color="#166534" />
+      </View>
+    );
+  }
 
   async function handlePay() {
     if (!id || paying) return;

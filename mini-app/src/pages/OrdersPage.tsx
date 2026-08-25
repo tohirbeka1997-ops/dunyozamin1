@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useSearchParams } from 'react-router-dom';
 import { apiFetch, loadTokens } from '../lib/api';
-import { canCancel, orderStatusUi } from '../lib/orderStatus';
+import { canCancel, isOrderInProgress, orderStatusUi } from '../lib/orderStatus';
 import { Skeleton } from '../components/Skeleton';
 import { getTg, haptic, tgConfirm } from '../lib/telegram';
 import { usePullToRefresh } from '../hooks/usePullToRefresh';
@@ -88,6 +88,32 @@ export function OrdersPage() {
       ok = false;
     };
   }, [loadOrders, done, pending]);
+
+  // Live status updates for open orders while this page is visible.
+  useEffect(() => {
+    if (!loadTokens() || err) return;
+    const pollMs = Math.min(
+      30_000,
+      Math.max(15_000, Number.parseInt(String(import.meta.env.VITE_ORDERS_POLL_MS || '20000'), 10) || 20_000),
+    );
+
+    const refreshIfNeeded = () => {
+      if (document.visibilityState !== 'visible') return;
+      if (!rows?.some((o) => isOrderInProgress(o.status))) return;
+      void loadOrders().catch(() => undefined);
+    };
+
+    const onVisibility = () => {
+      if (document.visibilityState === 'visible') refreshIfNeeded();
+    };
+
+    const timer = window.setInterval(refreshIfNeeded, pollMs);
+    document.addEventListener('visibilitychange', onVisibility);
+    return () => {
+      window.clearInterval(timer);
+      document.removeEventListener('visibilitychange', onVisibility);
+    };
+  }, [loadOrders, rows, err]);
 
   const pull = usePullToRefresh(async () => {
     try {

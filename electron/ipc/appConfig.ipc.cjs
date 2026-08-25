@@ -46,7 +46,24 @@ function registerAppConfigHandlers(app) {
       let db;
       try { db = getDb(); } catch { db = null; }
       assertAppConfigPatchAllowed(patch || {}, resolveActorRole(db));
-      return writeConfig(patch || {}, app);
+
+      const next = { ...(patch || {}) };
+      const existing = readConfig(app);
+      const nextMode = String(next.mode ?? existing.mode ?? 'host').toLowerCase();
+      if (nextMode === 'client') {
+        const hostUrl = String(next.client?.hostUrl ?? existing.client?.hostUrl ?? '')
+          .trim()
+          .replace(/\/+$/, '');
+        if (!hostUrl) {
+          const { createError, ERROR_CODES } = require('../lib/errors.cjs');
+          throw createError(
+            ERROR_CODES.VALIDATION_ERROR,
+            'CLIENT rejim uchun HOST URL majburiy (masalan http://192.168.1.10:3333). Yoki mahalliy HOST rejimini tanlang.'
+          );
+        }
+      }
+
+      return writeConfig(next, app);
     })
   );
 

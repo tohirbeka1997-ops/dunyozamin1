@@ -10,9 +10,7 @@ import {
   View,
 } from 'react-native';
 import { useRouter } from 'expo-router';
-import { staffLogin } from '@/api/client';
-import { saveSession } from '@/auth/session';
-import { getOrCreateDeviceId } from '@/lib/device';
+import { APP_VERSION_LABEL, BOOT_BANNER } from '@/lib/bootBanner';
 import { t } from '@/i18n';
 
 export default function LoginScreen() {
@@ -31,6 +29,14 @@ export default function LoginScreen() {
     }
     setLoading(true);
     try {
+      // Lazy-load after first paint — native SecureStore / API must not blank boot.
+      const [{ staffLogin }, { saveSession }, { getOrCreateDeviceId }, { schedulePushRegistration }] =
+        await Promise.all([
+          import('@/api/client'),
+          import('@/auth/session'),
+          import('@/lib/device'),
+          import('@/lib/pushNotifications'),
+        ]);
       const deviceId = await getOrCreateDeviceId();
       const result = await staffLogin({
         tenant: tenant.trim(),
@@ -40,6 +46,7 @@ export default function LoginScreen() {
         platform: Platform.OS,
       });
       await saveSession(result, result.user);
+      schedulePushRegistration();
       router.replace('/(tabs)/sell');
     } catch (e) {
       const msg = e instanceof Error ? e.message : 'Xatolik';
@@ -58,8 +65,11 @@ export default function LoginScreen() {
       style={styles.root}
       behavior={Platform.OS === 'ios' ? 'padding' : undefined}
     >
+      <View style={styles.bootStrip}>
+        <Text style={styles.bootStripText}>{BOOT_BANNER}</Text>
+      </View>
       <View style={styles.card}>
-        <Text style={styles.kicker}>DunyoZamin</Text>
+        <Text style={styles.kicker}>DunyoZamin | v{APP_VERSION_LABEL}</Text>
         <Text style={styles.title}>{t('appName')}</Text>
         <Text style={styles.subtitle}>Onlayn buyurtmalar</Text>
 
@@ -116,6 +126,23 @@ const styles = StyleSheet.create({
     backgroundColor: '#f0fdf4',
     justifyContent: 'center',
     padding: 24,
+  },
+  bootStrip: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    backgroundColor: '#14532d',
+    paddingTop: 40,
+    paddingBottom: 10,
+    alignItems: 'center',
+    zIndex: 10,
+  },
+  bootStripText: {
+    color: '#fef08c',
+    fontSize: 14,
+    fontWeight: '900',
+    letterSpacing: 0.5,
   },
   card: {
     backgroundColor: '#fff',

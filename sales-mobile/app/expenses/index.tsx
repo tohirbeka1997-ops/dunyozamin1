@@ -12,6 +12,7 @@ import {
   View,
 } from 'react-native';
 import { createExpense, fetchExpenseCategories, fetchExpenses } from '@/api/client';
+import { useRequireStaffAccess } from '@/hooks/useRequireStaffAccess';
 import { t } from '@/i18n';
 import type { Expense, ExpenseCategory } from '@/types/customers';
 
@@ -24,6 +25,7 @@ function todayYmd(): string {
 }
 
 export default function ExpensesScreen() {
+  const allowed = useRequireStaffAccess('expenses');
   const [expenses, setExpenses] = useState<Expense[]>([]);
   const [categories, setCategories] = useState<ExpenseCategory[]>([]);
   const [loading, setLoading] = useState(true);
@@ -51,10 +53,19 @@ export default function ExpensesScreen() {
 
   useFocusEffect(
     useCallback(() => {
+      if (!allowed) return;
       setLoading(true);
       void load();
-    }, [load]),
+    }, [allowed, load]),
   );
+
+  if (!allowed) {
+    return (
+      <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center' }}>
+        <ActivityIndicator size="large" color="#166534" />
+      </View>
+    );
+  }
 
   async function handleSave() {
     if (saving || !categoryId) return;

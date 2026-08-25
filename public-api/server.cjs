@@ -23,9 +23,11 @@ function timingSafeStringEqual(a, b) {
   if (aa.length !== bb.length || aa.length === 0) return false;
   return crypto.timingSafeEqual(aa, bb);
 }
-require('dotenv').config({ path: path.join(__dirname, '..', '.env') });
+// Same as Electron: root `.env` then `.env.local` with override so OPENAI_* / TELEGRAM_* win
+require('../electron/config/loadRootEnv.cjs').loadRootEnv();
 
 const { getDb, resolveDbPath } = require('./lib/db.cjs');
+const { assessDbPathSync, probePosServerDbPath, resolvePosHealthUrl } = require('./lib/dbPathSync.cjs');
 const { mountCatalogRoutes } = require('./routes/catalog.cjs');
 const { mountAuthRoutes } = require('./routes/auth.cjs');
 const { mountOrdersRoutes } = require('./routes/orders.cjs');
@@ -39,6 +41,10 @@ const { startStaffBot } = require('../telegram/staffBot.cjs');
 const { notifyOrderStatusChanged, notifyPaymentReminder } = require('./lib/telegramNotify.cjs');
 const { handleWebOrderCancelled } = require('./lib/stockDecrement.cjs');
 const { buildPaymeCheckoutUrl, buildClickCheckoutUrl } = require('./lib/paymentLinks.cjs');
+const { logger } = require('./lib/logger.cjs');
+const { tryAcquireSchedulerLock, shouldRunScheduler } = require('./lib/schedulerLock.cjs');
+const { runCreditReminderTick } = require('./lib/creditReminder.cjs');
+const { runDailyDigestTick } = require('./lib/reportNotify.cjs');
 
 const PORT = Number.parseInt(process.env.PUBLIC_API_PORT || '3334', 10) || 3334;
 const TRUST_PROXY = ['1', 'true', 'yes'].includes(String(process.env.PUBLIC_API_TRUST_PROXY || '').toLowerCase());
@@ -118,9 +124,7 @@ function buildCorsConfig() {
 
   if (origins.length === 0) {
     if (isProd) {
-      console.warn(
-        '[CORS] PUBLIC_API_CORS_ORIGINS bo\'sh — production rejimida hech qanday cross-origin so\'rovga ruxsat berilmaydi.'
-      );
+      logger.warn('[CORS] PUBLIC_API_CORS_ORIGINS bo\'sh — production rejimida hech qanday cross-origin so\'rovga ruxsat berilmaydi.');
       return {
         origin: (origin, cb) => cb(null, !origin),
         credentials: false,
@@ -200,9 +204,7 @@ function main() {
   if (staffWebAvailable) {
     app.use(express.static(STAFF_WEB_DIR, { index: false, maxAge: '1h' }));
   } else {
-    console.warn(
-      `[public-api] staff web build not found at ${STAFF_WEB_DIR} — run "npx expo export --platform web --output-dir dist" in sales-mobile/ (or set STAFF_WEB_DIR).`,
-    );
+    logger.warn({ staffWebDir: STAFF_WEB_DIR }, '[public-api] staff web build not found');
   }
 
   const limiter = rateLimit({
@@ -265,8 +267,52 @@ function main() {
     return limiter(req, res, next);
   });
 
-  app.get('/health', (_req, res) => {
-    res.json({ ok: true, service: 'dunyozamin-public-api', ts: new Date().toISOString() });
+  let dbReady = false;
+  let dbSyncState = { db_in_sync: false, issues: ['database not opened'] };
+  const strictDbSync = ['1', 'true', 'yes'].includes(
+    String(process.env.PUBLIC_API_STRICT_DB_SYNC || '').toLowerCase(),
+  );
+  try {
+    getDb();
+    dbSyncState = assessDbPathSync();
+    if (!dbSyncState.db_in_sync) {
+      logger.error({ dbSync: dbSyncState }, '[public-api] DB path sync check failed');
+      if (strictDbSync) {
+        logger.error('[public-api] PUBLIC_API_STRICT_DB_SYNC=1 — API will return 503 until DB path is fixed');
+      }
+    }
+    dbReady = dbSyncState.db_in_sync || !strictDbSync;
+  } catch (e) {
+    logger.error({ err: e.message }, '[public-api] DB open failed');
+  }
+
+  app.get('/health', async (_req, res) => {
+    const sync = dbReady ? assessDbPathSync() : dbSyncState;
+    let posProbe = {};
+    if (process.env.PUBLIC_API_HEALTH_PROBE_POS !== '0') {
+      posProbe = await probePosServerDbPath(resolvePosHealthUrl()).catch((e) => ({
+        pos_health_ok: false,
+        pos_health_error: String(e?.message || e),
+      }));
+    }
+    const posMismatch =
+      posProbe.pos_db_match === false
+        ? [`POS server db_path (${posProbe.pos_db_path}) does not match public-api (${sync.db_path})`]
+        : [];
+    const inSync = sync.db_in_sync && posMismatch.length === 0;
+    res.status(inSync ? 200 : 503).json({
+      ok: inSync,
+      service: 'dunyozamin-public-api',
+      ts: new Date().toISOString(),
+      db_ready: dbReady,
+      db_path: sync.db_path,
+      expected_pos_db_path: sync.expected_pos_db_path,
+      db_in_sync: inSync,
+      db_sync_issues: [...(sync.issues || []), ...posMismatch],
+      tenant_slug: sync.tenant_slug,
+      multi_tenant: sync.multi_tenant,
+      ...posProbe,
+    });
   });
 
   app.use('/product-images', express.static(PRODUCT_IMAGE_DIR, {
@@ -302,35 +348,6 @@ function main() {
     },
   );
 
-  let dbReady = false;
-  try {
-    getDb();
-    dbReady = true;
-    const resolvedDb = resolveDbPath();
-    const { resolvePosDataDir } = require('../electron/lib/resolvePosDbPath.cjs');
-    const dataRoot = resolvePosDataDir();
-    const legacyDb = path.join(dataRoot, 'pos.db');
-    const tenantDb = path.join(
-      dataRoot,
-      'tenants',
-      (process.env.POS_TENANT_SLUG && String(process.env.POS_TENANT_SLUG).trim()) || 'default',
-      'pos.db',
-    );
-    const masterDb = path.join(dataRoot, 'master.db');
-    if (
-      fs.existsSync(masterDb) &&
-      fs.existsSync(tenantDb) &&
-      path.resolve(resolvedDb) === path.resolve(legacyDb)
-    ) {
-      console.warn(
-        '[public-api] WARNING: multi-tenant master.db detected but DB resolves to legacy pos.db. ' +
-          'Set POS_MULTI_TENANT=1 or PUBLIC_API_DB_PATH to the tenant DB so Mini App orders appear in POS admin.',
-      );
-    }
-  } catch (e) {
-    console.error('[public-api] DB open failed:', e.message);
-  }
-
   const dbGetter = () => getDb();
   const jsonBody = express.json({ limit: '512kb' });
   const bearerAuth = createBearerAuth();
@@ -347,7 +364,13 @@ function main() {
 
   app.use('/v1', (req, res, next) => {
     if (!dbReady) {
-      res.status(503).json({ error: 'database_unavailable', db_path: resolveDbPath() });
+      const sync = assessDbPathSync();
+      res.status(503).json({
+        error: 'database_unavailable',
+        db_path: resolveDbPath(),
+        db_in_sync: false,
+        db_sync_issues: sync.issues,
+      });
       return;
     }
     next();
@@ -393,7 +416,7 @@ function main() {
   app.use((err, _req, res, _next) => {
     const status = Number(err?.status || err?.statusCode) || 500;
     if (status >= 500) {
-      console.error('[public-api] unhandled error:', err?.stack || err?.message || err);
+      logger.error({ err: err?.stack || err?.message || err }, '[public-api] unhandled error');
     }
     if (res.headersSent) return;
     res.status(status).json({
@@ -403,22 +426,10 @@ function main() {
   });
 
   function startExpireScheduler() {
-    if (!dbReady) return;
-    try {
-      const db = getDb();
-      db.exec(`
-        CREATE TABLE IF NOT EXISTS payment_reminders (
-          id INTEGER PRIMARY KEY AUTOINCREMENT,
-          order_id INTEGER NOT NULL,
-          reminder_type TEXT NOT NULL,
-          sent_at TEXT NOT NULL DEFAULT (datetime('now')),
-          UNIQUE(order_id, reminder_type)
-        );
-        CREATE INDEX IF NOT EXISTS idx_payment_reminders_order ON payment_reminders(order_id);
-      `);
-    } catch (e) {
-      console.error('[public-api] payment reminder schema init failed:', e.message || e);
-    }
+    if (!dbReady || !shouldRunScheduler()) return;
+
+    const instanceId = randomUUID();
+    logger.info({ instanceId }, '[public-api] payment reminder scheduler enabled');
 
     function buildPaymentLink(order) {
       const returnUrl = String(process.env.PAYME_RETURN_URL || process.env.PUBLIC_APP_RETURN_URL || '').trim();
@@ -446,6 +457,9 @@ function main() {
     setInterval(() => {
       try {
         const db = getDb();
+        const lockOwner = tryAcquireSchedulerLock(db, { owner: instanceId });
+        if (!lockOwner) return;
+
         const now = new Date().toISOString();
         const expiredRows = db
           .prepare(
@@ -478,7 +492,7 @@ function main() {
           cancelExpired(expiredRows);
         }
         if (expiredCount > 0) {
-          console.log('[public-api] expired web_orders cancelled:', expiredCount);
+          logger.info({ expiredCount }, '[public-api] expired web_orders cancelled');
           const token = String(process.env.TELEGRAM_BOT_TOKEN || '').trim();
           if (token) {
             for (const row of expiredRows) {
@@ -549,11 +563,139 @@ function main() {
             }
           }
         }
+
+        void runCreditReminderTick(db, { botToken: String(process.env.TELEGRAM_BOT_TOKEN || '').trim() })
+          .then((stats) => {
+            if (stats?.skipped) return;
+            if (stats?.sent > 0 || stats?.staffAlertsCreated > 0) {
+              logger.info({ creditReminders: stats }, '[public-api] credit due reminders');
+            }
+          })
+          .catch((e) => {
+            logger.warn({ err: e?.message || e }, '[public-api] credit reminder tick');
+          });
+
+        const { runSupplierPaymentReminderTick } = require('./lib/supplierPaymentReminder.cjs');
+        void runSupplierPaymentReminderTick(db, { botToken: String(process.env.TELEGRAM_BOT_TOKEN || '').trim() })
+          .then((stats) => {
+            if (stats?.sent > 0) {
+              logger.info({ supplierReminders: stats }, '[public-api] supplier payment reminders sent');
+            }
+          })
+          .catch((e) => {
+            logger.warn({ err: e?.message || e }, '[public-api] supplier reminder tick');
+          });
+
+        void runDailyDigestTick(db, { botToken: String(process.env.TELEGRAM_BOT_TOKEN || '').trim() })
+          .then((stats) => {
+            if (stats?.skipped) return;
+            if (stats?.sent > 0) {
+              logger.info({ reportDigest: stats }, '[public-api] telegram daily digest sent');
+            }
+          })
+          .catch((e) => {
+            logger.warn({ err: e?.message || e }, '[public-api] telegram report digest tick');
+          });
+
+        try {
+          require('../electron/config/loadRootEnv.cjs').loadRootEnv();
+          const {
+            runMorningBriefTick,
+            runAiAnalysisTick,
+            runWeeklyAiTick,
+            resolveOpenAiConfig,
+          } = require('./lib/storeAiAnalysis.cjs');
+          const botToken = String(process.env.TELEGRAM_BOT_TOKEN || '').trim();
+          void runMorningBriefTick(db, { botToken })
+            .then((stats) => {
+              if (stats?.skipped) return;
+              if (stats?.sent > 0) {
+                logger.info({ morningBrief: stats }, '[public-api] telegram morning brief sent');
+              }
+            })
+            .catch((e) => {
+              logger.warn({ err: e?.message || e }, '[public-api] telegram morning brief tick');
+            });
+          const { apiKey, model } = resolveOpenAiConfig({});
+          void runAiAnalysisTick(db, {
+            botToken,
+            apiKey,
+            model,
+          })
+            .then((stats) => {
+              if (stats?.skipped) return;
+              if (stats?.sent > 0) {
+                logger.info(
+                  {
+                    reportAi: {
+                      sent: stats.sent,
+                      failed: stats.failed,
+                      mode: stats.mode,
+                      fallbackReason: stats.fallbackReason || null,
+                      eveningPackage: Boolean(stats.eveningPackage),
+                    },
+                  },
+                  '[public-api] telegram AI analysis sent',
+                );
+              }
+            })
+            .catch((e) => {
+              logger.warn({ err: e?.message || e }, '[public-api] telegram AI analysis tick');
+            });
+          void runWeeklyAiTick(db, {
+            botToken,
+            apiKey,
+            model,
+          })
+            .then((stats) => {
+              if (stats?.skipped) return;
+              if (stats?.sent > 0) {
+                logger.info(
+                  {
+                    reportWeeklyAi: {
+                      sent: stats.sent,
+                      failed: stats.failed,
+                      weekKey: stats.weekKey || null,
+                    },
+                  },
+                  '[public-api] telegram weekly AI sent',
+                );
+              }
+            })
+            .catch((e) => {
+              logger.warn({ err: e?.message || e }, '[public-api] telegram weekly AI tick');
+            });
+
+          const { runDailyPosterTick } = require('./lib/dailyStorePoster.cjs');
+          void runDailyPosterTick(db, {})
+            .then((stats) => {
+              if (stats?.skipped) return;
+              if (stats?.sent > 0 || !stats?.skipped) {
+                logger.info(
+                  {
+                    dailyPoster: {
+                      sent: stats.sent,
+                      failed: stats.failed,
+                      rubric: stats.rubric || null,
+                      imageSource: stats.imageSource || null,
+                      reason: stats.reason || null,
+                    },
+                  },
+                  '[public-api] telegram daily poster',
+                );
+              }
+            })
+            .catch((e) => {
+              logger.warn({ err: e?.message || e }, '[public-api] telegram daily poster tick');
+            });
+        } catch (e) {
+          logger.warn({ err: e?.message || e }, '[public-api] telegram AI analysis require');
+        }
       } catch (e) {
         const msg = String(e.message || '');
         if (msg.includes('no such column')) return;
         if (msg.includes('no such table')) return;
-        console.error('[public-api] expire scheduler', e);
+        logger.error({ err: e }, '[public-api] expire scheduler');
       }
     }, 60_000);
   }
@@ -563,44 +705,38 @@ function main() {
     (process.env.STAFF_JWT_SECRET && String(process.env.STAFF_JWT_SECRET).length >= 16) || jwtOk;
   const botOk = process.env.TELEGRAM_BOT_TOKEN && String(process.env.TELEGRAM_BOT_TOKEN).length >= 20;
   if (!jwtOk || !botOk) {
-    console.error(
-      `[public-api] Mini App auth: JWT_SECRET=${jwtOk ? 'ok' : 'missing/short'} TELEGRAM_BOT_TOKEN=${botOk ? 'ok' : 'missing'} — /v1/auth/telegram xato: server_misconfigured`
+    logger.error(
+      { jwtOk, botOk },
+      '[public-api] Mini App auth misconfigured — /v1/auth/telegram xato: server_misconfigured',
     );
   }
   if (!staffJwtOk) {
-    console.error('[public-api] Staff auth: STAFF_JWT_SECRET (or JWT_SECRET) missing/short — /v1/staff/auth/* xato');
+    logger.error('[public-api] Staff auth: STAFF_JWT_SECRET (or JWT_SECRET) missing/short — /v1/staff/auth/* xato');
   }
 
   app.listen(PORT, () => {
-    console.log(`[public-api] listening on :${PORT}`);
-    console.log(`[public-api] DB: ${resolveDbPath()} (${dbReady ? 'ok' : 'MISSING'})`);
-    console.log(
-      `[public-api] routes: /v1/payment/*, /v1/auth/*, /v1/staff/*, /v1/admin/*, /v1/me, /v1/orders, /v1/products, /v1/categories`,
+    logger.info({ port: PORT }, '[public-api] listening');
+    logger.info(
+      { dbPath: resolveDbPath(), dbReady, db_in_sync: dbSyncState.db_in_sync, issues: dbSyncState.issues },
+      '[public-api] DB',
     );
-    console.log(
-      '[public-api] staff modules: auth, orders, products, shifts, sales, customers, suppliers, purchase-orders',
-    );
+    logger.info('[public-api] routes: /v1/payment/*, /v1/auth/*, /v1/staff/*, /v1/admin/*, /v1/me, /v1/orders, /v1/products, /v1/categories');
+    logger.info('[public-api] staff modules: auth, orders, products, shifts, sales, customers, suppliers, purchase-orders');
     if (staffWebAvailable) {
-      console.log(`[public-api] staff web app served from: ${STAFF_WEB_DIR} (GET / )`);
+      logger.info({ staffWebDir: STAFF_WEB_DIR }, '[public-api] staff web app served (GET /)');
     }
     startExpireScheduler();
-    // Start the SEPARATE staff POS Telegram bot. No-op when STAFF_BOT_TOKEN is
-    // unset, so existing deployments are unaffected. Never let a bot failure
-    // crash the API.
-    void Promise.resolve(startStaffBot(console)).catch((e) => {
-      console.error('[public-api] staff bot start error:', e?.message || e);
+    void Promise.resolve(startStaffBot(logger)).catch((e) => {
+      logger.error({ err: e?.message || e }, '[public-api] staff bot start error');
     });
   });
 }
 
-// Global safety net: never let a stray rejection/exception silently kill the
-// process without a log line. Exit on uncaughtException (unknown state); keep
-// running on unhandledRejection but log loudly so it gets fixed.
 process.on('unhandledRejection', (reason) => {
-  console.error('[public-api] unhandledRejection:', reason instanceof Error ? reason.stack : reason);
+  logger.error({ reason: reason instanceof Error ? reason.stack : reason }, '[public-api] unhandledRejection');
 });
 process.on('uncaughtException', (err) => {
-  console.error('[public-api] uncaughtException:', err?.stack || err);
+  logger.error({ err: err?.stack || err }, '[public-api] uncaughtException');
   process.exit(1);
 });
 
