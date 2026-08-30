@@ -223,6 +223,8 @@ test('assertOptionalUzPhone and email', () => {
   assert.equal(assertOptionalUzPhone('').ok, true);
   assert.equal(assertOptionalUzPhone('bad').ok, false);
   assert.equal(assertOptionalUzPhone('+998901234567').ok, true);
+  assert.equal(assertOptionalUzPhone('8 88 111 22 33').ok, true);
+  assert.equal(assertOptionalUzPhone('8 88 111 22 33').normalized, '998881112233');
   assert.equal(assertOptionalEmail('a@b.com').ok, true);
   assert.equal(assertOptionalEmail('not-an-email').ok, false);
 });

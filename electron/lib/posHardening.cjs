@@ -642,17 +642,23 @@ function assertOptionalUzPhone(raw) {
   const s = raw == null ? '' : String(raw).trim();
   if (!s) return { ok: true, phone: null, normalized: null };
   const digits = s.replace(/\D/g, '');
-  const ok =
-    digits.length === 9 || (digits.length === 12 && digits.startsWith('998'));
-  if (!ok) {
+  let normalized = null;
+  if (digits.startsWith('998') && digits.length >= 12) {
+    normalized = digits.slice(0, 12);
+  } else if (digits.length === 9) {
+    normalized = `998${digits}`;
+  } else if (digits.length === 10 && digits.startsWith('8')) {
+    normalized = `998${digits.slice(1)}`;
+  } else if (digits.length === 12 && digits.startsWith('998')) {
+    normalized = digits;
+  }
+  if (!normalized || !/^998\d{9}$/.test(normalized)) {
     return {
       ok: false,
       error: 'invalid UZ phone format',
       code: 'PHONE_INVALID',
     };
   }
-  const normalized =
-    digits.length === 9 ? `998${digits}` : digits.slice(0, 12);
   return { ok: true, phone: s, normalized };
 }
 
