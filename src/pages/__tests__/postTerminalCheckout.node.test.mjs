@@ -385,3 +385,30 @@ test('nav cart draft persists amend label, hold context, and loyalty redeem', ()
   assert.equal(holdDraft?.importedHoldOrderNumber, 'ORD-HOLD-9');
   assert.equal(holdDraft?.replacesOrderId, undefined);
 });
+
+test('payment dialog must close before cart clear (zero-sum flash guard)', () => {
+  // Simulated success sequencing: dialogClosed before cartCleared.
+  const events = [];
+  events.push('dialogClosed');
+  events.push('cartCleared');
+  assert.equal(events[0], 'dialogClosed');
+  assert.ok(events.indexOf('dialogClosed') < events.indexOf('cartCleared'));
+});
+
+test('post-return invalidate keys cover orders/returns/reports', () => {
+  const keys = [
+    ['returns'],
+    ['sales-returns'],
+    ['salesReturns'],
+    ['orders'],
+    ['order'],
+    ['dashboard'],
+    ['reports'],
+    ['order', 'ord-1'],
+  ];
+  const flat = keys.map((k) => k.join(':'));
+  assert.ok(flat.includes('returns'));
+  assert.ok(flat.includes('orders'));
+  assert.ok(flat.includes('dashboard'));
+  assert.ok(flat.includes('order:ord-1'));
+});

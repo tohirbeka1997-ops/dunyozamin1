@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef, useMemo } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -25,6 +25,7 @@ import { Save, Eye, EyeOff } from 'lucide-react';
 import { createEmployee, updateEmployee, getEmployeeById } from '@/db/api';
 import type { Profile, UserRole } from '@/types/database';
 import { useToast } from '@/hooks/use-toast';
+import { useConfirmDialog } from '@/contexts/ConfirmDialogContext';
 import { useAuth } from '@/contexts/AuthContext';
 import { useTranslation } from 'react-i18next';
 
@@ -74,6 +75,8 @@ export default function EmployeeFormModal({
   onSuccess,
 }: EmployeeFormModalProps) {
   const { toast } = useToast();
+  const confirmDialog = useConfirmDialog();
+  const baselineRef = useRef('');
   const { user, role } = useAuth();
   const { t } = useTranslation();
   const isEditMode = Boolean(employeeId);
@@ -103,6 +106,46 @@ export default function EmployeeFormModal({
     settings: { view: false, add: false, edit: false, delete: false },
   });
   const [errors, setErrors] = useState<Record<string, string>>({});
+
+  const formSnapshot = useMemo(
+    () => JSON.stringify({ formData, permissions }),
+    [formData, permissions],
+  );
+
+  const openedBaselineRef = useRef(false);
+
+  const isDirty =
+    Boolean(baselineRef.current) && formSnapshot !== baselineRef.current;
+
+  useEffect(() => {
+    if (!open) {
+      openedBaselineRef.current = false;
+      baselineRef.current = '';
+      return;
+    }
+    if (loading || openedBaselineRef.current) return;
+    baselineRef.current = formSnapshot;
+    openedBaselineRef.current = true;
+  }, [open, loading, formSnapshot]);
+
+  const handleDialogOpenChange = async (nextOpen: boolean) => {
+    if (nextOpen) {
+      onOpenChange(true);
+      return;
+    }
+    if (
+      isDirty &&
+      !(await confirmDialog({
+        title: "Saqlanmagan o'zgarishlar mavjud.",
+        description: "Davom etsangiz, o'zgarishlar yo'qoladi.",
+        confirmText: 'Davom etib, yopish',
+        cancelText: 'Formaga qaytish',
+      }))
+    ) {
+      return;
+    }
+    onOpenChange(false);
+  };
 
   useEffect(() => {
     if (open && isEditMode && employeeId) {
@@ -194,6 +237,23 @@ export default function EmployeeFormModal({
       defaultPerms.orders = { view: true, add: true, edit: false, delete: false };
       defaultPerms.products = { view: true, add: false, edit: false, delete: false, change_price: false };
       defaultPerms.customers = { view: true, add: true, edit: false, delete: false };
+    } else if (role === 'accountant') {
+      ['orders', 'reports', 'customers', 'inventory'].forEach((module) => {
+        defaultPerms[module as PermissionModule] = {
+          view: true,
+          add: true,
+          edit: true,
+          delete: false,
+        };
+      });
+      defaultPerms.products = { view: true, add: false, edit: false, delete: false, change_price: false };
+    } else if (role === 'purchaser') {
+      defaultPerms.products = { view: true, add: false, edit: false, delete: false, change_price: false };
+      defaultPerms.inventory = { view: true, add: true, edit: true, delete: false };
+      defaultPerms.reports = { view: true, add: false, edit: false, delete: false };
+    } else if (role === 'receiver' || role === 'warehouse') {
+      defaultPerms.products = { view: true, add: false, edit: false, delete: false, change_price: false };
+      defaultPerms.inventory = { view: true, add: true, edit: true, delete: false };
     }
 
     setPermissions(defaultPerms);
@@ -369,7 +429,7 @@ export default function EmployeeFormModal({
 
   return (
     <>
-      <Dialog open={open} onOpenChange={onOpenChange}>
+      <Dialog open={open} onOpenChange={handleDialogOpenChange}>
         <DialogContent className="max-w-4xl max-h-[90vh] overflow-y-auto">
           <DialogHeader>
             <DialogTitle>{isEditMode ? 'Xodimni tahrirlash' : 'Yangi xodim qo\'shish'}</DialogTitle>
@@ -434,6 +494,10 @@ export default function EmployeeFormModal({
                       </SelectTrigger>
                       <SelectContent>
                         <SelectItem value="cashier">Kassir</SelectItem>
+                        <SelectItem value="senior_cashier">Katta kassir</SelectItem>
+                        <SelectItem value="purchaser">Xaridchi</SelectItem>
+                        <SelectItem value="receiver">Qabul qiluvchi</SelectItem>
+                        <SelectItem value="accountant">Buxgalter</SelectItem>
                         <SelectItem value="manager">Manager</SelectItem>
                         <SelectItem value="warehouse">Ombor xodimi</SelectItem>
                         <SelectItem value="admin">Administrator</SelectItem>
@@ -718,7 +782,7 @@ export default function EmployeeFormModal({
               <Button
                 type="button"
                 variant="outline"
-                onClick={() => onOpenChange(false)}
+                onClick={() => void handleDialogOpenChange(false)}
                 disabled={loading}
               >
                 Bekor qilish

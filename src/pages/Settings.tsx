@@ -478,6 +478,7 @@ export default function Settings() {
     allow_negative_stock: 'allow_with_warning',
     cost_calculation: 'latest_purchase',
     adjustment_approval_required: false,
+    max_adjustment_qty: 10000,
   });
 
   const [numberingSettings, setNumberingSettings] = useState<NumberingSettings>({
@@ -2903,6 +2904,33 @@ export default function Settings() {
                       />
                     </div>
                     <p className="text-xs text-muted-foreground">{t('settings.inventory.approvalNotImplemented')}</p>
+                  </div>
+
+                  <div className="space-y-2">
+                    <Label htmlFor="max_adjustment_qty">
+                      {t('settings.inventory.maxAdjustment', {
+                        defaultValue: 'Maksimal tuzatish miqdori',
+                      })}
+                    </Label>
+                    <Input
+                      id="max_adjustment_qty"
+                      type="number"
+                      min="1"
+                      value={inventorySettings.max_adjustment_qty ?? 10000}
+                      onChange={(e) => {
+                        setInventorySettings({
+                          ...inventorySettings,
+                          max_adjustment_qty: Math.max(1, parseInt(e.target.value, 10) || 10000),
+                        });
+                        setHasUnsavedChanges(true);
+                      }}
+                    />
+                    <p className="text-xs text-muted-foreground">
+                      {t('settings.inventory.maxAdjustmentHint', {
+                        defaultValue:
+                          'Bu qiymatdan oshganda oddiy kassir bloklanadi; menejer/admin yoki tasdiq sozlamasi talab qilinadi.',
+                      })}
+                    </p>
                   </div>
                 </>
               )}

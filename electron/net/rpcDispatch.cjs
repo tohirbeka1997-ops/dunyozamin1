@@ -237,10 +237,17 @@ function createRpcDispatcher({ services, db, sessions }) {
           actorUserId: authContext?.userId || a[2] || null,
         });
       case 'pos:products:delete':
-        return services.products.delete(a[0], { event: _event });
+        return services.products.delete(a[0], {
+          event: _event,
+          actorUserId: authContext?.userId || a[1] || null,
+        });
+      case 'pos:products:getDeleteImpact':
+        return services.products.getDeleteImpact(a[0]);
       case 'pos:products:bulkAdjustPrices':
         return services.products.bulkAdjustPrices(a[0] || {}, {
           actorUserId: authContext?.userId || a[1] || null,
+          userRole: authContext?.role || null,
+          authorized: ['admin', 'manager'].includes(String(authContext?.role || '').toLowerCase()),
         });
       case 'pos:products:undoBulkPriceUpdate':
         return services.products.undoBulkPriceUpdate(a[0] ?? null, {
@@ -650,8 +657,43 @@ function createRpcDispatcher({ services, db, sessions }) {
       }
       case 'pos:returns:delete':
         return services.returns.deleteReturn(a[0]);
-      case 'pos:returns:complete':
-        return services.returns.completeReturn(a[0]);
+      case 'pos:returns:cancel': {
+        const p = a[0] || {};
+        if (p && typeof p === 'object' && 'returnId' in p) {
+          return services.returns.cancelReturn(p.returnId, p.data || p);
+        }
+        return services.returns.cancelReturn(a[0], a[1] || {});
+      }
+      case 'pos:returns:complete': {
+        const p = a[0];
+        if (p && typeof p === 'object' && 'returnId' in p) {
+          return services.returns.completeReturn(p.returnId, p.data || p);
+        }
+        return services.returns.completeReturn(a[0], a[1] || {});
+      }
+      case 'pos:returns:approve': {
+        const p = a[0];
+        if (p && typeof p === 'object' && 'returnId' in p) {
+          return services.returns.approveReturn(p.returnId, p.data || p);
+        }
+        return services.returns.approveReturn(a[0], a[1] || {});
+      }
+      case 'pos:returns:reject': {
+        const p = a[0];
+        if (p && typeof p === 'object' && 'returnId' in p) {
+          return services.returns.rejectReturn(p.returnId, p.data || p);
+        }
+        return services.returns.rejectReturn(a[0], a[1] || {});
+      }
+      case 'pos:returns:reasonBreakdown':
+        return services.returns.getReasonBreakdown(a[0] || {});
+      case 'pos:returns:auditTrail': {
+        const p = a[0];
+        if (p && typeof p === 'object') {
+          return services.returns.getAuditTrail(p.returnId || p.id, p.limit);
+        }
+        return services.returns.getAuditTrail(a[0], a[1]);
+      }
 
       // Purchases
       case 'pos:purchases:list':
@@ -749,6 +791,8 @@ function createRpcDispatcher({ services, db, sessions }) {
         return services.shifts.cashIn(a[0] || {});
       case 'pos:shifts:cashOut':
         return services.shifts.cashOut(a[0] || {});
+      case 'pos:shifts:reopen':
+        return services.shifts.reopenShift(a[0], a[1] || {});
       case 'pos:shifts:listCashMovements':
         return services.shifts.listShiftCashMovements(a[0]?.shiftId || a[0]?.shift_id, {
           type: a[0]?.type,

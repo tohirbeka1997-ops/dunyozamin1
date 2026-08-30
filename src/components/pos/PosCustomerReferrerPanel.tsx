@@ -182,7 +182,13 @@ export default function PosCustomerReferrerPanel({
                             <span className="min-w-0">
                               <span className="block truncate font-medium">{customer.name}</span>
                               {customer.phone && (
-                                <span className="block text-xs text-muted-foreground">{customer.phone}</span>
+                                <a
+                                  href={`tel:${String(customer.phone).replace(/[^\d+]/g, '')}`}
+                                  className="block text-xs text-muted-foreground underline-offset-2 hover:underline"
+                                  onClick={(e) => e.stopPropagation()}
+                                >
+                                  {customer.phone}
+                                </a>
                               )}
                               {customer.id && (
                                 <span className="block text-[11px] text-muted-foreground">
@@ -370,7 +376,13 @@ export default function PosCustomerReferrerPanel({
                               )}
                             </span>
                             {customer.phone && (
-                              <span className="text-xs text-muted-foreground">{customer.phone}</span>
+                              <a
+                                href={`tel:${String(customer.phone).replace(/[^\d+]/g, '')}`}
+                                className="text-xs text-muted-foreground underline-offset-2 hover:underline"
+                                onClick={(e) => e.stopPropagation()}
+                              >
+                                {customer.phone}
+                              </a>
                             )}
                             {Number(customer.bonus_points ?? 0) > 0 && (
                               <span className="text-[10px] text-muted-foreground">

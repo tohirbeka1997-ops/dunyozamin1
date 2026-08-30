@@ -13,6 +13,7 @@ const Database = require('better-sqlite3');
 const poster = require('./dailyStorePoster.cjs');
 
 const pickRubric = poster.pickRubric || poster.pickRubric;
+const pickContentType = poster.pickContentType;
 const getDailyPosterSettings = poster.getDailyPosterSettings || poster.getDailyPosterSettings;
 const shouldRunDailyPoster = poster.shouldRunDailyPoster || poster.shouldRunDailyPoster;
 const composePoster = poster.composePoster || poster.composePoster;
@@ -21,7 +22,7 @@ const sendDailyPosterNow = poster.sendDailyPosterNow || poster.sendDailyPosterNo
 const isPublishableProductName = poster.isPublishableProductName || poster.isPublishableProductName;
 const buildTemplateCaption = poster.buildTemplateCaption || poster.buildTemplateCaption;
 const qualityCheckCaption = poster.qualityCheckCaption || poster.qualityCheckCaption;
-const { RUBRICS } = poster;
+const { RUBRICS, CONTENT_TYPES } = poster;
 
 function withEnv(overrides, fn) {
   const prev = {};
@@ -104,45 +105,105 @@ function seedSetting(db, key, value, type = 'string') {
 
 async function main() {
   assert.ok(typeof pickRubric === 'function', 'pickRubric missing');
+  assert.ok(typeof pickContentType === 'function', 'pickContentType missing');
   assert.ok(typeof sendDailyPosterNow === 'function', 'sendDailyPosterNow missing');
-  assert.equal(RUBRICS.length, 12);
-  assert.equal(pickRubric(1).id, RUBRICS[1 % 12].id);
-  assert.equal(pickRubric(12).id, RUBRICS[0].id);
+  assert.equal(RUBRICS.length, 7);
+  assert.ok(CONTENT_TYPES.length >= 7);
+  assert.equal(pickRubric(1).id, 'monday_new_stock');
+  assert.equal(pickRubric(4).id, 'thursday_bundle');
+  assert.equal(pickRubric(0).id, 'sunday_quality');
+  assert.equal(pickRubric(6).weekdayName, 'Shanba');
   assert.equal(isPublishableProductName('Cola 1.5L'), true);
   assert.equal(isPublishableProductName('1234567890123'), false);
   assert.equal(isPublishableProductName('SKU-991'), false);
   assert.equal(isPublishableProductName('test'), false);
 
-  const rubric = RUBRICS[0];
-  const product = { name: 'Cola 1.5L', sale_price: 15000, current_stock: 5, category_name: 'Ichimliklar' };
-  const caption = buildTemplateCaption({ storeName: 'Test Market', product, rubric });
-  assert.ok(caption.includes('Cola'));
+  // Weekday defaults
+  assert.equal(pickContentType(2, { recentContentTypeIds: [] }).id, 'useful_tip');
+  assert.equal(pickContentType(5, { recentContentTypeIds: [] }).id, 'life_hack');
+  assert.equal(pickContentType(1, { recentContentTypeIds: [] }).id, 'product_showcase');
+  // Anti-repeat: after product, next product weekday → edu
+  const rotated = pickContentType(1, { recentContentTypeIds: ['product_showcase'] });
+  assert.equal(rotated.kind, 'edu');
+  assert.equal(pickContentType(2, { contentTypeId: 'life_hack' }).id, 'life_hack');
+
+  const tipType = poster.getContentTypeById('useful_tip');
+  const tipCaption = buildTemplateCaption({
+    storeName: 'Test Market',
+    contentType: tipType,
+    topic: 'PPR quvur ulashda o‘lchamni tekshiring',
+  });
+  assert.ok(/maslahat|Maslahat/i.test(tipCaption) || tipCaption.includes('💡'));
+  assert.ok(/#Dunyozamin/.test(tipCaption) && /#News/.test(tipCaption));
+  assert.equal(/sifatli\s+tanlov/i.test(tipCaption), false);
+  assert.equal(qualityCheckCaption(tipCaption, null, { contentType: tipType }).ok, true);
+
+  const rubric = RUBRICS[4]; // Payshanba
+  const product = {
+    name: 'Atvod 32 PPR',
+    sale_price: 15000,
+    current_stock: 5,
+    category_name: 'Santexnika · Fiting',
+  };
+  const caption = buildTemplateCaption({
+    storeName: 'Test Market',
+    product,
+    rubric,
+    contentType: poster.getContentTypeById('combo_bundle'),
+  });
+  assert.ok(caption.includes('Atvod'));
   assert.ok(caption.includes('15'));
   assert.ok(/News/i.test(caption));
+  assert.ok(caption.includes('Birga oling'));
+  assert.ok(caption.length >= poster.CAPTION_MIN);
+  assert.ok(/Santexnika|quvur|ulanish|sizib/i.test(caption));
+  assert.equal(/sifatli\s+tanlov/i.test(caption), false);
+  assert.ok(rubric.openingHint);
   const qc = qualityCheckCaption(caption, product);
   assert.equal(qc.ok, true);
 
   assert.equal(qualityCheckCaption('', product).ok, false);
   assert.equal(
     qualityCheckCaption(
-      'Buy Cola 1.5L today for amazing casino bonuses and guaranteed profit everywhere online now',
+      'Buy Atvod 32 PPR today for amazing casino bonuses and guaranteed profit everywhere online now with more filler text to clear min length gate 15000 #Dunyozamin #News',
       product,
     ).reason,
     'forbidden_content',
   );
   assert.equal(
     qualityCheckCaption(
-      'Cola 1.5L — bugungi qarz va nasiya hisobotiga qarang, narx 15000',
+      "Atvod 32 PPR — bugungi qarz va nasiya hisobotiga qarang, narx 15000 so'm va yana matn kerak uzunlik uchun qo'shildi #Dunyozamin #News",
       product,
     ).reason,
     'forbidden_content',
   );
+  assert.equal(
+    qualityCheckCaption(
+      "🔥 Atvod 32 PPR\nSifatli tanlov — kunni chiroyliroq qiladi\n💰 15000 so'm\n#Dunyozamin #News #tavsiya va yana matn uzunlik uchun",
+      product,
+    ).reason,
+    'banned_slogan',
+  );
+
+  // Each weekday template pitch must be unique (no recycled default slogan)
+  const pitches = new Set(RUBRICS.map((r) => r.templatePitch));
+  assert.equal(pitches.size, 7);
+  assert.equal(new Set(RUBRICS.map((r) => r.openingHint)).size, 7);
+  assert.ok(/santexnika/i.test(poster.inferUseCaseHint(product)));
+  assert.equal(new Set(CONTENT_TYPES.map((c) => c.id)).size, CONTENT_TYPES.length);
 
   const { db } = openTempDb();
   seedSetting(db, 'reports.telegram.daily_poster', '1', 'boolean');
   seedSetting(db, 'reports.telegram.daily_poster_time', '00:00', 'string');
   seedSetting(db, 'company_name', 'Test Market', 'string');
-
+  poster.pushRecentProductId(db, 'p1');
+  assert.deepEqual(poster.readRecentProductIds(db), ['p1']);
+  poster.pushRecentContentTypeId(db, 'product_showcase');
+  assert.deepEqual(poster.readRecentContentTypeIds(db), ['product_showcase']);
+  db.prepare(
+    `INSERT INTO products (id, name, sale_price, current_stock, image_url, category_id, is_active)
+     VALUES ('p4', 'Poliatvod 25', 12000, 20, 'https://example.com/p.jpg', 'c1', 1)`,
+  ).run();
   await withEnv(
     {
       TELEGRAM_MARKETING_BOT_TOKEN: '123:ABC',
@@ -155,6 +216,7 @@ async function main() {
       const settings = getDailyPosterSettings(db);
       assert.equal(settings.enabled, true);
       assert.equal(settings.scheduleTime, '00:00');
+      assert.ok(settings.todayContentType?.id);
 
       const gate = shouldRunDailyPoster(db, settings, { force: true });
       assert.equal(gate.ok, true);
@@ -162,12 +224,23 @@ async function main() {
       const composed = await composePoster(db, {
         skipEnvLoad: true,
         skipImage: true,
+        contentTypeId: 'useful_tip',
         fetchFn: async () => ({ ok: false, status: 500, text: async () => '' }),
       });
       assert.equal(composed.ok, true);
       assert.ok(composed.caption);
-      assert.ok(composed.product?.name);
-      assert.notEqual(composed.product.name, '4780123456789');
+      assert.equal(composed.contentType?.id, 'useful_tip');
+      assert.equal(composed.contentType?.kind, 'edu');
+
+      const productComposed = await composePoster(db, {
+        skipEnvLoad: true,
+        skipImage: true,
+        contentTypeId: 'product_showcase',
+        fetchFn: async () => ({ ok: false, status: 500, text: async () => '' }),
+      });
+      assert.equal(productComposed.ok, true);
+      assert.ok(productComposed.product?.name);
+      assert.notEqual(productComposed.product.name, '4780123456789');
 
       let posted = false;
       const origFetch = globalThis.fetch;
@@ -185,19 +258,33 @@ async function main() {
           skipImage: true,
           botToken: '123:ABC',
           channelId: '-100111',
+          contentTypeId: 'life_hack',
+          sampleOnly: true,
         });
         assert.equal(sent.ok, true);
         assert.equal(sent.sent, 1);
+        assert.equal(sent.contentType, 'life_hack');
         assert.equal(posted, true);
 
+        // sampleOnly must not block the real daily run
         const again = await runDailyPosterTick(db, {
           skipEnvLoad: true,
           skipImage: true,
           botToken: '123:ABC',
           channelId: '-100111',
+          contentTypeId: 'useful_tip',
         });
-        assert.equal(again.skipped, true);
-        assert.equal(again.reason, 'already_ran_today');
+        assert.equal(again.ok, true);
+        assert.equal(again.sent, 1);
+
+        const blocked = await runDailyPosterTick(db, {
+          skipEnvLoad: true,
+          skipImage: true,
+          botToken: '123:ABC',
+          channelId: '-100111',
+        });
+        assert.equal(blocked.skipped, true);
+        assert.equal(blocked.reason, 'already_ran_today');
       } finally {
         globalThis.fetch = origFetch;
       }

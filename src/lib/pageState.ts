@@ -1,4 +1,5 @@
 import type { NavigateFunction } from 'react-router-dom';
+import { sanitizeReturnTo } from '@/lib/listState';
 
 type LocationLike = {
   pathname: string;
@@ -9,6 +10,7 @@ type LocationLike = {
 
 type NavigationState = {
   backTo?: string;
+  returnTo?: string;
   [key: string]: unknown;
 };
 
@@ -20,24 +22,74 @@ export function createBackNavigationState(
   location: LocationLike,
   extraState?: Record<string, unknown>
 ): NavigationState {
+  const backTo = buildCurrentPath(location);
   return {
     ...(extraState || {}),
-    backTo: buildCurrentPath(location),
+    backTo,
+    returnTo: backTo,
   };
 }
 
-export function resolveBackTarget(location: LocationLike, fallback: string): string {
-  const candidate = (location.state as NavigationState | undefined)?.backTo;
-  if (typeof candidate === 'string' && candidate.startsWith('/')) {
-    return candidate;
+function readReturnToFromSearch(search?: string): string | null {
+  if (!search) return null;
+  try {
+    const params = new URLSearchParams(
+      search.startsWith('?') ? search.slice(1) : search,
+    );
+    return params.get('returnTo');
+  } catch {
+    return null;
   }
-  return fallback;
 }
 
+export function resolveBackTarget(location: LocationLike, fallback: string): string {
+  const state = location.state as NavigationState | undefined;
+  const fromState =
+    (typeof state?.backTo === 'string' && state.backTo) ||
+    (typeof state?.returnTo === 'string' && state.returnTo) ||
+    null;
+  const fromQuery = readReturnToFromSearch(location.search);
+  return sanitizeReturnTo(fromState || fromQuery, fallback);
+}
+
+/**
+ * Prefer browser history when the previous internal entry is the same list module;
+ * otherwise navigate to sanitized returnTo / fallback.
+ */
 export function navigateBackTo(
   navigate: NavigateFunction,
   location: LocationLike,
-  fallback: string
+  fallback: string,
 ) {
-  navigate(resolveBackTarget(location, fallback));
+  const target = resolveBackTarget(location, fallback);
+  const fallbackBase = fallback.split('?')[0] || fallback;
+  const targetBase = target.split('?')[0] || target;
+
+  try {
+    if (
+      typeof window !== 'undefined' &&
+      window.history.length > 1 &&
+      targetBase === fallbackBase
+    ) {
+      // Same list module: history.back restores scroll/stack when possible
+      const ref = typeof document !== 'undefined' ? document.referrer : '';
+      let sameOriginRef = false;
+      try {
+        if (ref) {
+          const u = new URL(ref);
+          sameOriginRef = u.origin === window.location.origin;
+        }
+      } catch {
+        sameOriginRef = false;
+      }
+      if (sameOriginRef) {
+        navigate(-1);
+        return;
+      }
+    }
+  } catch {
+    /* fall through */
+  }
+
+  navigate(target);
 }

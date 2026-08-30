@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Button } from '@/components/ui/button';
 import {
   Dialog,
@@ -44,8 +44,16 @@ import {
 } from '@/components/ui/select';
 import { useAuth } from '@/contexts/AuthContext';
 import { useShiftStore } from '@/store/shiftStore';
+import {
+  allocatePaymentInToDebtAndAdvance,
+  assertPaymentOutAllowed,
+  classifyPaymentOut,
+  roleCanLendCreateDebt,
+  roleCanPayoutWithinAdvance,
+} from '@/lib/posHardening';
 
 type PaymentMethod = 'cash' | 'card' | 'click' | 'payme' | 'transfer' | 'other';
+type OutMode = 'payout' | 'lend';
 
 interface ReceivePaymentModalProps {
   open: boolean;
@@ -84,8 +92,13 @@ export default function ReceivePaymentModal({
   const { toast } = useToast();
   const { user, profile } = useAuth();
   const { currentShift } = useShiftStore();
-  const isAdmin = profile?.role === 'admin';
+  const role = String(profile?.role || '').toLowerCase();
+  const roles = role ? [role] : [];
+  const canPayout = roleCanPayoutWithinAdvance(roles);
+  const canLend = roleCanLendCreateDebt(roles);
+
   const [direction, setDirection] = useState<'in' | 'out'>('in');
+  const [outMode, setOutMode] = useState<OutMode>('payout');
   const [amount, setAmount] = useState<number | null>(null);
   const [paymentCurrency, setPaymentCurrency] = useState<AppCurrency>(defaultCurrency);
   const [fxRate, setFxRate] = useState<number | null>(null);
@@ -93,11 +106,14 @@ export default function ReceivePaymentModal({
   const [note, setNote] = useState('');
   const [loading, setLoading] = useState(false);
   const [confirmOutOpen, setConfirmOutOpen] = useState(false);
+  const [confirmLendOpen, setConfirmLendOpen] = useState(false);
   const paymentUuidRef = useRef<string | null>(null);
   const queryClient = useQueryClient();
 
   const balances = customer ? getCustomerBalances(customer) : { uzs: 0, usd: 0 };
   const activeBalance = paymentCurrency === 'USD' ? balances.usd : balances.uzs;
+  const advance = activeBalance > 0 ? activeBalance : 0;
+  const openDebt = activeBalance < 0 ? Math.abs(activeBalance) : 0;
 
   useEffect(() => {
     if (open && customer) {
@@ -110,16 +126,19 @@ export default function ReceivePaymentModal({
         setDirection('in');
         setAmount(null);
       }
+      setOutMode('payout');
       setPaymentMethod('cash');
       setNote('');
       paymentUuidRef.current = null;
     } else if (!open) {
       setDirection('in');
+      setOutMode('payout');
       setAmount(null);
       setPaymentCurrency(defaultCurrency);
       setPaymentMethod('cash');
       setNote('');
       setConfirmOutOpen(false);
+      setConfirmLendOpen(false);
       paymentUuidRef.current = null;
     }
   }, [open, customer, defaultCurrency]);
@@ -134,12 +153,30 @@ export default function ReceivePaymentModal({
   }, [open, paymentCurrency]);
 
   useEffect(() => {
-    if (!isAdmin && direction === 'out') {
+    if (!canPayout && !canLend && direction === 'out') {
       setDirection('in');
     }
-  }, [isAdmin, direction]);
+  }, [canPayout, canLend, direction]);
 
-  const submitPayment = async () => {
+  const outClassification = useMemo(() => {
+    if (!amount || amount <= 0) return null;
+    return classifyPaymentOut(activeBalance, amount);
+  }, [activeBalance, amount]);
+
+  const paymentInAllocation = useMemo(() => {
+    if (!amount || amount <= 0 || direction !== 'in') return null;
+    return allocatePaymentInToDebtAndAdvance(activeBalance, amount);
+  }, [activeBalance, amount, direction]);
+
+  const payoutBlocked =
+    direction === 'out' &&
+    outMode === 'payout' &&
+    !!outClassification?.ok &&
+    outClassification.kind === 'lend';
+
+  const canSubmitAmount = !!amount && amount > 0 && !payoutBlocked;
+
+  const submitPayment = async (kind: OutMode | null) => {
     if (!customer) return;
 
     if (!paymentUuidRef.current) {
@@ -166,6 +203,13 @@ export default function ReceivePaymentModal({
         source,
         shift_id: currentShift?.id ?? null,
         payment_uuid: paymentUuid,
+        ...(operation === 'payment_out'
+          ? {
+              payment_out_kind: kind || outMode,
+              lend_authorized: kind === 'lend' || outMode === 'lend',
+              approver_user_id: user?.id || null,
+            }
+          : {}),
       });
 
       if (!result.success) {
@@ -182,7 +226,12 @@ export default function ReceivePaymentModal({
           ? Number(result.new_balance_usd ?? result.new_balance ?? 0)
           : Number(result.new_balance_uzs ?? result.new_balance ?? 0);
 
-      const operationLabel = direction === 'in' ? "To'lov qabul qilindi" : 'Pul berildi';
+      const operationLabel =
+        direction === 'in'
+          ? "To'lov qabul qilindi"
+          : kind === 'lend' || outMode === 'lend'
+            ? 'Qarz berildi'
+            : 'Pul berildi';
       const deltaLabel =
         direction === 'in'
           ? `+${formatMoney(appliedAmount, paymentCurrency)}`
@@ -202,6 +251,7 @@ export default function ReceivePaymentModal({
       });
 
       setDirection('in');
+      setOutMode('payout');
       setAmount(null);
       setPaymentMethod('cash');
       setNote('');
@@ -242,24 +292,44 @@ export default function ReceivePaymentModal({
     }
 
     if (direction === 'out') {
-      if (!isAdmin) {
+      const gate = assertPaymentOutAllowed({
+        oldBalance: activeBalance,
+        amount,
+        roles,
+        kindRequested: outMode,
+        reason: note,
+        creditLimit: Number((customer as any).credit_limit) || 0,
+        lendAuthorized: outMode === 'lend' && canLend,
+      });
+      if (!gate.ok) {
         toast({
           title: 'Xatolik',
-          description: 'Pul berish faqat admin uchun ruxsat etilgan',
+          description: gate.error,
           variant: 'destructive',
         });
+        return;
+      }
+      if (outMode === 'lend') {
+        if (!note.trim()) {
+          toast({
+            title: 'Sabab kerak',
+            description: 'Qarz berish (lend) uchun sabab majburiy',
+            variant: 'destructive',
+          });
+          return;
+        }
+        setConfirmLendOpen(true);
         return;
       }
       setConfirmOutOpen(true);
       return;
     }
 
-    await submitPayment();
+    await submitPayment(null);
   };
 
   if (!customer) return null;
 
-  const isDebt = activeBalance < 0;
   const previewAmount = amount && amount > 0 ? amount : 0;
   const delta = direction === 'in' ? previewAmount : -previewAmount;
   const newBalance = activeBalance + delta;
@@ -269,15 +339,24 @@ export default function ReceivePaymentModal({
   return (
     <>
       <Dialog open={open} onOpenChange={onOpenChange}>
-        <DialogContent className="w-[calc(100vw-1rem)] sm:max-w-[400px] max-h-[82vh] overflow-y-auto p-3">
+        <DialogContent
+          className="w-[calc(100vw-1rem)] sm:max-w-[400px] max-h-[82vh] overflow-y-auto p-3"
+          aria-describedby="receive-payment-desc"
+        >
           <DialogHeader>
             <DialogTitle className="text-base">
-              {direction === 'in' ? 'Pul qabul qilish' : 'Pul berish'}
+              {direction === 'in'
+                ? 'Pul qabul qilish'
+                : outMode === 'lend'
+                  ? 'Qarz berish (lend)'
+                  : 'Pul berish (payout)'}
             </DialogTitle>
-            <DialogDescription className="text-xs">
+            <DialogDescription id="receive-payment-desc" className="text-xs">
               {direction === 'in'
                 ? `${customer.name} — to‘lov valyutasini tanlang (UZS/USD alohida)`
-                : `${customer.name} mijozga pul bering`}
+                : outMode === 'lend'
+                  ? `${customer.name} — oldindan to‘lovdan ortiq berish = yangi qarz (menejer/admin)`
+                  : `${customer.name} — faqat mavjud oldindan to‘lov doirasida`}
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-2 py-1">
@@ -291,7 +370,7 @@ export default function ReceivePaymentModal({
                       + Qabul
                     </Label>
                   </div>
-                  {isAdmin && (
+                  {canPayout && (
                     <div className="flex items-center space-x-2">
                       <RadioGroupItem value="out" id="out" />
                       <Label htmlFor="out" className="font-normal cursor-pointer">
@@ -303,10 +382,44 @@ export default function ReceivePaymentModal({
               </RadioGroup>
             </div>
 
+            {direction === 'out' && canLend && (
+              <div className="space-y-2">
+                <Label>Berish turi *</Label>
+                <RadioGroup value={outMode} onValueChange={(v) => setOutMode(v as OutMode)}>
+                  <div className="flex flex-wrap gap-x-6 gap-y-2">
+                    <div className="flex items-center space-x-2">
+                      <RadioGroupItem value="payout" id="out-payout" />
+                      <Label htmlFor="out-payout" className="font-normal cursor-pointer">
+                        Oldindan to‘lovdan berish
+                      </Label>
+                    </div>
+                    <div className="flex items-center space-x-2">
+                      <RadioGroupItem value="lend" id="out-lend" />
+                      <Label htmlFor="out-lend" className="font-normal cursor-pointer">
+                        Qarz berish (lend)
+                      </Label>
+                    </div>
+                  </div>
+                </RadioGroup>
+              </div>
+            )}
+
             <div className="p-2 bg-muted rounded-lg space-y-1">
               <div className="flex justify-between">
                 <span className="text-xs text-muted-foreground">Mijoz:</span>
                 <span className="text-xs font-semibold">{customer.name}</span>
+              </div>
+              <div className="flex justify-between items-center">
+                <span className="text-xs text-muted-foreground">Oldindan ({paymentCurrency}):</span>
+                <span className="text-xs font-semibold text-green-600">
+                  {formatMoney(advance, paymentCurrency)}
+                </span>
+              </div>
+              <div className="flex justify-between items-center">
+                <span className="text-xs text-muted-foreground">Ochiq qarz ({paymentCurrency}):</span>
+                <span className="text-xs font-semibold text-destructive">
+                  {formatMoney(openDebt, paymentCurrency)}
+                </span>
               </div>
               <div className="flex justify-between items-center">
                 <span className="text-xs text-muted-foreground">Balans (UZS):</span>
@@ -357,20 +470,32 @@ export default function ReceivePaymentModal({
                 placeholder="0"
                 required
                 min={1}
+                max={direction === 'out' && outMode === 'payout' && advance > 0 ? advance : undefined}
                 className="h-9 text-sm"
               />
-              {direction === 'in' && isDebt && (
+              {direction === 'in' && openDebt > 0 && (
                 <div className="flex flex-wrap gap-2 mt-2">
                   <Button
                     type="button"
                     variant="outline"
                     size="sm"
-                    onClick={() => setAmount(Math.abs(activeBalance))}
+                    onClick={() => setAmount(openDebt)}
                     className="h-8 px-2 text-xs"
                   >
                     100% qarz
                   </Button>
                 </div>
+              )}
+              {direction === 'out' && outMode === 'payout' && (
+                <p className="text-xs text-muted-foreground">
+                  Maksimal: {formatMoney(advance, paymentCurrency)} (oldindan to‘lov)
+                </p>
+              )}
+              {payoutBlocked && (
+                <p className="text-xs text-destructive">
+                  Summa oldindan to‘lovdan oshib ketdi. Oddiy berish bloklangan — qarz berish (lend)
+                  alohida amal.
+                </p>
               )}
             </div>
 
@@ -392,18 +517,44 @@ export default function ReceivePaymentModal({
             </div>
 
             <div className="space-y-2">
-              <Label htmlFor="note">Izoh (ixtiyoriy)</Label>
+              <Label htmlFor="note">
+                {direction === 'out' && outMode === 'lend' ? 'Sabab *' : 'Izoh (ixtiyoriy)'}
+              </Label>
               <Textarea
                 id="note"
                 value={note}
                 onChange={(e) => setNote(e.target.value)}
-                placeholder="To'lov haqida qo'shimcha ma'lumot..."
+                placeholder={
+                  direction === 'out' && outMode === 'lend'
+                    ? 'Qarz berish sababi (majburiy)...'
+                    : "To'lov haqida qo'shimcha ma'lumot..."
+                }
                 rows={2}
+                required={direction === 'out' && outMode === 'lend'}
               />
             </div>
 
             {amount && amount > 0 && (
               <div className="p-2 bg-primary/10 border border-primary/20 rounded-lg space-y-1">
+                {direction === 'in' && paymentInAllocation && (
+                  <div className="text-xs space-y-1 pb-1 border-b mb-1">
+                    <div className="flex justify-between">
+                      <span>Qarz yopiladi:</span>
+                      <span className="font-semibold">
+                        {formatMoney(paymentInAllocation.debt_portion, paymentCurrency)}
+                      </span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span>Oldindan qo‘shiladi:</span>
+                      <span className="font-semibold text-green-600">
+                        {formatMoney(paymentInAllocation.advance_portion, paymentCurrency)}
+                      </span>
+                    </div>
+                    <p className="text-[11px] text-muted-foreground">
+                      Ortig‘i avtomatik oldindan to‘lovga o‘tadi; qarz o‘zi yopilmaydi.
+                    </p>
+                  </div>
+                )}
                 <div className="flex justify-between items-center">
                   <span className="text-xs font-medium">Joriy ({paymentCurrency}):</span>
                   <BalanceLine
@@ -434,9 +585,23 @@ export default function ReceivePaymentModal({
             <Button size="sm" variant="outline" onClick={() => onOpenChange(false)} disabled={loading}>
               Bekor qilish
             </Button>
-            <Button size="sm" onClick={handleSubmit} disabled={loading || !amount || amount <= 0}>
+            <Button
+              size="sm"
+              onClick={handleSubmit}
+              disabled={
+                loading ||
+                !canSubmitAmount ||
+                (direction === 'out' && outMode === 'lend' && !note.trim())
+              }
+            >
               <DollarSign className="h-3.5 w-3.5 mr-2" />
-              {loading ? 'Jarayonda...' : direction === 'in' ? 'Qabul qilish' : 'Berish'}
+              {loading
+                ? 'Jarayonda...'
+                : direction === 'in'
+                  ? 'Qabul qilish'
+                  : outMode === 'lend'
+                    ? 'Qarz berish'
+                    : 'Berish'}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -448,6 +613,7 @@ export default function ReceivePaymentModal({
             <AlertDialogTitle>Pul berishni tasdiqlang</AlertDialogTitle>
             <AlertDialogDescription>
               „{customer.name}” mijozga {formatMoney(amount || 0, paymentCurrency)} berilsinmi?
+              (faqat oldindan to‘lov doirasida)
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
@@ -457,10 +623,35 @@ export default function ReceivePaymentModal({
               onClick={(e) => {
                 e.preventDefault();
                 setConfirmOutOpen(false);
-                void submitPayment();
+                void submitPayment('payout');
               }}
             >
               Tasdiqlash
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      <AlertDialog open={confirmLendOpen} onOpenChange={setConfirmLendOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Qarz berishni tasdiqlang</AlertDialogTitle>
+            <AlertDialogDescription>
+              Bu amal mijozga yangi qarz yaratadi. Summa: {formatMoney(amount || 0, paymentCurrency)}.
+              Sabab: {note.trim() || '—'}. Ikkinchi marta tasdiqlang.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={loading}>Bekor qilish</AlertDialogCancel>
+            <AlertDialogAction
+              disabled={loading}
+              onClick={(e) => {
+                e.preventDefault();
+                setConfirmLendOpen(false);
+                void submitPayment('lend');
+              }}
+            >
+              Qarz berishni tasdiqlash
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

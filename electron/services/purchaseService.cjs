@@ -1,5 +1,18 @@
 const { ERROR_CODES, createError } = require('../lib/errors.cjs');
 const { randomUUID } = require('crypto');
+const {
+  computePurchasePaymentStatus,
+  computePurchaseRemainder,
+  validateConfirmReceiveInput,
+  computeReceivableQty,
+  assertReceivableAllows,
+  canApproveZeroCostReceive,
+  canCreateCostCorrection,
+  canApproveCostCorrection,
+  pickPrimaryPurchaseRole,
+  moneyTolerance,
+  canExportPurchaseOrders,
+} = require('../lib/purchaseHardening.cjs');
 
 /**
  * Purchase Service
@@ -12,6 +25,8 @@ class PurchaseService {
     this.batchService = batchService;
     this.cacheService = cacheService;
     this.productsService = null;
+    /** @type {import('./auditService.cjs')|null} */
+    this.auditService = null;
     this._poCols = null;
     this._poiCols = null;
     this._spCols = null;
@@ -192,12 +207,66 @@ class PurchaseService {
     );
   }
 
-  _computePaymentStatus(paidAmount, totalAmount) {
-    const paid = Number(paidAmount) || 0;
-    const total = Number(totalAmount) || 0;
-    if (paid <= 0) return 'UNPAID';
-    if (paid >= total) return 'PAID';
-    return 'PARTIALLY_PAID';
+  _computePaymentStatus(paidAmount, totalAmount, currency = 'UZS') {
+    return computePurchasePaymentStatus(paidAmount, totalAmount, currency);
+  }
+
+  _getUserRoleCodes(userId) {
+    if (!userId) return [];
+    try {
+      const rows = this.db
+        .prepare(
+          `
+        SELECT r.code
+        FROM roles r
+        INNER JOIN user_roles ur ON ur.role_id = r.id
+        WHERE ur.user_id = ?
+      `,
+        )
+        .all(userId);
+      const codes = (rows || []).map((r) => String(r.code || '').toLowerCase()).filter(Boolean);
+      if (codes.length) return codes;
+    } catch {
+      // fall through
+    }
+    try {
+      const profile = this.db.prepare(`SELECT role FROM profiles WHERE id = ?`).get(userId);
+      if (profile?.role) return [String(profile.role).toLowerCase()];
+    } catch {
+      // ignore
+    }
+    if (String(userId) === 'default-admin-001') return ['admin'];
+    return [];
+  }
+
+  _primaryPurchaseRole(userId) {
+    return pickPrimaryPurchaseRole(this._getUserRoleCodes(userId));
+  }
+
+  _audit(action, entityType, entityId, oldValues, newValues, userId) {
+    try {
+      this.auditService?.log?.({
+        action,
+        entity_type: entityType,
+        entity_id: entityId,
+        old_values: oldValues || null,
+        new_values: newValues || null,
+        user_id: userId || null,
+      });
+    } catch (e) {
+      console.warn('[PurchaseService] audit failed:', e?.message);
+    }
+  }
+
+  _supplierPaymentActiveSql(alias = 'sp') {
+    const parts = [];
+    if (this._hasSupplierPaymentCol('cancelled_at')) {
+      parts.push(`${alias}.cancelled_at IS NULL`);
+    }
+    if (this._hasSupplierPaymentCol('is_advance_portion')) {
+      parts.push(`COALESCE(${alias}.is_advance_portion, 0) = 0`);
+    }
+    return parts.length ? ` AND ${parts.join(' AND ')}` : '';
   }
 
   /**
@@ -476,6 +545,8 @@ class PurchaseService {
           ${hasAmountUsd ? ', SUM(COALESCE(amount_usd, 0)) AS paid_amount_usd' : ''}
         FROM supplier_payments
         WHERE purchase_order_id IS NOT NULL
+          ${this._hasSupplierPaymentCol('cancelled_at') ? 'AND cancelled_at IS NULL' : ''}
+          ${this._hasSupplierPaymentCol('is_advance_portion') ? 'AND COALESCE(is_advance_portion, 0) = 0' : ''}
         GROUP BY purchase_order_id
       ) pays ON pays.purchase_order_id = po.id
       WHERE 1=1
@@ -490,6 +561,25 @@ class PurchaseService {
     if (filters.status) {
       query += ' AND po.status = ?';
       params.push(filters.status);
+    }
+
+    if (filters.currency) {
+      query += ' AND UPPER(COALESCE(po.currency, \'UZS\')) = ?';
+      params.push(String(filters.currency).toUpperCase());
+    }
+
+    if (filters.payment_status) {
+      query += ' AND UPPER(COALESCE(po.payment_status, \'UNPAID\')) = ?';
+      params.push(String(filters.payment_status).toUpperCase());
+    }
+
+    if (filters.debt_only) {
+      query += ` AND (
+        CASE WHEN UPPER(COALESCE(po.currency, 'UZS')) = 'USD'
+          THEN COALESCE(po.total_usd, 0) - COALESCE(pays.paid_amount_usd, 0)
+          ELSE COALESCE(po.total_amount, 0) - COALESCE(pays.paid_amount, 0)
+        END
+      ) > 0.009`;
     }
 
     if (filters.date_from) {
@@ -509,14 +599,102 @@ class PurchaseService {
       params.push(term, term, term);
     }
 
-    query += ' ORDER BY po.order_date DESC, po.created_at DESC';
+    const sortBy = String(filters.sort_by || filters.sortBy || 'order_date').toLowerCase();
+    const sortDir = String(filters.sort_dir || filters.sortDir || 'desc').toLowerCase() === 'asc' ? 'ASC' : 'DESC';
+    const remainingExpr = hasAmountUsd
+      ? `(
+      CASE WHEN UPPER(COALESCE(po.currency, 'UZS')) = 'USD'
+        THEN COALESCE(po.total_usd, 0) - COALESCE(pays.paid_amount_usd, 0)
+        ELSE COALESCE(po.total_amount, 0) - COALESCE(pays.paid_amount, 0)
+      END
+    )`
+      : `(COALESCE(po.total_amount, 0) - COALESCE(pays.paid_amount, 0))`;
+    const paidExpr = hasAmountUsd
+      ? `(
+      CASE WHEN UPPER(COALESCE(po.currency, 'UZS')) = 'USD'
+        THEN COALESCE(pays.paid_amount_usd, 0)
+        ELSE COALESCE(pays.paid_amount, 0)
+      END
+    )`
+      : `COALESCE(pays.paid_amount, 0)`;
+    const sortCol =
+      sortBy === 'total' || sortBy === 'total_amount'
+        ? 'po.total_amount'
+        : sortBy === 'status'
+          ? 'po.status'
+          : sortBy === 'po_number'
+            ? 'po.po_number'
+            : sortBy === 'remaining' || sortBy === 'remaining_amount'
+              ? remainingExpr
+              : sortBy === 'paid' || sortBy === 'paid_amount'
+                ? paidExpr
+                : 'po.order_date';
 
-    if (filters.limit) {
-      query += ' LIMIT ?';
-      params.push(filters.limit);
+    const withTotal = !!(filters.with_total || filters.withTotal || filters.return_meta);
+    let total = null;
+    if (withTotal) {
+      const countQuery = `
+        SELECT COUNT(*) AS c
+        FROM purchase_orders po
+        LEFT JOIN suppliers s ON po.supplier_id = s.id
+        LEFT JOIN (
+          SELECT purchase_order_id,
+            SUM(amount) AS paid_amount
+            ${hasAmountUsd ? ', SUM(COALESCE(amount_usd, 0)) AS paid_amount_usd' : ''}
+          FROM supplier_payments
+          WHERE purchase_order_id IS NOT NULL
+            ${this._hasSupplierPaymentCol('cancelled_at') ? 'AND cancelled_at IS NULL' : ''}
+            ${this._hasSupplierPaymentCol('is_advance_portion') ? 'AND COALESCE(is_advance_portion, 0) = 0' : ''}
+          GROUP BY purchase_order_id
+        ) pays ON pays.purchase_order_id = po.id
+        WHERE 1=1
+        ${filters.supplier_id ? ' AND po.supplier_id = ?' : ''}
+        ${filters.status ? ' AND po.status = ?' : ''}
+        ${filters.currency ? ' AND UPPER(COALESCE(po.currency, \'UZS\')) = ?' : ''}
+        ${filters.payment_status ? ' AND UPPER(COALESCE(po.payment_status, \'UNPAID\')) = ?' : ''}
+        ${filters.debt_only ? ` AND (
+          CASE WHEN UPPER(COALESCE(po.currency, 'UZS')) = 'USD'
+            THEN COALESCE(po.total_usd, 0) - COALESCE(pays.paid_amount_usd, 0)
+            ELSE COALESCE(po.total_amount, 0) - COALESCE(pays.paid_amount, 0)
+          END
+        ) > 0.009` : ''}
+        ${filters.date_from ? ' AND po.order_date >= ?' : ''}
+        ${filters.date_to ? ' AND po.order_date <= ?' : ''}
+        ${
+          filters.search && String(filters.search).trim()
+            ? ' AND (po.po_number LIKE ? OR IFNULL(s.name, \'\') LIKE ? OR IFNULL(po.supplier_name, \'\') LIKE ?)'
+            : ''
+        }
+      `;
+      // Reuse same params order as main query (without limit/offset)
+      const countParams = [];
+      if (filters.supplier_id) countParams.push(filters.supplier_id);
+      if (filters.status) countParams.push(filters.status);
+      if (filters.currency) countParams.push(String(filters.currency).toUpperCase());
+      if (filters.payment_status) countParams.push(String(filters.payment_status).toUpperCase());
+      if (filters.date_from) countParams.push(filters.date_from);
+      if (filters.date_to) countParams.push(filters.date_to);
+      if (filters.search && String(filters.search).trim()) {
+        const term = `%${String(filters.search).trim()}%`;
+        countParams.push(term, term, term);
+      }
+      total = Number(this.db.prepare(countQuery).get(...countParams)?.c || 0);
     }
 
-    const rows = this.db.prepare(query).all(params);
+    query += ` ORDER BY ${sortCol} ${sortDir}, po.created_at DESC`;
+
+    const limit = filters.limit != null ? Number(filters.limit) : null;
+    const offset = filters.offset != null ? Number(filters.offset) : 0;
+    if (Number.isFinite(limit) && limit > 0) {
+      query += ' LIMIT ?';
+      params.push(limit);
+      if (Number.isFinite(offset) && offset > 0) {
+        query += ' OFFSET ?';
+        params.push(offset);
+      }
+    }
+
+    const rows = this.db.prepare(query).all(...params);
 
     // If include_items requested, fetch items for all POs in one batch
     let itemsByPoId = new Map();
@@ -545,7 +723,7 @@ class PurchaseService {
       }
     }
 
-    return rows.map((row) => {
+    const mapped = rows.map((row) => {
       const currency = hasCurrency ? String(row.currency || 'UZS').toUpperCase() : 'UZS';
       const paidAmountUZS = Number(row.computed_paid_amount ?? 0);
       let paidAmountUSD = hasAmountUsd ? Number(row.computed_paid_amount_usd ?? 0) : 0;
@@ -555,18 +733,23 @@ class PurchaseService {
       }
       const totalAmountUZS = Number(row.total_amount ?? 0);
       const totalAmountUSD = hasTotalUsd ? Number(row.total_usd ?? 0) : 0;
+      const remUzs = computePurchaseRemainder(paidAmountUZS, totalAmountUZS);
+      const remUsd = computePurchaseRemainder(paidAmountUSD, totalAmountUSD);
       const result = {
         ...row,
         paid_amount_uzs: paidAmountUZS,
-        remaining_amount_uzs: totalAmountUZS - paidAmountUZS,
+        remaining_amount_uzs: remUzs.debt,
+        excess_amount_uzs: remUzs.excess,
         paid_amount_usd: currency === 'USD' ? paidAmountUSD : null,
-        remaining_amount_usd: currency === 'USD' ? (totalAmountUSD - paidAmountUSD) : null,
-        // Keep legacy fields too (best-effort)
+        remaining_amount_usd: currency === 'USD' ? remUsd.debt : null,
+        excess_amount_usd: currency === 'USD' ? remUsd.excess : null,
+        // Keep legacy fields too (best-effort) — debt never negative
         paid_amount: currency === 'USD' ? paidAmountUSD : paidAmountUZS,
-        remaining_amount: currency === 'USD' ? (totalAmountUSD - paidAmountUSD) : (totalAmountUZS - paidAmountUZS),
+        remaining_amount: currency === 'USD' ? remUsd.debt : remUzs.debt,
+        excess_amount: currency === 'USD' ? remUsd.excess : remUzs.excess,
         payment_status: currency === 'USD'
-          ? this._computePaymentStatus(paidAmountUSD, totalAmountUSD)
-          : this._computePaymentStatus(paidAmountUZS, totalAmountUZS),
+          ? this._computePaymentStatus(paidAmountUSD, totalAmountUSD, 'USD')
+          : this._computePaymentStatus(paidAmountUZS, totalAmountUZS, 'UZS'),
         // Helpful for UI: allow payment from list even if it expects `po.supplier`
         supplier: row.supplier_id
           ? { id: row.supplier_id, name: row.supplier_name || row.supplier_id }
@@ -577,6 +760,46 @@ class PurchaseService {
       }
       return result;
     });
+
+    if (withTotal) {
+      return {
+        rows: mapped,
+        total: total != null ? total : mapped.length,
+        limit: Number.isFinite(limit) && limit > 0 ? limit : null,
+        offset: Number.isFinite(offset) && offset > 0 ? offset : 0,
+      };
+    }
+    return mapped;
+  }
+
+  /**
+   * Authorized + audited PO list export (CSV rows as objects).
+   */
+  exportList(filters = {}, { exported_by } = {}) {
+    const role = this._primaryPurchaseRole(exported_by);
+    if (!canExportPurchaseOrders(role)) {
+      throw createError(
+        ERROR_CODES.FORBIDDEN || ERROR_CODES.VALIDATION_ERROR,
+        'Export purchase orders requires accountant/manager/admin',
+      );
+    }
+    const { with_total: _wt, withTotal: _wt2, return_meta: _rm, limit: _lim, offset: _off, ...rest } =
+      filters || {};
+    const rows = this.list({ ...rest, include_items: false });
+    const list = Array.isArray(rows) ? rows : rows?.rows || [];
+    this._audit(
+      'export',
+      'purchase_orders',
+      null,
+      null,
+      {
+        count: list.length,
+        filters: rest,
+        exported_at: new Date().toISOString(),
+      },
+      exported_by || null,
+    );
+    return { rows: list, count: list.length };
   }
 
   /**
@@ -598,16 +821,32 @@ class PurchaseService {
     const hasTotalUsd = this._hasPOCol('total_usd');
     const poCurrency = hasCurrency ? String(po.currency || 'UZS').toUpperCase() : 'UZS';
 
+    const paidFilter = this._supplierPaymentActiveSql('').replace(/^\s*AND\s*/, '');
+    // _supplierPaymentActiveSql uses alias — build inline for bare table
+    const activePayExtra = [
+      this._hasSupplierPaymentCol('cancelled_at') ? 'cancelled_at IS NULL' : null,
+      this._hasSupplierPaymentCol('is_advance_portion')
+        ? 'COALESCE(is_advance_portion, 0) = 0'
+        : null,
+    ]
+      .filter(Boolean)
+      .join(' AND ');
+    const payWhere = activePayExtra
+      ? `purchase_order_id = ? AND ${activePayExtra}`
+      : 'purchase_order_id = ?';
+
     const paidAmountUZS = Number(
       this.db
-        .prepare(`SELECT COALESCE(SUM(amount), 0) AS paid_amount FROM supplier_payments WHERE purchase_order_id = ?`)
+        .prepare(`SELECT COALESCE(SUM(amount), 0) AS paid_amount FROM supplier_payments WHERE ${payWhere}`)
         .get(id)?.paid_amount ?? 0
     );
     let paidAmountUSD = hasAmountUsd
       ? Number(
           this.db
-            .prepare(`SELECT COALESCE(SUM(COALESCE(amount_usd, 0)), 0) AS paid_amount FROM supplier_payments WHERE purchase_order_id = ?`)
-            .get(id)?.paid_amount ?? 0
+            .prepare(
+              `SELECT COALESCE(SUM(COALESCE(amount_usd, 0)), 0) AS paid_amount FROM supplier_payments WHERE ${payWhere}`,
+            )
+            .get(id)?.paid_amount ?? 0,
         )
       : 0;
     if (poCurrency === 'USD' && paidAmountUSD <= 0 && paidAmountUZS > 0) {
@@ -691,6 +930,12 @@ class PurchaseService {
       supplier = this.db.prepare('SELECT * FROM suppliers WHERE id = ?').get(po.supplier_id);
     }
 
+    const remUzs = computePurchaseRemainder(paidAmountUZS, Number(po.total_amount ?? 0));
+    const remUsd = computePurchaseRemainder(
+      paidAmountUSD,
+      hasTotalUsd ? Number(po.total_usd ?? 0) : 0,
+    );
+
     return {
       ...po,
       items: normalizedItems,
@@ -699,14 +944,17 @@ class PurchaseService {
       total_expenses: totalExpenses,
       payment_schedule: this._loadPaymentSchedule(id),
       paid_amount_uzs: paidAmountUZS,
-      remaining_amount_uzs: Number(po.total_amount ?? 0) - paidAmountUZS,
+      remaining_amount_uzs: remUzs.debt,
+      excess_amount_uzs: remUzs.excess,
       paid_amount_usd: poCurrency === 'USD' ? paidAmountUSD : null,
-      remaining_amount_usd: poCurrency === 'USD' ? ((hasTotalUsd ? Number(po.total_usd ?? 0) : 0) - paidAmountUSD) : null,
+      remaining_amount_usd: poCurrency === 'USD' ? remUsd.debt : null,
+      excess_amount_usd: poCurrency === 'USD' ? remUsd.excess : null,
       paid_amount: poCurrency === 'USD' ? paidAmountUSD : paidAmountUZS,
-      remaining_amount: poCurrency === 'USD' ? ((hasTotalUsd ? Number(po.total_usd ?? 0) : 0) - paidAmountUSD) : (Number(po.total_amount ?? 0) - paidAmountUZS),
+      remaining_amount: poCurrency === 'USD' ? remUsd.debt : remUzs.debt,
+      excess_amount: poCurrency === 'USD' ? remUsd.excess : remUzs.excess,
       payment_status: poCurrency === 'USD'
-        ? this._computePaymentStatus(paidAmountUSD, hasTotalUsd ? Number(po.total_usd ?? 0) : 0)
-        : this._computePaymentStatus(paidAmountUZS, Number(po.total_amount ?? 0)),
+        ? this._computePaymentStatus(paidAmountUSD, hasTotalUsd ? Number(po.total_usd ?? 0) : 0, 'USD')
+        : this._computePaymentStatus(paidAmountUZS, Number(po.total_amount ?? 0), 'UZS'),
     };
   }
 
@@ -1713,6 +1961,9 @@ class PurchaseService {
     if (po.status === 'cancelled') {
       throw createError(ERROR_CODES.VALIDATION_ERROR, `Cannot update purchase order with status '${po.status}'`);
     }
+    if (String(po.status || '').toLowerCase() === 'closed' && !data?.via_cost_correction) {
+      throw createError(ERROR_CODES.VALIDATION_ERROR, 'Closed purchase orders are not editable');
+    }
 
     const lineItems = this._resolveLineItems(data, items);
     const headerData = data && typeof data === 'object' ? { ...data } : null;
@@ -1725,6 +1976,40 @@ class PurchaseService {
     `).get(purchaseOrderId);
 
     const totalReceived = Number(existingItems?.total_received || 0);
+
+    // P1: received/partially received — cost changes only via correction document
+    const receivedLocked = ['received', 'partially_received'].includes(
+      String(po.status || '').toLowerCase(),
+    );
+    if (receivedLocked && lineItems && !data?.via_cost_correction) {
+      const dbItems =
+        this.db
+          .prepare(
+            `SELECT id, product_id, unit_cost, unit_cost_usd FROM purchase_order_items WHERE purchase_order_id = ?`,
+          )
+          .all(purchaseOrderId) || [];
+      const byId = new Map(dbItems.map((r) => [r.id, r]));
+      for (const it of lineItems) {
+        const prev = it.id ? byId.get(it.id) : null;
+        if (!prev) continue;
+        const newCost = Number(it.unit_cost ?? prev.unit_cost);
+        const oldCost = Number(prev.unit_cost ?? 0);
+        if (Math.abs(newCost - oldCost) > moneyTolerance('UZS')) {
+          throw createError(
+            ERROR_CODES.VALIDATION_ERROR,
+            'Received order costs cannot be edited directly — create a cost correction document',
+          );
+        }
+        if (it.unit_cost_usd != null && prev.unit_cost_usd != null) {
+          if (Math.abs(Number(it.unit_cost_usd) - Number(prev.unit_cost_usd)) > moneyTolerance('USD')) {
+            throw createError(
+              ERROR_CODES.VALIDATION_ERROR,
+              'Received order USD costs cannot be edited directly — create a cost correction document',
+            );
+          }
+        }
+      }
+    }
 
     if (lineItems && (!Array.isArray(lineItems) || lineItems.length === 0)) {
       throw createError(ERROR_CODES.VALIDATION_ERROR, 'Purchase order must have at least one item');
@@ -1959,8 +2244,38 @@ class PurchaseService {
    * - Inventory updates ONLY when status === 'received'
    */
   createReceipt(data) {
-    if (!data || !Array.isArray(data.items) || data.items.length === 0) {
-      throw createError(ERROR_CODES.VALIDATION_ERROR, 'Receipt must have at least one item');
+    const statusInput = String(data?.status || 'received').toLowerCase();
+    const status = statusInput === 'draft' ? 'draft' : 'received';
+
+    // Draft may be empty and must not affect stock/finance.
+    if (status === 'draft') {
+      if (!data) data = { items: [] };
+      if (!Array.isArray(data.items)) data.items = [];
+    } else {
+      if (!data || !Array.isArray(data.items) || data.items.length === 0) {
+        throw createError(ERROR_CODES.VALIDATION_ERROR, 'Receipt must have at least one item');
+      }
+    }
+
+    const idempotencyKey = String(data.idempotency_key || data.idempotencyKey || '').trim() || null;
+    if (idempotencyKey) {
+      try {
+        const existing = this.db
+          .prepare(`SELECT * FROM purchase_receipts WHERE idempotency_key = ? LIMIT 1`)
+          .get(idempotencyKey);
+        if (existing) {
+          return {
+            ...existing,
+            items:
+              this.db
+                .prepare(`SELECT * FROM purchase_receipt_items WHERE receipt_id = ?`)
+                .all(existing.id) || [],
+            idempotent_replay: true,
+          };
+        }
+      } catch {
+        // column may not exist yet
+      }
     }
 
     const receiptId = randomUUID();
@@ -1974,8 +2289,11 @@ class PurchaseService {
       if (!po) {
         throw createError(ERROR_CODES.NOT_FOUND, `Purchase order ${purchaseOrderId} not found`);
       }
-      if (po.status === 'cancelled') {
-        throw createError(ERROR_CODES.VALIDATION_ERROR, 'Cannot receive a cancelled purchase order');
+      if (po.status === 'cancelled' || po.status === 'closed') {
+        throw createError(
+          ERROR_CODES.VALIDATION_ERROR,
+          `Cannot receive a ${po.status} purchase order`,
+        );
       }
     }
 
@@ -1984,8 +2302,34 @@ class PurchaseService {
       supplierId ? this.db.prepare('SELECT settlement_currency, name FROM suppliers WHERE id = ?').get(supplierId) : null;
     const settlementCurrency = String(supplier?.settlement_currency || 'UZS').toUpperCase() === 'USD' ? 'USD' : 'UZS';
     const warehouseId = data.warehouse_id || 'main-warehouse-001';
-    const statusInput = String(data.status || 'received').toLowerCase();
-    const status = statusInput === 'draft' ? 'draft' : 'received';
+
+    // Currency early for confirm validation
+    const currencyRaw = data.currency ?? po?.currency ?? 'UZS';
+    const currencyEarly = String(currencyRaw).toUpperCase() === 'USD' ? 'USD' : 'UZS';
+
+    if (status === 'received') {
+      const v = validateConfirmReceiveInput({
+        supplier_id: supplierId,
+        items: data.items,
+        received_at: data.received_at || now,
+        currency: currencyEarly,
+        receive_type: data.receive_type,
+        zero_cost_reason: data.zero_cost_reason,
+        zero_cost_approved_by: data.zero_cost_approved_by,
+      });
+      if (!v.ok) {
+        throw createError(ERROR_CODES.VALIDATION_ERROR, v.errors.join('; '));
+      }
+      if (v.allowZeroCost) {
+        const role = this._primaryPurchaseRole(data.zero_cost_approved_by || data.created_by);
+        if (!canApproveZeroCostReceive(role)) {
+          throw createError(
+            ERROR_CODES.FORBIDDEN,
+            'Zero-cost receive requires manager/admin approval',
+          );
+        }
+      }
+    }
 
     const hasReceiptTable = this.db
       .prepare(`SELECT 1 FROM sqlite_master WHERE type='table' AND name='purchase_receipts'`)
@@ -2016,6 +2360,10 @@ class PurchaseService {
     if (hasReceiptCol('created_by')) receiptInsertCols.push('created_by');
     if (hasReceiptCol('created_at')) receiptInsertCols.push('created_at');
     if (hasReceiptCol('updated_at')) receiptInsertCols.push('updated_at');
+    if (hasReceiptCol('receive_type')) receiptInsertCols.push('receive_type');
+    if (hasReceiptCol('zero_cost_reason')) receiptInsertCols.push('zero_cost_reason');
+    if (hasReceiptCol('zero_cost_approved_by')) receiptInsertCols.push('zero_cost_approved_by');
+    if (hasReceiptCol('idempotency_key')) receiptInsertCols.push('idempotency_key');
 
     const insertReceipt = this.db.prepare(
       `
@@ -2085,6 +2433,14 @@ class PurchaseService {
       if (hasReceiptCol('created_by')) receiptValues.push(data.created_by || null);
       if (hasReceiptCol('created_at')) receiptValues.push(now);
       if (hasReceiptCol('updated_at')) receiptValues.push(now);
+      if (hasReceiptCol('receive_type')) {
+        receiptValues.push(String(data.receive_type || 'standard').toLowerCase());
+      }
+      if (hasReceiptCol('zero_cost_reason')) receiptValues.push(data.zero_cost_reason || null);
+      if (hasReceiptCol('zero_cost_approved_by')) {
+        receiptValues.push(data.zero_cost_approved_by || null);
+      }
+      if (hasReceiptCol('idempotency_key')) receiptValues.push(idempotencyKey);
 
       insertReceipt.run(...receiptValues);
 
@@ -2093,9 +2449,28 @@ class PurchaseService {
       for (const item of data.items) {
         const qty = Number(item.received_qty || 0);
         if (!Number.isFinite(qty) || qty <= 0) {
+          if (status === 'draft') continue;
           throw createError(ERROR_CODES.VALIDATION_ERROR, 'received_qty must be > 0');
         }
         const poiId = item.purchase_order_item_id || null;
+
+        // Atomic anti-over-receive: receivable = ordered − alreadyReceived
+        if (status === 'received' && purchaseOrderId && poiId) {
+          const poi = this.db
+            .prepare(
+              `SELECT ordered_qty, received_qty FROM purchase_order_items WHERE id = ? AND purchase_order_id = ?`,
+            )
+            .get(poiId, purchaseOrderId);
+          if (!poi) {
+            throw createError(ERROR_CODES.NOT_FOUND, `PO item not found: ${poiId}`);
+          }
+          const receivable = computeReceivableQty(poi.ordered_qty, poi.received_qty, 0);
+          const gate = assertReceivableAllows(qty, receivable, { code: 'CONFLICT' });
+          if (!gate.ok) {
+            throw createError(ERROR_CODES.CONFLICT, gate.error, { available: gate.available });
+          }
+        }
+
         const landedUnitFromPo = poiId ? Number(landedByPoiId.get(poiId)) : NaN;
         const hasLanded = Number.isFinite(landedUnitFromPo) && landedUnitFromPo >= 0;
 
@@ -2324,10 +2699,50 @@ class PurchaseService {
           WHERE id = ?
         `
         ).run(nextStatus, now, purchaseOrderId);
+
+        this._audit(
+          'receive',
+          'purchase_receipt',
+          receiptId,
+          null,
+          {
+            receipt_number: receiptNumber,
+            purchase_order_id: purchaseOrderId,
+            status: nextStatus,
+            receive_type: data.receive_type || 'standard',
+          },
+          data.created_by || null,
+        );
       }
     });
 
-    transaction();
+    try {
+      if (typeof transaction.immediate === 'function') {
+        transaction.immediate();
+      } else {
+        transaction();
+      }
+    } catch (error) {
+      if (error?.code === ERROR_CODES.CONFLICT || error?.code === ERROR_CODES.VALIDATION_ERROR) {
+        throw error;
+      }
+      if (String(error?.message || '').includes('UNIQUE') && idempotencyKey) {
+        const existing = this.db
+          .prepare(`SELECT * FROM purchase_receipts WHERE idempotency_key = ? LIMIT 1`)
+          .get(idempotencyKey);
+        if (existing) {
+          return {
+            ...existing,
+            items:
+              this.db
+                .prepare(`SELECT * FROM purchase_receipt_items WHERE receipt_id = ?`)
+                .all(existing.id) || [],
+            idempotent_replay: true,
+          };
+        }
+      }
+      throw error;
+    }
     return { id: receiptId, receipt_number: receiptNumber };
   }
 
@@ -2446,6 +2861,170 @@ class PurchaseService {
     `).run(...params);
 
     return this.get(purchaseOrderId);
+  }
+
+  /**
+   * Create a cost correction document for a received PO (does not rewrite historical sale profit).
+   * Apply on approve only.
+   */
+  createCostCorrection(data) {
+    if (!data?.purchase_order_id) {
+      throw createError(ERROR_CODES.VALIDATION_ERROR, 'purchase_order_id is required');
+    }
+    const reason = String(data.reason || '').trim();
+    if (!reason) throw createError(ERROR_CODES.VALIDATION_ERROR, 'Correction reason is required');
+
+    const role = this._primaryPurchaseRole(data.created_by);
+    if (!canCreateCostCorrection(role)) {
+      throw createError(ERROR_CODES.FORBIDDEN, 'Cost correction requires accountant/manager/admin');
+    }
+
+    const hasTable = this.db
+      .prepare(`SELECT 1 FROM sqlite_master WHERE type='table' AND name='purchase_cost_corrections'`)
+      .get();
+    if (!hasTable) {
+      throw createError(ERROR_CODES.DB_ERROR, 'purchase_cost_corrections table missing (migration 130)');
+    }
+
+    const po = this.db.prepare('SELECT * FROM purchase_orders WHERE id = ?').get(data.purchase_order_id);
+    if (!po) throw createError(ERROR_CODES.NOT_FOUND, 'Purchase order not found');
+    const st = String(po.status || '').toLowerCase();
+    if (!['received', 'partially_received', 'closed'].includes(st)) {
+      throw createError(
+        ERROR_CODES.VALIDATION_ERROR,
+        'Cost correction is only for received/partially received/closed orders',
+      );
+    }
+
+    const id = randomUUID();
+    const correctionNumber = `PCC-${Date.now()}`;
+    const now = new Date().toISOString();
+    this.db
+      .prepare(
+        `
+        INSERT INTO purchase_cost_corrections (
+          id, correction_number, purchase_order_id, purchase_order_item_id, product_id,
+          field_name, old_value, new_value, reason, notes, status, created_by, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?)
+      `,
+      )
+      .run(
+        id,
+        correctionNumber,
+        data.purchase_order_id,
+        data.purchase_order_item_id || null,
+        data.product_id || null,
+        data.field_name || 'unit_cost',
+        data.old_value != null ? Number(data.old_value) : null,
+        data.new_value != null ? Number(data.new_value) : null,
+        reason,
+        data.notes || null,
+        data.created_by || null,
+        now,
+        now,
+      );
+
+    this._audit(
+      'create',
+      'purchase_cost_correction',
+      id,
+      null,
+      { correction_number: correctionNumber, ...data },
+      data.created_by,
+    );
+
+    return this.db.prepare('SELECT * FROM purchase_cost_corrections WHERE id = ?').get(id);
+  }
+
+  approveCostCorrection(correctionId, { approved_by, apply = true } = {}) {
+    if (!correctionId) {
+      throw createError(ERROR_CODES.VALIDATION_ERROR, 'correction id is required');
+    }
+    const role = this._primaryPurchaseRole(approved_by);
+    if (!canApproveCostCorrection(role)) {
+      throw createError(ERROR_CODES.FORBIDDEN, 'Approve cost correction requires accountant/manager/admin');
+    }
+
+    const row = this.db.prepare('SELECT * FROM purchase_cost_corrections WHERE id = ?').get(correctionId);
+    if (!row) throw createError(ERROR_CODES.NOT_FOUND, 'Correction not found');
+    if (row.status !== 'pending') {
+      throw createError(ERROR_CODES.VALIDATION_ERROR, `Correction is already ${row.status}`);
+    }
+
+    const now = new Date().toISOString();
+    const run = this.db.transaction(() => {
+      this.db
+        .prepare(
+          `
+          UPDATE purchase_cost_corrections
+          SET status = 'approved', approved_by = ?, approved_at = ?, updated_at = ?
+          WHERE id = ?
+        `,
+        )
+        .run(approved_by || null, now, now, correctionId);
+
+      if (apply && row.purchase_order_item_id && row.field_name === 'unit_cost') {
+        const poi = this.db
+          .prepare(`SELECT * FROM purchase_order_items WHERE id = ?`)
+          .get(row.purchase_order_item_id);
+        if (poi) {
+          const newCost = Number(row.new_value);
+          const qty = Number(poi.ordered_qty || 0);
+          this.db
+            .prepare(
+              `
+              UPDATE purchase_order_items
+              SET unit_cost = ?, line_total = ?
+              WHERE id = ?
+            `,
+            )
+            .run(newCost, qty * newCost, row.purchase_order_item_id);
+
+          // Snapshot catalog purchase_price for future — do NOT rewrite historical sales COGS
+          try {
+            this.db
+              .prepare(`UPDATE products SET purchase_price = ?, updated_at = ? WHERE id = ?`)
+              .run(newCost, now, poi.product_id);
+            if (this.cacheService?.invalidateProduct) {
+              this.cacheService.invalidateProduct(poi.product_id);
+            }
+          } catch {
+            // optional
+          }
+        }
+      }
+
+      this._audit(
+        'approve',
+        'purchase_cost_correction',
+        correctionId,
+        row,
+        { status: 'approved', apply },
+        approved_by,
+      );
+      return this.db.prepare('SELECT * FROM purchase_cost_corrections WHERE id = ?').get(correctionId);
+    });
+
+    return typeof run.immediate === 'function' ? run.immediate() : run();
+  }
+
+  listCostCorrections(purchaseOrderId) {
+    if (!purchaseOrderId) return [];
+    try {
+      return (
+        this.db
+          .prepare(
+            `
+            SELECT * FROM purchase_cost_corrections
+            WHERE purchase_order_id = ?
+            ORDER BY datetime(created_at) DESC
+          `,
+          )
+          .all(purchaseOrderId) || []
+      );
+    } catch {
+      return [];
+    }
   }
 
   /**

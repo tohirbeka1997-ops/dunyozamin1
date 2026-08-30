@@ -503,6 +503,23 @@ class DashboardService {
     const returnsCogs = (Number(returnsCogsRow?.returns_cogs || 0) || 0) + posCartReturnsCogs;
     const returnsCount = (Number(returnsRow?.returns_count || 0) || 0) + posCartReturnsCount;
     const netSales = Math.max(0, totalSales - returnsAmount);
+    let customerAdvance = 0;
+    try {
+      if (this._hasTable('customers')) {
+        const adv = this.db
+          .prepare(
+            `
+            SELECT COALESCE(SUM(CASE WHEN balance > 0 THEN balance ELSE 0 END), 0) AS customer_advance
+            FROM customers
+            WHERE COALESCE(status, 'active') = 'active'
+          `,
+          )
+          .get();
+        customerAdvance = Number(adv?.customer_advance || 0) || 0;
+      }
+    } catch {
+      customerAdvance = 0;
+    }
     const netProfit = calculateNetProfit({
       grossProfit: totalProfit,
       returnsRevenue: returnsAmount,
@@ -520,6 +537,7 @@ class DashboardService {
       total_sales_usd: Number(salesRow?.total_sales_usd || 0) || 0,
       total_collected: Number(salesRow?.total_collected || 0) || 0,
       credit_issued: Number(salesRow?.credit_issued || 0) || 0,
+      customer_advance: customerAdvance,
       total_orders: Number(salesRow?.total_orders || 0) || 0,
       average_order_value: Number(salesRow?.average_order_value || 0) || 0,
       total_cogs: totalCogs,

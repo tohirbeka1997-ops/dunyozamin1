@@ -51,9 +51,11 @@ import {
 } from '@/db/products.api';
 import type { Category, ProductWithCategory } from '@/types/database';
 import { Search, RotateCcw, Loader2 } from 'lucide-react';
-
-// PurchaseOrderForm bilan bir xil UX: ko'p qatorli amalda tasdiqlash so'raymiz.
-const BULK_PRICE_CONFIRM_MIN_ITEMS = 5;
+import { filterProductsBySearchTerm } from '@/lib/productSearchMatch';
+import {
+  computeBulkNewPrice,
+  isBulkPercentDecreaseBlocked,
+} from '@/lib/posHardening';
 
 type Props = {
   open: boolean;
@@ -73,35 +75,6 @@ function priceOf(product: ProductWithCategory, field: BulkPriceField): number {
   if (field === 'purchase') return Number(product.purchase_price ?? 0) || 0;
   if (field === 'master') return Number((product as any).master_price ?? 0) || 0;
   return Number(product.sale_price ?? 0) || 0;
-}
-
-// Backenddagi _computeBulkNewPrice bilan bir xil mantiq (preview ham mos kelishi uchun).
-function computeNewPrice(
-  oldPrice: number,
-  mode: BulkPriceMode,
-  params: { percent: number; amount: number; exact: number; roundTo: number }
-): number {
-  const old = Number(oldPrice) || 0;
-  let np = old;
-  switch (mode) {
-    case 'percent':
-      np = old * (1 + params.percent / 100);
-      break;
-    case 'amount':
-      np = old + params.amount;
-      break;
-    case 'set':
-      np = params.exact;
-      break;
-    case 'round': {
-      const step = params.roundTo > 0 ? params.roundTo : 1000;
-      np = Math.round(old / step) * step;
-      break;
-    }
-  }
-  if (!Number.isFinite(np)) return old;
-  np = Math.round(np);
-  return np < 0 ? 0 : np;
 }
 
 export default function BulkPriceUpdateDialog({
@@ -125,13 +98,13 @@ export default function BulkPriceUpdateDialog({
   const [amount, setAmount] = useState('1000');
   const [exact, setExact] = useState('0');
   const [roundTo, setRoundTo] = useState('1000');
+  const [reason, setReason] = useState('');
 
   const [applying, setApplying] = useState(false);
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [lastBatch, setLastBatch] = useState<LastBulkPriceBatch>(null);
   const [undoing, setUndoing] = useState(false);
 
-  // Load products for the picked category whenever the dialog opens / category changes.
   useEffect(() => {
     if (!open) return;
     let cancelled = false;
@@ -166,11 +139,11 @@ export default function BulkPriceUpdateDialog({
     };
   }, [open, categoryId, toast]);
 
-  // Reset filters + refresh last-batch info on open.
   useEffect(() => {
     if (!open) return;
     setCategoryId(defaultCategoryId || 'all');
     setSearch('');
+    setReason('');
     void refreshLastBatch();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
@@ -183,16 +156,10 @@ export default function BulkPriceUpdateDialog({
     }
   };
 
-  const visibleProducts = useMemo(() => {
-    const term = search.trim().toLowerCase();
-    if (!term) return products;
-    return products.filter((p) => {
-      const name = String(p.name || '').toLowerCase();
-      const sku = String(p.sku || '').toLowerCase();
-      const barcode = String(p.barcode || '').toLowerCase();
-      return name.includes(term) || sku.includes(term) || barcode.includes(term);
-    });
-  }, [products, search]);
+  const visibleProducts = useMemo(
+    () => filterProductsBySearchTerm(products, search),
+    [products, search],
+  );
 
   const params = useMemo(
     () => ({
@@ -204,19 +171,87 @@ export default function BulkPriceUpdateDialog({
     [percent, amount, exact, roundTo]
   );
 
-  // Tanlangan + narxi haqiqatan o'zgaradigan mahsulotlar (preview).
+  const percentBlocked =
+    field === 'sale' && mode === 'percent' && isBulkPercentDecreaseBlocked(params.percent);
+
+  type PreviewRow = {
+    id: string;
+    name: string;
+    sku: string;
+    oldPrice: number;
+    newPrice: number;
+    invalid: boolean;
+    belowCost: boolean;
+  };
+
   const preview = useMemo(() => {
-    const out: { id: string; name: string; sku: string; oldPrice: number; newPrice: number }[] = [];
+    const out: PreviewRow[] = [];
     for (const p of products) {
       if (!selectedIds.has(p.id)) continue;
       const oldPrice = priceOf(p, field);
       if (field === 'master' && mode !== 'set' && oldPrice <= 0) continue;
-      const newPrice = computeNewPrice(oldPrice, mode, params);
-      if (newPrice === oldPrice) continue;
-      out.push({ id: p.id, name: p.name, sku: p.sku, oldPrice, newPrice });
+      const newPrice = computeBulkNewPrice(oldPrice, {
+        mode,
+        percent: params.percent,
+        amount: params.amount,
+        exact: params.exact,
+        roundTo: params.roundTo,
+      });
+      if (!Number.isFinite(newPrice) || newPrice === oldPrice) {
+        if (field === 'sale' && Number.isFinite(newPrice) && !(newPrice > 0) && newPrice !== oldPrice) {
+          out.push({
+            id: p.id,
+            name: p.name,
+            sku: p.sku,
+            oldPrice,
+            newPrice,
+            invalid: true,
+            belowCost: false,
+          });
+        }
+        continue;
+      }
+      const invalid = field === 'sale' && !(newPrice > 0);
+      const cost = Number(p.purchase_price ?? 0) || 0;
+      const belowCost = field === 'sale' && !invalid && cost > 0 && newPrice < cost;
+      out.push({
+        id: p.id,
+        name: p.name,
+        sku: p.sku,
+        oldPrice,
+        newPrice,
+        invalid,
+        belowCost,
+      });
     }
     return out;
   }, [products, selectedIds, field, mode, params]);
+
+  const invalidRows = useMemo(() => preview.filter((r) => r.invalid), [preview]);
+  const validPreview = useMemo(() => preview.filter((r) => !r.invalid), [preview]);
+  const belowCostCount = useMemo(
+    () => validPreview.filter((r) => r.belowCost).length,
+    [validPreview],
+  );
+  const confirmDisabled =
+    applying ||
+    validPreview.length === 0 ||
+    invalidRows.length > 0 ||
+    percentBlocked ||
+    (field === 'sale' && !String(reason).trim());
+
+  const impactSummary = useMemo(() => {
+    let up = 0;
+    let down = 0;
+    let delta = 0;
+    for (const row of validPreview) {
+      const d = row.newPrice - row.oldPrice;
+      delta += d;
+      if (d > 0) up += 1;
+      else if (d < 0) down += 1;
+    }
+    return { up, down, delta, count: validPreview.length };
+  }, [validPreview]);
 
   const allVisibleSelected =
     visibleProducts.length > 0 && visibleProducts.every((p) => selectedIds.has(p.id));
@@ -243,9 +278,10 @@ export default function BulkPriceUpdateDialog({
 
   const buildPayload = () => {
     const base: any = {
-      product_ids: preview.map((p) => p.id),
+      product_ids: validPreview.map((p) => p.id),
       field,
       mode,
+      reason: String(reason).trim() || undefined,
     };
     if (mode === 'percent') base.percent = params.percent;
     if (mode === 'amount') base.amount = params.amount;
@@ -255,25 +291,46 @@ export default function BulkPriceUpdateDialog({
   };
 
   const requestApply = () => {
-    if (preview.length === 0) {
+    if (percentBlocked) {
+      toast({
+        title: 'Noto\'g\'ri foiz',
+        description: '-100% va undan past kamaytirish taqiqlangan (narx 0 bo\'ladi).',
+        variant: 'destructive',
+      });
+      return;
+    }
+    if (invalidRows.length > 0) {
+      toast({
+        title: 'Noto\'g\'ri narx',
+        description: `${invalidRows.length} ta mahsulotda yangi sotuv narxi 0 yoki manfiy. Qo'llash bloklangan.`,
+        variant: 'destructive',
+      });
+      return;
+    }
+    if (validPreview.length === 0) {
       toast({
         title: 'O\'zgarish yo\'q',
         description: 'Tanlangan mahsulotlarda narx o\'zgarmaydi.',
       });
       return;
     }
-    if (preview.length >= BULK_PRICE_CONFIRM_MIN_ITEMS) {
-      setConfirmOpen(true);
+    if (field === 'sale' && !String(reason).trim()) {
+      toast({
+        title: 'Sabab majburiy',
+        description: 'Ommaviy sotuv narxi uchun sabab kiriting.',
+        variant: 'destructive',
+      });
       return;
     }
-    void applyNow();
+    setConfirmOpen(true);
   };
 
   const applyNow = async () => {
     setConfirmOpen(false);
     setApplying(true);
     try {
-      const result = await bulkAdjustPrices(buildPayload());
+      const payload = buildPayload();
+      const result = await bulkAdjustPrices(payload);
       toast({
         title: 'Narxlar yangilandi',
         description: `${result.count} ta mahsulot yangilandi (${FIELD_LABELS[field]}).`,
@@ -306,7 +363,6 @@ export default function BulkPriceUpdateDialog({
       });
       onApplied?.();
       await refreshLastBatch();
-      // Tanlangan kategoriyani qayta yuklash uchun mahsulotlarni yangilaymiz.
       setCategoryId((c) => c);
       const rows = await getProducts(false, {
         status: 'active',
@@ -336,12 +392,11 @@ export default function BulkPriceUpdateDialog({
             <DialogTitle>Ommaviy narx yangilash</DialogTitle>
             <DialogDescription>
               Mahsulotlarni tanlang, narx o'zgarish turini belgilang va tasdiqlashdan oldin
-              "eski narx → yangi narx" jadvalini ko'ring.
+              "eski narx → yangi narx" jadvalini ko'ring. Sotuv narxi 0 yoki manfiy bo'lishi mumkin emas.
             </DialogDescription>
           </DialogHeader>
 
           <div className="grid min-h-0 flex-1 grid-cols-1 gap-4 overflow-y-auto md:grid-cols-[minmax(0,1fr)_320px]">
-            {/* Left: product selection */}
             <div className="flex min-h-0 flex-col gap-2">
               <div className="flex items-center gap-2">
                 <div className="relative h-9 flex-1">
@@ -351,6 +406,7 @@ export default function BulkPriceUpdateDialog({
                     value={search}
                     onChange={(e) => setSearch(e.target.value)}
                     className="h-9 pl-8"
+                    aria-label="Mahsulot qidirish"
                   />
                 </div>
                 <div className="w-44">
@@ -438,7 +494,6 @@ export default function BulkPriceUpdateDialog({
               </div>
             </div>
 
-            {/* Right: adjustment controls */}
             <div className="flex flex-col gap-4">
               <div className="space-y-2">
                 <Label>Qaysi narx</Label>
@@ -487,6 +542,11 @@ export default function BulkPriceUpdateDialog({
                       inputMode="decimal"
                       placeholder="masalan: 10 yoki -5"
                     />
+                    {percentBlocked ? (
+                      <p className="text-xs text-destructive">
+                        -100% va undan past taqiqlangan (yakuniy narx ≤ 0).
+                      </p>
+                    ) : null}
                   </div>
                 )}
                 {mode === 'amount' && (
@@ -532,11 +592,34 @@ export default function BulkPriceUpdateDialog({
                 )}
               </div>
 
-              <div className="rounded-md border bg-muted/30 p-3 text-sm">
-                <div className="flex items-center justify-between">
-                  <span className="text-muted-foreground">O'zgaradigan mahsulotlar</span>
-                  <Badge variant="secondary">{preview.length}</Badge>
+              {field === 'sale' ? (
+                <div className="space-y-1">
+                  <Label htmlFor="bulk-reason">Sabab (majburiy)</Label>
+                  <Input
+                    id="bulk-reason"
+                    value={reason}
+                    onChange={(e) => setReason(e.target.value)}
+                    placeholder="Masalan: mavsumiy chegirma"
+                  />
                 </div>
+              ) : null}
+
+              <div className="rounded-md border bg-muted/30 p-3 text-sm space-y-1">
+                <div className="flex items-center justify-between">
+                  <span className="text-muted-foreground">O'zgaradigan</span>
+                  <Badge variant="secondary">{validPreview.length}</Badge>
+                </div>
+                {invalidRows.length > 0 ? (
+                  <div className="flex items-center justify-between text-destructive">
+                    <span>Xato (≤0)</span>
+                    <Badge variant="destructive">{invalidRows.length}</Badge>
+                  </div>
+                ) : null}
+                {belowCostCount > 0 ? (
+                  <div className="text-xs text-amber-700">
+                    {belowCostCount} ta mahsulot tannarxdan past — manager + sabab talab qilinadi.
+                  </div>
+                ) : null}
               </div>
 
               {lastBatch && lastBatch.count > 0 && (
@@ -558,7 +641,6 @@ export default function BulkPriceUpdateDialog({
             </div>
           </div>
 
-          {/* Preview table */}
           {preview.length > 0 && (
             <div className="mt-2 max-h-48 shrink-0 overflow-y-auto rounded-md border">
               <Table>
@@ -575,11 +657,22 @@ export default function BulkPriceUpdateDialog({
                       <TableCell>
                         <div className="font-medium">{row.name}</div>
                         <div className="font-mono text-xs text-muted-foreground">{row.sku}</div>
+                        {row.invalid ? (
+                          <div className="text-xs text-destructive">Yakuniy narx ≤ 0</div>
+                        ) : row.belowCost ? (
+                          <div className="text-xs text-amber-700">Tannarxdan past</div>
+                        ) : null}
                       </TableCell>
                       <TableCell className="text-right text-muted-foreground line-through">
                         {formatMoneyUZS(row.oldPrice)}
                       </TableCell>
-                      <TableCell className="text-right font-semibold text-emerald-600">
+                      <TableCell
+                        className={
+                          row.invalid
+                            ? 'text-right font-semibold text-destructive'
+                            : 'text-right font-semibold text-emerald-600'
+                        }
+                      >
                         {formatMoneyUZS(row.newPrice)}
                       </TableCell>
                     </TableRow>
@@ -593,9 +686,9 @@ export default function BulkPriceUpdateDialog({
             <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
               Bekor
             </Button>
-            <Button type="button" onClick={requestApply} disabled={applying || preview.length === 0}>
+            <Button type="button" onClick={requestApply} disabled={confirmDisabled}>
               {applying && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-              Tasdiqlash ({preview.length})
+              Tasdiqlash ({validPreview.length})
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -605,9 +698,22 @@ export default function BulkPriceUpdateDialog({
         <AlertDialogContent>
           <AlertDialogHeader>
             <AlertDialogTitle>Ommaviy narx yangilashni tasdiqlang</AlertDialogTitle>
-            <AlertDialogDescription>
-              {preview.length} ta mahsulotning {FIELD_LABELS[field].toLowerCase()} o'zgartiriladi. Bu
-              amalni keyin "Orqaga qaytarish" tugmasi bilan bekor qilishingiz mumkin.
+            <AlertDialogDescription asChild>
+              <div className="space-y-2 text-sm text-muted-foreground">
+                <p>
+                  <strong className="text-foreground">{impactSummary.count}</strong> ta mahsulotning{' '}
+                  {FIELD_LABELS[field].toLowerCase()} o'zgartiriladi.
+                </p>
+                <ul className="list-disc pl-4 space-y-1">
+                  <li>Oshadi: {impactSummary.up}</li>
+                  <li>Kamayadi: {impactSummary.down}</li>
+                  <li>Jami farq: {formatMoneyUZS(impactSummary.delta)}</li>
+                  {belowCostCount > 0 ? (
+                    <li className="text-amber-700">Tannarxdan past: {belowCostCount}</li>
+                  ) : null}
+                </ul>
+                <p>Bu amalni keyin &quot;Orqaga qaytarish&quot; tugmasi bilan bekor qilishingiz mumkin.</p>
+              </div>
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>

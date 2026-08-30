@@ -21,15 +21,47 @@ function mapStaffServiceError(e, res, opts = {}) {
     return;
   }
   if (code === ERROR_CODES.VALIDATION_ERROR) {
-    res.status(400).json({ error: 'validation_error', message });
+    res.status(400).json({ error: 'validation_error', message, details: e?.details || null });
+    return;
+  }
+  if (code === ERROR_CODES.UNPROCESSABLE_ENTITY) {
+    res.status(422).json({ error: 'unprocessable_entity', message, details: e?.details || null });
+    return;
+  }
+  if (code === ERROR_CODES.INSUFFICIENT_CASH) {
+    res.status(422).json({ error: 'insufficient_cash', message, details: e?.details || null });
     return;
   }
   if (code === ERROR_CODES.SHIFT_CLOSED) {
     res.status(409).json({ error: 'shift_closed', message: message || 'Smena yopiq. Avval smena oching.' });
     return;
   }
+  if (code === ERROR_CODES.RETURN_LIMIT_EXCEEDED || code === 'RETURN_LIMIT_EXCEEDED') {
+    res.status(409).json({
+      error: 'return_limit_exceeded',
+      code: 'RETURN_LIMIT_EXCEEDED',
+      message: message || 'Sotuv to‘liq qaytarilgan yoki qaytarish miqdori ruxsat etilgan limitdan oshgan.',
+      details: e?.details || null,
+    });
+    return;
+  }
+  if (code === ERROR_CODES.CONFLICT || code === 'CONFLICT') {
+    res.status(409).json({
+      error: 'conflict',
+      message,
+      details: e?.details || null,
+    });
+    return;
+  }
   if (code === ERROR_CODES.INSUFFICIENT_STOCK || code === ERROR_CODES.INSUFFICIENT_BATCH_STOCK) {
-    res.status(409).json({ error: 'insufficient_stock', message, details: e?.details || null });
+    res.status(409).json({
+      error: 'insufficient_stock',
+      message,
+      details: e?.details || null,
+      product_name: e?.details?.productName ?? null,
+      requested_qty: e?.details?.requested ?? null,
+      available_stock: e?.details?.available ?? null,
+    });
     return;
   }
   if (code === ERROR_CODES.PERMISSION_DENIED || code === 'FORBIDDEN' || code === ERROR_CODES.FORBIDDEN) {

@@ -436,6 +436,16 @@ export default function Dashboard() {
 
         <MetricCard
           variant="teal"
+          title={t('dashboard.cards.customer_advance.title')}
+          value={formatCurrency((analytics as any)?.customer_advance || 0)}
+          subtitle={t('dashboard.cards.customer_advance.subtitle')}
+          icon={<DollarSign />}
+          loading={analyticsLoading}
+          error={analyticsError}
+        />
+
+        <MetricCard
+          variant="teal"
           title={t('dashboard.cards.total_cogs.title')}
           value={formatCurrency(analytics?.total_cogs || 0)}
           subtitle={t('dashboard.cards.total_cogs.subtitle')}

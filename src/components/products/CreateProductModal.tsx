@@ -255,6 +255,14 @@ export default function CreateProductModal({
         ? Math.round(costEntered * rate)
         : costEntered;
     const sale = salePrice ?? purchase;
+    if (!(Number(sale) > 0)) {
+      toast({
+        title: t('productForm.validation_error'),
+        description: t('productForm.sale_price_required'),
+        variant: 'destructive',
+      });
+      return;
+    }
     if (sale < purchase) {
       const ok = await confirmDialog({
         title: 'Ogohlantirish',
@@ -527,7 +535,7 @@ export default function CreateProductModal({
               value={salePrice}
               onValueChange={setSalePrice}
               placeholder="0"
-              allowZero
+              allowZero={false}
               allowDecimals
               min={0}
             />

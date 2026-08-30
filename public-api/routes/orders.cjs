@@ -184,6 +184,14 @@ function createOrder(db, customerId, data) {
         throw err;
       }
 
+      if (!(Number(p.sale_price) > 0)) {
+        const err = new Error('product_price_not_set');
+        err.code = 'ZERO_PRICE_BLOCKED';
+        err.status = 400;
+        err.meta = { product_id: it.product_id };
+        throw err;
+      }
+
       const track = boolCol(p.track_stock);
       if (track) {
         const avail = getAvailableStock(db, it.product_id);

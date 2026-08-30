@@ -29,10 +29,10 @@ import {
 import { createProduct, deleteProduct, getProducts, updateProduct, productUpdateEmitter } from '@/db/api';
 import { useProducts } from '@/hooks/useProducts';
 import type { ProductWithCategory } from '@/types/database';
-import { Plus, Search, Package, FileDown, ChevronDown, Percent } from 'lucide-react';
+import { Plus, Search, Package, FileDown, ChevronDown, Percent, X } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
-import { useNavigate, useSearchParams } from 'react-router-dom';
-import { formatMoneyUZS, formatNumberUZ } from '@/lib/format';
+import { useNavigate, useSearchParams, useLocation } from 'react-router-dom';
+import { formatMoneyUZS } from '@/lib/format';
 import { normalizeImportImageUrl } from '@/lib/productImageUrl';
 import { formatUnit } from '@/utils/formatters';
 import { productShowInMarketplace } from '@/lib/productMarketplace';
@@ -54,10 +54,21 @@ import { Sheet, SheetContent } from '@/components/ui/sheet';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import BulkPriceUpdateDialog from '@/components/products/BulkPriceUpdateDialog';
 import { useDebounce } from '@/hooks/use-debounce';
+import { filterProductsBySearchTerm } from '@/lib/productSearchMatch';
+import { extractHttpStatus, reportApiFailure } from '@/lib/apiFailureTelemetry';
+import { useAuth } from '@/contexts/AuthContext';
+import {
+  listScrollStorageKey,
+  normalizeListPathAndQuery,
+  persistListScroll,
+  withReturnToPath,
+} from '@/lib/listState';
 
 export default function Products() {
   const { t } = useTranslation();
   const { toast } = useToast();
+  const { user, profile } = useAuth();
+  const location = useLocation();
   const navigate = useNavigate();
   const confirmDialog = useConfirmDialog();
   const [searchParams, setSearchParams] = useSearchParams();
@@ -80,6 +91,8 @@ export default function Products() {
   const setStoredPageSize = useProductsListStore((state) => state.setPageSize);
   const setLastFocusedProductId = useProductsListStore((state) => state.setLastFocusedProductId);
   const resetForQuery = useProductsListStore((state) => state.resetForQuery);
+  const setProductsCache = useProductsListStore((state) => state.setProductsCache);
+  const getFreshProductsCache = useProductsListStore((state) => state.getFreshProductsCache);
   const [restoreDone, setRestoreDone] = useState(false);
   const [restoreScrollTop, setRestoreScrollTop] = useState(0);
   const PAGE_SIZE = 200;
@@ -194,7 +207,8 @@ export default function Products() {
   }, [searchParams, storedFiltersQuery, setStoredFiltersQuery]);
 
   // Keep initial load light to avoid UI stalls on open; infinite scroll can load more.
-  const { products, categories, loading, loadingMore, error, refetch, loadMore, hasMore, page } = useProducts(true, {
+  const productsCacheBootstrap = getFreshProductsCache(listQueryKey);
+  const { products, categories, loading, loadingMore, error, lastUpdatedAt, refetch, loadMore, hasMore, page } = useProducts(true, {
     searchTerm: debouncedSearchTerm || undefined,
     categoryId: categoryFilter !== 'all' ? categoryFilter : undefined,
     status: statusFilter === 'all' ? 'all' : (statusFilter as 'active' | 'inactive'),
@@ -202,7 +216,30 @@ export default function Products() {
     marketplace: marketplaceFilter === 'all' ? 'all' : marketplaceFilter,
     sortBy,
     sortOrder,
-  }, PAGE_SIZE);
+  }, PAGE_SIZE, {
+    bootstrap: productsCacheBootstrap
+      ? {
+          products: productsCacheBootstrap.products,
+          categories: productsCacheBootstrap.categories,
+          page: productsCacheBootstrap.page,
+          hasMore: productsCacheBootstrap.hasMore,
+        }
+      : null,
+    skipInitialLoad: Boolean(productsCacheBootstrap),
+  });
+
+  useEffect(() => {
+    if (loading || loadingMore) return;
+    if (storedQueryKey !== listQueryKey) return;
+    setProductsCache({
+      queryKey: listQueryKey,
+      products,
+      categories,
+      page,
+      hasMore,
+      cachedAt: Date.now(),
+    });
+  }, [loading, loadingMore, products, categories, page, hasMore, listQueryKey, storedQueryKey, setProductsCache]);
 
   useEffect(() => {
     refetchRef.current = refetch;
@@ -240,20 +277,50 @@ export default function Products() {
   // Show error toast if loading fails
   useEffect(() => {
     if (error) {
+      reportApiFailure({
+        page: 'Products',
+        apiUrl: 'pos:products:list',
+        httpCode: extractHttpStatus(error),
+        userRole: user?.role || null,
+        message: error.message,
+      });
       toast({
-        title: t('common.error'),
-        description: t('products.failed_to_load'),
+        title: t('products.load_failed_title', { defaultValue: "Ma'lumot yuklanmadi" }),
+        description: t('products.load_failed_body', {
+          defaultValue: 'Server vaqtincha javob bermayapti',
+        }),
         variant: 'destructive',
       });
     }
-  }, [error, toast, t]);
+  }, [error, toast, t, user?.role]);
 
   const handleDelete = async (id: string, name: string) => {
-    // Avoid native `window.confirm()` which can leave the UI "blocked" in Electron.
+    let impact: { softDelete?: boolean; hardDelete?: boolean } | null = null;
+    try {
+      const { getProductDeleteImpact } = await import('@/db/products.api');
+      impact = await getProductDeleteImpact(id);
+    } catch {
+      impact = null;
+    }
+    const soft = impact?.softDelete === true;
     const ok = await confirmDialog({
-      title: t('common.confirm'),
-      description: t('products.delete_confirm', { name }),
-      confirmText: t('common.delete'),
+      title: soft
+        ? t('products.deactivate_confirm_title', { defaultValue: 'Mahsulotni nofaol qilish' })
+        : t('products.hard_delete_confirm_title', {
+            defaultValue: 'Mahsulotni butunlay o‘chirish',
+          }),
+      description: soft
+        ? t('products.deactivate_confirm', {
+            name,
+            defaultValue: `"${name}" tarixga ega. Faqat nofaol qilinadi (o‘chirilmaydi). Nofaol ro‘yxatda qoladi.`,
+          })
+        : t('products.hard_delete_confirm', {
+            name,
+            defaultValue: `"${name}" tarixisiz. Butunlay o‘chiriladi — bu amalni qaytarib bo‘lmaydi.`,
+          }),
+      confirmText: soft
+        ? t('products.actions.deactivate', { defaultValue: 'Nofaol qilish' })
+        : t('common.delete'),
       cancelText: t('common.cancel'),
       variant: 'destructive',
     });
@@ -262,9 +329,10 @@ export default function Products() {
       const res = await deleteProduct(id);
       toast({
         title: t('common.success'),
-        description: (res as { softDeleted?: boolean })?.softDeleted ? t('products.archived') : t('products.product_deleted'),
+        description: (res as { softDeleted?: boolean })?.softDeleted
+          ? t('products.archived')
+          : t('products.product_deleted'),
       });
-      // Trigger product refetch
       await refetch();
     } catch (error) {
       toast({
@@ -653,6 +721,7 @@ export default function Products() {
     sale_price: number | null;
     payload: any;
     initial_stock: number;
+    error?: string | null;
     display: {
       categoryName: string;
       unit: string;
@@ -776,6 +845,9 @@ export default function Products() {
       let created = 0;
       let skipped = 0;
       let failed = 0;
+      const resultRows: Array<Array<string | number>> = [
+        ['row', 'sku', 'name', 'status', 'error'],
+      ];
       const reviewRows: ImportReviewItem[] = [];
 
       for (let r = 1; r < data.length; r++) {
@@ -818,6 +890,27 @@ export default function Products() {
         }
 
         const articleRaw = iArticle >= 0 ? String(row[iArticle] || '').trim() : '';
+        const saleNum = Number.isFinite(sale_price) ? sale_price : 0;
+        const purchaseNum = Number.isFinite(purchase_price) ? purchase_price : 0;
+        const knownUnits = new Set([
+          'pcs', 'kg', 'l', 'L', 'ml', 'mL', 'g', 'm', 'sqm', 'box', 'roll', 'bag', 'set',
+        ]);
+        let rowError: string | null = null;
+        if (!name || !sku) {
+          rowError = 'Name and SKU are required';
+        } else if (purchaseNum < 0 || saleNum < 0) {
+          rowError = 'Negative prices are not allowed';
+        } else if (!(saleNum > 0)) {
+          rowError = 'Sale price must be > 0';
+        } else if (initial_stock < 0) {
+          rowError = 'Initial stock must be >= 0';
+        } else if (categoryName && !categoryId) {
+          rowError = `Unknown category: ${categoryName}`;
+        } else if (unitRaw && !knownUnits.has(unit) && unit === unitRaw.trim()) {
+          // normalizeUnitToCode returned raw unchanged → unknown unit
+          rowError = `Unknown unit: ${unitRaw}`;
+        }
+
         const payload: any = {
           name,
           sku,
@@ -826,8 +919,8 @@ export default function Products() {
           description: iDesc >= 0 ? String(row[iDesc] || '').trim() || null : null,
           category_id: categoryId,
           unit,
-          purchase_price: Number.isFinite(purchase_price) ? purchase_price : 0,
-          sale_price: Number.isFinite(sale_price) ? sale_price : 0,
+          purchase_price: purchaseNum,
+          sale_price: saleNum,
           min_stock_level: Number.isFinite(min_stock_level) ? min_stock_level : 0,
           track_stock,
           show_in_marketplace,
@@ -837,21 +930,47 @@ export default function Products() {
         reviewRows.push({
           id: `row-${r}`,
           rowIndex: r,
-          include: true,
+          include: !rowError,
           name,
           sku,
           barcode: payload.barcode ? String(payload.barcode) : '',
-          sale_price: Number.isFinite(payload.sale_price) ? Number(payload.sale_price) : 0,
+          sale_price: saleNum,
           payload,
           initial_stock: initial_stock > 0 ? initial_stock : 0,
+          error: rowError,
           display: {
             categoryName,
             unit,
-            purchase_price: Number.isFinite(purchase_price) ? purchase_price : 0,
+            purchase_price: purchaseNum,
             min_stock_level: Number.isFinite(min_stock_level) ? min_stock_level : 0,
             is_active,
           },
         });
+      }
+
+      // Mark duplicate SKU/barcode within the import file as errors.
+      const skuSeen = new Map<string, string>();
+      const barcodeSeen = new Map<string, string>();
+      for (const item of reviewRows) {
+        const skuKey = item.sku.trim().toLowerCase();
+        if (skuKey) {
+          if (skuSeen.has(skuKey)) {
+            item.error = item.error || `Duplicate SKU in file: ${item.sku}`;
+            item.include = false;
+          } else {
+            skuSeen.set(skuKey, item.id);
+          }
+        }
+        const bc = item.barcode.trim();
+        if (bc) {
+          const bcKey = bc.toLowerCase();
+          if (barcodeSeen.has(bcKey)) {
+            item.error = item.error || `Duplicate barcode in file: ${bc}`;
+            item.include = false;
+          } else {
+            barcodeSeen.set(bcKey, item.id);
+          }
+        }
       }
 
       if (reviewRows.length === 0) {
@@ -865,8 +984,22 @@ export default function Products() {
       }
 
       for (const item of reviewResult.items) {
-        if (!item.include) {
+        if (!item.include || item.error) {
           skipped++;
+          resultRows.push([
+            item.rowIndex,
+            item.sku,
+            item.name,
+            'skipped',
+            item.error || 'unchecked',
+          ]);
+          continue;
+        }
+
+        const sale = Number(item.sale_price);
+        if (!(sale > 0)) {
+          skipped++;
+          resultRows.push([item.rowIndex, item.sku, item.name, 'skipped', 'Sale price must be > 0']);
           continue;
         }
 
@@ -875,16 +1008,24 @@ export default function Products() {
           name: item.name.trim(),
           sku: item.sku.trim(),
           barcode: item.barcode.trim() ? item.barcode.trim() : null,
-          sale_price: Number.isFinite(item.sale_price) ? Number(item.sale_price) : 0,
+          sale_price: sale,
         };
 
         try {
           // IMPORTANT: Use createProduct() so initial stock can be applied transactionally
           await createProduct(updatedPayload, item.initial_stock);
           created++;
+          resultRows.push([item.rowIndex, item.sku, item.name, 'created', '']);
         } catch (e) {
           // SKU duplicate etc.
           failed++;
+          resultRows.push([
+            item.rowIndex,
+            item.sku,
+            item.name,
+            'error',
+            e instanceof Error ? e.message : String(e),
+          ]);
         }
       }
 
@@ -893,6 +1034,23 @@ export default function Products() {
         title: 'Import yakunlandi',
         description: `Qo‘shildi: ${created}, O‘tkazib yuborildi: ${skipped}, Xato: ${failed}`,
       });
+
+      try {
+        const csv = buildCsv(
+          resultRows[0].map(String),
+          resultRows.slice(1),
+        );
+        const api = requireElectron();
+        await handleIpcResponse(
+          api.files.saveTextFile({
+            defaultPath: `products_import_result_${Date.now()}.csv`,
+            content: csv,
+            filters: [{ name: 'CSV', extensions: ['csv'] }],
+          }),
+        );
+      } catch {
+        // best-effort result download
+      }
     } catch (e) {
       toast({
         title: 'Xatolik',
@@ -905,7 +1063,9 @@ export default function Products() {
   };
 
   // Always virtualize — non-virtual path re-rendered hundreds of rows on every scroll store write.
-  const filteredProducts = products;
+  const filteredProducts = searchInput.trim()
+    ? filterProductsBySearchTerm(products, searchInput)
+    : products;
   const detailOpen = Boolean(detailId);
 
   const openDetail = (id: string) => {
@@ -925,8 +1085,30 @@ export default function Products() {
     openDetail(id);
   };
 
+  const listReturnPath = normalizeListPathAndQuery(location.pathname, searchParams);
+
+  const persistListScrollBeforeLeave = () => {
+    const scrollTop = useProductsListStore.getState().scrollTop;
+    setStoredScrollTop(scrollTop);
+    persistListScroll(
+      listScrollStorageKey({
+        userId: user?.id,
+        branchId: (profile as { branch_id?: string } | null)?.branch_id,
+        pathAndQuery: listReturnPath,
+      }),
+      scrollTop,
+    );
+  };
+
   const handleEdit = (id: string) => {
-    navigate(`/products/${id}/edit`);
+    setLastFocusedProductId(id);
+    persistListScrollBeforeLeave();
+    navigate(withReturnToPath(`/products/${id}/edit`, listReturnPath));
+  };
+
+  const handleNewProduct = () => {
+    persistListScrollBeforeLeave();
+    navigate(withReturnToPath('/products/new', listReturnPath));
   };
 
   return (
@@ -986,7 +1168,7 @@ export default function Products() {
             </Button>
           )}
           {statusFilter === 'active' && (
-            <Button size="sm" className="h-8 text-xs" onClick={() => navigate('/products/new')}>
+            <Button size="sm" className="h-8 text-xs" onClick={handleNewProduct}>
               <Plus className="mr-2 h-3.5 w-3.5" />
               {t('products.add_product')}
             </Button>
@@ -1008,8 +1190,26 @@ export default function Products() {
                   placeholder={t('products.search_placeholder')}
                   value={searchInput}
                   onChange={(e) => setSearchInput(e.target.value)}
-                  className="h-8 py-1 pl-8 text-xs sm:text-sm"
+                  className="h-8 py-1 pl-8 pr-8 text-xs sm:text-sm"
+                  aria-label={t('products.search_placeholder')}
                 />
+                {searchInput ? (
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon"
+                    className="absolute right-0 top-1/2 h-8 w-8 -translate-y-1/2"
+                    aria-label={t('products.clear_search')}
+                    onClick={() => {
+                      setSearchInput('');
+                      const next = new URLSearchParams(searchParams);
+                      next.delete('search');
+                      setSearchParams(next, { replace: true });
+                    }}
+                  >
+                    <X className="h-3.5 w-3.5" aria-hidden />
+                  </Button>
+                ) : null}
               </div>
               <div className="min-w-[6.5rem] shrink-0 flex-1 basis-0">
                 <Select value={categoryFilter} onValueChange={(val) => updateFilter('category', val)}>
@@ -1093,9 +1293,29 @@ export default function Products() {
           </CardTitle>
         </CardHeader>
         <CardContent>
-          {loading ? (
+          {loading && products.length === 0 ? (
             <div className="flex justify-center py-8">
               <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary" />
+            </div>
+          ) : error && products.length === 0 ? (
+            <div className="space-y-3 py-12 text-center">
+              <p className="font-medium text-destructive">
+                {t('products.load_failed_title', { defaultValue: "Ma'lumot yuklanmadi" })}
+              </p>
+              <p className="text-sm text-muted-foreground">
+                {t('products.load_failed_body', {
+                  defaultValue: 'Server vaqtincha javob bermayapti',
+                })}
+              </p>
+              {lastUpdatedAt && (
+                <p className="text-xs text-muted-foreground">
+                  {t('products.last_updated', { defaultValue: 'Oxirgi yangilanish' })}:{' '}
+                  {lastUpdatedAt.toLocaleString()}
+                </p>
+              )}
+              <Button type="button" variant="outline" onClick={() => void refetch()}>
+                {t('common.retry', { defaultValue: 'Qayta urinish' })}
+              </Button>
             </div>
           ) : filteredProducts.length === 0 ? (
             <div className="text-center py-12">
@@ -1104,7 +1324,7 @@ export default function Products() {
                 {statusFilter === 'inactive' ? t('products.no_inactive_products') : t('products.no_products_found')}
               </p>
               {statusFilter === 'active' && (
-                <Button className="mt-4" onClick={() => navigate('/products/new')}>
+                <Button className="mt-4" onClick={handleNewProduct}>
                   <Plus className="h-4 w-4 mr-2" />
                   {t('products.add_product')}
                 </Button>
@@ -1112,6 +1332,18 @@ export default function Products() {
             </div>
           ) : (
             <div className="space-y-3">
+              {error && (
+                <div className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900">
+                  <span>
+                    {t('products.load_failed_body', {
+                      defaultValue: 'Server vaqtincha javob bermayapti',
+                    })}
+                  </span>
+                  <Button type="button" size="sm" variant="outline" className="h-7" onClick={() => void refetch()}>
+                    {t('common.retry', { defaultValue: 'Qayta urinish' })}
+                  </Button>
+                </div>
+              )}
               <VirtualizedProductsTable
                 products={filteredProducts}
                 t={t}
@@ -1123,6 +1355,12 @@ export default function Products() {
                 onEdit={handleEdit}
                 onDelete={(id, name) => void handleDelete(id, name)}
                 onRestore={handleRestore}
+                onHistory={(id) => {
+                  const next = new URLSearchParams(searchParams);
+                  next.set('detail', id);
+                  next.set('tab', 'audit');
+                  setSearchParams(next);
+                }}
                 showRestore={statusFilter === 'inactive'}
                 initialScrollTop={restoreDone ? restoreScrollTop : undefined}
                 onScrollTopChange={setStoredScrollTop}
@@ -1173,18 +1411,22 @@ export default function Products() {
                     <TableHead>Sotib olish</TableHead>
                     <TableHead>Qoldiq</TableHead>
                     <TableHead>Holat</TableHead>
+                    <TableHead>Xato</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
                   {reviewItems.map((item) => (
-                    <TableRow key={item.id}>
+                    <TableRow key={item.id} className={item.error ? 'bg-destructive/5' : undefined}>
                       <TableCell>
                         <Checkbox
-                          checked={item.include}
+                          checked={item.include && !item.error}
+                          disabled={Boolean(item.error)}
                           onCheckedChange={(checked) =>
                             setReviewItems((prev) =>
                               prev?.map((row) =>
-                                row.id === item.id ? { ...row, include: Boolean(checked) } : row
+                                row.id === item.id
+                                  ? { ...row, include: Boolean(checked) && !row.error }
+                                  : row
                               ) || null
                             )
                           }
@@ -1237,13 +1479,18 @@ export default function Products() {
                             )
                           }
                           placeholder="0"
+                          allowZero={false}
+                          min={0}
                         />
                       </TableCell>
                       <TableCell>{item.display.categoryName || '-'}</TableCell>
                       <TableCell>{item.display.unit || '-'}</TableCell>
                       <TableCell>{formatMoneyUZS(item.display.purchase_price)}</TableCell>
-                      <TableCell>{formatNumberUZ(item.initial_stock)}</TableCell>
+                      <TableCell>{item.initial_stock}</TableCell>
                       <TableCell>{item.display.is_active ? 'Faol' : 'Nofaol'}</TableCell>
+                      <TableCell className="max-w-[12rem] text-xs text-destructive">
+                        {item.error || '—'}
+                      </TableCell>
                     </TableRow>
                   ))}
                 </TableBody>
@@ -1259,10 +1506,15 @@ export default function Products() {
               onClick={() => {
                 if (!reviewItems) return;
                 const invalid = reviewItems.some(
-                  (item) => item.include && (!item.name.trim() || !item.sku.trim())
+                  (item) =>
+                    item.include &&
+                    !item.error &&
+                    (!item.name.trim() ||
+                      !item.sku.trim() ||
+                      !(Number(item.sale_price) > 0))
                 );
                 if (invalid) {
-                  setReviewError('Nomi va SKU majburiy (tanlangan qatorlarda).');
+                  setReviewError('Nomi, SKU va sotish narxi (>0) majburiy (tanlangan qatorlarda).');
                   return;
                 }
                 closeImportReview({ action: 'confirm', items: reviewItems });

@@ -268,6 +268,15 @@ function mountStaffSalesRoutes() {
         return;
       }
 
+      const applyOverpayAsPrepaid =
+        body.apply_overpay_as_prepaid === true ||
+        body.apply_overpay_as_prepaid === 1 ||
+        String(body.apply_overpay_as_prepaid || '').toLowerCase() === 'true' ||
+        (hasTendered &&
+          customerId &&
+          amountTendered != null &&
+          amountTendered > cashDue + 0.009);
+
       const orderData = {
         user_id: req.staffUser.id,
         cashier_id: req.staffUser.id,
@@ -285,18 +294,17 @@ function mountStaffSalesRoutes() {
           ? { due_date: String(body.due_date).trim().slice(0, 10) }
           : {}),
         ...(prepaidToApply > 0 ? { prepaid_applied: prepaidToApply } : {}),
+        ...(applyOverpayAsPrepaid ? { apply_overpay_as_prepaid: true } : {}),
       };
 
       let paymentsData = [];
       if (paymentMethod === 'credit') {
         paymentsData = [];
       } else if (hasTendered) {
-        if (amountTendered > cashDue + 0.009) {
+        if (amountTendered > cashDue + 0.009 && !customerId) {
           res.status(400).json({
             error: 'validation_error',
-            message: prepaidToApply > 0
-              ? `To'lov miqdori qolgan summa ${Math.round(cashDue)} so'mdan oshmasligi kerak (oldindan to'lov hisobga olindi)`
-              : 'amount_tendered cannot exceed sale total',
+            message: 'amount_tendered cannot exceed sale total without a customer (overpay→advance)',
           });
           return;
         }
@@ -477,21 +485,18 @@ function mountStaffSalesRoutes() {
       }
 
       const details = bundle.returns.getOrderDetails(orderId);
-      const sumReturnedStmt = db.prepare(`
-        SELECT COALESCE(SUM(ri.quantity), 0) AS total
-        FROM return_items ri
-        INNER JOIN sales_returns sr ON sr.id = ri.return_id
-        WHERE ri.order_item_id = ?
-          AND LOWER(TRIM(COALESCE(sr.status, ''))) IN ('completed', 'draft')
-      `);
-
+      // Prefer getOrderDetails remaining (already clamps sold−held; remaining=0 stays 0).
       const items = (details.items || [])
         .map((it) => {
           const orderItemIdVal = it.orderItemId || it.id;
-          const soldQty = Number(it.sold_quantity ?? it.qty ?? it.quantity ?? 0);
-          const returnedRow = sumReturnedStmt.get(orderItemIdVal);
-          const returnedQty = Number(returnedRow?.total || 0);
-          const returnableQty = Math.max(0, soldQty - returnedQty);
+          const soldQty = Number(it.sold_quantity ?? it.qty_sale ?? it.qty ?? it.quantity ?? 0);
+          const returnedQty = Number(it.returned_quantity ?? 0);
+          const returnableQty = Math.max(
+            0,
+            it.remaining_quantity != null
+              ? Number(it.remaining_quantity)
+              : soldQty - returnedQty,
+          );
           return {
             order_item_id: orderItemIdVal,
             product_id: it.productId || it.product_id,

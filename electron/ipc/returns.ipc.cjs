@@ -76,9 +76,72 @@ function registerReturnsHandlers(services) {
     return returns.deleteReturn(id);
   }));
 
+  ipcMain.removeHandler('pos:returns:cancel');
+  ipcMain.handle('pos:returns:cancel', wrapHandler(async (_event, a, b) => {
+    let returnId;
+    let data;
+    if (a && typeof a === 'object' && 'returnId' in a) {
+      returnId = a.returnId;
+      data = a.data || a;
+    } else {
+      returnId = a;
+      data = b || {};
+    }
+    return returns.cancelReturn(returnId, data);
+  }));
+
   ipcMain.removeHandler('pos:returns:complete');
-  ipcMain.handle('pos:returns:complete', wrapHandler(async (_event, id) => {
-    return returns.completeReturn(id);
+  ipcMain.handle('pos:returns:complete', wrapHandler(async (_event, a, b) => {
+    let returnId;
+    let data;
+    if (a && typeof a === 'object' && 'returnId' in a) {
+      returnId = a.returnId;
+      data = a.data || a;
+    } else {
+      returnId = a;
+      data = b || {};
+    }
+    return returns.completeReturn(returnId, data);
+  }));
+
+  ipcMain.removeHandler('pos:returns:approve');
+  ipcMain.handle('pos:returns:approve', wrapHandler(async (_event, a, b) => {
+    let returnId;
+    let data;
+    if (a && typeof a === 'object' && 'returnId' in a) {
+      returnId = a.returnId;
+      data = a.data || a;
+    } else {
+      returnId = a;
+      data = b || {};
+    }
+    return returns.approveReturn(returnId, data);
+  }));
+
+  ipcMain.removeHandler('pos:returns:reject');
+  ipcMain.handle('pos:returns:reject', wrapHandler(async (_event, a, b) => {
+    let returnId;
+    let data;
+    if (a && typeof a === 'object' && 'returnId' in a) {
+      returnId = a.returnId;
+      data = a.data || a;
+    } else {
+      returnId = a;
+      data = b || {};
+    }
+    return returns.rejectReturn(returnId, data);
+  }));
+
+  ipcMain.removeHandler('pos:returns:reasonBreakdown');
+  ipcMain.handle('pos:returns:reasonBreakdown', wrapHandler(async (_event, filters) => {
+    return returns.getReasonBreakdown(filters || {});
+  }));
+
+  ipcMain.removeHandler('pos:returns:auditTrail');
+  ipcMain.handle('pos:returns:auditTrail', wrapHandler(async (_event, a, b) => {
+    const returnId = a && typeof a === 'object' ? a.returnId || a.id : a;
+    const limit = a && typeof a === 'object' ? a.limit : b;
+    return returns.getAuditTrail(returnId, limit);
   }));
 }
 

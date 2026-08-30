@@ -1,7 +1,8 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
+import { useTranslation } from 'react-i18next';
 import { Button } from '@/components/ui/button';
-import { Card, CardContent } from '@/components/ui/card';
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import {
   Select,
@@ -19,78 +20,72 @@ import {
   TableRow,
 } from '@/components/ui/table';
 import { ArrowLeft, TrendingDown, TrendingUp } from 'lucide-react';
-import { useToast } from '@/hooks/use-toast';
 import { handleIpcResponse, isElectron, requireElectron } from '@/utils/electron';
 import { formatDateYMD, todayYMD } from '@/lib/datetime';
 import { formatMoneyUZS } from '@/lib/format';
 import { expenseToUzsAmount, getOrderSaleCurrency } from '@/lib/currency';
 import { toShiftUzsAmount } from '@/lib/posSaleCurrency';
 import { useReportAutoRefresh } from '@/hooks/useReportAutoRefresh';
-import type { CashFlowGranularity, CashFlowRow } from '@/types/financialReports';
+import type {
+  CashFlowGranularity,
+  CashFlowReconciliation,
+  CashFlowReportPayload,
+  CashFlowRow,
+  CashFlowSourceRow,
+} from '@/types/financialReports';
 import { getExpenses, getOrderById, getOrders, getSalesReturns, getSuppliers, getSupplierPayments } from '@/db/api';
 import { startOfWeek } from 'date-fns';
+import { useAuth } from '@/contexts/AuthContext';
+import { ReportLoadPanel } from '@/components/reports/ReportLoadPanel';
+import {
+  createReportCorrelationId,
+  reportLoadErrorMessage,
+  resolveReportStatus,
+  telemetryFromReportError,
+  type ReportLoadStatus,
+} from '@/lib/reportLoadState';
+import { useReportFilters } from '@/hooks/useReportFilters';
+import { getCashFlowSourceLabel, getPaymentMethodLabel } from '@/lib/paymentMethodLabels';
+
+type FallbackEntry = { date: string; method: string; source: string; inflow: number; outflow: number };
+
+function isCashFlowPayload(value: unknown): value is CashFlowReportPayload {
+  return !!value && typeof value === 'object' && Array.isArray((value as CashFlowReportPayload).rows);
+}
 
 export default function CashFlowReport() {
   const navigate = useNavigate();
-  const { toast } = useToast();
+  const { t } = useTranslation();
+  const { user } = useAuth();
 
-  const [granularity, setGranularity] = useState<CashFlowGranularity>('day');
-  const [dateFrom, setDateFrom] = useState(todayYMD());
-  const [dateTo, setDateTo] = useState(todayYMD());
-  const [method, setMethod] = useState<string>('all');
-  const [loading, setLoading] = useState(true);
+  const { get, set } = useReportFilters({
+    storageKey: 'reports.cash-flow.filters',
+    trackedKeys: ['granularity', 'dateFrom', 'dateTo', 'method'],
+    defaults: {
+      granularity: 'day',
+      dateFrom: todayYMD(),
+      dateTo: todayYMD(),
+      method: 'all',
+    },
+  });
+  const granularity = get('granularity', 'day') as CashFlowGranularity;
+  const dateFrom = get('dateFrom', todayYMD());
+  const dateTo = get('dateTo', todayYMD());
+  const method = get('method', 'all');
+  const [loadStatus, setLoadStatus] = useState<ReportLoadStatus>('loading');
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [correlationId, setCorrelationId] = useState<string | null>(null);
+  const [loadedAt, setLoadedAt] = useState<string | null>(null);
   const [rows, setRows] = useState<CashFlowRow[]>([]);
+  const [bySource, setBySource] = useState<CashFlowSourceRow[]>([]);
+  const [reconciliation, setReconciliation] = useState<CashFlowReconciliation | null>(null);
+  const [usedFallback, setUsedFallback] = useState(false);
 
-  useReportAutoRefresh(loadData);
-
-  useEffect(() => {
-    loadData();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [granularity, dateFrom, dateTo]);
-
-  async function loadData() {
-    try {
-      setLoading(true);
-      let data: CashFlowRow[] | null = null;
-
-      if (isElectron()) {
-        try {
-          const api = requireElectron();
-          const res = await handleIpcResponse<CashFlowRow[]>(
-            api.reports.cashFlow({
-              granularity,
-              date_from: dateFrom,
-              date_to: dateTo,
-            })
-          );
-          data = Array.isArray(res) ? res : [];
-        } catch (error: any) {
-          console.warn('[CashFlowReport] IPC cashFlow failed, using fallback:', error);
-        }
-      }
-
-      if (!data || data.length === 0) {
-        data = await buildFallbackRows();
-      }
-
-      setRows(Array.isArray(data) ? data : []);
-    } catch (error: any) {
-      console.error('[CashFlowReport] loadData error:', error);
-      toast({
-        title: 'Xatolik',
-        description: error?.message || "Ma'lumotlarni yuklab bo'lmadi",
-        variant: 'destructive',
-      });
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  const buildFallbackRows = async (): Promise<CashFlowRow[]> => {
-    const entries: Array<{ date: string; method: string; inflow: number; outflow: number }> = [];
+  const buildFallbackBundle = useCallback(async (): Promise<CashFlowReportPayload> => {
+    const entries: FallbackEntry[] = [];
 
     const inRange = (ymd: string) => ymd >= dateFrom && ymd <= dateTo;
-    const normalizeMethod = (m: any) => String(m || 'unknown').toLowerCase();
+    const normalizeMethod = (m: unknown) => String(m || 'unknown').toLowerCase();
     const isRefundPayoutMethod = (m: string) => m === 'refund_cash';
 
     const ordersData = await getOrders(100000);
@@ -112,7 +107,7 @@ export default function CashFlowReport() {
         } catch {
           return order;
         }
-      })
+      }),
     );
 
     const toUzs = (order: any, amount: number) => {
@@ -125,10 +120,11 @@ export default function CashFlowReport() {
       const ymd = formatDateYMD(order.created_at);
       const payments = order.payments || [];
       if (payments.length === 0) {
-        const method = normalizeMethod((order as any).payment_type || 'cash');
+        const m = normalizeMethod((order as any).payment_type || 'cash');
         entries.push({
           date: ymd,
-          method,
+          method: m,
+          source: 'order_payments',
           inflow: toUzs(order, Number(order.total_amount || 0)),
           outflow: 0,
         });
@@ -139,7 +135,7 @@ export default function CashFlowReport() {
         payments.length === 1 && rawSum <= 0 && Number(order.total_amount) > 0;
 
       payments.forEach((payment: any) => {
-        const method = normalizeMethod(payment.payment_method);
+        const m = normalizeMethod(payment.payment_method);
         const raw = shouldFallbackSinglePaymentAmount
           ? Number(order.total_amount || 0)
           : Number(payment?.amount ?? 0);
@@ -147,9 +143,10 @@ export default function CashFlowReport() {
         if (amount <= 0) return;
         entries.push({
           date: ymd,
-          method,
-          inflow: isRefundPayoutMethod(method) ? 0 : amount,
-          outflow: isRefundPayoutMethod(method) ? amount : 0,
+          method: m,
+          source: 'order_payments',
+          inflow: isRefundPayoutMethod(m) ? 0 : amount,
+          outflow: isRefundPayoutMethod(m) ? amount : 0,
         });
       });
     });
@@ -163,6 +160,7 @@ export default function CashFlowReport() {
         entries.push({
           date: ymd,
           method: normalizeMethod(e.payment_method),
+          source: 'expenses',
           inflow: 0,
           outflow: expenseToUzsAmount(e),
         });
@@ -176,11 +174,12 @@ export default function CashFlowReport() {
       const refundUzs = toShiftUzsAmount(
         refundRaw,
         String(r.order_currency || 'UZS').toUpperCase() === 'USD' ? 'USD' : 'UZS',
-        Number(r.order_fx_rate ?? 0)
+        Number(r.order_fx_rate ?? 0),
       );
       entries.push({
         date: ymd,
         method: normalizeMethod(r.refund_method || 'cash'),
+        source: 'refunds',
         inflow: 0,
         outflow: refundUzs,
       });
@@ -194,17 +193,18 @@ export default function CashFlowReport() {
         } catch {
           return [];
         }
-      })
+      }),
     );
     supplierPayments.flat().forEach((p: any) => {
       const ymd = formatDateYMD(p.paid_at || p.created_at);
       if (!inRange(ymd)) return;
-      const method = normalizeMethod(p.payment_method || 'transfer');
-      if (method === 'credit_note') return; // accounting adjustment, no direct cash movement
+      const m = normalizeMethod(p.payment_method || 'transfer');
+      if (m === 'credit_note') return;
       const amount = Number(p.amount || 0);
       entries.push({
         date: ymd,
-        method,
+        method: m,
+        source: 'supplier_payments',
         inflow: amount < 0 ? Math.abs(amount) : 0,
         outflow: amount > 0 ? amount : 0,
       });
@@ -220,14 +220,15 @@ export default function CashFlowReport() {
     };
 
     const grouped = new Map<string, CashFlowRow>();
+    const sourceMap = new Map<string, CashFlowSourceRow>();
+
     entries.forEach((e) => {
       const period_start = toPeriodStart(e.date);
-      const method = e.method;
-      const key = `${period_start}|${method}`;
+      const key = `${period_start}|${e.method}`;
       const existing = grouped.get(key) || {
         period_start,
         period_key: period_start,
-        method,
+        method: e.method,
         inflow: 0,
         outflow: 0,
         net: 0,
@@ -236,10 +237,108 @@ export default function CashFlowReport() {
       existing.outflow += e.outflow;
       existing.net = existing.inflow - existing.outflow;
       grouped.set(key, existing);
+
+      const src = sourceMap.get(e.source) || {
+        source: e.source,
+        inflow: 0,
+        outflow: 0,
+        net: 0,
+      };
+      src.inflow += e.inflow;
+      src.outflow += e.outflow;
+      src.net = src.inflow - src.outflow;
+      sourceMap.set(e.source, src);
     });
 
-    return Array.from(grouped.values()).sort((a, b) => a.period_start.localeCompare(b.period_start));
-  };
+    const cashNet = Array.from(grouped.values())
+      .filter((r) => String(r.method).toLowerCase() === 'cash')
+      .reduce((sum, r) => sum + Number(r.net || 0), 0);
+
+    return {
+      rows: Array.from(grouped.values()).sort((a, b) => a.period_start.localeCompare(b.period_start)),
+      by_source: Array.from(sourceMap.values()),
+      reconciliation: {
+        opening_cash: 0,
+        closing_cash: 0,
+        net_cash_movement: cashNet,
+        delta: -cashNet,
+      },
+    };
+  }, [dateFrom, dateTo, granularity]);
+
+  const loadData = useCallback(async () => {
+    const cid = createReportCorrelationId('cash-flow');
+    setCorrelationId(cid);
+    setLoadStatus('loading');
+    setLoadError(null);
+
+    try {
+      let bundle: CashFlowReportPayload | null = null;
+      let fallback = false;
+
+      if (isElectron()) {
+        try {
+          const api = requireElectron();
+          const res = await handleIpcResponse<CashFlowReportPayload | CashFlowRow[]>(
+            api.reports.cashFlow({
+              granularity,
+              date_from: dateFrom,
+              date_to: dateTo,
+            }),
+          );
+          if (Array.isArray(res)) {
+            bundle = { rows: res, by_source: [], reconciliation: null };
+          } else if (isCashFlowPayload(res)) {
+            bundle = res;
+          }
+        } catch (error) {
+          console.warn('[CashFlowReport] IPC cashFlow failed, using fallback:', error);
+          telemetryFromReportError(
+            'reports/financial/cash-flow',
+            'pos:reports:cashFlow',
+            error,
+            cid,
+            user?.role,
+          );
+        }
+      }
+
+      if (!bundle) {
+        bundle = await buildFallbackBundle();
+        fallback = true;
+      }
+
+      setRows(bundle.rows || []);
+      setBySource(bundle.by_source || []);
+      setReconciliation(bundle.reconciliation);
+      setUsedFallback(fallback);
+      setLoadedAt(new Date().toISOString());
+      setLoadStatus(resolveReportStatus(bundle.rows, (r) => r.length === 0));
+    } catch (error) {
+      const message = reportLoadErrorMessage(
+        error,
+        t('reports.cash_flow.errors.load_failed', "Pul oqimini yuklab bo'lmadi"),
+      );
+      setLoadError(message);
+      setRows([]);
+      setBySource([]);
+      setReconciliation(null);
+      setLoadStatus('error');
+      telemetryFromReportError(
+        'reports/financial/cash-flow',
+        'cashFlow:fallback',
+        error,
+        cid,
+        user?.role,
+      );
+    }
+  }, [buildFallbackBundle, dateFrom, dateTo, granularity, t, user?.role]);
+
+  useReportAutoRefresh(loadData);
+
+  useEffect(() => {
+    void loadData();
+  }, [loadData]);
 
   const methods = useMemo(() => {
     const set = new Set<string>();
@@ -257,10 +356,23 @@ export default function CashFlowReport() {
     return { inflow, outflow, net: inflow - outflow };
   }, [filtered]);
 
-  if (loading) {
+  const filteredSources = useMemo(() => bySource, [bySource]);
+
+  if (loadStatus === 'loading' || loadStatus === 'error') {
     return (
-      <div className="flex justify-center items-center min-h-[400px]">
-        <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary" />
+      <div className="space-y-6">
+        <div className="flex items-center gap-4">
+          <Button variant="ghost" size="icon" onClick={() => navigate('/reports/financial')}>
+            <ArrowLeft className="h-4 w-4" />
+          </Button>
+          <h1 className="page-heading">{t('reports.cash_flow.title', 'Pul oqimi')}</h1>
+        </div>
+        <ReportLoadPanel
+          status={loadStatus}
+          error={loadError}
+          correlationId={correlationId}
+          onRetry={() => void loadData()}
+        />
       </div>
     );
   }
@@ -273,14 +385,27 @@ export default function CashFlowReport() {
             <ArrowLeft className="h-4 w-4" />
           </Button>
           <div>
-            <h1 className="page-heading">Pul oqimi</h1>
+            <h1 className="page-heading">{t('reports.cash_flow.title', 'Pul oqimi')}</h1>
             <p className="text-muted-foreground">
-              Kirim / chiqim va net pul oqimi (UZS ekvivalent, USD sotuvlar kurs bo‘yicha)
+              {t(
+                'reports.cash_flow.subtitle',
+                'Kirim / chiqim va net pul oqimi (UZS ekvivalent, USD sotuvlar kurs bo‘yicha)',
+              )}
+              {loadedAt ? (
+                <span className="ml-2 opacity-70">
+                  · {dateFrom} — {dateTo} · UZS
+                </span>
+              ) : null}
             </p>
+            {usedFallback ? (
+              <p className="text-xs text-amber-600">
+                {t('reports.cash_flow.fallback_notice', 'Server hisoboti mavjud emas — mahalliy hisob-kitob ishlatildi')}
+              </p>
+            ) : null}
           </div>
         </div>
-        <Button variant="outline" onClick={loadData}>
-          Yangilash
+        <Button variant="outline" onClick={() => void loadData()}>
+          {t('reports.load_state.retry', 'Yangilash')}
         </Button>
       </div>
 
@@ -288,36 +413,58 @@ export default function CashFlowReport() {
         <CardContent className="pt-6">
           <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
             <div>
-              <label className="text-sm text-muted-foreground">Davriylik</label>
-              <Select value={granularity} onValueChange={(v) => setGranularity(v as CashFlowGranularity)}>
+              <label className="text-sm text-muted-foreground">
+                {t('reports.cash_flow.filters.granularity', 'Davriylik')}
+              </label>
+              <Select
+                value={granularity}
+                onValueChange={(v) => set({ granularity: v as CashFlowGranularity })}
+              >
                 <SelectTrigger>
-                  <SelectValue placeholder="Kun/hafta" />
+                  <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="day">Kunlik</SelectItem>
-                  <SelectItem value="week">Haftalik</SelectItem>
+                  <SelectItem value="day">{t('reports.cash_flow.filters.daily', 'Kunlik')}</SelectItem>
+                  <SelectItem value="week">{t('reports.cash_flow.filters.weekly', 'Haftalik')}</SelectItem>
                 </SelectContent>
               </Select>
             </div>
             <div>
-              <label className="text-sm text-muted-foreground">Boshlanish sana</label>
-              <Input type="date" value={dateFrom} onChange={(e) => setDateFrom(e.target.value)} />
+              <label className="text-sm text-muted-foreground">
+                {t('reports.cash_flow.filters.from', 'Boshlanish sana')}
+              </label>
+              <Input
+                type="date"
+                value={dateFrom}
+                onChange={(e) => set({ dateFrom: e.target.value || null })}
+              />
             </div>
             <div>
-              <label className="text-sm text-muted-foreground">Tugash sana</label>
-              <Input type="date" value={dateTo} onChange={(e) => setDateTo(e.target.value)} />
+              <label className="text-sm text-muted-foreground">
+                {t('reports.cash_flow.filters.to', 'Tugash sana')}
+              </label>
+              <Input
+                type="date"
+                value={dateTo}
+                onChange={(e) => set({ dateTo: e.target.value || null })}
+              />
             </div>
             <div>
-              <label className="text-sm text-muted-foreground">To'lov usuli</label>
-              <Select value={method} onValueChange={setMethod}>
+              <label className="text-sm text-muted-foreground">
+                {t('reports.cash_flow.filters.method', "To'lov usuli")}
+              </label>
+              <Select
+                value={method}
+                onValueChange={(value) => set({ method: value === 'all' ? null : value })}
+              >
                 <SelectTrigger>
-                  <SelectValue placeholder="Barchasi" />
+                  <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="all">Barchasi</SelectItem>
+                  <SelectItem value="all">{t('reports.cash_flow.filters.all_methods', 'Barchasi')}</SelectItem>
                   {methods.map((m) => (
                     <SelectItem key={m} value={m}>
-                      {m}
+                      {getPaymentMethodLabel(m, t)}
                     </SelectItem>
                   ))}
                 </SelectContent>
@@ -332,7 +479,7 @@ export default function CashFlowReport() {
           <CardContent className="pt-6">
             <div className="flex items-center justify-between">
               <div>
-                <p className="text-sm text-muted-foreground">Kirim</p>
+                <p className="text-sm text-muted-foreground">{t('reports.cash_flow.inflow', 'Kirim')}</p>
                 <p className="text-2xl font-bold text-success">{formatMoneyUZS(summary.inflow)}</p>
               </div>
               <TrendingUp className="h-6 w-6 text-success" />
@@ -343,7 +490,7 @@ export default function CashFlowReport() {
           <CardContent className="pt-6">
             <div className="flex items-center justify-between">
               <div>
-                <p className="text-sm text-muted-foreground">Chiqim</p>
+                <p className="text-sm text-muted-foreground">{t('reports.cash_flow.outflow', 'Chiqim')}</p>
                 <p className="text-2xl font-bold text-destructive">{formatMoneyUZS(summary.outflow)}</p>
               </div>
               <TrendingDown className="h-6 w-6 text-destructive" />
@@ -352,7 +499,7 @@ export default function CashFlowReport() {
         </Card>
         <Card>
           <CardContent className="pt-6">
-            <p className="text-sm text-muted-foreground">Net</p>
+            <p className="text-sm text-muted-foreground">{t('reports.cash_flow.net', 'Net')}</p>
             <p className={`text-2xl font-bold ${summary.net >= 0 ? 'text-success' : 'text-destructive'}`}>
               {formatMoneyUZS(summary.net)}
             </p>
@@ -360,32 +507,106 @@ export default function CashFlowReport() {
         </Card>
       </div>
 
+      {bySource.length > 0 ? (
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-base">
+              {t('reports.cash_flow.by_source', 'Manba bo‘yicha (drill-down)')}
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="p-0">
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>{t('reports.cash_flow.source', 'Manba')}</TableHead>
+                  <TableHead className="text-right">{t('reports.cash_flow.inflow', 'Kirim')}</TableHead>
+                  <TableHead className="text-right">{t('reports.cash_flow.outflow', 'Chiqim')}</TableHead>
+                  <TableHead className="text-right">{t('reports.cash_flow.net', 'Net')}</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {filteredSources.map((s) => (
+                  <TableRow key={s.source}>
+                    <TableCell>{getCashFlowSourceLabel(s.source, t)}</TableCell>
+                    <TableCell className="text-right text-success">{formatMoneyUZS(s.inflow)}</TableCell>
+                    <TableCell className="text-right text-destructive">{formatMoneyUZS(s.outflow)}</TableCell>
+                    <TableCell className="text-right font-medium">{formatMoneyUZS(s.net)}</TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </CardContent>
+        </Card>
+      ) : null}
+
+      {reconciliation ? (
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-base">
+              {t('reports.cash_flow.reconciliation', 'Naqd kassa tekshiruvi (smena)')}
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="grid grid-cols-2 gap-4 text-sm md:grid-cols-4">
+            <div>
+              <p className="text-muted-foreground">{t('reports.cash_flow.opening', 'Boshlang‘ich')}</p>
+              <p className="font-semibold">{formatMoneyUZS(reconciliation.opening_cash)}</p>
+            </div>
+            <div>
+              <p className="text-muted-foreground">{t('reports.cash_flow.closing', 'Yakuniy')}</p>
+              <p className="font-semibold">{formatMoneyUZS(reconciliation.closing_cash)}</p>
+            </div>
+            <div>
+              <p className="text-muted-foreground">{t('reports.cash_flow.net_cash', 'Naqd harakat')}</p>
+              <p className="font-semibold">{formatMoneyUZS(reconciliation.net_cash_movement)}</p>
+            </div>
+            <div>
+              <p className="text-muted-foreground">{t('reports.cash_flow.delta', 'Farq')}</p>
+              <p
+                className={`font-semibold ${
+                  Math.abs(reconciliation.delta) < 1 ? 'text-success' : 'text-amber-600'
+                }`}
+              >
+                {formatMoneyUZS(reconciliation.delta)}
+              </p>
+            </div>
+          </CardContent>
+        </Card>
+      ) : null}
+
       <Card>
         <CardContent className="p-0">
-          {filtered.length === 0 ? (
-            <div className="text-center py-12">
-              <p className="text-muted-foreground">Ma'lumot topilmadi</p>
-            </div>
+          {loadStatus === 'empty' || filtered.length === 0 ? (
+            <ReportLoadPanel
+              status="empty"
+              overlay={false}
+              emptyTitle={t('reports.cash_flow.empty', "Tanlangan davrda pul oqimi yo'q")}
+            />
           ) : (
             <Table>
               <TableHeader>
                 <TableRow>
-                  <TableHead>Davr</TableHead>
-                  <TableHead>To'lov usuli</TableHead>
-                  <TableHead className="text-right">Kirim</TableHead>
-                  <TableHead className="text-right">Chiqim</TableHead>
-                  <TableHead className="text-right">Net</TableHead>
+                  <TableHead>{t('reports.cash_flow.period', 'Davr')}</TableHead>
+                  <TableHead>{t('reports.cash_flow.filters.method', "To'lov usuli")}</TableHead>
+                  <TableHead className="text-right">{t('reports.cash_flow.inflow', 'Kirim')}</TableHead>
+                  <TableHead className="text-right">{t('reports.cash_flow.outflow', 'Chiqim')}</TableHead>
+                  <TableHead className="text-right">{t('reports.cash_flow.net', 'Net')}</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
                 {filtered.map((r, idx) => (
                   <TableRow key={`${r.period_start}-${r.method}-${idx}`}>
                     <TableCell className="font-medium">
-                      {granularity === 'week' ? `Hafta: ${r.period_start}` : r.period_start}
+                      {granularity === 'week'
+                        ? `${t('reports.cash_flow.week', 'Hafta')}: ${r.period_start}`
+                        : r.period_start}
                     </TableCell>
-                    <TableCell>{r.method}</TableCell>
-                    <TableCell className="text-right text-success">{formatMoneyUZS(Number(r.inflow || 0))}</TableCell>
-                    <TableCell className="text-right text-destructive">{formatMoneyUZS(Number(r.outflow || 0))}</TableCell>
+                    <TableCell>{getPaymentMethodLabel(r.method, t)}</TableCell>
+                    <TableCell className="text-right text-success">
+                      {formatMoneyUZS(Number(r.inflow || 0))}
+                    </TableCell>
+                    <TableCell className="text-right text-destructive">
+                      {formatMoneyUZS(Number(r.outflow || 0))}
+                    </TableCell>
                     <TableCell
                       className={`text-right font-medium ${
                         Number(r.net || 0) >= 0 ? 'text-success' : 'text-destructive'
@@ -403,4 +624,3 @@ export default function CashFlowReport() {
     </div>
   );
 }
-

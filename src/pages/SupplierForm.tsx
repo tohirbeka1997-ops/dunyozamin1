@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo, useRef } from 'react';
 import { useLocation, useNavigate, useParams } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -16,15 +16,15 @@ import { useToast } from '@/hooks/use-toast';
 import { getSupplierById, createSupplier, updateSupplier } from '@/db/api';
 import type { Supplier } from '@/types/database';
 import { ArrowLeft, Save } from 'lucide-react';
-import { navigateBackTo, resolveBackTarget } from '@/lib/pageState';
+import { useFormListReturn } from '@/hooks/useFormListReturn';
 
 export default function SupplierForm() {
   const { id } = useParams();
   const navigate = useNavigate();
   const location = useLocation();
   const { toast } = useToast();
+  const { goToList, leaveToList } = useFormListReturn({ fallbackListPath: '/suppliers' });
   const isEditMode = !!id;
-  const backTo = resolveBackTarget(location, '/suppliers');
 
   const [loading, setLoading] = useState(false);
   const [name, setName] = useState('');
@@ -37,11 +37,39 @@ export default function SupplierForm() {
   const [settlementCurrency, setSettlementCurrency] = useState<'UZS' | 'USD'>('USD');
 
   const [errors, setErrors] = useState<Record<string, string>>({});
+  const baselineSnapshotRef = useRef<string | null>(null);
+  const [initialLoadDone, setInitialLoadDone] = useState(!id);
+
+  const formSnapshot = useMemo(
+    () =>
+      JSON.stringify({
+        name,
+        contactPerson,
+        phone,
+        email,
+        address,
+        note,
+        status,
+        settlementCurrency,
+      }),
+    [name, contactPerson, phone, email, address, note, status, settlementCurrency],
+  );
+  const isDirty =
+    baselineSnapshotRef.current !== null && formSnapshot !== baselineSnapshotRef.current;
+
+  useEffect(() => {
+    if (!initialLoadDone || loading) return;
+    if (baselineSnapshotRef.current !== null) return;
+    baselineSnapshotRef.current = formSnapshot;
+  }, [initialLoadDone, loading, formSnapshot]);
 
   useEffect(() => {
     if (id) {
-      loadSupplier();
+      void loadSupplier();
+    } else {
+      setInitialLoadDone(true);
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id]);
 
   const loadSupplier = async () => {
@@ -62,9 +90,10 @@ export default function SupplierForm() {
         description: 'Yetkazib beruvchini yuklab bo‘lmadi',
         variant: 'destructive',
       });
-      navigate(backTo);
+      goToList();
     } finally {
       setLoading(false);
+      setInitialLoadDone(true);
     }
   };
 
@@ -123,7 +152,7 @@ export default function SupplierForm() {
         });
       }
 
-      navigate(backTo);
+      goToList();
     } catch (error: any) {
       toast({
         title: 'Xatolik',
@@ -146,7 +175,7 @@ export default function SupplierForm() {
   return (
     <div className="space-y-6">
       <div className="flex items-center gap-4">
-        <Button variant="ghost" size="icon" onClick={() => navigateBackTo(navigate, location, '/suppliers')}>
+        <Button variant="ghost" size="icon" onClick={() => void leaveToList(isDirty)}>
           <ArrowLeft className="h-4 w-4" />
         </Button>
         <div>

@@ -42,12 +42,13 @@ import PrintDialog from '@/components/print/PrintDialog';
 import VirtualizedOrdersTable from '@/components/orders/VirtualizedOrdersTable';
 import { useSessionSearchParams } from '@/hooks/useSessionSearchParams';
 import { useMainScrollRestoration } from '@/hooks/useMainScrollRestoration';
-import { createBackNavigationState } from '@/lib/pageState';
+import { createBackNavigationState, buildCurrentPath } from '@/lib/pageState';
+import { withReturnToPath } from '@/lib/listState';
 import { useOrdersListStore } from '@/store/ordersListStore';
 import { useDebounce } from '@/hooks/use-debounce';
 import { useTranslation } from 'react-i18next';
 import SearchableCustomerCombobox from '@/components/common/SearchableCustomerCombobox';
-import SearchableCombobox from '@/components/common/SearchableCombobox';
+import { canCreateSalesReturnForOrder } from '@/lib/posHardening';
 
 function isWebOrderRow(o: { order_source?: string; id?: string } | null | undefined) {
   return o?.order_source === 'web' || String(o?.id || '').startsWith('web:');
@@ -355,8 +356,22 @@ export default function Orders() {
     setStoredPage(page);
   }, [page, setStoredPage]);
 
-  // Navigate to Create Return screen with order preselected
+  const showReturnAction = (order: OrderWithDetails) =>
+    !isWebOrderRow(order) && String(order?.status || '').toLowerCase() === 'completed';
+
+  const canReturnOrder = (order: OrderWithDetails) =>
+    showReturnAction(order) && canCreateSalesReturnForOrder(order);
+
+  const fullyReturnedTooltip = t('orders.return_fully_returned_tooltip', {
+    defaultValue: 'Bu sotuv to‘liq qaytarilgan. Yangi qaytarish yaratib bo‘lmaydi.',
+  });
+
+  const fullyReturnedLabel = t('orders.return_fully_returned_label', {
+    defaultValue: 'To‘liq qaytarilgan',
+  });
+
   const handleCreateReturn = (order: OrderWithDetails) => {
+    if (!canReturnOrder(order)) return;
     navigate(`/returns/create?orderId=${order.id}`);
   };
 
@@ -416,6 +431,26 @@ export default function Orders() {
     return <Badge className={variant.className}>{variant.label}</Badge>;
   };
 
+  const getReturnStatusBadge = (status: string | null | undefined) => {
+    const key = String(status || 'not_returned').toLowerCase();
+    if (key === 'not_returned' || key === '') return null;
+    if (key === 'fully_returned') {
+      return (
+        <Badge className="bg-orange-600 text-white">
+          {t('orders.return_status_fully_returned')}
+        </Badge>
+      );
+    }
+    if (key === 'partially_returned') {
+      return (
+        <Badge variant="outline" className="border-orange-500/50 text-orange-700 dark:text-orange-300">
+          {t('orders.return_status_partially_returned')}
+        </Badge>
+      );
+    }
+    return null;
+  };
+
   const salesChannelLabel = (order: any) => {
     const ch = String(order?.sales_channel || order?.order_source || 'pos').toLowerCase();
     const labels: Record<string, string> = {
@@ -439,7 +474,7 @@ export default function Orders() {
         navigate(`/web-orders?open=${wid}`, { state: createBackNavigationState(location) });
         return;
       }
-      navigate(`/orders/${order.id}`, { state: createBackNavigationState(location) });
+      navigate(withReturnToPath(`/orders/${order.id}`, buildCurrentPath(location)));
     },
     [location, navigate, saveScroll, useVirtualizedList],
   );
@@ -825,6 +860,7 @@ export default function Orders() {
                   getEffectiveDiscountAmount={getEffectiveDiscountAmount}
                   getPaymentStatusBadge={getPaymentStatusBadge}
                   getStatusBadge={getStatusBadge}
+                  getReturnStatusBadge={getReturnStatusBadge}
                   getPaymentMethodIcons={getPaymentMethodIcons}
                   onView={(id) => {
                     const order = filteredOrders.find((o: any) => o.id === id);
@@ -837,7 +873,10 @@ export default function Orders() {
                     setPrintDialogOpen(true);
                   }}
                   onReturn={(id) => navigate(`/returns/create?orderId=${id}`)}
-                  canReturn={(o) => !isWebOrderRow(o) && String(o?.status || '') === 'completed'}
+                  showReturnAction={showReturnAction}
+                  canReturn={canReturnOrder}
+                  returnFullyReturnedLabel={fullyReturnedLabel}
+                  returnFullyReturnedTooltip={fullyReturnedTooltip}
                   hasMore={hasMore}
                   loadingMore={loadingMore}
                   loadMore={loadMore}
@@ -856,7 +895,9 @@ export default function Orders() {
                         <TableHead className="h-9 text-xs font-medium">Sana va vaqt</TableHead>
                         <TableHead className="h-9 text-xs font-medium">Kassir</TableHead>
                         <TableHead className="h-9 text-xs font-medium">Mijoz</TableHead>
-                        <TableHead className="h-9 text-right text-xs font-medium">Jami summa</TableHead>
+                        <TableHead className="h-9 text-right text-xs font-medium">{t('orders.gross_total')}</TableHead>
+                        <TableHead className="h-9 text-right text-xs font-medium">{t('orders.returned_total')}</TableHead>
+                        <TableHead className="h-9 text-right text-xs font-medium">{t('orders.net_total')}</TableHead>
                         <TableHead className="h-9 w-[120px] text-right text-xs font-medium">Chegirma</TableHead>
                         <TableHead className="h-9 text-xs font-medium">To'lov holati</TableHead>
                         <TableHead className="h-9 text-xs font-medium">To'lov usuli</TableHead>
@@ -887,7 +928,30 @@ export default function Orders() {
                               : (order.customer_name || 'Yangi mijoz')}
                           </TableCell>
                           <TableCell className="text-right align-top">
-                            <span className="font-medium tabular-nums">{formatOrderMoney(order, order.total_amount)}</span>
+                            <span className="font-medium tabular-nums">
+                              {formatOrderMoney(order, order.gross_total ?? order.total_amount)}
+                            </span>
+                          </TableCell>
+                          <TableCell className="text-right align-top">
+                            {Number(order.returned_total || 0) > 0 ? (
+                              <span className="tabular-nums text-destructive">
+                                {formatOrderMoney(order, order.returned_total)}
+                              </span>
+                            ) : (
+                              <span className="text-muted-foreground text-sm">—</span>
+                            )}
+                          </TableCell>
+                          <TableCell className="text-right align-top">
+                            <span className="font-medium tabular-nums">
+                              {formatOrderMoney(
+                                order,
+                                order.net_total ??
+                                  Math.max(
+                                    0,
+                                    Number(order.total_amount || 0) - Number(order.returned_total || 0),
+                                  ),
+                              )}
+                            </span>
                           </TableCell>
                           <TableCell className="text-right align-top">
                             {(() => {
@@ -912,7 +976,10 @@ export default function Orders() {
                             {getPaymentMethodIcons(order)}
                           </TableCell>
                           <TableCell>
-                            {getStatusBadge(order.status)}
+                            <div className="flex flex-wrap items-center gap-1">
+                              {getStatusBadge(order.status)}
+                              {getReturnStatusBadge(order.return_status)}
+                            </div>
                           </TableCell>
                           <TableCell className="text-right">
                             <div className="flex items-center justify-end gap-1">
@@ -948,15 +1015,29 @@ export default function Orders() {
                                 </Button>
                               )}
                               {!isWebOrderRow(order) && order.status === 'completed' && (
-                                <Button
-                                  variant="ghost"
-                                  size="icon"
-                                  onClick={() => handleCreateReturn(order)}
-                                  title="Sotuvni qaytarish"
-                                  className="text-orange-500 hover:text-orange-600 hover:bg-orange-50"
-                                >
-                                  <RotateCcw className="h-4 w-4" />
-                                </Button>
+                                canReturnOrder(order) ? (
+                                  <Button
+                                    variant="ghost"
+                                    size="icon"
+                                    onClick={() => handleCreateReturn(order)}
+                                    title={t('orders.return_sale', { defaultValue: 'Sotuvni qaytarish' })}
+                                    aria-label={t('orders.return_sale', { defaultValue: 'Sotuvni qaytarish' })}
+                                    className="text-orange-500 hover:text-orange-600 hover:bg-orange-50"
+                                  >
+                                    <RotateCcw className="h-4 w-4" />
+                                  </Button>
+                                ) : (
+                                  <Button
+                                    variant="ghost"
+                                    size="icon"
+                                    disabled
+                                    title={fullyReturnedTooltip}
+                                    aria-label={fullyReturnedLabel}
+                                    className="text-muted-foreground opacity-60"
+                                  >
+                                    <RotateCcw className="h-4 w-4" />
+                                  </Button>
+                                )
                               )}
                             </div>
                           </TableCell>

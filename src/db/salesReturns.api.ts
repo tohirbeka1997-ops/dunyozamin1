@@ -42,6 +42,8 @@ export const getSalesReturnById = async (id: string) => {
       if (v === 'pending') return 'Pending';
       if (v === 'cancelled') return 'Cancelled';
       if (v === 'draft') return 'Draft';
+      if (v === 'approved') return 'Approved';
+      if (v === 'rejected') return 'Rejected';
       return s;
     };
     return {
@@ -76,6 +78,8 @@ export const getSalesReturns = async (filters?: {
   startDate?: string;
   endDate?: string;
   customerId?: string;
+  returnMode?: string;
+  returnReason?: string;
 }): Promise<SalesReturnWithDetails[]> => {
   // Use Electron IPC if available (real DB)
   if (hasPosApi()) {
@@ -85,16 +89,22 @@ export const getSalesReturns = async (filters?: {
       Pending: 'pending',
       Cancelled: 'cancelled',
       Draft: 'draft',
+      Approved: 'approved',
+      Rejected: 'rejected',
       completed: 'completed',
       pending: 'pending',
       cancelled: 'cancelled',
       draft: 'draft',
+      approved: 'approved',
+      rejected: 'rejected',
     };
     const payload: any = {};
     if (filters?.status) payload.status = statusMap[String(filters.status)] || String(filters.status).toLowerCase();
     if (filters?.customerId) payload.customer_id = filters.customerId;
     if (filters?.startDate) payload.date_from = filters.startDate;
     if (filters?.endDate) payload.date_to = filters.endDate;
+    if (filters?.returnMode) payload.return_mode = filters.returnMode;
+    if (filters?.returnReason) payload.return_reason = filters.returnReason;
 
     const rows = await ipc<any[]>(api.returns.list(payload));
     const normalizeStatus = (s: any) => {
@@ -103,6 +113,8 @@ export const getSalesReturns = async (filters?: {
       if (v === 'pending') return 'Pending';
       if (v === 'cancelled') return 'Cancelled';
       if (v === 'draft') return 'Draft';
+      if (v === 'approved') return 'Approved';
+      if (v === 'rejected') return 'Rejected';
       return s;
     };
     return (rows || []).map((r: any) => {
@@ -238,6 +250,65 @@ export const deleteSalesReturn = async (id: string) => {
   saveSalesReturnItems(filteredItems);
 };
 
+export const cancelSalesReturn = async (
+  id: string,
+  data: { cancel_reason: string; user_id?: string; cashier_id?: string },
+) => {
+  if (hasPosApi()) {
+    const api = requireElectron();
+    return ipc<any>(api.returns.cancel(id, data));
+  }
+  throw new Error('Cancel return requires Electron POS API');
+};
+
+export const approveSalesReturn = async (
+  id: string,
+  data: { approval_reason: string; user_id?: string; cashier_id?: string },
+) => {
+  if (hasPosApi()) {
+    const api = requireElectron();
+    return ipc<any>(api.returns.approve(id, data));
+  }
+  throw new Error('Approve return requires Electron POS API');
+};
+
+export const rejectSalesReturn = async (
+  id: string,
+  data: { reject_reason: string; user_id?: string; cashier_id?: string },
+) => {
+  if (hasPosApi()) {
+    const api = requireElectron();
+    return ipc<any>(api.returns.reject(id, data));
+  }
+  throw new Error('Reject return requires Electron POS API');
+};
+
+export const getSalesReturnReasonBreakdown = async (filters?: {
+  startDate?: string;
+  endDate?: string;
+  returnMode?: string;
+}) => {
+  if (hasPosApi()) {
+    const api = requireElectron();
+    return ipc<any[]>(
+      api.returns.reasonBreakdown({
+        date_from: filters?.startDate,
+        date_to: filters?.endDate,
+        return_mode: filters?.returnMode,
+      }),
+    );
+  }
+  return [];
+};
+
+export const getSalesReturnAuditTrail = async (id: string, limit = 40) => {
+  if (hasPosApi()) {
+    const api = requireElectron();
+    return ipc<any[]>(api.returns.auditTrail(id, limit));
+  }
+  return [];
+};
+
 export const getOrderForReturn = async (orderId: string) => {
   // Use Electron IPC if available (real DB)
   if (hasPosApi()) {
@@ -273,6 +344,7 @@ export const getOrderForReturn = async (orderId: string) => {
       notes: order.notes ?? null,
       created_at: order.created_at ?? order.createdAt ?? new Date().toISOString(),
       updated_at: order.updated_at ?? order.updatedAt ?? null,
+      payment_summary: details?.payment_summary ?? null,
       // Details:
       items: items.map((it: any) => ({
         // keep both id and orderItemId for compatibility with existing UI mapping
@@ -294,9 +366,15 @@ export const getOrderForReturn = async (orderId: string) => {
         line_total: Number(it.line_total ?? it.lineTotal ?? 0),
         created_at: it.created_at ?? order.created_at ?? new Date().toISOString(),
         // return-aware fields used by CreateReturn.tsx:
-        sold_quantity: it.sold_quantity ?? it.qty ?? it.quantity,
+        sold_quantity: it.sold_quantity ?? it.qty_sale ?? it.qty ?? it.quantity,
         returned_quantity: it.returned_quantity ?? 0,
-        remaining_quantity: it.remaining_quantity ?? it.refundableQty ?? it.qty ?? it.quantity,
+        // Keep remaining=0 (fully returned); do not fall back to sold qty.
+        remaining_quantity:
+          it.remaining_quantity != null
+            ? it.remaining_quantity
+            : it.refundableQty != null
+              ? it.refundableQty
+              : undefined,
         orderItemId: it.orderItemId ?? it.order_item_id ?? it.id,
       })) as any,
       payments: [],
@@ -341,6 +419,17 @@ export const createSalesReturn = async (returnData: {
   reason: string;
   notes: string | null;
   save_as_draft?: boolean;
+  submit_for_approval?: boolean;
+  status?: string;
+  /** Client idempotency key — reused across retries of the same submit. */
+  idempotency_key?: string | null;
+  shift_id?: string | null;
+  visitor?: boolean;
+  approval_reason?: string | null;
+  method_mismatch_reason?: string | null;
+  attachment_note?: string | null;
+  attachment_url?: string | null;
+  attachment_name?: string | null;
   items: Array<{
     product_id: string;
     quantity: number;
@@ -372,6 +461,14 @@ export const createSalesReturn = async (returnData: {
       refund_method: returnData.refund_method,
       notes: returnData.notes,
       total_amount: returnData.total_amount,
+      idempotency_key: returnData.idempotency_key || null,
+      shift_id: returnData.shift_id || null,
+      visitor: returnData.visitor === true,
+      approval_reason: returnData.approval_reason || null,
+      method_mismatch_reason: returnData.method_mismatch_reason || null,
+      attachment_note: returnData.attachment_note || null,
+      attachment_url: returnData.attachment_url || null,
+      attachment_name: returnData.attachment_name || null,
       items: (returnData.items || []).map((it) => ({
         order_item_id: (it as any).order_item_id,
         product_id: it.product_id,
@@ -394,6 +491,8 @@ export const createSalesReturn = async (returnData: {
       cashier_id: returnData.cashier_id,
       user_id: returnData.cashier_id,
       save_as_draft: returnData.save_as_draft === true,
+      submit_for_approval: returnData.submit_for_approval === true,
+      status: returnData.status || undefined,
     };
 
     return ipc<any>(api.returns.create(payload));
@@ -564,15 +663,13 @@ export const updateSalesReturnStatus = async (id: string, status: string) => {
   saveSalesReturns(returns);
 };
 
-export const cancelSalesReturn = async (id: string) => {
-  await delay();
-  await updateSalesReturnStatus(id, 'Cancelled');
-};
-
-export const completeSalesReturn = async (id: string) => {
+export const completeSalesReturn = async (
+  id: string,
+  data?: { user_id?: string; cashier_id?: string; approval_reason?: string },
+) => {
   if (hasPosApi()) {
     const api = requireElectron();
-    return ipc<any>(api.returns.complete(id));
+    return ipc<any>(api.returns.complete(id, data || {}));
   }
   await delay();
   await updateSalesReturnStatus(id, 'Completed');

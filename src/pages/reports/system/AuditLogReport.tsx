@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
+import { useSessionSearchParams } from '@/hooks/useSessionSearchParams';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
@@ -17,6 +18,17 @@ import { useToast } from '@/hooks/use-toast';
 import { handleIpcResponse, isElectron, requireElectron } from '@/utils/electron';
 import { todayYMD, formatDateYMD, formatDateTime } from '@/lib/datetime';
 import { useReportAutoRefresh } from '@/hooks/useReportAutoRefresh';
+import { ReportLoadPanel } from '@/components/reports/ReportLoadPanel';
+import {
+  createReportCorrelationId,
+  reportLoadErrorMessage,
+  resolveReportStatus,
+  telemetryFromReportError,
+  type ReportLoadStatus,
+} from '@/lib/reportLoadState';
+import { useAuth } from '@/contexts/AuthContext';
+import { useTranslation } from 'react-i18next';
+import { auditEntityTypeLabel, AUDIT_ENTITY_FILTER_OPTIONS } from '@/lib/auditEntityLabels';
 
 interface AuditLog {
   id: string;
@@ -34,22 +46,32 @@ interface AuditLog {
   description?: string;
 }
 
+function defaultAuditDateFrom() {
+  const d = new Date();
+  d.setTime(d.getTime() - 7 * 24 * 60 * 60 * 1000);
+  return formatDateYMD(d, { timeZone: 'Asia/Tashkent' });
+}
+
 export default function AuditLogReport() {
   const navigate = useNavigate();
   const { toast } = useToast();
-
-  const [loading, setLoading] = useState(true);
-  const [logRows, setLogRows] = useState<AuditLog[]>([]);
-  const [dateFrom, setDateFrom] = useState(() => {
-    const t = new Date();
-    t.setTime(t.getTime() - 7 * 24 * 60 * 60 * 1000);
-    return formatDateYMD(t, { timeZone: 'Asia/Tashkent' });
+  const { user } = useAuth();
+  const { t } = useTranslation();
+  const { searchParams, updateParams } = useSessionSearchParams({
+    storageKey: 'reports.audit-log.filters',
+    trackedKeys: ['dateFrom', 'dateTo', 'search', 'action', 'entityType', 'userId'],
   });
-  const [dateTo, setDateTo] = useState(todayYMD());
-  const [searchTerm, setSearchTerm] = useState('');
-  const [actionFilter, setActionFilter] = useState<string>('all');
-  const [entityTypeFilter, setEntityTypeFilter] = useState<string>('all');
-  const [userFilter, setUserFilter] = useState<string>('all');
+
+  const [loadStatus, setLoadStatus] = useState<ReportLoadStatus>('loading');
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [correlationId, setCorrelationId] = useState<string | null>(null);
+  const [logRows, setLogRows] = useState<AuditLog[]>([]);
+  const dateFrom = searchParams.get('dateFrom') || defaultAuditDateFrom();
+  const dateTo = searchParams.get('dateTo') || todayYMD();
+  const searchTerm = searchParams.get('search') || '';
+  const actionFilter = searchParams.get('action') || 'all';
+  const entityTypeFilter = searchParams.get('entityType') || 'all';
+  const userFilter = searchParams.get('userId') || 'all';
 
   useEffect(() => {
     loadData();
@@ -57,13 +79,16 @@ export default function AuditLogReport() {
   }, [dateFrom, dateTo, actionFilter, entityTypeFilter, userFilter]);
 
   async function loadData() {
+    const cid = createReportCorrelationId('audit-log');
+    setCorrelationId(cid);
+    setLoadStatus('loading');
+    setLoadError(null);
     try {
       if (!isElectron()) {
-        throw new Error('Bu hisobot faqat desktop ilovada mavjud.');
+        throw new Error(t('reports.audit_log.desktop_only', 'Bu hisobot faqat desktop ilovada mavjud.'));
       }
-      setLoading(true);
       const api = requireElectron();
-      
+
       const logs = await handleIpcResponse<AuditLog[]>(
         api.reports?.auditLog?.({
           date_from: dateFrom,
@@ -71,20 +96,24 @@ export default function AuditLogReport() {
           action: actionFilter !== 'all' ? actionFilter : undefined,
           entity_type: entityTypeFilter !== 'all' ? entityTypeFilter : undefined,
           user_id: userFilter !== 'all' ? userFilter : undefined,
-        }) || Promise.resolve([])
+        }) || Promise.resolve([]),
       );
 
-      setLogRows(Array.isArray(logs) ? logs : []);
+      const rows = Array.isArray(logs) ? logs : [];
+      setLogRows(rows);
+      setLoadStatus(resolveReportStatus(rows, (r) => r.length === 0));
     } catch (error: any) {
       console.error('[AuditLogReport] loadData error:', error);
+      const message = reportLoadErrorMessage(error);
+      setLoadError(message);
+      setLogRows([]);
+      setLoadStatus('error');
+      telemetryFromReportError('reports/system/audit-log', 'pos:reports:auditLog', error, cid, user?.role);
       toast({
-        title: 'Xatolik',
-        description: error?.message || "Ma'lumotlarni yuklab bo'lmadi",
+        title: t('reports.load_state.error_title', 'Xatolik'),
+        description: message,
         variant: 'destructive',
       });
-      setLogRows([]);
-    } finally {
-      setLoading(false);
     }
   }
 
@@ -98,6 +127,7 @@ export default function AuditLogReport() {
         (row.user_name || '').toLowerCase().includes(term) ||
         row.action.toLowerCase().includes(term) ||
         row.entity_type.toLowerCase().includes(term) ||
+        auditEntityTypeLabel(row.entity_type).toLowerCase().includes(term) ||
         (row.entity_name && row.entity_name.toLowerCase().includes(term)) ||
         (row.description && row.description.toLowerCase().includes(term))
     );
@@ -137,10 +167,21 @@ export default function AuditLogReport() {
     return <Badge variant="secondary">Ko'rildi</Badge>;
   };
 
-  if (loading) {
+  if (loadStatus === 'loading' || loadStatus === 'error') {
     return (
-      <div className="flex justify-center items-center min-h-[400px]">
-        <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary" />
+      <div className="space-y-6">
+        <div className="flex items-center gap-4">
+          <Button variant="ghost" size="icon" onClick={() => navigate('/reports/system')}>
+            <ArrowLeft className="h-4 w-4" />
+          </Button>
+          <h1 className="page-heading">{t('reports.audit_log.title', 'Harakatlar jurnali (Audit)')}</h1>
+        </div>
+        <ReportLoadPanel
+          status={loadStatus}
+          error={loadError}
+          correlationId={correlationId}
+          onRetry={() => void loadData()}
+        />
       </div>
     );
   }
@@ -158,7 +199,10 @@ export default function AuditLogReport() {
               Harakatlar jurnali (Audit)
             </h1>
             <p className="text-muted-foreground">
-              Jurnal: audit_log (asosan mahsulot). Sana filtri va jadval vaqti: O'zbekiston (Asia/Tashkent).
+              {t(
+                'reports.audit_log.subtitle',
+                'Markaziy audit: mahsulot, buyurtma, narx o‘zgarishlari va boshqa harakatlar (Toshkent vaqti).',
+              )}
             </p>
           </div>
         </div>
@@ -175,29 +219,34 @@ export default function AuditLogReport() {
               <Input
                 placeholder="Foydalanuvchi, harakat..."
                 value={searchTerm}
-                onChange={(e) => setSearchTerm(e.target.value)}
+                onChange={(e) => updateParams({ search: e.target.value })}
               />
             </div>
             <div>
               <label className="text-sm text-muted-foreground">Boshlanish sana</label>
-              <Input type="date" value={dateFrom} onChange={(e) => setDateFrom(e.target.value)} />
+              <Input
+                type="date"
+                value={dateFrom}
+                onChange={(e) => updateParams({ dateFrom: e.target.value })}
+              />
             </div>
             <div>
               <label className="text-sm text-muted-foreground">Tugash sana</label>
-              <Input type="date" value={dateTo} onChange={(e) => setDateTo(e.target.value)} />
+              <Input type="date" value={dateTo} onChange={(e) => updateParams({ dateTo: e.target.value })} />
             </div>
             <div>
               <label className="text-sm text-muted-foreground">Harakat</label>
               <select
                 className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
                 value={actionFilter}
-                onChange={(e) => setActionFilter(e.target.value)}
+                onChange={(e) => updateParams({ action: e.target.value })}
               >
                 <option value="all">Hammasi</option>
                 <option value="create">Yaratildi</option>
                 <option value="update">Yangilandi</option>
                 <option value="delete">O'chirildi</option>
                 <option value="view">Ko'rildi</option>
+                <option value="free_sale">Bepul sotuv</option>
               </select>
             </div>
             <div>
@@ -205,15 +254,14 @@ export default function AuditLogReport() {
               <select
                 className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
                 value={entityTypeFilter}
-                onChange={(e) => setEntityTypeFilter(e.target.value)}
+                onChange={(e) => updateParams({ entityType: e.target.value })}
               >
                 <option value="all">Hammasi</option>
-                <option value="product">Mahsulot</option>
-                <option value="order">Buyurtma</option>
-                <option value="customer">Mijoz</option>
-                <option value="supplier">Postavshik</option>
-                <option value="user">Foydalanuvchi</option>
-                <option value="setting">Sozlama</option>
+                {AUDIT_ENTITY_FILTER_OPTIONS.map((opt) => (
+                  <option key={opt.value} value={opt.value}>
+                    {opt.label}
+                  </option>
+                ))}
               </select>
             </div>
             <div>
@@ -221,7 +269,7 @@ export default function AuditLogReport() {
               <select
                 className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
                 value={userFilter}
-                onChange={(e) => setUserFilter(e.target.value)}
+                onChange={(e) => updateParams({ userId: e.target.value })}
               >
                 <option value="all">Hammasi</option>
                 {uniqueUsers.map(([id, name]) => (
@@ -286,10 +334,11 @@ export default function AuditLogReport() {
       <Card>
         <CardContent className="p-0">
           {filteredLogs.length === 0 ? (
-            <div className="text-center py-12">
-              <FileText className="h-12 w-12 text-muted-foreground mx-auto mb-4" />
-              <p className="text-muted-foreground">Audit yozuvlari topilmadi</p>
-            </div>
+            <ReportLoadPanel
+              status="empty"
+              overlay={false}
+              emptyTitle={t('reports.audit_log.empty', 'Audit yozuvlari topilmadi')}
+            />
           ) : (
             <Table>
               <TableHeader>
@@ -327,7 +376,7 @@ export default function AuditLogReport() {
                       </div>
                     </TableCell>
                     <TableCell>
-                      <Badge variant="outline">{row.entity_type}</Badge>
+                      <Badge variant="outline">{auditEntityTypeLabel(row.entity_type)}</Badge>
                     </TableCell>
                     <TableCell className="font-medium">{row.entity_name || row.entity_id}</TableCell>
                     <TableCell className="text-sm text-muted-foreground max-w-xs truncate">

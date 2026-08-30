@@ -3,6 +3,7 @@
 /**
  * Telegram business reports (internal only).
  * Channel: settings reports.telegram.chat_id → TELEGRAM_REPORTS_CHAT_ID → TELEGRAM_ADMIN_IDS.
+ * Bot: TELEGRAM_REPORTS_BOT_TOKEN → TELEGRAM_BOT_TOKEN (never marketing/staff).
  * Never falls back to TELEGRAM_MARKETING_CHANNEL_ID (customer News channel).
  */
 
@@ -59,12 +60,53 @@ function formatSumma(amount) {
   return Math.round(Number(amount) || 0).toLocaleString('uz-UZ');
 }
 
+const DIGEST_LIST_CAP = 5;
+
 function hasTable(db, name) {
   try {
     return !!db.prepare(`SELECT 1 FROM sqlite_master WHERE type='table' AND name=?`).get(name);
   } catch {
     return false;
   }
+}
+
+function hasColumn(db, table, column) {
+  const t = String(table || '').replace(/[^a-zA-Z0-9_]/g, '');
+  const c = String(column || '');
+  if (!t || !c) return false;
+  try {
+    const cols = db.prepare(`PRAGMA table_info(${t})`).all() || [];
+    return cols.some((row) => row.name === c);
+  } catch {
+    return false;
+  }
+}
+
+/** Calendar day in Asia/Tashkent for UTC-stored timestamps (same as reportsService). */
+function tzDateExpr(columnExpr) {
+  return `date(datetime(replace(replace(${columnExpr}, 'T', ' '), 'Z', ''), '+5 hours'))`;
+}
+
+function clipLabel(s, max = 42) {
+  const t = String(s || '')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (!t) return '—';
+  if (t.length <= max) return t;
+  return `${t.slice(0, max - 1)}…`;
+}
+
+function movementTypeLabel(raw) {
+  const t = String(raw || '')
+    .toLowerCase()
+    .trim();
+  if (t === 'purchase' || t === 'receipt') return 'xarid';
+  if (t === 'return' || t === 'sales_return' || t === 'sale_return') return 'qaytarish';
+  if (t === 'adjustment' || t === 'adjust') return 'tuzatish';
+  if (t === 'transfer' || t === 'move') return 'ko‘chirish';
+  if (t === 'audit' || t === 'revision') return 'reviziya';
+  if (t === 'sale') return 'sotuv';
+  return t || 'boshqa';
 }
 
 function getReportTelegramSettings(db) {
@@ -139,8 +181,11 @@ function resolveReportDestination(db, options = {}) {
 
   let botToken = String(options.botToken || '').trim();
   if (!botToken) {
-    const reportsBot = String(process.env.TELEGRAM_BOT_TOKEN || '').trim();
-    botToken = reportsBot;
+    // Prefer dedicated reports bot (channel admin). Fall back to TELEGRAM_BOT_TOKEN
+    // so single-bot installs still work; never use marketing/staff tokens here.
+    botToken =
+      String(process.env.TELEGRAM_REPORTS_BOT_TOKEN || '').trim() ||
+      String(process.env.TELEGRAM_BOT_TOKEN || '').trim();
   }
 
   return { chatIds, botToken, source };
@@ -161,7 +206,10 @@ function resolveBotToken(options = {}, db = null) {
   if (db) {
     return resolveReportDestination(db, options).botToken;
   }
-  return String(process.env.TELEGRAM_BOT_TOKEN || '').trim();
+  return (
+    String(process.env.TELEGRAM_REPORTS_BOT_TOKEN || '').trim() ||
+    String(process.env.TELEGRAM_BOT_TOKEN || '').trim()
+  );
 }
 
 function isEventEnabled(settings, eventKey) {
@@ -266,8 +314,25 @@ function buildShiftClosedText(payload = {}, storeName = "Do'kon") {
   return lines.join('\n');
 }
 
+function pushSection(lines, title, totalLine, items, emptyHint, moreCount = 0) {
+  lines.push('');
+  lines.push(title);
+  if (totalLine) lines.push(totalLine);
+  const list = Array.isArray(items) ? items : [];
+  if (!list.length) {
+    if (emptyHint) lines.push(emptyHint);
+    return;
+  }
+  for (const row of list) {
+    lines.push(`• ${row}`);
+  }
+  const more = Number(moreCount) || 0;
+  if (more > 0) lines.push(`… va yana ${more} ta`);
+}
+
 function buildDailyDigestText(summary = {}, storeName = "Do'kon") {
   const date = summary.date || new Date().toISOString().slice(0, 10);
+  const ops = summary.operations || {};
   const lines = [
     `📊 Kunlik hisobot — ${date}`,
     storeName ? `Do'kon: ${storeName}` : null,
@@ -277,6 +342,70 @@ function buildDailyDigestText(summary = {}, storeName = "Do'kon") {
     `Xarajat: ${formatSumma(summary.expensesTotal)} so'm`,
     `Mijoz qarzi (jami): ${formatSumma(summary.customerDebtTotal)} so'm`,
   ].filter(Boolean);
+
+  lines.push('');
+  lines.push('📋 Bugungi operatsiyalar');
+
+  const exp = ops.expenses || {};
+  pushSection(
+    lines,
+    '💸 Xarajatlar',
+    `Jami: ${formatSumma(exp.total != null ? exp.total : summary.expensesTotal)} so'm (${exp.count || 0} ta)`,
+    exp.lines || [],
+    (exp.count || 0) === 0 ? '• Yo‘q' : null,
+    exp.more,
+  );
+
+  const credit = ops.creditSales || {};
+  pushSection(
+    lines,
+    '💳 Nasiya sotuvlar',
+    `Jami: ${formatSumma(credit.total)} so'm (${credit.count || 0} ta)`,
+    credit.lines || [],
+    (credit.count || 0) === 0 ? '• Yo‘q' : null,
+    credit.more,
+  );
+
+  const purchases = ops.purchases || {};
+  pushSection(
+    lines,
+    '📦 Xaridlar / qabul',
+    `Jami: ${formatSumma(purchases.total)} so'm (${purchases.count || 0} ta)`,
+    purchases.lines || [],
+    (purchases.count || 0) === 0 ? '• Yo‘q' : null,
+    purchases.more,
+  );
+
+  const stock = ops.stockChanges || {};
+  pushSection(
+    lines,
+    '🏭 Ombor o‘zgarishi',
+    `${stock.count || 0} ta harakat (sotuvdan tashqari)`,
+    stock.lines || [],
+    (stock.count || 0) === 0 ? '• Yo‘q' : null,
+    stock.more,
+  );
+
+  const debtPay = ops.debtPayments || {};
+  pushSection(
+    lines,
+    '💰 Qarzdorlik to‘lovlari',
+    `Jami: ${formatSumma(debtPay.total)} so'm (${debtPay.count || 0} ta)`,
+    debtPay.lines || [],
+    (debtPay.count || 0) === 0 ? '• Yo‘q' : null,
+    debtPay.more,
+  );
+
+  const returns = ops.returns || {};
+  pushSection(
+    lines,
+    '↩️ Sotuv qaytarishlari',
+    `Jami: ${formatSumma(returns.total)} so'm (${returns.count || 0} ta)`,
+    returns.lines || [],
+    (returns.count || 0) === 0 ? '• Yo‘q' : null,
+    returns.more,
+  );
+
   return lines.join('\n');
 }
 
@@ -397,19 +526,42 @@ async function notifyShiftClosed(db, payload = {}, options = {}) {
   return out;
 }
 
-function localTimeParts(db) {
-  const row = db
-    .prepare(
-      `SELECT date('now', 'localtime') AS d,
-              cast(strftime('%H', 'now', 'localtime') AS INTEGER) AS h,
-              cast(strftime('%M', 'now', 'localtime') AS INTEGER) AS m`,
-    )
-    .get();
-  return {
-    date: row?.d || new Date().toISOString().slice(0, 10),
-    hour: Number(row?.h) || 0,
-    minute: Number(row?.m) || 0,
-  };
+function localTimeParts(_db) {
+  try {
+    const {
+      formatYmdInTimeZone,
+      UZBEKISTAN_TIMEZONE,
+    } = require('../../electron/lib/timezone.cjs');
+    const d = new Date();
+    const parts = new Intl.DateTimeFormat('en-GB', {
+      timeZone: UZBEKISTAN_TIMEZONE,
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: false,
+    }).formatToParts(d);
+    const map = {};
+    for (const p of parts) {
+      if (p.type !== 'literal') map[p.type] = p.value;
+    }
+    return {
+      date: formatYmdInTimeZone(d) || new Date().toISOString().slice(0, 10),
+      hour: Number(map.hour) || 0,
+      minute: Number(map.minute) || 0,
+    };
+  } catch {
+    const row = _db
+      .prepare(
+        `SELECT date('now', 'localtime') AS d,
+                cast(strftime('%H', 'now', 'localtime') AS INTEGER) AS h,
+                cast(strftime('%M', 'now', 'localtime') AS INTEGER) AS m`,
+      )
+      .get();
+    return {
+      date: row?.d || new Date().toISOString().slice(0, 10),
+      hour: Number(row?.h) || 0,
+      minute: Number(row?.m) || 0,
+    };
+  }
 }
 
 function shouldRunDailyDigest(db, settings, options = {}) {
@@ -429,19 +581,366 @@ function shouldRunDailyDigest(db, settings, options = {}) {
   return { ok: true, reason: 'due', today: parts.date };
 }
 
+function emptyOpSection() {
+  return { count: 0, total: 0, lines: [], more: 0 };
+}
+
+function capLines(rows, formatFn, cap = DIGEST_LIST_CAP) {
+  const list = Array.isArray(rows) ? rows : [];
+  const lines = list.slice(0, cap).map(formatFn).filter(Boolean);
+  return {
+    lines,
+    more: Math.max(0, list.length - lines.length),
+  };
+}
+
 function sumTodayExpenses(db, ymd) {
-  if (!hasTable(db, 'expenses')) return 0;
+  return loadTodayExpenses(db, ymd).total;
+}
+
+function loadTodayExpenses(db, ymd) {
+  if (!hasTable(db, 'expenses')) return emptyOpSection();
   try {
-    const row = db
+    const dateExpr = tzDateExpr('COALESCE(e.expense_date, e.created_at)');
+    const statusFilter = hasColumn(db, 'expenses', 'status')
+      ? `AND LOWER(COALESCE(e.status,'')) NOT IN ('rejected','cancelled','draft')`
+      : '';
+    const catJoin =
+      hasTable(db, 'expense_categories') && hasColumn(db, 'expenses', 'category_id')
+        ? 'LEFT JOIN expense_categories ec ON ec.id = e.category_id'
+        : '';
+    const labelParts = [];
+    if (catJoin) labelParts.push(`NULLIF(TRIM(ec.name), '')`);
+    if (hasColumn(db, 'expenses', 'category')) labelParts.push(`NULLIF(TRIM(e.category), '')`);
+    if (hasColumn(db, 'expenses', 'description')) labelParts.push(`NULLIF(TRIM(e.description), '')`);
+    if (hasColumn(db, 'expenses', 'vendor')) labelParts.push(`NULLIF(TRIM(e.vendor), '')`);
+    const catSelect =
+      labelParts.length > 0
+        ? `COALESCE(${labelParts.join(', ')}, 'Xarajat')`
+        : `'Xarajat'`;
+    const vendorSelect = hasColumn(db, 'expenses', 'vendor')
+      ? `NULLIF(TRIM(e.vendor), '')`
+      : `NULL`;
+    const descSelect = hasColumn(db, 'expenses', 'description')
+      ? `NULLIF(TRIM(e.description), '')`
+      : `NULL`;
+    const agg = db
       .prepare(
-        `SELECT COALESCE(SUM(amount), 0) AS s FROM expenses
-         WHERE date(expense_date) = date(?)`,
+        `SELECT COUNT(*) AS cnt, COALESCE(SUM(e.amount), 0) AS total
+         FROM expenses e
+         WHERE ${dateExpr} = date(?)
+           ${statusFilter}`,
       )
       .get(ymd);
-    return Number(row?.s || 0) || 0;
+    const rows = db
+      .prepare(
+        `SELECT e.amount, ${catSelect} AS label,
+                ${vendorSelect} AS vendor,
+                ${descSelect} AS description
+         FROM expenses e
+         ${catJoin}
+         WHERE ${dateExpr} = date(?)
+           ${statusFilter}
+         ORDER BY e.amount DESC
+         LIMIT 20`,
+      )
+      .all(ymd);
+    const capped = capLines(rows, (r) => {
+      const label = clipLabel(r.label || r.description || 'Xarajat');
+      const vendor = r.vendor ? ` (${clipLabel(r.vendor, 20)})` : '';
+      return `${label}${vendor}: ${formatSumma(r.amount)}`;
+    });
+    return {
+      count: Number(agg?.cnt || 0) || 0,
+      total: Number(agg?.total || 0) || 0,
+      lines: capped.lines,
+      more: Math.max(0, (Number(agg?.cnt || 0) || 0) - capped.lines.length),
+    };
   } catch {
-    return 0;
+    return emptyOpSection();
   }
+}
+
+function loadTodayCreditSales(db, ymd) {
+  if (!hasTable(db, 'orders')) return emptyOpSection();
+  try {
+    const dateExpr = tzDateExpr('o.created_at');
+    const statusFilter = hasColumn(db, 'orders', 'status')
+      ? `AND LOWER(TRIM(COALESCE(o.status,''))) IN ('completed','paid','done')`
+      : '';
+    const agg = db
+      .prepare(
+        `SELECT COUNT(*) AS cnt, COALESCE(SUM(o.credit_amount), 0) AS total
+         FROM orders o
+         WHERE ${dateExpr} = date(?)
+           AND COALESCE(o.credit_amount, 0) > 0
+           ${statusFilter}`,
+      )
+      .get(ymd);
+    const rows = db
+      .prepare(
+        `SELECT o.order_number, o.credit_amount, c.name AS customer_name
+         FROM orders o
+         LEFT JOIN customers c ON c.id = o.customer_id
+         WHERE ${dateExpr} = date(?)
+           AND COALESCE(o.credit_amount, 0) > 0
+           ${statusFilter}
+         ORDER BY o.credit_amount DESC
+         LIMIT 20`,
+      )
+      .all(ymd);
+    const capped = capLines(rows, (r) => {
+      const who = clipLabel(r.customer_name || r.order_number || 'Mijoz');
+      const num = r.order_number ? ` #${clipLabel(r.order_number, 16)}` : '';
+      return `${who}${num}: ${formatSumma(r.credit_amount)}`;
+    });
+    return {
+      count: Number(agg?.cnt || 0) || 0,
+      total: Number(agg?.total || 0) || 0,
+      lines: capped.lines,
+      more: Math.max(0, (Number(agg?.cnt || 0) || 0) - capped.lines.length),
+    };
+  } catch {
+    return emptyOpSection();
+  }
+}
+
+function loadTodayPurchases(db, ymd) {
+  // Prefer goods receipts; fall back to purchase_orders received/created today.
+  if (hasTable(db, 'purchase_receipts')) {
+    try {
+      const dateExpr = tzDateExpr('COALESCE(pr.received_at, pr.created_at)');
+      const amountCol = hasColumn(db, 'purchase_receipts', 'total_uzs')
+        ? 'COALESCE(pr.total_uzs, pr.total_usd, 0)'
+        : hasColumn(db, 'purchase_receipts', 'total_usd')
+          ? 'COALESCE(pr.total_usd, 0)'
+          : '0';
+      const agg = db
+        .prepare(
+          `SELECT COUNT(*) AS cnt, COALESCE(SUM(${amountCol}), 0) AS total
+           FROM purchase_receipts pr
+           WHERE ${dateExpr} = date(?)
+             AND LOWER(COALESCE(pr.status,'')) NOT IN ('cancelled','void','draft')`,
+        )
+        .get(ymd);
+      const rows = db
+        .prepare(
+          `SELECT pr.receipt_number, ${amountCol} AS amount,
+                  COALESCE(s.name, pr.invoice_number, pr.receipt_number) AS label
+           FROM purchase_receipts pr
+           LEFT JOIN suppliers s ON s.id = pr.supplier_id
+           WHERE ${dateExpr} = date(?)
+             AND LOWER(COALESCE(pr.status,'')) NOT IN ('cancelled','void','draft')
+           ORDER BY amount DESC
+           LIMIT 20`,
+        )
+        .all(ymd);
+      const capped = capLines(rows, (r) => {
+        const label = clipLabel(r.label || r.receipt_number || 'Qabul');
+        const num = r.receipt_number ? ` #${clipLabel(r.receipt_number, 14)}` : '';
+        return `${label}${num}: ${formatSumma(r.amount)}`;
+      });
+      return {
+        count: Number(agg?.cnt || 0) || 0,
+        total: Number(agg?.total || 0) || 0,
+        lines: capped.lines,
+        more: Math.max(0, (Number(agg?.cnt || 0) || 0) - capped.lines.length),
+      };
+    } catch {
+      // fall through to PO
+    }
+  }
+
+  if (!hasTable(db, 'purchase_orders')) return emptyOpSection();
+  try {
+    const dateExpr = tzDateExpr('COALESCE(po.order_date, po.created_at)');
+    const agg = db
+      .prepare(
+        `SELECT COUNT(*) AS cnt, COALESCE(SUM(po.total_amount), 0) AS total
+         FROM purchase_orders po
+         WHERE ${dateExpr} = date(?)
+           AND LOWER(COALESCE(po.status,'')) NOT IN ('cancelled','void','draft')`,
+      )
+      .get(ymd);
+    const rows = db
+      .prepare(
+        `SELECT po.po_number, po.total_amount AS amount,
+                COALESCE(s.name, po.supplier_name, po.po_number) AS label
+         FROM purchase_orders po
+         LEFT JOIN suppliers s ON s.id = po.supplier_id
+         WHERE ${dateExpr} = date(?)
+           AND LOWER(COALESCE(po.status,'')) NOT IN ('cancelled','void','draft')
+         ORDER BY po.total_amount DESC
+         LIMIT 20`,
+      )
+      .all(ymd);
+    const capped = capLines(rows, (r) => {
+      const label = clipLabel(r.label || r.po_number || 'Xarid');
+      const num = r.po_number ? ` #${clipLabel(r.po_number, 14)}` : '';
+      return `${label}${num}: ${formatSumma(r.amount)}`;
+    });
+    return {
+      count: Number(agg?.cnt || 0) || 0,
+      total: Number(agg?.total || 0) || 0,
+      lines: capped.lines,
+      more: Math.max(0, (Number(agg?.cnt || 0) || 0) - capped.lines.length),
+    };
+  } catch {
+    return emptyOpSection();
+  }
+}
+
+function loadTodayStockChanges(db, ymd) {
+  if (!hasTable(db, 'inventory_movements')) return emptyOpSection();
+  try {
+    const dateExpr = tzDateExpr('im.created_at');
+    // Exclude routine sale lines — focus on ops managers care about.
+    const typeFilter = `AND LOWER(COALESCE(im.movement_type,'')) NOT IN ('sale','sales')`;
+    const agg = db
+      .prepare(
+        `SELECT COUNT(*) AS cnt
+         FROM inventory_movements im
+         WHERE ${dateExpr} = date(?)
+           ${typeFilter}`,
+      )
+      .get(ymd);
+    const rows = db
+      .prepare(
+        `SELECT im.movement_type, im.quantity,
+                COALESCE(NULLIF(TRIM(p.name), ''), im.product_id) AS product_name,
+                NULLIF(TRIM(im.reason), '') AS reason
+         FROM inventory_movements im
+         LEFT JOIN products p ON p.id = im.product_id
+         WHERE ${dateExpr} = date(?)
+           ${typeFilter}
+         ORDER BY ABS(im.quantity) DESC
+         LIMIT 20`,
+      )
+      .all(ymd);
+    const capped = capLines(rows, (r) => {
+      const qty = Number(r.quantity) || 0;
+      const sign = qty > 0 ? '+' : '';
+      const why = r.reason ? ` — ${clipLabel(r.reason, 24)}` : '';
+      return `${clipLabel(r.product_name)} (${movementTypeLabel(r.movement_type)}) ${sign}${qty}${why}`;
+    });
+    return {
+      count: Number(agg?.cnt || 0) || 0,
+      total: 0,
+      lines: capped.lines,
+      more: Math.max(0, (Number(agg?.cnt || 0) || 0) - capped.lines.length),
+    };
+  } catch {
+    return emptyOpSection();
+  }
+}
+
+function loadTodayDebtPayments(db, ymd) {
+  if (!hasTable(db, 'customer_payments')) return emptyOpSection();
+  try {
+    const dateExpr = tzDateExpr('cp.paid_at');
+    let opFilter = '';
+    if (hasColumn(db, 'customer_payments', 'operation')) {
+      opFilter = `AND COALESCE(LOWER(cp.operation), 'payment_in') = 'payment_in'`;
+    }
+    const methodFilter = `AND COALESCE(LOWER(cp.payment_method), '') NOT IN ('refund_cash','refund_balance')`;
+    const agg = db
+      .prepare(
+        `SELECT COUNT(*) AS cnt, COALESCE(SUM(cp.amount), 0) AS total
+         FROM customer_payments cp
+         WHERE ${dateExpr} = date(?)
+           AND COALESCE(cp.amount, 0) > 0
+           ${opFilter}
+           ${methodFilter}`,
+      )
+      .get(ymd);
+    const rows = db
+      .prepare(
+        `SELECT cp.amount, cp.payment_method, c.name AS customer_name
+         FROM customer_payments cp
+         LEFT JOIN customers c ON c.id = cp.customer_id
+         WHERE ${dateExpr} = date(?)
+           AND COALESCE(cp.amount, 0) > 0
+           ${opFilter}
+           ${methodFilter}
+         ORDER BY cp.amount DESC
+         LIMIT 20`,
+      )
+      .all(ymd);
+    const capped = capLines(rows, (r) => {
+      const who = clipLabel(r.customer_name || 'Mijoz');
+      const method = r.payment_method ? ` (${clipLabel(r.payment_method, 12)})` : '';
+      return `${who}${method}: ${formatSumma(r.amount)}`;
+    });
+    return {
+      count: Number(agg?.cnt || 0) || 0,
+      total: Number(agg?.total || 0) || 0,
+      lines: capped.lines,
+      more: Math.max(0, (Number(agg?.cnt || 0) || 0) - capped.lines.length),
+    };
+  } catch {
+    return emptyOpSection();
+  }
+}
+
+function loadTodayReturns(db, ymd) {
+  const tables = ['sales_returns', 'sale_returns'];
+  for (const table of tables) {
+    if (!hasTable(db, table)) continue;
+    try {
+      const amountCol = hasColumn(db, table, 'total_amount')
+        ? 'total_amount'
+        : hasColumn(db, table, 'refund_amount')
+          ? 'refund_amount'
+          : hasColumn(db, table, 'amount')
+            ? 'amount'
+            : null;
+      const dateCol = hasColumn(db, table, 'return_date')
+        ? 'return_date'
+        : hasColumn(db, table, 'created_at')
+          ? 'created_at'
+          : null;
+      if (!amountCol || !dateCol) continue;
+      const dateExpr = tzDateExpr(`r.${dateCol}`);
+      const statusFilter = hasColumn(db, table, 'status')
+        ? `AND LOWER(COALESCE(r.status,'')) IN ('completed','done','paid')`
+        : '';
+      const numCol = hasColumn(db, table, 'return_number') ? 'r.return_number' : 'r.id';
+      const agg = db
+        .prepare(
+          `SELECT COUNT(*) AS cnt, COALESCE(SUM(r.${amountCol}), 0) AS total
+           FROM ${table} r
+           WHERE ${dateExpr} = date(?)
+             ${statusFilter}`,
+        )
+        .get(ymd);
+      const rows = db
+        .prepare(
+          `SELECT r.${amountCol} AS amount, ${numCol} AS return_number,
+                  c.name AS customer_name
+           FROM ${table} r
+           LEFT JOIN customers c ON c.id = r.customer_id
+           WHERE ${dateExpr} = date(?)
+             ${statusFilter}
+           ORDER BY amount DESC
+           LIMIT 20`,
+        )
+        .all(ymd);
+      const capped = capLines(rows, (r) => {
+        const who = clipLabel(r.customer_name || r.return_number || 'Qaytarish');
+        const num = r.return_number ? ` #${clipLabel(r.return_number, 14)}` : '';
+        return `${who}${num}: ${formatSumma(r.amount)}`;
+      });
+      return {
+        count: Number(agg?.cnt || 0) || 0,
+        total: Number(agg?.total || 0) || 0,
+        lines: capped.lines,
+        more: Math.max(0, (Number(agg?.cnt || 0) || 0) - capped.lines.length),
+      };
+    } catch {
+      // try next table
+    }
+  }
+  return emptyOpSection();
 }
 
 function sumCustomerDebt(db) {
@@ -475,6 +974,14 @@ function buildDailyDigestSummary(db, ymd) {
   } catch {
     // reportsService may fail in minimal test DBs
   }
+
+  const expenses = loadTodayExpenses(db, ymd);
+  const creditSales = loadTodayCreditSales(db, ymd);
+  const purchases = loadTodayPurchases(db, ymd);
+  const stockChanges = loadTodayStockChanges(db, ymd);
+  const debtPayments = loadTodayDebtPayments(db, ymd);
+  const returns = loadTodayReturns(db, ymd);
+
   return {
     date: ymd,
     totalSales: Number(daily.total_sales || 0) || 0,
@@ -483,8 +990,16 @@ function buildDailyDigestSummary(db, ymd) {
     cardTotal: Number(daily.card_total || 0) || 0,
     creditTotal: Number(daily.credit_total || 0) || 0,
     netProfit: daily.net_profit != null ? Number(daily.net_profit) || 0 : null,
-    expensesTotal: sumTodayExpenses(db, ymd),
+    expensesTotal: expenses.total,
     customerDebtTotal: sumCustomerDebt(db),
+    operations: {
+      expenses,
+      creditSales,
+      purchases,
+      stockChanges,
+      debtPayments,
+      returns,
+    },
   };
 }
 
@@ -522,7 +1037,42 @@ async function runDailyDigestTick(db, options = {}) {
 
   const summary = buildDailyDigestSummary(db, gate.today);
   const text = buildDailyDigestText(summary, settings.storeName);
-  const out = await sendToReportChats(db, text, options);
+  // Soft-split long digests so Telegram 4096 limit does not drop the whole message.
+  const chunks = [];
+  const hard = 3900;
+  if (text.length <= hard) {
+    chunks.push(text);
+  } else {
+    const parts = text.split('\n\n');
+    let buf = '';
+    for (const part of parts) {
+      const next = buf ? `${buf}\n\n${part}` : part;
+      if (next.length > hard && buf) {
+        chunks.push(buf);
+        buf = part;
+      } else {
+        buf = next;
+      }
+    }
+    if (buf) chunks.push(buf);
+  }
+  let sent = 0;
+  let failed = 0;
+  let lastReason = null;
+  for (const chunk of chunks) {
+    // eslint-disable-next-line no-await-in-loop
+    const out = await sendToReportChats(db, chunk, options);
+    sent += Number(out.sent || 0) || 0;
+    failed += Number(out.failed || 0) || 0;
+    if (out.reason) lastReason = out.reason;
+  }
+  const out = {
+    ok: failed === 0 && sent > 0,
+    sent,
+    failed,
+    reason: sent > 0 ? null : lastReason || 'send_failed',
+    parts: chunks.length,
+  };
   if (out.ok || out.sent > 0) {
     writeSetting(db, 'reports.telegram.last_run_date', gate.today, 'string');
     if (hasTable(db, 'report_notify_log')) {

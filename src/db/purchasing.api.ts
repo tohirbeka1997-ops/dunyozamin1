@@ -523,13 +523,17 @@ export const createPurchaseReceipt = async (payload: {
   received_at?: string | null;
   notes?: string | null;
   created_by?: string | null;
+  receive_type?: string | null;
+  zero_cost_reason?: string | null;
+  zero_cost_approved_by?: string | null;
+  idempotency_key?: string | null;
   items: Array<{
     purchase_order_item_id?: string | null;
     product_id: string;
     product_name?: string | null;
     received_qty: number;
-    unit_cost?: number;
-    line_total?: number;
+    unit_cost?: number | null;
+    line_total?: number | null;
     unit_cost_usd?: number | null;
     line_total_usd?: number | null;
   }>;

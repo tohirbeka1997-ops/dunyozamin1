@@ -28,6 +28,12 @@ services:
       - ${POS_HOST_DATA_DIR:-/var/lib/pos}:/var/lib/pos
       # loadRootEnv() reads /app/.env on Yangilash without container restart
       - ./.env:/app/.env:ro
+      # Customer ops notify: GHCR image may lag host /opt/pos — bind host copies until image rebuild
+      - ./public-api/lib/customerOpsNotify.cjs:/app/public-api/lib/customerOpsNotify.cjs:ro
+      - ./electron/lib/posHardening.cjs:/app/electron/lib/posHardening.cjs:ro
+      - ./electron/services/salesService.cjs:/app/electron/services/salesService.cjs:ro
+      - ./electron/services/customersService.cjs:/app/electron/services/customersService.cjs:ro
+      - ./electron/services/returnsService.cjs:/app/electron/services/returnsService.cjs:ro
 
     # Optional GHCR image override — set POS_IMAGE in .env for CI/CD pulls.
     # When unset, the base docker-compose.yaml `pos-server:latest` build tag is used.
@@ -38,10 +44,12 @@ services:
       # loadRootEnv() reads this path on Yangilash (RPC) without container restart
       POS_ENV_FILE: /app/.env
       # Explicit pass-through (also in base compose) — internal reports ≠ News channel
+      TELEGRAM_REPORTS_BOT_TOKEN: ${TELEGRAM_REPORTS_BOT_TOKEN:-}
       TELEGRAM_REPORTS_CHAT_ID: ${TELEGRAM_REPORTS_CHAT_ID:-}
       TELEGRAM_ADMIN_IDS: ${TELEGRAM_ADMIN_IDS:-}
       TELEGRAM_MARKETING_BOT_TOKEN: ${TELEGRAM_MARKETING_BOT_TOKEN:-}
       TELEGRAM_MARKETING_CHANNEL_ID: ${TELEGRAM_MARKETING_CHANNEL_ID:-}
+      TELEGRAM_CUSTOMER_BOT_TOKEN: ${TELEGRAM_CUSTOMER_BOT_TOKEN:-}
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
       GEMINI_IMAGE_MODEL: ${GEMINI_IMAGE_MODEL:-}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}

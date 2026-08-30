@@ -57,10 +57,17 @@ function clampQuantityForUnit(value, unit) {
   return rounded < 1 ? 1 : rounded;
 }
 
-function formatQuantity(value, unit) {
+function formatQuantity(value, unitOrPrecision) {
   if (!isFinite(value)) return '0';
-  if (isFractionalUnit(unit)) {
-    return roundTo(value, FRACTIONAL_DECIMALS).toFixed(FRACTIONAL_DECIMALS);
+  if (typeof unitOrPrecision === 'number') {
+    const decimals = Math.max(0, Math.min(8, Math.floor(unitOrPrecision)));
+    const rounded = roundTo(value, decimals);
+    if (decimals === 0) return String(Math.round(rounded));
+    return String(Number(rounded.toFixed(decimals)));
+  }
+  if (isFractionalUnit(unitOrPrecision)) {
+    const rounded = roundTo(value, FRACTIONAL_DECIMALS);
+    return String(Number(rounded.toFixed(FRACTIONAL_DECIMALS)));
   }
   return String(Math.round(value));
 }
@@ -119,6 +126,9 @@ assert.equal(clampQuantityForUnit(0.0005, 'kg'), 0.001);
 assert.equal(clampQuantityForUnit(2.4, 'pcs'), 2);
 
 assert.equal(formatQuantity(0.086, 'kg'), '0.086');
+assert.equal(formatQuantity(405.5, 'm'), '405.5');
+assert.equal(formatQuantity(405.5, 'pcs'), '406');
+assert.equal(formatQuantity(405.5, 3), '405.5');
 
 assert.equal(isValidDecimalInput('0.086', 6), true);
 assert.equal(isValidDecimalInput('0.', 6), true);

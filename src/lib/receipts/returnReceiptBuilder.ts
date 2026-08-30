@@ -22,6 +22,8 @@ export type ReturnReceiptItem = {
 export type ReturnReceiptInput = {
   storeName: string;
   returnNumber: string;
+  returnId?: string;
+  deepLink?: string;
   orderNumber: string;
   sourceLabel: string;
   dateTime: string;
@@ -68,14 +70,25 @@ export function buildReturnReceiptInput(
     Pending: 'Kutilmoqda',
     Cancelled: 'Bekor qilingan',
     Draft: 'Qoralama',
+    Approved: 'Tasdiqlangan',
+    Rejected: 'Rad etilgan',
+    completed: 'Yakunlangan',
+    pending: 'Kutilmoqda',
+    cancelled: 'Bekor qilingan',
+    draft: 'Qoralama',
+    approved: 'Tasdiqlangan',
+    rejected: 'Rad etilgan',
   };
   const isManual = returnData.return_mode === 'manual';
   const orderCur =
     (returnData as { order_currency?: string }).order_currency ?? returnData.order?.currency ?? 'UZS';
+  const deepLink = `pos://returns/${returnData.id}`;
 
   return {
     storeName: getStoreName(company),
     returnNumber: returnData.return_number,
+    returnId: returnData.id,
+    deepLink,
     orderNumber: returnData.order?.order_number || 'Ordersiz',
     sourceLabel: isManual ? 'Ordersiz qaytarish' : 'Buyurtma bo‘yicha qaytarish',
     dateTime: formatReceiptDateTime(returnData.created_at),
@@ -85,7 +98,10 @@ export function buildReturnReceiptInput(
     reason: returnData.reason ?? returnData.return_reason ?? null,
     notes: returnData.notes ?? null,
     isManual,
-    isPending: returnData.status === 'Pending' || returnData.status === 'Draft',
+    isPending:
+      ['Pending', 'Draft', 'Approved', 'pending', 'draft', 'approved'].includes(
+        String(returnData.status || ''),
+      ),
     items: (returnData.items || []).map((item) => normalizeReturnItem(item as Record<string, unknown>)),
     totalAmount: Number(returnData.total_amount ?? returnData.refund_amount ?? 0) || 0,
     orderCurrency: orderCur,
@@ -136,6 +152,7 @@ export function buildReturnReceiptEscposLines(
     push(input.notes.trim());
   }
   push('', 'left');
+  push(`QR: ${input.deepLink || `pos://returns/${input.returnId || input.returnNumber}`}`, 'center');
   push('Rahmat!', 'center');
   return lines;
 }
@@ -212,6 +229,7 @@ export function generateReturnReceiptHTML(
         </div>
         ${input.notes ? `<div class="mb-6"><p class="font-semibold mb-2">Izoh:</p><p class="text-sm text-muted-foreground">${input.notes}</p></div>` : ''}
         <div class="text-center mt-8 pt-4 border-t border-gray-300">
+          <p class="text-sm font-mono mb-2">${input.deepLink || ('pos://returns/' + (input.returnId || input.returnNumber))}</p>
           <p class="text-sm text-muted-foreground">Rahmat!</p>
           <p class="text-xs text-muted-foreground mt-2">${input.dateTime}</p>
         </div>
@@ -265,6 +283,7 @@ export function generateReturnReceiptHTML(
       </div>
       ${input.notes ? `<div class="mb-3 text-xs border-t border-dashed border-gray-400 pt-2"><p class="font-semibold">Izoh:</p><p class="text-gray-600">${input.notes}</p></div>` : ''}
       <div class="text-center mt-4 pt-2 border-t border-dashed border-gray-400">
+        <p class="text-xs font-mono">${input.deepLink || ('pos://returns/' + (input.returnId || input.returnNumber))}</p>
         <p class="text-xs">Rahmat!</p>
         <p class="text-xs text-gray-500 mt-1">${input.dateTime}</p>
       </div>

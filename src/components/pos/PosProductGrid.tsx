@@ -1,6 +1,6 @@
 import { memo, useRef, Fragment, type ReactNode } from 'react';
 import { useVirtualizer } from '@tanstack/react-virtual';
-import { Package, Plus, Store } from 'lucide-react';
+import { Package, Plus, Store, AlertCircle, RefreshCw } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
 import { productShowInMarketplace } from '@/lib/productMarketplace';
@@ -9,6 +9,7 @@ import { resolveUsdRetailDisplay } from '@/lib/productPricing';
 import { formatUnit } from '@/utils/formatters';
 import { highlightMatch } from '@/utils/searchHighlight';
 import { getSaleUnitConfig, getProductUnits } from '@/pages/posTerminalHelpers';
+import { isOutOfStockForSale, isProductPriceNotSet } from '@/lib/posHardening';
 import type { Product } from '@/types/database';
 import type { TFunction } from 'i18next';
 
@@ -34,6 +35,11 @@ export type PosProductGridProps = {
   onFocusSearch: () => void;
   renderSkuWithHighlight: (sku: string, term: string) => ReactNode;
   categoryNameById?: Record<string, string>;
+  /** When true (return mode), zero-stock products may still be added. */
+  allowOutOfStockAdd?: boolean;
+  /** Catalog fetch failed — show error+retry instead of empty "not found". */
+  loadError?: string | null;
+  onRetryLoad?: () => void;
   t: TFunction;
 };
 
@@ -62,6 +68,9 @@ function PosProductGridInner({
   onFocusSearch,
   renderSkuWithHighlight,
   categoryNameById,
+  allowOutOfStockAdd = false,
+  loadError = null,
+  onRetryLoad,
   t,
 }: PosProductGridProps) {
   const parentRef = useRef<HTMLDivElement>(null);
@@ -71,6 +80,32 @@ function PosProductGridInner({
     estimateSize: () => ROW_HEIGHT,
     overscan: 10,
   });
+
+  if (products.length === 0 && loadError) {
+    return (
+      <div className="flex h-full items-center justify-center p-3 text-muted-foreground">
+        <div className="max-w-sm text-center">
+          <AlertCircle className="mx-auto mb-2 h-10 w-10 text-destructive opacity-80" aria-hidden />
+          <p className="text-sm font-medium text-foreground">
+            {t('pos.catalog_load_failed_title', { defaultValue: 'Katalog yuklanmadi' })}
+          </p>
+          <p className="mt-1 text-xs">{loadError}</p>
+          {onRetryLoad && (
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              className="mt-3 gap-1.5"
+              onClick={() => onRetryLoad()}
+            >
+              <RefreshCw className="h-3.5 w-3.5" aria-hidden />
+              {t('common.retry', { defaultValue: 'Qayta urinish' })}
+            </Button>
+          )}
+        </div>
+      </div>
+    );
+  }
 
   if (products.length === 0) {
     return (
@@ -136,6 +171,9 @@ function PosProductGridInner({
             );
             const saleUnitLabel = formatUnit(saleUnit) || saleUnit || 'Dona';
             const baseUnitLabel = formatUnit(baseUnit) || baseUnit;
+            const outOfStock = !allowOutOfStockAdd && isOutOfStockForSale(product);
+            const priceBlocked = isProductPriceNotSet(product as any);
+            const rowDisabled = outOfStock || priceBlocked;
             // Compact: SKU · Artikul · Brend (then unit); category only in title to avoid wrap.
             const metaItems: ReactNode[] = [];
             if (sku) {
@@ -171,12 +209,15 @@ function PosProductGridInner({
               >
                 <div
                   role="button"
-                  tabIndex={0}
+                  tabIndex={rowDisabled ? -1 : 0}
+                  aria-disabled={rowDisabled || undefined}
                   onClick={() => {
+                    if (rowDisabled) return;
                     onRequestAddToCart(product);
                     onFocusSearch();
                   }}
                   onKeyDown={(e) => {
+                    if (rowDisabled) return;
                     if (e.target !== e.currentTarget) return;
                     if (e.key === 'Enter' || e.key === ' ') {
                       e.preventDefault();
@@ -185,7 +226,10 @@ function PosProductGridInner({
                     }
                   }}
                   className={cn(
-                    'grid w-full cursor-pointer grid-cols-12 items-center gap-2 border-b border-transparent bg-white p-1.5 transition-colors hover:bg-primary/5 dark:bg-gray-800 dark:hover:bg-primary/10',
+                    'grid w-full grid-cols-12 items-center gap-2 border-b border-transparent bg-white p-1.5 transition-colors dark:bg-gray-800',
+                    rowDisabled
+                      ? 'cursor-not-allowed opacity-60'
+                      : 'cursor-pointer hover:bg-primary/5 dark:hover:bg-primary/10',
                     !productShowInMarketplace(product) && 'opacity-[0.92]',
                   )}
                 >
@@ -246,7 +290,11 @@ function PosProductGridInner({
                   </div>
 
                   <div className="col-span-2 text-right">
-                    {saleCurrency === 'USD' ? (
+                    {priceBlocked ? (
+                      <p className="text-[10px] font-medium text-destructive md:text-xs">
+                        {t('products.price_not_set', { defaultValue: 'Price not set' })}
+                      </p>
+                    ) : saleCurrency === 'USD' ? (
                       <>
                         <p className="text-[11px] font-semibold tabular-nums text-primary md:text-xs">
                           {usdDisplay != null ? formatMoney(usdDisplay, 'USD') : '—'}
@@ -279,9 +327,20 @@ function PosProductGridInner({
                       variant="outline"
                       className="h-7 w-7 shrink-0 touch-manipulation md:h-6 md:w-6"
                       aria-label={`${product.name} — 1 ${saleUnitLabel} savatga qo'shish`}
-                      title={`1 ${saleUnitLabel} savatga qo'shish`}
+                      title={
+                        priceBlocked
+                          ? t('products.price_not_set', { defaultValue: 'Price not set' })
+                          : outOfStock
+                            ? t('pos.stock_zero_blocked', {
+                                defaultValue: '{{name}}: omborda qoldiq 0 — savatga qo‘shib bo‘lmaydi',
+                                name: product.name,
+                              })
+                            : `1 ${saleUnitLabel} savatga qo'shish`
+                      }
+                      disabled={rowDisabled}
                       onClick={(e) => {
                         e.stopPropagation();
+                        if (rowDisabled) return;
                         onQuickAddOneToCart(product);
                       }}
                     >

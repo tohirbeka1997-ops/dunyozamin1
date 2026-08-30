@@ -26,6 +26,22 @@ const {
 } = require('../lib/customerBalance.cjs');
 const { normalizePhoneUz, formatPhoneUz } = require('../lib/phoneNormalize.cjs');
 const { recordPaymentFee } = require('../lib/paymentFee.cjs');
+const {
+  parsePositiveMoneyAmount,
+  allocatePaymentInToDebtAndAdvance,
+  assertPaymentOutAllowed,
+  assertBonusCorrection,
+  assertInitialBonusPoints,
+  assertOptionalEmail,
+  assertOptionalUzPhone,
+  maskPhoneForExport,
+  roleCanExportCustomers,
+  roleCanReissueLoyaltyQr,
+  DEFAULT_BONUS_CORRECTION_PER_OP,
+  DEFAULT_BONUS_CORRECTION_PER_DAY,
+  DEFAULT_BONUS_LARGE_CORRECTION,
+  DEFAULT_INITIAL_BONUS_LIMIT,
+} = require('../lib/posHardening.cjs');
 
 /**
  * Customers Service
@@ -57,7 +73,16 @@ class CustomersService {
     if (!raw) {
       return { phone: null, phone_normalized: null };
     }
+    const gate = assertOptionalUzPhone(raw);
+    if (!gate.ok) {
+      throw createError(ERROR_CODES.VALIDATION_ERROR, gate.error, { code: gate.code });
+    }
     const phone_normalized = normalizePhoneUz(raw);
+    if (!phone_normalized) {
+      throw createError(ERROR_CODES.VALIDATION_ERROR, 'invalid UZ phone format', {
+        code: 'PHONE_INVALID',
+      });
+    }
     const formatted = formatPhoneUz(raw);
     return {
       phone: formatted || raw,
@@ -193,6 +218,90 @@ class CustomersService {
       )
       .run(cardCode, qrPayload, nowSqlInTimeZone(), customerId);
     return { loyalty_card_code: cardCode, qr_payload: qrPayload };
+  }
+
+  /**
+   * Reissue loyalty card/QR (admin/manager). Archives previous code in history.
+   */
+  reissueLoyaltyCard(customerId, actorUserId, reason) {
+    if (!customerId) {
+      throw createError(ERROR_CODES.VALIDATION_ERROR, 'Mijoz ID kerak');
+    }
+    const roles = this._getUserRoleCodes(actorUserId);
+    if (!roleCanReissueLoyaltyQr(roles)) {
+      throw createError(ERROR_CODES.FORBIDDEN, 'Loyalty QR qayta chiqarish faqat admin/menejer uchun');
+    }
+    const reasonText = String(reason || '').trim();
+    if (!reasonText) {
+      throw createError(ERROR_CODES.VALIDATION_ERROR, 'Qayta chiqarish sababi majburiy');
+    }
+    if (!this._hasCol('loyalty_card_code')) {
+      throw createError(ERROR_CODES.VALIDATION_ERROR, 'loyalty_card_code ustuni yo‘q');
+    }
+
+    const existing = this.db
+      .prepare(`SELECT loyalty_card_code, loyalty_qr_payload, code FROM customers WHERE id = ?`)
+      .get(customerId);
+    if (!existing) {
+      throw createError(ERROR_CODES.NOT_FOUND, 'Mijoz topilmadi');
+    }
+
+    const oldCode = existing.loyalty_card_code || null;
+    const oldPayload = existing.loyalty_qr_payload || null;
+    const newCode = `LC-${String(existing.code || customerId).slice(0, 12).toUpperCase()}-${Date.now()
+      .toString(36)
+      .toUpperCase()
+      .slice(-4)}`;
+    const newPayload = this._buildLoyaltyQrPayload(newCode);
+    const now = nowSqlInTimeZone();
+
+    this.db.transaction(() => {
+      try {
+        const hist = this.db
+          .prepare(
+            `SELECT name FROM sqlite_master WHERE type='table' AND name='customer_loyalty_card_history'`
+          )
+          .get();
+        if (hist && oldCode) {
+          this.db
+            .prepare(
+              `
+            INSERT INTO customer_loyalty_card_history (
+              id, customer_id, loyalty_card_code, qr_payload, status, reason, replaced_by, created_at, created_by
+            ) VALUES (?, ?, ?, ?, 'replaced', ?, ?, ?, ?)
+          `
+            )
+            .run(
+              randomUUID(),
+              customerId,
+              oldCode,
+              oldPayload,
+              reasonText,
+              newCode,
+              now,
+              actorUserId || null
+            );
+        }
+      } catch (e) {
+        console.warn('[customers] loyalty history insert skipped:', e?.message || e);
+      }
+      this.db
+        .prepare(
+          `UPDATE customers SET loyalty_card_code = ?, loyalty_qr_payload = ?, updated_at = ? WHERE id = ?`
+        )
+        .run(newCode, newPayload, now, customerId);
+    })();
+
+    this._safeAuditLog({
+      user_id: actorUserId,
+      action: 'loyalty_qr_reissue',
+      entity_type: 'customer',
+      entity_id: customerId,
+      old_values: { loyalty_card_code: oldCode, qr_payload: oldPayload },
+      new_values: { loyalty_card_code: newCode, qr_payload: newPayload, reason: reasonText },
+    });
+
+    return { loyalty_card_code: newCode, qr_payload: newPayload };
   }
 
   _findProbablePhonelessDuplicate(name, excludeId = null) {
@@ -581,6 +690,16 @@ class CustomersService {
     const sortExpr = sortMap[sortByRaw] || sortMap.created_at;
     query += ` ORDER BY ${sortExpr} ${sortOrder}, name ASC`;
 
+    const limitRaw = filters.limit != null ? Number(filters.limit) : null;
+    const offsetRaw = filters.offset != null ? Number(filters.offset) : 0;
+    const hasLimit = Number.isFinite(limitRaw) && limitRaw > 0;
+    if (hasLimit) {
+      const limit = Math.min(Math.floor(limitRaw), 500);
+      const offset = Number.isFinite(offsetRaw) && offsetRaw > 0 ? Math.floor(offsetRaw) : 0;
+      query += ' LIMIT ? OFFSET ?';
+      params.push(limit, offset);
+    }
+
     return this.db.prepare(query).all(params);
   }
 
@@ -840,6 +959,27 @@ class CustomersService {
           phone_normalized: data.phone_normalized ?? null,
         }
       : this._resolvePhoneFields(data.phone);
+
+    if (data.email !== undefined && data.email !== null && String(data.email).trim() !== '') {
+      const emailGate = assertOptionalEmail(data.email);
+      if (!emailGate.ok) {
+        throw createError(ERROR_CODES.VALIDATION_ERROR, emailGate.error, { code: emailGate.code });
+      }
+      data.email = emailGate.email;
+    }
+
+    if (data.bonus_points !== undefined && data.bonus_points !== null) {
+      const bonusGate = assertInitialBonusPoints(data.bonus_points, {
+        maxInitial: this._getNumericSetting(
+          'customers.bonus.initial_limit',
+          DEFAULT_INITIAL_BONUS_LIMIT
+        ),
+      });
+      if (!bonusGate.ok) {
+        throw createError(ERROR_CODES.VALIDATION_ERROR, bonusGate.error, { code: bonusGate.code });
+      }
+      data.bonus_points = bonusGate.points;
+    }
 
     if (!data._skipDuplicateCheck && resolvedPhone.phone_normalized) {
       const existing = this.findByNormalizedPhone(resolvedPhone.phone_normalized);
@@ -1203,7 +1343,121 @@ class CustomersService {
    *   - Example: balance = 0, give 3000 => new balance = -3000 (creates debt)
    * 
    * This is the SINGLE SOURCE OF TRUTH for customer payment logic.
-   * 
+   */
+  /**
+   * Insert a customer_payments row for shift drawer rollup WITHOUT changing
+   * balance or ledger. Used when a sale TX already applied prior_debt_payment
+   * to customers + customer_ledger; shift expected cash still needs this row
+   * (see ShiftsService._getCustomerPaymentsShiftRollup).
+   *
+   * Must run inside the caller's SQLite transaction.
+   *
+   * @returns {{ payment_id: string, payment_number: string, shift_id: string|null }}
+   */
+  recordDrawerPaymentOnly({
+    customerId,
+    amount,
+    paymentMethod = 'cash',
+    notes = null,
+    receivedBy = null,
+    orderId = null,
+    shiftId = null,
+    oldBalance = null,
+    newBalance = null,
+    operation = 'payment_in',
+    paidAt = null,
+  } = {}) {
+    const normalizedCustomerId =
+      customerId != null && customerId !== '' ? String(customerId).trim() : '';
+    if (!normalizedCustomerId) {
+      throw createError(ERROR_CODES.VALIDATION_ERROR, 'Customer ID is required');
+    }
+    const amountParsed = parsePositiveMoneyAmount(amount);
+    if (!amountParsed.ok) {
+      throw createError(ERROR_CODES.VALIDATION_ERROR, amountParsed.error);
+    }
+    const requestedAmount = amountParsed.amount;
+    if (!paymentMethod) {
+      throw createError(ERROR_CODES.VALIDATION_ERROR, 'Payment method is required');
+    }
+    if (operation !== 'payment_in' && operation !== 'payment_out') {
+      throw createError(
+        ERROR_CODES.VALIDATION_ERROR,
+        `Invalid operation type: ${operation}. Must be 'payment_in' or 'payment_out'`
+      );
+    }
+
+    const resolvedReceivedBy = this._resolveReceivedByForPayment(receivedBy);
+    const normalizedOrderId = this._normalizeOrderIdForPayment(orderId);
+    const normalizedShiftId = this._normalizeShiftIdForPayment(shiftId);
+    const now = paidAt || nowSqlInTimeZone();
+    const paymentId = randomUUID();
+    const paymentNumber = `PAY-${Date.now()}-${paymentId.substring(0, 8).toUpperCase()}`;
+
+    const tableInfo = this.db.prepare('PRAGMA table_info(customer_payments)').all();
+    const hasLedgerFields = tableInfo.some((col) => col.name === 'old_balance');
+    const hasShiftIdCol = tableInfo.some((col) => col.name === 'shift_id');
+    const hasOperationCol = tableInfo.some((col) => col.name === 'operation');
+
+    const cols = [
+      'id',
+      'payment_number',
+      'customer_id',
+      'order_id',
+      'amount',
+      'payment_method',
+      'reference_number',
+      'notes',
+      'received_by',
+      'paid_at',
+      'created_at',
+    ];
+    const vals = [
+      paymentId,
+      paymentNumber,
+      normalizedCustomerId,
+      normalizedOrderId,
+      requestedAmount,
+      paymentMethod,
+      null,
+      notes || null,
+      resolvedReceivedBy,
+      now,
+      now,
+    ];
+    if (hasLedgerFields) {
+      const oldBal =
+        oldBalance != null && Number.isFinite(Number(oldBalance)) ? Number(oldBalance) : null;
+      const newBal =
+        newBalance != null && Number.isFinite(Number(newBalance))
+          ? Number(newBalance)
+          : oldBal != null
+            ? oldBal + (operation === 'payment_out' ? -requestedAmount : requestedAmount)
+            : null;
+      cols.push('old_balance', 'applied_amount', 'new_balance');
+      vals.push(oldBal, requestedAmount, newBal);
+    }
+    if (hasShiftIdCol) {
+      cols.push('shift_id');
+      vals.push(normalizedShiftId);
+    }
+    if (hasOperationCol) {
+      cols.push('operation');
+      vals.push(operation);
+    }
+    const ph = cols.map(() => '?').join(', ');
+    this.db
+      .prepare(`INSERT INTO customer_payments (${cols.join(', ')}) VALUES (${ph})`)
+      .run(...vals);
+
+    return {
+      payment_id: paymentId,
+      payment_number: paymentNumber,
+      shift_id: normalizedShiftId,
+    };
+  }
+
+  /**
    * @param {string} customerId - Customer ID
    * @param {number} amount - Payment amount (must be > 0, always positive)
    * @param {string} paymentMethod - 'cash', 'card', 'click', 'payme', 'transfer', 'other'
@@ -1227,7 +1481,10 @@ class CustomersService {
     shiftId = null,
     currency = 'UZS',
     fxRate = null,
-    paymentUuid = null
+    paymentUuid = null,
+    paymentOutKind = null,
+    lendAuthorized = false,
+    approverUserId = null
   ) {
     if (customerId && typeof customerId === 'object' && !Array.isArray(customerId)) {
       const p = customerId;
@@ -1243,7 +1500,10 @@ class CustomersService {
         p.shift_id ?? p.shiftId ?? null,
         p.currency ?? 'UZS',
         p.fx_rate ?? p.fxRate ?? null,
-        p.payment_uuid ?? p.paymentUuid ?? null
+        p.payment_uuid ?? p.paymentUuid ?? null,
+        p.payment_out_kind ?? p.paymentOutKind ?? null,
+        p.lend_authorized === true || p.lendAuthorized === true,
+        p.approver_user_id ?? p.approverUserId ?? null
       );
     }
 
@@ -1253,11 +1513,12 @@ class CustomersService {
       throw createError(ERROR_CODES.VALIDATION_ERROR, 'Customer ID is required');
     }
 
-    // Validation: amount must be positive number
-    const requestedAmount = Number(amount);
-    if (!requestedAmount || requestedAmount <= 0 || isNaN(requestedAmount) || !isFinite(requestedAmount)) {
-      throw createError(ERROR_CODES.VALIDATION_ERROR, 'Payment amount must be greater than zero');
+    // Validation: amount must be positive number (reject 0 / neg / bad format)
+    const amountParsed = parsePositiveMoneyAmount(amount);
+    if (!amountParsed.ok) {
+      throw createError(ERROR_CODES.VALIDATION_ERROR, amountParsed.error);
     }
+    const requestedAmount = amountParsed.amount;
 
     // Validation: payment method required
     if (!paymentMethod) {
@@ -1330,6 +1591,35 @@ class CustomersService {
       const customer = this.getById(normalizedCustomerId);
       const balancesBefore = readCustomerBalances(this.db, normalizedCustomerId);
       const oldBalance = readBalanceInCurrency(this.db, normalizedCustomerId, payCurrency);
+
+      let paymentOutMeta = null;
+      if (operation === 'payment_out') {
+        const actorRoles = this._getUserRoleCodes(resolvedReceivedBy);
+        const outGate = assertPaymentOutAllowed({
+          oldBalance,
+          amount: requestedAmount,
+          roles: actorRoles,
+          kindRequested: paymentOutKind,
+          reason: notes,
+          creditLimit: customer?.credit_limit,
+          lendAuthorized: lendAuthorized === true,
+        });
+        if (!outGate.ok) {
+          throw createError(
+            outGate.code === 'LEND_FORBIDDEN' || outGate.code === 'PAYOUT_FORBIDDEN'
+              ? ERROR_CODES.FORBIDDEN
+              : ERROR_CODES.VALIDATION_ERROR,
+            outGate.error,
+            {
+              code: outGate.code,
+              advance: outGate.advance,
+              amount: outGate.amount,
+              debt_created: outGate.debt_created,
+            }
+          );
+        }
+        paymentOutMeta = outGate;
+      }
       
       // Calculate signed amount based on operation type
       // CRITICAL: amount is always positive from UI, backend applies the sign
@@ -1343,6 +1633,10 @@ class CustomersService {
       // payment_in: balance = balance + amount (increases)
       // payment_out: balance = balance - amount (decreases)
       const newBalance = oldBalance + signedAmount;
+      const allocation =
+        operation === 'payment_in'
+          ? allocatePaymentInToDebtAndAdvance(oldBalance, requestedAmount)
+          : { debt_portion: 0, advance_portion: 0, new_balance: newBalance };
 
       const now = nowSqlInTimeZone();
 
@@ -1356,6 +1650,8 @@ class CustomersService {
         requested_amount: requestedAmount,
         signed_amount: signedAmount,
         new_balance: newBalance,
+        debt_portion: allocation.debt_portion,
+        advance_portion: allocation.advance_portion,
         method: paymentMethod,
         source: source || 'unknown',
         balance_type: oldBalance < 0 ? 'debt' : oldBalance > 0 ? 'credit' : 'zero'
@@ -1406,9 +1702,14 @@ class CustomersService {
           
           const ledgerId = randomUUID();
           // Ledger type matches operation type
-          const ledgerNote = operation === 'payment_in' 
-            ? (notes || `Pul qabul qilindi: ${paymentMethod}`)
-            : (notes || `Pul berildi: ${paymentMethod}`);
+          const ledgerNote =
+            operation === 'payment_in'
+              ? notes ||
+                `Pul qabul qilindi: ${paymentMethod} (qarz: ${allocation.debt_portion}; oldindan: ${allocation.advance_portion})`
+              : paymentOutMeta?.kind === 'lend'
+                ? notes ||
+                  `Qarz berildi (lend): ${paymentMethod}; yaratilgan qarz: ${paymentOutMeta.debt_created}`
+                : notes || `Pul berildi (payout): ${paymentMethod}`;
           
           const ledgerCols = [
             'id',
@@ -1547,10 +1848,15 @@ class CustomersService {
         requested_amount: requestedAmount,
         applied_amount: requestedAmount,
         signed_amount: signedAmount,
+        debt_portion: allocation.debt_portion,
+        advance_portion: allocation.advance_portion,
+        payment_out_kind: paymentOutMeta?.kind || null,
+        debt_created: paymentOutMeta?.debt_created ?? 0,
         payment_id: paymentId,
         payment_number: paymentNumber,
         created_at: now,
         operation,
+        approver_user_id: paymentOutMeta?.kind === 'lend' ? approverUserId || resolvedReceivedBy : null,
       };
     })();
 
@@ -1562,7 +1868,28 @@ class CustomersService {
         currency: result.currency,
         reason: result.operation || 'payment_in',
         refId: result.payment_id,
+        paymentNumber: result.payment_number || null,
+        totalAmount: Math.abs(Number(result.applied_amount || result.signed_amount || 0)),
         customerName: null,
+      });
+    }
+
+    if (result && !result.duplicate && result.operation === 'payment_out') {
+      this._safeAuditLog({
+        user_id: resolvedReceivedBy,
+        action: result.payment_out_kind === 'lend' ? 'customer_lend' : 'customer_payout',
+        entity_type: 'customer',
+        entity_id: result.customer_id,
+        old_values: { balance: result.old_balance },
+        new_values: {
+          balance: result.new_balance,
+          amount: result.applied_amount,
+          kind: result.payment_out_kind,
+          debt_created: result.debt_created,
+          payment_id: result.payment_id,
+          approver_user_id: result.approver_user_id,
+          notes: notes || null,
+        },
       });
     }
 
@@ -1570,15 +1897,54 @@ class CustomersService {
   }
 
   /**
-   * Fire-and-forget balance change Telegram/SMS (customer + reports channel).
+   * Fire-and-forget customer Telegram DM for payments / balance adjusts (not staff channel).
    */
   _notifyBalanceChange(payload) {
     try {
-      const { fireBalanceChangeNotify } = require('../../public-api/lib/balanceChangeNotify.cjs');
-      fireBalanceChangeNotify(this.db, payload);
+      const { fireCustomerOpsNotify } = require('../../public-api/lib/customerOpsNotify.cjs');
+      fireCustomerOpsNotify(this.db, payload);
     } catch (e) {
-      console.warn('[customers] balance change notify unavailable:', e?.message || e);
+      console.warn('[customers] customer ops notify unavailable:', e?.message || e);
     }
+  }
+
+  _safeAuditLog(data) {
+    try {
+      const has = this.db
+        .prepare(`SELECT name FROM sqlite_master WHERE type='table' AND name='audit_log'`)
+        .get();
+      if (!has) return;
+      const id = randomUUID();
+      const now = new Date().toISOString();
+      this.db
+        .prepare(
+          `
+        INSERT INTO audit_log (
+          id, user_id, action, entity_type, entity_id,
+          old_values, new_values, ip_address, user_agent, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?)
+      `
+        )
+        .run(
+          id,
+          data.user_id || null,
+          data.action,
+          data.entity_type,
+          data.entity_id || null,
+          data.old_values ? JSON.stringify(data.old_values) : null,
+          data.new_values ? JSON.stringify(data.new_values) : null,
+          now
+        );
+    } catch (e) {
+      console.warn('[customers] audit log skipped:', e?.message || e);
+    }
+  }
+
+  _getNumericSetting(key, fallback) {
+    const raw = this._getSettingRaw(key);
+    if (raw == null || raw === '') return fallback;
+    const n = Number(raw);
+    return Number.isFinite(n) && n > 0 ? n : fallback;
   }
 
   /**
@@ -1802,20 +2168,12 @@ class CustomersService {
   /**
    * Admin/manager adjustment to bonus_points with audit row.
    */
-  adjustBonusPoints(actorUserId, customerId, deltaPoints, note) {
+  adjustBonusPoints(actorUserId, customerId, deltaPoints, note, opts = {}) {
     if (!customerId) {
       throw createError(ERROR_CODES.VALIDATION_ERROR, 'Mijoz ID kerak');
     }
-    const roles = this._getUserRoleCodes(actorUserId);
-    if (!roles.some((r) => r === 'admin' || r === 'manager')) {
-      throw createError(ERROR_CODES.FORBIDDEN, 'Bonus korreksiyasi faqat admin yoki menejer uchun');
-    }
     if (!this._hasCol('bonus_points')) {
       throw createError(ERROR_CODES.VALIDATION_ERROR, 'bonus_points ustuni mavjud emas');
-    }
-    const delta = Number(deltaPoints);
-    if (!Number.isFinite(delta) || delta === 0) {
-      throw createError(ERROR_CODES.VALIDATION_ERROR, 'Nol dan farqli ball kiriting');
     }
 
     const t = this.db
@@ -1830,11 +2188,61 @@ class CustomersService {
       throw createError(ERROR_CODES.NOT_FOUND, 'Mijoz topilmadi');
     }
     const before = Number(cust.bonus_points) || 0;
-    const after = before + delta;
-    if (after < -0.0001) {
-      throw createError(ERROR_CODES.VALIDATION_ERROR, 'Ball manfiy bo‘lishi mumkin emas');
+    const roles = this._getUserRoleCodes(actorUserId);
+    const perOp = this._getNumericSetting(
+      'customers.bonus.correction_per_op',
+      DEFAULT_BONUS_CORRECTION_PER_OP
+    );
+    const perDay = this._getNumericSetting(
+      'customers.bonus.correction_per_day',
+      DEFAULT_BONUS_CORRECTION_PER_DAY
+    );
+    const largeAt = this._getNumericSetting(
+      'customers.bonus.large_threshold',
+      DEFAULT_BONUS_LARGE_CORRECTION
+    );
+
+    let dayUsedAbs = 0;
+    try {
+      const today = formatYmdInTimeZone(new Date());
+      const row = this.db
+        .prepare(
+          `
+          SELECT COALESCE(SUM(ABS(points)), 0) AS used
+          FROM customer_bonus_ledger
+          WHERE customer_id = ?
+            AND type = 'adjust'
+            AND date(created_at) = date(?)
+        `
+        )
+        .get(customerId, today);
+      dayUsedAbs = Number(row?.used || 0) || 0;
+    } catch {
+      dayUsedAbs = 0;
     }
 
+    const gate = assertBonusCorrection({
+      delta: deltaPoints,
+      reason: note,
+      beforeBalance: before,
+      allowNegative: false,
+      perOpLimit: perOp,
+      perDayLimit: perDay,
+      dayUsedAbs,
+      largeThreshold: largeAt,
+      roles,
+      largeApproved: opts.largeApproved === true || opts.large_approved === true,
+      authorized: opts.authorized === true,
+    });
+    if (!gate.ok) {
+      throw createError(
+        gate.code === 'BONUS_FORBIDDEN' ? ERROR_CODES.FORBIDDEN : ERROR_CODES.VALIDATION_ERROR,
+        gate.error,
+        { code: gate.code, threshold: gate.threshold, limit: gate.limit }
+      );
+    }
+
+    const after = gate.after;
     const now = nowSqlInTimeZone();
     this.db.transaction(() => {
       this.db
@@ -1846,8 +2254,17 @@ class CustomersService {
           `INSERT INTO customer_bonus_ledger (id, customer_id, type, points, order_id, note, created_at, created_by)
            VALUES (?, ?, 'adjust', ?, NULL, ?, ?, ?)`
         )
-        .run(lid, customerId, delta, (note || 'Korreksiya').trim(), now, actorUserId || null);
+        .run(lid, customerId, gate.delta, gate.reason, now, actorUserId || null);
     })();
+
+    this._safeAuditLog({
+      user_id: actorUserId,
+      action: 'customer_bonus_adjust',
+      entity_type: 'customer',
+      entity_id: customerId,
+      old_values: { bonus_points: before },
+      new_values: { bonus_points: after, delta: gate.delta, note: gate.reason },
+    });
 
     return this.getById(customerId);
   }
@@ -1860,12 +2277,22 @@ class CustomersService {
    */
   async exportCsv(filters = {}, browserWindow = null) {
     try {
+      // Authz bound to session only — never trust client actorUserId spoof.
+      const actorUserId = getCurrentUserId() || null;
+      const roles = this._getUserRoleCodes(actorUserId);
+      if (!roleCanExportCustomers(roles)) {
+        throw createError(ERROR_CODES.FORBIDDEN, 'Mijozlar eksporti faqat admin uchun');
+      }
+
       // Get customers using existing list method
       const customers = this.list(filters);
 
       if (customers.length === 0) {
         return { cancelled: false, path: null, count: 0, message: 'No customers to export' };
       }
+
+      // Privacy: mask phones on export unless admin explicitly requests full phones
+      const unmask = filters?.unmaskPhones === true || filters?.maskPhones === false;
 
       // Build CSV content
       const hasBalanceUsd = hasCustomerBalanceUsd(this.db);
@@ -1899,10 +2326,11 @@ class CustomersService {
       ];
 
       for (const customer of customers) {
+        const phoneOut = unmask ? customer.phone : maskPhoneForExport(customer.phone);
         const row = [
           escapeCsv(customer.id),
           escapeCsv(customer.name),
-          escapeCsv(customer.phone),
+          escapeCsv(phoneOut),
           escapeCsv(customer.type),
           escapeCsv(customer.status),
           escapeCsv(customer.balance || 0),
@@ -1950,15 +2378,94 @@ class CustomersService {
 
       console.log(`✅ Exported ${customers.length} customers to ${filePath}`);
 
+      this._safeAuditLog({
+        user_id: actorUserId,
+        action: 'customers_export_csv',
+        entity_type: 'customer',
+        entity_id: null,
+        old_values: null,
+        new_values: {
+          count: customers.length,
+          path: filePath,
+          phones_masked: !unmask,
+          filters: {
+            search: filters?.search || filters?.searchTerm || null,
+            type: filters?.type || null,
+            status: filters?.status || null,
+          },
+        },
+      });
+
       return {
         cancelled: false,
         path: filePath,
         count: customers.length
       };
     } catch (error) {
+      if (error && error.code === ERROR_CODES.FORBIDDEN) throw error;
       console.error('❌ Error exporting customers to CSV:', error);
       throw createError(ERROR_CODES.DB_ERROR, `Failed to export customers: ${error.message}`);
     }
+  }
+
+  /**
+   * Find likely duplicate customers before create (phone / email / name).
+   */
+  findDuplicateCandidates({ phone, email, name, excludeId = null } = {}) {
+    const out = [];
+    const seen = new Set();
+    const push = (row, match) => {
+      if (!row?.id || seen.has(row.id)) return;
+      if (excludeId && String(row.id) === String(excludeId)) return;
+      seen.add(row.id);
+      out.push({
+        id: row.id,
+        name: row.name,
+        phone: row.phone || null,
+        email: row.email || null,
+        code: row.code || null,
+        match,
+      });
+    };
+
+    try {
+      if (phone) {
+        const norm = normalizePhoneUz(phone);
+        if (norm) {
+          const byPhone = this.findByNormalizedPhone(norm);
+          if (byPhone) push(byPhone, 'phone');
+        }
+      }
+      if (email) {
+        const em = String(email).trim().toLowerCase();
+        if (em) {
+          const row = this.db
+            .prepare(
+              `SELECT id, name, phone, email, code FROM customers WHERE LOWER(TRIM(email)) = ? LIMIT 1`
+            )
+            .get(em);
+          if (row) push(row, 'email');
+        }
+      }
+      if (name) {
+        const n = String(name).trim().toLowerCase();
+        if (n.length >= 2) {
+          const rows = this.db
+            .prepare(
+              `
+              SELECT id, name, phone, email, code FROM customers
+              WHERE LOWER(TRIM(name)) = ?
+              LIMIT 5
+            `
+            )
+            .all(n);
+          for (const row of rows || []) push(row, 'name');
+        }
+      }
+    } catch (e) {
+      console.warn('[customers] findDuplicateCandidates:', e?.message || e);
+    }
+    return out;
   }
 }
 

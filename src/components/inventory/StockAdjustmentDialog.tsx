@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -18,7 +18,8 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
-import { createStockAdjustment } from '@/db/api';
+import { useTranslation } from 'react-i18next';
+import { createStockAdjustment, getSettingsByCategory } from '@/db/api';
 import type { Product } from '@/types/database';
 import { useToast } from '@/hooks/use-toast';
 import { formatUnit } from '@/utils/formatters';
@@ -32,6 +33,11 @@ import {
 } from '@/utils/quantity';
 import { useQueryClient } from '@tanstack/react-query';
 import { invalidateDashboardQueries } from '@/utils/dashboard';
+import {
+  assertStockAdjustmentQty,
+  DEFAULT_MAX_STOCK_ADJUSTMENT,
+} from '@/lib/posHardening';
+import { useAuth } from '@/contexts/AuthContext';
 
 interface StockAdjustmentDialogProps {
   open: boolean;
@@ -40,6 +46,16 @@ interface StockAdjustmentDialogProps {
   onSuccess?: () => void;
 }
 
+const ADJUSTMENT_CATEGORIES = [
+  { value: 'surplus', direction: 'increase' as const },
+  { value: 'shortage', direction: 'decrease' as const },
+  { value: 'damage', direction: 'decrease' as const },
+  { value: 'expiry', direction: 'decrease' as const },
+  { value: 'recount', direction: 'increase' as const },
+  { value: 'system_error', direction: 'increase' as const },
+  { value: 'other', direction: 'increase' as const },
+];
+
 export default function StockAdjustmentDialog({
   open,
   onOpenChange,
@@ -47,18 +63,67 @@ export default function StockAdjustmentDialog({
   onSuccess,
 }: StockAdjustmentDialogProps) {
   const { toast } = useToast();
+  const { t } = useTranslation();
   const queryClient = useQueryClient();
-  
+  const { profile, user } = useAuth();
+
+  const [category, setCategory] = useState('recount');
   const [adjustmentType, setAdjustmentType] = useState<'increase' | 'decrease'>('increase');
   const [quantity, setQuantity] = useState('');
   const [reason, setReason] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [maxAdjustmentQty, setMaxAdjustmentQty] = useState(DEFAULT_MAX_STOCK_ADJUSTMENT);
+  const [approvalRequired, setApprovalRequired] = useState(false);
+
+  useEffect(() => {
+    if (!open) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const inv = await getSettingsByCategory('inventory');
+        if (cancelled || !inv) return;
+        const max = Number((inv as any).max_adjustment_qty);
+        if (Number.isFinite(max) && max > 0) setMaxAdjustmentQty(max);
+        setApprovalRequired(!!(inv as any).adjustment_approval_required);
+      } catch {
+        /* keep defaults */
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [open]);
 
   // Get current stock from product data (single source of truth from IPC)
-  const currentStock = product.current_stock ?? (product as any).stock_available ?? (product as any).available_stock ?? product.stock_quantity ?? 0;
+  const currentStock =
+    product.current_stock ??
+    (product as any).stock_available ??
+    (product as any).available_stock ??
+    product.stock_quantity ??
+    0;
   const unit = product.unit;
   const quantityMin = getQuantityMin(unit);
   const quantityStep = getQuantityStep(unit);
+  const qtyPreview = Number(normalizeQuantityInput(quantity));
+  const hasQtyPreview = quantity !== '' && Number.isFinite(qtyPreview) && qtyPreview > 0;
+  const deltaPreview = hasQtyPreview
+    ? adjustmentType === 'increase'
+      ? qtyPreview
+      : -qtyPreview
+    : null;
+  const newStockPreview = deltaPreview != null ? currentStock + deltaPreview : null;
+
+  const handleCategoryChange = (value: string) => {
+    setCategory(value);
+    const meta = ADJUSTMENT_CATEGORIES.find((c) => c.value === value);
+    if (meta) setAdjustmentType(meta.direction);
+  };
+
+  const canSave =
+    !isSubmitting &&
+    reason.trim().length > 0 &&
+    hasQtyPreview &&
+    !(adjustmentType === 'decrease' && newStockPreview != null && newStockPreview < 0);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -68,7 +133,16 @@ export default function StockAdjustmentDialog({
     if (!quantity || isNaN(qtyRaw) || qtyRaw <= 0) {
       toast({
         title: 'Xatolik',
-        description: 'Miqdor musbat son bo\'lishi kerak',
+        description: "Miqdor musbat son bo'lishi kerak",
+        variant: 'destructive',
+      });
+      return;
+    }
+
+    if (!reason.trim()) {
+      toast({
+        title: 'Xatolik',
+        description: 'Sabab majburiy',
         variant: 'destructive',
       });
       return;
@@ -80,6 +154,20 @@ export default function StockAdjustmentDialog({
         title: 'Miqdor tuzatildi',
         description: `Miqdor ${formatQuantity(qty, unit)} ga o'rnatildi`,
       });
+    }
+
+    const limitCheck = assertStockAdjustmentQty(qty, {
+      maxQty: maxAdjustmentQty,
+      approvalRequired,
+      userRole: user?.role || profile?.role || null,
+    });
+    if (!limitCheck.ok) {
+      toast({
+        title: 'Xatolik',
+        description: limitCheck.error,
+        variant: 'destructive',
+      });
+      return;
     }
 
     if (adjustmentType === 'decrease') {
@@ -98,15 +186,15 @@ export default function StockAdjustmentDialog({
 
     try {
       setIsSubmitting(true);
-      
-      // Call IPC handler to update stock in backend (mockProducts array)
+
       await createStockAdjustment({
         product_id: product.id,
         quantity: movementQuantity,
-        reason: reason || `Manual ${adjustmentType === 'increase' ? 'increase' : 'decrease'}`,
+        reason: reason.trim(),
+        adjustment_type: category,
+        user_role: user?.role || profile?.role || null,
       });
 
-      // Invalidate dashboard queries (affects low stock count)
       invalidateDashboardQueries(queryClient);
 
       toast({
@@ -114,9 +202,9 @@ export default function StockAdjustmentDialog({
         description: `Qoldiq ${adjustmentType === 'increase' ? 'oshirildi' : 'kamaytirildi'} ${qty} ${formatUnit(product.unit)} ga`,
       });
 
-      // Reset form
       setQuantity('');
       setReason('');
+      setCategory('recount');
       setAdjustmentType('increase');
       onOpenChange(false);
       onSuccess?.();
@@ -139,14 +227,37 @@ export default function StockAdjustmentDialog({
         <DialogHeader>
           <DialogTitle>Qoldiqni to'g'rilash - {product.name}</DialogTitle>
           <DialogDescription>
-            Joriy qoldiq: <strong>{currentStock} {formatUnit(product.unit)}</strong>
+            Joriy qoldiq:{' '}
+            <strong>
+              {currentStock} {formatUnit(product.unit)}
+            </strong>
           </DialogDescription>
         </DialogHeader>
         <form onSubmit={handleSubmit}>
           <div className="space-y-4 py-4">
             <div className="space-y-2">
+              <Label htmlFor="adjustment-category">
+                {t('inventory.adjustment_category', { defaultValue: "To'g'rilash turi" })}{' '}
+                <span className="text-destructive">*</span>
+              </Label>
+              <Select value={category} onValueChange={handleCategoryChange}>
+                <SelectTrigger id="adjustment-category">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {ADJUSTMENT_CATEGORIES.map((c) => (
+                    <SelectItem key={c.value} value={c.value}>
+                      {t(`inventory.adjustment_type_${c.value}`, { defaultValue: c.value })}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+
+            <div className="space-y-2">
               <Label htmlFor="adjustment-type">
-                To'g'rilash turi <span className="text-destructive">*</span>
+                {t('inventory.adjustment_direction', { defaultValue: "Yo'nalish" })}{' '}
+                <span className="text-destructive">*</span>
               </Label>
               <Select
                 value={adjustmentType}
@@ -177,34 +288,46 @@ export default function StockAdjustmentDialog({
                 autoFocus
                 inputMode={isFractionalUnit(unit) ? 'decimal' : 'numeric'}
               />
-              {adjustmentType === 'decrease' && quantity && Number(quantity) > 0 && (
+              {hasQtyPreview && newStockPreview != null && (
                 <p className="text-sm text-muted-foreground">
-                  Yangi qoldiq: {currentStock - Number(quantity)} {formatUnit(product.unit)}
+                  Eski: {currentStock} → o‘zgarish: {deltaPreview! > 0 ? '+' : ''}
+                  {deltaPreview} → yangi: {newStockPreview} {formatUnit(product.unit)}
                 </p>
               )}
-              {adjustmentType === 'increase' && quantity && Number(quantity) > 0 && (
-                <p className="text-sm text-muted-foreground">
-                  Yangi qoldiq: {currentStock + Number(quantity)} {formatUnit(product.unit)}
-                </p>
-              )}
+              {adjustmentType === 'decrease' &&
+                hasQtyPreview &&
+                newStockPreview != null &&
+                newStockPreview < 0 && (
+                  <p className="text-sm text-destructive">
+                    Natija manfiy bo‘ladi — saqlash bloklangan
+                  </p>
+                )}
             </div>
 
             <div className="space-y-2">
-              <Label htmlFor="reason">Sabab (Ixtiyoriy)</Label>
+              <Label htmlFor="reason">
+                Sabab <span className="text-destructive">*</span>
+              </Label>
               <Textarea
                 id="reason"
                 value={reason}
                 onChange={(e) => setReason(e.target.value)}
                 placeholder="To'g'rilash sababini kiriting..."
                 rows={3}
+                required
               />
             </div>
           </div>
           <DialogFooter>
-            <Button type="button" variant="outline" onClick={() => onOpenChange(false)} disabled={isSubmitting}>
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => onOpenChange(false)}
+              disabled={isSubmitting}
+            >
               Bekor qilish
             </Button>
-            <Button type="submit" disabled={isSubmitting}>
+            <Button type="submit" disabled={!canSave}>
               {isSubmitting ? 'Saqlanmoqda...' : 'Saqlash'}
             </Button>
           </DialogFooter>
@@ -213,6 +336,3 @@ export default function StockAdjustmentDialog({
     </Dialog>
   );
 }
-
-
-

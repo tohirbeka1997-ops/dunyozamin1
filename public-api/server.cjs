@@ -586,7 +586,11 @@ function main() {
             logger.warn({ err: e?.message || e }, '[public-api] supplier reminder tick');
           });
 
-        void runDailyDigestTick(db, { botToken: String(process.env.TELEGRAM_BOT_TOKEN || '').trim() })
+        void runDailyDigestTick(db, {
+          botToken:
+            String(process.env.TELEGRAM_REPORTS_BOT_TOKEN || '').trim() ||
+            String(process.env.TELEGRAM_BOT_TOKEN || '').trim(),
+        })
           .then((stats) => {
             if (stats?.skipped) return;
             if (stats?.sent > 0) {
@@ -605,7 +609,9 @@ function main() {
             runWeeklyAiTick,
             resolveOpenAiConfig,
           } = require('./lib/storeAiAnalysis.cjs');
-          const botToken = String(process.env.TELEGRAM_BOT_TOKEN || '').trim();
+          const botToken =
+            String(process.env.TELEGRAM_REPORTS_BOT_TOKEN || '').trim() ||
+            String(process.env.TELEGRAM_BOT_TOKEN || '').trim();
           void runMorningBriefTick(db, { botToken })
             .then((stats) => {
               if (stats?.skipped) return;

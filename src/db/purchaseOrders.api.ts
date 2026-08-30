@@ -24,10 +24,18 @@ export const getPurchaseOrders = async (filters?: {
   search?: string;
   include_items?: boolean;
   warehouse_id?: string;
-}) => {
+  sort_by?: string;
+  sort_dir?: 'asc' | 'desc';
+  limit?: number;
+  offset?: number;
+  with_total?: boolean;
+  payment_status?: string;
+  debt_only?: boolean;
+  currency?: string;
+}): Promise<PurchaseOrderWithDetails[] | { rows: PurchaseOrderWithDetails[]; total: number }> => {
   if (hasPosApi()) {
     const api = requireElectron();
-    return ipc<any[]>(api.purchases.list(filters || {}));
+    return ipc<any>(api.purchases.list(filters || {}));
   }
   await delay();
   const orders = getStoredPurchaseOrders();
@@ -61,7 +69,7 @@ export const getPurchaseOrders = async (filters?: {
   const payments = getStoredSupplierPayments();
   
   // Build PurchaseOrderWithDetails with payment info
-  return filtered.map(po => {
+  const mapped = filtered.map(po => {
     // Calculate paid amount for this PO
     const poPayments = payments.filter(p => p.purchase_order_id === po.id);
     const paidAmount = poPayments.reduce((sum, p) => sum + p.amount, 0);
@@ -84,6 +92,32 @@ export const getPurchaseOrders = async (filters?: {
       payment_status: paymentStatus,
     };
   }) as PurchaseOrderWithDetails[];
+
+  if (filters?.with_total) {
+    const limit = filters.limit != null ? Number(filters.limit) : mapped.length;
+    const offset = filters.offset != null ? Number(filters.offset) : 0;
+    const slice =
+      Number.isFinite(limit) && limit > 0 ? mapped.slice(offset, offset + limit) : mapped;
+    return { rows: slice, total: mapped.length };
+  }
+  return mapped;
+};
+
+export const exportPurchaseOrders = async (
+  filters?: Record<string, unknown>,
+  opts?: { exported_by?: string | null },
+) => {
+  if (hasPosApi()) {
+    const api = requireElectron();
+    if (!api?.purchases?.exportList) {
+      throw new Error('Ilovani qayta ishga tushiring (exportList handler yangilandi)');
+    }
+    return ipc<{ rows: any[]; count: number }>(
+      api.purchases.exportList(filters || {}, opts || {}),
+    );
+  }
+  await delay();
+  throw new Error('Export is only available in desktop app');
 };
 
 export const getPurchaseOrderById = async (id: string) => {

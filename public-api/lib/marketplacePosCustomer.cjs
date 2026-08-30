@@ -58,13 +58,21 @@ function updatePosCustomerFromMarketplaceProfile(db, posCustomerId, profile) {
   const sets = [
     'name = COALESCE(NULLIF(?, \'\'), name)',
     'phone = COALESCE(?, phone)',
-    'updated_at = datetime(\'now\')',
   ];
   const vals = [fullName, phone];
   if (cols.includes('phone_normalized')) {
-    sets.splice(2, 0, 'phone_normalized = COALESCE(?, phone_normalized)');
-    vals.splice(2, 0, phoneNormalized);
+    sets.push('phone_normalized = COALESCE(?, phone_normalized)');
+    vals.push(phoneNormalized);
   }
+  // Persist Telegram chat id so customer ops notify works even without binding race.
+  if (cols.includes('telegram_id') && profile.telegram_id != null) {
+    const tg = Number(profile.telegram_id);
+    if (Number.isFinite(tg)) {
+      sets.push('telegram_id = COALESCE(?, telegram_id)');
+      vals.push(tg);
+    }
+  }
+  sets.push("updated_at = datetime('now')");
   vals.push(posCustomerId);
   db.prepare(`UPDATE customers SET ${sets.join(', ')} WHERE id = ?`).run(...vals);
 }
@@ -314,6 +322,7 @@ function recordWebOrderCustomerSale(db, webOrderId) {
 module.exports = {
   linkMarketplaceCustomerToPos,
   ensurePosCustomerForMarketplace,
+  updatePosCustomerFromMarketplaceProfile,
   persistMarketplaceCheckoutContact,
   syncPosCustomerFromMarketplace,
   recordWebOrderCustomerSale,

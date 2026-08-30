@@ -1,6 +1,6 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { useNavigate, useParams } from 'react-router-dom';
+import { useNavigate, useParams, useLocation } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
@@ -40,6 +40,9 @@ import { loadRetailUsdPrice, saveRetailUsdPrice } from '@/lib/productPricing';
 import { readLocalImageFile, uploadProductImage } from '@/lib/uploadProductImage';
 import { formatUnit } from '@/utils/formatters';
 import { formatUnitRatioHint } from '@/pages/posTerminalHelpers';
+import { useAuth } from '@/contexts/AuthContext';
+import { isProductPriceNotSet } from '@/lib/posHardening';
+import { useFormListReturn } from '@/hooks/useFormListReturn';
 
 const MAX_VARIANT_OPTIONS = 16;
 const MAX_BROWSER_IMAGE_BYTES = 8 * 1024 * 1024;
@@ -63,8 +66,14 @@ export default function ProductForm() {
   const { t } = useTranslation();
   const { id } = useParams();
   const navigate = useNavigate();
+  const location = useLocation();
   const { toast } = useToast();
   const confirmDialog = useConfirmDialog();
+  const { user } = useAuth();
+  const { goToList, leaveToList } = useFormListReturn({ fallbackListPath: '/products' });
+  const canToggleFreeSale = ['admin', 'manager'].includes(
+    String(user?.role || '').toLowerCase(),
+  );
   const { addMovement } = useInventoryStore();
   const [loading, setLoading] = useState(false);
   const [categories, setCategories] = useState<Category[]>([]);
@@ -87,6 +96,8 @@ export default function ProductForm() {
     is_active: true,
     show_in_marketplace: true,
     track_stock: true,
+    free_sale_allowed: false,
+    free_sale_reason: '',
     brand: '',
     article: '',
   });
@@ -102,6 +113,29 @@ export default function ProductForm() {
   const [catalogStockQty, setCatalogStockQty] = useState(0);
   const [imageOptimizing, setImageOptimizing] = useState(false);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const baselineSnapshotRef = useRef<string | null>(null);
+  const [initialLoadDone, setInitialLoadDone] = useState(!id);
+
+  const formSnapshot = useMemo(
+    () =>
+      JSON.stringify({
+        formData,
+        productUnits,
+        variantOptions,
+        images: images.map((i) => ({ url: i.url, sort_order: i.sort_order, is_primary: i.is_primary })),
+        descriptionEnabled,
+      }),
+    [formData, productUnits, variantOptions, images, descriptionEnabled],
+  );
+
+  const isDirty =
+    baselineSnapshotRef.current !== null && formSnapshot !== baselineSnapshotRef.current;
+
+  useEffect(() => {
+    if (!initialLoadDone || loading) return;
+    if (baselineSnapshotRef.current !== null) return;
+    baselineSnapshotRef.current = formSnapshot;
+  }, [initialLoadDone, loading, formSnapshot]);
 
   const isEditMode = !!id;
   const getElectronApiSafe = () => {
@@ -118,7 +152,9 @@ export default function ProductForm() {
     if (isEditMode) {
       loadProduct();
     } else {
-      generateNewSKU();
+      generateNewSKU().finally(() => {
+        setInitialLoadDone(true);
+      });
     }
   }, [id]);
 
@@ -182,6 +218,10 @@ export default function ProductForm() {
             (product as any).track_stock === undefined ||
             (product as any).track_stock === 1 ||
             (product as any).track_stock === true,
+          free_sale_allowed:
+            (product as any).free_sale_allowed === true ||
+            (product as any).free_sale_allowed === 1,
+          free_sale_reason: '',
           brand: (product as any).brand || '',
           article: (product as any).article || '',
         });
@@ -209,9 +249,10 @@ export default function ProductForm() {
         description: t('productForm.failed_to_load'),
         variant: 'destructive',
       });
-      navigate('/products');
+      goToList();
     } finally {
       setLoading(false);
+      setInitialLoadDone(true);
     }
   };
 
@@ -291,10 +332,13 @@ export default function ProductForm() {
   const generateNewBarcode = async () => {
     try {
       if (isEditMode) {
+        const oldBarcode = String(formData.barcode || '').trim() || '—';
         const ok = await confirmDialog({
           title: "Ogohlantirish",
-          description:
-            "Diqqat: mavjud mahsulotning shtrix-kodini o'zgartirsangiz, eski chop etilgan label/shtrix-kodlar ishlamay qoladi.\n\nDavom etamizmi?",
+          description: t('products.barcode_replace_warning', {
+            defaultValue: `Diqqat: shtrix-kod o'zgaradi.\nEski: ${oldBarcode}\nYangi avtomatik yaratiladi.\nEski chop etilgan label/shtrix-kodlar ishlamay qoladi.\n\nDavom etamizmi?`,
+            old: oldBarcode,
+          }),
           confirmText: "Davom etish",
           cancelText: "Bekor qilish",
           variant: 'destructive',
@@ -306,6 +350,13 @@ export default function ProductForm() {
         unit === 'kg'
           ? await generateBarcodeForUnit('kg')
           : await generateBarcodeForUnit('pcs');
+      if (isEditMode) {
+        const oldBarcode = String(formData.barcode || '').trim() || '—';
+        toast({
+          title: t('products.barcode_replaced', { defaultValue: 'Shtrix-kod yangilandi' }),
+          description: `${oldBarcode} → ${barcode}`,
+        });
+      }
       setFormData((prev) => ({ ...prev, barcode }));
     } catch (error) {
       console.error('Error generating barcode:', error);
@@ -585,13 +636,42 @@ export default function ProductForm() {
       return false;
     }
 
-    const purchasePrice = formData.purchase_price || 0;
-    const salePrice = formData.sale_price || 0;
+    const purchasePrice = formData.purchase_price ?? 0;
+    const salePrice = formData.sale_price ?? 0;
 
     if (purchasePrice < 0 || salePrice < 0) {
       toast({
         title: t('productForm.validation_error'),
         description: t('productForm.prices_negative'),
+        variant: 'destructive',
+      });
+      return false;
+    }
+
+    if (!(salePrice > 0) && !formData.free_sale_allowed) {
+      toast({
+        title: t('productForm.validation_error'),
+        description: t('productForm.sale_price_required'),
+        variant: 'destructive',
+      });
+      return false;
+    }
+
+    if (!(salePrice > 0) && formData.free_sale_allowed && !String(formData.free_sale_reason || '').trim()) {
+      toast({
+        title: t('productForm.validation_error'),
+        description: t('products.free_sale_reason_required', {
+          defaultValue: 'Bepul sotuv uchun sabab majburiy',
+        }),
+        variant: 'destructive',
+      });
+      return false;
+    }
+
+    if (formData.purchase_price === null || formData.purchase_price === undefined) {
+      toast({
+        title: t('productForm.validation_error'),
+        description: t('productForm.cost_price_required'),
         variant: 'destructive',
       });
       return false;
@@ -741,6 +821,10 @@ export default function ProductForm() {
         is_active: formData.is_active,
         show_in_marketplace: formData.show_in_marketplace,
         track_stock: formData.track_stock,
+        free_sale_allowed: formData.free_sale_allowed,
+        free_sale_reason: formData.free_sale_allowed
+          ? String(formData.free_sale_reason || '').trim() || null
+          : null,
         brand: formData.brand.trim() || null,
         article: formData.article.trim() || null,
         variant_options: cleanedVariants,
@@ -832,7 +916,7 @@ export default function ProductForm() {
         });
       }
 
-      navigate('/products');
+      goToList();
     } catch (error: any) {
       console.error('Submit error:', error);
       const msg = String(error?.message || error?.error_description || '').trim();
@@ -861,7 +945,7 @@ export default function ProductForm() {
   return (
     <div className="space-y-6">
       <div className="flex items-center gap-4">
-        <Button variant="ghost" size="icon" onClick={() => navigate('/products')}>
+        <Button variant="ghost" size="icon" onClick={() => void leaveToList(isDirty)}>
           <ArrowLeft className="h-5 w-5" />
         </Button>
         <div>
@@ -901,8 +985,14 @@ export default function ProductForm() {
                     required
                     className="font-mono"
                   />
-                  <Button type="button" variant="outline" onClick={generateNewSKU}>
-                    {t('products.generate')}
+                  <Button
+                    type="button"
+                    variant="outline"
+                    onClick={generateNewSKU}
+                    aria-label={t('products.generate_sku', { defaultValue: 'SKU yaratish' })}
+                    title={t('products.generate_sku', { defaultValue: 'SKU yaratish' })}
+                  >
+                    {t('products.generate_sku', { defaultValue: 'SKU' })}
                   </Button>
                 </div>
               </div>
@@ -917,8 +1007,14 @@ export default function ProductForm() {
                     placeholder={t('productForm.barcode_placeholder')}
                     className="font-mono"
                   />
-                    <Button type="button" variant="outline" onClick={generateNewBarcode}>
-                      {t('products.generate')}
+                    <Button
+                      type="button"
+                      variant="outline"
+                      onClick={generateNewBarcode}
+                      aria-label={t('products.generate_barcode', { defaultValue: 'Shtrix-kod yaratish' })}
+                      title={t('products.generate_barcode', { defaultValue: 'Shtrix-kod yaratish' })}
+                    >
+                      {t('products.generate_barcode', { defaultValue: 'Barcode' })}
                     </Button>
                 </div>
                 {String(formData.unit || '').toLowerCase() === 'kg' && (
@@ -1175,14 +1271,57 @@ export default function ProductForm() {
                   <Label htmlFor="track_stock" className="text-sm">
                     Zaxirani kuzatish
                   </Label>
+                  {canToggleFreeSale ? (
+                    <>
+                      <Switch
+                        id="free_sale_allowed"
+                        checked={formData.free_sale_allowed}
+                        onCheckedChange={(checked) =>
+                          setFormData({
+                            ...formData,
+                            free_sale_allowed: checked,
+                            free_sale_reason: checked ? formData.free_sale_reason : '',
+                          })
+                        }
+                      />
+                      <Label htmlFor="free_sale_allowed" className="text-sm">
+                        {t('products.free_sale_allowed')}
+                      </Label>
+                    </>
+                  ) : null}
                 </div>
               </div>
+              {canToggleFreeSale && formData.free_sale_allowed ? (
+                <div className="space-y-2 pl-1">
+                  <Label htmlFor="free_sale_reason">
+                    {t('products.free_sale_reason', { defaultValue: 'Bepul sotuv sababi *' })}
+                  </Label>
+                  <Input
+                    id="free_sale_reason"
+                    value={formData.free_sale_reason}
+                    onChange={(e) =>
+                      setFormData({ ...formData, free_sale_reason: e.target.value })
+                    }
+                    placeholder={t('products.free_sale_reason_placeholder', {
+                      defaultValue: 'Masalan: reklama / demo / kompensatsiya',
+                    })}
+                    required={!(Number(formData.sale_price ?? 0) > 0)}
+                  />
+                </div>
+              ) : null}
               <p className="text-xs text-muted-foreground pl-1">
                 {t('productForm.marketplace_catalog_hint')}
               </p>
               <p className="text-xs text-muted-foreground pl-1">
                 «Zaxirani kuzatish» o‘chirilsa, onlayn do‘konda mahsulot doim mavjud ko‘rinadi.
               </p>
+              {formData.free_sale_allowed || isProductPriceNotSet(formData) ? (
+                <p className="text-xs text-amber-700 pl-1">
+                  {formData.free_sale_allowed
+                    ? t('products.free_sale_hint')
+                    : t('products.price_not_set_hint')}
+                </p>
+              ) : null}
               <div className="pt-2">
                 <MarketplaceProductPreview
                   name={formData.name}
@@ -1294,8 +1433,17 @@ export default function ProductForm() {
               <div className="space-y-2 md:col-span-3">
                 <Label>{t('productForm.profit_margin_label')}</Label>
                 <div className="h-10 px-3 py-2 border rounded-md bg-muted flex items-center">
-                  <span className="font-medium">{margin}%</span>
+                  <span
+                    className={
+                      Number(margin) < 0 ? 'font-medium text-amber-700' : 'font-medium'
+                    }
+                  >
+                    {margin}%
+                  </span>
                 </div>
+                {Number(margin) < 0 ? (
+                  <p className="text-xs text-amber-700">{t('productForm.sale_price_warning')}</p>
+                ) : null}
               </div>
             </div>
             {productUnits.map((u, index) => (
@@ -1353,9 +1501,21 @@ export default function ProductForm() {
                     value={u.sale_price}
                     onValueChange={(val) => updateProductUnit(index, { sale_price: val ?? 0 })}
                     placeholder="0"
-                    allowZero={true}
+                    allowZero={!!formData.free_sale_allowed}
                     min={0}
+                    error={
+                      !(Number(u.sale_price) > 0) && !formData.free_sale_allowed
+                        ? t('productForm.sale_price_required')
+                        : undefined
+                    }
                   />
+                  {Number(formData.purchase_price ?? 0) > 0 &&
+                  Number(u.sale_price ?? 0) > 0 &&
+                  Number(u.sale_price) < Number(formData.purchase_price) ? (
+                    <p className="text-[10px] text-amber-700">
+                      {t('productForm.sale_price_warning')}
+                    </p>
+                  ) : null}
                 </div>
                 <div className="space-y-2 md:col-span-2">
                   <Label>Default</Label>
@@ -1438,7 +1598,7 @@ export default function ProductForm() {
             <Save className="h-4 w-4 mr-2" />
             {loading ? t('productForm.saving') : isEditMode ? t('productForm.update_button') : t('productForm.create_button')}
           </Button>
-          <Button type="button" variant="outline" onClick={() => navigate('/products')}>
+          <Button type="button" variant="outline" onClick={() => void leaveToList(isDirty)}>
             {t('common.cancel')}
           </Button>
         </div>

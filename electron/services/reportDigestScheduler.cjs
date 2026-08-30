@@ -21,8 +21,8 @@ function createReportDigestScheduler({
       } catch {
         // ignore
       }
-      const botToken = String(process.env.TELEGRAM_BOT_TOKEN || '').trim();
-      const { runDailyDigestTick } = require('../../public-api/lib/reportNotify.cjs');
+      const { runDailyDigestTick, resolveBotToken } = require('../../public-api/lib/reportNotify.cjs');
+      const botToken = resolveBotToken({});
       const stats = await runDailyDigestTick(db, {
         botToken,
         source,

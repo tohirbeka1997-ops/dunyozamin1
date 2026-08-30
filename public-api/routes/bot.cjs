@@ -377,7 +377,12 @@ function upsertRegistration(db, telegramId, payload) {
     throw new Error('registration_failed');
   }
 
-  const posCustomerId = ensurePosCustomerForMarketplace(db, { first_name: firstName, last_name: lastName, phone });
+  const posCustomerId = ensurePosCustomerForMarketplace(db, {
+    first_name: firstName,
+    last_name: lastName,
+    phone,
+    telegram_id: telegramId,
+  });
   const existingBinding = db
     .prepare(`SELECT loyalty_card_code, qr_payload FROM marketplace_customer_bindings WHERE marketplace_customer_id = ?`)
     .get(marketplaceCustomerId);
@@ -390,6 +395,18 @@ function upsertRegistration(db, telegramId, payload) {
       WHERE marketplace_customer_id = ?
     `,
     ).run(posCustomerId, marketplaceCustomerId);
+    // Re-sync telegram_id in case binding existed from an older registration.
+    try {
+      const { updatePosCustomerFromMarketplaceProfile } = require('../lib/marketplacePosCustomer.cjs');
+      updatePosCustomerFromMarketplaceProfile(db, posCustomerId, {
+        first_name: firstName,
+        last_name: lastName,
+        phone,
+        telegram_id: telegramId,
+      });
+    } catch (e) {
+      console.warn('[bot] sync pos telegram_id failed:', e?.message || e);
+    }
     return {
       marketplace_customer_id: marketplaceCustomerId,
       pos_customer_id: posCustomerId,

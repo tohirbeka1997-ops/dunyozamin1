@@ -292,6 +292,13 @@ export const receiveCustomerPayment = async (_paymentData: {
   /** Client idempotency key — reused across UI retries of the same submit */
   payment_uuid?: string | null;
   paymentUuid?: string | null;
+  /** payment_out: 'payout' (within advance) or 'lend' (create debt) */
+  payment_out_kind?: 'payout' | 'lend' | null;
+  paymentOutKind?: 'payout' | 'lend' | null;
+  lend_authorized?: boolean;
+  lendAuthorized?: boolean;
+  approver_user_id?: string | null;
+  approverUserId?: string | null;
 }): Promise<{
   success: boolean;
   payment_number?: string;
@@ -304,6 +311,8 @@ export const receiveCustomerPayment = async (_paymentData: {
   new_balance_usd?: number;
   requested_amount?: number;
   applied_amount?: number;
+  payment_out_kind?: string | null;
+  debt_created?: number;
   error?: string;
 }> => {
   if (hasPosApi()) {
@@ -335,6 +344,10 @@ export const receiveCustomerPayment = async (_paymentData: {
         source: _paymentData.source ?? null,
         shift_id: _paymentData.shift_id ?? _paymentData.shiftId ?? null,
         payment_uuid: paymentUuid,
+        payment_out_kind: _paymentData.payment_out_kind ?? _paymentData.paymentOutKind ?? null,
+        lend_authorized:
+          _paymentData.lend_authorized === true || _paymentData.lendAuthorized === true,
+        approver_user_id: _paymentData.approver_user_id ?? _paymentData.approverUserId ?? null,
       })
     );
   }
@@ -401,6 +414,8 @@ export const adjustCustomerBonusPoints = async (payload: {
   customerId: string;
   deltaPoints: number;
   note?: string;
+  largeApproved?: boolean;
+  authorized?: boolean;
 }): Promise<Customer> => {
   if (hasPosApi()) {
     const api = requireElectron();
@@ -408,6 +423,19 @@ export const adjustCustomerBonusPoints = async (payload: {
   }
   await delay();
   throw new Error('Bonus korreksiyasi faqat desktop ilovada mavjud');
+};
+
+export const reissueCustomerLoyaltyCard = async (payload: {
+  actorUserId: string;
+  customerId: string;
+  reason: string;
+}): Promise<CustomerLoyaltyCard> => {
+  if (hasPosApi()) {
+    const api = requireElectron();
+    return ipc<CustomerLoyaltyCard>(api.customers.reissueLoyaltyCard(payload));
+  }
+  await delay();
+  throw new Error('Loyalty QR qayta chiqarish faqat desktop ilovada mavjud');
 };
 
 export const getCustomerLoyaltyCard = async (customerId: string): Promise<CustomerLoyaltyCard | null> => {
@@ -464,6 +492,8 @@ export const listOpenCreditOrders = async (filters?: {
 export const updateOrderDueDate = async (payload: {
   orderId: string;
   dueDate: string;
+  reason?: string;
+  actorUserId?: string | null;
 }): Promise<{ ok: boolean; due_date?: string; error?: string }> => {
   if (hasPosApi()) {
     const api = requireElectron();

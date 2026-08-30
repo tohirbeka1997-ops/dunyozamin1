@@ -7,4 +7,6 @@ INSERT OR IGNORE INTO settings (id, key, value, type, description, category, is_
   (lower(hex(randomblob(16))), 'reports.telegram.daily_poster_time', '10:00', 'string',
    'Kunlik poster vaqti (HH:MM, lokal)', 'reports', 1),
   (lower(hex(randomblob(16))), 'reports.telegram.daily_poster_last_run_date', '', 'string',
-   'Kunlik poster oxirgi yuborilgan sana', 'reports', 0);
+   'Kunlik poster oxirgi yuborilgan sana', 'reports', 0),
+  (lower(hex(randomblob(16))), 'reports.telegram.daily_poster_recent_products', '[]', 'string',
+   'Oxirgi yuborilgan poster mahsulot id lari (JSON massiv, rotatsiya)', 'reports', 0);

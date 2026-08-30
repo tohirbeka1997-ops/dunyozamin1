@@ -345,6 +345,8 @@ export const createSupplierPayment = async (paymentData: {
   paid_at?: string;
   note?: string | null;
   created_by?: string | null;
+  accept_as_advance?: boolean;
+  idempotency_key?: string | null;
 }): Promise<{ success: boolean; payment?: SupplierPayment; new_balance?: number; error?: string }> => {
   // Real implementation (Electron SQLite)
   if (hasPosApi()) {
@@ -479,6 +481,56 @@ export const deleteSupplierPayment = async (paymentId: string) => {
   payments.splice(index, 1);
   saveSupplierPayments(payments);
   return { success: true };
+};
+
+/** Soft-cancel supplier payment (accountant+). Prefer over hard delete. */
+export const cancelSupplierPayment = async (
+  paymentId: string,
+  opts: { reason: string; cancelled_by?: string | null },
+) => {
+  if (hasPosApi()) {
+    const api = requireElectron();
+    if (!api?.suppliers?.cancelPayment) {
+      throw new Error('Ilovani qayta ishga tushiring (cancelPayment handler yangilandi)');
+    }
+    return ipc(api.suppliers.cancelPayment(paymentId, opts));
+  }
+  await delay();
+  throw new Error('cancelPayment is only available in desktop app');
+};
+
+export const listSupplierAdvances = async (
+  supplierId: string,
+  opts?: { includeZero?: boolean },
+) => {
+  if (hasPosApi()) {
+    const api = requireElectron();
+    if (!api?.suppliers?.listAdvances) {
+      throw new Error('Ilovani qayta ishga tushiring (listAdvances handler yangilandi)');
+    }
+    return ipc<any[]>(api.suppliers.listAdvances(supplierId, opts || {}));
+  }
+  await delay();
+  return [];
+};
+
+export const applySupplierAdvanceToPurchaseOrder = async (payload: {
+  advance_id: string;
+  purchase_order_id: string;
+  amount?: number;
+  confirm: boolean;
+  created_by?: string | null;
+  notes?: string | null;
+}) => {
+  if (hasPosApi()) {
+    const api = requireElectron();
+    if (!api?.suppliers?.applyAdvance) {
+      throw new Error('Ilovani qayta ishga tushiring (applyAdvance handler yangilandi)');
+    }
+    return ipc(api.suppliers.applyAdvance(payload));
+  }
+  await delay();
+  throw new Error('applyAdvance is only available in desktop app');
 };
 
 /**

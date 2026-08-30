@@ -20,6 +20,7 @@ import { formatMoneyUZS } from '@/lib/format';
 import { DualCurrencyAmount } from '@/components/common/DualCurrencyAmount';
 import { todayYMD } from '@/lib/datetime';
 import { useReportAutoRefresh } from '@/hooks/useReportAutoRefresh';
+import { useReportFilters } from '@/hooks/useReportFilters';
 import { exportProfitLoss } from '@/lib/exportManager';
 import SearchableCombobox from '@/components/common/SearchableCombobox';
 type PriceTier = {
@@ -40,8 +41,22 @@ export default function ProfitLossReport() {
   const [reportData, setReportData] = useState<any>(null);
   const [priceTiers, setPriceTiers] = useState<PriceTier[]>([]);
   const [warehouses, setWarehouses] = useState<WarehouseOption[]>([]);
-  const [tierFilter, setTierFilter] = useState<string>('all');
-  const [warehouseId, setWarehouseId] = useState<string>('all');
+  const { get, set } = useReportFilters({
+    storageKey: 'reports.profit-loss.filters',
+    trackedKeys: ['period', 'dateFrom', 'dateTo', 'tier', 'warehouseId'],
+    defaults: {
+      period: 'daily',
+      dateFrom: todayYMD(),
+      dateTo: todayYMD(),
+      tier: 'all',
+      warehouseId: 'all',
+    },
+  });
+  const tierFilter = get('tier', 'all');
+  const warehouseId = get('warehouseId', 'all');
+  const period = get('period', 'daily') as 'daily' | 'day' | 'weekly' | 'monthly' | 'custom';
+  const dateFrom = get('dateFrom', todayYMD());
+  const dateTo = get('dateTo', todayYMD());
 
   const warehouseOptions = useMemo(
     () => [
@@ -55,9 +70,6 @@ export default function ProfitLossReport() {
   );
   const [loading, setLoading] = useState(true);
   const [exporting, setExporting] = useState<null | 'excel' | 'pdf'>(null);
-  const [period, setPeriod] = useState<'daily' | 'day' | 'weekly' | 'monthly' | 'custom'>('daily');
-  const [dateFrom, setDateFrom] = useState(todayYMD());
-  const [dateTo, setDateTo] = useState(todayYMD());
 
   const parseYMDLocal = (ymd: string): Date => {
     const [y, m, d] = ymd.split('-').map((v) => Number(v));
@@ -274,7 +286,10 @@ export default function ProfitLossReport() {
           <div className="grid grid-cols-1 md:grid-cols-6 gap-4">
             <div>
               <label className="text-sm text-muted-foreground">{t('reports.profit_loss_page.filters.period')}</label>
-              <Select value={period} onValueChange={(v: any) => setPeriod(v)}>
+              <Select
+                value={period}
+                onValueChange={(v) => set({ period: v === 'daily' ? null : v })}
+              >
                 <SelectTrigger>
                   <SelectValue />
                 </SelectTrigger>
@@ -289,7 +304,10 @@ export default function ProfitLossReport() {
             </div>
             <div>
               <label className="text-sm text-muted-foreground">Narx turi</label>
-              <Select value={tierFilter} onValueChange={setTierFilter}>
+              <Select
+                value={tierFilter}
+                onValueChange={(value) => set({ tier: value === 'all' ? null : value })}
+              >
                 <SelectTrigger>
                   <SelectValue placeholder="Barchasi" />
                 </SelectTrigger>
@@ -307,7 +325,7 @@ export default function ProfitLossReport() {
               <label className="text-sm text-muted-foreground">Ombor</label>
               <SearchableCombobox
                 value={warehouseId}
-                onValueChange={setWarehouseId}
+                onValueChange={(value) => set({ warehouseId: value === 'all' ? null : value })}
                 options={warehouseOptions}
                 placeholder={t('combobox.all_warehouses', 'Barcha omborlar')}
                 searchPlaceholder={t('combobox.search_warehouse', "Ombor nomi bo'yicha qidirish...")}
@@ -327,7 +345,7 @@ export default function ProfitLossReport() {
                   <Input
                     type="date"
                     value={dateFrom}
-                    onChange={(e) => setDateFrom(e.target.value)}
+                    onChange={(e) => set({ dateFrom: e.target.value || null })}
                   />
                 </div>
                 <div>
@@ -335,7 +353,7 @@ export default function ProfitLossReport() {
                   <Input
                     type="date"
                     value={dateTo}
-                    onChange={(e) => setDateTo(e.target.value)}
+                    onChange={(e) => set({ dateTo: e.target.value || null })}
                   />
                 </div>
               </>
@@ -346,7 +364,7 @@ export default function ProfitLossReport() {
                 <Input
                   type="date"
                   value={dateFrom}
-                  onChange={(e) => setDateFrom(e.target.value)}
+                  onChange={(e) => set({ dateFrom: e.target.value || null })}
                 />
               </div>
             )}
@@ -424,6 +442,30 @@ export default function ProfitLossReport() {
             {reportData?.warnings?.valuation_mismatch ? (
               <div className="mt-4 text-xs text-destructive">
                 FIFO va weighted avg baholashlarida farq aniqlandi. Hisobotni tekshiring.
+              </div>
+            ) : null}
+            {Number(reportData?.warnings?.missing_cost_count || 0) > 0 ? (
+              <div className="mt-4 rounded-md border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900 dark:border-amber-800 dark:bg-amber-950/30 dark:text-amber-100">
+                <p className="font-medium">
+                  {t('reports.profit_loss_page.warnings.profit_incomplete', 'Foyda to‘liq emas — tannarx yo‘q qatorlar')}
+                </p>
+                <p className="text-xs mt-1">
+                  {t('reports.profit_loss_page.warnings.missing_cogs', {
+                    count: Number(reportData?.warnings?.missing_cost_count || 0),
+                  })}
+                </p>
+                {Array.isArray(reportData?.warnings?.missing_cost_samples) &&
+                reportData.warnings.missing_cost_samples.length > 0 ? (
+                  <ul className="mt-2 list-disc pl-4 text-xs">
+                    {reportData.warnings.missing_cost_samples.slice(0, 10).map((s: any) => (
+                      <li key={String(s.product_id)}>
+                        {s.product_name || s.product_id}
+                        {s.product_sku ? ` (${s.product_sku})` : ''} — {s.line_count}{' '}
+                        {t('reports.profit_loss_page.warnings.lines', 'qator')}
+                      </li>
+                    ))}
+                  </ul>
+                ) : null}
               </div>
             ) : null}
           </CardContent>

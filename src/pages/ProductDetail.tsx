@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { useNavigate, useParams } from 'react-router-dom';
+import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
@@ -9,6 +9,7 @@ import { useToast } from '@/hooks/use-toast';
 import { isElectron, requireElectron, handleIpcResponse } from '@/utils/electron';
 import { ArrowLeft, Pencil, Package, AlertTriangle, DollarSign } from 'lucide-react';
 import { formatUnit } from '@/utils/formatters';
+import { formatQuantity } from '@/utils/quantity';
 import { formatMoneyUZS } from '@/lib/format';
 import { formatDate, formatDateTime } from '@/lib/datetime';
 import { getProductImageDisplayUrl } from '@/lib/productImageUrl';
@@ -63,19 +64,47 @@ type ProductDetailProps = {
 export function ProductDetailContent({ productId, onClose }: ProductDetailProps) {
   const { t } = useTranslation();
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
   const { toast } = useToast();
   const [productDetail, setProductDetail] = useState<ProductDetailData | null>(null);
   const [productImages, setProductImages] = useState<Array<{ id: string; url: string; sort_order: number; is_primary: number }>>([]);
   const [selectedImageIdx, setSelectedImageIdx] = useState(0);
   const [loading, setLoading] = useState(true);
   const [categories, setCategories] = useState<Category[]>([]);
+  const [auditRows, setAuditRows] = useState<any[]>([]);
+  const [auditLoading, setAuditLoading] = useState(false);
+  const initialTab = searchParams.get('tab') === 'audit' ? 'audit' : 'movements';
   const handleClose = onClose || (() => navigate('/products'));
 
   useEffect(() => {
     if (productId) {
       loadData(productId);
+      void loadAudit(productId);
     }
   }, [productId]);
+
+  const loadAudit = async (id: string) => {
+    if (!isElectron()) {
+      setAuditRows([]);
+      return;
+    }
+    setAuditLoading(true);
+    try {
+      const api = requireElectron();
+      const rows = handleIpcResponse(
+        await api.reports.auditLog({
+          entity_type: 'product',
+          entity_id: id,
+          limit: 100,
+        }),
+      );
+      setAuditRows(Array.isArray(rows) ? rows : []);
+    } catch {
+      setAuditRows([]);
+    } finally {
+      setAuditLoading(false);
+    }
+  };
 
   useEffect(() => {
     // Load categories to reliably show category name in detail view.
@@ -361,7 +390,8 @@ export function ProductDetailContent({ productId, onClose }: ProductDetailProps)
               <div className="text-center">
                 <div className="text-3xl font-bold">{formatMoneyUZS(productDetail.stock_value || 0)}</div>
                 <p className="text-sm text-muted-foreground mt-2">
-                  {productDetail.current_stock.toFixed(2)} {formatUnit(productDetail.unit)} × {formatMoneyUZS(productDetail.purchase_price)}
+                  {formatQuantity(Number(productDetail.current_stock) || 0, productDetail.unit)}{' '}
+                  {formatUnit(productDetail.unit)} × {formatMoneyUZS(productDetail.purchase_price)}
                 </p>
               </div>
             </CardContent>
@@ -371,13 +401,14 @@ export function ProductDetailContent({ productId, onClose }: ProductDetailProps)
       </div>
 
       <Card className="w-full min-w-0">
-        <Tabs defaultValue="movements" className="w-full min-w-0">
+        <Tabs defaultValue={initialTab} className="w-full min-w-0">
           <CardHeader>
             <TabsList>
               <TabsTrigger value="movements">{t('products.detail.inventory_movements')}</TabsTrigger>
               <TabsTrigger value="summary">{t('products.detail.stock_summary')}</TabsTrigger>
               <TabsTrigger value="sales">{t('products.detail.sales_history')}</TabsTrigger>
               <TabsTrigger value="purchases">{t('products.detail.purchase_history')}</TabsTrigger>
+              <TabsTrigger value="audit">{t('products.actions.history')}</TabsTrigger>
             </TabsList>
           </CardHeader>
           <CardContent>
@@ -408,7 +439,7 @@ export function ProductDetailContent({ productId, onClose }: ProductDetailProps)
                           <TableCell className="font-mono whitespace-nowrap">
                             <span className={movement.quantity > 0 ? 'text-success' : 'text-destructive'}>
                               {movement.quantity > 0 ? '+' : ''}
-                              {movement.quantity}
+                              {formatQuantity(Number(movement.quantity) || 0, productDetail.unit)}
                             </span>{' '}
                             {formatUnit(productDetail.unit)}
                           </TableCell>
@@ -542,6 +573,47 @@ export function ProductDetailContent({ productId, onClose }: ProductDetailProps)
               ) : (
                 <div className="text-center py-8 text-muted-foreground">
                   {t('products.detail.purchase_history_placeholder')}
+                </div>
+              )}
+            </TabsContent>
+
+            <TabsContent value="audit" className="mt-0 min-w-0">
+              {auditLoading ? (
+                <div className="py-8 text-center text-muted-foreground">…</div>
+              ) : auditRows.length > 0 ? (
+                <div className="overflow-x-auto">
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead>{t('products.detail.date')}</TableHead>
+                        <TableHead>{t('products.detail.type')}</TableHead>
+                        <TableHead>User</TableHead>
+                        <TableHead>{t('products.detail.reason')}</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {auditRows.map((row: any) => (
+                        <TableRow key={row.id}>
+                          <TableCell>
+                            {row.created_at ? formatDateTime(row.created_at) : '—'}
+                          </TableCell>
+                          <TableCell className="font-mono text-xs">{row.action || '—'}</TableCell>
+                          <TableCell>{row.user_name || row.user_username || row.user_id || '—'}</TableCell>
+                          <TableCell className="max-w-[240px] truncate text-xs" title={String(row.description || row.new_value || '')}>
+                            {row.description ||
+                              (typeof row.new_values === 'string'
+                                ? row.new_values
+                                : row.new_value) ||
+                              '—'}
+                          </TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                </div>
+              ) : (
+                <div className="py-8 text-center text-muted-foreground">
+                  {t('products.detail.no_movements')}
                 </div>
               )}
             </TabsContent>

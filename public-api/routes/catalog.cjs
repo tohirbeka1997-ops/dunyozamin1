@@ -183,6 +183,8 @@ function listProducts(db, query, req) {
   if (hasShowInMarketplaceColumn(db)) {
     conditions.push('p.show_in_marketplace = 1');
   }
+  // P0: hide zero-price products from marketplace catalog (free-sale is POS-only).
+  conditions.push('COALESCE(p.sale_price, 0) > 0');
   const catVisSql = marketplaceVisibleCategorySql(db);
   if (catVisSql) {
     conditions.push(catVisSql);
@@ -329,6 +331,7 @@ function getProductById(db, id, req) {
     FROM products p
     LEFT JOIN (${stockSubquery(db)}) sb ON sb.product_id = p.id
     WHERE p.id = ? AND p.is_active = 1
+      AND COALESCE(p.sale_price, 0) > 0
       ${mpVis ? 'AND p.show_in_marketplace = 1' : ''}
   `
     )
@@ -529,6 +532,7 @@ function listTrendingProducts(db, query, req) {
     LEFT JOIN ranked r ON r.product_id = p.id
     LEFT JOIN (${stockSubquery(db)}) sb ON sb.product_id = p.id
     WHERE p.is_active = 1
+      AND COALESCE(p.sale_price, 0) > 0
       ${mpWhere}
       ${catWhere}
     LIMIT 200

@@ -1,4 +1,12 @@
-export type UserRole = 'admin' | 'manager' | 'cashier';
+export type UserRole =
+  | 'admin'
+  | 'manager'
+  | 'cashier'
+  | 'senior_cashier'
+  | 'accountant'
+  | 'purchaser'
+  | 'receiver'
+  | 'warehouse';
 
 export type OrderStatus = 'hold' | 'completed' | 'returned' | 'pending' | 'voided' | 'cancelled' | 'amended';
 export type PaymentStatus =
@@ -169,6 +177,11 @@ export interface Product {
   show_in_marketplace?: boolean;
   /** Zaxirani kuzatish — onlayn katalogda mavjudlik (migration) */
   track_stock?: boolean;
+  /**
+   * When true, sale_price may be 0 and POS may complete a free sale with cashier reason
+   * (migration 126). Unauthorized zero price remains blocked.
+   */
+  free_sale_allowed?: boolean;
   /** Rang, o‘lcham… (migration 068) */
   variant_options?: ProductVariantOption[];
   /** Manufacturer / brand name (migration 061) */
@@ -287,6 +300,14 @@ export interface Order {
   total_usd?: number | null;
   status: OrderStatus;
   payment_status: PaymentStatus;
+  /** Derived: not_returned | partially_returned | fully_returned */
+  return_status?: 'not_returned' | 'partially_returned' | 'fully_returned' | string | null;
+  /** Original sale total (same as total_amount when present). */
+  gross_total?: number | null;
+  /** Sum of completed returns attributed to this order. */
+  returned_total?: number | null;
+  /** gross_total − returned_total */
+  net_total?: number | null;
   /** Nasiya qarz qaytarish sanasi (YYYY-MM-DD). */
   due_date?: string | null;
   /** Ichki eslatma izohi (kassir/admin). */
@@ -366,11 +387,26 @@ export interface SalesReturn {
   customer_id: string | null;
   cashier_id: string;
   total_amount: number;
+  refund_amount?: number;
   refund_method: 'cash' | 'card' | 'credit' | 'customer_account';
   return_mode?: 'order' | 'manual';
   status: string;
   reason: string;
+  return_reason?: string;
   notes: string | null;
+  attachment_note?: string | null;
+  attachment_url?: string | null;
+  attachment_name?: string | null;
+  approved_by?: string | null;
+  approval_reason?: string | null;
+  method_mismatch_reason?: string | null;
+  original_payment_summary?: string | null;
+  cancelled_at?: string | null;
+  cancelled_by?: string | null;
+  cancel_reason?: string | null;
+  rejected_at?: string | null;
+  rejected_by?: string | null;
+  reject_reason?: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -936,6 +972,8 @@ export interface InventorySettings {
   allow_negative_stock: 'block' | 'allow_with_warning' | 'allow_without_warning';
   cost_calculation: 'latest_purchase' | 'average_cost';
   adjustment_approval_required: boolean;
+  /** Absolute max qty for a single stock adjustment without manager role. */
+  max_adjustment_qty?: number;
 }
 
 export interface NumberingSettings {

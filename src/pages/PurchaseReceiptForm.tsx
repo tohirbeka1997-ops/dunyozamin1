@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -21,6 +21,18 @@ import MoneyInput from '@/components/common/MoneyInput';
 import { todayYMD } from '@/lib/datetime';
 import { formatUnit } from '@/utils/formatters';
 import { useAuth } from '@/contexts/AuthContext';
+import { useTranslation } from 'react-i18next';
+import type { ZeroCostReceiveType } from '@/lib/purchase/purchaseHardening';
+import { canApproveZeroCostReceive } from '@/lib/purchase/purchaseHardening';
+import { useFormListReturn } from '@/hooks/useFormListReturn';
+import { Checkbox } from '@/components/ui/checkbox';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
 
 type ReceiptItem = {
   purchase_order_item_id?: string | null;
@@ -36,9 +48,11 @@ export default function PurchaseReceiptForm() {
   const { id } = useParams();
   const navigate = useNavigate();
   const { toast } = useToast();
+  const { t } = useTranslation();
   const { profile } = useAuth();
   const fromPoId = id || null;
 
+  const { leaveToList, goToList } = useFormListReturn({ fallbackListPath: '/purchase-orders' });
   const [loading, setLoading] = useState(false);
   const [suppliers, setSuppliers] = useState<SupplierWithBalance[]>([]);
   const [products, setProducts] = useState<ProductWithCategory[]>([]);
@@ -48,10 +62,23 @@ export default function PurchaseReceiptForm() {
   const [currency, setCurrency] = useState<'USD' | 'UZS'>('UZS');
   const [receivedAt, setReceivedAt] = useState(todayYMD());
   const [invoiceNumber, setInvoiceNumber] = useState('');
+  const [allowZeroCost, setAllowZeroCost] = useState(false);
+  const [receiveType, setReceiveType] = useState<ZeroCostReceiveType>('free_sample');
+  const [zeroCostReason, setZeroCostReason] = useState('');
+  const canZeroCost = canApproveZeroCostReceive(profile?.role);
   const [notes, setNotes] = useState('');
   const [fxRate, setFxRate] = useState<number | null>(null);
   const [items, setItems] = useState<ReceiptItem[]>([]);
   const [searchTerm, setSearchTerm] = useState('');
+
+  const isDirty = useMemo(
+    () =>
+      items.some((it) => Number(it.received_qty || 0) > 0) ||
+      notes.trim() !== '' ||
+      invoiceNumber.trim() !== '' ||
+      Boolean(supplierId && !fromPoId),
+    [items, notes, invoiceNumber, supplierId, fromPoId],
+  );
 
   useEffect(() => {
     loadInitial();
@@ -155,7 +182,7 @@ export default function PurchaseReceiptForm() {
         description: error.message || 'Maʼlumotlarni yuklab bo‘lmadi',
         variant: 'destructive',
       });
-      navigate('/purchase-orders');
+      goToList();
     } finally {
       setLoading(false);
     }
@@ -210,11 +237,14 @@ export default function PurchaseReceiptForm() {
     setItems(items.filter((_, i) => i !== index));
   };
 
-  const validateForm = () => {
+  const validateForm = (status: 'draft' | 'received') => {
+    // Draft may be empty and must not affect stock/finance.
+    if (status === 'draft') return true;
+
     if (!supplierId) {
       toast({
         title: 'Xatolik',
-        description: 'Yetkazib beruvchini tanlang',
+        description: t('purchase_receipt.supplier_required', 'Yetkazib beruvchini tanlang'),
         variant: 'destructive',
       });
       return false;
@@ -222,7 +252,15 @@ export default function PurchaseReceiptForm() {
     if (items.length === 0) {
       toast({
         title: 'Xatolik',
-        description: 'Kamida bitta mahsulot qo‘shing',
+        description: t('purchase_receipt.products_required', 'Kamida bitta mahsulot qo‘shing'),
+        variant: 'destructive',
+      });
+      return false;
+    }
+    if (!receivedAt) {
+      toast({
+        title: 'Xatolik',
+        description: t('purchase_receipt.date_required', 'Hujjat sanasi majburiy'),
         variant: 'destructive',
       });
       return false;
@@ -231,7 +269,18 @@ export default function PurchaseReceiptForm() {
       if (Number(item.received_qty || 0) <= 0) {
         toast({
           title: 'Xatolik',
-          description: 'Miqdor 0 dan katta bo‘lishi kerak',
+          description: t('purchase_receipt.qty_required', 'Miqdor 0 dan katta bo‘lishi kerak'),
+          variant: 'destructive',
+        });
+        return false;
+      }
+      if (Number(item.unit_cost || 0) <= 0 && !allowZeroCost) {
+        toast({
+          title: 'Xatolik',
+          description: t(
+            'purchase_receipt.cost_required',
+            'Narx 0 dan katta bo‘lishi kerak (yoki bepul namuna / bonus / gratis)',
+          ),
           variant: 'destructive',
         });
         return false;
@@ -242,7 +291,17 @@ export default function PurchaseReceiptForm() {
       if (!Number.isFinite(rate) || rate <= 0) {
         toast({
           title: 'Xatolik',
-          description: 'Kursni kiriting',
+          description: t('purchase_receipt.fx_required', 'Kursni kiriting'),
+          variant: 'destructive',
+        });
+        return false;
+      }
+    }
+    if (allowZeroCost) {
+      if (!String(zeroCostReason || '').trim()) {
+        toast({
+          title: 'Xatolik',
+          description: t('purchase_receipt.zero_cost_reason_required', 'Nol narx sababi majburiy'),
           variant: 'destructive',
         });
         return false;
@@ -252,13 +311,17 @@ export default function PurchaseReceiptForm() {
   };
 
   const handleSave = async (status: 'draft' | 'received') => {
-    if (!validateForm()) return;
+    if (!validateForm(status)) return;
     try {
       setLoading(true);
       const rate = Number(fxRate || 0);
+      const idempotencyKey =
+        status === 'received'
+          ? `gr-${fromPoId || 'free'}-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
+          : null;
       await createPurchaseReceipt({
         purchase_order_id: fromPoId,
-        supplier_id: supplierId,
+        supplier_id: supplierId || null,
         currency,
         exchange_rate: currency === 'USD' ? rate : null,
         status,
@@ -266,6 +329,10 @@ export default function PurchaseReceiptForm() {
         received_at: receivedAt || null,
         notes: notes.trim() || null,
         created_by: profile?.id || null,
+        receive_type: allowZeroCost ? receiveType : 'standard',
+        zero_cost_reason: allowZeroCost ? zeroCostReason.trim() : null,
+        zero_cost_approved_by: allowZeroCost ? profile?.id || null : null,
+        idempotency_key: idempotencyKey,
         items: items.map((it) => ({
           purchase_order_item_id: it.purchase_order_item_id || null,
           product_id: it.product_id,
@@ -282,7 +349,7 @@ export default function PurchaseReceiptForm() {
         title: 'Muvaffaqiyatli',
         description: status === 'received' ? 'Qabul qilindi' : 'Qoralama saqlandi',
       });
-      navigate(fromPoId ? `/purchase-orders/${fromPoId}` : '/purchase-orders');
+      goToList();
     } catch (error: any) {
       toast({
         title: 'Xatolik',
@@ -305,7 +372,7 @@ export default function PurchaseReceiptForm() {
   return (
     <div className="space-y-6">
       <div className="flex items-center gap-4">
-        <Button variant="ghost" size="icon" onClick={() => navigate(-1)}>
+        <Button variant="ghost" size="icon" onClick={() => void leaveToList(isDirty)}>
           <ArrowLeft className="h-4 w-4" />
         </Button>
         <div>
@@ -359,6 +426,51 @@ export default function PurchaseReceiptForm() {
             <Label>Izoh</Label>
             <Input value={notes} onChange={(e) => setNotes(e.target.value)} />
           </div>
+          {canZeroCost && (
+            <div className="md:col-span-2 space-y-3 rounded-md border p-3">
+              <label className="flex items-center gap-2 text-sm">
+                <Checkbox
+                  checked={allowZeroCost}
+                  onCheckedChange={(v) => setAllowZeroCost(!!v)}
+                />
+                {t('purchase_receipt.allow_zero_cost', 'Nol narxli qabul (namuna / bonus / gratis)')}
+              </label>
+              {allowZeroCost && (
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                  <div className="space-y-2">
+                    <Label>{t('purchase_receipt.receive_type', 'Qabul turi')}</Label>
+                    <Select
+                      value={receiveType}
+                      onValueChange={(v) => setReceiveType(v as ZeroCostReceiveType)}
+                    >
+                      <SelectTrigger>
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="free_sample">
+                          {t('purchase_receipt.type_free_sample', 'Bepul namunа')}
+                        </SelectItem>
+                        <SelectItem value="bonus_goods">
+                          {t('purchase_receipt.type_bonus', 'Bonus tovar')}
+                        </SelectItem>
+                        <SelectItem value="gratis">
+                          {t('purchase_receipt.type_gratis', 'Gratis')}
+                        </SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div className="space-y-2">
+                    <Label>{t('purchase_receipt.zero_cost_reason', 'Sabab')}</Label>
+                    <Input
+                      value={zeroCostReason}
+                      onChange={(e) => setZeroCostReason(e.target.value)}
+                      placeholder={t('purchase_receipt.zero_cost_reason_ph', 'Sababni kiriting')}
+                    />
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
         </CardContent>
       </Card>
 

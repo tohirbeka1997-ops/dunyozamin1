@@ -73,6 +73,8 @@ export default function SearchableCustomerCombobox({
           status: status && status !== 'all' ? status : undefined,
           sortBy: 'name',
           sortOrder: 'asc',
+          limit: 50,
+          offset: 0,
         });
         if (cancelled) return;
         const filtered = (Array.isArray(list) ? list : []).filter((c) => !excludeSet.has(c.id));

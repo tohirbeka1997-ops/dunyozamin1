@@ -460,6 +460,52 @@ function runMigrations(db) {
       continue;
     }
 
+    if (file === '131_inventory_revision_hardening.sql') {
+      // Rebuild inventory_revisions. SQLite ignores `PRAGMA foreign_keys=OFF`
+      // *inside* a transaction, so cascading ON DELETE would wipe
+      // inventory_revision_items (prod had 8k+ lines). Disable FK *before*
+      // opening the migration transaction.
+      try {
+        console.log(`  🔄 ${file}...`);
+        if (hasTable(db, 'inventory_revisions') && hasColumn(db, 'inventory_revisions', 'revision_type')) {
+          console.log('    ⏭  inventory_revisions already hardened (revision_type present)');
+          db.prepare(`
+            INSERT INTO schema_migrations (id, applied_at, checksum)
+            VALUES (?, datetime('now'), ?)
+          `).run(file, checksum);
+        } else {
+          const prevFk = db.pragma('foreign_keys', { simple: true });
+          db.pragma('foreign_keys = OFF');
+          try {
+            const tx131 = db.transaction(() => {
+              db.exec(sql);
+              db.prepare(`
+                INSERT INTO schema_migrations (id, applied_at, checksum)
+                VALUES (?, datetime('now'), ?)
+              `).run(file, checksum);
+            });
+            tx131.immediate();
+          } finally {
+            db.pragma(`foreign_keys = ${prevFk ? 'ON' : 'OFF'}`);
+          }
+        }
+        console.log(`  ✅ ${file} applied successfully`);
+        appliedCount++;
+      } catch (error) {
+        console.error('');
+        console.error('═══════════════════════════════════════════════════════════════');
+        console.error('🚨 MIGRATION FAILED - APP WILL EXIT');
+        console.error('═══════════════════════════════════════════════════════════════');
+        console.error('');
+        console.error('Failed migration:', file);
+        console.error('Error:', error.message);
+        console.error('The transaction was rolled back; database is unchanged.');
+        console.error('');
+        throw error;
+      }
+      continue;
+    }
+
     // Run migration in a transaction
     const transaction = db.transaction(() => {
       try {
@@ -939,6 +985,112 @@ function runMigrations(db) {
           for (const row of rows) {
             upd.run(hashPassword('12345'), row.id);
             console.log(`    ✓ Upgraded factory admin password hash for ${row.id}`);
+          }
+          db.exec(sql);
+        } else if (file === '125_sales_return_idempotency.sql') {
+          if (hasTable(db, 'sales_returns')) {
+            if (safeAddColumn(db, 'sales_returns', 'idempotency_key', 'TEXT')) {
+              console.log('    ✓ Added sales_returns.idempotency_key');
+            }
+            db.exec(`
+              CREATE UNIQUE INDEX IF NOT EXISTS idx_sales_returns_idempotency_key
+                ON sales_returns(idempotency_key)
+                WHERE idempotency_key IS NOT NULL AND TRIM(idempotency_key) != '';
+            `);
+          }
+        } else if (file === '126_product_free_sale_allowed.sql') {
+          if (hasTable(db, 'products')) {
+            if (safeAddColumn(db, 'products', 'free_sale_allowed', 'INTEGER NOT NULL DEFAULT 0')) {
+              console.log('    ✓ Added products.free_sale_allowed');
+            }
+          }
+        } else if (file === '128_sales_return_controls.sql') {
+          if (hasTable(db, 'sales_returns')) {
+            const cols = [
+              ['approved_by', 'TEXT'],
+              ['approval_reason', 'TEXT'],
+              ['method_mismatch_reason', 'TEXT'],
+              ['original_payment_summary', 'TEXT'],
+              ['cancelled_at', 'TEXT'],
+              ['cancelled_by', 'TEXT'],
+              ['cancel_reason', 'TEXT'],
+              ['attachment_note', 'TEXT'],
+            ];
+            for (const [col, def] of cols) {
+              if (safeAddColumn(db, 'sales_returns', col, def)) {
+                console.log(`    ✓ Added sales_returns.${col}`);
+              }
+            }
+          }
+          try {
+            db.exec(`
+              INSERT OR IGNORE INTO settings (id, key, value, type, description, category, is_public) VALUES
+                (lower(hex(randomblob(16))), 'returns.large_amount_threshold', '500000', 'number',
+                 'Large sales-return amount requiring extra note + manager approval (UZS)', 'returns', 0);
+            `);
+          } catch (e) {
+            console.warn('    ⚠ settings insert skipped:', e.message);
+          }
+          try {
+            db.exec(`
+              INSERT OR IGNORE INTO roles (id, code, name, description, is_active, created_at) VALUES
+                ('role-manager-001', 'manager', 'Manager', 'Store manager', 1, datetime('now')),
+                ('role-cashier-001', 'cashier', 'Cashier', 'POS cashier', 1, datetime('now'));
+            `);
+          } catch (e) {
+            console.warn('    ⚠ roles insert skipped:', e.message);
+          }
+        } else if (file === '129_sales_return_workflow_p2.sql') {
+          if (hasTable(db, 'sales_returns')) {
+            const cols = [
+              ['attachment_url', 'TEXT'],
+              ['attachment_name', 'TEXT'],
+              ['rejected_at', 'TEXT'],
+              ['rejected_by', 'TEXT'],
+              ['reject_reason', 'TEXT'],
+            ];
+            for (const [col, def] of cols) {
+              if (safeAddColumn(db, 'sales_returns', col, def)) {
+                console.log(`    ✓ Added sales_returns.${col}`);
+              }
+            }
+          }
+          try {
+            db.exec(`
+              INSERT OR IGNORE INTO roles (id, code, name, description, is_active, created_at) VALUES
+                ('role-senior-cashier-001', 'senior_cashier', 'Senior cashier',
+                 'Can approve returns under large-amount threshold; method mismatch with reason', 1, datetime('now'));
+            `);
+          } catch (e) {
+            console.warn('    ⚠ senior_cashier role insert skipped:', e.message);
+          }
+          try {
+            db.exec(`
+              INSERT OR IGNORE INTO settings (id, key, value, type, description, category, is_public) VALUES
+                (lower(hex(randomblob(16))), 'returns.permission_matrix', '{}', 'json',
+                 'Sales returns role permission matrix', 'returns', 0);
+            `);
+          } catch (e) {
+            console.warn('    ⚠ permission_matrix setting skipped:', e.message);
+          }
+        } else if (file === '132_inventory_revision_item_snapshot.sql') {
+          if (hasTable(db, 'inventory_revision_items')) {
+            if (safeAddColumn(db, 'inventory_revision_items', 'snapshot_version', 'INTEGER NOT NULL DEFAULT 1')) {
+              console.log('    ✓ Added inventory_revision_items.snapshot_version');
+            }
+            if (safeAddColumn(db, 'inventory_revision_items', 'snapshot_at', 'TEXT')) {
+              console.log('    ✓ Added inventory_revision_items.snapshot_at');
+            }
+            try {
+              db.exec(`
+                UPDATE inventory_revision_items
+                SET snapshot_at = COALESCE(snapshot_at, created_at),
+                    snapshot_version = COALESCE(snapshot_version, 1)
+                WHERE snapshot_at IS NULL OR snapshot_version IS NULL
+              `);
+            } catch (e) {
+              console.warn('    ⚠ snapshot backfill skipped:', e.message);
+            }
           }
           db.exec(sql);
         } else {

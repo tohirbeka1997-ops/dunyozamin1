@@ -18,6 +18,12 @@ import { handleIpcResponse, isElectron, requireElectron } from '@/utils/electron
 import { todayYMD, formatDate, formatDateYMD } from '@/lib/datetime';
 import { formatMoneyUZS } from '@/lib/format';
 import { useReportAutoRefresh } from '@/hooks/useReportAutoRefresh';
+import { useReportFilters } from '@/hooks/useReportFilters';
+import {
+  cashierAverageErrorRate,
+  cashierPortfolioErrorRate,
+  cashierWeightedErrorRate,
+} from '@/lib/cashierErrorRate';
 
 interface CashierError {
   employee_id: string;
@@ -27,7 +33,7 @@ interface CashierError {
   cancelled_value: number;
   returns_count: number;
   returns_value: number;
-  error_rate: number; // (cancelled + returns) / (tugallangan + bekor + qaytarish) * 100
+  error_rate: number; // (cancelled + returns) / completed orders × 100
   avg_cancelled_value: number;
   avg_return_value: number;
   error_score: number; // 0-100, higher is worse
@@ -53,15 +59,25 @@ export default function CashierErrorsReport() {
   const [loading, setLoading] = useState(true);
   const [summaryRows, setSummaryRows] = useState<CashierError[]>([]);
   const [detailRows, setDetailRows] = useState<ErrorDetail[]>([]);
-  const [dateFrom, setDateFrom] = useState(() => {
-    const d = new Date();
-    d.setDate(d.getDate() - 30);
-    return formatDateYMD(d);
+  const { get, set } = useReportFilters({
+    storageKey: 'reports.cashier-errors.filters',
+    trackedKeys: ['dateFrom', 'dateTo', 'search', 'viewMode', 'typeFilter'],
+    defaults: {
+      dateFrom: (() => {
+        const d = new Date();
+        d.setDate(d.getDate() - 30);
+        return formatDateYMD(d);
+      })(),
+      dateTo: todayYMD(),
+      viewMode: 'summary',
+      typeFilter: 'all',
+    },
   });
-  const [dateTo, setDateTo] = useState(() => todayYMD());
-  const [searchTerm, setSearchTerm] = useState('');
-  const [viewMode, setViewMode] = useState<'summary' | 'details'>('summary');
-  const [typeFilter, setTypeFilter] = useState<string>('all');
+  const dateFrom = get('dateFrom', formatDateYMD(new Date(Date.now() - 30 * 86400000)));
+  const dateTo = get('dateTo', todayYMD());
+  const searchTerm = get('search', '');
+  const viewMode = (get('viewMode', 'summary') || 'summary') as 'summary' | 'details';
+  const typeFilter = get('typeFilter', 'all');
 
   useEffect(() => {
     loadData();
@@ -150,16 +166,15 @@ export default function CashierErrorsReport() {
       0
     );
     const totalSales = summaryRows.reduce((sum, r) => sum + Number(r.total_sales || 0), 0);
-    const avgErrorRate =
-      summaryRows.length > 0
-        ? summaryRows.reduce((sum, r) => sum + Number(r.error_rate || 0), 0) / summaryRows.length
-        : 0;
+    const weightedErrorRate = cashierPortfolioErrorRate(summaryRows);
+    const avgErrorRate = cashierAverageErrorRate(summaryRows);
     return {
       totalCancelled,
       totalReturns,
       totalCancelledValue,
       totalReturnsValue,
       totalSales,
+      weightedErrorRate,
       avgErrorRate,
     };
   }, [summaryRows]);
@@ -217,23 +232,33 @@ export default function CashierErrorsReport() {
               <Input
                 placeholder="Kassir yoki chek..."
                 value={searchTerm}
-                onChange={(e) => setSearchTerm(e.target.value)}
+                onChange={(e) => set({ search: e.target.value || null }, true)}
               />
             </div>
             <div>
               <label className="text-sm text-muted-foreground">Boshlanish sana</label>
-              <Input type="date" value={dateFrom} onChange={(e) => setDateFrom(e.target.value)} />
+              <Input
+                type="date"
+                value={dateFrom}
+                onChange={(e) => set({ dateFrom: e.target.value || null })}
+              />
             </div>
             <div>
               <label className="text-sm text-muted-foreground">Tugash sana</label>
-              <Input type="date" value={dateTo} onChange={(e) => setDateTo(e.target.value)} />
+              <Input
+                type="date"
+                value={dateTo}
+                onChange={(e) => set({ dateTo: e.target.value || null })}
+              />
             </div>
             <div>
               <label className="text-sm text-muted-foreground">Ko'rinish</label>
               <select
                 className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
                 value={viewMode}
-                onChange={(e) => setViewMode(e.target.value as any)}
+                onChange={(e) =>
+                  set({ viewMode: e.target.value === 'summary' ? null : e.target.value })
+                }
               >
                 <option value="summary">Umumiy</option>
                 <option value="details">Batafsil</option>
@@ -245,7 +270,7 @@ export default function CashierErrorsReport() {
                 <select
                   className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
                   value={typeFilter}
-                  onChange={(e) => setTypeFilter(e.target.value)}
+                  onChange={(e) => set({ typeFilter: e.target.value === 'all' ? null : e.target.value })}
                 >
                   <option value="all">Hammasi</option>
                   <option value="cancelled">Bekor qilindi</option>
@@ -302,9 +327,12 @@ export default function CashierErrorsReport() {
           <CardContent className="pt-6">
             <div className="flex items-center gap-2">
               <AlertTriangle className="h-5 w-5 text-yellow-500" />
-              <p className="text-sm text-muted-foreground">O'rtacha xatolik</p>
+              <p className="text-sm text-muted-foreground">Xatolik % (og‘irlikli)</p>
             </div>
-            <div className="text-2xl font-bold mt-2">{overallStats.avgErrorRate.toFixed(2)}%</div>
+            <div className="text-2xl font-bold mt-2">{overallStats.weightedErrorRate.toFixed(2)}%</div>
+            <p className="text-[10px] text-muted-foreground mt-1">
+              O‘rtacha kassir %: {overallStats.avgErrorRate.toFixed(2)}%
+            </p>
           </CardContent>
         </Card>
         <Card>
@@ -360,7 +388,7 @@ export default function CashierErrorsReport() {
                         {formatMoneyUZS(row.returns_value)}
                       </TableCell>
                       <TableCell className="text-right font-semibold">
-                        {row.error_rate.toFixed(2)}%
+                        {cashierWeightedErrorRate(row).toFixed(2)}%
                       </TableCell>
                       <TableCell className="text-center">
                         {getErrorBadge(row.error_score)}

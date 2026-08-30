@@ -1,6 +1,7 @@
 const { ipcMain } = require('electron');
 const { wrapHandler } = require('../lib/errors.cjs');
 const { getCurrentUserId } = require('../lib/currentUser.cjs');
+const { getCurrentUserRole } = require('../lib/ipcAuth.cjs');
 
 // Defensive check: ensure wrapHandler is imported correctly
 if (typeof wrapHandler !== 'function') {
@@ -151,8 +152,14 @@ function registerProductsHandlers(services) {
   console.log('Registering pos:products:bulkAdjustPrices handler...');
   ipcMain.removeHandler('pos:products:bulkAdjustPrices');
   ipcMain.handle('pos:products:bulkAdjustPrices', wrapHandler(async (event, payload, actorUserId) => {
-    const actor = actorUserId != null && String(actorUserId).trim() ? String(actorUserId).trim() : getCurrentUserId();
-    const result = products.bulkAdjustPrices(payload || {}, { actorUserId: actor });
+    const actor = getCurrentUserId() || (actorUserId != null && String(actorUserId).trim() ? String(actorUserId).trim() : null);
+    const userRole = getCurrentUserRole(products.db) || null;
+    const role = String(userRole || '').toLowerCase();
+    const result = products.bulkAdjustPrices(payload || {}, {
+      actorUserId: actor,
+      userRole,
+      authorized: role === 'admin' || role === 'manager',
+    });
     if (event && event.sender) {
       event.sender.send('cache:invalidate', { type: 'products' });
     }
@@ -188,8 +195,8 @@ function registerProductsHandlers(services) {
           return null;
         }
       })();
-      const result = await products.delete(id);
       const actor = actorUserId != null && String(actorUserId).trim() ? String(actorUserId).trim() : getCurrentUserId();
+      const result = await products.delete(id, { actorUserId: actor });
       // Audit (best-effort)
       try {
         if (before) audit?.logProductDelete?.(before, actor);
@@ -209,6 +216,12 @@ function registerProductsHandlers(services) {
       });
       throw error;
     }
+  }));
+
+  console.log('Registering pos:products:getDeleteImpact handler...');
+  ipcMain.removeHandler('pos:products:getDeleteImpact');
+  ipcMain.handle('pos:products:getDeleteImpact', wrapHandler(async (_event, id) => {
+    return products.getDeleteImpact(id);
   }));
 
   console.log('Registering pos:products:exportScaleRongtaTxt handler...');

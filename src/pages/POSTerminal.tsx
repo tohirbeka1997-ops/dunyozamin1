@@ -94,7 +94,6 @@ import {
   createOrder,
   createCreditOrder,
   cancelOrder,
-  receiveCustomerPayment,
   getOrderById,
   saveHeldOrder,
   getHeldOrders,
@@ -183,6 +182,7 @@ import { getActiveReceiptTemplate, resolveReceiptTemplateStore } from '@/lib/rec
 import { formatOrderDateTime } from '@/lib/datetime';
 import { shouldAutoPrintReceipt } from '@/lib/receipts/normalizeReceiptSettings';
 import { printPosCustomerReceiptEscpos } from '@/lib/receipts/printPosCustomerReceipt';
+import { getPrintAgentHealth } from '@/lib/receipts/printAgent';
 import { isElectron, getElectronAPI, handleIpcResponse } from '@/utils/electron';
 import { getProductImageDisplayUrl } from '@/lib/productImageUrl';
 import { useNavigate, useLocation } from 'react-router-dom';
@@ -191,6 +191,17 @@ import Fuse from 'fuse.js';
 import QRCode from 'qrcode';
 import { highlightMatch } from '@/utils/searchHighlight';
 import { getRecentSearches, addRecentSearch, removeRecentSearch } from '@/utils/recentSearches';
+import {
+  findInsufficientStockLines,
+  isOutOfStockForSale,
+  productTracksStock,
+  shouldShowZeroSettlePaymentUi,
+  isZeroTotalSaleAllowed,
+  isProductPriceNotSet,
+  isProductFreeSaleAllowed,
+  isProductSalePriceSellable,
+} from '@/lib/posHardening';
+import { posSearchCache } from '@/lib/posSearchCache';
 
 import {
   POS_QUICK_PRODUCT_IDS_KEY,
@@ -200,7 +211,7 @@ import {
   normalizeSearchTerm,
   normalizeSku,
   classifyQuery,
-  productMatchesPosTextFilter,
+  filterPosProductsBySearchTerm,
   formatPosProductCodeMeta,
   getSaleUnitConfig,
   getBaseUnit,
@@ -365,6 +376,7 @@ export default function POSTerminal() {
     clearPosNavCartDraft();
     navCartDraftRestoredRef.current = true;
     setCart([]);
+    setExchangeReturnMode(false);
   }, []);
 
   const resetCustomerSelection = useCallback(() => {
@@ -437,6 +449,7 @@ export default function POSTerminal() {
   const [quickProductSearch, setQuickProductSearch] = useState('');
   const [favoriteProducts, setFavoriteProducts] = useState<Product[]>([]);
   const [allProducts, setAllProducts] = useState<Product[]>([]);
+  const [catalogLoadError, setCatalogLoadError] = useState<string | null>(null);
   const [scanIndexLoading, setScanIndexLoading] = useState(true);
   const scanIndexReadyRef = useRef(false);
   const pendingScansRef = useRef<Array<{ rawInput: string; opts?: { clearSearch?: boolean } }>>([]);
@@ -471,6 +484,12 @@ export default function POSTerminal() {
   /** POS: o‘lchovli mahsulotni savatga — birlik yoki so‘m summasi bo‘yicha */
   const [weightedCartAddMode, setWeightedCartAddMode] = useState<'sale_qty' | 'amount_uzs'>('sale_qty');
   const [exchangeReturnMode, setExchangeReturnMode] = useState(false);
+
+  useEffect(() => {
+    if (cart.length === 0 && exchangeReturnMode) {
+      setExchangeReturnMode(false);
+    }
+  }, [cart.length, exchangeReturnMode]);
   const [selectedCartIndex, setSelectedCartIndex] = useState<number>(-1);
   const [showCostPrice, setShowCostPrice] = useState(false);
   const [posUiMode, setPosUiMode] = useState<'beginner' | 'fast'>(() => {
@@ -497,6 +516,7 @@ export default function POSTerminal() {
   const lastScanDedupeRef = useRef<{ raw: string; at: number }>({ raw: '', at: 0 });
   const searchDebounceRef = useRef<number | null>(null);
   const searchSeqRef = useRef(0);
+  const catalogLoadGenRef = useRef(0);
   const perfEnabled = (import.meta as any)?.env?.VITE_POS_PERF === 'true';
   const [companySettings, setCompanySettings] = useState<CompanySettings | null>(null);
   const receiptSettings = useReceiptSettings();
@@ -823,6 +843,16 @@ export default function POSTerminal() {
       if (isPrintingReceipt) return;
       setIsPrintingReceipt(true);
       try {
+        const agentHealth = await getPrintAgentHealth(1500);
+        if (!agentHealth && !opts?.silent) {
+          toast({
+            variant: 'destructive',
+            title: t('pos.device_bar.print_agent_down', { defaultValue: 'Printer offline' }),
+            description: t('pos.device_status.print_offline_before_receipt', {
+              defaultValue: 'Chop etish agenti ulanmagan. Chek brauzer orqali ochilishi mumkin.',
+            }),
+          });
+        }
         try {
           await printPosCustomerReceiptEscpos(data, companySettings, receiptSettings);
           if (!opts?.silent) {
@@ -921,7 +951,7 @@ export default function POSTerminal() {
         setIsPrintingReceipt(false);
       }
     },
-    [companySettings, receiptSettings, receiptTemplateStore, toast, isPrintingReceipt]
+    [companySettings, receiptSettings, receiptTemplateStore, toast, isPrintingReceipt, t]
   );
 
   const handlePrintLastReceipt = useCallback(() => {
@@ -1185,6 +1215,7 @@ export default function POSTerminal() {
   }, [posWarehouseId]);
 
   const loadAllProducts = useCallback(async () => {
+    const gen = ++catalogLoadGenRef.current;
     try {
       // Full catalog for grid/search display (heavy joins); scan index loads separately via loadScanIndex.
       const PAGE_SIZE = 5000;
@@ -1203,11 +1234,32 @@ export default function POSTerminal() {
         if (batch.length < PAGE_SIZE) break;
         offset += PAGE_SIZE;
       }
+      if (gen !== catalogLoadGenRef.current) return;
       setAllProducts(results);
+      setCatalogLoadError(null);
     } catch (error) {
+      if (gen !== catalogLoadGenRef.current) return;
       console.error('Error loading all products:', error);
+      // Never clear existing catalog on 502/timeout — cashiers must not see "0 products".
+      setCatalogLoadError(
+        t('pos.catalog_load_failed', {
+          defaultValue: "Ma'lumot yuklanmadi. Server vaqtincha javob bermayapti.",
+        })
+      );
+      try {
+        const { extractHttpStatus, reportApiFailure } = await import('@/lib/apiFailureTelemetry');
+        reportApiFailure({
+          page: 'POSTerminal',
+          apiUrl: 'pos:products:list',
+          httpCode: extractHttpStatus(error),
+          userRole: profile?.role || null,
+          message: error instanceof Error ? error.message : String(error),
+        });
+      } catch {
+        /* telemetry best-effort */
+      }
     }
-  }, [posWarehouseId]);
+  }, [posWarehouseId, t, profile?.role]);
 
   const refreshCatalog = useCallback(async () => {
     await loadScanIndex();
@@ -1616,6 +1668,21 @@ export default function POSTerminal() {
 
     const directResults = scored.slice(0, 20).map((entry) => entry.product);
 
+    // Exact SKU / barcode / article: do not mix in fuzzy/partial noise
+    const exactHits = directResults.filter((p) => {
+      const skuN = normalizeSku(String(p.sku || ''));
+      const bc = String((p as { barcode?: string | null }).barcode || '').trim().toLowerCase();
+      const art = normalizeArticle(String((p as { article?: string | null }).article || ''));
+      return (
+        (skuN && skuN === query.normalizedSku) ||
+        (bc && bc === query.raw.toLowerCase()) ||
+        (art && art === query.normalizedSku)
+      );
+    });
+    if (exactHits.length > 0) {
+      return exactHits;
+    }
+
     // Fuzzy fallback via keshlangan Fuse.js (xato yozuvlarni ushlaydi).
     // Indeks bir marta qurilgan; kategoriya filtri natijaga qo'llanadi.
     if (directResults.length < 3 && query.lower.length >= 2) {
@@ -1635,17 +1702,29 @@ export default function POSTerminal() {
 
   const runSearch = async (term: string, categoryId: string | null) => {
     const currentSeq = ++searchSeqRef.current;
+    const cacheKey = posSearchCache.buildKey(term, categoryId, posWarehouseId);
+    const cached = posSearchCache.get<Product>(cacheKey);
+    if (cached) {
+      if (searchSeqRef.current === currentSeq) {
+        setSearchResults(cached);
+      }
+      return;
+    }
     const start = perfEnabled ? performance.now() : 0;
     try {
       const normalizedQuery = normalizeSearchTerm(term);
       let results = getRankedSearchResults(normalizedQuery, categoryId);
       if (results.length === 0 && term.trim().length >= 2) {
         const fallback = await searchProductsScreen(term, { warehouse_id: posWarehouseId });
+        if (searchSeqRef.current !== currentSeq) return;
         results = categoryId
           ? fallback.filter((p) => productMatchesCategoryFilter(p.category_id, categoryId, categories))
           : fallback;
       }
+      // Exact SKU/barcode wins over fuzzy/contains noise from any source
+      results = filterPosProductsBySearchTerm(results, term);
       if (searchSeqRef.current === currentSeq) {
+        posSearchCache.set(cacheKey, results);
         setSearchResults(results);
         // Save to recent searches when there are results
         if (results.length > 0 && term.trim().length >= 2) {
@@ -1665,7 +1744,7 @@ export default function POSTerminal() {
 
   const handleSearch = (term: string) => {
     const MIN_SEARCH_LENGTH = 2;
-    const SEARCH_DEBOUNCE_MS = 120;
+    const SEARCH_DEBOUNCE_MS = 300;
     setSearchTerm(term);
     if (searchDebounceRef.current) {
       window.clearTimeout(searchDebounceRef.current);
@@ -1722,11 +1801,31 @@ export default function POSTerminal() {
       formatUnit(unit) || unit,
     ].filter(Boolean);
     toast({
-      title: product.name,
+      title: `✓ ${product.name}`,
       description: parts.join(' · '),
-      duration: 2200,
+      duration: 1800,
+      className: 'border-emerald-300 bg-emerald-50 text-emerald-950 dark:border-emerald-800 dark:bg-emerald-950 dark:text-emerald-100',
     });
-  }, [toast]);
+    try {
+      const Ctx = window.AudioContext || (window as any).webkitAudioContext;
+      if (Ctx) {
+        const ctx = new Ctx();
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.type = 'sine';
+        osc.frequency.value = 880;
+        gain.gain.value = 0.04;
+        osc.connect(gain);
+        gain.connect(ctx.destination);
+        osc.start();
+        osc.stop(ctx.currentTime + 0.07);
+        void ctx.close?.();
+      }
+    } catch {
+      /* audio optional */
+    }
+    focusSearchInput();
+  }, [toast, focusSearchInput]);
 
   const tryLocalScanLookup = useCallback((rawInput: string): Product | null => {
     const indexHit = lookupProductByScanCode(rawInput, scanIndexRef.current);
@@ -1920,14 +2019,15 @@ export default function POSTerminal() {
         return;
       }
 
-      // Not found -> show feedback and clear (scanner flow)
+      // Not found -> show feedback and clear (scanner flow); do not pollute Recent
       perfNote = 'miss';
       toast({
-        title: 'Mahsulot topilmadi',
+        title: t('pos.product_not_found', { defaultValue: 'Mahsulot topilmadi' }),
         description: `Kod: ${rawInput}`,
         variant: 'destructive',
       });
       resetSearch();
+      focusSearchInput();
     } catch (error) {
       console.error('Error searching by barcode:', error);
     } finally {
@@ -2269,6 +2369,17 @@ export default function POSTerminal() {
 
   const requestAddToCart = useCallback(async (product: Product) => {
     const resolvedProduct = await resolveProductForCart(product);
+    if (!exchangeReturnMode && isOutOfStockForSale(resolvedProduct)) {
+      toast({
+        title: t('pos.stock_insufficient_title', { defaultValue: 'Yetarli qoldiq yo‘q' }),
+        description: t('pos.stock_zero_blocked', {
+          defaultValue: '{{name}}: omborda qoldiq 0',
+          name: resolvedProduct.name,
+        }),
+        variant: 'destructive',
+      });
+      return;
+    }
     const { saleUnit, ratio_to_base, sale_price } = getSaleUnitConfig(resolvedProduct);
     const maxAllowed = getMaxSaleQty(resolvedProduct, ratio_to_base, saleUnit);
     let refUnitPrice: number | undefined;
@@ -2299,17 +2410,29 @@ export default function POSTerminal() {
       refUnitPrice,
     });
     setNumpadOpen(true);
-  }, [selectedCustomer, getLinePricing]);
+  }, [selectedCustomer, getLinePricing, exchangeReturnMode, toast, t]);
 
   const quickAddOneToCart = useCallback(async (product: Product) => {
     const resolvedProduct = await resolveProductForCart(product);
+    if (!exchangeReturnMode && isOutOfStockForSale(resolvedProduct)) {
+      toast({
+        title: t('pos.stock_insufficient_title', { defaultValue: 'Yetarli qoldiq yo‘q' }),
+        description: t('pos.stock_zero_blocked', {
+          defaultValue: '{{name}}: omborda qoldiq 0',
+          name: resolvedProduct.name,
+        }),
+        variant: 'destructive',
+      });
+      focusSearchInput();
+      return;
+    }
     if (canQuickAddWithoutNumpad(resolvedProduct)) {
       void addToCartRef.current(resolvedProduct, getQuickAddSaleQty(resolvedProduct));
     } else {
       await requestAddToCart(resolvedProduct);
     }
     focusSearchInput();
-  }, [focusSearchInput, requestAddToCart]);
+  }, [focusSearchInput, requestAddToCart, exchangeReturnMode, toast, t]);
 
   const addToCart = async (product: Product, quantity: number = 1, saleUnit?: string) => {
     const perfStart = perfEnabled ? performance.now() : 0;
@@ -2332,6 +2455,24 @@ export default function POSTerminal() {
       });
       return;
     }
+    if (isProductPriceNotSet(product as any)) {
+      toast({
+        title: t('products.price_not_set', { defaultValue: 'Price not set' }),
+        description: t('products.price_not_set_hint', {
+          defaultValue: 'Set a sale price or enable free sale before selling.',
+        }),
+        variant: 'destructive',
+      });
+      return;
+    }
+    if (!productTracksStock(product) && posTerminalSettings.show_low_stock_warning) {
+      toast({
+        title: t('products.stock_not_tracked', { defaultValue: 'Stock not tracked' }),
+        description: t('products.stock_not_tracked_hint', {
+          defaultValue: 'This product does not track inventory.',
+        }),
+      });
+    }
     const sign = getCartLineQuantitySign(exchangeReturnMode);
     const unit = resolvedUnit;
     const existingItem = cartRef.current.find(
@@ -2342,14 +2483,37 @@ export default function POSTerminal() {
     let validQuantity = clampQuantityForUnit(qtySaleRaw, unit) * sign;
     let stockLimitToast: { title: string; description: string } | null = null;
     let lowStockToast: { title: string; description: string } | null = null;
-    if (validQuantity > 0) {
+    if (validQuantity > 0 && productTracksStock(product)) {
       const maxAllowed = getMaxSaleQty(product, ratio_to_base, unit);
-      if (maxAllowed > 0 && validQuantity > maxAllowed) {
-        validQuantity = maxAllowed;
-        stockLimitToast = {
-          title: 'Stock Limit Reached',
-          description: `Maximum available quantity is ${formatQuantity(maxAllowed, unit)}`,
-        };
+      const existingSaleQty = existingItem
+        ? Math.max(0, Number(existingItem.qty_sale ?? existingItem.quantity ?? 0) || 0)
+        : 0;
+      const room = maxAllowed - existingSaleQty;
+      if (maxAllowed <= 0 || room <= 0) {
+        toast({
+          title: t('pos.stock_insufficient_title', { defaultValue: 'Yetarli qoldiq yo‘q' }),
+          description: t('pos.stock_insufficient_desc', {
+            defaultValue: '{{name}}: so‘ralgan {{requested}}, mavjud {{available}}',
+            name: product.name,
+            requested: formatQuantity(validQuantity + existingSaleQty, unit),
+            available: formatQuantity(Math.max(0, maxAllowed), unit),
+          }),
+          variant: 'destructive',
+        });
+        return;
+      }
+      if (validQuantity > room) {
+        toast({
+          title: t('pos.stock_insufficient_title', { defaultValue: 'Yetarli qoldiq yo‘q' }),
+          description: t('pos.stock_insufficient_desc', {
+            defaultValue: '{{name}}: so‘ralgan {{requested}}, mavjud {{available}}',
+            name: product.name,
+            requested: formatQuantity(validQuantity + existingSaleQty, unit),
+            available: formatQuantity(maxAllowed, unit),
+          }),
+          variant: 'destructive',
+        });
+        return;
       }
       if (
         posTerminalSettings.show_low_stock_warning &&
@@ -2357,7 +2521,7 @@ export default function POSTerminal() {
       ) {
         const remainingBase =
           (Number(product.current_stock || 0) || 0) -
-          toBaseQty(validQuantity, ratio_to_base);
+          toBaseQty(validQuantity + existingSaleQty, ratio_to_base);
         const minStock = Number((product as any)?.min_stock_level || 0) || 0;
         const threshold = minStock > 0 ? minStock : 10;
         if (remainingBase >= 0 && remainingBase <= threshold) {
@@ -3645,20 +3809,25 @@ export default function POSTerminal() {
     const ratioToBase = Number(cartItem.ratio_to_base ?? 1) || 1;
     let validQuantity = clampSignedQuantityForUnit(quantity, saleUnit);
 
-    if (validQuantity > 0) {
+    if (validQuantity > 0 && productTracksStock(cartItem.product)) {
       const maxAllowed = getMaxSaleQtyForCartLine(
         cartItem.product,
         ratioToBase,
         saleUnit,
         cartItem.amend_original_qty_sale,
       );
-      if (maxAllowed > 0 && validQuantity > maxAllowed) {
-        validQuantity = maxAllowed;
+      if (maxAllowed <= 0 || validQuantity > maxAllowed) {
         toast({
-          title: 'Stock Limit Reached',
-          description: `Maximum available quantity is ${formatQuantity(maxAllowed, saleUnit)}`,
+          title: t('pos.stock_insufficient_title', { defaultValue: 'Yetarli qoldiq yo‘q' }),
+          description: t('pos.stock_insufficient_desc', {
+            defaultValue: '{{name}}: so‘ralgan {{requested}}, mavjud {{available}}',
+            name: cartItem.product.name,
+            requested: formatQuantity(validQuantity, saleUnit),
+            available: formatQuantity(Math.max(0, maxAllowed), saleUnit),
+          }),
           variant: 'destructive',
         });
+        return;
       }
     }
     
@@ -4191,15 +4360,18 @@ export default function POSTerminal() {
   }, [effectiveCart]);
 
   const { subtotal, lineDiscountsTotal, ustaSavings } = cartTotals;
-  const stockRiskCount = useMemo(
-    () =>
-      effectiveCart.filter((item) => {
-        const qtyBase = Number(item.qty_base ?? item.quantity ?? 0) || 0;
-        const stock = Number(item.product.current_stock ?? 0) || 0;
-        return qtyBase > 0 && qtyBase > stock;
-      }).length,
+  const stockRiskLines = useMemo(
+    () => findInsufficientStockLines(effectiveCart),
     [effectiveCart]
   );
+  const stockRiskCount = stockRiskLines.length;
+  const stockBlockedReason =
+    stockRiskCount > 0
+      ? t('pos.cart_stock_blocked', {
+          defaultValue: '{{count}} qatorda yetarli qoldiq yo‘q — to‘lov ochilmaydi',
+          count: stockRiskCount,
+        })
+      : '';
   const nextHeldPreview = useMemo(() => {
     if (heldOrders.length === 0) return null;
     const first = heldOrders[0] as any;
@@ -4243,7 +4415,8 @@ export default function POSTerminal() {
     discount.type !== 'promo' && discount.value !== '' && discountError !== '';
   const discountActionDisabledReason = isDiscountActionDisabled ? discountError : '';
   const shiftRequiredReason = !currentShift ? 'Avval smena oching' : '';
-  const paymentDisabledReason = shiftRequiredReason || discountActionDisabledReason;
+  const paymentDisabledReason =
+    shiftRequiredReason || discountActionDisabledReason || stockBlockedReason;
   const discountValueNumber =
     discount.type === 'promo'
       ? 0
@@ -4670,17 +4843,21 @@ export default function POSTerminal() {
       }
     }
 
-    // 1. Stock: faqat sotilayotgan (musbat) qatorlar
-    for (const cartItem of cart) {
-      const qtyBase = cartItem.qty_base ?? cartItem.quantity;
-      if (qtyBase > 0 && qtyBase > cartItem.product.current_stock) {
-        toast({
-          title: 'Error',
-          description: `Error: Not enough stock for ${cartItem.product.name}`,
-          variant: 'destructive',
-        });
-        return;
-      }
+    // 1. Stock: faqat sotilayotgan (musbat) qatorlar — final FE gate before modal/API
+    const shortage = findInsufficientStockLines(cart);
+    if (shortage.length > 0) {
+      const first = shortage[0];
+      toast({
+        title: t('pos.stock_insufficient_title', { defaultValue: 'Yetarli qoldiq yo‘q' }),
+        description: t('pos.stock_insufficient_desc', {
+          defaultValue: '{{name}}: so‘ralgan {{requested}}, mavjud {{available}}',
+          name: first.productName,
+          requested: first.requested,
+          available: first.available,
+        }),
+        variant: 'destructive',
+      });
+      return;
     }
 
     const checkoutCart = await resolveCheckoutCart();
@@ -4771,6 +4948,26 @@ export default function POSTerminal() {
         toast({
           title: t('pos.process_payment'),
           description: t('pos.exchange.payment_need_zero'),
+          variant: 'destructive',
+        });
+        return;
+      }
+      if (
+        !isZeroTotalSaleAllowed({
+          subtotal,
+          discountAmount,
+          loyaltyDiscountAmount: loyaltyDiscountUzs,
+          hasPromo: discount.type === 'promo' || Boolean(promoCodeInput.trim()),
+          loyaltyRedeemPoints: loyaltyRedeemPointsApplied,
+          userRole: profile?.role,
+        })
+      ) {
+        toast({
+          title: t('pos.process_payment'),
+          description: t('pos.exchange.zero_settle_not_allowed', {
+            defaultValue:
+              'Nol jami faqat 100% chegirma, promo, bonus yoki ruxsatli foydalanuvchi uchun.',
+          }),
           variant: 'destructive',
         });
         return;
@@ -4871,6 +5068,48 @@ export default function POSTerminal() {
       // Stable per-checkout idempotency key — reused on retry so a slow/429
       // re-submit cannot create a second order or deduct stock twice.
       const checkoutIdempotencyKey = getOrCreateCheckoutIdempotencyKey();
+
+      const freeSaleLines = checkoutCart.filter((line) => {
+        const unitPrice = Number(line.unit_price ?? 0) || 0;
+        return unitPrice <= 0 && isProductFreeSaleAllowed(line.product as any);
+      });
+      let freeSaleReason: string | null = null;
+      if (freeSaleLines.length > 0) {
+        const prompted = window.prompt(
+          t('pos.free_sale_reason_prompt', {
+            defaultValue: 'Free sale reason (required):',
+          }),
+        );
+        freeSaleReason = String(prompted || '').trim();
+        if (!freeSaleReason) {
+          toast({
+            title: t('pos.free_sale_reason_required', {
+              defaultValue: 'Free sale reason required',
+            }),
+            variant: 'destructive',
+          });
+          setIsProcessingPayment(false);
+          return;
+        }
+      }
+
+      const blockedZero = checkoutCart.some((line) => {
+        const unitPrice = Number(line.unit_price ?? 0) || 0;
+        if (!(unitPrice <= 0)) return false;
+        return !isProductSalePriceSellable(line.product as any);
+      });
+      if (blockedZero) {
+        toast({
+          title: t('products.price_not_set', { defaultValue: 'Price not set' }),
+          description: t('products.price_not_set_hint', {
+            defaultValue: 'Remove zero-price items or set a price.',
+          }),
+          variant: 'destructive',
+        });
+        setIsProcessingPayment(false);
+        return;
+      }
+
       const order = {
         order_number: '',
         order_uuid: checkoutIdempotencyKey,
@@ -4895,7 +5134,8 @@ export default function POSTerminal() {
               : creditAmountValue === 0
                 ? ('paid' as const)
                 : ('partially_paid' as const),
-        notes: null,
+        notes: freeSaleReason ? `[FREE_SALE] ${freeSaleReason}` : null,
+        ...(freeSaleReason ? { free_sale_reason: freeSaleReason } : {}),
         ...(creditAmountValue > 0 && creditDueDate ? { due_date: creditDueDate } : {}),
         ...(creditAmountValue > 0 && creditReminderNote.trim()
           ? { credit_reminder_note: creditReminderNote.trim() }
@@ -4928,8 +5168,15 @@ export default function POSTerminal() {
       }
       const orderNumber = created?.order_number || order.order_number || 'ORD';
 
-      // Clear cart immediately on successful checkout — before receipt dialog / follow-up work.
+      // Close payment dialog FIRST (sync) so an emptied cart never flashes
+      // "Yakunlash (nol jami)" while follow-up async work (receipt/loyalty) runs.
       checkoutIdempotencyKeyRef.current = null;
+      flushSync(() => {
+        setPaymentDialogOpen(false);
+        setCashReceived(null);
+        setCreditAmount(null);
+        setPayments([]);
+      });
       clearCartAndNavDraft();
 
       if (created?.offline_queued) {
@@ -4940,14 +5187,10 @@ export default function POSTerminal() {
         });
         clearPosSaleImportContext();
         setExchangeReturnMode(false);
-        setPayments([]);
         setDiscount({ type: 'amount', value: '' });
         setPromoCodeInput('');
         setLoyaltyRedeemPoints(0);
         resetCustomerSelection();
-        setPaymentDialogOpen(false);
-        setCashReceived(null);
-        setCreditAmount(null);
         setIsProcessingPayment(false);
         void voidImportedHoldOrderAfterSale(importedHoldOrderIdForSale);
         return;
@@ -5128,17 +5371,13 @@ export default function POSTerminal() {
         className: 'bg-green-50 border-green-200',
       });
 
-      // Sale committed — idempotency key already released when cart was cleared.
+      // Sale committed — dialog already closed; finish remaining UI reset.
       clearPosSaleImportContext();
       setExchangeReturnMode(false);
-      setPayments([]);
       setDiscount({ type: 'amount', value: '' });
       setPromoCodeInput('');
       setLoyaltyRedeemPoints(0);
       resetCustomerSelection();
-      setPaymentDialogOpen(false);
-      setCashReceived(null);
-      setCreditAmount(null);
       setSelectedCartIndex(-1);
 
       // Har doim yangilash: qarz yopilganda ham balans eski qolmasin (credit/bonus shart emas)
@@ -5357,26 +5596,7 @@ export default function POSTerminal() {
         error?: string;
       };
 
-      if (safePriorPaymentAmount > 0) {
-        const rp = await receiveCustomerPayment({
-          customer_id: selectedCustomer.id,
-          amount: safePriorPaymentAmount,
-          currency: saleCurrency,
-          // Credit sale is UZS-only (guarded at the top of handleCreditSale).
-          fx_rate: null,
-          operation: 'payment_in',
-          payment_method: 'cash',
-          notes: 'POS nasiya: oldingi qarzdan',
-          received_by: profile.id,
-          source: 'pos',
-          shift_id: currentShift?.id ?? null,
-        });
-        if (!rp.success) {
-          throw new Error(rp.error || 'Oldingi qarzdan yechib bo‘lmadi');
-        }
-      }
-
-      if (orderCash > 0) {
+      if (orderCash > 0 || safePriorPaymentAmount > 0 || merchCredit > 0.01) {
         const applyPrepaid = orderCash > total + 0.01;
         const order: Record<string, unknown> = {
           order_number: '',
@@ -5397,6 +5617,7 @@ export default function POSTerminal() {
           payment_status: (merchCredit > 0.01 ? 'partially_paid' : 'paid') as 'partially_paid' | 'paid',
           notes: null,
           apply_overpay_as_prepaid: applyPrepaid,
+          ...(safePriorPaymentAmount > 0 ? { prior_debt_payment: safePriorPaymentAmount } : {}),
           ...(merchCredit > 0.01 && creditDueDate ? { due_date: creditDueDate } : {}),
           ...(merchCredit > 0.01 && creditReminderNote.trim()
             ? { credit_reminder_note: creditReminderNote.trim() }
@@ -5407,15 +5628,18 @@ export default function POSTerminal() {
           ...(replacesOrderIdForSale ? { replaces_order_id: replacesOrderIdForSale } : {}),
         };
 
-        const orderPaymentsData = [
-          {
-            payment_number: '',
-            payment_method: 'cash' as PaymentMethod,
-            amount: orderCash,
-            reference_number: null,
-            notes: null,
-          },
-        ];
+        const orderPaymentsData =
+          orderCash > 0
+            ? [
+                {
+                  payment_number: '',
+                  payment_method: 'cash' as PaymentMethod,
+                  amount: orderCash,
+                  reference_number: null,
+                  notes: null,
+                },
+              ]
+            : [];
 
         const created = (await createOrder(order as any, orderItems, orderPaymentsData)) as {
           order_number?: string;
@@ -5461,6 +5685,12 @@ export default function POSTerminal() {
       }
 
       checkoutIdempotencyKeyRef.current = null;
+      flushSync(() => {
+        setPaymentDialogOpen(false);
+        setCashReceived(null);
+        setCreditAmount(null);
+        setPayments([]);
+      });
       clearCartAndNavDraft();
 
       if (replacesOrderIdForSale) {
@@ -5569,14 +5799,10 @@ export default function POSTerminal() {
       }
 
       clearPosSaleImportContext();
-      setPayments([]);
       setDiscount({ type: 'amount', value: '' });
       setPromoCodeInput('');
       setLoyaltyRedeemPoints(0);
       resetCustomerSelection();
-      setPaymentDialogOpen(false);
-      setCashReceived(null);
-      setCreditAmount(null);
       setSelectedCartIndex(-1);
 
       // Refresh customer data to ensure sync
@@ -5653,6 +5879,14 @@ export default function POSTerminal() {
       if (e.key === 'F9') {
         e.preventDefault();
         if (cart.length > 0 && !paymentDialogOpen && !isProcessingPayment) {
+          if (stockRiskCount > 0) {
+            toast({
+              title: t('pos.stock_insufficient_title', { defaultValue: 'Yetarli qoldiq yo‘q' }),
+              description: stockBlockedReason,
+              variant: 'destructive',
+            });
+            return;
+          }
           const canFastCash =
             currentShift &&
             !waitingOrdersDialogOpen &&
@@ -5671,7 +5905,18 @@ export default function POSTerminal() {
       if (e.key === 'F8') {
         e.preventDefault();
         if (paymentDialogOpen || waitingOrdersDialogOpen) return;
-        setExchangeReturnMode((v) => !v);
+        setExchangeReturnMode((v) => {
+          if (!v) {
+            const ok = window.confirm(
+              t('pos.exchange.return_mode_confirm', {
+                defaultValue:
+                  'Qaytarish rejimiga o‘tasizmi? Keyingi mahsulotlar manfiy (qaytarish) qator sifatida qo‘shiladi.',
+              }),
+            );
+            if (!ok) return v;
+          }
+          return !v;
+        });
         return;
       }
 
@@ -5780,6 +6025,10 @@ export default function POSTerminal() {
     isDiscountActionDisabled,
     hasReturnLine,
     handleCompletePayment,
+    stockRiskCount,
+    stockBlockedReason,
+    t,
+    toast,
   ]);
 
   // Get products to display (search results or all products filtered by category)
@@ -5813,9 +6062,7 @@ export default function POSTerminal() {
   const quickProductCandidates = useMemo(() => {
     const term = quickProductSearch.trim();
     const source = term ? allProducts : favoriteProducts;
-    return source
-      .filter((product) => productMatchesPosTextFilter(product, term))
-      .slice(0, 30);
+    return filterPosProductsBySearchTerm(source, term).slice(0, 30);
   }, [allProducts, favoriteProducts, quickProductSearch]);
 
   const toggleQuickProduct = useCallback((productId: string) => {
@@ -5871,6 +6118,20 @@ export default function POSTerminal() {
                   <Loader2 className="h-2.5 w-2.5 animate-spin shrink-0" aria-hidden />
                   Katalog yuklanmoqda…
                 </p>
+              )}
+              {catalogLoadError && (
+                <div className="mb-1.5 flex flex-wrap items-center justify-between gap-2 rounded-md border border-amber-200 bg-amber-50 px-2 py-1.5 text-[11px] text-amber-950">
+                  <span className="min-w-0 flex-1">{catalogLoadError}</span>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    className="h-6 px-2 text-[10px]"
+                    onClick={() => void loadAllProducts()}
+                  >
+                    {t('common.retry', { defaultValue: 'Qayta urinish' })}
+                  </Button>
+                </div>
               )}
               <TooltipProvider delayDuration={300}>
                 <div className="flex min-w-0 items-center gap-1">
@@ -6055,6 +6316,9 @@ export default function POSTerminal() {
                 onFocusSearch={focusSearchInput}
                 renderSkuWithHighlight={renderSkuWithHighlight}
                 categoryNameById={categoryNameById}
+                allowOutOfStockAdd={exchangeReturnMode}
+                loadError={catalogLoadError}
+                onRetryLoad={() => void loadAllProducts()}
                 t={t}
               />
             </div>
@@ -6139,8 +6403,18 @@ export default function POSTerminal() {
                       Chegirma holatini to'g'rilang: {discountActionDisabledReason}
                     </p>
                   )}
+                  {stockRiskCount > 0 && (
+                    <p className="rounded border border-destructive/40 bg-destructive/10 px-2 py-1.5 text-[11px] font-medium text-destructive">
+                      {stockBlockedReason}
+                      {stockRiskLines.slice(0, 2).map((line) => (
+                        <span key={line.productId} className="mt-0.5 block font-normal opacity-90">
+                          {line.productName}: {line.requested} &gt; {line.available}
+                        </span>
+                      ))}
+                    </p>
+                  )}
                   {exchangeReturnMode && (
-                    <p className="rounded bg-amber-50 px-2 py-1 text-[10px] text-amber-800 dark:bg-amber-950/40 dark:text-amber-200">
+                    <p className="rounded border-2 border-amber-600 bg-amber-100 px-2 py-2 text-xs font-semibold text-amber-950 dark:border-amber-400 dark:bg-amber-950/60 dark:text-amber-100">
                       {t('pos.exchange.return_mode_banner')}
                     </p>
                   )}
@@ -6788,9 +7062,27 @@ export default function POSTerminal() {
                 <Button
                   className="h-11 w-full touch-manipulation bg-green-600 text-sm font-semibold text-white hover:bg-green-700 disabled:cursor-not-allowed disabled:bg-muted disabled:text-muted-foreground"
                   size="lg"
-                  disabled={cart.length === 0 || isDiscountActionDisabled || !currentShift || isProcessingPayment}
+                  disabled={
+                    cart.length === 0 ||
+                    isDiscountActionDisabled ||
+                    !currentShift ||
+                    isProcessingPayment ||
+                    stockRiskCount > 0
+                  }
                   title={paymentDisabledReason || undefined}
-                  onClick={() => setPaymentDialogOpen(true)}
+                  onClick={() => {
+                    if (stockRiskCount > 0) {
+                      toast({
+                        title: t('pos.stock_insufficient_title', {
+                          defaultValue: 'Yetarli qoldiq yo‘q',
+                        }),
+                        description: stockBlockedReason,
+                        variant: 'destructive',
+                      });
+                      return;
+                    }
+                    setPaymentDialogOpen(true);
+                  }}
                 >
                   <DollarSign className="mr-1.5 h-4 w-4" />
                   {t('pos.pay_checkout')}
@@ -6850,7 +7142,20 @@ export default function POSTerminal() {
               title={`${t('pos.exchange.return_mode_short')} (F8)`}
               aria-label={`${t('pos.exchange.return_mode_short')} (F8)`}
               aria-pressed={exchangeReturnMode}
-              onClick={() => setExchangeReturnMode((v) => !v)}
+              onClick={() =>
+                setExchangeReturnMode((v) => {
+                  if (!v) {
+                    const ok = window.confirm(
+                      t('pos.exchange.return_mode_confirm', {
+                        defaultValue:
+                          'Qaytarish rejimiga o‘tasizmi? Keyingi mahsulotlar manfiy (qaytarish) qator sifatida qo‘shiladi.',
+                      }),
+                    );
+                    if (!ok) return v;
+                  }
+                  return !v;
+                })
+              }
             >
               <ArrowLeftRight className="h-5 w-5" />
             </Button>
@@ -7186,7 +7491,20 @@ export default function POSTerminal() {
         </DialogContent>
       </Dialog>
 
-      <Dialog open={paymentDialogOpen} onOpenChange={setPaymentDialogOpen}>
+      <Dialog
+        open={paymentDialogOpen}
+        onOpenChange={(open) => {
+          if (open && stockRiskCount > 0) {
+            toast({
+              title: t('pos.stock_insufficient_title', { defaultValue: 'Yetarli qoldiq yo‘q' }),
+              description: stockBlockedReason,
+              variant: 'destructive',
+            });
+            return;
+          }
+          setPaymentDialogOpen(open);
+        }}
+      >
         <DialogContent className="flex max-h-[min(92dvh,840px)] w-[min(calc(100vw-1rem),42rem)] max-w-[min(calc(100vw-1rem),42rem)] flex-col gap-4 overflow-y-auto overflow-x-hidden pb-[max(1.25rem,env(safe-area-inset-bottom))] sm:max-w-2xl">
           <DialogHeader>
             <DialogTitle>{t('pos.process_payment')}</DialogTitle>
@@ -7231,12 +7549,14 @@ export default function POSTerminal() {
               <Button
                 className="w-full"
                 variant="destructive"
-                disabled={isDiscountActionDisabled}
+                disabled={isDiscountActionDisabled || isProcessingPayment}
                 onClick={() => handleCompletePayment(POS_EXCHANGE_PAYOUT_METHOD)}
               >
-                {t('pos.exchange.refund_confirm_with_amount', {
-                  amount: formatCurrency(Math.abs(total)),
-                })}
+                {isProcessingPayment
+                  ? 'Jarayonda...'
+                  : t('pos.exchange.refund_confirm_with_amount', {
+                      amount: formatCurrency(Math.abs(total)),
+                    })}
               </Button>
               {selectedCustomer && !isWalkInCustomer(selectedCustomer) ? (
                 <>
@@ -7246,12 +7566,14 @@ export default function POSTerminal() {
                   <Button
                     className="w-full"
                     variant="secondary"
-                    disabled={isDiscountActionDisabled}
+                    disabled={isDiscountActionDisabled || isProcessingPayment}
                     onClick={() => handleCompletePayment(POS_EXCHANGE_BALANCE_METHOD)}
                   >
-                    {t('pos.exchange.refund_balance_with_amount', {
-                      amount: formatCurrency(Math.abs(total)),
-                    })}
+                    {isProcessingPayment
+                      ? 'Jarayonda...'
+                      : t('pos.exchange.refund_balance_with_amount', {
+                          amount: formatCurrency(Math.abs(total)),
+                        })}
                   </Button>
                 </>
               ) : (
@@ -7260,16 +7582,31 @@ export default function POSTerminal() {
                 </p>
               )}
             </div>
-          ) : total === 0 ? (
+          ) : shouldShowZeroSettlePaymentUi({ cartLength: cart.length, total }) ? (
             <div className="space-y-4">
               <p className="text-sm text-muted-foreground">{t('pos.exchange.zero_settle_intro')}</p>
               <Button
                 className="w-full"
-                disabled={isDiscountActionDisabled}
+                disabled={
+                  isDiscountActionDisabled ||
+                  isProcessingPayment ||
+                  !isZeroTotalSaleAllowed({
+                    subtotal: totals.subtotal,
+                    discountAmount: totals.discountAmount,
+                    loyaltyDiscountAmount: totals.loyaltyDiscountUzs,
+                    hasPromo: discount.type === 'promo' || Boolean(promoCodeInput.trim()),
+                    loyaltyRedeemPoints: totals.loyaltyRedeemPointsApplied,
+                    userRole: profile?.role,
+                  })
+                }
                 onClick={() => handleCompletePayment('zero_settle')}
               >
-                {t('pos.exchange.zero_settle_button')}
+                {isProcessingPayment ? 'Jarayonda...' : t('pos.exchange.zero_settle_button')}
               </Button>
+            </div>
+          ) : cart.length === 0 ? (
+            <div className="space-y-2 py-4 text-center text-sm text-muted-foreground">
+              <p>{t('pos.empty_cart', { defaultValue: 'Savat bo‘sh' })}</p>
             </div>
           ) : (
           <Tabs defaultValue={isPaymentEnabled('cash') ? 'cash' : (isPaymentEnabled('card') ? 'card' : (isPaymentEnabled('qr') ? 'qr' : 'cash'))} className="w-full">
@@ -7669,7 +8006,18 @@ export default function POSTerminal() {
                 variant={exchangeReturnMode ? 'default' : 'outline'}
                 className="h-14 justify-between"
                 onClick={() => {
-                  setExchangeReturnMode((v) => !v);
+                  setExchangeReturnMode((v) => {
+                    if (!v) {
+                      const ok = window.confirm(
+                        t('pos.exchange.return_mode_confirm', {
+                          defaultValue:
+                            'Qaytarish rejimiga o‘tasizmi? Keyingi mahsulotlar manfiy (qaytarish) qator sifatida qo‘shiladi.',
+                        }),
+                      );
+                      if (!ok) return v;
+                    }
+                    return !v;
+                  });
                   setHotkeyGuideOpen(false);
                 }}
               >
@@ -7680,9 +8028,10 @@ export default function POSTerminal() {
                 type="button"
                 variant="outline"
                 className="h-14 justify-between"
-                disabled={cart.length === 0}
+                disabled={cart.length === 0 || stockRiskCount > 0}
                 onClick={() => {
                   setHotkeyGuideOpen(false);
+                  if (stockRiskCount > 0) return;
                   setPaymentDialogOpen(true);
                 }}
               >

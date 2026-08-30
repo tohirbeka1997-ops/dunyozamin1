@@ -27,6 +27,17 @@ test('mapStaffServiceError maps shift_closed to 409', () => {
   assert.equal(res.body.error, 'shift_closed');
 });
 
+test('mapStaffServiceError maps CONFLICT to 409', () => {
+  const res = mockRes();
+  mapStaffServiceError(
+    Object.assign(new Error('Cannot return over available qty'), { code: ERROR_CODES.CONFLICT }),
+    res,
+    { logTag: '[test]' },
+  );
+  assert.equal(res.statusCode, 409);
+  assert.equal(res.body.error, 'conflict');
+});
+
 test('mapStaffServiceError maps SQLITE errors to database_error', () => {
   const res = mockRes();
   mapStaffServiceError(Object.assign(new Error('no such column: currency'), { code: 'SQLITE_ERROR' }), res, {

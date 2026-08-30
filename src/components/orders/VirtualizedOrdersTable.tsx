@@ -13,6 +13,7 @@ type Props = {
   getEffectiveDiscountAmount?: (order: any) => number;
   getPaymentStatusBadge: (status: string) => JSX.Element;
   getStatusBadge: (status: string) => JSX.Element;
+  getReturnStatusBadge?: (status: string | null | undefined) => JSX.Element | null;
   getPaymentMethodIcons: (order: any) => JSX.Element | string;
   onView: (id: string) => void;
   onPrint: (id: string) => void;
@@ -20,7 +21,11 @@ type Props = {
   onEditPos?: (id: string) => void;
   canEditInPos?: (order: any) => boolean;
   onReturn: (id: string) => void;
+  /** Completed POS orders that may show return action (enabled or disabled). */
+  showReturnAction?: (order: any) => boolean;
   canReturn: (order: any) => boolean;
+  returnFullyReturnedLabel?: string;
+  returnFullyReturnedTooltip?: string;
   hasMore: boolean;
   loadingMore: boolean;
   loadMore: () => void;
@@ -36,13 +41,17 @@ export default function VirtualizedOrdersTable({
   getEffectiveDiscountAmount,
   getPaymentStatusBadge,
   getStatusBadge,
+  getReturnStatusBadge,
   getPaymentMethodIcons,
   onView,
   onPrint,
   onEditPos,
   canEditInPos,
   onReturn,
+  showReturnAction,
   canReturn,
+  returnFullyReturnedLabel = "To'liq qaytarilgan",
+  returnFullyReturnedTooltip = "Bu sotuv to'liq qaytarilgan. Yangi qaytarish yaratib bo'lmaydi.",
   hasMore,
   loadingMore,
   loadMore,
@@ -131,7 +140,19 @@ export default function VirtualizedOrdersTable({
                 <div className="col-span-2 text-xs">{o.cashier_name || '-'}</div>
                 <div className="col-span-2 text-xs truncate">{o.customer_name || 'Yangi mijoz'}</div>
                 <div className="col-span-2 text-right text-xs">
-                  <div className="font-medium tabular-nums">{formatOrderMoney(o, o.total_amount)}</div>
+                  <div className="font-medium tabular-nums">
+                    {formatOrderMoney(o, o.gross_total ?? o.total_amount)}
+                  </div>
+                  {Number(o.returned_total || 0) > 0 ? (
+                    <div className="text-[11px] text-destructive tabular-nums">
+                      −{formatOrderMoney(o, o.returned_total)} →{' '}
+                      {formatOrderMoney(
+                        o,
+                        o.net_total ??
+                          Math.max(0, Number(o.total_amount || 0) - Number(o.returned_total || 0)),
+                      )}
+                    </div>
+                  ) : null}
                   {disc > 0 ? (
                     <div className="flex justify-end mt-0.5">
                       <Badge
@@ -146,6 +167,9 @@ export default function VirtualizedOrdersTable({
                   <div className="flex justify-end gap-1 mt-0.5 flex-wrap">
                     {getPaymentStatusBadge(o.payment_status)}
                     {getStatusBadge(o.status)}
+                    {typeof getReturnStatusBadge === 'function'
+                      ? getReturnStatusBadge(o.return_status)
+                      : null}
                   </div>
                   <div className="text-[11px] text-muted-foreground mt-0.5 truncate">{getPaymentMethodIcons(o)}</div>
                 </div>
@@ -167,17 +191,37 @@ export default function VirtualizedOrdersTable({
                   <Button variant="ghost" size="icon" onClick={() => onPrint(o.id)} title="Chek">
                     <Printer className="h-4 w-4" />
                   </Button>
-                  {canReturn(o) && (
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      onClick={() => onReturn(o.id)}
-                      title="Qaytarish"
-                      className="text-orange-500 hover:text-orange-600 hover:bg-orange-50"
-                    >
-                      <RotateCcw className="h-4 w-4" />
-                    </Button>
-                  )}
+                  {(() => {
+                    const showReturnSlot =
+                      typeof showReturnAction === 'function' ? showReturnAction(o) : canReturn(o);
+                    if (!showReturnSlot) return null;
+                    if (canReturn(o)) {
+                      return (
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          onClick={() => onReturn(o.id)}
+                          title={t('orders.return_sale', { defaultValue: 'Sotuvni qaytarish' })}
+                          aria-label={t('orders.return_sale', { defaultValue: 'Sotuvni qaytarish' })}
+                          className="text-orange-500 hover:text-orange-600 hover:bg-orange-50"
+                        >
+                          <RotateCcw className="h-4 w-4" />
+                        </Button>
+                      );
+                    }
+                    return (
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        disabled
+                        title={returnFullyReturnedTooltip}
+                        aria-label={returnFullyReturnedLabel}
+                        className="text-muted-foreground opacity-60"
+                      >
+                        <RotateCcw className="h-4 w-4" />
+                      </Button>
+                    );
+                  })()}
                 </div>
               </div>
               );

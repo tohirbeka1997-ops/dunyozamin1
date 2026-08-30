@@ -94,6 +94,30 @@ function registerPurchasesHandlers(services) {
     return purchases.deleteExpense(purchaseOrderId, expenseId);
   }));
 
+  console.log('Registering pos:purchases:createCostCorrection handler...');
+  ipcMain.removeHandler('pos:purchases:createCostCorrection');
+  ipcMain.handle('pos:purchases:createCostCorrection', wrapHandler(async (_event, payload) => {
+    return purchases.createCostCorrection(payload || {});
+  }));
+
+  console.log('Registering pos:purchases:approveCostCorrection handler...');
+  ipcMain.removeHandler('pos:purchases:approveCostCorrection');
+  ipcMain.handle('pos:purchases:approveCostCorrection', wrapHandler(async (_event, correctionId, opts) => {
+    return purchases.approveCostCorrection(correctionId, opts || {});
+  }));
+
+  console.log('Registering pos:purchases:listCostCorrections handler...');
+  ipcMain.removeHandler('pos:purchases:listCostCorrections');
+  ipcMain.handle('pos:purchases:listCostCorrections', wrapHandler(async (_event, purchaseOrderId) => {
+    return purchases.listCostCorrections(purchaseOrderId);
+  }));
+
+  console.log('Registering pos:purchases:exportList handler...');
+  ipcMain.removeHandler('pos:purchases:exportList');
+  ipcMain.handle('pos:purchases:exportList', wrapHandler(async (_event, filters, opts) => {
+    return purchases.exportList(filters || {}, opts || {});
+  }));
+
   console.log('All purchases handlers registered successfully');
 }
 

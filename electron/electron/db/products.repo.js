@@ -15,7 +15,7 @@ function listProducts(params = {}) {
     let query = 'SELECT * FROM products WHERE 1=1';
     const conditions = [];
     const values = [];
-    // Search filter
+    // Search filter (name / SKU / barcode / article / brand)
     const term = String(search || '').trim();
     if (term) {
         const searchPattern = `%${term}%`;

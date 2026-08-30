@@ -1,5 +1,10 @@
 const { ERROR_CODES, createError } = require('../lib/errors.cjs');
 const { randomUUID } = require('crypto');
+const {
+  assertStockAdjustmentQty,
+  DEFAULT_MAX_STOCK_ADJUSTMENT,
+  MANUAL_STOCK_ADJUSTMENT_TYPES,
+} = require('../lib/posHardening.cjs');
 const { formatYmdInTimeZone, UZBEKISTAN_TZ_SQLITE_OFFSET } = require('../lib/timezone.cjs');
 
 /**
@@ -12,6 +17,8 @@ class InventoryService {
     this.batchService = batchService;
     /** @type {null | { findOpenRevision?: (warehouseId: string) => any }} */
     this.inventoryRevisions = null;
+    /** @type {null | { logStockAdjustment?: Function, log?: Function }} */
+    this.audit = null;
   }
 
   /**
@@ -289,6 +296,14 @@ class InventoryService {
       throw createError(ERROR_CODES.VALIDATION_ERROR, 'Adjustment reason is required');
     }
 
+    const adjType = String(adjustmentData.adjustment_type || 'adjustment').trim();
+    if (!MANUAL_STOCK_ADJUSTMENT_TYPES.has(adjType)) {
+      throw createError(
+        ERROR_CODES.VALIDATION_ERROR,
+        `Invalid adjustment type: ${adjType}`
+      );
+    }
+
     // Soft-lock: block manual adjustments while a warehouse revision is open.
     // Revision complete passes allow_during_open_revision: true.
     // Sales/purchases/returns do not go through adjustStock and are not blocked.
@@ -300,6 +315,29 @@ class InventoryService {
           `Ochiq ombor reviziyasi bor (${open.revision_number}). Qo'lda qoldiq to'g'rilash bloklangan — avval reviziyani yakunlang yoki bekor qiling.`
         );
       }
+    }
+
+    let maxAdjustmentQty = DEFAULT_MAX_STOCK_ADJUSTMENT;
+    let approvalRequired = false;
+    try {
+      const settingsRow = this.db
+        .prepare(
+          `SELECT value FROM settings WHERE category = 'inventory' OR key LIKE 'inventory.%' LIMIT 1`
+        )
+        .get();
+      // Prefer structured inventory settings blob when present
+      const invBlob = this.db
+        .prepare(`SELECT value FROM settings WHERE key = 'inventory' LIMIT 1`)
+        .get();
+      const raw = invBlob?.value || settingsRow?.value;
+      if (raw) {
+        const parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;
+        const max = Number(parsed?.max_adjustment_qty);
+        if (Number.isFinite(max) && max > 0) maxAdjustmentQty = max;
+        approvalRequired = !!parsed?.adjustment_approval_required;
+      }
+    } catch {
+      /* keep defaults */
     }
 
     // Use transaction for multi-step operation
@@ -346,6 +384,32 @@ class InventoryService {
         const qty = Number(item.quantity || 0) || 0;
         const absQty = Math.abs(qty);
 
+        // Enforce qty > 0 + limits for all manual types except absolute "set".
+        if (type !== 'set') {
+          if (!(absQty > 0) || !Number.isFinite(absQty)) {
+            throw createError(
+              ERROR_CODES.VALIDATION_ERROR,
+              'Adjustment quantity must be a number greater than 0'
+            );
+          }
+          if (!adjustmentData.allow_during_open_revision) {
+            const limitCheck = assertStockAdjustmentQty(absQty, {
+              maxQty: maxAdjustmentQty,
+              approvalRequired,
+              userRole: adjustmentData.user_role || adjustmentData.userRole || null,
+              authorized: adjustmentData.authorized === true,
+              approverId: adjustmentData.approver_id || adjustmentData.approverId || null,
+            });
+            if (!limitCheck.ok) {
+              throw createError(
+                limitCheck.code === 'CONFLICT' ? ERROR_CODES.CONFLICT : ERROR_CODES.VALIDATION_ERROR,
+                limitCheck.error,
+                { max: maxAdjustmentQty, requested: absQty }
+              );
+            }
+          }
+        }
+
         let adjustmentQuantity = 0; // signed delta
         if (type === 'set') {
           const target = Number(item.target_quantity || 0) || 0;
@@ -356,6 +420,13 @@ class InventoryService {
           adjustmentQuantity = -absQty;
         } else {
           adjustmentQuantity = qty;
+        }
+
+        if (!(Math.abs(adjustmentQuantity) > 0)) {
+          throw createError(
+            ERROR_CODES.VALIDATION_ERROR,
+            'Adjustment delta must not be zero'
+          );
         }
 
         // Batch mode: adjustments must also keep batches consistent.
@@ -428,10 +499,45 @@ class InventoryService {
         WHERE aai.adjustment_id = ?
       `).all(adjustmentId);
 
-      return {
+      const result = {
         ...adjustment,
         items,
       };
+
+      try {
+        if (this.audit?.logStockAdjustment) {
+          this.audit.logStockAdjustment(result, adjustmentData.created_by || null);
+        } else if (this.audit?.log) {
+          this.audit.log({
+            action: 'adjust',
+            entity_type: 'inventory',
+            entity_id: adjustmentId,
+            old_values: {
+              items: items.map((it) => ({
+                product_id: it.product_id,
+                before_quantity: it.before_quantity,
+              })),
+            },
+            new_values: {
+              adjustment_number: adjustmentNumber,
+              warehouse_id: adjustmentData.warehouse_id,
+              reason: adjustmentData.reason.trim(),
+              items: items.map((it) => ({
+                product_id: it.product_id,
+                product_name: it.product_name,
+                before_quantity: it.before_quantity,
+                adjustment_quantity: it.adjustment_quantity,
+                after_quantity: it.after_quantity,
+              })),
+            },
+            user_id: adjustmentData.created_by || null,
+          });
+        }
+      } catch (auditErr) {
+        console.warn('[inventory] audit log failed:', auditErr?.message || auditErr);
+      }
+
+      return result;
     })();
   }
 
@@ -441,9 +547,16 @@ class InventoryService {
    * This method atomically checks and updates stock to prevent race conditions
    */
   _updateBalance(productId, warehouseId, quantityChange, moveType, referenceType, referenceId, reason, createdBy) {
-    return this.db.transaction(() => {
+    const run = this.db.transaction(() => {
     // Use SQLite-friendly datetime format (consistent across services)
     const now = new Date().toISOString().replace('T', ' ').replace('Z', '').substring(0, 19);
+
+    // Serialize concurrent cashiers on the same SKU (SQLite write lock + product touch).
+    try {
+      this.db.prepare('UPDATE products SET id = id WHERE id = ?').run(productId);
+    } catch {
+      /* products row may be missing briefly — stock check below still fails safely */
+    }
 
     // SINGLE SOURCE OF TRUTH: inventory_movements
     // Compute stock from movements, not from stock_balances
@@ -460,7 +573,15 @@ class InventoryService {
         const productName = product ? product.name : productId;
         throw createError(ERROR_CODES.INSUFFICIENT_STOCK, 
           `Insufficient stock for ${productName}. Available: ${beforeQuantity}, Requested: ${Math.abs(quantityChange)}`,
-          { productId, productName, available: beforeQuantity, requested: Math.abs(quantityChange) });
+          {
+            productId,
+            productName,
+            available: beforeQuantity,
+            requested: Math.abs(quantityChange),
+            available_stock: beforeQuantity,
+            requested_qty: Math.abs(quantityChange),
+            product_name: productName,
+          });
       }
     }
 
@@ -470,7 +591,17 @@ class InventoryService {
       const productName = product ? product.name : productId;
       throw createError(ERROR_CODES.INSUFFICIENT_STOCK, 
         `Stock cannot go negative for ${productName}. Current: ${beforeQuantity}, Change: ${quantityChange}`,
-        { productId, productName, current: beforeQuantity, change: quantityChange });
+        {
+          productId,
+          productName,
+          current: beforeQuantity,
+          change: quantityChange,
+          available: beforeQuantity,
+          requested: Math.abs(quantityChange),
+          available_stock: beforeQuantity,
+          requested_qty: Math.abs(quantityChange),
+          product_name: productName,
+        });
     }
 
     // Insert inventory movement (ledger)
@@ -550,7 +681,8 @@ class InventoryService {
     console.log(`📦 Updated products.current_stock for ${productId}: ${totalQuantity} (warehouse ${warehouseId}: ${afterQuantity})`);
 
     return { beforeQuantity, afterQuantity, moveId: movementId };
-    })();
+    });
+    return run.immediate();
   }
 
   /**

@@ -14,6 +14,7 @@ const FRACTIONAL_UNITS = [
   'm3',
   'm²',
   'm³',
+  'sqm',
   'l',
   'л',
   'lt',
@@ -92,10 +93,22 @@ export const clampSignedQuantityForUnit = (value: number, unit?: string): number
   return -absClamped;
 };
 
-export const formatQuantity = (value: number, unit?: string): string => {
+/**
+ * Display stock/qty without corrupting fractional values.
+ * - unit string: pcs → int; kg/m/L → up to 3 decimals (trailing zeros trimmed)
+ * - number: explicit decimal precision (unitPrecision overload from TZ)
+ */
+export const formatQuantity = (value: number, unitOrPrecision?: string | number): string => {
   if (!isFinite(value)) return '0';
-  if (isFractionalUnit(unit)) {
-    return roundTo(value, FRACTIONAL_DECIMALS).toFixed(FRACTIONAL_DECIMALS);
+  if (typeof unitOrPrecision === 'number') {
+    const decimals = Math.max(0, Math.min(8, Math.floor(unitOrPrecision)));
+    const rounded = roundTo(value, decimals);
+    if (decimals === 0) return String(Math.round(rounded));
+    return String(Number(rounded.toFixed(decimals)));
+  }
+  if (isFractionalUnit(unitOrPrecision)) {
+    const rounded = roundTo(value, FRACTIONAL_DECIMALS);
+    return String(Number(rounded.toFixed(FRACTIONAL_DECIMALS)));
   }
   return String(Math.round(value));
 };

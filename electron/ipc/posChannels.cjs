@@ -23,6 +23,7 @@ module.exports = {
     'pos:products:create',
     'pos:products:update',
     'pos:products:delete',
+    'pos:products:getDeleteImpact',
     // Ommaviy narx yangilash (bulk price update + undo)
     'pos:products:bulkAdjustPrices',
     'pos:products:undoBulkPriceUpdate',
@@ -141,7 +142,12 @@ module.exports = {
     'pos:returns:getOrderDetails',
     'pos:returns:update',
     'pos:returns:delete',
+    'pos:returns:cancel',
     'pos:returns:complete',
+    'pos:returns:approve',
+    'pos:returns:reject',
+    'pos:returns:reasonBreakdown',
+    'pos:returns:auditTrail',
 
     // Purchases
     'pos:purchases:list',
@@ -180,6 +186,7 @@ module.exports = {
     'pos:shifts:cashIn',
     'pos:shifts:cashOut',
     'pos:shifts:listCashMovements',
+    'pos:shifts:reopen',
 
     // Reports
     'pos:reports:dailySales',

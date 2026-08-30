@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useLocation, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -13,13 +13,19 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
-import { getCustomerById, getCustomers, createCustomer, updateCustomer, findCustomerByPhone } from '@/db/api';
+import { getCustomerById, getCustomers, createCustomer, updateCustomer, findCustomerByPhone, findCustomerDuplicates } from '@/db/api';
 import type { Customer } from '@/types/database';
 import { useAuth } from '@/contexts/AuthContext';
 import { ArrowLeft, Save } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
-import { navigateBackTo, resolveBackTarget } from '@/lib/pageState';
+import { useFormListReturn } from '@/hooks/useFormListReturn';
 import { DUPLICATE_PHONE_MESSAGE_UZ, formatUserFacingError } from '@/utils/electron';
+import {
+  assertInitialBonusPoints,
+  assertOptionalEmail,
+  assertOptionalUzPhone,
+  DEFAULT_INITIAL_BONUS_LIMIT,
+} from '@/lib/posHardening';
 
 export default function CustomerForm() {
   const { id } = useParams<{ id: string }>();
@@ -30,9 +36,12 @@ export default function CustomerForm() {
   const { profile } = useAuth();
   const isAdmin = profile?.role === 'admin';
   const fromParam = searchParams.get('from'); // 'pos' or null
-  const backTo = resolveBackTarget(location, '/customers');
+  const { goToList, leaveToList } = useFormListReturn({ fallbackListPath: '/customers' });
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [dupCandidates, setDupCandidates] = useState<
+    Array<{ id: string; name: string; phone?: string | null; email?: string | null; match: string }>
+  >([]);
   const [formData, setFormData] = useState({
     name: '',
     phone: id ? '' : '+998',
@@ -47,11 +56,26 @@ export default function CustomerForm() {
     bonus_points: 0,
     telegram: '',
   });
+  const baselineSnapshotRef = useRef<string | null>(null);
+  const [initialLoadDone, setInitialLoadDone] = useState(!id);
+
+  const formSnapshot = useMemo(() => JSON.stringify(formData), [formData]);
+  const isDirty =
+    baselineSnapshotRef.current !== null && formSnapshot !== baselineSnapshotRef.current;
+
+  useEffect(() => {
+    if (!initialLoadDone || loading) return;
+    if (baselineSnapshotRef.current !== null) return;
+    baselineSnapshotRef.current = formSnapshot;
+  }, [initialLoadDone, loading, formSnapshot]);
 
   useEffect(() => {
     if (id) {
-      loadCustomer();
+      void loadCustomer();
+    } else {
+      setInitialLoadDone(true);
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id]);
 
   const loadCustomer = async () => {
@@ -100,9 +124,10 @@ export default function CustomerForm() {
         description: 'Mijozni yuklab bo\'lmadi',
         variant: 'destructive',
       });
-      navigate(backTo);
+      goToList();
     } finally {
       setLoading(false);
+      setInitialLoadDone(true);
     }
   };
 
@@ -130,13 +155,35 @@ export default function CustomerForm() {
 
     const phoneInput = formData.phone?.trim();
     if (phoneInput) {
-      const digits = phoneInput.replace(/\D/g, '');
-      const validPhone =
-        digits.length === 9 || (digits.length === 12 && digits.startsWith('998'));
-      if (!validPhone) {
+      const phoneGate = assertOptionalUzPhone(phoneInput);
+      if (!phoneGate.ok) {
         toast({
           title: 'Validatsiya xatosi',
           description: "Telefon raqami noto'g'ri formatda. Masalan: +998 90 123 45 67",
+          variant: 'destructive',
+        });
+        return;
+      }
+    }
+
+    const emailGate = assertOptionalEmail(formData.email);
+    if (!emailGate.ok) {
+      toast({
+        title: 'Validatsiya xatosi',
+        description: 'Email formati noto‘g‘ri',
+        variant: 'destructive',
+      });
+      return;
+    }
+
+    if (isAdmin) {
+      const bonusGate = assertInitialBonusPoints(formData.bonus_points, {
+        maxInitial: DEFAULT_INITIAL_BONUS_LIMIT,
+      });
+      if (!bonusGate.ok) {
+        toast({
+          title: 'Validatsiya xatosi',
+          description: bonusGate.error,
           variant: 'destructive',
         });
         return;
@@ -163,11 +210,30 @@ export default function CustomerForm() {
     try {
       setSaving(true);
 
+      if (!id) {
+        const dups = await findCustomerDuplicates({
+          phone: phoneInput || null,
+          email: emailGate.email,
+          name: formData.name.trim(),
+        });
+        setDupCandidates(dups);
+        if (dups.some((d) => d.match === 'phone')) {
+          const byPhone = dups.find((d) => d.match === 'phone');
+          toast({
+            title: 'Xatolik',
+            description: DUPLICATE_PHONE_MESSAGE_UZ,
+            variant: 'destructive',
+          });
+          if (byPhone) navigate(`/customers/${byPhone.id}`);
+          return;
+        }
+      }
+
       if (id) {
         await updateCustomer(id, {
           name: formData.name,
           phone: formData.phone || null,
-          email: formData.email || null,
+          email: emailGate.email,
           address: formData.address || null,
           type: formData.type,
           pricing_tier: formData.pricing_tier,
@@ -182,11 +248,11 @@ export default function CustomerForm() {
           title: 'Muvaffaqiyatli',
           description: 'Mijoz muvaffaqiyatli yangilandi',
         });
-        navigate(backTo);
+        goToList();
       } else {
-        const phoneInput = formData.phone?.trim();
-        if (phoneInput) {
-          const existingByPhone = await findCustomerByPhone(phoneInput);
+        const phoneInput2 = formData.phone?.trim();
+        if (phoneInput2) {
+          const existingByPhone = await findCustomerByPhone(phoneInput2);
           if (existingByPhone) {
             toast({
               title: 'Xatolik',
@@ -201,7 +267,7 @@ export default function CustomerForm() {
         const newCustomer = await createCustomer({
           name: formData.name,
           phone: formData.phone || null,
-          email: formData.email || null,
+          email: emailGate.email,
           address: formData.address || null,
           type: formData.type,
           pricing_tier: formData.pricing_tier,
@@ -224,7 +290,7 @@ export default function CustomerForm() {
           navigate('/pos');
         } else {
           // Otherwise navigate to customers list
-          navigate(backTo);
+          goToList();
         }
       }
     } catch (error) {
@@ -265,8 +331,14 @@ export default function CustomerForm() {
   return (
     <div className="space-y-6">
       <div className="flex items-center gap-4">
-        <Button variant="ghost" size="icon" onClick={() => navigateBackTo(navigate, location, '/customers')}>
-          <ArrowLeft className="h-4 w-4" />
+        <Button
+          variant="ghost"
+          size="icon"
+          onClick={() => void leaveToList(isDirty)}
+          aria-label="Mijozlar ro'yxatiga qaytish"
+          title="Orqaga"
+        >
+          <ArrowLeft className="h-4 w-4" aria-hidden="true" />
         </Button>
         <div>
           <h1 className="page-heading">{id ? 'Mijozni tahrirlash' : 'Yangi mijoz qo\'shish'}</h1>
@@ -278,6 +350,28 @@ export default function CustomerForm() {
 
       <form onSubmit={handleSubmit}>
         <div className="grid gap-6">
+          {!id && dupCandidates.length > 0 && (
+            <Card className="border-amber-500/50">
+              <CardHeader>
+                <CardTitle className="text-base">O‘xshash mijozlar</CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-2">
+                {dupCandidates.map((d) => (
+                  <button
+                    key={`${d.id}-${d.match}`}
+                    type="button"
+                    className="flex w-full items-center justify-between rounded-md border px-3 py-2 text-left text-sm hover:bg-muted"
+                    onClick={() => navigate(`/customers/${d.id}`)}
+                  >
+                    <span>
+                      {d.name} {d.phone ? `(${d.phone})` : ''} — {d.match}
+                    </span>
+                    <span className="text-xs text-muted-foreground">Ochish</span>
+                  </button>
+                ))}
+              </CardContent>
+            </Card>
+          )}
           <Card>
             <CardHeader>
               <CardTitle>Asosiy ma'lumotlar</CardTitle>
@@ -476,7 +570,7 @@ export default function CustomerForm() {
             <Button
               type="button"
               variant="outline"
-              onClick={() => navigateBackTo(navigate, location, '/customers')}
+              onClick={() => void leaveToList(isDirty)}
             >
               Bekor qilish
             </Button>

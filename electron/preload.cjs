@@ -90,6 +90,7 @@ contextBridge.exposeInMainWorld('posApi', {
     create: (data, actorUserId) => invoke('pos:products:create', data, actorUserId ?? null),
     update: (id, data, actorUserId) => invoke('pos:products:update', id, data, actorUserId ?? null),
     delete: (id, actorUserId) => invoke('pos:products:delete', id, actorUserId ?? null),
+    getDeleteImpact: (id) => invoke('pos:products:getDeleteImpact', id),
     bulkAdjustPrices: (payload, actorUserId) =>
       invoke('pos:products:bulkAdjustPrices', payload, actorUserId ?? null),
     undoBulkPriceUpdate: (batchId, actorUserId) =>
@@ -131,6 +132,8 @@ contextBridge.exposeInMainWorld('posApi', {
     getByLoyaltyQr: (payload) => invoke('pos:customers:getByLoyaltyQr', payload),
     getLoyaltyCard: (customerId) => invoke('pos:customers:getLoyaltyCard', customerId),
     findByPhone: (phone) => invoke('pos:customers:findByPhone', phone),
+    findDuplicates: (payload) => invoke('pos:customers:findDuplicates', payload),
+    reissueLoyaltyCard: (payload) => invoke('pos:customers:reissueLoyaltyCard', payload),
     create: (data) => invoke('pos:customers:create', data),
     update: (id, data) => invoke('pos:customers:update', id, data),
     delete: (id) => invoke('pos:customers:delete', id),
@@ -162,7 +165,10 @@ contextBridge.exposeInMainWorld('posApi', {
     delete: (id) => invoke('pos:suppliers:delete', id),
     getLedger: (supplierId, filters) => invoke('pos:suppliers:getLedger', supplierId, filters),
     createPayment: (payload) => invoke('pos:suppliers:createPayment', payload),
-    deletePayment: (paymentId) => invoke('pos:suppliers:deletePayment', paymentId),
+    deletePayment: (paymentId, opts) => invoke('pos:suppliers:deletePayment', paymentId, opts),
+    cancelPayment: (paymentId, opts) => invoke('pos:suppliers:cancelPayment', paymentId, opts),
+    listAdvances: (supplierId, opts) => invoke('pos:suppliers:listAdvances', supplierId, opts),
+    applyAdvance: (payload) => invoke('pos:suppliers:applyAdvance', payload),
     getPayments: (supplierId, filters) => invoke('pos:suppliers:getPayments', supplierId, filters),
     getPurchaseSummary: (supplierId, filters) => invoke('pos:suppliers:getPurchaseSummary', supplierId, filters),
     // Supplier Returns (credit notes)
@@ -218,6 +224,8 @@ contextBridge.exposeInMainWorld('posApi', {
     clearRevisionItemCount: (payload) => invoke('pos:inventory:clearRevisionItemCount', payload),
     countRevisionByBarcode: (payload) => invoke('pos:inventory:countRevisionByBarcode', payload),
     bulkSetRevisionItemCounts: (payload) => invoke('pos:inventory:bulkSetRevisionItemCounts', payload),
+    getRevisionCompletePreview: (revisionId) =>
+      invoke('pos:inventory:getRevisionCompletePreview', revisionId),
     completeRevision: (payload) => invoke('pos:inventory:completeRevision', payload),
     cancelRevision: (payload) => invoke('pos:inventory:cancelRevision', payload),
   },
@@ -246,7 +254,12 @@ contextBridge.exposeInMainWorld('posApi', {
     getOrderDetails: (orderId) => invoke('pos:returns:getOrderDetails', orderId),
     update: (returnId, payload) => invoke('pos:returns:update', returnId, payload),
     delete: (id) => invoke('pos:returns:delete', id),
-    complete: (id) => invoke('pos:returns:complete', id),
+    cancel: (returnId, data) => invoke('pos:returns:cancel', returnId, data),
+    complete: (id, data) => invoke('pos:returns:complete', id, data || {}),
+    approve: (returnId, data) => invoke('pos:returns:approve', returnId, data || {}),
+    reject: (returnId, data) => invoke('pos:returns:reject', returnId, data || {}),
+    reasonBreakdown: (filters) => invoke('pos:returns:reasonBreakdown', filters),
+    auditTrail: (returnId, limit) => invoke('pos:returns:auditTrail', returnId, limit),
   },
 
   // Purchases
@@ -263,6 +276,10 @@ contextBridge.exposeInMainWorld('posApi', {
     listExpenses: (purchaseOrderId) => invoke('pos:purchases:listExpenses', purchaseOrderId),
     addExpense: (purchaseOrderId, payload) => invoke('pos:purchases:addExpense', purchaseOrderId, payload),
     deleteExpense: (purchaseOrderId, expenseId) => invoke('pos:purchases:deleteExpense', purchaseOrderId, expenseId),
+    createCostCorrection: (payload) => invoke('pos:purchases:createCostCorrection', payload),
+    approveCostCorrection: (correctionId, opts) => invoke('pos:purchases:approveCostCorrection', correctionId, opts),
+    listCostCorrections: (purchaseOrderId) => invoke('pos:purchases:listCostCorrections', purchaseOrderId),
+    exportList: (filters, opts) => invoke('pos:purchases:exportList', filters, opts),
   },
 
   // Expenses
@@ -300,6 +317,7 @@ contextBridge.exposeInMainWorld('posApi', {
     list: (filters) => invoke('pos:shifts:list', filters),
     cashIn: (payload) => invoke('pos:shifts:cashIn', payload),
     cashOut: (payload) => invoke('pos:shifts:cashOut', payload),
+    reopen: (shiftId, data) => invoke('pos:shifts:reopen', shiftId, data),
     listCashMovements: (payload) => invoke('pos:shifts:listCashMovements', payload),
   },
 

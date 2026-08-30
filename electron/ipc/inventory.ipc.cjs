@@ -172,6 +172,11 @@ function registerInventoryHandlers(services) {
     return requireRevisions().bulkSetItemCounts(payload || {});
   }));
 
+  ipcMain.removeHandler('pos:inventory:getRevisionCompletePreview');
+  ipcMain.handle('pos:inventory:getRevisionCompletePreview', wrapHandler(async (_event, revisionId) => {
+    return requireRevisions().getCompletePreview(revisionId);
+  }));
+
   ipcMain.removeHandler('pos:inventory:completeRevision');
   ipcMain.handle('pos:inventory:completeRevision', wrapHandler(async (_event, payload) => {
     return requireRevisions().completeRevision(payload || {});

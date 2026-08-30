@@ -40,6 +40,8 @@ Bir domen (Nginx `/v1` → public-api) uchun `VITE_PUBLIC_API_URL` bo‘sh qolad
 
 **Muhim:** `TELEGRAM_WEB_APP_URL`, BotFather dagi Web App URL va brauzerdagi `https://app...` **bir xil** HTTPS bo‘lsin. `public-api` va `telegram-bot` **bir xil** `pos.db` (`POS_DATA_DIR`) ni ko‘rsatsin.
 
+**Mijoz operatsiya hisobotlari** (xarid / to‘lov / nasiya → shaxsiy chat): `docs/CUSTOMER-TELEGRAM-OPS-UZ.md`.
+
 ## 5. Xavfsizlik
 
 Token suhbatda yoki logda ochiq bo‘lsa, [@BotFather](https://t.me/BotFather) orqali **yangi token** oling va `.env` ni yangilang.

@@ -3,6 +3,19 @@ import { getProducts, getCategories, productUpdateEmitter } from '@/db/api';
 import { useAuth } from '@/contexts/AuthContext';
 import type { ProductWithCategory, Category } from '@/types/database';
 
+export type ProductsListBootstrap = {
+  products: ProductWithCategory[];
+  categories: Category[];
+  page: number;
+  hasMore: boolean;
+};
+
+type UseProductsOptions = {
+  /** Hydrate from in-memory cache (e.g. cancel-back from edit form). */
+  bootstrap?: ProductsListBootstrap | null;
+  skipInitialLoad?: boolean;
+};
+
 export function useProducts(
   includeInactive = true,
   filters?: {
@@ -15,20 +28,25 @@ export function useProducts(
     sortBy?: 'name' | 'sku' | 'created_at' | 'current_stock' | 'sale_price';
     sortOrder?: 'asc' | 'desc';
   },
-  pageSize: number = 200
+  pageSize: number = 200,
+  options?: UseProductsOptions,
 ) {
+  const bootstrap = options?.bootstrap ?? null;
+  const skipInitialLoadRef = useRef(Boolean(options?.skipInitialLoad && bootstrap));
   const { user, loading: authLoading } = useAuth();
-  const [products, setProducts] = useState<ProductWithCategory[]>([]);
-  const [categories, setCategories] = useState<Category[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [products, setProducts] = useState<ProductWithCategory[]>(bootstrap?.products ?? []);
+  const [categories, setCategories] = useState<Category[]>(bootstrap?.categories ?? []);
+  const [loading, setLoading] = useState(!bootstrap);
   const [loadingMore, setLoadingMore] = useState(false);
   const [error, setError] = useState<Error | null>(null);
-  const [page, setPage] = useState(0);
-  const [hasMore, setHasMore] = useState(false);
+  const [lastUpdatedAt, setLastUpdatedAt] = useState<Date | null>(bootstrap ? new Date() : null);
+  const [page, setPage] = useState(bootstrap?.page ?? 0);
+  const [hasMore, setHasMore] = useState(bootstrap?.hasMore ?? false);
 
   // Use refs to track loading state and prevent infinite loops
   const isLoadingRef = useRef(false);
   const lastLoadTimeRef = useRef(0);
+  const requestGenRef = useRef(0);
   const LOAD_DEBOUNCE_MS = 500; // Minimum time between loads
 
   const loadData = useCallback(async (opts?: { append?: boolean; pageOverride?: number; force?: boolean }) => {
@@ -46,6 +64,7 @@ export function useProducts(
 
     isLoadingRef.current = true;
     lastLoadTimeRef.current = now;
+    const requestGen = ++requestGenRef.current;
 
     try {
       if (opts?.append) setLoadingMore(true);
@@ -61,6 +80,7 @@ export function useProducts(
         }),
         getCategories(),
       ]);
+      if (requestGen !== requestGenRef.current) return;
       const term = String(filters?.searchTerm || '').trim().toLowerCase();
       const prioritize = (items: ProductWithCategory[]) => {
         const getRank = (p: ProductWithCategory) => {
@@ -81,11 +101,13 @@ export function useProducts(
       setCategories(categoriesData);
       setPage(effectivePage);
       setHasMore(Array.isArray(productsData) && productsData.length >= pageSize);
+      setLastUpdatedAt(new Date());
     } catch (err) {
+      if (requestGen !== requestGenRef.current) return;
       const error = err instanceof Error ? err : new Error('Failed to load products');
       console.error('Error loading products:', error);
       setError(error);
-      // Don't throw - let UI handle error state
+      // Keep previous products — never clear table on API/timeout failure
     } finally {
       setLoading(false);
       setLoadingMore(false);
@@ -103,6 +125,10 @@ export function useProducts(
   // Only run when auth state or includeInactive changes, NOT when loadData changes
   useEffect(() => {
     if (!authLoading && user) {
+      if (skipInitialLoadRef.current) {
+        skipInitialLoadRef.current = false;
+        return;
+      }
       loadData({ append: false, pageOverride: 0 });
     }
   }, [authLoading, user, includeInactive, filters?.searchTerm, filters?.categoryId, filters?.status, filters?.stockStatus, filters?.marketplace, filters?.sortBy, filters?.sortOrder, pageSize]); // keep stable, avoids infinite loops
@@ -151,6 +177,7 @@ export function useProducts(
     loading,
     loadingMore,
     error,
+    lastUpdatedAt,
     refetch: () => loadData({ append: false, pageOverride: 0, force: true }),
     loadMore,
     hasMore,

@@ -29,6 +29,8 @@ import {
   convertFromSettlementCurrency,
   type LedgerCurrency,
 } from '@/lib/supplierPaymentPayload';
+import { canAcceptSupplierOverpayAsAdvance, splitPaymentAgainstRemainder } from '@/lib/purchase/purchaseHardening';
+import { Checkbox } from '@/components/ui/checkbox';
 import { useAuth } from '@/contexts/AuthContext';
 import MoneyInput from '@/components/common/MoneyInput';
 import { useQueryClient } from '@tanstack/react-query';
@@ -62,6 +64,7 @@ export default function PaySupplierDialog({
   const [loading, setLoading] = useState(false);
   const [direction, setDirection] = useState<SupplierPaymentDirection>('pay');
   const [adjustPercent, setAdjustPercent] = useState(0);
+  const [acceptAsAdvance, setAcceptAsAdvance] = useState(false);
   const [paymentCurrency, setPaymentCurrency] = useState<PaymentCurrency>('UZS');
   const [fxRate, setFxRate] = useState<number | null>(null);
 
@@ -106,6 +109,7 @@ export default function PaySupplierDialog({
       setAdjustPercent(0);
       setPaymentCurrency('UZS');
       setFxRate(null);
+      setAcceptAsAdvance(false);
     }
   }, [open, purchaseOrder, supplier.balance]);
 
@@ -148,6 +152,10 @@ export default function PaySupplierDialog({
     ? convertFromSettlementCurrency(remainingAmount, poLedgerCur, paymentCurrency, fxRateSafe)
     : 0;
   const formatCurrency = (value: number, currency: PaymentCurrency) => formatMoney(value, currency);
+  const overpaySplit = purchaseOrder
+    ? splitPaymentAgainstRemainder(adjustedAmount, remainingInPaymentCurrency, paymentCurrency)
+    : { settleAmount: 0, advanceAmount: 0, requiresAdvanceAck: false };
+  const canOverpayAdvance = canAcceptSupplierOverpayAsAdvance(profile?.role);
 
   const handleSubmit = async () => {
     // Validation
@@ -178,17 +186,24 @@ export default function PaySupplierDialog({
       return;
     }
 
-    // If PO provided, validate amount doesn't exceed remaining
-    if (purchaseOrder && adjustedAmount > remainingInPaymentCurrency + 0.0001) {
-      toast({
-        title: 'Amount Exceeds Remaining',
-        description: `To'lov summasi qoldiqdan oshmasligi kerak: ${formatCurrency(
-          remainingInPaymentCurrency,
-          paymentCurrency
-        )}.`,
-        variant: 'destructive',
-      });
-      return;
+    // If PO provided, overpay requires explicit accept-as-advance + authority
+    if (purchaseOrder && overpaySplit.requiresAdvanceAck) {
+      if (!acceptAsAdvance) {
+        toast({
+          title: 'Amount Exceeds Remaining',
+          description: `Qoldiq: ${formatCurrency(remainingInPaymentCurrency, paymentCurrency)}. Ortiqchani avans sifatida qabul qilishni belgilang.`,
+          variant: 'destructive',
+        });
+        return;
+      }
+      if (!canOverpayAdvance) {
+        toast({
+          title: 'Ruxsat yo‘q',
+          description: 'Ortiqcha to‘lovni avans qilish uchun buxgalter/menejer kerak',
+          variant: 'destructive',
+        });
+        return;
+      }
     }
 
     try {
@@ -241,6 +256,8 @@ export default function PaySupplierDialog({
         payment_method: paymentMethod,
         note: fullNote,
         created_by: profile?.id || null,
+        accept_as_advance: acceptAsAdvance && overpaySplit.requiresAdvanceAck,
+        idempotency_key: `spay-${supplier.id}-${purchaseOrder?.id || 'none'}-${Date.now()}`,
       });
 
       if (!result.success) {
@@ -352,8 +369,22 @@ export default function PaySupplierDialog({
             required
             allowDecimals={paymentCurrency === 'USD'}
             min={paymentCurrency === 'USD' ? 0 : 1}
-            max={purchaseOrder ? remainingInPaymentCurrency : undefined}
+            max={purchaseOrder && !canOverpayAdvance ? remainingInPaymentCurrency : undefined}
           />
+
+          {purchaseOrder && canOverpayAdvance && overpaySplit.requiresAdvanceAck && (
+            <label className="flex items-start gap-2 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm">
+              <Checkbox
+                checked={acceptAsAdvance}
+                onCheckedChange={(v) => setAcceptAsAdvance(!!v)}
+                className="mt-0.5"
+              />
+              <span>
+                Ortiqcha {formatCurrency(overpaySplit.advanceAmount, paymentCurrency)} ni yetkazib
+                beruvchi <strong>avansi</strong> sifatida qabul qilish (qarz manfiy bo‘lmaydi)
+              </span>
+            </label>
+          )}
 
           {poCurrency === 'USD' && (
             <div className="space-y-2">

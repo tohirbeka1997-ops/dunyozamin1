@@ -833,7 +833,7 @@ export const assignProductsToCategory = async (
 export const deleteProduct = async (id: string) => {
   if (hasPosApi()) {
     const api = requireElectron();
-    const res = await ipc<{ success: boolean; softDeleted?: boolean }>(
+    const res = await ipc<{ success: boolean; softDeleted?: boolean; hardDeleted?: boolean }>(
       api.products.delete(id, getActorUserIdForAudit())
     );
     productUpdateEmitter.emit();
@@ -846,6 +846,23 @@ export const deleteProduct = async (id: string) => {
   // Hard delete in mock mode (for wrong entries)
   mockDB.products.splice(index, 1);
   productUpdateEmitter.emit();
-  return { success: true, softDeleted: false };
+  return { success: true, softDeleted: false, hardDeleted: true };
+};
+
+export const getProductDeleteImpact = async (id: string) => {
+  if (hasPosApi()) {
+    const api = requireElectron();
+    if (typeof (api.products as any).getDeleteImpact === 'function') {
+      return ipc<{
+        product_id: string;
+        name?: string;
+        sku?: string;
+        softDelete: boolean;
+        hardDelete: boolean;
+        refs?: Record<string, number>;
+      }>((api.products as any).getDeleteImpact(id));
+    }
+  }
+  return { product_id: id, softDelete: false, hardDelete: true, refs: {} };
 };
 

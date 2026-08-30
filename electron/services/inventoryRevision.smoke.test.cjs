@@ -73,6 +73,8 @@ try {
     purchase_price: 500,
     track_stock: 1,
     current_stock: 0,
+    unit: 'dona',
+    base_unit: 'dona',
   });
   const pB = products.create({
     name: 'Rev Smoke B',
@@ -82,6 +84,8 @@ try {
     purchase_price: 800,
     track_stock: 1,
     current_stock: 0,
+    unit: 'dona',
+    base_unit: 'dona',
   });
   const pC = products.create({
     name: 'Rev Smoke C',
@@ -91,6 +95,8 @@ try {
     purchase_price: 900,
     track_stock: 1,
     current_stock: 0,
+    unit: 'dona',
+    base_unit: 'dona',
   });
   ok('create 3 products');
 
@@ -110,9 +116,7 @@ try {
   assert.strictEqual(stockOf(inventory, pC.id), 7);
   ok('seed stock A=10 B=5 C=7');
 
-  const rev = inventoryRevisions.createRevision({
-    warehouse_id: WH,
-    created_by: ADMIN,
+  const rev = inventoryRevisions.createRevision({ warehouse_id: WH, created_by: ADMIN, responsible_user_id: ADMIN,
     notes: 'smoke',
   });
   assert.strictEqual(rev.status, 'in_progress');
@@ -215,28 +219,51 @@ try {
   // Only one open revision
   let duplicateBlocked = false;
   try {
-    inventoryRevisions.createRevision({ warehouse_id: WH, created_by: ADMIN });
+    inventoryRevisions.createRevision({ warehouse_id: WH, created_by: ADMIN, responsible_user_id: ADMIN });
   } catch (e) {
     duplicateBlocked = /Ochiq ombor reviziyasi bor/i.test(String(e.message || e));
   }
   assert.ok(duplicateBlocked, 'second open revision rejected');
   ok('createRevision rejects when another draft/in_progress exists');
 
+  // Partial complete must be rejected
+  let partialCompleteBlocked = false;
+  try {
+    inventoryRevisions.completeRevision({
+      revision_id: rev.id,
+      created_by: ADMIN,
+      user_role: 'admin',
+    });
+  } catch (e) {
+    partialCompleteBlocked = /not counted/i.test(String(e.message || e));
+  }
+  assert.ok(partialCompleteBlocked, 'complete with uncounted items rejected');
+  ok('completeRevision rejects when pending items remain');
+
+  // Count remaining product C then complete
+  inventoryRevisions.updateItemCount({
+    revision_id: rev.id,
+    product_id: pC.id,
+    counted_qty: 7,
+  });
+
   const completed = inventoryRevisions.completeRevision({
     revision_id: rev.id,
     created_by: ADMIN,
+    user_role: 'admin',
+    approve_stock_drift: true,
   });
   assert.strictEqual(completed.status, 'completed');
   assert.ok(completed.stock_changed_since_snapshot === true);
   assert.ok((completed.stock_drift_items || 0) >= 1);
-  assert.strictEqual(stockOf(inventory, pA.id), 9, 'A set to counted 9 (not live 4)');
-  assert.strictEqual(stockOf(inventory, pB.id), 5, 'B set to counted 5 (idempotent)');
-  assert.strictEqual(stockOf(inventory, pC.id), 7, 'C uncounted left unchanged');
-  ok('completeRevision applies only counted (A→9 despite live drift, B same, C untouched)');
+  assert.strictEqual(stockOf(inventory, pA.id), 9, 'A set to counted 9 (delta from live 4)');
+  assert.strictEqual(stockOf(inventory, pB.id), 5, 'B unchanged (counted matches live)');
+  assert.strictEqual(stockOf(inventory, pC.id), 7, 'C set to counted 7');
+  ok('completeRevision requires 100% counted; applies counted−live deltas');
 
   let doubleCompleteBlocked = false;
   try {
-    inventoryRevisions.completeRevision({ revision_id: rev.id, created_by: ADMIN });
+    inventoryRevisions.completeRevision({ revision_id: rev.id, created_by: ADMIN, user_role: 'admin' });
   } catch (e) {
     doubleCompleteBlocked = /already completed/i.test(String(e.message || e));
   }
@@ -246,7 +273,7 @@ try {
 
   let cancelledOk = false;
   try {
-    inventoryRevisions.cancelRevision({ revision_id: rev.id });
+    inventoryRevisions.cancelRevision({ revision_id: rev.id, cancel_reason: 'should fail' });
   } catch (e) {
     cancelledOk = /cannot be cancelled/i.test(String(e.message || e));
   }
@@ -254,7 +281,7 @@ try {
   ok('completed revision cannot be cancelled');
 
   // counted == snapshot, live drifted → complete must still write counted
-  const revDrift = inventoryRevisions.createRevision({ warehouse_id: WH, created_by: ADMIN });
+  const revDrift = inventoryRevisions.createRevision({ warehouse_id: WH, created_by: ADMIN, responsible_user_id: ADMIN });
   inventoryRevisions.updateItemCount({
     revision_id: revDrift.id,
     product_id: pB.id,
@@ -275,7 +302,22 @@ try {
   assert.strictEqual(Number(driftB.counted_qty), 5);
   assert.strictEqual(Number(driftB.variance), 0);
   assert.strictEqual(Number(driftB.live_qty), 2);
-  inventoryRevisions.completeRevision({ revision_id: revDrift.id, created_by: ADMIN });
+  const revDriftAll = inventoryRevisions.getRevision(revDrift.id);
+  for (const it of revDriftAll.items) {
+    if (it.counted_qty == null) {
+      inventoryRevisions.updateItemCount({
+        revision_id: revDrift.id,
+        product_id: it.product_id,
+        counted_qty: Number(it.system_qty) || 0,
+      });
+    }
+  }
+  inventoryRevisions.completeRevision({
+    revision_id: revDrift.id,
+    created_by: ADMIN,
+    user_role: 'admin',
+    approve_stock_drift: true,
+  });
   assert.strictEqual(
     stockOf(inventory, pB.id),
     5,
@@ -283,14 +325,38 @@ try {
   );
   ok('complete always sets counted items even when variance vs snapshot is 0');
 
-  const rev2 = inventoryRevisions.createRevision({ warehouse_id: WH, created_by: ADMIN });
-  inventoryRevisions.cancelRevision({ revision_id: rev2.id });
+  const rev2 = inventoryRevisions.createRevision({ warehouse_id: WH, created_by: ADMIN, responsible_user_id: ADMIN });
+  inventoryRevisions.cancelRevision({
+    revision_id: rev2.id,
+    cancel_reason: 'Smoke test cancel',
+    cancelled_by: ADMIN,
+  });
   const cancelled = inventoryRevisions.getRevision(rev2.id);
   assert.strictEqual(cancelled.status, 'cancelled');
   assert.strictEqual(stockOf(inventory, pA.id), 9);
   ok('cancelRevision leaves stock unchanged');
 
-  const rev3 = inventoryRevisions.createRevision({ warehouse_id: WH, created_by: ADMIN });
+  // Zero counted cannot complete
+  const revZero = inventoryRevisions.createRevision({ warehouse_id: WH, created_by: ADMIN, responsible_user_id: ADMIN });
+  let zeroBlocked = false;
+  try {
+    inventoryRevisions.completeRevision({
+      revision_id: revZero.id,
+      created_by: ADMIN,
+      user_role: 'admin',
+    });
+  } catch (e) {
+    zeroBlocked = /no products have been counted/i.test(String(e.message || e));
+  }
+  assert.ok(zeroBlocked, '0% counted cannot complete');
+  inventoryRevisions.cancelRevision({
+    revision_id: revZero.id,
+    cancel_reason: 'empty test',
+    cancelled_by: ADMIN,
+  });
+  ok('0% complete blocked');
+
+  const rev3 = inventoryRevisions.createRevision({ warehouse_id: WH, created_by: ADMIN, responsible_user_id: ADMIN });
   const pendingIds = rev3.items
     .filter((i) => [pA.id, pB.id, pC.id].includes(i.product_id) && i.counted_qty == null)
     .map((i) => i.id);
@@ -314,16 +380,96 @@ try {
   ok('listRevisions');
 
   // Soft-lock lifted after cancel/complete — cancel rev3 then adjust ok
-  inventoryRevisions.cancelRevision({ revision_id: rev3.id });
+  inventoryRevisions.cancelRevision({
+    revision_id: rev3.id,
+    cancel_reason: 'bulk zero test cleanup',
+    cancelled_by: ADMIN,
+  });
   inventory.adjustStock({
     warehouse_id: WH,
     reason: 'After revision closed',
     adjustment_type: 'set',
     created_by: ADMIN,
-    items: [{ product_id: pC.id, target_quantity: 7 }],
+    items: [{ product_id: pC.id, target_quantity: 8 }],
   });
-  assert.strictEqual(stockOf(inventory, pC.id), 7);
+  assert.strictEqual(stockOf(inventory, pC.id), 8);
   ok('soft-lock lifts after open revision closed');
+
+  // Reason mandatory on manual adjust
+  let reasonBlocked = false;
+  try {
+    inventory.adjustStock({
+      warehouse_id: WH,
+      reason: '   ',
+      adjustment_type: 'surplus',
+      created_by: ADMIN,
+      items: [{ product_id: pA.id, quantity: 1 }],
+    });
+  } catch (e) {
+    reasonBlocked = /reason is required/i.test(String(e.message || e));
+  }
+  assert.ok(reasonBlocked, 'blank reason rejected');
+  ok('adjustStock requires non-empty reason');
+
+  // Partial revision needs scope; completes as partially_completed
+  let partialNoScopeBlocked = false;
+  try {
+    inventoryRevisions.createRevision({
+      warehouse_id: WH,
+      created_by: ADMIN,
+      responsible_user_id: ADMIN,
+      revision_type: 'partial',
+    });
+  } catch (e) {
+    partialNoScopeBlocked = /scope/i.test(String(e.message || e));
+  }
+  assert.ok(partialNoScopeBlocked, 'partial without scope rejected');
+  ok('partial revision requires scope');
+
+  const revPartial = inventoryRevisions.createRevision({
+    warehouse_id: WH,
+    created_by: ADMIN,
+    responsible_user_id: ADMIN,
+    revision_type: 'partial',
+    scope: { product_ids: [pA.id, pB.id] },
+  });
+  assert.strictEqual(revPartial.revision_type, 'partial');
+  assert.ok(
+    revPartial.items.length === 2 || Number(revPartial.summary?.total_items) === 2,
+    'partial scope snapshots only scoped products'
+  );
+  for (const it of revPartial.items) {
+    inventoryRevisions.updateItemCount({
+      revision_id: revPartial.id,
+      product_id: it.product_id,
+      counted_qty: Number(it.system_qty) || 0,
+    });
+  }
+
+  let warehouseCompleteBlocked = false;
+  try {
+    inventoryRevisions.completeRevision({
+      revision_id: revPartial.id,
+      created_by: ADMIN,
+      user_role: 'warehouse',
+      manager_approved: true,
+      authorized: true,
+    });
+  } catch (e) {
+    warehouseCompleteBlocked =
+      /Manager or admin/i.test(String(e.message || e)) ||
+      /FORBIDDEN/i.test(String(e.code || e.message || e));
+  }
+  assert.ok(warehouseCompleteBlocked, 'warehouse role cannot complete even with client flags');
+  ok('storekeeper/warehouse cannot complete revision');
+
+  const partialDone = inventoryRevisions.completeRevision({
+    revision_id: revPartial.id,
+    created_by: ADMIN,
+    user_role: 'manager',
+  });
+  assert.strictEqual(partialDone.status, 'partially_completed');
+  ok('partial revision completes as partially_completed with manager role');
 
   console.log(`\nResult: ${passed} passed, ${failed} failed\n`);
   close();

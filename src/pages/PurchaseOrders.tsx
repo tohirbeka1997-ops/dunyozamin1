@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
 import {
@@ -33,6 +33,7 @@ import {
 import {
   approvePurchaseOrder,
   deletePurchaseOrder,
+  exportPurchaseOrders,
   getPurchaseOrderById,
   getPurchaseOrders,
   getSuppliers,
@@ -40,7 +41,7 @@ import {
   receiveGoods,
 } from '@/db/api';
 import type { PurchaseOrderWithDetails, SupplierWithBalance } from '@/types/database';
-import { Plus, Search, FileDown, Eye, Edit, Package, X, DollarSign, CheckCircle, Trash2, CalendarClock } from 'lucide-react';
+import { Plus, Search, FileDown, Eye, Edit, Package, X, DollarSign, CheckCircle, Trash2, CalendarClock, ChevronLeft, ChevronRight } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { useToast } from '@/hooks/use-toast';
 import { formatMoneyUZS } from '@/lib/format';
@@ -49,21 +50,43 @@ import PaySupplierDialog from '@/components/suppliers/PaySupplierDialog';
 import { useAuth } from '@/contexts/AuthContext';
 import { formatDate } from '@/lib/datetime';
 import { useSessionSearchParams } from '@/hooks/useSessionSearchParams';
-import { createBackNavigationState } from '@/lib/pageState';
+import { useMainScrollRestoration } from '@/hooks/useMainScrollRestoration';
+import { createBackNavigationState, buildCurrentPath } from '@/lib/pageState';
+import { listSessionStorageKey, withReturnToPath } from '@/lib/listState';
+import { usePurchaseOrdersListStore } from '@/store/purchaseOrdersListStore';
+import {
+  canExportPurchaseOrders,
+  computePurchaseRemainder,
+} from '@/lib/purchase/purchaseHardening';
+
+const PAGE_SIZE = 50;
 
 export default function PurchaseOrders() {
   const navigate = useNavigate();
   const location = useLocation();
   const { toast } = useToast();
   const { t } = useTranslation();
-  const { profile, role } = useAuth();
+  const { profile, role, user } = useAuth();
+  const listAnchorRef = useRef<HTMLDivElement | null>(null);
   const { searchParams, updateParams } = useSessionSearchParams({
-    storageKey: 'purchase-orders.filters.query',
-    trackedKeys: ['search', 'status', 'supplier', 'dateFrom', 'dateTo', 'sortBy'],
+    storageKey: listSessionStorageKey(
+      'purchase-orders',
+      user?.id,
+      (profile as { branch_id?: string } | null)?.branch_id,
+    ),
+    trackedKeys: ['search', 'status', 'supplier', 'dateFrom', 'dateTo', 'sortBy', 'page'],
   });
+  const listQueryKey = searchParams.toString();
+  const storedQueryKey = usePurchaseOrdersListStore((state) => state.queryKey);
+  const storedScrollTop = usePurchaseOrdersListStore((state) => state.scrollTop);
+  const setStoredScrollTop = usePurchaseOrdersListStore((state) => state.setScrollTop);
+  const resetForQuery = usePurchaseOrdersListStore((state) => state.resetForQuery);
+  const restoredScrollTop = storedQueryKey === listQueryKey ? storedScrollTop : 0;
   const [purchaseOrders, setPurchaseOrders] = useState<PurchaseOrderWithDetails[]>([]);
+  const [totalCount, setTotalCount] = useState(0);
   const [suppliers, setSuppliers] = useState<SupplierWithBalance[]>([]);
   const [loading, setLoading] = useState(true);
+  const [exporting, setExporting] = useState(false);
   const [error, setError] = useState<Error | null>(null);
   const searchTerm = searchParams.get('search') || '';
   const statusFilter = searchParams.get('status') || 'all';
@@ -71,16 +94,36 @@ export default function PurchaseOrders() {
   const dateFrom = searchParams.get('dateFrom') || '';
   const dateTo = searchParams.get('dateTo') || '';
   const sortBy = searchParams.get('sortBy') || 'order_date-desc';
+  const page = Math.max(1, Number(searchParams.get('page') || '1') || 1);
   const [payDialogOpen, setPayDialogOpen] = useState(false);
   const [selectedPO, setSelectedPO] = useState<PurchaseOrderWithDetails | null>(null);
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<PurchaseOrderWithDetails | null>(null);
   const [deleting, setDeleting] = useState(false);
   const isAdmin = role === 'admin' || profile?.role === 'admin';
+  const canExport = canExportPurchaseOrders(profile?.role || role);
+
+  useEffect(() => {
+    if (storedQueryKey !== listQueryKey) {
+      resetForQuery(listQueryKey);
+    }
+  }, [storedQueryKey, listQueryKey, resetForQuery]);
+
+  const { saveScroll } = useMainScrollRestoration({
+    scrollTop: restoredScrollTop,
+    setScrollTop: setStoredScrollTop,
+    ready: !loading,
+    anchorRef: listAnchorRef,
+  });
+
+  const navigateWithReturnTo = (detailPath: string) => {
+    saveScroll();
+    navigate(withReturnToPath(detailPath, buildCurrentPath(location)));
+  };
 
   useEffect(() => {
     loadData();
-  }, [statusFilter, supplierFilter, dateFrom, dateTo, searchTerm, sortBy]);
+  }, [statusFilter, supplierFilter, dateFrom, dateTo, searchTerm, sortBy, page]);
 
   useEffect(() => {
     const unsubscribe = productUpdateEmitter.subscribe(() => {
@@ -89,44 +132,52 @@ export default function PurchaseOrders() {
     return unsubscribe;
   }, []);
 
+  const buildListFilters = (opts?: { withTotal?: boolean; forExport?: boolean }) => {
+    const [field, dir] = String(sortBy || 'order_date-desc').split('-');
+    const filters: Record<string, unknown> = {
+      sort_by: field || 'order_date',
+      sort_dir: dir === 'asc' ? 'asc' : 'desc',
+    };
+    if (statusFilter !== 'all') filters.status = statusFilter;
+    if (supplierFilter !== 'all') filters.supplier_id = supplierFilter;
+    if (dateFrom) filters.date_from = dateFrom;
+    if (dateTo) filters.date_to = dateTo;
+    if (searchTerm) filters.search = searchTerm;
+    if (opts?.forExport) return filters;
+    filters.with_total = true;
+    filters.limit = PAGE_SIZE;
+    filters.offset = (page - 1) * PAGE_SIZE;
+    return filters;
+  };
+
   const loadData = async () => {
     try {
       setLoading(true);
       setError(null);
-      const filters: any = {};
-      
-      if (statusFilter !== 'all') {
-        filters.status = statusFilter;
-      }
-      
-      if (supplierFilter !== 'all') {
-        filters.supplier_id = supplierFilter;
-      }
-      
-      if (dateFrom) {
-        filters.date_from = dateFrom;
-      }
-      
-      if (dateTo) {
-        filters.date_to = dateTo;
-      }
-      
-      if (searchTerm) {
-        filters.search = searchTerm;
-      }
-      
+      const filters = buildListFilters({ withTotal: true });
+
       const [ordersData, suppliersData] = await Promise.all([
-        getPurchaseOrders(filters),
+        getPurchaseOrders(filters as any),
         getSuppliers(),
       ]);
-      
-      setPurchaseOrders(Array.isArray(ordersData) ? ordersData : []);
+
+      if (Array.isArray(ordersData)) {
+        setPurchaseOrders(ordersData);
+        setTotalCount(ordersData.length);
+      } else if (ordersData && typeof ordersData === 'object' && Array.isArray((ordersData as any).rows)) {
+        setPurchaseOrders((ordersData as any).rows);
+        setTotalCount(Number((ordersData as any).total || 0));
+      } else {
+        setPurchaseOrders([]);
+        setTotalCount(0);
+      }
       setSuppliers(Array.isArray(suppliersData) ? suppliersData : []);
     } catch (err) {
       const loadError = err instanceof Error ? err : new Error("Xarid buyurtmalarini yuklab bo'lmadi");
       console.error('Error loading purchase orders:', loadError);
       setError(loadError);
       setPurchaseOrders([]);
+      setTotalCount(0);
       toast({
         title: 'Xatolik',
         description: loadError.message || "Xarid buyurtmalarini yuklab bo'lmadi",
@@ -165,14 +216,20 @@ export default function PurchaseOrders() {
     }, 0);
   };
 
-  const getPaymentStatusBadge = (status?: string) => {
+  const getPaymentStatusBadge = (status?: string, hasAdvance?: boolean) => {
     const statusConfig: Record<string, { label: string; className: string }> = {
       UNPAID: { label: 'To\'lanmagan', className: 'bg-destructive text-white' },
       PARTIALLY_PAID: { label: 'Qisman to\'langan', className: 'bg-warning text-white' },
       PAID: { label: 'To\'langan', className: 'bg-success text-white' },
+      OVERPAID: { label: 'Avans mavjud', className: 'bg-blue-600 text-white' },
+      SUPPLIER_ADVANCE: { label: 'Avans mavjud', className: 'bg-blue-600 text-white' },
     };
-    
-    const config = statusConfig[status || 'UNPAID'] || statusConfig.UNPAID;
+
+    const key =
+      hasAdvance || status === 'OVERPAID' || status === 'SUPPLIER_ADVANCE'
+        ? 'OVERPAID'
+        : status || 'UNPAID';
+    const config = statusConfig[key] || statusConfig.UNPAID;
     return (
       <Badge className={`${config.className} px-1.5 py-0 text-[10px] font-normal sm:text-xs`}>{config.label}</Badge>
     );
@@ -266,55 +323,83 @@ export default function PurchaseOrders() {
     }
   };
 
-  const filteredOrders = (() => {
-    const list = Array.isArray(purchaseOrders) ? purchaseOrders : [];
-    const [field, dir] = String(sortBy || 'order_date-desc').split('-');
-    const direction = dir === 'asc' ? 1 : -1;
+  const handleExport = async () => {
+    if (!canExport) {
+      toast({
+        title: t('common.error', 'Error'),
+        description: t(
+          'purchase_orders.export_role_required',
+          'Export requires accountant/manager/admin',
+        ),
+        variant: 'destructive',
+      });
+      return;
+    }
+    try {
+      setExporting(true);
+      const result = await exportPurchaseOrders(buildListFilters({ forExport: true }), {
+        exported_by: profile?.id || null,
+      });
+      const rows = Array.isArray(result?.rows) ? result.rows : [];
+      const header = [
+        'po_number',
+        'supplier_name',
+        'order_date',
+        'status',
+        'currency',
+        'total_amount',
+        'total_usd',
+        'paid_amount',
+        'remaining_amount',
+        'payment_status',
+      ];
+      const escape = (v: unknown) => {
+        const s = v == null ? '' : String(v);
+        return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+      };
+      const lines = [
+        header.join(','),
+        ...rows.map((r: any) =>
+          header
+            .map((h) =>
+              escape(
+                h === 'supplier_name'
+                  ? r.supplier_name || r.supplier?.name || ''
+                  : r[h],
+              ),
+            )
+            .join(','),
+        ),
+      ];
+      const blob = new Blob([lines.join('\n')], { type: 'text/csv;charset=utf-8' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `purchase-orders-${new Date().toISOString().slice(0, 10)}.csv`;
+      a.click();
+      URL.revokeObjectURL(url);
+      toast({
+        title: t('common.success', 'Success'),
+        description: t('purchase_orders.export_done', 'Exported {{count}} orders', {
+          count: rows.length,
+        }),
+      });
+    } catch (e: any) {
+      toast({
+        title: t('common.error', 'Error'),
+        description: e?.message || t('purchase_orders.export_failed', 'Export failed'),
+        variant: 'destructive',
+      });
+    } finally {
+      setExporting(false);
+    }
+  };
 
-    const getCurrency = (po: any) => String(po?.currency || 'UZS').toUpperCase();
-    const getTotal = (po: any) => {
-      const currency = getCurrency(po);
-      return currency === 'USD'
-        ? Number(po?.total_usd ?? 0)
-        : Number(po?.total_amount ?? 0);
-    };
-    const getPaid = (po: any) => {
-      const currency = getCurrency(po);
-      if (currency === 'USD') return Number(po?.paid_amount_usd ?? po?.paid_amount ?? 0);
-      return Number(po?.paid_amount_uzs ?? po?.paid_amount ?? 0);
-    };
-    const getRemaining = (po: any) => {
-      const currency = getCurrency(po);
-      if (currency === 'USD') {
-        const paid = getPaid(po);
-        return Number(po?.remaining_amount_usd ?? po?.remaining_amount ?? (Number(po?.total_usd ?? 0) - paid));
-      }
-      const paid = getPaid(po);
-      return Number(po?.remaining_amount_uzs ?? po?.remaining_amount ?? (Number(po?.total_amount ?? 0) - paid));
-    };
-
-    return [...list].sort((a: any, b: any) => {
-      if (field === 'order_date') {
-        return (new Date(a.order_date).getTime() - new Date(b.order_date).getTime()) * direction;
-      }
-      if (field === 'total') {
-        return (getTotal(a) - getTotal(b)) * direction;
-      }
-      if (field === 'remaining') {
-        return (getRemaining(a) - getRemaining(b)) * direction;
-      }
-      if (field === 'paid') {
-        return (getPaid(a) - getPaid(b)) * direction;
-      }
-      if (field === 'po_number') {
-        return String(a.po_number || '').localeCompare(String(b.po_number || ''), undefined, { numeric: true }) * direction;
-      }
-      return 0;
-    });
-  })();
+  const filteredOrders = Array.isArray(purchaseOrders) ? purchaseOrders : [];
+  const totalPages = Math.max(1, Math.ceil(totalCount / PAGE_SIZE));
 
   return (
-    <div className="w-full min-w-0 space-y-4">
+    <div className="w-full min-w-0 space-y-4" ref={listAnchorRef}>
       <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
         <div className="min-w-0 space-y-0.5">
           <h1 className="page-heading">Xarid buyurtmalari</h1>
@@ -345,7 +430,7 @@ export default function PurchaseOrders() {
             size="sm"
             className="h-8 text-xs"
             aria-label="Yangi xarid buyurtmasi"
-            onClick={() => navigate('/purchase-orders/new', { state: createBackNavigationState(location) })}
+            onClick={() => navigateWithReturnTo('/purchase-orders/new')}
           >
             <Plus className="mr-2 h-3.5 w-3.5" />
             Yangi xarid buyurtmasi
@@ -367,7 +452,7 @@ export default function PurchaseOrders() {
                     <Input
                       placeholder="Buyurtma raqami yoki yetkazib beruvchi bo'yicha qidirish..."
                       value={searchTerm}
-                      onChange={(e) => updateParams({ search: e.target.value })}
+                      onChange={(e) => updateParams({ search: e.target.value, page: '1' })}
                       onKeyDown={(e) => e.key === 'Enter' && handleSearch()}
                       className="h-8 py-1 pl-8 text-xs sm:text-sm"
                     />
@@ -378,7 +463,7 @@ export default function PurchaseOrders() {
                 </div>
                 <div className="flex min-w-0 flex-1 flex-wrap items-center gap-2">
                   <div className="min-w-[10rem] flex-1 sm:max-w-[13rem]">
-                    <Select value={statusFilter} onValueChange={(value) => updateParams({ status: value })}>
+                    <Select value={statusFilter} onValueChange={(value) => updateParams({ status: value, page: '1' })}>
                       <SelectTrigger className="h-8 w-full bg-background text-xs [&_span]:truncate">
                         <SelectValue placeholder="Holati" />
                       </SelectTrigger>
@@ -395,7 +480,7 @@ export default function PurchaseOrders() {
                   <div className="min-w-[10rem] flex-1 sm:max-w-[14rem]">
                     <SearchableSupplierCombobox
                       value={supplierFilter}
-                      onValueChange={(value) => updateParams({ supplier: value })}
+                      onValueChange={(value) => updateParams({ supplier: value, page: '1' })}
                       suppliers={suppliers}
                       prefixOptions={[
                         {
@@ -407,7 +492,7 @@ export default function PurchaseOrders() {
                     />
                   </div>
                   <div className="min-w-[10rem] flex-1 sm:max-w-[14rem]">
-                    <Select value={sortBy} onValueChange={(value) => updateParams({ sortBy: value })}>
+                    <Select value={sortBy} onValueChange={(value) => updateParams({ sortBy: value, page: '1' })}>
                       <SelectTrigger className="h-8 w-full bg-background text-xs [&_span]:truncate">
                         <SelectValue placeholder="Saralash" />
                       </SelectTrigger>
@@ -430,12 +515,21 @@ export default function PurchaseOrders() {
                     variant="outline"
                     size="sm"
                     className="h-8 shrink-0 gap-1.5 text-xs"
-                    onClick={() =>
-                      toast({ title: 'Eksport qilish', description: "Eksport funksiyasi tez orada qo'shiladi" })
+                    disabled={exporting || !canExport}
+                    onClick={handleExport}
+                    title={
+                      canExport
+                        ? undefined
+                        : t(
+                            'purchase_orders.export_role_required',
+                            'Export requires accountant/manager/admin',
+                          )
                     }
                   >
                     <FileDown className="h-3.5 w-3.5" />
-                    Eksport
+                    {exporting
+                      ? t('common.exporting', 'Exporting...')
+                      : t('common.export', 'Export')}
                   </Button>
                 </div>
               </div>
@@ -447,7 +541,7 @@ export default function PurchaseOrders() {
                   <Input
                     type="date"
                     value={dateFrom}
-                    onChange={(e) => updateParams({ dateFrom: e.target.value })}
+                    onChange={(e) => updateParams({ dateFrom: e.target.value, page: '1' })}
                     className="h-8 text-xs"
                   />
                 </div>
@@ -456,7 +550,7 @@ export default function PurchaseOrders() {
                   <Input
                     type="date"
                     value={dateTo}
-                    onChange={(e) => updateParams({ dateTo: e.target.value })}
+                    onChange={(e) => updateParams({ dateTo: e.target.value, page: '1' })}
                     className="h-8 text-xs"
                   />
                 </div>
@@ -507,7 +601,7 @@ export default function PurchaseOrders() {
                 size="sm"
                 className="mt-4 h-8 text-xs"
                 aria-label="Yangi xarid buyurtmasi yaratish"
-                onClick={() => navigate('/purchase-orders/new', { state: createBackNavigationState(location) })}
+                onClick={() => navigateWithReturnTo('/purchase-orders/new')}
               >
                 <Plus className="mr-2 h-3.5 w-3.5" />
                 Yangi xarid buyurtmasi
@@ -533,22 +627,21 @@ export default function PurchaseOrders() {
                 <TableBody>
                   {filteredOrders.map((po) => {
                   const currency = String((po as any).currency || 'UZS').toUpperCase();
+                  const totalAmount =
+                    currency === 'USD'
+                      ? Number((po as any).total_usd ?? (po as any).total_amount ?? 0)
+                      : Number((po as any).total_amount ?? 0);
                   const paidAmount =
                     currency === 'USD'
                       ? Number((po as any).paid_amount_usd ?? (po as any).paid_amount ?? 0)
                       : Number((po as any).paid_amount_uzs ?? (po as any).paid_amount ?? 0);
-                  const remainingAmount =
-                    currency === 'USD'
-                      ? Number(
-                          (po as any).remaining_amount_usd ??
-                            (po as any).remaining_amount ??
-                            (Number((po as any).total_usd ?? 0) - paidAmount)
-                        )
-                      : Number(
-                          (po as any).remaining_amount_uzs ??
-                            (po as any).remaining_amount ??
-                            (Number((po as any).total_amount ?? 0) - paidAmount)
-                        );
+                  const rem = computePurchaseRemainder(paidAmount, totalAmount);
+                  // Never show negative debt; excess is supplier advance
+                  const remainingAmount = rem.debt;
+                  const hasAdvance =
+                    rem.excess > 0.009 ||
+                    !!(po as any).has_supplier_advance ||
+                    String(po.payment_status || '').toUpperCase() === 'OVERPAID';
                   const canPay = po.status === 'received' || po.status === 'partially_received';
                   
                   return (
@@ -585,13 +678,20 @@ export default function PurchaseOrders() {
                         <span className={remainingAmount > 0 ? 'font-medium' : ''}>
                           {currency === 'USD' ? formatMoney(remainingAmount, 'USD') : formatMoneyUZS(remainingAmount)}
                         </span>
-                        {currency === 'USD' && (
+                        {hasAdvance && rem.excess > 0.009 && (
+                          <div className="text-[10px] text-blue-600 dark:text-blue-400">
+                            Avans: {currency === 'USD' ? formatMoney(rem.excess, 'USD') : formatMoneyUZS(rem.excess)}
+                          </div>
+                        )}
+                        {currency === 'USD' && remainingAmount > 0 && (
                           <div className="text-xs text-muted-foreground">
-                            {formatMoneyUZS((po as any).remaining_amount_uzs ?? 0)}
+                            {formatMoneyUZS(Math.max(0, Number((po as any).remaining_amount_uzs ?? 0)))}
                           </div>
                         )}
                       </TableCell>
-                      <TableCell className="py-2">{getPaymentStatusBadge(po.payment_status)}</TableCell>
+                      <TableCell className="py-2">
+                        {getPaymentStatusBadge(po.payment_status, hasAdvance)}
+                      </TableCell>
                       <TableCell className="py-2">{getStatusBadge(po.status)}</TableCell>
                       <TableCell className="py-2 text-right">
                         <div className="flex justify-end gap-0.5">
@@ -599,11 +699,7 @@ export default function PurchaseOrders() {
                             variant="ghost"
                             size="icon"
                             className="h-8 w-8"
-                            onClick={() =>
-                              navigate(`/purchase-orders/${po.id}`, {
-                                state: createBackNavigationState(location),
-                              })
-                            }
+                            onClick={() => navigateWithReturnTo(`/purchase-orders/${po.id}`)}
                             title="Tafsilotlarni ko'rish"
                           >
                             <Eye className="h-4 w-4" />
@@ -638,11 +734,7 @@ export default function PurchaseOrders() {
                               variant="ghost"
                               size="icon"
                               className="h-8 w-8"
-                              onClick={() =>
-                                navigate(`/purchase-orders/${po.id}/edit`, {
-                                  state: createBackNavigationState(location),
-                                })
-                              }
+                              onClick={() => navigateWithReturnTo(`/purchase-orders/${po.id}/edit`)}
                               title="Tahrirlash"
                             >
                               <Edit className="h-4 w-4" />
@@ -664,11 +756,7 @@ export default function PurchaseOrders() {
                               variant="ghost"
                               size="icon"
                               className="h-8 w-8"
-                              onClick={() =>
-                                navigate(`/purchase-orders/${po.id}/receive`, {
-                                  state: createBackNavigationState(location),
-                                })
-                              }
+                              onClick={() => navigateWithReturnTo(`/purchase-orders/${po.id}/receive`)}
                               title="Tovar qabul qilish"
                             >
                               <Package className="h-4 w-4" />
@@ -683,6 +771,39 @@ export default function PurchaseOrders() {
             </Table>
             </div>
           )}
+          {!loading && !error && totalCount > 0 ? (
+            <div className="mx-4 mt-3 flex flex-wrap items-center justify-between gap-2 border-t pt-3">
+              <p className="text-xs text-muted-foreground">
+                {t('purchase_orders.page_of', 'Page {{page}} / {{pages}} · {{total}} orders', {
+                  page,
+                  pages: totalPages,
+                  total: totalCount,
+                })}
+              </p>
+              <div className="flex items-center gap-1">
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  className="h-8 px-2"
+                  disabled={page <= 1}
+                  onClick={() => updateParams({ page: String(page - 1) })}
+                >
+                  <ChevronLeft className="h-4 w-4" />
+                </Button>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  className="h-8 px-2"
+                  disabled={page >= totalPages}
+                  onClick={() => updateParams({ page: String(page + 1) })}
+                >
+                  <ChevronRight className="h-4 w-4" />
+                </Button>
+              </div>
+            </div>
+          ) : null}
         </CardContent>
       </Card>
 

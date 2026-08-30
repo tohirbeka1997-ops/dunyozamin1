@@ -57,7 +57,15 @@ function hasActiveSessionToken(): boolean {
 type User = { id: string; email: string };
 type Session = { user: User };
 type Profile = { id: string; full_name: string; email: string; role: string };
-type UserRole = 'admin' | 'cashier' | 'manager';
+type UserRole =
+  | 'admin'
+  | 'cashier'
+  | 'manager'
+  | 'senior_cashier'
+  | 'accountant'
+  | 'purchaser'
+  | 'receiver'
+  | 'warehouse';
 // Bosqich 16: "master" is the super-admin scope in multi-tenant mode. We model
 // it as an auth dimension ORTHOGONAL to role — a master session has NO
 // tenant role; its privileges are scoped to managing tenants themselves.
@@ -117,9 +125,23 @@ function deriveRole(profile: Profile | null): UserRole {
     // they're doing.
     return 'cashier';
   }
-  const role = profile.role;
-  if (role === 'admin' || role === 'cashier' || role === 'manager') {
+  const role = String(profile.role || '').trim().toLowerCase();
+  if (
+    role === 'admin' ||
+    role === 'cashier' ||
+    role === 'manager' ||
+    role === 'senior_cashier' ||
+    role === 'accountant' ||
+    role === 'purchaser' ||
+    role === 'receiver' ||
+    role === 'warehouse'
+  ) {
     return role;
+  }
+  // Aliases used in purchase hardening / locale labels
+  if (role === 'buxgalter') return 'accountant';
+  if (role === 'ombor' || role === 'buyer' || role === 'xarid') {
+    return role === 'buyer' || role === 'xarid' ? 'purchaser' : 'receiver';
   }
   throw new UnrecognizedRoleError(role);
 }

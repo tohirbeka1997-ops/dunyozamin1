@@ -8,6 +8,11 @@ const {
   paymentSalesSplitExpressions,
   returnRefundUzsSql,
 } = require('../lib/orderAmount.cjs');
+const {
+  parsePositiveMoneyAmount,
+  parseNonNegativeMoneyAmount,
+  requiresShiftVarianceReason,
+} = require('../lib/posHardening.cjs');
 const { randomUUID } = require('crypto');
 
 /**
@@ -427,7 +432,17 @@ class ShiftsService {
    * Always loads shift by ID (not by query)
    */
   closeShift(shiftId, data = {}) {
-    const { closing_cash: closingCash = 0, notes = null, closed_by: closedBy = null } = data;
+    const { closing_cash: closingCashRaw = 0, notes = null, closed_by: closedBy = null } = data;
+
+    const parsedClosing = parseNonNegativeMoneyAmount(closingCashRaw);
+    if (!parsedClosing.ok) {
+      throw createError(
+        ERROR_CODES.UNPROCESSABLE_ENTITY,
+        parsedClosing.error || 'Yopilish naqd puli 0 dan katta yoki teng bo‘lishi kerak',
+        { field: 'closing_cash', value: closingCashRaw }
+      );
+    }
+    const closingCash = parsedClosing.amount;
     
     console.log('[SHIFT] closeShift called:', {
       shiftId,
@@ -438,7 +453,7 @@ class ShiftsService {
       notes
     });
 
-    const result = this.db.transaction(() => {
+    const runClose = this.db.transaction(() => {
       // DEBUGGING: Check what shifts exist
       const allShifts = this.db.prepare('SELECT id, status, user_id, cashier_id FROM shifts ORDER BY opened_at DESC LIMIT 5').all();
       console.log('[SHIFT] Recent shifts in DB:', allShifts);
@@ -464,7 +479,12 @@ class ShiftsService {
       if (!shift) {
         console.error('[SHIFT] ❌ Cannot find open shift with id:', shiftId);
         console.error('[SHIFT] Shift exists but wrong status?', shiftAnyStatus?.status);
-        throw new Error('Yopish uchun ochiq smena topilmadi.');
+        throw createError(
+          ERROR_CODES.VALIDATION_ERROR,
+          shiftAnyStatus?.status === 'closed'
+            ? 'Smena allaqachon yopilgan yoki boshqa jarayon tomonidan yopilmoqda'
+            : 'Yopish uchun ochiq smena topilmadi.'
+        );
       }
 
       // 2. Calculate Expected Total from PAYMENTS (not orders.total_amount)
@@ -530,6 +550,15 @@ class ShiftsService {
       // Calculate difference = closing_cash - expected_cash
       const difference = closingCash - expectedCash;
 
+      const varianceCheck = requiresShiftVarianceReason(closingCash, expectedCash, notes);
+      if (varianceCheck.missing) {
+        throw createError(
+          ERROR_CODES.UNPROCESSABLE_ENTITY,
+          `Katta tafovut (${Math.round(varianceCheck.diff)} so'm) uchun sabab majburiy`,
+          { field: 'notes', expectedCash, closingCash, difference: varianceCheck.diff }
+        );
+      }
+
       console.log('[SHIFT] Payment-based totals:', {
         shiftId,
         total_payments: systemTotal,
@@ -554,9 +583,24 @@ class ShiftsService {
       // Check if closed_by column exists
       const tableInfo = this.db.prepare("PRAGMA table_info(shifts)").all();
       const hasClosedBy = tableInfo.some(col => col.name === 'closed_by');
+      const hasNotes = tableInfo.some(col => col.name === 'notes');
 
-      if (hasClosedBy) {
-        this.db.prepare(`
+      let updateResult;
+      if (hasClosedBy && hasNotes) {
+        updateResult = this.db.prepare(`
+          UPDATE shifts 
+          SET 
+            closed_at = datetime('now'),
+            status = 'closed',
+            closing_cash = ?,
+            expected_cash = ?,
+            cash_difference = ?,
+            closed_by = ?,
+            notes = COALESCE(?, notes)
+          WHERE id = ? AND status = 'open' AND closed_at IS NULL
+        `).run(closingCash, expectedCash, difference, closedBy || shift.user_id || shift.cashier_id, notes || null, shiftId);
+      } else if (hasClosedBy) {
+        updateResult = this.db.prepare(`
           UPDATE shifts 
           SET 
             closed_at = datetime('now'),
@@ -565,10 +609,10 @@ class ShiftsService {
             expected_cash = ?,
             cash_difference = ?,
             closed_by = ?
-          WHERE id = ?
+          WHERE id = ? AND status = 'open' AND closed_at IS NULL
         `).run(closingCash, expectedCash, difference, closedBy || shift.user_id || shift.cashier_id, shiftId);
       } else {
-        this.db.prepare(`
+        updateResult = this.db.prepare(`
           UPDATE shifts 
           SET 
             closed_at = datetime('now'),
@@ -576,8 +620,15 @@ class ShiftsService {
             closing_cash = ?,
             expected_cash = ?,
             cash_difference = ?
-          WHERE id = ?
+          WHERE id = ? AND status = 'open' AND closed_at IS NULL
         `).run(closingCash, expectedCash, difference, shiftId);
+      }
+
+      if (!updateResult || updateResult.changes === 0) {
+        throw createError(
+          ERROR_CODES.VALIDATION_ERROR,
+          'Smena allaqachon yopilgan yoki boshqa jarayon tomonidan yopilmoqda'
+        );
       }
 
       // 4. Update User's current shift status
@@ -624,10 +675,135 @@ class ShiftsService {
         debtRepaidTotal: custRoll.debtRepaidTotal,
         debtRepaidCash: custRoll.debtRepaidCash
       };
-    })();
+    });
 
+    const result = runClose.immediate();
+    try {
+      this._writeAuditLog({
+        user_id: closedBy || null,
+        action: 'shift_close',
+        entity_type: 'shift',
+        entity_id: shiftId,
+        old_values: { status: 'open' },
+        new_values: {
+          status: 'closed',
+          closing_cash: result.closingCash,
+          expected_cash: result.expectedCash,
+          cash_difference: result.cashDifference,
+          notes: notes || null,
+        },
+      });
+    } catch (auditErr) {
+      console.warn('[SHIFT] close audit log failed:', auditErr?.message || auditErr);
+    }
     this._notifyShiftClosedReport(result);
     return result;
+  }
+
+  /**
+   * Reopen a closed shift (admin/manager only) with audit trail.
+   */
+  reopenShift(shiftId, data = {}) {
+    const sid = String(shiftId || '').trim();
+    if (!sid) {
+      throw createError(ERROR_CODES.VALIDATION_ERROR, 'shiftId majburiy');
+    }
+    const userId = data.user_id || data.userId || data.reopened_by || null;
+    const reason = String(data.reason || data.notes || '').trim();
+    if (!reason) {
+      throw createError(ERROR_CODES.UNPROCESSABLE_ENTITY, 'Smenani qayta ochish uchun sabab majburiy', {
+        field: 'reason',
+      });
+    }
+    if (!userId || !this._userHasElevatedRole(userId)) {
+      throw createError(
+        ERROR_CODES.PERMISSION_DENIED,
+        'Yopiq smenani qayta ochish faqat admin/manager uchun'
+      );
+    }
+
+    const run = this.db.transaction(() => {
+      const shift = this.db.prepare('SELECT * FROM shifts WHERE id = ?').get(sid);
+      if (!shift) {
+        throw createError(ERROR_CODES.NOT_FOUND, `Smena topilmadi: ${sid}`);
+      }
+      if (shift.status !== 'closed') {
+        throw createError(ERROR_CODES.VALIDATION_ERROR, 'Faqat yopiq smenani qayta ochish mumkin');
+      }
+      const openOther = this.db
+        .prepare(
+          `
+        SELECT id FROM shifts
+        WHERE status = 'open' AND closed_at IS NULL
+          AND (cashier_id = ? OR user_id = ?)
+        LIMIT 1
+      `
+        )
+        .get(shift.cashier_id || shift.user_id, shift.user_id || shift.cashier_id);
+      if (openOther) {
+        throw createError(
+          ERROR_CODES.VALIDATION_ERROR,
+          'Kassirda allaqachon ochiq smena bor — avval uni yoping'
+        );
+      }
+
+      const updated = this.db
+        .prepare(
+          `
+        UPDATE shifts
+        SET status = 'open',
+            closed_at = NULL,
+            closing_cash = NULL,
+            expected_cash = NULL,
+            cash_difference = NULL
+        WHERE id = ? AND status = 'closed'
+      `
+        )
+        .run(sid);
+      if (!updated.changes) {
+        throw createError(ERROR_CODES.VALIDATION_ERROR, 'Smenani qayta ochib bo‘lmadi');
+      }
+
+      const uid = shift.user_id || shift.cashier_id;
+      if (uid) {
+        try {
+          this.db.prepare('UPDATE users SET current_shift_id = ? WHERE id = ?').run(sid, uid);
+        } catch {
+          /* column may not exist */
+        }
+      }
+
+      return this.db.prepare('SELECT * FROM shifts WHERE id = ?').get(sid);
+    });
+
+    const reopened = run.immediate();
+    this._writeAuditLog({
+      user_id: userId,
+      action: 'shift_reopen',
+      entity_type: 'shift',
+      entity_id: sid,
+      old_values: { status: 'closed' },
+      new_values: { status: 'open', reason },
+    });
+    return reopened;
+  }
+
+  _userHasElevatedRole(userId) {
+    try {
+      const rows = this.db
+        .prepare(
+          `
+        SELECT LOWER(TRIM(COALESCE(r.code, ''))) AS code
+        FROM user_roles ur
+        JOIN roles r ON r.id = ur.role_id
+        WHERE ur.user_id = ?
+      `
+        )
+        .all(String(userId));
+      return rows.some((r) => r.code === 'admin' || r.code === 'manager');
+    } catch {
+      return false;
+    }
   }
 
   /**
@@ -650,6 +826,40 @@ class ShiftsService {
       });
     } catch (e) {
       console.warn('[SHIFT] telegram report notify unavailable:', e?.message || e);
+    }
+  }
+
+  _writeAuditLog({ user_id, action, entity_type, entity_id, old_values, new_values }) {
+    try {
+      const hasTable = this.db
+        .prepare(`SELECT name FROM sqlite_master WHERE type='table' AND name='audit_log'`)
+        .get();
+      if (!hasTable) return null;
+      const id = randomUUID();
+      const now = new Date().toISOString();
+      this.db
+        .prepare(
+          `
+        INSERT INTO audit_log (
+          id, user_id, action, entity_type, entity_id,
+          old_values, new_values, ip_address, user_agent, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?)
+      `
+        )
+        .run(
+          id,
+          user_id || null,
+          action,
+          entity_type,
+          entity_id || null,
+          old_values ? JSON.stringify(old_values) : null,
+          new_values ? JSON.stringify(new_values) : null,
+          now
+        );
+      return { id, created_at: now };
+    } catch (e) {
+      console.warn('[SHIFT] audit_log write failed:', e?.message || e);
+      return null;
     }
   }
 
@@ -954,57 +1164,132 @@ class ShiftsService {
         "type 'deposit' yoki 'withdrawal' bo'lishi kerak"
       );
     }
-    const amount = Number(data?.amount || 0);
-    if (!Number.isFinite(amount) || amount <= 0) {
-      throw createError(ERROR_CODES.VALIDATION_ERROR, 'amount 0 dan katta bo‘lishi kerak');
-    }
 
-    // Smena haqiqatdan ham ochiqligini tekshiramiz — yopiq smenaga yozish noto'g'ri.
-    const shift = this.db
-      .prepare('SELECT id, status, closed_at FROM shifts WHERE id = ?')
-      .get(shiftId);
-    if (!shift) {
-      throw createError(ERROR_CODES.NOT_FOUND, `Smena topilmadi: ${shiftId}`);
-    }
-    if (shift.status !== 'open' || shift.closed_at) {
+    const parsedAmount = parsePositiveMoneyAmount(data?.amount);
+    if (!parsedAmount.ok) {
       throw createError(
-        ERROR_CODES.VALIDATION_ERROR,
-        'Yopiq smenaga naqd kirim/chiqim qo‘shib bo‘lmaydi'
+        ERROR_CODES.UNPROCESSABLE_ENTITY,
+        parsedAmount.error || 'amount 0 dan katta bo‘lishi kerak',
+        { field: 'amount', value: data?.amount }
       );
     }
+    const amount = parsedAmount.amount;
 
-    const id = randomUUID();
-    const movementNumber = `CASH-${type === 'deposit' ? 'IN' : 'OUT'}-${Date.now()}-${id.substring(0, 6)}`;
-    const now = new Date().toISOString();
-    const reason = (data?.reason || data?.notes || '').toString().trim() || null;
-    let createdBy = data?.createdBy || data?.created_by || null;
-    if (createdBy) {
-      const uid = String(createdBy).trim();
-      const userRow = this.db.prepare('SELECT id FROM users WHERE id = ?').get(uid);
-      createdBy = userRow ? uid : null;
-    }
+    const run = this.db.transaction(() => {
+      // Smena haqiqatdan ham ochiqligini tekshiramiz — yopiq smenaga yozish noto'g'ri.
+      const shift = this.db
+        .prepare('SELECT id, status, closed_at, opening_cash, cashier_id, user_id FROM shifts WHERE id = ?')
+        .get(shiftId);
+      if (!shift) {
+        throw createError(ERROR_CODES.NOT_FOUND, `Smena topilmadi: ${shiftId}`);
+      }
+      if (shift.status !== 'open' || shift.closed_at) {
+        throw createError(
+          ERROR_CODES.VALIDATION_ERROR,
+          'Yopiq smenaga naqd kirim/chiqim qo‘shib bo‘lmaydi'
+        );
+      }
 
-    this.db
-      .prepare(
-        `
-      INSERT INTO cash_movements (
-        id, movement_number, shift_id, movement_type, amount,
-        reason, reference_type, reference_id, created_by, created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `
-      )
-      .run(id, movementNumber, shiftId, type, amount, reason, 'shift', shiftId, createdBy, now);
+      let previousCashBalance = 0;
+      try {
+        const summary = this.getShiftSummary(shiftId);
+        previousCashBalance = Number(summary?.expectedCash ?? summary?.expected_cash ?? 0) || 0;
+      } catch {
+        previousCashBalance = Number(shift.opening_cash || 0) || 0;
+      }
+
+      if (type === 'withdrawal' && amount > previousCashBalance + 1e-6) {
+        throw createError(
+          ERROR_CODES.INSUFFICIENT_CASH,
+          `Kassada yetarli naqd yo‘q. Mavjud: ${previousCashBalance}, so‘ralgan: ${amount}`,
+          {
+            available: previousCashBalance,
+            requested: amount,
+            available_cash: previousCashBalance,
+            requested_amount: amount,
+          }
+        );
+      }
+
+      const nextCashBalance =
+        type === 'deposit' ? previousCashBalance + amount : previousCashBalance - amount;
+
+      const id = randomUUID();
+      const movementNumber = `CASH-${type === 'deposit' ? 'IN' : 'OUT'}-${Date.now()}-${id.substring(0, 6)}`;
+      const now = new Date().toISOString();
+      const reason = (data?.reason || data?.notes || '').toString().trim() || null;
+      let createdBy = data?.createdBy || data?.created_by || null;
+      if (createdBy) {
+        const uid = String(createdBy).trim();
+        const userRow = this.db.prepare('SELECT id FROM users WHERE id = ?').get(uid);
+        createdBy = userRow ? uid : null;
+      }
+
+      this.db
+        .prepare(
+          `
+        INSERT INTO cash_movements (
+          id, movement_number, shift_id, movement_type, amount,
+          reason, reference_type, reference_id, created_by, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `
+        )
+        .run(id, movementNumber, shiftId, type, amount, reason, 'shift', shiftId, createdBy, now);
+
+      const row = this.db.prepare('SELECT * FROM cash_movements WHERE id = ?').get(id);
+
+      return {
+        movement: row,
+        previousCashBalance,
+        nextCashBalance,
+        createdBy,
+        reason,
+        type,
+        amount,
+        shiftId,
+      };
+    });
+
+    const result = run.immediate();
 
     console.log('[SHIFT] cash movement recorded:', {
-      id,
-      movementNumber,
+      id: result.movement?.id,
+      movementNumber: result.movement?.movement_number,
       shiftId,
       type,
       amount,
-      reason,
+      reason: result.reason,
+      previousCashBalance: result.previousCashBalance,
+      nextCashBalance: result.nextCashBalance,
     });
 
-    return this.db.prepare('SELECT * FROM cash_movements WHERE id = ?').get(id);
+    this._writeAuditLog({
+      user_id: result.createdBy,
+      action: type === 'deposit' ? 'cash_in' : 'cash_out',
+      entity_type: 'cash_movement',
+      entity_id: result.movement?.id,
+      old_values: {
+        shift_id: shiftId,
+        cash_balance: result.previousCashBalance,
+      },
+      new_values: {
+        shift_id: shiftId,
+        movement_type: type,
+        amount,
+        reason: result.reason,
+        cash_balance: result.nextCashBalance,
+        previous_cash_balance: result.previousCashBalance,
+        next_cash_balance: result.nextCashBalance,
+        cashier_id: result.createdBy,
+        created_at: result.movement?.created_at,
+      },
+    });
+
+    return {
+      ...result.movement,
+      previous_cash_balance: result.previousCashBalance,
+      next_cash_balance: result.nextCashBalance,
+    };
   }
 
   /** Convenience: kassaga naqd kirim. */

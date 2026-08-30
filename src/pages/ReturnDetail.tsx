@@ -23,9 +23,9 @@ import {
   AlertDialogTitle,
   AlertDialogTrigger,
 } from '@/components/ui/alert-dialog';
-import { getSalesReturnById, deleteSalesReturn, updateSalesReturn, completeSalesReturn, getSettingsByCategory } from '@/db/api';
+import { getSalesReturnById, deleteSalesReturn, cancelSalesReturn, completeSalesReturn, approveSalesReturn, rejectSalesReturn, getSalesReturnAuditTrail, getSettingsByCategory } from '@/db/api';
 import type { CompanySettings, SalesReturnWithDetails } from '@/types/database';
-import { ArrowLeft, Printer, Package, Edit, Trash2 } from 'lucide-react';
+import { ArrowLeft, Printer, Package, Edit, Trash2, Ban, Check, X } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 import { Skeleton } from '@/components/ui/skeleton';
 import { formatReturnMoney } from '@/lib/format';
@@ -33,19 +33,33 @@ import { formatOrderDateTime } from '@/lib/datetime';
 import { createBackNavigationState, navigateBackTo, resolveBackTarget } from '@/lib/pageState';
 import { printReturnReceipt } from '@/lib/receipts/printReturnReceipt';
 import { useReceiptSettings } from '@/hooks/useReceiptSettings';
+import { useAuth } from '@/contexts/AuthContext';
+import { Textarea } from '@/components/ui/textarea';
+import { useTranslation } from 'react-i18next';
+import QRCodeDataUrl from '@/components/ui/qrcodedataurl';
+import { getProductImageDisplayUrl } from '@/lib/productImageUrl';
 
 export default function ReturnDetail() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const location = useLocation();
   const { toast } = useToast();
+  const { t } = useTranslation();
+  const { profile, role } = useAuth();
+  const isManagerOrAdmin = role === 'admin' || role === 'manager';
+  const canApproveReject =
+    role === 'admin' || role === 'manager' || role === 'senior_cashier';
   const [returnData, setReturnData] = useState<SalesReturnWithDetails | null>(null);
   const [loading, setLoading] = useState(true);
   const [actionLoading, setActionLoading] = useState(false);
   const [printing, setPrinting] = useState(false);
+  const [cancelReason, setCancelReason] = useState('');
+  const [approvalReason, setApprovalReason] = useState('');
+  const [rejectReason, setRejectReason] = useState('');
+  const [auditTrail, setAuditTrail] = useState<any[]>([]);
   const [companySettings, setCompanySettings] = useState<CompanySettings | null>(null);
   const receiptSettings = useReceiptSettings();
-  const backTo = resolveBackTarget(location, '/sales-returns');
+  const backTo = resolveBackTarget(location, '/returns');
 
   const fmtReturn = (amount?: number | null) =>
     formatReturnMoney(
@@ -74,6 +88,12 @@ export default function ReturnDetail() {
       setLoading(true);
       const data = await getSalesReturnById(id);
       setReturnData(data);
+      try {
+        const logs = await getSalesReturnAuditTrail(id);
+        setAuditTrail(Array.isArray(logs) ? logs : []);
+      } catch {
+        setAuditTrail([]);
+      }
     } catch (error) {
       console.error('Error loading return:', error);
       toast({
@@ -92,7 +112,11 @@ export default function ReturnDetail() {
     
     try {
       setActionLoading(true);
-      await completeSalesReturn(id);
+      await completeSalesReturn(id, {
+        user_id: profile?.id,
+        cashier_id: profile?.id,
+        approval_reason: approvalReason.trim() || undefined,
+      });
       toast({
         title: 'Muvaffaqiyatli',
         description: 'Qaytarish yakunlandi',
@@ -103,6 +127,72 @@ export default function ReturnDetail() {
       toast({
         title: 'Xatolik',
         description: error instanceof Error ? error.message : 'Qaytarishni yakunlab bo‘lmadi',
+        variant: 'destructive',
+      });
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
+  const handleApprove = async () => {
+    if (!id || !approvalReason.trim()) {
+      toast({
+        title: t('common.error'),
+        description: t('sales_returns.detail.approval_reason_required'),
+        variant: 'destructive',
+      });
+      return;
+    }
+    try {
+      setActionLoading(true);
+      await approveSalesReturn(id, {
+        approval_reason: approvalReason.trim(),
+        user_id: profile?.id,
+        cashier_id: profile?.id,
+      });
+      toast({
+        title: t('common.success', { defaultValue: 'OK' }),
+        description: t('sales_returns.detail.approve_success'),
+      });
+      setApprovalReason('');
+      await loadReturnData();
+    } catch (error) {
+      toast({
+        title: t('common.error'),
+        description: error instanceof Error ? error.message : t('sales_returns.detail.approve_failed'),
+        variant: 'destructive',
+      });
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
+  const handleReject = async () => {
+    if (!id || !rejectReason.trim()) {
+      toast({
+        title: t('common.error'),
+        description: t('sales_returns.detail.reject_reason_required'),
+        variant: 'destructive',
+      });
+      return;
+    }
+    try {
+      setActionLoading(true);
+      await rejectSalesReturn(id, {
+        reject_reason: rejectReason.trim(),
+        user_id: profile?.id,
+        cashier_id: profile?.id,
+      });
+      toast({
+        title: t('common.success', { defaultValue: 'OK' }),
+        description: t('sales_returns.detail.reject_success'),
+      });
+      setRejectReason('');
+      await loadReturnData();
+    } catch (error) {
+      toast({
+        title: t('common.error'),
+        description: error instanceof Error ? error.message : t('sales_returns.detail.reject_failed'),
         variant: 'destructive',
       });
     } finally {
@@ -128,6 +218,39 @@ export default function ReturnDetail() {
         description: error instanceof Error ? error.message : 'Qaytarishni o‘chirib bo‘lmadi',
         variant: 'destructive',
       });
+      setActionLoading(false);
+    }
+  };
+
+  const handleCancel = async () => {
+    if (!id || !cancelReason.trim()) {
+      toast({
+        title: t('common.error'),
+        description: t('sales_returns.detail.cancel_reason_required'),
+        variant: 'destructive',
+      });
+      return;
+    }
+    try {
+      setActionLoading(true);
+      await cancelSalesReturn(id, {
+        cancel_reason: cancelReason.trim(),
+        user_id: profile?.id,
+        cashier_id: profile?.id,
+      });
+      toast({
+        title: t('common.success', { defaultValue: 'OK' }),
+        description: t('sales_returns.detail.cancel_success'),
+      });
+      setCancelReason('');
+      await loadReturnData();
+    } catch (error) {
+      toast({
+        title: t('common.error'),
+        description: error instanceof Error ? error.message : t('sales_returns.detail.cancel_failed'),
+        variant: 'destructive',
+      });
+    } finally {
       setActionLoading(false);
     }
   };
@@ -158,13 +281,17 @@ export default function ReturnDetail() {
   const getStatusBadge = (status: string) => {
     switch (String(status || '').toLowerCase()) {
       case 'completed':
-        return <Badge className="bg-success text-success-foreground">Yakunlangan</Badge>;
+        return <Badge className="bg-success text-success-foreground">{t('sales_returns.status.completed')}</Badge>;
       case 'pending':
-        return <Badge className="bg-primary text-primary-foreground">Kutilmoqda</Badge>;
+        return <Badge className="bg-primary text-primary-foreground">{t('sales_returns.status.pending')}</Badge>;
       case 'cancelled':
-        return <Badge variant="destructive">Bekor qilingan</Badge>;
+        return <Badge variant="destructive">{t('sales_returns.status.cancelled')}</Badge>;
       case 'draft':
-        return <Badge variant="secondary">Qoralama</Badge>;
+        return <Badge variant="secondary">{t('sales_returns.status.draft')}</Badge>;
+      case 'approved':
+        return <Badge className="bg-emerald-600 text-white">{t('sales_returns.status.approved')}</Badge>;
+      case 'rejected':
+        return <Badge variant="destructive">{t('sales_returns.status.rejected')}</Badge>;
       default:
         return <Badge variant="outline">{status}</Badge>;
     }
@@ -221,16 +348,33 @@ export default function ReturnDetail() {
   }
 
   const statusKey = String(returnData.status || '').toLowerCase();
-  const canEdit = statusKey !== 'completed';
-  const canDelete = statusKey !== 'completed';
-  const canComplete = statusKey === 'draft' || statusKey === 'pending';
+  const canEdit = statusKey === 'draft' || statusKey === 'pending' || statusKey === 'approved';
+  const canDelete =
+    statusKey === 'draft' || statusKey === 'pending' || statusKey === 'approved' || statusKey === 'rejected';
+  const canComplete =
+    (statusKey === 'draft' || statusKey === 'pending' || statusKey === 'approved') &&
+    (statusKey === 'draft' || canApproveReject);
+  const canApprove = (statusKey === 'pending' || statusKey === 'draft') && canApproveReject;
+  const canReject =
+    (statusKey === 'pending' || statusKey === 'approved' || statusKey === 'draft') && canApproveReject;
+  const canCancel = statusKey === 'completed' && isManagerOrAdmin;
+  const returnDeepLink = `pos://returns/${returnData.id}`;
+  const attachmentDisplayUrl = getProductImageDisplayUrl(
+    (returnData as any).attachment_url || null,
+  );
 
   return (
     <div className="space-y-6">
       {/* Header */}
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-4">
-          <Button variant="outline" size="icon" onClick={() => navigateBackTo(navigate, location, '/sales-returns')}>
+          <Button
+            variant="outline"
+            size="icon"
+            onClick={() => navigateBackTo(navigate, location, '/returns')}
+            aria-label="Qaytarishlar ro'yxatiga qaytish"
+            title="Orqaga"
+          >
             <ArrowLeft className="h-4 w-4" />
           </Button>
           <div>
@@ -282,9 +426,102 @@ export default function ReturnDetail() {
               </AlertDialogContent>
             </AlertDialog>
           )}
+          {canCancel && (
+            <AlertDialog>
+              <AlertDialogTrigger asChild>
+                <Button variant="outline" disabled={actionLoading}>
+                  <Ban className="h-4 w-4 mr-2" />
+                  {t('sales_returns.detail.cancel_return')}
+                </Button>
+              </AlertDialogTrigger>
+              <AlertDialogContent>
+                <AlertDialogHeader>
+                  <AlertDialogTitle>{t('sales_returns.detail.cancel_confirm_title')}</AlertDialogTitle>
+                  <AlertDialogDescription>
+                    {t('sales_returns.detail.cancel_confirm_body')}
+                  </AlertDialogDescription>
+                </AlertDialogHeader>
+                <div className="space-y-2 py-2">
+                  <Label htmlFor="cancel_reason">{t('sales_returns.detail.cancel_reason')}</Label>
+                  <Textarea
+                    id="cancel_reason"
+                    value={cancelReason}
+                    onChange={(e) => setCancelReason(e.target.value)}
+                    rows={3}
+                  />
+                </div>
+                <AlertDialogFooter>
+                  <AlertDialogCancel>{t('common.cancel')}</AlertDialogCancel>
+                  <AlertDialogAction onClick={handleCancel} disabled={!cancelReason.trim()}>
+                    {t('sales_returns.detail.cancel_return')}
+                  </AlertDialogAction>
+                </AlertDialogFooter>
+              </AlertDialogContent>
+            </AlertDialog>
+          )}
+          {canApprove && (
+            <AlertDialog>
+              <AlertDialogTrigger asChild>
+                <Button variant="secondary" disabled={actionLoading}>
+                  <Check className="h-4 w-4 mr-2" />
+                  {t('sales_returns.detail.approve')}
+                </Button>
+              </AlertDialogTrigger>
+              <AlertDialogContent>
+                <AlertDialogHeader>
+                  <AlertDialogTitle>{t('sales_returns.detail.approve_confirm_title')}</AlertDialogTitle>
+                </AlertDialogHeader>
+                <div className="space-y-2 py-2">
+                  <Label htmlFor="approval_reason">{t('sales_returns.detail.approval_reason')}</Label>
+                  <Textarea
+                    id="approval_reason"
+                    value={approvalReason}
+                    onChange={(e) => setApprovalReason(e.target.value)}
+                    rows={3}
+                  />
+                </div>
+                <AlertDialogFooter>
+                  <AlertDialogCancel>{t('common.cancel')}</AlertDialogCancel>
+                  <AlertDialogAction onClick={handleApprove} disabled={!approvalReason.trim()}>
+                    {t('sales_returns.detail.approve')}
+                  </AlertDialogAction>
+                </AlertDialogFooter>
+              </AlertDialogContent>
+            </AlertDialog>
+          )}
+          {canReject && (
+            <AlertDialog>
+              <AlertDialogTrigger asChild>
+                <Button variant="outline" disabled={actionLoading}>
+                  <X className="h-4 w-4 mr-2" />
+                  {t('sales_returns.detail.reject')}
+                </Button>
+              </AlertDialogTrigger>
+              <AlertDialogContent>
+                <AlertDialogHeader>
+                  <AlertDialogTitle>{t('sales_returns.detail.reject_confirm_title')}</AlertDialogTitle>
+                </AlertDialogHeader>
+                <div className="space-y-2 py-2">
+                  <Label htmlFor="reject_reason">{t('sales_returns.detail.reject_reason')}</Label>
+                  <Textarea
+                    id="reject_reason"
+                    value={rejectReason}
+                    onChange={(e) => setRejectReason(e.target.value)}
+                    rows={3}
+                  />
+                </div>
+                <AlertDialogFooter>
+                  <AlertDialogCancel>{t('common.cancel')}</AlertDialogCancel>
+                  <AlertDialogAction onClick={handleReject} disabled={!rejectReason.trim()}>
+                    {t('sales_returns.detail.reject')}
+                  </AlertDialogAction>
+                </AlertDialogFooter>
+              </AlertDialogContent>
+            </AlertDialog>
+          )}
           {canComplete && (
             <Button onClick={handleComplete} disabled={actionLoading}>
-              Yakunlash
+              {t('sales_returns.detail.complete')}
             </Button>
           )}
           <Button variant="outline" onClick={handlePrint} disabled={printing}>
@@ -303,8 +540,12 @@ export default function ReturnDetail() {
           <CardContent className="space-y-4">
             <div className="grid grid-cols-2 gap-4">
               <div>
-                <Label className="text-muted-foreground">Qaytarish raqami</Label>
-                <p className="font-medium">{returnData.return_number}</p>
+                <Label className="text-muted-foreground">{t('sales_returns.return_number')}</Label>
+                <p className="font-medium font-mono">{returnData.return_number}</p>
+                <p className="text-xs text-muted-foreground break-all mt-1">{returnDeepLink}</p>
+                <div className="mt-2 inline-block rounded border bg-white p-1">
+                  <QRCodeDataUrl text={returnDeepLink} width={120} />
+                </div>
               </div>
               <div>
                 <Label className="text-muted-foreground">Holati</Label>
@@ -366,6 +607,45 @@ export default function ReturnDetail() {
               <Label className="text-muted-foreground">Izoh</Label>
               <p className="text-sm">{returnData.notes || 'Izoh kiritilmagan'}</p>
             </div>
+            {(returnData as any).attachment_note ? (
+              <div>
+                <Label className="text-muted-foreground">{t('sales_returns.detail.attachment_note')}</Label>
+                <p className="text-sm">{(returnData as any).attachment_note}</p>
+              </div>
+            ) : null}
+            {attachmentDisplayUrl ? (
+              <div>
+                <Label className="text-muted-foreground">{t('sales_returns.detail.attachment')}</Label>
+                <a href={attachmentDisplayUrl} target="_blank" rel="noreferrer" className="block mt-1">
+                  <img
+                    src={attachmentDisplayUrl}
+                    alt={(returnData as any).attachment_name || 'attachment'}
+                    className="max-h-40 rounded border object-contain bg-white"
+                  />
+                </a>
+                {(returnData as any).attachment_name ? (
+                  <p className="text-xs text-muted-foreground mt-1">{(returnData as any).attachment_name}</p>
+                ) : null}
+              </div>
+            ) : null}
+            {(returnData as any).approval_reason ? (
+              <div>
+                <Label className="text-muted-foreground">{t('sales_returns.detail.approval_reason')}</Label>
+                <p className="text-sm">{(returnData as any).approval_reason}</p>
+              </div>
+            ) : null}
+            {(returnData as any).reject_reason ? (
+              <div>
+                <Label className="text-muted-foreground">{t('sales_returns.detail.reject_reason')}</Label>
+                <p className="text-sm">{(returnData as any).reject_reason}</p>
+              </div>
+            ) : null}
+            {(returnData as any).cancel_reason ? (
+              <div>
+                <Label className="text-muted-foreground">{t('sales_returns.detail.cancel_reason')}</Label>
+                <p className="text-sm">{(returnData as any).cancel_reason}</p>
+              </div>
+            ) : null}
             <div>
               <Label className="text-muted-foreground">Qabul qilgan</Label>
               <p className="font-medium">{returnData.cashier?.username || 'N/A'}</p>
@@ -441,23 +721,50 @@ export default function ReturnDetail() {
         </CardHeader>
         <CardContent>
           <p className="text-sm text-muted-foreground">
-            Qaytarish yaratilganda omborda quyidagi o‘zgarishlar qilindi:
+            {statusKey === 'completed'
+              ? 'Qaytarish yakunlanganda omborda quyidagi o‘zgarishlar qilindi:'
+              : 'Hold (draft/pending/approved) holatida ombor hali o‘zgarmagan — yakunlashda qo‘llanadi.'}
           </p>
-          <ul className="mt-2 space-y-1">
-            {returnData.items?.map((item) => (
-              <li key={item.id} className="text-sm">
-                • <span className="font-medium">{item.product?.name}</span>: 
-                ombordagi qoldiq <span className="font-medium">{item.quantity}</span> ga oshirildi
-              </li>
-            ))}
-          </ul>
+          {statusKey === 'completed' ? (
+            <ul className="mt-2 space-y-1">
+              {returnData.items?.map((item) => (
+                <li key={item.id} className="text-sm">
+                  • <span className="font-medium">{item.product?.name}</span>:
+                  ombordagi qoldiq <span className="font-medium">{item.quantity}</span> ga oshirildi
+                </li>
+              ))}
+            </ul>
+          ) : null}
           {canDelete && (
             <p className="mt-4 text-sm text-muted-foreground">
-              Agar qaytarishni o‘chirsangiz, bu ombor o‘zgarishlari bekor qilinadi.
+              Agar qaytarishni o‘chirsangiz, hold rezervi bo‘shatiladi (yakunlanmagan bo‘lsa).
             </p>
           )}
         </CardContent>
       </Card>
+
+      {auditTrail.length > 0 ? (
+        <Card>
+          <CardHeader>
+            <CardTitle>{t('sales_returns.detail.audit_trail')}</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-2">
+            {auditTrail.map((log) => (
+              <div key={log.id || `${log.action}-${log.created_at}`} className="text-sm border-b pb-2 last:border-0">
+                <div className="flex justify-between gap-2">
+                  <span className="font-medium">{log.action}</span>
+                  <span className="text-muted-foreground text-xs">
+                    {formatOrderDateTime(log.created_at)}
+                  </span>
+                </div>
+                <p className="text-xs text-muted-foreground">
+                  {log.user_username || log.user_id || '—'}
+                </p>
+              </div>
+            ))}
+          </CardContent>
+        </Card>
+      ) : null}
     </div>
   );
 }

@@ -1,0 +1,28 @@
+# Namuna: Linux systemd — mijoz hisobotlari boti (alohida token).
+# TELEGRAM_CUSTOMER_BOT_TOKEN .env da bo‘lishi shart (gitga kirmaydi).
+#
+#   sudo cp telegram/telegram-customer-bot.service.example /etc/systemd/system/telegram-customer-bot.service
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now telegram-customer-bot
+
+[Unit]
+Description=Telegram customer ops bot (sales/payment/nasiya DM)
+After=network-online.target public-api.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=pos
+Group=pos
+WorkingDirectory=/opt/pos
+EnvironmentFile=-/opt/pos/.env
+ExecStart=/usr/bin/node /opt/pos/telegram/customerOpsBot.cjs
+Restart=always
+RestartSec=5
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=telegram-customer-bot
+
+[Install]
+WantedBy=multi-user.target

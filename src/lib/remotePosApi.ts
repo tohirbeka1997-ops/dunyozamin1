@@ -552,11 +552,14 @@ async function remoteInvoke(
   const body: Record<string, unknown> = { channel, args };
   if (payloadTenant) body.tenant = payloadTenant;
 
-  // Login is never auto-retried (avoid lockout churn); everything else gets a
-  // few attempts so transient network blips and HTTP 429 back-pressure recover
-  // on their own. Retrying writes is SAFE because the POS sale path carries a
-  // stable idempotency key (`order_uuid`) — the server dedups duplicates.
-  const maxAttempts = channel === 'pos:auth:login' ? 1 : 4;
+  // Login is never auto-retried (avoid lockout churn); health probes stay
+  // single-shot (NetworkBadge polls). Everything else gets a few attempts so
+  // transient network blips and HTTP 429 back-pressure recover on their own.
+  // Retrying writes is SAFE because the POS sale path carries a stable
+  // idempotency key (`order_uuid`) — the server dedups duplicates.
+  const maxAttempts =
+    channel === 'pos:auth:login' || channel === 'pos:health' ? 1 : 4;
+  const quietChannel = channel === 'pos:health';
 
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
     const controller = new AbortController();
@@ -590,12 +593,14 @@ async function remoteInvoke(
 
         // Auto-retry with backoff (0.5s, 1s, 2s ...) honoring Retry-After.
         if (canRetry) {
-          notifyRpc({
-            code: 'RATE_LIMITED',
-            level: 'info',
-            channel,
-            message: "Juda ko'p so'rov yuborildi, bir lahzadan keyin qayta urinilmoqda",
-          });
+          if (!quietChannel) {
+            notifyRpc({
+              code: 'RATE_LIMITED',
+              level: 'info',
+              channel,
+              message: "Juda ko'p so'rov yuborildi, bir lahzadan keyin qayta urinilmoqda",
+            });
+          }
           const backoff = retryAfterMs || 500 * 2 ** attempt;
           await sleepMs(backoff);
           continue;
@@ -606,9 +611,9 @@ async function remoteInvoke(
           channel === 'pos:auth:login'
             ? `Juda ko'p kirish urinishi. Biroz kutib, qayta urinib ko'ring.${waitHint}`
             : `Server band (429). Biroz kutib, qayta urinib ko'ring.${waitHint}`;
-        // Login surfaces its own toast; for everything else the retries are
-        // exhausted — make the final failure visible (never silent).
-        if (channel !== 'pos:auth:login') {
+        // Login surfaces its own toast; health is polled by NetworkBadge —
+        // for everything else the retries are exhausted — make visible.
+        if (channel !== 'pos:auth:login' && !quietChannel) {
           notifyRpc({ code: 'RATE_LIMITED', level: 'error', channel, message: rateMsg });
         }
         return {
@@ -625,17 +630,21 @@ async function remoteInvoke(
       if (!json || typeof json !== 'object') {
         // Retry transient server hiccups (5xx / proxy errors) before failing.
         if (res.status >= 500 && attempt < maxAttempts - 1) {
-          notifyRpc({
-            code: 'INTERNAL_ERROR',
-            level: 'info',
-            channel,
-            message: 'Server javob bermadi, qayta urinilmoqda...',
-          });
+          if (!quietChannel) {
+            notifyRpc({
+              code: 'INTERNAL_ERROR',
+              level: 'info',
+              channel,
+              message: 'Server javob bermadi, qayta urinilmoqda...',
+            });
+          }
           await sleepMs(500 * 2 ** attempt);
           continue;
         }
         const invalidMsg = `Server bilan aloqa xatosi (HTTP ${res.status}). Qayta urinib ko'ring.`;
-        notifyRpc({ code: 'INTERNAL_ERROR', level: 'error', channel, message: invalidMsg });
+        if (!quietChannel) {
+          notifyRpc({ code: 'INTERNAL_ERROR', level: 'error', channel, message: invalidMsg });
+        }
         return {
           success: false,
           error: {
@@ -670,7 +679,8 @@ async function remoteInvoke(
         // Surface genuine SERVER errors (5xx) so they're never silent. Business
         // errors (4xx: validation / not-found / forbidden) are intentionally
         // left to the calling screen, which renders contextual messages.
-        if (res.status >= 500) {
+        // Health probes stay quiet — NetworkBadge owns that signal.
+        if (res.status >= 500 && !quietChannel) {
           notifyRpc({
             code: String(e.code || 'INTERNAL_ERROR'),
             level: 'error',
@@ -738,8 +748,8 @@ async function remoteInvoke(
       }
       const msg = e instanceof Error ? e.message : String(e);
       // Final transport failure — make it visible (never silent). Login keeps
-      // its own form-level error handling.
-      if (channel !== 'pos:auth:login') {
+      // its own form-level error handling; health is polled silently.
+      if (channel !== 'pos:auth:login' && !quietChannel) {
         notifyRpc({
           code: 'NETWORK_ERROR',
           level: 'error',
@@ -990,7 +1000,12 @@ export function createRemotePosApi(baseUrl: string, secret: string) {
       getOrderDetails: inv('pos:returns:getOrderDetails'),
       update: inv('pos:returns:update'),
       delete: inv('pos:returns:delete'),
+      cancel: inv('pos:returns:cancel'),
       complete: inv('pos:returns:complete'),
+      approve: inv('pos:returns:approve'),
+      reject: inv('pos:returns:reject'),
+      reasonBreakdown: inv('pos:returns:reasonBreakdown'),
+      auditTrail: inv('pos:returns:auditTrail'),
     },
     purchases: {
       createOrder: inv('pos:purchases:createOrder'),
@@ -1037,6 +1052,7 @@ export function createRemotePosApi(baseUrl: string, secret: string) {
       list: inv('pos:shifts:list'),
       cashIn: inv('pos:shifts:cashIn'),
       cashOut: inv('pos:shifts:cashOut'),
+      reopen: inv('pos:shifts:reopen'),
       listCashMovements: inv('pos:shifts:listCashMovements'),
     },
     reports: {

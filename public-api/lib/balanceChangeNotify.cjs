@@ -273,8 +273,12 @@ async function notifyCustomerBalanceChange(db, payload = {}, options = {}) {
     logger.warn({ err: e?.message || e, customerId }, '[balance-change] customer notify failed');
   }
 
-  // --- Staff reports channel ---
-  if (settings.staffChannelEnabled) {
+  // --- Staff reports channel (opt-in only; customer ops stay in private DM) ---
+  // Default: skip staff to avoid spamming reports channel with every payment.
+  const includeStaff =
+    options.includeStaff === true ||
+    (options.includeStaff !== false && options.forceStaff === true);
+  if (includeStaff && settings.staffChannelEnabled) {
     try {
       const chatIds = resolveReportChatIds(db);
       if (chatIds.length && botToken) {

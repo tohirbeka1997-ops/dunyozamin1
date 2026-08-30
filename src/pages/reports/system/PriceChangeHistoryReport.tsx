@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
+import { useSessionSearchParams } from '@/hooks/useSessionSearchParams';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
@@ -18,6 +19,7 @@ import { handleIpcResponse, isElectron, requireElectron } from '@/utils/electron
 import { todayYMD, formatDateYMD, formatDateTime } from '@/lib/datetime';
 import { formatMoneyUZS } from '@/lib/format';
 import { useReportAutoRefresh } from '@/hooks/useReportAutoRefresh';
+import { useTranslation } from 'react-i18next';
 
 interface PriceChange {
   id: string;
@@ -36,21 +38,28 @@ interface PriceChange {
   reason?: string;
 }
 
+function defaultPriceHistoryDateFrom() {
+  const t = new Date();
+  t.setTime(t.getTime() - 30 * 24 * 60 * 60 * 1000);
+  return formatDateYMD(t, { timeZone: 'Asia/Tashkent' });
+}
+
 export default function PriceChangeHistoryReport() {
   const navigate = useNavigate();
   const { toast } = useToast();
+  const { t } = useTranslation();
+  const { searchParams, updateParams } = useSessionSearchParams({
+    storageKey: 'reports.price-history.filters',
+    trackedKeys: ['dateFrom', 'dateTo', 'search', 'priceType', 'productId'],
+  });
 
   const [loading, setLoading] = useState(true);
   const [changeRows, setChangeRows] = useState<PriceChange[]>([]);
-  const [dateFrom, setDateFrom] = useState(() => {
-    const t = new Date();
-    t.setTime(t.getTime() - 30 * 24 * 60 * 60 * 1000);
-    return formatDateYMD(t, { timeZone: 'Asia/Tashkent' });
-  });
-  const [dateTo, setDateTo] = useState(todayYMD());
-  const [searchTerm, setSearchTerm] = useState('');
-  const [priceTypeFilter, setPriceTypeFilter] = useState<string>('all');
-  const [selectedProduct, setSelectedProduct] = useState<string>('');
+  const dateFrom = searchParams.get('dateFrom') || defaultPriceHistoryDateFrom();
+  const dateTo = searchParams.get('dateTo') || todayYMD();
+  const searchTerm = searchParams.get('search') || '';
+  const priceTypeFilter = searchParams.get('priceType') || 'all';
+  const selectedProduct = searchParams.get('productId') || '';
 
   useEffect(() => {
     loadData();
@@ -147,27 +156,47 @@ export default function PriceChangeHistoryReport() {
     return { totalChanges, priceIncreases, priceDecreases, avgIncrease, avgDecrease };
   }, [filteredChanges]);
 
-  const getPriceChangeBadge = (change: number, changePercent: number) => {
+  const getPriceChangeBadge = (row: PriceChange) => {
+    const change = Number(row.change_amount || 0);
+    const oldPrice = Number(row.old_price || 0);
+    const newPrice = Number(row.new_price || 0);
+    const changePercent = row.change_percent;
+
+    if (oldPrice === 0 && newPrice > 0) {
+      return (
+        <Badge className="bg-blue-600 flex items-center gap-1">
+          {t('reports.price_history.new_price_set', 'Yangi narx')}
+        </Badge>
+      );
+    }
+    if (newPrice === 0 && oldPrice > 0) {
+      return (
+        <Badge variant="destructive" className="flex items-center gap-1">
+          {t('reports.price_history.dropped_to_zero', '0 ga tushdi')}
+        </Badge>
+      );
+    }
     if (change === 0) {
       return (
         <Badge variant="secondary" className="flex items-center gap-1">
-          <Minus className="h-3 w-3" />
-          0%
+          <Minus className="h-3 w-3" />—
         </Badge>
       );
+    }
+    if (changePercent == null || !Number.isFinite(Number(changePercent))) {
+      return <Badge variant="secondary">—</Badge>;
     }
     if (change > 0) {
       return (
         <Badge className="bg-green-600 flex items-center gap-1">
-          <TrendingUp className="h-3 w-3" />
-          +{changePercent.toFixed(1)}%
+          <TrendingUp className="h-3 w-3" />+{Number(changePercent).toFixed(1)}%
         </Badge>
       );
     }
     return (
       <Badge variant="destructive" className="flex items-center gap-1">
         <TrendingDown className="h-3 w-3" />
-        {changePercent.toFixed(1)}%
+        {Number(changePercent).toFixed(1)}%
       </Badge>
     );
   };
@@ -231,23 +260,33 @@ export default function PriceChangeHistoryReport() {
               <Input
                 placeholder="Mahsulot yoki SKU..."
                 value={searchTerm}
-                onChange={(e) => setSearchTerm(e.target.value)}
+                onChange={(e) => updateParams({ search: e.target.value || null }, { replace: true })}
               />
             </div>
             <div>
               <label className="text-sm text-muted-foreground">Boshlanish sana</label>
-              <Input type="date" value={dateFrom} onChange={(e) => setDateFrom(e.target.value)} />
+              <Input
+                type="date"
+                value={dateFrom}
+                onChange={(e) => updateParams({ dateFrom: e.target.value || null }, { replace: true })}
+              />
             </div>
             <div>
               <label className="text-sm text-muted-foreground">Tugash sana</label>
-              <Input type="date" value={dateTo} onChange={(e) => setDateTo(e.target.value)} />
+              <Input
+                type="date"
+                value={dateTo}
+                onChange={(e) => updateParams({ dateTo: e.target.value || null }, { replace: true })}
+              />
             </div>
             <div>
               <label className="text-sm text-muted-foreground">Narx turi</label>
               <select
                 className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
                 value={priceTypeFilter}
-                onChange={(e) => setPriceTypeFilter(e.target.value)}
+                onChange={(e) =>
+                  updateParams({ priceType: e.target.value === 'all' ? null : e.target.value }, { replace: true })
+                }
               >
                 <option value="all">Hammasi</option>
                 <option value="purchase">Xarid narxi</option>
@@ -261,7 +300,9 @@ export default function PriceChangeHistoryReport() {
               <select
                 className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
                 value={selectedProduct}
-                onChange={(e) => setSelectedProduct(e.target.value)}
+                onChange={(e) =>
+                  updateParams({ productId: e.target.value || null }, { replace: true })
+                }
               >
                 <option value="">Hammasi</option>
                 {uniqueProducts.map(([id, product]) => (
@@ -383,9 +424,7 @@ export default function PriceChangeHistoryReport() {
                       {row.change_amount > 0 ? '+' : ''}
                       {formatMoneyUZS(row.change_amount)}
                     </TableCell>
-                    <TableCell className="text-center">
-                      {getPriceChangeBadge(row.change_amount, row.change_percent)}
-                    </TableCell>
+                    <TableCell className="text-center">{getPriceChangeBadge(row)}</TableCell>
                     <TableCell>{row.changed_by_name}</TableCell>
                     <TableCell className="text-sm text-muted-foreground max-w-xs truncate">
                       {row.reason || '-'}

@@ -822,20 +822,76 @@ class ReportsService {
 
     this._logMissingCostPrice(where, params, 'product_sales_report');
 
+    // Formal sales_returns (completed) by product for net revenue column.
+    const returnByProduct = new Map();
+    try {
+      const hasSr = !!this.db
+        .prepare(`SELECT 1 AS ok FROM sqlite_master WHERE type='table' AND name='sales_returns' LIMIT 1`)
+        .get()?.ok;
+      const hasRi = !!this.db
+        .prepare(`SELECT 1 AS ok FROM sqlite_master WHERE type='table' AND name='return_items' LIMIT 1`)
+        .get()?.ok;
+      if (hasSr && hasRi) {
+        const rParams = [];
+        let rWhere = `WHERE LOWER(TRIM(COALESCE(sr.status,''))) = 'completed'`;
+        const retDateExpr = this._tzDateExpr
+          ? this._tzDateExpr('sr.created_at')
+          : `DATE(sr.created_at)`;
+        if (dateFrom) {
+          rWhere += ` AND ${retDateExpr} >= date(?)`;
+          rParams.push(dateFrom);
+        }
+        if (dateTo) {
+          rWhere += ` AND ${retDateExpr} <= date(?)`;
+          rParams.push(dateTo);
+        }
+        const rRows = this.db
+          .prepare(
+            `
+            SELECT
+              ri.product_id,
+              COALESCE(SUM(ri.quantity), 0) AS return_qty,
+              COALESCE(SUM(ri.line_total), 0) AS return_amount
+            FROM return_items ri
+            INNER JOIN sales_returns sr ON sr.id = ri.return_id
+            ${rWhere}
+            GROUP BY ri.product_id
+          `,
+          )
+          .all(rParams);
+        for (const rr of rRows || []) {
+          if (!rr?.product_id) continue;
+          returnByProduct.set(String(rr.product_id), {
+            return_qty: Number(rr.return_qty || 0) || 0,
+            return_amount: Number(rr.return_amount || 0) || 0,
+          });
+        }
+      }
+    } catch {
+      /* keep gross-only if returns schema unavailable */
+    }
+
     return (rows || []).map((r) => {
       const revenue = Number(r.revenue || 0) || 0;
       const retailRevenue = Number(r.retail_revenue || 0) || 0;
       const masterRevenue = Number(r.master_revenue || 0) || 0;
       const cost = Number(r.cost || 0) || 0;
-      const profit = revenue - cost;
-      const profitMargin = revenue > 0 ? (profit / revenue) * 100 : 0;
+      const ret = returnByProduct.get(String(r.product_id)) || { return_qty: 0, return_amount: 0 };
+      const returnAmount = Number(ret.return_amount || 0) || 0;
+      const returnQty = Number(ret.return_qty || 0) || 0;
+      const netRevenue = revenue - returnAmount;
+      const profit = netRevenue - cost;
+      const profitMargin = netRevenue > 0 ? (profit / netRevenue) * 100 : 0;
       return {
         product_id: r.product_id,
         product_name: r.product_name,
         sku: r.sku,
         category_name: r.category_name,
         quantity_sold: Number(r.quantity_sold || 0) || 0,
+        return_qty: returnQty,
+        return_amount: returnAmount,
         revenue,
+        net_revenue: netRevenue,
         revenue_uzs: Number(r.revenue_uzs || 0) || 0,
         revenue_usd: Number(r.revenue_usd || 0) || 0,
         retail_revenue: retailRevenue,
@@ -4363,9 +4419,9 @@ ${innerUnion}
         })()
       : false;
 
-    // If there is no data source at all, return empty.
+    // If there is no data source at all, return empty bundle.
     if (!hasPayments && !hasCustomerPayments && !hasExpenses && !hasSupplierPayments && !returnsTable) {
-      return [];
+      return { rows: [], by_source: [], reconciliation: null };
     }
 
     const params = [];
@@ -4498,9 +4554,26 @@ ${innerUnion}
       ORDER BY period_start ASC, method ASC
     `;
 
+    const bySourceQuery = `
+      WITH tx AS (
+        ${union}
+      )
+      SELECT
+        source,
+        COALESCE(SUM(inflow), 0) AS inflow,
+        COALESCE(SUM(outflow), 0) AS outflow,
+        COALESCE(SUM(inflow), 0) - COALESCE(SUM(outflow), 0) AS net
+      FROM tx
+      GROUP BY source
+      ORDER BY source ASC
+    `;
+
     // SQL placeholder order: all WHERE params first (in union order), then granularity check (`WHEN ? = 'week'`)
-    const rows = this.db.prepare(query).all([...params, granularity]);
-    return (rows || []).map((r) => ({
+    const allParams = [...params, granularity];
+    const rows = this.db.prepare(query).all(allParams);
+    const bySourceRows = this.db.prepare(bySourceQuery).all(params);
+
+    const mappedRows = (rows || []).map((r) => ({
       period_start: r.period_start,
       period_key: r.period_key,
       method: r.method || 'unknown',
@@ -4508,6 +4581,55 @@ ${innerUnion}
       outflow: Number(r.outflow || 0) || 0,
       net: Number(r.net || 0) || 0,
     }));
+
+    const by_source = (bySourceRows || []).map((r) => ({
+      source: r.source || 'unknown',
+      inflow: Number(r.inflow || 0) || 0,
+      outflow: Number(r.outflow || 0) || 0,
+      net: Number(r.net || 0) || 0,
+    }));
+
+    let reconciliation = null;
+    if (this._hasTable('shifts')) {
+      try {
+        const shiftParams = [];
+        const closedDateExpr = `COALESCE(${this._tzDateExpr('s.closed_at')}, ${this._tzDateExpr('s.opened_at')})`;
+        let shiftWhere = `WHERE s.status = 'closed' AND ${closedDateExpr} IS NOT NULL`;
+        if (dateFrom) {
+          shiftWhere += ` AND ${closedDateExpr} >= date(?)`;
+          shiftParams.push(dateFrom);
+        }
+        if (dateTo) {
+          shiftWhere += ` AND ${closedDateExpr} <= date(?)`;
+          shiftParams.push(dateTo);
+        }
+        const shiftRow = this.db
+          .prepare(
+            `
+            SELECT
+              COALESCE(SUM(s.opening_cash), 0) AS opening_cash,
+              COALESCE(SUM(s.closing_cash), 0) AS closing_cash
+            FROM shifts s
+            ${shiftWhere}
+          `,
+          )
+          .get(...shiftParams);
+        const cashRows = mappedRows.filter((r) => String(r.method || '').toLowerCase() === 'cash');
+        const netCashMovement = cashRows.reduce((sum, r) => sum + Number(r.net || 0), 0);
+        const opening = Number(shiftRow?.opening_cash || 0) || 0;
+        const closing = Number(shiftRow?.closing_cash || 0) || 0;
+        reconciliation = {
+          opening_cash: opening,
+          closing_cash: closing,
+          net_cash_movement: netCashMovement,
+          delta: closing - opening - netCashMovement,
+        };
+      } catch {
+        reconciliation = null;
+      }
+    }
+
+    return { rows: mappedRows, by_source, reconciliation };
   }
 
   /**
@@ -7226,8 +7348,8 @@ ${innerUnion}
       const cancelledValue = Number(e.cancelled_value) || 0;
       const returnsValue = Number(e.returns_value) || 0;
       const totalEvents = totalSales + cancelledCount + returnsCount;
-      const errorRate =
-        totalEvents > 0 ? ((cancelledCount + returnsCount) / totalEvents) * 100 : 0;
+      const errorRate = totalSales > 0 ? ((cancelledCount + returnsCount) / totalSales) * 100 : 0;
+      const legacyEventRate = totalEvents > 0 ? ((cancelledCount + returnsCount) / totalEvents) * 100 : 0;
       return {
         ...e,
         total_sales: totalSales,
@@ -7238,6 +7360,7 @@ ${innerUnion}
         avg_cancelled_value: cancelledCount > 0 ? cancelledValue / cancelledCount : 0,
         avg_return_value: returnsCount > 0 ? returnsValue / returnsCount : 0,
         error_rate: errorRate,
+        error_rate_legacy: legacyEventRate,
         error_score: Math.min(100, errorRate * 2.5),
       };
     });
@@ -8053,41 +8176,47 @@ ${innerUnion}
     const dateFrom = this._ymd(date_from || new Date(Date.now() - 7 * 86400000));
     const dateTo = this._ymd(date_to || new Date());
 
-    // Backward compatibility:
-    // - Older/newer DBs may have `audit_log` (009_settings.sql) instead of `audit_logs`
     const hasAuditLogs = this._hasTable('audit_logs');
     const hasAuditLog = this._hasTable('audit_log');
-    if (!hasAuditLogs && !hasAuditLog) return [];
+    const hasPriceHistory = this._hasTable('price_history');
     const hasUsers = this._hasTable('users');
-    const userJoin = hasUsers ? 'LEFT JOIN users u ON al.user_id = u.id' : '';
-    const userNameExpr = hasUsers
-      ? `COALESCE(u.full_name, u.username, al.user_id, 'Noma''lum')`
-      : `COALESCE(al.user_id, 'Noma''lum')`;
+    const hasProducts = this._hasTable('products');
 
-    // Tashkent kuni (boshqa hisobotlar bilan bir xil)
-    const dayCol = this._tzDateExpr('al.created_at');
-    let where = `WHERE ${dayCol} BETWEEN date(?) AND date(?)`;
-    const params = [dateFrom, dateTo];
+    const wantPrice =
+      hasPriceHistory &&
+      (!entity_type || entity_type === 'all' || entity_type === 'price');
+    const wantAudit =
+      (hasAuditLogs || hasAuditLog) &&
+      (!entity_type || entity_type === 'all' || entity_type !== 'price');
 
-    if (action) {
-      where += ` AND al.action = ?`;
-      params.push(action);
-    }
+    const rows = [];
 
-    if (entity_type) {
-      where += ` AND al.entity_type = ?`;
-      params.push(entity_type);
-    }
+    if (wantAudit && (hasAuditLogs || hasAuditLog)) {
+      const userJoin = hasUsers ? 'LEFT JOIN users u ON al.user_id = u.id' : '';
+      const userNameExpr = hasUsers
+        ? `COALESCE(u.full_name, u.username, al.user_id, 'Noma''lum')`
+        : `COALESCE(al.user_id, 'Noma''lum')`;
+      const dayCol = this._tzDateExpr('al.created_at');
+      let where = `WHERE ${dayCol} BETWEEN date(?) AND date(?)`;
+      const params = [dateFrom, dateTo];
 
-    if (user_id) {
-      where += ` AND al.user_id = ?`;
-      params.push(user_id);
-    }
+      if (action) {
+        where += ` AND al.action = ?`;
+        params.push(action);
+      }
+      if (entity_type && entity_type !== 'all' && entity_type !== 'price') {
+        where += ` AND al.entity_type = ?`;
+        params.push(entity_type);
+      }
+      if (user_id) {
+        where += ` AND al.user_id = ?`;
+        params.push(user_id);
+      }
 
-    if (hasAuditLogs) {
-      return this.db
-        .prepare(
-          `
+      if (hasAuditLogs) {
+        const auditRows = this.db
+          .prepare(
+            `
           SELECT 
             al.id,
             al.user_id,
@@ -8107,15 +8236,14 @@ ${innerUnion}
           ${where}
           ORDER BY al.created_at DESC
           LIMIT 1000
-        `
-        )
-        .all(...params);
-    }
-
-    // audit_log schema (009_settings.sql): old_values/new_values (JSON), no entity_name/description
-    return this.db
-      .prepare(
-        `
+        `,
+          )
+          .all(...params);
+        rows.push(...(auditRows || []));
+      } else {
+        const auditRows = this.db
+          .prepare(
+            `
         SELECT 
           al.id,
           al.user_id,
@@ -8135,9 +8263,69 @@ ${innerUnion}
         ${where}
         ORDER BY al.created_at DESC
         LIMIT 1000
-      `
-      )
-      .all(...params);
+      `,
+          )
+          .all(...params);
+        rows.push(...(auditRows || []));
+      }
+    }
+
+    if (wantPrice) {
+      const productJoin = hasProducts ? 'LEFT JOIN products p ON ph.product_id = p.id' : '';
+      const productNameExpr = hasProducts ? `COALESCE(p.name, ph.product_id)` : `ph.product_id`;
+      const productSkuExpr = hasProducts ? `p.sku` : `NULL`;
+      const userJoin = hasUsers ? 'LEFT JOIN users u ON ph.changed_by = u.id' : '';
+      const changedByExpr = hasUsers
+        ? `COALESCE(u.full_name, u.username, ph.changed_by, 'Noma''lum')`
+        : `COALESCE(ph.changed_by, 'Noma''lum')`;
+      let priceWhere = `WHERE ${this._tzDateExpr('ph.changed_at')} BETWEEN date(?) AND date(?)`;
+      const priceParams = [dateFrom, dateTo];
+      if (action && action !== 'update') {
+        // price history entries are always "update"
+      } else if (action === 'update') {
+        // no extra filter
+      }
+      if (user_id) {
+        priceWhere += ` AND ph.changed_by = ?`;
+        priceParams.push(user_id);
+      }
+
+      const priceRows = this.db
+        .prepare(
+          `
+        SELECT
+          'ph:' || ph.id AS id,
+          ph.changed_by AS user_id,
+          ${changedByExpr} AS user_name,
+          'update' AS action,
+          'price' AS entity_type,
+          ph.product_id AS entity_id,
+          ${productNameExpr} AS entity_name,
+          printf('%.2f', COALESCE(ph.old_price, 0)) AS old_value,
+          printf('%.2f', COALESCE(ph.new_price, 0)) AS new_value,
+          NULL AS ip_address,
+          NULL AS user_agent,
+          ph.changed_at AS created_at,
+          COALESCE(ph.reason, ph.price_type || ' narx') AS description,
+          ph.price_type,
+          ${productSkuExpr} AS product_sku
+        FROM price_history ph
+        ${productJoin}
+        ${userJoin}
+        ${priceWhere}
+        ORDER BY ph.changed_at DESC
+        LIMIT 1000
+      `,
+        )
+        .all(...priceParams);
+      rows.push(...(priceRows || []));
+    }
+
+    if (!rows.length) return [];
+
+    return rows
+      .sort((a, b) => String(b.created_at || '').localeCompare(String(a.created_at || '')))
+      .slice(0, 1000);
   }
 
   /**
@@ -8182,7 +8370,10 @@ ${innerUnion}
         ph.old_price,
         ph.new_price,
         (ph.new_price - ph.old_price) as change_amount,
-        CASE WHEN ph.old_price > 0 THEN ((ph.new_price - ph.old_price) / ph.old_price * 100) ELSE 0 END as change_percent,
+        CASE
+          WHEN ph.old_price IS NULL OR ph.old_price = 0 THEN NULL
+          ELSE ((ph.new_price - ph.old_price) / ph.old_price * 100)
+        END as change_percent,
         ph.changed_by,
         ${changedByExpr} as changed_by_name,
         ph.changed_at,
@@ -8410,6 +8601,37 @@ ${innerUnion}
       missingCostCount = 0;
     }
 
+    let missingCostSamples = [];
+    try {
+      if (missingCostCount > 0 && this._hasSaleItemsSource() && (this._hasView('v_unified_sales') || this._hasTable('orders'))) {
+        const hasProducts = this._hasTable('products');
+        const productJoin = hasProducts ? 'LEFT JOIN products p ON p.id = oi.product_id' : '';
+        const productNameExpr = hasProducts ? `COALESCE(p.name, oi.product_id)` : `oi.product_id`;
+        const productSkuExpr = hasProducts ? `p.sku` : `NULL`;
+        missingCostSamples =
+          this.db
+            .prepare(
+              `
+              SELECT
+                oi.product_id,
+                ${productNameExpr} AS product_name,
+                ${productSkuExpr} AS product_sku,
+                COUNT(*) AS line_count
+              FROM ${itemsTable} oi
+              INNER JOIN ${salesTable} o ON o.${salesJoinCol} = oi.${orderJoinCol}
+              ${where}
+                AND (oi.cost_price IS NULL OR oi.cost_price = 0)
+              GROUP BY oi.product_id
+              ORDER BY line_count DESC
+              LIMIT 20
+            `,
+            )
+            .all(params) || [];
+      }
+    } catch {
+      missingCostSamples = [];
+    }
+
     let fifoTotal = null;
     let weightedTotal = null;
 
@@ -8510,8 +8732,15 @@ ${innerUnion}
 
     return {
       missing_cost_count: missingCostCount,
+      missing_cost_samples: (missingCostSamples || []).map((r) => ({
+        product_id: r.product_id,
+        product_name: r.product_name,
+        product_sku: r.product_sku,
+        line_count: Number(r.line_count || 0) || 0,
+      })),
       cogs_missing: missingCostCount > 0,
       accounting_cogs_missing: missingCostCount > 0,
+      profit_incomplete: missingCostCount > 0,
       fifo_total: fifoTotal,
       weighted_total: weightedTotal,
       valuation_mismatch: valuationMismatch,

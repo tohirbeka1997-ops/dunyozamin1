@@ -26,44 +26,78 @@ import {
 import { getInventoryAll, getCategories } from '@/db/api';
 import type { ProductWithCategory, Category } from '@/types/database';
 import { FileDown, ArrowLeft, AlertTriangle, ChevronDown, Lightbulb } from 'lucide-react';
-import { useToast } from '@/hooks/use-toast';
 import { useNavigate } from 'react-router-dom';
 import { useReportAutoRefresh } from '@/hooks/useReportAutoRefresh';
 import { Label } from '@/components/ui/label';
 import { cn } from '@/lib/utils';
+import { useTranslation } from 'react-i18next';
+import { useAuth } from '@/contexts/AuthContext';
+import { ReportLoadPanel } from '@/components/reports/ReportLoadPanel';
+import { filterProductsBySearchTerm } from '@/lib/productSearchMatch';
+import { useReportFilters } from '@/hooks/useReportFilters';
+import {
+  createReportCorrelationId,
+  reportLoadErrorMessage,
+  resolveReportStatus,
+  telemetryFromReportError,
+  type ReportLoadStatus,
+} from '@/lib/reportLoadState';
 
 export default function StockLevelsReport() {
   const navigate = useNavigate();
-  const { toast } = useToast();
+  const { t } = useTranslation();
+  const { user } = useAuth();
   const [inventory, setInventory] = useState<ProductWithCategory[]>([]);
   const [categories, setCategories] = useState<Category[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [categoryFilter, setCategoryFilter] = useState<string>('all');
-  const [statusFilter, setStatusFilter] = useState<string>('all');
-  const [searchTerm, setSearchTerm] = useState('');
+  const [loadStatus, setLoadStatus] = useState<ReportLoadStatus>('loading');
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [correlationId, setCorrelationId] = useState<string | null>(null);
+  const [loadedAt, setLoadedAt] = useState<string | null>(null);
+  const { get, set } = useReportFilters({
+    storageKey: 'reports.stock-levels.filters',
+    trackedKeys: ['category', 'status', 'search'],
+    defaults: { category: 'all', status: 'all' },
+  });
+  const categoryFilter = get('category', 'all');
+  const statusFilter = get('status', 'all');
+  const searchTerm = get('search', '');
+
+  async function loadData() {
+    const cid = createReportCorrelationId('inventory-stock-levels');
+    setCorrelationId(cid);
+    setLoadStatus('loading');
+    setLoadError(null);
+    try {
+      const [productsData, categoriesData] = await Promise.all([getInventoryAll(), getCategories()]);
+      const products = Array.isArray(productsData) ? productsData : [];
+      setInventory(products);
+      setCategories(Array.isArray(categoriesData) ? categoriesData : []);
+      setLoadedAt(new Date().toISOString());
+      setLoadStatus(resolveReportStatus(products, (rows) => rows.length === 0));
+    } catch (error) {
+      const message = reportLoadErrorMessage(
+        error,
+        t('reports.stock_levels_page.errors.load_failed', "Ombor darajalarini yuklab bo'lmadi"),
+      );
+      setLoadError(message);
+      setInventory([]);
+      setLoadStatus('error');
+      telemetryFromReportError(
+        'reports/inventory/stock-levels',
+        'getInventoryAll',
+        error,
+        cid,
+        user?.role,
+      );
+    }
+  }
 
   useReportAutoRefresh(loadData);
 
   useEffect(() => {
-    loadData();
+    void loadData();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
-
-  async function loadData() {
-    try {
-      setLoading(true);
-      const [productsData, categoriesData] = await Promise.all([getInventoryAll(), getCategories()]);
-      setInventory(Array.isArray(productsData) ? productsData : []);
-      setCategories(Array.isArray(categoriesData) ? categoriesData : []);
-    } catch (error) {
-      toast({
-        title: 'Xatolik',
-        description: "Ombor darajalarini yuklab bo'lmadi",
-        variant: 'destructive',
-      });
-    } finally {
-      setLoading(false);
-    }
-  }
 
   /** Tanlangan kategoriyadagi mahsulotlar (KPI shu yerdan) */
   const byCategory = useMemo(() => {
@@ -73,69 +107,119 @@ export default function StockLevelsReport() {
 
   const stats = useMemo(() => {
     let inStock = 0;
-    let lowStock = 0;
+    let atMin = 0;
+    let belowMin = 0;
     let outOfStock = 0;
     for (const p of byCategory) {
       const stock = Number(p.current_stock);
-      const minStock = Number(p.min_stock_level);
+      const minStock = Number(p.min_stock_level) || 0;
       if (stock === 0) outOfStock += 1;
-      else if (stock <= minStock) lowStock += 1;
+      else if (minStock > 0 && Math.abs(stock - minStock) < 0.0001) atMin += 1;
+      else if (minStock > 0 && stock < minStock) belowMin += 1;
       else inStock += 1;
     }
-    return { inStock, lowStock, outOfStock };
+    return { inStock, atMin, belowMin, lowStock: atMin + belowMin, outOfStock };
   }, [byCategory]);
 
   const getStockStatus = (product: ProductWithCategory) => {
     const stock = Number(product.current_stock);
-    const minStock = Number(product.min_stock_level);
+    const minStock = Number(product.min_stock_level) || 0;
     if (stock === 0) {
-      return { label: 'Tugagan', className: 'bg-destructive text-white' };
+      return {
+        label: t('inventory.out_of_stock', { defaultValue: 'Tugagan' }),
+        className: 'bg-destructive text-white',
+        suggestedQty: Math.max(minStock, 1),
+      };
     }
-    if (stock <= minStock) {
-      return { label: 'Kam zaxira', className: 'bg-warning text-white' };
+    if (minStock > 0 && stock < minStock) {
+      return {
+        label: t('inventory.stock_critical', { defaultValue: 'Kritik kam' }),
+        className: 'bg-destructive text-white',
+        suggestedQty: Math.max(0, minStock - stock),
+      };
     }
-    return { label: 'Omborda bor', className: 'bg-success text-white' };
+    if (minStock > 0 && Math.abs(stock - minStock) < 0.0001) {
+      return {
+        label: t('inventory.stock_at_min', { defaultValue: 'Minimalda' }),
+        className: 'bg-warning text-white',
+        suggestedQty: Math.max(1, Math.ceil(minStock * 0.5)),
+      };
+    }
+    return {
+      label: t('inventory.in_stock', { defaultValue: 'Omborda bor' }),
+      className: 'bg-success text-white',
+      suggestedQty: 0,
+    };
   };
 
   const tableRows = useMemo(() => {
     let list = byCategory;
     if (statusFilter === 'out_of_stock') {
       list = list.filter((p) => Number(p.current_stock) === 0);
+    } else if (statusFilter === 'critical') {
+      list = list.filter((p) => {
+        const stock = Number(p.current_stock);
+        const minStock = Number(p.min_stock_level) || 0;
+        return minStock > 0 && stock > 0 && stock < minStock;
+      });
+    } else if (statusFilter === 'at_min') {
+      list = list.filter((p) => {
+        const stock = Number(p.current_stock);
+        const minStock = Number(p.min_stock_level) || 0;
+        return minStock > 0 && Math.abs(stock - minStock) < 0.0001;
+      });
     } else if (statusFilter === 'low') {
       list = list.filter((p) => {
         const stock = Number(p.current_stock);
-        const minStock = Number(p.min_stock_level);
-        return stock > 0 && stock <= minStock;
+        const minStock = Number(p.min_stock_level) || 0;
+        return minStock > 0 && stock > 0 && stock <= minStock;
       });
     } else if (statusFilter === 'ok') {
-      list = list.filter((p) => Number(p.current_stock) > Number(p.min_stock_level));
+      list = list.filter((p) => {
+        const stock = Number(p.current_stock);
+        const minStock = Number(p.min_stock_level) || 0;
+        return stock > 0 && (minStock <= 0 || stock > minStock);
+      });
     }
-    if (!searchTerm.trim()) return list;
-    const q = searchTerm.toLowerCase();
-    return list.filter(
-      (product) =>
-        product.name.toLowerCase().includes(q) ||
-        product.sku.toLowerCase().includes(q) ||
-        (product.barcode && product.barcode.toLowerCase().includes(q))
-    );
+    return filterProductsBySearchTerm(list, searchTerm);
   }, [byCategory, statusFilter, searchTerm]);
 
+  const rowMeta = useMemo(
+    () => ({
+      catalogTotal: inventory.length,
+      filterMatch: byCategory.length,
+      loadedRows: tableRows.length,
+    }),
+    [inventory.length, byCategory.length, tableRows.length],
+  );
+
   const handleExport = (format: 'excel' | 'pdf') => {
-    toast({
-      title: 'Eksport',
-      description: `${format.toUpperCase()} formatiga eksport qilinmoqda...`,
-    });
+    // Export wiring tracked in P2 (ExportManager).
+    console.info('[StockLevelsReport] export requested', format);
   };
 
-  if (loading) {
+  if (loadStatus === 'loading' || loadStatus === 'error') {
     return (
-      <div className="flex min-h-[200px] items-center justify-center">
-        <div className="h-7 w-7 animate-spin rounded-full border-b-2 border-primary" />
+      <div className="space-y-3">
+        <div className="flex items-center gap-2">
+          <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => navigate('/reports/inventory')}>
+            <ArrowLeft className="h-4 w-4" />
+          </Button>
+          <h1 className="page-heading text-base md:text-lg">
+            {t('reports.stock_levels_page.title', 'Ombor darajalari')}
+          </h1>
+        </div>
+        <ReportLoadPanel
+          status={loadStatus}
+          error={loadError}
+          correlationId={correlationId}
+          onRetry={() => void loadData()}
+        />
       </div>
     );
   }
 
-  const { inStock, lowStock, outOfStock } = stats;
+  const { inStock, lowStock, outOfStock, atMin, belowMin } = stats;
   const hasRisk = outOfStock > 0 || lowStock > 0;
 
   return (
@@ -146,8 +230,29 @@ export default function StockLevelsReport() {
             <ArrowLeft className="h-4 w-4" />
           </Button>
           <div className="min-w-0">
-            <h1 className="page-heading text-base md:text-lg">Ombor darajalari</h1>
-            <p className="text-muted-foreground text-xs">Joriy zaxira, kam va tugagan mahsulotlar</p>
+            <h1 className="page-heading text-base md:text-lg">
+              {t('reports.stock_levels_page.title', 'Ombor darajalari')}
+            </h1>
+            <p className="text-muted-foreground text-xs">
+              {t('reports.stock_levels_page.subtitle', 'Joriy zaxira, kam va tugagan mahsulotlar')}
+              {loadedAt ? (
+                <span className="ml-2 opacity-70">
+                  · {t('reports.load_state.updated_at', 'Yangilangan')}:{' '}
+                  {new Date(loadedAt).toLocaleString()}
+                </span>
+              ) : null}
+            </p>
+            <p className="text-muted-foreground text-[11px]">
+              {t('reports.stock_levels_page.row_meta', {
+                defaultValue: 'Katalog: {{catalog}} · Filtr: {{filter}} · Jadval: {{rows}}',
+                catalog: rowMeta.catalogTotal,
+                filter: rowMeta.filterMatch,
+                rows: rowMeta.loadedRows,
+              })}
+              {belowMin > 0 || atMin > 0
+                ? ` · ${t('inventory.stock_critical', { defaultValue: 'Kritik' })}: ${belowMin}, ${t('inventory.stock_at_min', { defaultValue: 'Min' })}: ${atMin}`
+                : null}
+            </p>
           </div>
         </div>
         <div className="flex flex-wrap gap-1.5">
@@ -180,7 +285,7 @@ export default function StockLevelsReport() {
                   size="sm"
                   variant="secondary"
                   className="h-6 px-2 text-[11px]"
-                  onClick={() => setStatusFilter('out_of_stock')}
+                  onClick={() => set({ status: 'out_of_stock' })}
                 >
                   Tugaganlarni ko‘rish
                 </Button>
@@ -191,7 +296,7 @@ export default function StockLevelsReport() {
                   size="sm"
                   variant="secondary"
                   className="h-6 px-2 text-[11px]"
-                  onClick={() => setStatusFilter('low')}
+                  onClick={() => set({ status: 'low' })}
                 >
                   Kam zaxirani ko‘rish
                 </Button>
@@ -202,7 +307,7 @@ export default function StockLevelsReport() {
                   size="sm"
                   variant="ghost"
                   className="h-6 px-2 text-[11px]"
-                  onClick={() => setStatusFilter('all')}
+                  onClick={() => set({ status: null, category: null, search: null })}
                 >
                   Filtrni olib tashlash
                 </Button>
@@ -283,7 +388,10 @@ export default function StockLevelsReport() {
           <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
             <div className="space-y-1">
               <Label className="text-muted-foreground text-xs">Kategoriya</Label>
-              <Select value={categoryFilter} onValueChange={setCategoryFilter}>
+              <Select
+                value={categoryFilter}
+                onValueChange={(value) => set({ category: value === 'all' ? null : value })}
+              >
                 <SelectTrigger className="h-8">
                   <SelectValue placeholder="Barcha kategoriyalar" />
                 </SelectTrigger>
@@ -299,14 +407,19 @@ export default function StockLevelsReport() {
             </div>
             <div className="space-y-1">
               <Label className="text-muted-foreground text-xs">Ombor holati</Label>
-              <Select value={statusFilter} onValueChange={setStatusFilter}>
+              <Select
+                value={statusFilter}
+                onValueChange={(value) => set({ status: value === 'all' ? null : value })}
+              >
                 <SelectTrigger className="h-8">
                   <SelectValue placeholder="Barcha holatlar" />
                 </SelectTrigger>
                 <SelectContent>
                   <SelectItem value="all">Barcha holatlar</SelectItem>
                   <SelectItem value="ok">Omborda bor</SelectItem>
-                  <SelectItem value="low">Kam zaxira</SelectItem>
+                  <SelectItem value="at_min">{t('inventory.stock_at_min', { defaultValue: 'Minimalda' })}</SelectItem>
+                  <SelectItem value="critical">{t('inventory.stock_critical', { defaultValue: 'Kritik kam' })}</SelectItem>
+                  <SelectItem value="low">Kam zaxira (min+kritik)</SelectItem>
                   <SelectItem value="out_of_stock">Tugagan</SelectItem>
                 </SelectContent>
               </Select>
@@ -317,7 +430,7 @@ export default function StockLevelsReport() {
                 className="h-8"
                 placeholder="Nomi, SKU, shtrixkod"
                 value={searchTerm}
-                onChange={(e) => setSearchTerm(e.target.value)}
+                onChange={(e) => set({ search: e.target.value || null }, true)}
               />
             </div>
           </div>
@@ -326,8 +439,16 @@ export default function StockLevelsReport() {
 
       <Card>
         <CardContent className="p-0">
-          {tableRows.length === 0 ? (
-            <div className="text-muted-foreground py-8 text-center text-sm">Mahsulotlar topilmadi</div>
+          {loadStatus === 'empty' || tableRows.length === 0 ? (
+            <ReportLoadPanel
+              status="empty"
+              overlay={false}
+              emptyTitle={t('reports.stock_levels_page.empty_filtered', 'Mahsulotlar topilmadi')}
+              emptyDescription={t(
+                'reports.stock_levels_page.empty_filtered_hint',
+                'Filtr yoki qidiruvni o‘zgartiring. Bu xatolik emas.',
+              )}
+            />
           ) : (
             <div className="overflow-x-auto">
               <Table className="w-full min-w-[640px] text-sm [&_td]:p-2 [&_th]:p-2">
@@ -339,6 +460,9 @@ export default function StockLevelsReport() {
                     <TableHead className="text-right tabular-nums">Joriy</TableHead>
                     <TableHead className="text-right tabular-nums">Minimal</TableHead>
                     <TableHead>Holati</TableHead>
+                    <TableHead className="text-right tabular-nums">
+                      {t('reports.stock_levels_page.suggested_qty', { defaultValue: 'Tavsiya' })}
+                    </TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
@@ -357,6 +481,9 @@ export default function StockLevelsReport() {
                         </TableCell>
                         <TableCell>
                           <Badge className={cn('text-xs', status.className)}>{status.label}</Badge>
+                        </TableCell>
+                        <TableCell className="text-right tabular-nums text-xs">
+                          {status.suggestedQty > 0 ? status.suggestedQty : '—'}
                         </TableCell>
                       </TableRow>
                     );

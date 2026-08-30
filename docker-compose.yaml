@@ -44,8 +44,12 @@ services:
       POS_BACKUP_INTERVAL_MIN: ${POS_BACKUP_INTERVAL_MIN:-30}
       POS_BACKUP_MAX: ${POS_BACKUP_MAX:-48}
       TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
+      # Mijoz hisobotlari DM boti (xarid/to'lov/nasiya) — staff/reports tokenidan alohida
+      TELEGRAM_CUSTOMER_BOT_TOKEN: ${TELEGRAM_CUSTOMER_BOT_TOKEN:-}
       TELEGRAM_COURIER_GROUP_ID: ${TELEGRAM_COURIER_GROUP_ID:-}
       # AI / marketing poster — host .env dan konteynerga (public-api systemd allaqachon oladi)
+      # Hisobotlar kanalidagi bot (masalan @Hisobotlar...); bo'sh bo'lsa TELEGRAM_BOT_TOKEN
+      TELEGRAM_REPORTS_BOT_TOKEN: ${TELEGRAM_REPORTS_BOT_TOKEN:-}
       TELEGRAM_REPORTS_CHAT_ID: ${TELEGRAM_REPORTS_CHAT_ID:-}
       TELEGRAM_ADMIN_IDS: ${TELEGRAM_ADMIN_IDS:-}
       TELEGRAM_MARKETING_BOT_TOKEN: ${TELEGRAM_MARKETING_BOT_TOKEN:-}

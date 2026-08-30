@@ -157,6 +157,7 @@ function createServices(db) {
 
   const shiftsService = new ShiftsService(db);
   shiftsService.batchService = batchService;
+  returnsService.shiftsService = shiftsService;
 
   const services = {
     categories: new CategoriesService(db),
@@ -186,10 +187,15 @@ function createServices(db) {
     cache: cacheService,
     promotions: promotionService,
   };
+  services.suppliers.auditService = services.audit;
+  services.purchases.auditService = services.audit;
   // Soft-lock: InventoryService.adjustStock consults open revisions.
   inventoryService.inventoryRevisions = services.inventoryRevisions;
+  inventoryService.audit = services.audit;
   // Same soft-lock for stock-affecting POS sales.
   salesService.inventoryRevisions = services.inventoryRevisions;
+  // prior_debt_payment → customer_payments (shift drawer) inside sale TX
+  salesService.customers = services.customers;
   services.quotes = new QuotesService(db, salesService);
   services.webOrders = new WebOrdersService(db);
   services.couriers = new CouriersService(db);

@@ -43,6 +43,8 @@ function customersListCacheKey(filters?: {
   hasDebt?: boolean;
   sortBy?: string;
   sortOrder?: 'asc' | 'desc';
+  limit?: number;
+  offset?: number;
 }) {
   return JSON.stringify(filters || {});
 }
@@ -54,6 +56,8 @@ export const getCustomers = async (filters?: {
   hasDebt?: boolean;
   sortBy?: string;
   sortOrder?: 'asc' | 'desc';
+  limit?: number;
+  offset?: number;
 }) => {
   if (hasPosApi()) {
     const cacheKey = customersListCacheKey(filters);
@@ -67,6 +71,8 @@ export const getCustomers = async (filters?: {
     if (filters?.type) f.type = filters.type;
     if (filters?.sortBy) f.sortBy = filters.sortBy;
     if (filters?.sortOrder) f.sortOrder = filters.sortOrder;
+    if (filters?.limit != null) f.limit = filters.limit;
+    if (filters?.offset != null) f.offset = filters.offset;
     const request = ipc<Customer[]>(api.customers.list(f)).finally(() => {
       if (customersListInFlight.get(cacheKey) === request) {
         customersListInFlight.delete(cacheKey);
@@ -198,6 +204,22 @@ export const findCustomerByPhone = async (phone: string) => {
       return false;
     }) || null
   );
+};
+
+export const findCustomerDuplicates = async (payload: {
+  phone?: string | null;
+  email?: string | null;
+  name?: string | null;
+  excludeId?: string | null;
+}): Promise<
+  Array<{ id: string; name: string; phone?: string | null; email?: string | null; code?: string | null; match: string }>
+> => {
+  if (hasPosApi() && (window as any).posApi?.customers?.findDuplicates) {
+    const api = requireElectron();
+    return ipc(api.customers.findDuplicates(payload));
+  }
+  await delay();
+  return [];
 };
 
 export const createCustomer = async (customer: {

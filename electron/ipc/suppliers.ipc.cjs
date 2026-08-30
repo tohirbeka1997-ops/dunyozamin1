@@ -72,8 +72,26 @@ function registerSuppliersHandlers(services) {
 
   console.log('Registering pos:suppliers:deletePayment handler...');
   ipcMain.removeHandler('pos:suppliers:deletePayment');
-  ipcMain.handle('pos:suppliers:deletePayment', wrapHandler(async (_event, paymentId) => {
-    return suppliers.deletePayment(paymentId);
+  ipcMain.handle('pos:suppliers:deletePayment', wrapHandler(async (_event, paymentId, opts) => {
+    return suppliers.deletePayment(paymentId, opts || {});
+  }));
+
+  console.log('Registering pos:suppliers:cancelPayment handler...');
+  ipcMain.removeHandler('pos:suppliers:cancelPayment');
+  ipcMain.handle('pos:suppliers:cancelPayment', wrapHandler(async (_event, paymentId, opts) => {
+    return suppliers.cancelPayment(paymentId, opts || {});
+  }));
+
+  console.log('Registering pos:suppliers:listAdvances handler...');
+  ipcMain.removeHandler('pos:suppliers:listAdvances');
+  ipcMain.handle('pos:suppliers:listAdvances', wrapHandler(async (_event, supplierId, opts) => {
+    return suppliers.listAdvances(supplierId, opts || {});
+  }));
+
+  console.log('Registering pos:suppliers:applyAdvance handler...');
+  ipcMain.removeHandler('pos:suppliers:applyAdvance');
+  ipcMain.handle('pos:suppliers:applyAdvance', wrapHandler(async (_event, payload) => {
+    return suppliers.applyAdvanceToPurchaseOrder(payload || {});
   }));
 
   console.log('Registering pos:suppliers:getPayments handler...');

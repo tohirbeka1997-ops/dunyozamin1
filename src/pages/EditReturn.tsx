@@ -1,4 +1,4 @@
-import { useEffect, useState, useMemo } from 'react';
+import { useEffect, useState, useMemo, useRef } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { Button } from '@/components/ui/button';
@@ -26,6 +26,7 @@ import type { SalesReturnWithDetails } from '@/types/database';
 import { ArrowLeft, Save, Plus, Minus } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 import { Skeleton } from '@/components/ui/skeleton';
+import { useFormListReturn } from '@/hooks/useFormListReturn';
 import { formatMoneyUZS, formatOrderMoney, formatReturnMoney } from '@/lib/format';
 
 export default function EditReturn() {
@@ -33,6 +34,8 @@ export default function EditReturn() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const { toast } = useToast();
+  const { leaveToList, goToList } = useFormListReturn({ fallbackListPath: '/returns' });
+  const baselineRef = useRef<string | null>(null);
   const [returnData, setReturnData] = useState<SalesReturnWithDetails | null>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -87,6 +90,11 @@ export default function EditReturn() {
         }
       });
       setItemQuantities(initialQuantities);
+      baselineRef.current = JSON.stringify({
+        reason: data.reason || '',
+        notes: data.notes || '',
+        itemQuantities: initialQuantities,
+      });
     } catch (error) {
       console.error('Error loading return:', error);
       toast({
@@ -94,7 +102,7 @@ export default function EditReturn() {
         description: error instanceof Error ? error.message : t('sales_returns.create.failed_to_load_order_details'),
         variant: 'destructive',
       });
-      navigate('/returns');
+      goToList();
     } finally {
       setLoading(false);
     }
@@ -125,6 +133,19 @@ export default function EditReturn() {
     
     return { total, isValid, errors };
   }, [returnData, itemQuantities]);
+
+  const isDirty = useMemo(() => {
+    if (!baselineRef.current) return false;
+    return JSON.stringify({ reason, notes, itemQuantities }) !== baselineRef.current;
+  }, [reason, notes, itemQuantities]);
+
+  const handleBackToDetail = () => {
+    if (isDirty) {
+      void leaveToList(true);
+      return;
+    }
+    navigate(`/returns/${id}`);
+  };
 
   const handleQuantityChange = (itemId: string, newQuantity: number) => {
     const item = returnData?.items?.find(i => i.id === itemId);
@@ -202,7 +223,7 @@ export default function EditReturn() {
       });
       
       // Navigate back to returns list and refresh
-      navigate('/returns');
+      goToList();
     } catch (error) {
       console.error('Error updating return:', error);
       toast({
@@ -253,7 +274,9 @@ export default function EditReturn() {
           <Button
             variant="outline"
             size="icon"
-            onClick={() => navigate(`/sales-returns/${id}`)}
+            onClick={handleBackToDetail}
+            aria-label={t('sales_returns.back_to_detail', { defaultValue: "Qaytarish detailiga qaytish" })}
+            title={t('common.back', { defaultValue: 'Orqaga' })}
           >
             <ArrowLeft className="h-4 w-4" />
           </Button>
@@ -455,7 +478,7 @@ export default function EditReturn() {
       <div className="flex justify-between">
         <Button
           variant="outline"
-          onClick={() => navigate(`/sales-returns/${id}`)}
+          onClick={handleBackToDetail}
         >
           {t('common.cancel')}
         </Button>

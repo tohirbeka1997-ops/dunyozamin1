@@ -63,6 +63,7 @@ import { Skeleton } from '@/components/ui/skeleton';
 import * as XLSX from 'xlsx';
 import { printHtml } from '@/lib/print';
 import SearchableCustomerCombobox from '@/components/common/SearchableCustomerCombobox';
+import { useFormListReturn } from '@/hooks/useFormListReturn';
 
 type PriceType = 'retail' | 'usta';
 
@@ -117,6 +118,7 @@ export default function QuoteForm() {
   const { t } = useTranslation();
   const { toast } = useToast();
   const { profile } = useAuth();
+  const { leaveToList, goToList } = useFormListReturn({ fallbackListPath: '/quotes' });
   const isEdit = Boolean(id && id !== 'new');
 
   const [loading, setLoading] = useState(false);
@@ -144,6 +146,16 @@ export default function QuoteForm() {
   const [orderDiscountAmount, setOrderDiscountAmount] = useState<number | null>(null);
   const [quoteNumber, setQuoteNumber] = useState('');
   const [showProfit, setShowProfit] = useState(false);
+
+  const isDirty = useMemo(
+    () =>
+      items.length > 0 ||
+      customerName.trim() !== '' ||
+      phone.trim() !== '' ||
+      notes.trim() !== '' ||
+      Boolean(customerId),
+    [items, customerName, phone, notes, customerId],
+  );
 
   const computeLineTotal = (row: QuoteItemRow): number => {
     const qty = Number(row.quantity) || 0;
@@ -566,7 +578,7 @@ export default function QuoteForm() {
           title: status === 'draft' ? t('quotes.toast_draft_saved') : t('quotes.toast_created'),
         });
       }
-      navigate('/quotes');
+      goToList();
     } catch (e) {
       toast({
         title: t('common.error'),
@@ -638,7 +650,7 @@ export default function QuoteForm() {
             variant="ghost"
             size="icon"
             className="h-10 w-10 shrink-0 touch-manipulation"
-            onClick={() => navigate(-1)}
+            onClick={() => void leaveToList(isDirty)}
             aria-label={t('common.back')}
           >
             <ArrowLeft className="h-4 w-4" />
@@ -660,7 +672,7 @@ export default function QuoteForm() {
             variant="outline"
             className="h-10 w-full touch-manipulation sm:h-9 sm:w-auto"
             aria-label={t('quotes.cancel')}
-            onClick={() => navigate('/quotes')}
+            onClick={() => void leaveToList(isDirty)}
           >
             {t('quotes.cancel')}
           </Button>

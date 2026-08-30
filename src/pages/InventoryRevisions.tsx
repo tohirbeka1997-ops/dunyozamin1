@@ -23,8 +23,9 @@ import {
 import PageBreadcrumb from '@/components/common/PageBreadcrumb';
 import { useToast } from '@/hooks/use-toast';
 import { useAuth } from '@/contexts/AuthContext';
-import { createInventoryRevision, getOpenInventoryRevision, listInventoryRevisions } from '@/db/api';
+import { getOpenInventoryRevision, listInventoryRevisions } from '@/db/api';
 import { formatDate } from '@/lib/datetime';
+import CreateInventoryRevisionDialog from '@/components/inventory/CreateInventoryRevisionDialog';
 
 type RevisionRow = {
   id: string;
@@ -55,12 +56,14 @@ export default function InventoryRevisions() {
   const [rows, setRows] = useState<RevisionRow[]>([]);
   const [openRevision, setOpenRevision] = useState<RevisionRow | null>(null);
   const [loading, setLoading] = useState(true);
-  const [creating, setCreating] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [createOpen, setCreateOpen] = useState(false);
   const [statusFilter, setStatusFilter] = useState('all');
 
   const load = useCallback(async () => {
     try {
       setLoading(true);
+      setLoadError(null);
       const [list, open] = await Promise.all([
         listInventoryRevisions({
           status: statusFilter === 'all' ? undefined : statusFilter,
@@ -71,6 +74,12 @@ export default function InventoryRevisions() {
       setRows(Array.isArray(list) ? list : []);
       setOpenRevision(open || null);
     } catch (err: any) {
+      // Do not clear existing rows on error — distinguish error vs empty.
+      setLoadError(
+        t('inventory_revision.load_failed_body', {
+          defaultValue: 'Server did not respond',
+        })
+      );
       toast({
         title: t('common.error', { defaultValue: 'Xato' }),
         description: err?.message || String(err),
@@ -85,7 +94,7 @@ export default function InventoryRevisions() {
     load();
   }, [load]);
 
-  const handleCreate = async () => {
+  const handleCreateClick = () => {
     if (openRevision) {
       toast({
         title: t('common.error', { defaultValue: 'Xato' }),
@@ -97,28 +106,18 @@ export default function InventoryRevisions() {
       navigate(`/inventory/revisions/${openRevision.id}`);
       return;
     }
-    try {
-      setCreating(true);
-      const rev = await createInventoryRevision({
-        created_by: profile?.id || null,
-      });
-      toast({
-        title: t('inventory_revision.created_title'),
-        description: t('inventory_revision.created_desc', {
-          number: rev?.revision_number,
-          count: rev?.summary?.total_items ?? rev?.items?.length ?? 0,
-        }),
-      });
-      navigate(`/inventory/revisions/${rev.id}`);
-    } catch (err: any) {
-      toast({
-        title: t('common.error', { defaultValue: 'Xato' }),
-        description: err?.message || String(err),
-        variant: 'destructive',
-      });
-    } finally {
-      setCreating(false);
-    }
+    setCreateOpen(true);
+  };
+
+  const handleRevisionCreated = (rev: { id: string; revision_number?: string; summary?: { total_items?: number }; items?: unknown[] }) => {
+    toast({
+      title: t('inventory_revision.created_title'),
+      description: t('inventory_revision.created_desc', {
+        number: rev?.revision_number,
+        count: rev?.summary?.total_items ?? rev?.items?.length ?? 0,
+      }),
+    });
+    navigate(`/inventory/revisions/${rev.id}`);
   };
 
   return (
@@ -140,11 +139,9 @@ export default function InventoryRevisions() {
             <RefreshCw className={`mr-1.5 h-4 w-4 ${loading ? 'animate-spin' : ''}`} />
             {t('quotes.refresh', { defaultValue: 'Yangilash' })}
           </Button>
-          <Button size="sm" onClick={handleCreate} disabled={creating || !!openRevision}>
+          <Button size="sm" onClick={handleCreateClick} disabled={!!openRevision}>
             <Plus className="mr-1.5 h-4 w-4" />
-            {creating
-              ? t('inventory_revision.creating')
-              : t('inventory_revision.new_revision')}
+            {t('inventory_revision.new_revision')}
           </Button>
         </div>
       </div>
@@ -178,6 +175,7 @@ export default function InventoryRevisions() {
               </SelectTrigger>
               <SelectContent>
                 <SelectItem value="all">{t('inventory_revision.filter_all_statuses')}</SelectItem>
+                <SelectItem value="partially_completed">{t('inventory_revision.status_partially_completed')}</SelectItem>
                 <SelectItem value="in_progress">{t('inventory_revision.status_in_progress')}</SelectItem>
                 <SelectItem value="completed">{t('inventory_revision.status_completed')}</SelectItem>
                 <SelectItem value="cancelled">{t('inventory_revision.status_cancelled')}</SelectItem>
@@ -185,10 +183,24 @@ export default function InventoryRevisions() {
             </Select>
           </div>
 
-          {loading ? (
-            <p className="py-8 text-center text-sm text-muted-foreground">
-              {t('common.loading', { defaultValue: 'Yuklanmoqda...' })}
-            </p>
+          {loading && rows.length === 0 ? (
+            <div className="space-y-2 py-4" aria-busy="true">
+              {[0, 1, 2, 3].map((i) => (
+                <div key={i} className="h-10 animate-pulse rounded-md bg-muted" />
+              ))}
+            </div>
+          ) : loadError && rows.length === 0 ? (
+            <div className="flex flex-col items-center gap-3 py-10 text-center">
+              <p className="text-sm font-medium text-destructive">
+                {t('inventory_revision.load_failed_title', {
+                  defaultValue: "Ma'lumot yuklanmadi",
+                })}
+              </p>
+              <p className="text-sm text-muted-foreground">{loadError}</p>
+              <Button type="button" size="sm" variant="outline" onClick={() => void load()}>
+                {t('common.retry', { defaultValue: 'Qayta urinish' })}
+              </Button>
+            </div>
           ) : rows.length === 0 ? (
             <div className="flex flex-col items-center gap-2 py-10 text-center text-muted-foreground">
               <ClipboardList className="h-10 w-10 opacity-40" />
@@ -196,6 +208,14 @@ export default function InventoryRevisions() {
             </div>
           ) : (
             <div className="overflow-x-auto rounded-md border">
+              {loadError && (
+                <div className="flex flex-wrap items-center justify-between gap-2 border-b bg-amber-50 px-3 py-2 text-sm text-amber-900">
+                  <span>{loadError}</span>
+                  <Button type="button" size="sm" variant="outline" className="h-7" onClick={() => void load()}>
+                    {t('common.retry', { defaultValue: 'Qayta urinish' })}
+                  </Button>
+                </div>
+              )}
               <Table>
                 <TableHeader>
                   <TableRow>
@@ -243,6 +263,13 @@ export default function InventoryRevisions() {
           )}
         </CardContent>
       </Card>
+
+      <CreateInventoryRevisionDialog
+        open={createOpen}
+        onOpenChange={setCreateOpen}
+        createdBy={profile?.id || null}
+        onCreated={handleRevisionCreated}
+      />
     </div>
   );
 }

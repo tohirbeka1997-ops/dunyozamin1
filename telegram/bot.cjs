@@ -1360,12 +1360,14 @@ bot.start(async (ctx) => {
     return;
   }
 
-  // Customers: marketplace shop /start only (no admin report UI).
+  // Customers: marketplace shop /start + ops reports notice.
   const greetingText =
     `${BRAND.bullet} <b>Assalomu alaykum${name ? ', ' + esc(name) : ''}!</b>\n` +
     `${BRAND.divider}\n` +
     `${BRAND.leaf} <b>${esc(BRAND.name)}</b> onlayn doʻkoniga xush kelibsiz!\n` +
     `${BRAND.spark} <i>Yangi mahsulotlar, qulay yetkazib berish va bonus ball.</i>\n\n` +
+    `📋 <b>Hisobotlar</b>\n` +
+    `Doʻkonda xarid, toʻlov, nasiya yoki qaytarish boʻlsa — shu yerga qisqa hisobot keladi (summa va qarz qoldigʻi).\n\n` +
     `<code>v${esc(BOT_RUNTIME_VERSION)}</code>`;
   await safeReplyHTML(ctx, greetingText, await mainMenuKeyboardAsync(ctx));
   await safeReplyHTML(
@@ -1878,7 +1880,9 @@ bot.on('contact', async (ctx) => {
         ctx,
         `✅ <b>Roʻyxatdan oʻtdingiz!</b>\n${BRAND.softDivider}\n` +
           `${BRAND.bullet} Xush kelibsiz, <b>${esc(out?.data?.first_name || '')}</b>.\n` +
-          `${BRAND.spark} <i>Endi xaridlardan bonus ball yigʻa olasiz.</i>`,
+          `${BRAND.spark} <i>Endi xaridlardan bonus ball yigʻa olasiz.</i>\n\n` +
+          `📋 <b>Hisobotlar ulandi</b>\n` +
+          `Doʻkonda sotib olsangiz, pul bersangiz yoki nasiya olsangiz — shu botga qisqa hisobot keladi.`,
         await mainMenuKeyboardAsync(ctx),
       );
       await sendLoyaltyQrCard(ctx, out?.data || {});

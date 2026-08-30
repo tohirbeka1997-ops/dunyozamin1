@@ -5,7 +5,6 @@ import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Label } from '@/components/ui/label';
-import NumberInput from '@/components/common/NumberInput';
 import { Textarea } from '@/components/ui/textarea';
 import {
   Dialog,
@@ -39,6 +38,7 @@ import {
   getCustomerBonusLedger,
   adjustCustomerBonusPoints,
   getCustomerLoyaltyCard,
+  reissueCustomerLoyaltyCard,
 } from '@/db/api';
 import type {
   Customer,
@@ -102,6 +102,10 @@ export default function CustomerDetail() {
   const [bonusAdjustDelta, setBonusAdjustDelta] = useState<number | null>(null);
   const [bonusAdjustNote, setBonusAdjustNote] = useState('');
   const [bonusAdjustSaving, setBonusAdjustSaving] = useState(false);
+  const [bonusLargeApproved, setBonusLargeApproved] = useState(false);
+  const [loyaltyReissueOpen, setLoyaltyReissueOpen] = useState(false);
+  const [loyaltyReissueReason, setLoyaltyReissueReason] = useState('');
+  const [loyaltyReissueSaving, setLoyaltyReissueSaving] = useState(false);
   const [ledgerOrder, setLedgerOrder] = useState<'newest' | 'oldest'>('newest');
   const [openCreditOrders, setOpenCreditOrders] = useState<OpenCreditOrderRow[]>([]);
   const [creditOrdersLoading, setCreditOrdersLoading] = useState(true);
@@ -154,15 +158,36 @@ export default function CustomerDetail() {
 
   const creditOrdersSummary = useMemo(() => {
     let totalRemaining = 0;
+    let overdueAmount = 0;
     let overdueCount = 0;
+    let nextDue: string | null = null;
     const today = todayYMD();
     for (const row of openCreditOrders) {
-      totalRemaining += Number(row.credit_amount || 0) || 0;
+      const rem = Number(row.credit_amount || 0) || 0;
+      totalRemaining += rem;
       const due = row.due_date ? String(row.due_date).slice(0, 10) : '';
-      if (due.length === 10 && due < today) overdueCount += 1;
+      if (due.length === 10 && due < today) {
+        overdueCount += 1;
+        overdueAmount += rem;
+      }
+      if (due.length === 10 && due >= today) {
+        if (!nextDue || due < nextDue) nextDue = due;
+      }
     }
-    return { totalRemaining, overdueCount };
+    return { totalRemaining, overdueCount, overdueAmount, nextDue };
   }, [openCreditOrders]);
+
+  const balanceMetrics = useMemo(() => {
+    if (!customer) {
+      return { advance: 0, openDebt: 0, net: 0 };
+    }
+    const b = getCustomerBalances(customer);
+    const advance = Math.max(0, b.uzs) + Math.max(0, b.usd);
+    // Display UZS-primary: keep separate in UI; net is informational only
+    const openDebt = Math.max(0, -b.uzs);
+    const net = b.uzs;
+    return { advance: Math.max(0, b.uzs), openDebt, net, usdAdvance: Math.max(0, b.usd), usdDebt: Math.max(0, -b.usd) };
+  }, [customer]);
 
   useEffect(() => {
     void fetchUzsPerUsdRate().then((r) => setUsdRate(r && r > 0 ? r : null));
@@ -352,9 +377,13 @@ export default function CustomerDetail() {
 
   const handleBonusAdjust = async () => {
     if (!id || !profile?.id) return;
-    const delta = bonusAdjustDelta ?? 0;
-    if (!Number.isFinite(delta) || delta === 0) {
-      toast({ title: 'Xatolik', description: 'Nol dan farqli ball kiriting', variant: 'destructive' });
+    const delta = bonusAdjustDelta;
+    if (delta == null || !Number.isInteger(delta) || delta === 0) {
+      toast({ title: 'Xatolik', description: 'Nol dan farqli butun son kiriting', variant: 'destructive' });
+      return;
+    }
+    if (!bonusAdjustNote.trim()) {
+      toast({ title: 'Xatolik', description: 'Sabab majburiy', variant: 'destructive' });
       return;
     }
     try {
@@ -363,12 +392,14 @@ export default function CustomerDetail() {
         actorUserId: profile.id,
         customerId: id,
         deltaPoints: delta,
-        note: bonusAdjustNote.trim() || undefined,
+        note: bonusAdjustNote.trim(),
+        largeApproved: bonusLargeApproved || profile.role === 'admin',
       });
       setCustomer(updated);
       setBonusAdjustOpen(false);
       setBonusAdjustDelta(null);
       setBonusAdjustNote('');
+      setBonusLargeApproved(false);
       await loadBonusLedger();
       toast({ title: 'Saqlandi', description: 'Bonus balansi yangilandi' });
     } catch (e: any) {
@@ -379,6 +410,34 @@ export default function CustomerDetail() {
       });
     } finally {
       setBonusAdjustSaving(false);
+    }
+  };
+
+  const handleLoyaltyReissue = async () => {
+    if (!id || !profile?.id) return;
+    if (!loyaltyReissueReason.trim()) {
+      toast({ title: 'Xatolik', description: 'Qayta chiqarish sababi majburiy', variant: 'destructive' });
+      return;
+    }
+    try {
+      setLoyaltyReissueSaving(true);
+      const card = await reissueCustomerLoyaltyCard({
+        actorUserId: profile.id,
+        customerId: id,
+        reason: loyaltyReissueReason.trim(),
+      });
+      setLoyaltyCard(card);
+      setLoyaltyReissueOpen(false);
+      setLoyaltyReissueReason('');
+      toast({ title: 'Yangilandi', description: 'Loyalty QR qayta chiqarildi' });
+    } catch (e: any) {
+      toast({
+        title: 'Xatolik',
+        description: e?.message || 'Qayta chiqarib bo‘lmadi',
+        variant: 'destructive',
+      });
+    } finally {
+      setLoyaltyReissueSaving(false);
     }
   };
 
@@ -423,7 +482,13 @@ export default function CustomerDetail() {
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-4">
-          <Button variant="ghost" size="icon" onClick={() => navigateBackTo(navigate, location, '/customers')}>
+          <Button
+            variant="ghost"
+            size="icon"
+            onClick={() => navigateBackTo(navigate, location, '/customers')}
+            aria-label="Mijozlar ro'yxatiga qaytish"
+            title="Orqaga"
+          >
             <ArrowLeft className="h-4 w-4" />
           </Button>
           <div>
@@ -526,17 +591,52 @@ export default function CustomerDetail() {
               const usdInfo = formatCustomerBalance(b.usd, 'USD');
               return (
                 <>
-                  <div className="flex flex-col gap-2 text-sm font-semibold">
-                    <Badge variant={uzsInfo.variant} className={uzsInfo.type === 'balance' ? 'bg-green-600 text-white hover:bg-green-700' : ''}>
-                      UZS: {uzsInfo.label}
-                    </Badge>
-                    {(Math.abs(b.usd) > 0.0001 || Math.abs(b.uzs) > 0.0001) && (
+                  <div className="space-y-1.5 text-sm">
+                    <div className="flex justify-between gap-2">
+                      <span className="text-muted-foreground">Oldindan (UZS)</span>
+                      <span className="font-semibold text-green-600 tabular-nums">
+                        {formatMoneyUZS(balanceMetrics.advance)}
+                      </span>
+                    </div>
+                    <div className="flex justify-between gap-2">
+                      <span className="text-muted-foreground">Ochiq qarz (buyurtmalar)</span>
+                      <span className="font-semibold text-destructive tabular-nums">
+                        {formatMoneyUZS(creditOrdersSummary.totalRemaining)}
+                      </span>
+                    </div>
+                    <div className="flex justify-between gap-2">
+                      <span className="text-muted-foreground">Muddati o‘tgan</span>
+                      <span className="font-semibold text-destructive tabular-nums">
+                        {formatMoneyUZS(creditOrdersSummary.overdueAmount)}
+                        {creditOrdersSummary.overdueCount > 0
+                          ? ` (${creditOrdersSummary.overdueCount})`
+                          : ''}
+                      </span>
+                    </div>
+                    <div className="flex justify-between gap-2">
+                      <span className="text-muted-foreground">Keyingi muddat</span>
+                      <span className="font-medium tabular-nums">
+                        {creditOrdersSummary.nextDue || '—'}
+                      </span>
+                    </div>
+                    <div className="flex justify-between gap-2 pt-1 border-t">
+                      <span className="text-muted-foreground">Net (info)</span>
+                      <Badge
+                        variant={uzsInfo.variant}
+                        className={uzsInfo.type === 'balance' ? 'bg-green-600 text-white hover:bg-green-700' : ''}
+                      >
+                        UZS: {uzsInfo.label}
+                      </Badge>
+                    </div>
+                    {(Math.abs(b.usd) > 0.0001) && (
                       <Badge variant={usdInfo.variant} className={usdInfo.type === 'balance' ? 'bg-green-600 text-white hover:bg-green-700' : ''}>
                         USD: {usdInfo.label}
                       </Badge>
                     )}
                   </div>
-                  <p className="text-xs text-muted-foreground mt-2">Joriy balans (valyuta bo‘yicha alohida)</p>
+                  <p className="text-xs text-muted-foreground mt-2">
+                    Oldindan to‘lov qarzni avtomatik yopmaydi. Net — ma’lumot uchun.
+                  </p>
                 </>
               );
             })()}
@@ -798,13 +898,27 @@ export default function CustomerDetail() {
           <Card>
             <CardHeader className="flex flex-row items-center justify-between">
               <CardTitle>Nakopitel karta</CardTitle>
-              <Button variant="outline" size="sm" onClick={loadLoyaltyCard} disabled={loyaltyCardLoading}>
-                {loyaltyCardLoading ? 'Yuklanmoqda...' : "QR ni qayta chiqarish"}
-              </Button>
+              <div className="flex gap-2">
+                <Button variant="outline" size="sm" onClick={loadLoyaltyCard} disabled={loyaltyCardLoading}>
+                  {loyaltyCardLoading ? 'Yuklanmoqda...' : 'Yangilash'}
+                </Button>
+                {(profile?.role === 'admin' || profile?.role === 'manager') && isElectron() && (
+                  <Button
+                    variant="default"
+                    size="sm"
+                    onClick={() => setLoyaltyReissueOpen(true)}
+                    disabled={loyaltyCardLoading || !loyaltyCard}
+                  >
+                    QR ni qayta chiqarish
+                  </Button>
+                )}
+              </div>
             </CardHeader>
             <CardContent>
               {!isElectron() ? (
                 <p className="text-sm text-muted-foreground">Karta faqat desktop ilovada ko‘rinadi.</p>
+              ) : !(profile?.role === 'admin' || profile?.role === 'manager' || profile?.role === 'cashier') ? (
+                <p className="text-sm text-muted-foreground">Loyalty QR ko‘rish uchun ruxsat yo‘q.</p>
               ) : loyaltyCardLoading ? (
                 <div className="flex justify-center py-8">
                   <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary" />
@@ -1203,7 +1317,19 @@ export default function CustomerDetail() {
                         <TableCell>{formatDateTime(row.created_at)}</TableCell>
                         <TableCell>
                           <Badge variant="outline">
-                            {row.type === 'earn' ? 'Yig‘ildi' : row.type === 'redeem' ? 'Ishlatildi' : row.type === 'adjust' ? 'Korreksiya' : row.type}
+                            {row.type === 'earn'
+                              ? 'Yig‘ildi'
+                              : row.type === 'redeem'
+                                ? 'Ishlatildi'
+                                : row.type === 'adjust'
+                                  ? 'Korreksiya'
+                                  : row.type === 'return_reverse' ||
+                                      row.type === 'auto' ||
+                                      row.type === 'automatic' ||
+                                      String(row.note || '').toLowerCase().includes('avtomatik') ||
+                                      String(row.note || '').toLowerCase().includes('return')
+                                    ? 'Avtomatik'
+                                    : row.type}
                           </Badge>
                         </TableCell>
                         <TableCell className="font-mono font-medium">
@@ -1241,39 +1367,109 @@ export default function CustomerDetail() {
       </Tabs>
 
       <Dialog open={bonusAdjustOpen} onOpenChange={setBonusAdjustOpen}>
-        <DialogContent>
+        <DialogContent aria-describedby="bonus-adjust-desc">
           <DialogHeader>
             <DialogTitle>Bonus korreksiyasi</DialogTitle>
-            <DialogDescription>
-              Ijobiy qiymat qo‘shadi, manfiy ayiradi. Harakat bonus jurnaliga yoziladi.
+            <DialogDescription id="bonus-adjust-desc">
+              Butun son, nol emas. Sabab majburiy. Katta o‘zgarish uchun qo‘shimcha tasdiq kerak.
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-3 py-2">
             <div className="space-y-1">
-              <Label>Ball (±)</Label>
-              <NumberInput
-                value={bonusAdjustDelta}
-                onValueChange={setBonusAdjustDelta}
-                min={-999999999}
+              <Label htmlFor="bonus-delta">Ball (±) *</Label>
+              <input
+                id="bonus-delta"
+                type="number"
+                step={1}
+                className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                value={bonusAdjustDelta ?? ''}
+                onChange={(e) => {
+                  const raw = e.target.value.trim();
+                  if (raw === '' || raw === '-') {
+                    setBonusAdjustDelta(null);
+                    return;
+                  }
+                  if (!/^-?\d+$/.test(raw)) return;
+                  const n = Number(raw);
+                  if (!Number.isFinite(n) || n === 0) {
+                    setBonusAdjustDelta(n === 0 ? 0 : null);
+                    return;
+                  }
+                  setBonusAdjustDelta(n);
+                }}
                 placeholder="Masalan: 100 yoki -50"
               />
             </div>
             <div className="space-y-1">
-              <Label>Izoh</Label>
+              <Label htmlFor="bonus-note">Sabab *</Label>
               <Textarea
+                id="bonus-note"
                 value={bonusAdjustNote}
                 onChange={(e) => setBonusAdjustNote(e.target.value)}
-                placeholder="Sabab"
+                placeholder="Sabab majburiy"
                 rows={3}
+                required
               />
             </div>
+            {profile?.role === 'manager' &&
+              bonusAdjustDelta != null &&
+              Math.abs(bonusAdjustDelta) >= 1000 && (
+                <label className="flex items-center gap-2 text-sm">
+                  <input
+                    type="checkbox"
+                    checked={bonusLargeApproved}
+                    onChange={(e) => setBonusLargeApproved(e.target.checked)}
+                  />
+                  Katta korreksiyani tasdiqlayman (ikkilamchi tasdiq)
+                </label>
+              )}
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setBonusAdjustOpen(false)}>
               Bekor
             </Button>
-            <Button onClick={handleBonusAdjust} disabled={bonusAdjustSaving}>
+            <Button
+              onClick={handleBonusAdjust}
+              disabled={
+                bonusAdjustSaving ||
+                bonusAdjustDelta == null ||
+                bonusAdjustDelta === 0 ||
+                !bonusAdjustNote.trim()
+              }
+            >
               {bonusAdjustSaving ? 'Saqlanmoqda...' : 'Saqlash'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={loyaltyReissueOpen} onOpenChange={setLoyaltyReissueOpen}>
+        <DialogContent aria-describedby="loyalty-reissue-desc">
+          <DialogHeader>
+            <DialogTitle>Loyalty QR qayta chiqarish</DialogTitle>
+            <DialogDescription id="loyalty-reissue-desc">
+              Eski QR tarixda saqlanadi. Sabab majburiy.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-2">
+            <Label htmlFor="loyalty-reissue-reason">Sabab *</Label>
+            <Textarea
+              id="loyalty-reissue-reason"
+              value={loyaltyReissueReason}
+              onChange={(e) => setLoyaltyReissueReason(e.target.value)}
+              rows={3}
+              required
+            />
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setLoyaltyReissueOpen(false)}>
+              Bekor
+            </Button>
+            <Button
+              onClick={() => void handleLoyaltyReissue()}
+              disabled={loyaltyReissueSaving || !loyaltyReissueReason.trim()}
+            >
+              {loyaltyReissueSaving ? 'Jarayonda...' : 'Qayta chiqarish'}
             </Button>
           </DialogFooter>
         </DialogContent>

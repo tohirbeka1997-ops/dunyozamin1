@@ -25,7 +25,7 @@ const EVENT_MORNING_BRIEF = 'morning_brief';
 const EVENT_WEEKLY_AI = 'weekly_ai';
 const DEFAULT_MODEL = 'gpt-4o-mini';
 const DEFAULT_BASE_URL = 'https://api.openai.com/v1';
-const DEFAULT_GEMINI_TEXT_MODEL = 'gemini-2.0-flash';
+const DEFAULT_GEMINI_TEXT_MODEL = 'gemini-flash-lite-latest';
 const DEFAULT_MORNING_BRIEF_TIME = '08:00';
 const DEFAULT_WEEKLY_AI_TIME = '08:00';
 /** 0=Sun … 6=Sat (SQLite %w). Default Monday. */

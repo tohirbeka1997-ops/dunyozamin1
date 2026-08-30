@@ -25,6 +25,9 @@ import { handleIpcResponse, isElectron, requireElectron } from '@/utils/electron
 import { formatMoneyUZS } from '@/lib/format';
 import { formatDate, formatDateYMD, todayYMD } from '@/lib/datetime';
 import { useReportAutoRefresh } from '@/hooks/useReportAutoRefresh';
+import { useAuth } from '@/contexts/AuthContext';
+import { formatCustomerPhone } from '@/lib/piiMask';
+import { useReportFilters } from '@/hooks/useReportFilters';
 import { useTableSort } from '@/hooks/useTableSort';
 import { SortableTableHead } from '@/components/reports/SortableTableHead';
 
@@ -57,13 +60,34 @@ type VipSortKey =
 export default function VIPCustomersReport() {
   const navigate = useNavigate();
   const { toast } = useToast();
+  const { user } = useAuth();
 
   const [loading, setLoading] = useState(true);
   const [rows, setRows] = useState<VIPCustomer[]>([]);
-  const [searchTerm, setSearchTerm] = useState('');
-  const { sortKey, sortOrder, toggleSort } = useTableSort<VipSortKey>('total_spent', 'desc');
-  const [minOrders, setMinOrders] = useState(1);
-  const [limit, setLimit] = useState(50);
+  const { get, set } = useReportFilters({
+    storageKey: 'reports.vip-customers.filters',
+    trackedKeys: ['search', 'minOrders', 'limit', 'sortBy', 'sortOrder'],
+    defaults: { minOrders: '1', limit: '50', sortBy: 'total_spent', sortOrder: 'desc' },
+  });
+  const searchTerm = get('search', '');
+  const minOrders = Number(get('minOrders', '1')) || 1;
+  const limit = Number(get('limit', '50')) || 50;
+  const initialSortKey = (get('sortBy', 'total_spent') || 'total_spent') as VipSortKey;
+  const initialSortOrder = (get('sortOrder', 'desc') || 'desc') as 'asc' | 'desc';
+  const { sortKey, sortOrder, toggleSort } = useTableSort<VipSortKey>(
+    initialSortKey,
+    initialSortOrder,
+  );
+
+  const handleSort = (key: VipSortKey, kind: 'string' | 'number') => {
+    const nextOrder =
+      sortKey === key ? (sortOrder === 'asc' ? 'desc' : 'asc') : kind === 'number' ? 'desc' : 'asc';
+    set({
+      sortBy: key,
+      sortOrder: nextOrder === 'desc' && key === 'total_spent' ? null : nextOrder,
+    });
+    toggleSort(key, kind);
+  };
 
   useReportAutoRefresh(loadData);
 
@@ -171,7 +195,7 @@ export default function VIPCustomersReport() {
                 className="h-8"
                 placeholder="Ism yoki telefon..."
                 value={searchTerm}
-                onChange={(e) => setSearchTerm(e.target.value)}
+                onChange={(e) => set({ search: e.target.value || null }, true)}
               />
             </div>
             <div>
@@ -181,12 +205,15 @@ export default function VIPCustomersReport() {
                 type="number"
                 min="1"
                 value={minOrders}
-                onChange={(e) => setMinOrders(Number(e.target.value))}
+                onChange={(e) => set({ minOrders: e.target.value || '1' })}
               />
             </div>
             <div className="md:col-span-2">
               <label className="text-xs text-muted-foreground">Limit</label>
-              <Select value={String(limit)} onValueChange={(v) => setLimit(Number(v))}>
+              <Select
+                value={String(limit)}
+                onValueChange={(v) => set({ limit: v === '50' ? null : v })}
+              >
                 <SelectTrigger className="h-8">
                   <SelectValue />
                 </SelectTrigger>
@@ -274,7 +301,7 @@ export default function VIPCustomersReport() {
                     columnKey="customer_name"
                     sortKey={sortKey}
                     sortOrder={sortOrder}
-                    onSort={toggleSort}
+                    onSort={handleSort}
                     kind="string"
                   >
                     Mijoz
@@ -283,7 +310,7 @@ export default function VIPCustomersReport() {
                     columnKey="customer_phone"
                     sortKey={sortKey}
                     sortOrder={sortOrder}
-                    onSort={toggleSort}
+                    onSort={handleSort}
                     kind="string"
                   >
                     Telefon
@@ -292,7 +319,7 @@ export default function VIPCustomersReport() {
                     columnKey="total_spent"
                     sortKey={sortKey}
                     sortOrder={sortOrder}
-                    onSort={toggleSort}
+                    onSort={handleSort}
                     kind="number"
                     align="right"
                   >
@@ -303,7 +330,7 @@ export default function VIPCustomersReport() {
                     columnKey="order_count"
                     sortKey={sortKey}
                     sortOrder={sortOrder}
-                    onSort={toggleSort}
+                    onSort={handleSort}
                     kind="number"
                     align="right"
                   >
@@ -313,7 +340,7 @@ export default function VIPCustomersReport() {
                     columnKey="bonus_points"
                     sortKey={sortKey}
                     sortOrder={sortOrder}
-                    onSort={toggleSort}
+                    onSort={handleSort}
                     kind="number"
                     align="right"
                   >
@@ -323,7 +350,7 @@ export default function VIPCustomersReport() {
                     columnKey="avg_order_value"
                     sortKey={sortKey}
                     sortOrder={sortOrder}
-                    onSort={toggleSort}
+                    onSort={handleSort}
                     kind="number"
                     align="right"
                   >
@@ -333,7 +360,7 @@ export default function VIPCustomersReport() {
                     columnKey="loyalty_score"
                     sortKey={sortKey}
                     sortOrder={sortOrder}
-                    onSort={toggleSort}
+                    onSort={handleSort}
                     kind="number"
                     align="center"
                   >
@@ -343,7 +370,7 @@ export default function VIPCustomersReport() {
                     columnKey="last_purchase"
                     sortKey={sortKey}
                     sortOrder={sortOrder}
-                    onSort={toggleSort}
+                    onSort={handleSort}
                     kind="string"
                   >
                     Oxirgi xarid
@@ -374,7 +401,7 @@ export default function VIPCustomersReport() {
                         {row.customer_name}
                       </TableCell>
                       <TableCell className="max-w-0 truncate font-mono text-xs" title={row.customer_phone || ''}>
-                        {row.customer_phone || '-'}
+                        {formatCustomerPhone(row.customer_phone, user?.role)}
                       </TableCell>
                       <TableCell className="text-right font-semibold tabular-nums">
                         {formatMoneyUZS(row.total_spent)}

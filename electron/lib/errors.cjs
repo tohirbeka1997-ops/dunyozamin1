@@ -7,14 +7,19 @@
  */
 const ERROR_CODES = {
   VALIDATION_ERROR: 'VALIDATION_ERROR',
+  UNPROCESSABLE_ENTITY: 'UNPROCESSABLE_ENTITY',
   NOT_FOUND: 'NOT_FOUND',
+  CONFLICT: 'CONFLICT',
+  RETURN_LIMIT_EXCEEDED: 'RETURN_LIMIT_EXCEEDED',
   DB_ERROR: 'DB_ERROR',
   DATABASE_ERROR: 'DATABASE_ERROR',
   AUTH_ERROR: 'AUTH_ERROR',
   PERMISSION_DENIED: 'PERMISSION_DENIED',
+  FORBIDDEN: 'FORBIDDEN',
   SHIFT_CLOSED: 'SHIFT_CLOSED',
   INSUFFICIENT_STOCK: 'INSUFFICIENT_STOCK',
   INSUFFICIENT_BATCH_STOCK: 'INSUFFICIENT_BATCH_STOCK',
+  INSUFFICIENT_CASH: 'INSUFFICIENT_CASH',
   INTERNAL_ERROR: 'INTERNAL_ERROR',
   DUPLICATE_PHONE: 'DUPLICATE_PHONE',
 };
@@ -23,12 +28,16 @@ const ERROR_CODES = {
  * Create a structured error object
  * @param {string} code - Error code from ERROR_CODES
  * @param {string} message - Human-readable error message
- * @returns {Error} Error object with code and message properties
+ * @param {object} [details] - Optional structured details for clients
+ * @returns {Error} Error object with code, message, and optional details
  */
-function createError(code, message) {
+function createError(code, message, details) {
   const error = new Error(message);
   error.code = code;
   error.name = 'StructuredError';
+  if (details !== undefined) {
+    error.details = details;
+  }
   return error;
 }
 

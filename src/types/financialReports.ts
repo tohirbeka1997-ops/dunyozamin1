@@ -9,6 +9,26 @@ export type CashFlowRow = {
   net: number;
 };
 
+export type CashFlowSourceRow = {
+  source: string;
+  inflow: number;
+  outflow: number;
+  net: number;
+};
+
+export type CashFlowReconciliation = {
+  opening_cash: number;
+  closing_cash: number;
+  net_cash_movement: number;
+  delta: number;
+};
+
+export type CashFlowReportPayload = {
+  rows: CashFlowRow[];
+  by_source: CashFlowSourceRow[];
+  reconciliation: CashFlowReconciliation | null;
+};
+
 export type SupplierProductSalesRow = {
   supplier_id: string | null;
   supplier_name: string | null;

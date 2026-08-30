@@ -135,10 +135,52 @@ async function main() {
   assert.match(textShift, /Smena yopildi/);
 
   const textDigest = buildDailyDigestText(
-    { date: '2026-08-20', totalSales: 2e6, orderCount: 3, cashTotal: 1e6, cardTotal: 5e5, creditTotal: 5e5, expensesTotal: 1e5, customerDebtTotal: 9e5 },
+    {
+      date: '2026-08-20',
+      totalSales: 2e6,
+      orderCount: 3,
+      cashTotal: 1e6,
+      cardTotal: 5e5,
+      creditTotal: 5e5,
+      expensesTotal: 1e5,
+      customerDebtTotal: 9e5,
+      operations: {
+        expenses: {
+          count: 2,
+          total: 1e5,
+          lines: ['Ijara: 80 000', 'Kommunal: 20 000'],
+          more: 0,
+        },
+        creditSales: {
+          count: 1,
+          total: 5e5,
+          lines: ['Ali #A-1: 500 000'],
+          more: 0,
+        },
+        purchases: { count: 0, total: 0, lines: [], more: 0 },
+        stockChanges: {
+          count: 1,
+          total: 0,
+          lines: ['Un (xarid) +10'],
+          more: 0,
+        },
+        debtPayments: {
+          count: 1,
+          total: 5e4,
+          lines: ['Vali (cash): 50 000'],
+          more: 0,
+        },
+        returns: { count: 0, total: 0, lines: [], more: 0 },
+      },
+    },
     'Shop',
   );
   assert.match(textDigest, /Kunlik hisobot/);
+  assert.match(textDigest, /Bugungi operatsiyalar/);
+  assert.match(textDigest, /Xarajatlar/);
+  assert.match(textDigest, /Nasiya sotuvlar/);
+  assert.match(textDigest, /Ombor/);
+  assert.match(textDigest, /Qarzdorlik to/);
 
   const { db, dir } = openTempDb();
   try {
@@ -173,7 +215,7 @@ async function main() {
         TELEGRAM_REPORTS_CHAT_ID: '',
         TELEGRAM_ADMIN_IDS: '',
         TELEGRAM_MARKETING_CHANNEL_ID: '-100555',
-        TELEGRAM_BOT_TOKEN: 'reports:TOKEN',
+        TELEGRAM_BOT_TOKEN: 'customer:TOKEN',
         TELEGRAM_MARKETING_BOT_TOKEN: 'marketing:TOKEN',
       },
       () => {
@@ -181,6 +223,21 @@ async function main() {
         const dest = resolveReportDestination(db);
         assert.notEqual(dest.source, 'marketing_channel');
         assert.equal(dest.chatIds.length, 0);
+        assert.equal(dest.botToken, 'customer:TOKEN');
+      },
+    );
+
+    withEnv(
+      {
+        TELEGRAM_REPORTS_CHAT_ID: '-100123',
+        TELEGRAM_BOT_TOKEN: 'customer:TOKEN',
+        TELEGRAM_REPORTS_BOT_TOKEN: 'reports:TOKEN',
+        TELEGRAM_MARKETING_BOT_TOKEN: 'marketing:TOKEN',
+      },
+      () => {
+        db.prepare(`UPDATE settings SET value = '' WHERE key = 'reports.telegram.chat_id'`).run();
+        const dest = resolveReportDestination(db);
+        assert.deepEqual(dest.chatIds, [-100123]);
         assert.equal(dest.botToken, 'reports:TOKEN');
       },
     );

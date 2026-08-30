@@ -8,7 +8,7 @@ interface AuthContextType {
   session: { user: { id: string; email: string } } | null;
   user: { id: string; email: string; role: string; full_name?: string } | null;
   profile: { id: string; full_name: string; email: string; role: string; username?: string } | null;
-  role: 'admin' | 'cashier' | 'manager';
+  role: 'admin' | 'cashier' | 'manager' | 'senior_cashier' | 'accountant' | 'purchaser' | 'receiver' | 'warehouse';
   /** Bosqich 16 — 'master' = super-admin session, 'tenant' = regular user. */
   scope: 'tenant' | 'master';
   /** null in single-tenant installs and for master sessions. */

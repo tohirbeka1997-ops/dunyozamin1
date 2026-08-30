@@ -17,6 +17,15 @@ const {
 } = require('../lib/customerBalance.cjs');
 const { recordPaymentFee } = require('../lib/paymentFee.cjs');
 const { allocateOrderDiscountOntoItems } = require('../lib/allocateOrderDiscount.cjs');
+const {
+  allocatePaymentInToDebtAndAdvance,
+  assertDueDateNotBeforeToday,
+  parseNonNegativeMoneyAmount,
+  isZeroTotalSaleAllowed,
+  computeOrderReturnMoney,
+  isProductSalePriceSellable,
+  isProductFreeSaleAllowed,
+} = require('../lib/posHardening.cjs');
 
 /**
  * Sales Service (POS Terminal)
@@ -32,6 +41,8 @@ class SalesService {
     this.promotionService = promotionService;
     /** @type {null | { findOpenRevision?: (warehouseId: string) => any }} */
     this.inventoryRevisions = null;
+    /** @type {null | { recordDrawerPaymentOnly?: Function }} */
+    this.customers = null;
     this._orderItemsColumns = null;
     this._orderColumns = null;
   }
@@ -239,7 +250,7 @@ class SalesService {
     const hasUsd = hasCustomerBalanceUsd(this.db);
     const row = this.db
       .prepare(
-        `SELECT id, name, credit_limit, allow_debt, allow_credit, balance${
+        `SELECT id, name, status, credit_limit, allow_debt, allow_credit, balance${
           hasUsd ? ', balance_usd' : ''
         } FROM customers WHERE id = ?`
       )
@@ -248,6 +259,14 @@ class SalesService {
       throw createError(
         ERROR_CODES.NOT_FOUND,
         `Customer not found: ${customerId}. Cannot process credit sale.`
+      );
+    }
+
+    const status = String(row.status || '').trim().toLowerCase();
+    if (status && status !== 'active') {
+      throw createError(
+        ERROR_CODES.VALIDATION_ERROR,
+        `Cannot sell on credit to inactive customer: "${row.name}".`
       );
     }
 
@@ -319,7 +338,13 @@ class SalesService {
     const credit = Number(creditAmount || 0);
     if (credit <= 0.009 || !this._isCreditPaymentStatus(paymentStatus)) return null;
     const explicit = this._normalizeDueDate(orderData?.due_date);
-    if (explicit) return explicit;
+    if (explicit) {
+      const check = assertDueDateNotBeforeToday(explicit);
+      if (!check.ok) {
+        throw createError(ERROR_CODES.VALIDATION_ERROR, check.error);
+      }
+      return check.due_date;
+    }
     const days = this._getCreditDueDefaultDays();
     const row = this.db
       .prepare(`SELECT date('now', 'localtime', '+' || ? || ' days') AS d`)
@@ -1744,6 +1769,32 @@ class SalesService {
       throw createError(ERROR_CODES.VALIDATION_ERROR, 'Order must have at least one item');
     }
 
+    const declaredTotal = Number(orderData.total_amount || 0);
+    if (Math.abs(declaredTotal) < 0.005) {
+      const roleCodesForZero = this._getUserRoleCodes(orderData.user_id || orderData.cashier_id);
+      const authorizedZero = roleCodesForZero.some((r) => r === 'admin' || r === 'manager');
+      const disc = Number(orderData.discount_amount || 0);
+      const sub = Number(orderData.subtotal || 0);
+      const loyaltyPts = Number(orderData.loyalty_redeem_points || 0);
+      const hasPromo =
+        Boolean(orderData.promo_code) ||
+        String(orderData.discount_type || '').toLowerCase() === 'promo';
+      if (
+        !isZeroTotalSaleAllowed({
+          subtotal: sub,
+          discountAmount: disc,
+          loyaltyRedeemPoints: loyaltyPts,
+          hasPromo,
+          authorized: authorizedZero,
+        })
+      ) {
+        throw createError(
+          ERROR_CODES.VALIDATION_ERROR,
+          'Zero-total sale requires 100% discount, promo, bonus points, or authorized role',
+        );
+      }
+    }
+
     // CRITICAL FIX: Filter out zero-amount payments and allow empty payments for full credit sales.
     // IMPORTANT: A "credit" entry is NOT real money received; do NOT count it toward paid_amount.
     const validPayments = (paymentsData || []).filter((p) => Number(p.amount) > 0);
@@ -1893,16 +1944,34 @@ class SalesService {
       }
       
       // Verify customer exists and is not the default walk-in customer
-      const customer = this.db.prepare('SELECT id, name FROM customers WHERE id = ?').get(orderData.customer_id);
+      const customer = this.db
+        .prepare('SELECT id, name, status FROM customers WHERE id = ?')
+        .get(orderData.customer_id);
       if (!customer) {
         throw createError(ERROR_CODES.NOT_FOUND, 
           `Customer not found: ${orderData.customer_id}. Cannot process credit sale.`);
+      }
+
+      const custStatus = String(customer.status || '').trim().toLowerCase();
+      if (custStatus && custStatus !== 'active') {
+        throw createError(
+          ERROR_CODES.VALIDATION_ERROR,
+          `Cannot sell on credit to inactive customer: "${customer.name}".`
+        );
       }
       
       // Check if it's the default walk-in customer (should not allow credit for walk-in)
       if (orderData.customer_id === KNOWN_DEFAULT_CUSTOMER) {
         throw createError(ERROR_CODES.VALIDATION_ERROR, 
           'Credit sales are not allowed for walk-in customers. Please select a registered customer.');
+      }
+
+      // Explicit nasiya due date cannot be in the past (server-side).
+      if (orderData.due_date != null && String(orderData.due_date).trim() !== '') {
+        const dueCheck = assertDueDateNotBeforeToday(orderData.due_date);
+        if (!dueCheck.ok) {
+          throw createError(ERROR_CODES.VALIDATION_ERROR, dueCheck.error);
+        }
       }
 
       const saleCurrencyForCredit = normalizeCustomerCurrency(
@@ -1954,6 +2023,15 @@ class SalesService {
 
       // Create order with 'hold' status initially
       // CRITICAL: Use FORCED values to ensure FK constraints are satisfied
+      const freeSaleReasonRaw = String(orderData.free_sale_reason || '').trim();
+      let orderNotes = orderData.notes != null ? String(orderData.notes) : '';
+      if (freeSaleReasonRaw) {
+        const tagged = `[FREE_SALE] ${freeSaleReasonRaw}`;
+        orderNotes = orderNotes.trim()
+          ? `${tagged}\n${orderNotes.trim()}`
+          : tagged;
+      }
+
       const hasPriceTierId = this._hasOrderCol('price_tier_id');
       const hasOrderCurrency = this._hasOrderCol('currency');
       const hasOrderFxRate = this._hasOrderCol('fx_rate');
@@ -2023,7 +2101,7 @@ class SalesService {
         0, // credit_amount - will be calculated
         'hold', // status - will be set to 'completed' after finalization
         'pending', // payment_status - will be updated
-        orderData.notes || null,
+        orderNotes || null,
         now, // created_at - use SQLite datetime format
         now, // updated_at - use SQLite datetime format
         ...(hasOrderUuid ? [orderData.order_uuid || null] : []),
@@ -2038,6 +2116,41 @@ class SalesService {
       this.db
         .prepare(`INSERT INTO orders (${orderCols.join(', ')}) VALUES (${orderCols.map(() => '?').join(', ')})`)
         .run(...orderVals);
+
+      if (freeSaleReasonRaw) {
+        try {
+          const hasAudit = this.db
+            .prepare(`SELECT 1 AS ok FROM sqlite_master WHERE type='table' AND name='audit_log'`)
+            .get();
+          if (hasAudit) {
+            this.db
+              .prepare(
+                `INSERT INTO audit_log (
+                  id, user_id, action, entity_type, entity_id,
+                  old_values, new_values, ip_address, user_agent, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+              )
+              .run(
+                randomUUID(),
+                orderData.user_id || null,
+                'free_sale',
+                'order',
+                orderId,
+                null,
+                JSON.stringify({
+                  order_number: orderNumber,
+                  reason: freeSaleReasonRaw,
+                  total_amount: orderData.total_amount || 0,
+                }),
+                null,
+                null,
+                new Date().toISOString(),
+              );
+          }
+        } catch (err) {
+          console.warn('[SALES] free_sale audit log failed:', err?.message || err);
+        }
+      }
 
       // Runtime guard: Verify order exists before inserting children
       const orderExists = this.db.prepare('SELECT 1 FROM orders WHERE id = ?').get(orderId);
@@ -2077,7 +2190,15 @@ class SalesService {
           if (!canGoNegative && qtyBase > available) {
             throw createError(ERROR_CODES.INSUFFICIENT_STOCK, 
               `Insufficient stock for ${product.name}. Available: ${available}, Requested: ${qtyBase}`,
-              { productId: product.id, productName: product.name, available, requested: qtyBase });
+              {
+                productId: product.id,
+                productName: product.name,
+                available,
+                requested: qtyBase,
+                available_stock: available,
+                requested_qty: qtyBase,
+                product_name: product.name,
+              });
           }
         }
 
@@ -2109,6 +2230,35 @@ class SalesService {
             if (Number.isFinite(inferredUnit) && inferredUnit > 0) {
               unitPrice = inferredUnit;
             }
+          }
+        }
+
+        // P0: block free/zero-price sale unless product allows free sale + cashier reason.
+        if (unitPrice <= 0 && qtySale !== 0) {
+          const catalogSellable = isProductSalePriceSellable(product);
+          const freeAllowed = isProductFreeSaleAllowed(product);
+          const freeReason = String(
+            itemData.free_sale_reason ||
+              orderData.free_sale_reason ||
+              orderData.notes ||
+              '',
+          ).trim();
+          const looksFreeReason =
+            freeReason.length > 0 &&
+            (/\[FREE_SALE\]/i.test(freeReason) ||
+              Boolean(itemData.free_sale_reason) ||
+              Boolean(orderData.free_sale_reason));
+          if (!catalogSellable || !freeAllowed || !looksFreeReason) {
+            throw createError(
+              ERROR_CODES.VALIDATION_ERROR,
+              `Zero-price sale blocked for ${product.name || product.sku || product.id}`,
+              {
+                code: 'ZERO_PRICE_BLOCKED',
+                productId: product.id,
+                productName: product.name,
+                sku: product.sku,
+              },
+            );
           }
         }
         const priceTier = itemData.price_tier || tierCode || 'retail';
@@ -2712,6 +2862,15 @@ class SalesService {
         const saleCurrency = normalizeCustomerCurrency(hasFinCurrency ? orderFin?.currency : 'UZS');
         const currentBalance = readBalanceInCurrency(this.db, orderData.customer_id, saleCurrency);
         const curLabel = saleCurrency === 'USD' ? 'USD' : "so'm";
+        // Optional atomic prior-debt close folded into this sale TX (POS nasiya).
+        let priorDebtPayment = 0;
+        if (orderData.prior_debt_payment != null && orderData.prior_debt_payment !== '') {
+          const priorParsed = parseNonNegativeMoneyAmount(orderData.prior_debt_payment);
+          if (!priorParsed.ok) {
+            throw createError(ERROR_CODES.VALIDATION_ERROR, priorParsed.error);
+          }
+          priorDebtPayment = priorParsed.amount;
+        }
         // Almashuv: jami manfiy — faqat refund_balance to‘lovida balansga yoziladi (naqd refund_cash emas).
         let refundDebtReduction = 0;
         let refundMagForBalance = 0;
@@ -2725,10 +2884,16 @@ class SalesService {
           refundMagForBalance = refundMag;
         }
         const balanceCreditIn =
-          Number(debtPaidFromOverpay || 0) + Number(refundMagForBalance || 0);
+          Number(debtPaidFromOverpay || 0) +
+          Number(refundMagForBalance || 0) +
+          Number(priorDebtPayment || 0);
         const prepaidConsumed = Math.max(0, Number(orderData.prepaid_applied || 0) || 0);
         const balanceDelta = -finalCreditAmount + balanceCreditIn - prepaidConsumed;
         const salesStatUzs = orderSalesStatUzs(orderFin);
+        const paymentAlloc = allocatePaymentInToDebtAndAdvance(
+          currentBalance,
+          Number(debtPaidFromOverpay || 0) + Number(priorDebtPayment || 0)
+        );
 
         console.log('💰 Updating customer stats:', {
           customer_id: orderData.customer_id,
@@ -2737,6 +2902,9 @@ class SalesService {
           creditAmount: finalCreditAmount,
           prepaid_consumed: prepaidConsumed,
           debtPaidFromOverpay,
+          prior_debt_payment: priorDebtPayment,
+          debt_portion: paymentAlloc.debt_portion,
+          advance_portion: paymentAlloc.advance_portion,
           refundDebtReduction,
           refundMagForBalance,
           balance_delta: balanceDelta,
@@ -2847,7 +3015,10 @@ class SalesService {
                   : debtPaidFromOverpay > 0
                     ? `Sotuv: ${order.order_number} (To'liq to'langan: ${order.total_amount} ${curLabel})`
                     : `Sotuv: ${order.order_number} (To'liq to'langan: ${order.total_amount} ${curLabel})`;
-            const saleBalanceAfter = debtPaidFromOverpay > 0 ? newBalance - debtPaidFromOverpay : newBalance;
+            const inboundPayTotal =
+              Number(debtPaidFromOverpay || 0) + Number(priorDebtPayment || 0);
+            const saleBalanceAfter =
+              inboundPayTotal > 0 ? newBalance - inboundPayTotal : newBalance;
 
             insertLedger({
               id: ledgerId,
@@ -2864,19 +3035,40 @@ class SalesService {
               balanceAfter: saleBalanceAfter,
             });
 
+            let balCursor = currentBalance;
+            const payMethod =
+              validPayments.find((p) => Number(p.amount) > 0)?.payment_method || null;
+
+            if (priorDebtPayment > payEps) {
+              const priorAlloc = allocatePaymentInToDebtAndAdvance(balCursor, priorDebtPayment);
+              balCursor = priorAlloc.new_balance;
+              insertLedger({
+                id: randomUUID(),
+                type: 'payment_in',
+                amount: priorDebtPayment,
+                balance_after: balCursor,
+                note: `Oldingi qarz to'lovi (nasiya): ${order.order_number} (qarz: ${priorAlloc.debt_portion}; oldindan: ${priorAlloc.advance_portion} ${curLabel})`,
+                method: payMethod || 'cash',
+              });
+            }
+
             if (debtPaidFromOverpay > payEps) {
+              const overAlloc = allocatePaymentInToDebtAndAdvance(balCursor, debtPaidFromOverpay);
+              balCursor = overAlloc.new_balance;
               insertLedger({
                 id: randomUUID(),
                 type: 'payment_in',
                 amount: debtPaidFromOverpay,
                 balance_after: newBalance,
-                note: `Qarz yopildi: ${order.order_number} (to'lovdan hisobga o'tkazildi: ${debtPaidFromOverpay} ${curLabel})`,
-                method: validPayments.find((p) => Number(p.amount) > 0)?.payment_method || null,
+                note: `To'lovdan hisobga: ${order.order_number} (qarz: ${overAlloc.debt_portion}; oldindan: ${overAlloc.advance_portion} ${curLabel})`,
+                method: payMethod,
               });
-              console.log('✅ Ledger entry inserted for prior debt payment:', {
+              console.log('✅ Ledger entry inserted for prior debt / overpay:', {
                 customerId: orderData.customer_id,
                 amount: debtPaidFromOverpay,
                 balanceAfter: newBalance,
+                debt_portion: overAlloc.debt_portion,
+                advance_portion: overAlloc.advance_portion,
               });
             }
           }
@@ -2886,6 +3078,49 @@ class SalesService {
             ERROR_CODES.DB_ERROR,
             `Failed to record customer ledger for sale: ${ledgerError.message || ledgerError}`
           );
+        }
+
+        // Shift expected cash uses customer_payments (not ledger). Fold prior-debt
+        // cash into the same sale TX so drawer rollup matches cash collected.
+        if (priorDebtPayment > payEps) {
+          const custSvc = this.customers;
+          if (!custSvc || typeof custSvc.recordDrawerPaymentOnly !== 'function') {
+            throw createError(
+              ERROR_CODES.DB_ERROR,
+              'Customers service unavailable for prior debt drawer payment'
+            );
+          }
+          try {
+            const priorDrawer = custSvc.recordDrawerPaymentOnly({
+              customerId: orderData.customer_id,
+              amount: priorDebtPayment,
+              // POS prior-debt collection is physical cash for the drawer.
+              paymentMethod: 'cash',
+              notes: `Oldingi qarz to'lovi (nasiya): ${order.order_number}`,
+              receivedBy: orderData.cashier_id || orderData.user_id || null,
+              orderId,
+              shiftId: orderData.shift_id || null,
+              oldBalance: currentBalance,
+              newBalance: currentBalance + priorDebtPayment,
+              operation: 'payment_in',
+              paidAt: now,
+            });
+            console.log('✅ Prior debt customer_payments row for shift drawer:', {
+              customerId: orderData.customer_id,
+              amount: priorDebtPayment,
+              payment_id: priorDrawer.payment_id,
+              shift_id: priorDrawer.shift_id,
+            });
+          } catch (drawerPayErr) {
+            console.error(
+              '❌ Failed to record prior debt drawer payment (critical, rolling back):',
+              drawerPayErr.message || drawerPayErr
+            );
+            throw createError(
+              ERROR_CODES.DB_ERROR,
+              `Failed to record prior debt cash for shift: ${drawerPayErr.message || drawerPayErr}`
+            );
+          }
         }
 
         this._applyLoyaltyRedeemOnOrder({
@@ -2989,7 +3224,7 @@ class SalesService {
     // by returning the already-committed order instead of surfacing a confusing
     // duplicate-key error to the cashier.
     try {
-      const saleResult = __runSaleTx();
+      const saleResult = __runSaleTx.immediate();
       this._notifyCreditSaleReport(saleResult);
       this._notifyBalanceChangeFromSale(saleResult);
       return saleResult;
@@ -3376,7 +3611,37 @@ class SalesService {
         c.phone AS customer_phone,
         u.username as cashier_name,
         u.full_name as cashier_full_name,
-        COALESCE(GROUP_CONCAT(DISTINCT p.payment_method), '') as payment_methods
+        COALESCE(GROUP_CONCAT(DISTINCT p.payment_method), '') as payment_methods,
+        COALESCE((
+          SELECT SUM(
+            CASE
+              WHEN ABS(COALESCE(oi.quantity, 0)) < 1e-9 THEN 0
+              ELSE ABS(COALESCE(
+                oi.final_total,
+                oi.line_total,
+                (COALESCE(oi.unit_price, 0) * ABS(oi.quantity))
+              )) * MIN(1.0, COALESCE(oi.returned_quantity, 0) / ABS(oi.quantity))
+            END
+          )
+          FROM order_items oi WHERE oi.order_id = o.id
+        ), 0) AS returned_total,
+        COALESCE((
+          SELECT CASE
+            WHEN SUM(CASE WHEN ABS(COALESCE(oi.quantity, 0)) > 0 THEN 1 ELSE 0 END) = 0
+              THEN 'not_returned'
+            WHEN SUM(CASE WHEN COALESCE(oi.returned_quantity, 0) > 0 THEN 1 ELSE 0 END) = 0
+              THEN 'not_returned'
+            WHEN SUM(
+              CASE
+                WHEN ABS(COALESCE(oi.quantity, 0)) > 0
+                  AND COALESCE(oi.returned_quantity, 0) + 1e-9 < ABS(oi.quantity)
+                THEN 1 ELSE 0
+              END
+            ) = 0 THEN 'fully_returned'
+            ELSE 'partially_returned'
+          END
+          FROM order_items oi WHERE oi.order_id = o.id
+        ), 'not_returned') AS return_status
       FROM orders o
       LEFT JOIN customers c ON c.id = o.customer_id
       LEFT JOIN users u ON o.cashier_id = u.id
@@ -3478,7 +3743,18 @@ class SalesService {
       query += ' LIMIT 1000';
     }
 
-    return this.db.prepare(query).all(params);
+    const rows = this.db.prepare(query).all(params);
+    return rows.map((row) => {
+      const gross = Math.max(0, Number(row.total_amount) || 0);
+      const returned = Math.max(0, Number(row.returned_total) || 0);
+      return {
+        ...row,
+        gross_total: gross,
+        returned_total: Math.round(returned * 100) / 100,
+        net_total: Math.round(Math.max(0, gross - returned) * 100) / 100,
+        return_status: row.return_status || 'not_returned',
+      };
+    });
   }
 
   _listWebOrdersForUnified(filters = {}, fetchSize = 50) {
@@ -4007,12 +4283,24 @@ class SalesService {
       cashier: cashier || null,
     };
 
+    const money = computeOrderReturnMoney({
+      grossTotal: Number(order.total_amount) || 0,
+      items: enrichedItems,
+    });
+    result.gross_total = money.gross_total;
+    result.returned_total = money.returned_total;
+    result.net_total = money.net_total;
+    result.return_status = money.return_status;
+
     console.log('[SALES] _getOrderWithDetails returning order:', {
       id: result.id,
       order_number: result.order_number,
       items_count: result.items.length,
       payments_count: result.payments.length,
       has_customer: !!result.customer,
+      return_status: result.return_status,
+      returned_total: result.returned_total,
+      net_total: result.net_total,
     });
 
     // CRITICAL: If items are empty, log warning but still return order
@@ -4043,24 +4331,30 @@ class SalesService {
   }
 
   /**
-   * Fire-and-forget customer+staff notify when sale changes customer balance.
+   * Fire-and-forget customer DM report for POS sales (private chat only).
+   * Includes fully-paid sales (delta=0) when a customer is linked.
    */
   _notifyBalanceChangeFromSale(saleResult) {
     try {
-      const delta = Number(saleResult?.balance_delta || 0);
       const customerId = saleResult?.customer_id;
-      if (!customerId || !Number.isFinite(delta) || delta === 0) return;
-      const { fireBalanceChangeNotify } = require('../../public-api/lib/balanceChangeNotify.cjs');
-      fireBalanceChangeNotify(this.db, {
+      if (!customerId) return;
+      const creditAmount = Number(saleResult?.credit_amount || 0);
+      const delta = Number(saleResult?.balance_delta || 0);
+      const { fireCustomerOpsNotify } = require('../../public-api/lib/customerOpsNotify.cjs');
+      fireCustomerOpsNotify(this.db, {
         customerId,
         delta,
         balanceAfter: saleResult?.new_balance,
         currency: saleResult?.currency || 'UZS',
-        reason: Number(saleResult?.credit_amount || 0) > 0 ? 'credit_sale' : 'sale',
+        reason: creditAmount > 0 ? 'credit_sale' : 'sale',
         refId: saleResult?.order_id || saleResult?.id,
+        orderId: saleResult?.order_id || saleResult?.id,
+        order_id: saleResult?.order_id || saleResult?.id,
+        orderNumber: saleResult?.order_number || null,
+        creditAmount,
       });
     } catch (e) {
-      console.warn('[sales] balance change notify unavailable:', e?.message || e);
+      console.warn('[sales] customer ops notify unavailable:', e?.message || e);
     }
   }
 }

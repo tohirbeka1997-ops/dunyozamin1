@@ -9,6 +9,16 @@ const {
   readBalanceInCurrency,
   applyCustomerBalanceDeltaOnce,
 } = require('../lib/customerBalance.cjs');
+const { availableToReturnQty, assertReturnQtyAllowed, RETURN_LIMIT_EXCEEDED_CODE, RETURN_LIMIT_EXCEEDED_MESSAGE, isSalesReturnFullyExhausted } = require('../lib/posHardening.cjs');
+const {
+  summarizeOrderPayments,
+  requiresMethodMismatchApproval,
+  getLargeReturnThreshold,
+  normalizePayMethod,
+  pickPrimaryReturnsRole,
+  getReturnsPermissions,
+  canApproveOrRejectReturn,
+} = require('../lib/returnsControls.cjs');
 
 /**
  * Returns Service
@@ -20,6 +30,10 @@ class ReturnsService {
     this.db = db;
     this.inventoryService = inventoryService;
     this.batchService = batchService;
+    /** @type {import('./shiftsService.cjs')|null} */
+    this.shiftsService = null;
+    /** @type {import('./auditService.cjs')|null} */
+    this.auditService = null;
     this._returnItemCols = null;
     this._salesReturnCols = null;
   }
@@ -69,6 +83,40 @@ class ReturnsService {
     return this._getSalesReturnCols().has(name);
   }
 
+  _normalizeIdempotencyKey(raw) {
+    const key = String(raw || '').trim();
+    return key || null;
+  }
+
+  _findReturnByIdempotencyKey(key) {
+    if (!key || !this._hasSalesReturnCol('idempotency_key')) return null;
+    const row = this.db
+      .prepare(`SELECT * FROM sales_returns WHERE idempotency_key = ? LIMIT 1`)
+      .get(key);
+    if (!row?.id) return null;
+    const items = this.db
+      .prepare(`SELECT * FROM return_items WHERE return_id = ?`)
+      .all(row.id);
+    return { ...row, items, idempotent_replay: true };
+  }
+
+  /**
+   * Statuses that permanently consume returnable qty (completed returns).
+   * Open/in-flight statuses reserve qty so parallel returns cannot over-return.
+   */
+  _completedReturnStatusesSql() {
+    return `('completed')`;
+  }
+
+  _heldReturnStatusesSql() {
+    // pending/approved reserve qty until completed or cancelled/rejected.
+    return `('draft', 'pending', 'approved')`;
+  }
+
+  _allReservingReturnStatusesSql() {
+    return `('completed', 'draft', 'pending', 'approved')`;
+  }
+
   /**
    * Yagona manba: yakunlangan qaytarishlar bo'yicha shu order_item uchun qaytarilgan miqdor.
    * `order_items.returned_quantity` maydoni eski/ nomuvofiq bo'lishi mumkin — create/getOrderDetails bilan mos.
@@ -81,15 +129,31 @@ class ReturnsService {
         FROM return_items ri
         INNER JOIN sales_returns sr ON sr.id = ri.return_id
         WHERE ri.order_item_id = ?
-          AND LOWER(TRIM(COALESCE(sr.status, ''))) = 'completed'
+          AND LOWER(TRIM(COALESCE(sr.status, ''))) IN ${this._completedReturnStatusesSql()}
       `,
       )
       .get(orderItemId);
     return Number(row?.total || 0);
   }
 
+  /** Yakunlangan qaytarishlar bo'yicha buyurtma bo'yicha qaytarilgan summa. */
+  _sumCompletedReturnAmountForOrder(orderId) {
+    if (!orderId) return 0;
+    const row = this.db
+      .prepare(
+        `
+        SELECT COALESCE(SUM(sr.refund_amount), 0) AS total
+        FROM sales_returns sr
+        WHERE sr.order_id = ?
+          AND LOWER(TRIM(COALESCE(sr.status, ''))) IN ${this._completedReturnStatusesSql()}
+      `,
+      )
+      .get(orderId);
+    return Number(row?.total || 0);
+  }
+
   /**
-   * Barcha draft qaytarishlar bo'yicha shu order_item uchun band qilingan miqdor (boshqa draftlar bilan to'qnashmaslik).
+   * Open returns (draft/pending/approved) that reserve qty against parallel/over-return.
    * @param {string|null} excludeReturnId - joriy qaytarishni yig'indidan chiqarish (completeReturn validatsiyasi).
    */
   _sumDraftReturnedQtyForOrderItem(orderItemId, excludeReturnId = null) {
@@ -102,7 +166,7 @@ class ReturnsService {
         FROM return_items ri
         INNER JOIN sales_returns sr ON sr.id = ri.return_id
         WHERE ri.order_item_id = ?
-          AND LOWER(TRIM(COALESCE(sr.status, ''))) = 'draft'
+          AND LOWER(TRIM(COALESCE(sr.status, ''))) IN ${this._heldReturnStatusesSql()}
           AND sr.id != ?
       `,
         )
@@ -116,7 +180,7 @@ class ReturnsService {
         FROM return_items ri
         INNER JOIN sales_returns sr ON sr.id = ri.return_id
         WHERE ri.order_item_id = ?
-          AND LOWER(TRIM(COALESCE(sr.status, ''))) = 'draft'
+          AND LOWER(TRIM(COALESCE(sr.status, ''))) IN ${this._heldReturnStatusesSql()}
       `,
       )
       .get(orderItemId);
@@ -124,11 +188,409 @@ class ReturnsService {
   }
 
   _normalizeRefundMethod(method) {
-    return method === 'customer_account' ? 'customer_account' : method === 'credit' ? 'credit' : method || 'cash';
+    const n = normalizePayMethod(method);
+    if (n === 'customer_account') return 'customer_account';
+    if (n === 'card') return 'card';
+    if (n === 'cash') return 'cash';
+    // Preserve legacy 'credit' alias for account refunds from older clients.
+    if (method === 'credit') return 'credit';
+    return method || 'cash';
   }
 
   _isCustomerAccountRefund(method) {
     return method === 'credit' || method === 'customer_account';
+  }
+
+  _getUserRoleCodes(userId) {
+    if (!userId) return [];
+    try {
+      const rows = this.db
+        .prepare(
+          `
+        SELECT r.code
+        FROM roles r
+        INNER JOIN user_roles ur ON ur.role_id = r.id
+        WHERE ur.user_id = ?
+      `,
+        )
+        .all(userId);
+      return (rows || []).map((r) => String(r.code || '').toLowerCase());
+    } catch {
+      return [];
+    }
+  }
+
+  _primaryReturnsRole(userId) {
+    return pickPrimaryReturnsRole(this._getUserRoleCodes(userId));
+  }
+
+  _returnsPerms(userId) {
+    return getReturnsPermissions(this._primaryReturnsRole(userId));
+  }
+
+  _isManagerOrAdmin(userId) {
+    const role = this._primaryReturnsRole(userId);
+    return role === 'admin' || role === 'manager';
+  }
+
+  _canApproveReject(userId, refundAmount) {
+    return canApproveOrRejectReturn(
+      this._primaryReturnsRole(userId),
+      refundAmount,
+      this._getLargeReturnThreshold(),
+    );
+  }
+
+  /**
+   * Create-time status: completed | draft | pending (hold = no money/stock yet).
+   */
+  _resolveCreateHold(data) {
+    const st = String(data?.status || '').toLowerCase().trim();
+    if (data?.save_as_draft === true || st === 'draft') {
+      return { asHold: true, asDraft: true, asPending: false, status: 'draft' };
+    }
+    if (data?.submit_for_approval === true || st === 'pending') {
+      return { asHold: true, asDraft: false, asPending: true, status: 'pending' };
+    }
+    return { asHold: false, asDraft: false, asPending: false, status: 'completed' };
+  }
+
+  _getLargeReturnThreshold() {
+    try {
+      const row = this.db
+        .prepare(`SELECT value FROM settings WHERE key = 'returns.large_amount_threshold' LIMIT 1`)
+        .get();
+      return getLargeReturnThreshold(row?.value);
+    } catch {
+      return getLargeReturnThreshold(null);
+    }
+  }
+
+  _getOrderPaymentRows(orderId) {
+    if (!orderId) return [];
+    try {
+      return (
+        this.db
+          .prepare(
+            `SELECT payment_method, amount FROM payments WHERE order_id = ? AND COALESCE(amount, 0) > 0`,
+          )
+          .all(orderId) || []
+      );
+    } catch {
+      return [];
+    }
+  }
+
+  _getOrderPaymentSummary(orderId, orderRow = null) {
+    const order =
+      orderRow ||
+      (orderId ? this.db.prepare('SELECT * FROM orders WHERE id = ?').get(orderId) : null);
+    return summarizeOrderPayments(this._getOrderPaymentRows(orderId), order);
+  }
+
+  _findOpenShiftId(preferredShiftId = null, userId = null) {
+    if (preferredShiftId) {
+      const row = this.db
+        .prepare(`SELECT id FROM shifts WHERE id = ? AND LOWER(TRIM(COALESCE(status,''))) = 'open'`)
+        .get(String(preferredShiftId));
+      if (row?.id) return String(row.id);
+    }
+    if (userId) {
+      const forUser = this.db
+        .prepare(
+          `
+        SELECT id FROM shifts
+        WHERE LOWER(TRIM(COALESCE(status,''))) = 'open'
+          AND (cashier_id = ? OR user_id = ?)
+        ORDER BY opened_at DESC
+        LIMIT 1
+      `,
+        )
+        .get(String(userId), String(userId));
+      if (forUser?.id) return String(forUser.id);
+    }
+    const anyOpen = this.db
+      .prepare(
+        `
+      SELECT id FROM shifts
+      WHERE LOWER(TRIM(COALESCE(status,''))) = 'open'
+      ORDER BY opened_at DESC
+      LIMIT 1
+    `,
+      )
+      .get();
+    return anyOpen?.id ? String(anyOpen.id) : null;
+  }
+
+  _assertCashDrawerSufficient(shiftId, amount) {
+    const need = Number(amount || 0) || 0;
+    if (need <= 0) return;
+    if (!shiftId) {
+      throw createError(
+        ERROR_CODES.VALIDATION_ERROR,
+        'Cash refund requires an open shift',
+      );
+    }
+    let expected = 0;
+    if (this.shiftsService && typeof this.shiftsService.getShiftSummary === 'function') {
+      const summary = this.shiftsService.getShiftSummary(shiftId);
+      // Prefer cash_movements-only refunds to avoid double-count with order-level cash totals.
+      const refundsOut = Number(
+        summary?.refundsBreakdown?.fromMovements ??
+          summary?.refundsBreakdown?.strictCash ??
+          summary?.cashRefundsOut ??
+          0,
+      );
+      expected =
+        Number(summary?.openingCash ?? 0) +
+        Number(summary?.cashSales ?? 0) +
+        Number(summary?.customerDrawerCashNet ?? 0) +
+        Number(summary?.cashDeposits ?? 0) -
+        refundsOut -
+        Number(summary?.cashOutflowTotal ?? 0);
+    } else {
+      const shift = this.db.prepare('SELECT opening_cash FROM shifts WHERE id = ?').get(shiftId);
+      expected = Number(shift?.opening_cash || 0);
+    }
+    if (!Number.isFinite(expected)) expected = 0;
+    if (need > expected + 0.009) {
+      throw createError(
+        ERROR_CODES.INSUFFICIENT_CASH,
+        `Insufficient drawer cash for refund (need ${need}, available ${expected})`,
+      );
+    }
+  }
+
+  _assertManagerApproval(userId, { reason, fieldLabel = 'Manager approval' } = {}) {
+    if (!this._isManagerOrAdmin(userId)) {
+      throw createError(
+        ERROR_CODES.FORBIDDEN,
+        `${fieldLabel} requires manager or admin role`,
+      );
+    }
+    if (!String(reason || '').trim()) {
+      throw createError(ERROR_CODES.VALIDATION_ERROR, `${fieldLabel} reason is required`);
+    }
+  }
+
+  _assertCancelPermission(userId, { reason } = {}) {
+    const perms = this._returnsPerms(userId);
+    if (!perms.cancel_completed) {
+      throw createError(
+        ERROR_CODES.FORBIDDEN,
+        'Cancel return requires manager or admin role',
+      );
+    }
+    if (!String(reason || '').trim()) {
+      throw createError(ERROR_CODES.VALIDATION_ERROR, 'Cancel return reason is required');
+    }
+  }
+
+  /**
+   * Shared create-time money-safe gates (method match, drawer cash, orderless, large amount).
+   * Hold statuses (draft/pending) skip complete-time gates so cashiers can submit for approval.
+   */
+  _enforceCreateControls(data, { refundAmount, order = null, isManual = false } = {}) {
+    const actorId = data.cashier_id || data.user_id || null;
+    const refundMethod = this._normalizeRefundMethod(data.refund_method);
+    const amount = Number(refundAmount || data.total_amount || 0) || 0;
+    const notes = String(data.notes || '').trim();
+    const hold = this._resolveCreateHold(data);
+    const asHold = hold.asHold;
+    const perms = this._returnsPerms(actorId);
+
+    if (isManual) {
+      if (!asHold && !perms.orderless_complete) {
+        throw createError(
+          ERROR_CODES.FORBIDDEN,
+          'Orderless returns are restricted to manager or admin',
+        );
+      }
+      if (asHold && hold.asPending && !perms.orderless_pending && !perms.orderless_complete) {
+        throw createError(
+          ERROR_CODES.FORBIDDEN,
+          'Orderless pending returns require cashier or higher',
+        );
+      }
+      if (!notes) {
+        throw createError(
+          ERROR_CODES.VALIDATION_ERROR,
+          'Orderless return requires a note',
+        );
+      }
+      const visitorOk = data.visitor === true || data.is_visitor === true || data.customer_id === 'visitor';
+      if (!data.customer_id && !visitorOk) {
+        throw createError(
+          ERROR_CODES.VALIDATION_ERROR,
+          'Orderless return requires a customer or visitor flag',
+        );
+      }
+      if (!asHold && !String(data.approval_reason || data.manager_approval_reason || '').trim()) {
+        throw createError(
+          ERROR_CODES.VALIDATION_ERROR,
+          'Orderless return requires manager approval reason',
+        );
+      }
+    }
+
+    const paymentSummary =
+      !isManual && order
+        ? this._getOrderPaymentSummary(order.id, order)
+        : null;
+
+    let methodMismatch = false;
+    let methodMismatchReason = null;
+    if (!isManual && paymentSummary && requiresMethodMismatchApproval(refundMethod, paymentSummary)) {
+      methodMismatch = true;
+      methodMismatchReason = String(
+        data.method_mismatch_reason || data.approval_reason || data.manager_approval_reason || '',
+      ).trim();
+      if (!asHold) {
+        if (!perms.method_mismatch_complete && !this._isManagerOrAdmin(actorId)) {
+          throw createError(
+            ERROR_CODES.FORBIDDEN,
+            'Refund method mismatch requires senior cashier, manager, or admin (or submit as pending)',
+          );
+        }
+        if (!methodMismatchReason) {
+          throw createError(ERROR_CODES.VALIDATION_ERROR, 'Refund method mismatch reason is required');
+        }
+      }
+    }
+
+    const threshold = this._getLargeReturnThreshold();
+    let largeAmount = false;
+    let approvalReason = String(data.approval_reason || data.manager_approval_reason || '').trim() || null;
+    let approvedBy = null;
+    if (amount >= threshold) {
+      largeAmount = true;
+      if (!notes) {
+        throw createError(
+          ERROR_CODES.VALIDATION_ERROR,
+          `Large return (≥ ${threshold}) requires an extra note`,
+        );
+      }
+      if (!asHold) {
+        if (!perms.large_complete) {
+          throw createError(
+            ERROR_CODES.FORBIDDEN,
+            'Large return requires manager or admin (or submit as pending)',
+          );
+        }
+        if (!approvalReason) {
+          throw createError(ERROR_CODES.VALIDATION_ERROR, 'Large return approval reason is required');
+        }
+        approvedBy = actorId;
+      }
+    }
+
+    if (!asHold && isManual) {
+      approvedBy = actorId;
+      approvalReason =
+        approvalReason ||
+        String(data.approval_reason || data.manager_approval_reason || '').trim() ||
+        null;
+    } else if (!asHold && methodMismatch) {
+      approvedBy = actorId;
+      approvalReason = approvalReason || methodMismatchReason;
+    }
+
+    const attachmentNote = String(data.attachment_note || '').trim() || null;
+    const attachmentUrl = String(data.attachment_url || '').trim() || null;
+    const attachmentName = String(data.attachment_name || '').trim() || null;
+
+    let cashShiftId = null;
+    const refundNorm = normalizePayMethod(refundMethod);
+    if (!asHold && refundNorm === 'cash' && amount > 0) {
+      cashShiftId = this._findOpenShiftId(data.shift_id || null, actorId);
+      if (!cashShiftId) {
+        throw createError(ERROR_CODES.VALIDATION_ERROR, 'Cash refund requires an open shift');
+      }
+      this._assertCashDrawerSufficient(cashShiftId, amount);
+    }
+
+    return {
+      hold,
+      paymentSummary,
+      methodMismatch,
+      methodMismatchReason,
+      largeAmount,
+      approvedBy,
+      approvalReason,
+      attachmentNote,
+      attachmentUrl,
+      attachmentName,
+      cashShiftId,
+      originalPaymentSummaryJson: paymentSummary ? JSON.stringify(paymentSummary) : null,
+    };
+  }
+
+  _revertCashRefundMovement(returnId) {
+    if (!returnId) return;
+    try {
+      const hasCashMovements = !!this.db
+        .prepare(`SELECT 1 AS ok FROM sqlite_master WHERE type='table' AND name='cash_movements' LIMIT 1`)
+        .get()?.ok;
+      if (!hasCashMovements) return;
+      this.db
+        .prepare(
+          `DELETE FROM cash_movements WHERE reference_type = 'return' AND reference_id = ?`,
+        )
+        .run(returnId);
+    } catch (e) {
+      console.warn('[RETURNS] cash refund movement revert skip:', e?.message || e);
+    }
+  }
+
+  _auditReturn(action, returnRecord, userId, extra = {}) {
+    try {
+      if (!this.auditService || typeof this.auditService.log !== 'function') return;
+      this.auditService.log({
+        action,
+        entity_type: 'return',
+        entity_id: returnRecord?.id || null,
+        new_values: {
+          return_number: returnRecord?.return_number,
+          order_id: returnRecord?.order_id,
+          total_amount: returnRecord?.total_amount ?? returnRecord?.refund_amount,
+          refund_method: returnRecord?.refund_method,
+          return_reason: returnRecord?.return_reason,
+          status: returnRecord?.status,
+          ...extra,
+        },
+        user_id: userId || returnRecord?.cashier_id || returnRecord?.user_id || null,
+      });
+    } catch (e) {
+      console.warn('[RETURNS] audit skip:', e?.message || e);
+    }
+  }
+
+  _auditReturnRejected(userId, data, details = {}) {
+    try {
+      if (!this.auditService || typeof this.auditService.log !== 'function') return;
+      this.auditService.log({
+        action: 'return_rejected',
+        entity_type: 'order',
+        entity_id: data?.order_id || null,
+        new_values: {
+          code: RETURN_LIMIT_EXCEEDED_CODE,
+          message: RETURN_LIMIT_EXCEEDED_MESSAGE,
+          ...details,
+        },
+        user_id: userId || data?.cashier_id || data?.user_id || null,
+      });
+    } catch (e) {
+      console.warn('[RETURNS] return_rejected audit skip:', e?.message || e);
+    }
+  }
+
+  _throwReturnLimitExceeded(userId, data, details = {}) {
+    this._auditReturnRejected(userId, data, details);
+    throw createError(ERROR_CODES.RETURN_LIMIT_EXCEEDED, RETURN_LIMIT_EXCEEDED_MESSAGE, {
+      httpStatus: 409,
+      code: RETURN_LIMIT_EXCEEDED_CODE,
+      ...details,
+    });
   }
 
   _hasBonusLedgerTable() {
@@ -285,7 +747,52 @@ class ReturnsService {
           now,
         );
     } catch (e) {
-      console.warn('[RETURNS] cash refund movement skip (non-critical):', e?.message || e);
+      // Fail closed for money path — incomplete cash ledger must not silently succeed.
+      throw createError(
+        ERROR_CODES.DB_ERROR,
+        `Failed to record cash refund movement: ${e?.message || e}`,
+      );
+    }
+  }
+
+  /**
+   * When completing a held (draft/pending/approved) return, apply cash drawer + loyalty
+   * side-effects that were skipped at create time.
+   */
+  _applyCashAndLoyaltyOnComplete(sr, opts = {}) {
+    const refundAmount = Number(opts.refundAmount ?? sr.refund_amount ?? sr.total_amount ?? 0) || 0;
+    const refundMethod = String(opts.refundMethod || sr.refund_method || 'cash').toLowerCase();
+    const userId = opts.userId || sr.cashier_id || sr.user_id || null;
+    const now = opts.now || new Date().toISOString().replace('T', ' ').replace('Z', '').substring(0, 19);
+
+    if (opts.orderId && refundAmount > 0) {
+      this._reverseLoyaltyForReturn({
+        orderId: opts.orderId,
+        returnId: sr.id,
+        refundAmount,
+        orderTotal: opts.orderTotal,
+        userId,
+        now,
+      });
+    }
+
+    if ((refundMethod === 'cash' || refundMethod === 'naqd') && refundAmount > 0) {
+      const shiftId =
+        this._findOpenShiftId(opts.shiftHint || sr.shift_id || null, userId) ||
+        sr.shift_id ||
+        null;
+      if (!shiftId) {
+        throw createError(ERROR_CODES.VALIDATION_ERROR, 'Cash refund requires an open shift');
+      }
+      this._assertCashDrawerSufficient(shiftId, refundAmount);
+      this._recordCashRefundMovement({
+        returnId: sr.id,
+        returnNumber: sr.return_number || null,
+        shiftId,
+        amount: refundAmount,
+        userId,
+        now,
+      });
     }
   }
 
@@ -418,10 +925,10 @@ class ReturnsService {
 
   _notifyBalanceChange(payload) {
     try {
-      const { fireBalanceChangeNotify } = require('../../public-api/lib/balanceChangeNotify.cjs');
-      fireBalanceChangeNotify(this.db, payload);
+      const { fireCustomerOpsNotify } = require('../../public-api/lib/customerOpsNotify.cjs');
+      fireCustomerOpsNotify(this.db, payload);
     } catch (e) {
-      console.warn('[returns] balance change notify unavailable:', e?.message || e);
+      console.warn('[returns] customer ops notify unavailable:', e?.message || e);
     }
   }
 
@@ -523,12 +1030,26 @@ class ReturnsService {
       throw createError(ERROR_CODES.VALIDATION_ERROR, 'Return reason is required');
     }
 
+    const idempotencyKey = this._normalizeIdempotencyKey(
+      data.idempotency_key || data.idempotencyKey || null
+    );
+    if (idempotencyKey) {
+      const existing = this._findReturnByIdempotencyKey(idempotencyKey);
+      if (existing) return existing;
+    }
+
     try {
-      return this.db.transaction(() => {
-        const asDraft = !!(
-          data &&
-          (data.save_as_draft === true || String(data.status || '').toLowerCase() === 'draft')
-        );
+      // IMMEDIATE = reserved write lock (SQLite equivalent of SELECT … FOR UPDATE races).
+      const runReturnTx = this.db.transaction(() => {
+        if (idempotencyKey) {
+          const existing = this._findReturnByIdempotencyKey(idempotencyKey);
+          if (existing) return existing;
+        }
+
+        const hold = this._resolveCreateHold(data);
+        const asDraft = hold.asDraft;
+        const asHold = hold.asHold;
+        const initialStatus = hold.status;
         // --------------------------------------------------------------------
         // FK SAFETY (bulletproof):
         // Some DBs enforce FKs on user_id / warehouse_id / shift_id in returns tables.
@@ -566,7 +1087,7 @@ class ReturnsService {
           throw createError(ERROR_CODES.VALIDATION_ERROR, 'No warehouses exist in DB. Cannot create return.');
         };
 
-        // Step 1: Check if order_id exists
+        // Step 1: Check if order_id exists (within IMMEDIATE tx = row-lock vs parallel writers)
         console.log(`🔍 Step 1: Validating order_id=${data.order_id}`);
         const order = this.db.prepare('SELECT * FROM orders WHERE id = ?').get(data.order_id);
         if (!order) {
@@ -574,6 +1095,8 @@ class ReturnsService {
           console.error('❌ Step 1 FAILED:', error);
           throw error;
         }
+        // Touch all order lines under the write lock before qty recomputation.
+        this.db.prepare('SELECT id FROM order_items WHERE order_id = ?').all(data.order_id);
         console.log(`✅ Step 1: Order found - ${order.order_number} (${order.id})`);
 
         // Resolve warehouse_id (single warehouse mode)
@@ -642,13 +1165,15 @@ class ReturnsService {
             throw error;
           }
 
-          // CRITICAL: Validate return quantity — completed return_items yig'indisi (getOrderDetails bilan bir xil)
+          // CRITICAL: Recompute returned qty under write lock, then enforce availableToReturn.
           const committedReturnedQty = this._sumCompletedReturnedQtyForOrderItem(item.order_item_id);
           const draftOtherQty = this._sumDraftReturnedQtyForOrderItem(item.order_item_id, null);
           const legacyReturned = Number(orderItem.returned_quantity || 0);
           const originalQty = Number(orderItem.qty_sale ?? orderItem.quantity ?? 0);
-          const availableQty = originalQty - committedReturnedQty - draftOtherQty;
+          const heldReturned = committedReturnedQty + draftOtherQty;
+          const availableQty = availableToReturnQty(originalQty, heldReturned);
           const returnQty = Number(item.quantity || 0);
+          const qtyCheck = assertReturnQtyAllowed(originalQty, heldReturned, returnQty);
 
           if (process.env.DEBUG_RETURNS === '1') {
             console.log(`[RETURNS] Step 2.${i + 1} qty check`, {
@@ -662,11 +1187,14 @@ class ReturnsService {
             });
           }
 
-          if (returnQty > availableQty) {
-            const error = createError(ERROR_CODES.VALIDATION_ERROR,
-              `Cannot return ${returnQty} items. Only ${availableQty} available (original: ${originalQty}, completed returns: ${committedReturnedQty}, draft holds: ${draftOtherQty})`);
-            console.error(`❌ Step 2.${i + 1} FAILED:`, error);
-            throw error; // This will rollback the entire transaction
+          if (!qtyCheck.ok) {
+            this._throwReturnLimitExceeded(data.cashier_id || data.user_id, data, {
+              order_item_id: item.order_item_id,
+              sold_quantity: originalQty,
+              returned_quantity: heldReturned,
+              available_to_return: availableQty,
+              requested: returnQty,
+            });
           }
 
           // Validate product exists
@@ -731,6 +1259,16 @@ class ReturnsService {
           });
         }
 
+        const orderGross = Math.max(0, Number(order.total_amount || order.gross_total || 0) || 0);
+        const priorReturnedAmount = this._sumCompletedReturnAmountForOrder(data.order_id);
+        if (orderGross > 0 && priorReturnedAmount + totalAmount > orderGross + 0.01) {
+          this._throwReturnLimitExceeded(data.cashier_id || data.user_id, data, {
+            gross_total: orderGross,
+            returned_total: priorReturnedAmount,
+            requested_amount: totalAmount,
+          });
+        }
+
         console.log(`✅ Step 2: All ${validatedItems.length} items validated successfully. Total amount: ${totalAmount}`);
 
         // Step 3: Determine cashier_id/user_id safely (must exist if FK is enforced)
@@ -755,6 +1293,14 @@ class ReturnsService {
         }
         
         console.log(`📝 Step 3: Using cashier_id=${cashierId}, user_id=${userId} for return`);
+
+        // Money-safe gates (drawer cash, method match, large amount) — use resolved actor id.
+        const controlData = { ...data, cashier_id: cashierId, user_id: userId };
+        const createControls = this._enforceCreateControls(controlData, {
+          refundAmount: totalAmount,
+          order,
+          isManual: false,
+        });
 
         // Resolve customer_id safely (customer can be deleted/wiped, while order still has customer_id)
         let customerId = order.customer_id || null;
@@ -781,21 +1327,31 @@ class ReturnsService {
         const batchActive =
           !!this.batchService?.shouldEnforceAt?.(now) && !!this.batchService?.shouldEnforceAt?.(orderCreatedAtSql);
 
-        // If the order's shift_id is orphaned (shift deleted), set it to NULL to avoid FK failures.
-        let shiftId = order.shift_id || null;
-        if (shiftId) {
-          try {
-            const ok = this.db.prepare('SELECT id FROM shifts WHERE id = ?').get(String(shiftId));
-            if (!ok?.id) shiftId = null;
-          } catch {
-            // If shifts table doesn't exist or query fails, don't block return creation.
-            shiftId = null;
+        // Prefer current open shift for cash refunds; else keep order shift if valid.
+        let shiftId = createControls.cashShiftId || null;
+        if (!shiftId) {
+          shiftId = order.shift_id || null;
+          if (shiftId) {
+            try {
+              const ok = this.db.prepare('SELECT id FROM shifts WHERE id = ?').get(String(shiftId));
+              if (!ok?.id) shiftId = null;
+            } catch {
+              shiftId = null;
+            }
           }
         }
 
         console.log(`📝 Step 4: Inserting return record - ${returnNumber} (${returnId})`);
         try {
           const hasReturnMode = this._hasSalesReturnCol('return_mode');
+          const hasIdempotency = this._hasSalesReturnCol('idempotency_key') && !!idempotencyKey;
+          const hasApprovedBy = this._hasSalesReturnCol('approved_by');
+          const hasApprovalReason = this._hasSalesReturnCol('approval_reason');
+          const hasMismatchReason = this._hasSalesReturnCol('method_mismatch_reason');
+          const hasOrigPay = this._hasSalesReturnCol('original_payment_summary');
+          const hasAttachment = this._hasSalesReturnCol('attachment_note');
+          const hasAttachmentUrl = this._hasSalesReturnCol('attachment_url');
+          const hasAttachmentName = this._hasSalesReturnCol('attachment_name');
           const cols = [
             'id',
             'return_number',
@@ -812,6 +1368,14 @@ class ReturnsService {
             ...(hasReturnMode ? ['return_mode'] : []),
             'status',
             'notes',
+            ...(hasIdempotency ? ['idempotency_key'] : []),
+            ...(hasApprovedBy ? ['approved_by'] : []),
+            ...(hasApprovalReason ? ['approval_reason'] : []),
+            ...(hasMismatchReason ? ['method_mismatch_reason'] : []),
+            ...(hasOrigPay ? ['original_payment_summary'] : []),
+            ...(hasAttachment ? ['attachment_note'] : []),
+            ...(hasAttachmentUrl ? ['attachment_url'] : []),
+            ...(hasAttachmentName ? ['attachment_name'] : []),
             'created_at',
           ];
           const vals = [
@@ -828,8 +1392,16 @@ class ReturnsService {
             totalAmount,
             data.refund_method || 'cash',
             ...(hasReturnMode ? ['order'] : []),
-            asDraft ? 'draft' : 'completed',
+            initialStatus,
             data.notes || null,
+            ...(hasIdempotency ? [idempotencyKey] : []),
+            ...(hasApprovedBy ? [createControls.approvedBy || null] : []),
+            ...(hasApprovalReason ? [createControls.approvalReason || null] : []),
+            ...(hasMismatchReason ? [createControls.methodMismatchReason || null] : []),
+            ...(hasOrigPay ? [createControls.originalPaymentSummaryJson] : []),
+            ...(hasAttachment ? [createControls.attachmentNote || null] : []),
+            ...(hasAttachmentUrl ? [createControls.attachmentUrl || null] : []),
+            ...(hasAttachmentName ? [createControls.attachmentName || null] : []),
             now,
           ];
           const placeholders = cols.map(() => '?').join(', ');
@@ -839,6 +1411,23 @@ class ReturnsService {
           `).run(...vals);
           console.log(`✅ Step 4: Return record inserted successfully with cashier_id=${cashierId}`);
         } catch (step4Error) {
+          // Parallel duplicate submit with same idempotency key → return existing.
+          if (
+            idempotencyKey &&
+            String(step4Error?.code || '').includes('CONSTRAINT') &&
+            String(step4Error?.message || '').toLowerCase().includes('idempotency')
+          ) {
+            const existing = this._findReturnByIdempotencyKey(idempotencyKey);
+            if (existing) return existing;
+          }
+          if (
+            idempotencyKey &&
+            (step4Error?.code === 'SQLITE_CONSTRAINT_UNIQUE' ||
+              String(step4Error?.message || '').includes('UNIQUE'))
+          ) {
+            const existing = this._findReturnByIdempotencyKey(idempotencyKey);
+            if (existing) return existing;
+          }
           console.error('❌ Step 4 FAILED (Insert Return):', {
             message: step4Error.message,
             code: step4Error.code,
@@ -939,7 +1528,7 @@ class ReturnsService {
               .run(...vals);
             console.log(`✅ Step 5.${i + 1}: Return item inserted - ${returnItemId}`);
 
-            if (!asDraft) {
+            if (!asHold) {
               // CRITICAL: Update order_items.returned_quantity (return_items completed yig'indisi bilan sinxron)
               const newReturnedQty = committedReturnedQty + returnQty;
               this.db.prepare(`
@@ -1070,7 +1659,7 @@ class ReturnsService {
           refundAmount > 0 &&
           (this._isCustomerAccountRefund(data.refund_method) || orderHadUnpaidCredit);
 
-        if (!asDraft && shouldAdjustBalance) {
+        if (!asHold && shouldAdjustBalance) {
           try {
             const balanceResult = this._applyCustomerRefund(customerId, refundAmount, {
               returnId,
@@ -1097,7 +1686,7 @@ class ReturnsService {
           }
         }
 
-        if (!asDraft) {
+        if (!asHold) {
           this._reverseLoyaltyForReturn({
             orderId: data.order_id,
             returnId,
@@ -1121,11 +1710,11 @@ class ReturnsService {
         }
 
         console.log(
-          `✅ Return ${asDraft ? 'saved as draft' : 'transaction completed successfully'}: ${returnNumber} (${returnId})`,
+          `✅ Return ${asHold ? `saved as ${initialStatus}` : 'transaction completed successfully'}: ${returnNumber} (${returnId})`,
         );
         console.log(`📊 Return Summary: Total=${totalAmount}, Refund=${refundAmount}, Items=${returnItems.length}`);
 
-        return {
+        const created = {
           id: returnId,
           return_number: returnNumber,
           order_id: data.order_id,
@@ -1135,12 +1724,32 @@ class ReturnsService {
           refund_amount: refundAmount,
           refund_method: data.refund_method || 'cash',
           return_mode: 'order',
-          status: asDraft ? 'draft' : 'completed',
+          status: initialStatus,
           notes: data.notes || null,
+          approved_by: createControls.approvedBy || null,
+          approval_reason: createControls.approvalReason || null,
+          method_mismatch_reason: createControls.methodMismatchReason || null,
+          attachment_note: createControls.attachmentNote || null,
+          attachment_url: createControls.attachmentUrl || null,
+          attachment_name: createControls.attachmentName || null,
+          payment_allocation: createControls.paymentSummary?.allocation || null,
+          idempotency_key: idempotencyKey || null,
           items: returnItems,
           created_at: now
         };
-      })();
+        if (!asHold) {
+          this._auditReturn('create', created, cashierId || userId, {
+            shift_id: shiftId,
+            method_mismatch: createControls.methodMismatch,
+          });
+        } else {
+          this._auditReturn('create_hold', created, cashierId || userId, {
+            status: initialStatus,
+          });
+        }
+        return created;
+      });
+      return runReturnTx.immediate();
     } catch (error) {
       // Error Handling: Log FULL error object
       console.error('❌ Return transaction FAILED:', {
@@ -1183,12 +1792,12 @@ class ReturnsService {
 
     const refundMethod = this._normalizeRefundMethod(data.refund_method);
 
-    const asDraft = !!(
-      data &&
-      (data.save_as_draft === true || String(data.status || '').toLowerCase() === 'draft')
-    );
+    const hold = this._resolveCreateHold(data);
+    const asDraft = hold.asDraft;
+    const asHold = hold.asHold;
+    const initialStatus = hold.status;
 
-    if (!asDraft && this._isCustomerAccountRefund(refundMethod) && !data.customer_id) {
+    if (!asHold && this._isCustomerAccountRefund(refundMethod) && !data.customer_id) {
       throw createError(ERROR_CODES.VALIDATION_ERROR, 'Customer is required for customer account refunds');
     }
 
@@ -1228,7 +1837,10 @@ class ReturnsService {
       const returnNumber = `RET-${Date.now()}-${returnId.slice(0, 6)}`;
 
       let customerId = data.customer_id || null;
-      if (customerId) {
+      if (String(customerId) === 'visitor' || data.visitor === true || data.is_visitor === true) {
+        customerId = null;
+        data.visitor = true;
+      } else if (customerId) {
         const customer = this.db.prepare('SELECT id FROM customers WHERE id = ?').get(customerId);
         if (!customer?.id) {
           throw createError(ERROR_CODES.NOT_FOUND, `Customer ${customerId} not found`);
@@ -1296,7 +1908,19 @@ class ReturnsService {
         totalAmount += lineTotalNorm;
       }
 
+      const createControls = this._enforceCreateControls(
+        { ...data, cashier_id: cashierId, user_id: userId, customer_id: customerId },
+        { refundAmount: totalAmount, isManual: true },
+      );
+      const shiftId = createControls.cashShiftId || null;
+
       const hasReturnMode = this._hasSalesReturnCol('return_mode');
+      const hasApprovedBy = this._hasSalesReturnCol('approved_by');
+      const hasApprovalReason = this._hasSalesReturnCol('approval_reason');
+      const hasMismatchReason = this._hasSalesReturnCol('method_mismatch_reason');
+      const hasAttachment = this._hasSalesReturnCol('attachment_note');
+      const hasAttachmentUrl = this._hasSalesReturnCol('attachment_url');
+      const hasAttachmentName = this._hasSalesReturnCol('attachment_name');
       const returnCols = [
         'id',
         'return_number',
@@ -1313,6 +1937,12 @@ class ReturnsService {
         ...(hasReturnMode ? ['return_mode'] : []),
         'status',
         'notes',
+        ...(hasApprovedBy ? ['approved_by'] : []),
+        ...(hasApprovalReason ? ['approval_reason'] : []),
+        ...(hasMismatchReason ? ['method_mismatch_reason'] : []),
+        ...(hasAttachment ? ['attachment_note'] : []),
+        ...(hasAttachmentUrl ? ['attachment_url'] : []),
+        ...(hasAttachmentName ? ['attachment_name'] : []),
         'created_at',
       ];
       const returnVals = [
@@ -1323,14 +1953,20 @@ class ReturnsService {
         cashierId,
         userId,
         warehouseId,
-        null,
+        shiftId,
         data.return_reason.trim(),
         totalAmount,
         totalAmount,
         refundMethod,
         ...(hasReturnMode ? ['manual'] : []),
-        asDraft ? 'draft' : 'completed',
+        initialStatus,
         data.notes || null,
+        ...(hasApprovedBy ? [createControls.approvedBy || null] : []),
+        ...(hasApprovalReason ? [createControls.approvalReason || null] : []),
+        ...(hasMismatchReason ? [null] : []),
+        ...(hasAttachment ? [createControls.attachmentNote || null] : []),
+        ...(hasAttachmentUrl ? [createControls.attachmentUrl || null] : []),
+        ...(hasAttachmentName ? [createControls.attachmentName || null] : []),
         now,
       ];
       const returnPlaceholders = returnCols.map(() => '?').join(', ');
@@ -1397,7 +2033,7 @@ class ReturnsService {
         const placeholders = cols.map(() => '?').join(', ');
         this.db.prepare(`INSERT INTO return_items (${cols.join(', ')}) VALUES (${placeholders})`).run(...vals);
 
-        if (!asDraft && item.product.track_stock) {
+        if (!asHold && item.product.track_stock) {
           this.inventoryService._updateBalance(
             item.product.id,
             warehouseId,
@@ -1434,7 +2070,7 @@ class ReturnsService {
       // Manual return + customer balance:
       // Only adjust balance for credit/customer_account refunds. Cash/card manual returns
       // should NOT increment customer balance (would be double benefit: cash + credit).
-      if (!asDraft && customerId && this._isCustomerAccountRefund(refundMethod)) {
+      if (!asHold && customerId && this._isCustomerAccountRefund(refundMethod)) {
         this._applyCustomerRefund(customerId, totalAmount, {
           returnId,
           returnNumber,
@@ -1446,7 +2082,21 @@ class ReturnsService {
         });
       }
 
-      return {
+      if (!asHold) {
+        const refundMethodNorm = String(refundMethod || 'cash').toLowerCase();
+        if ((refundMethodNorm === 'cash' || refundMethodNorm === 'naqd') && totalAmount > 0) {
+          this._recordCashRefundMovement({
+            returnId,
+            returnNumber,
+            shiftId,
+            amount: totalAmount,
+            userId: cashierId || userId,
+            now,
+          });
+        }
+      }
+
+      const created = {
         id: returnId,
         return_number: returnNumber,
         order_id: null,
@@ -1457,18 +2107,32 @@ class ReturnsService {
         refund_amount: totalAmount,
         refund_method: refundMethod,
         return_mode: 'manual',
-        status: asDraft ? 'draft' : 'completed',
+        status: initialStatus,
         notes: data.notes || null,
+        approved_by: createControls.approvedBy || null,
+        approval_reason: createControls.approvalReason || null,
+        attachment_note: createControls.attachmentNote || null,
+        attachment_url: createControls.attachmentUrl || null,
+        attachment_name: createControls.attachmentName || null,
         items: returnItems,
         created_at: now,
       };
+      if (!asHold) {
+        this._auditReturn('create', created, cashierId || userId, { orderless: true, shift_id: shiftId });
+      } else {
+        this._auditReturn('create_hold', created, cashierId || userId, {
+          orderless: true,
+          status: initialStatus,
+        });
+      }
+      return created;
     })();
   }
 
   /**
-   * Draft qaytarishni yakunlash: qayta validatsiya, zaxira/batch/order_items/mijoz, status = completed.
+   * Hold (draft/pending/approved) → completed: stock, money, order_items.
    */
-  completeReturn(returnId) {
+  completeReturn(returnId, data = {}) {
     const SAFE_ADMIN_ID = 'default-admin-001';
     const SAFE_WAREHOUSE_ID = 'main-warehouse-001';
 
@@ -1483,8 +2147,20 @@ class ReturnsService {
           throw createError(ERROR_CODES.NOT_FOUND, `Return ${returnId} not found`);
         }
         const st = String(sr.status || '').toLowerCase().trim();
-        if (st !== 'draft') {
-          throw createError(ERROR_CODES.VALIDATION_ERROR, 'Only draft returns can be completed');
+        const actorId = data?.user_id || data?.cashier_id || sr.cashier_id || sr.user_id || null;
+        if (!['draft', 'pending', 'approved'].includes(st)) {
+          throw createError(
+            ERROR_CODES.VALIDATION_ERROR,
+            'Only draft, pending, or approved returns can be completed',
+          );
+        }
+        if (st === 'pending' || st === 'approved') {
+          if (!this._canApproveReject(actorId, Number(sr.refund_amount || sr.total_amount || 0))) {
+            throw createError(
+              ERROR_CODES.FORBIDDEN,
+              'Completing pending/approved returns requires senior cashier (under threshold), manager, or admin',
+            );
+          }
         }
 
         const returnItems =
@@ -1583,8 +2259,18 @@ class ReturnsService {
             });
           }
 
-          this.db.prepare(`UPDATE sales_returns SET status = 'completed' WHERE id = ?`).run(returnId);
-          return this.getById(returnId);
+          this._applyCashAndLoyaltyOnComplete(sr, {
+            refundAmount,
+            refundMethod,
+            userId: actorId || userId,
+            now,
+            shiftHint: data?.shift_id || null,
+          });
+
+          this._finalizeCompletedStatus(returnId, actorId, data);
+          const done = this.getById(returnId);
+          this._auditReturn('complete', done || sr, actorId, { from_status: st });
+          return done;
         }
 
         const order = this.db.prepare('SELECT * FROM orders WHERE id = ?').get(sr.order_id);
@@ -1623,10 +2309,12 @@ class ReturnsService {
           const availableQty = originalQty - committedReturnedQty - draftOtherQty;
 
           if (returnQty > availableQty) {
-            throw createError(
-              ERROR_CODES.VALIDATION_ERROR,
-              `Cannot complete return: quantity ${returnQty} exceeds available ${availableQty} for order line ${ri.order_item_id}`,
-            );
+            this._throwReturnLimitExceeded(actorId || userId, { order_id: sr.order_id }, {
+              order_item_id: ri.order_item_id,
+              available_to_return: availableQty,
+              requested: returnQty,
+              phase: 'complete',
+            });
           }
 
           const product = this.db.prepare('SELECT * FROM products WHERE id = ?').get(orderItem.product_id);
@@ -1726,12 +2414,139 @@ class ReturnsService {
           }
         }
 
-        this.db.prepare(`UPDATE sales_returns SET status = 'completed' WHERE id = ?`).run(returnId);
-        return this.getById(returnId);
+        this._applyCashAndLoyaltyOnComplete(sr, {
+          refundAmount,
+          refundMethod,
+          userId: actorId || userId,
+          now,
+          shiftHint: data?.shift_id || order.shift_id || null,
+          orderId: sr.order_id,
+          orderTotal: totalOnOrder,
+        });
+
+        this._finalizeCompletedStatus(returnId, actorId, data);
+        const done = this.getById(returnId);
+        this._auditReturn('complete', done || sr, actorId, { from_status: st });
+        return done;
       })();
     } catch (error) {
       console.error('[RETURNS] completeReturn FAILED:', { message: error.message, code: error.code, returnId });
       throw error;
+    }
+  }
+
+  _finalizeCompletedStatus(returnId, actorId, data = {}) {
+    const setCols = ["status = 'completed'"];
+    const vals = [];
+    if (this._hasSalesReturnCol('approved_by') && actorId) {
+      setCols.push('approved_by = COALESCE(approved_by, ?)');
+      vals.push(actorId);
+    }
+    if (this._hasSalesReturnCol('approval_reason')) {
+      const reason = String(data.approval_reason || data.reason || '').trim();
+      if (reason) {
+        setCols.push('approval_reason = COALESCE(approval_reason, ?)');
+        vals.push(reason);
+      }
+    }
+    vals.push(returnId);
+    this.db.prepare(`UPDATE sales_returns SET ${setCols.join(', ')} WHERE id = ?`).run(...vals);
+  }
+
+  /**
+   * pending → approved (manager / senior_cashier under threshold).
+   */
+  approveReturn(returnId, data = {}) {
+    if (!returnId) throw createError(ERROR_CODES.VALIDATION_ERROR, 'Return ID is required');
+    const actorId = data.user_id || data.cashier_id || data.approved_by || null;
+    const reason = String(data.approval_reason || data.reason || '').trim();
+
+    return this.db.transaction(() => {
+      const sr = this.db.prepare('SELECT * FROM sales_returns WHERE id = ?').get(returnId);
+      if (!sr) throw createError(ERROR_CODES.NOT_FOUND, `Return ${returnId} not found`);
+      const st = String(sr.status || '').toLowerCase().trim();
+      if (st !== 'pending' && st !== 'draft') {
+        throw createError(ERROR_CODES.VALIDATION_ERROR, 'Only pending or draft returns can be approved');
+      }
+      if (!this._canApproveReject(actorId, Number(sr.refund_amount || sr.total_amount || 0))) {
+        throw createError(ERROR_CODES.FORBIDDEN, 'Approve requires senior cashier (under threshold), manager, or admin');
+      }
+      if (!reason) {
+        throw createError(ERROR_CODES.VALIDATION_ERROR, 'Approval reason is required');
+      }
+      const setCols = ["status = 'approved'"];
+      const vals = [];
+      if (this._hasSalesReturnCol('approved_by')) {
+        setCols.push('approved_by = ?');
+        vals.push(actorId);
+      }
+      if (this._hasSalesReturnCol('approval_reason')) {
+        setCols.push('approval_reason = ?');
+        vals.push(reason);
+      }
+      vals.push(returnId);
+      this.db.prepare(`UPDATE sales_returns SET ${setCols.join(', ')} WHERE id = ?`).run(...vals);
+      const result = this.getById(returnId);
+      this._auditReturn('approve', result || sr, actorId, { approval_reason: reason });
+      return result;
+    })();
+  }
+
+  /**
+   * pending|approved|draft → rejected (no money reverse; hold released).
+   */
+  rejectReturn(returnId, data = {}) {
+    if (!returnId) throw createError(ERROR_CODES.VALIDATION_ERROR, 'Return ID is required');
+    const actorId = data.user_id || data.cashier_id || data.rejected_by || null;
+    const reason = String(data.reject_reason || data.reason || data.notes || '').trim();
+
+    return this.db.transaction(() => {
+      const sr = this.db.prepare('SELECT * FROM sales_returns WHERE id = ?').get(returnId);
+      if (!sr) throw createError(ERROR_CODES.NOT_FOUND, `Return ${returnId} not found`);
+      const st = String(sr.status || '').toLowerCase().trim();
+      if (!['pending', 'approved', 'draft'].includes(st)) {
+        throw createError(ERROR_CODES.VALIDATION_ERROR, 'Only draft, pending, or approved returns can be rejected');
+      }
+      if (!this._canApproveReject(actorId, Number(sr.refund_amount || sr.total_amount || 0))) {
+        throw createError(ERROR_CODES.FORBIDDEN, 'Reject requires senior cashier (under threshold), manager, or admin');
+      }
+      if (!reason) {
+        throw createError(ERROR_CODES.VALIDATION_ERROR, 'Reject reason is required');
+      }
+      const now = new Date().toISOString().replace('T', ' ').replace('Z', '').substring(0, 19);
+      const setCols = ["status = 'rejected'"];
+      const vals = [];
+      if (this._hasSalesReturnCol('rejected_at')) {
+        setCols.push('rejected_at = ?');
+        vals.push(now);
+      }
+      if (this._hasSalesReturnCol('rejected_by')) {
+        setCols.push('rejected_by = ?');
+        vals.push(actorId);
+      }
+      if (this._hasSalesReturnCol('reject_reason')) {
+        setCols.push('reject_reason = ?');
+        vals.push(reason);
+      }
+      vals.push(returnId);
+      this.db.prepare(`UPDATE sales_returns SET ${setCols.join(', ')} WHERE id = ?`).run(...vals);
+      const result = this.getById(returnId);
+      this._auditReturn('reject', result || sr, actorId, { reject_reason: reason });
+      return result;
+    })();
+  }
+
+  getAuditTrail(returnId, limit = 50) {
+    if (!returnId) return [];
+    if (!this.auditService || typeof this.auditService.getLogs !== 'function') return [];
+    try {
+      return this.auditService.getLogs({
+        entity_type: 'return',
+        entity_id: String(returnId),
+        limit: Math.min(100, Math.max(1, Number(limit) || 50)),
+      });
+    } catch {
+      return [];
     }
   }
 
@@ -1760,14 +2575,16 @@ class ReturnsService {
       total_amount: order.total_amount,
     });
     
-    // STEP 2: Get order items — qaytarilgan miqdor: completed + draft (band qilingan)
+    // STEP 2: Get order items — held qty = completed + draft/pending/approved
+    // sold = COALESCE(qty_sale, quantity) so pack/base lines match createReturn checks.
+    const reservingStatuses = this._allReservingReturnStatusesSql();
     const orderItemsQuery = `
       SELECT 
         oi.id AS order_item_id,
         oi.product_id,
         oi.product_name,
         oi.product_sku,
-        oi.quantity AS sold_quantity,
+        COALESCE(oi.qty_sale, oi.quantity) AS sold_quantity,
         oi.sale_unit,
         oi.qty_sale,
         oi.qty_base,
@@ -1781,8 +2598,11 @@ class ReturnsService {
         oi.price_source,
         oi.line_total,
         oi.returned_quantity AS order_item_returned_qty,
-        COALESCE(SUM(CASE WHEN LOWER(TRIM(COALESCE(sr.status, ''))) IN ('completed', 'draft') THEN ri.quantity ELSE 0 END), 0) AS returned_quantity,
-        (oi.quantity - COALESCE(SUM(CASE WHEN LOWER(TRIM(COALESCE(sr.status, ''))) IN ('completed', 'draft') THEN ri.quantity ELSE 0 END), 0)) AS remaining_quantity
+        COALESCE(SUM(CASE WHEN LOWER(TRIM(COALESCE(sr.status, ''))) IN ${reservingStatuses} THEN ri.quantity ELSE 0 END), 0) AS returned_quantity,
+        (
+          COALESCE(oi.qty_sale, oi.quantity)
+          - COALESCE(SUM(CASE WHEN LOWER(TRIM(COALESCE(sr.status, ''))) IN ${reservingStatuses} THEN ri.quantity ELSE 0 END), 0)
+        ) AS remaining_quantity
       FROM order_items oi
       LEFT JOIN return_items ri ON ri.order_item_id = oi.id
       LEFT JOIN sales_returns sr ON sr.id = ri.return_id
@@ -1826,10 +2646,20 @@ class ReturnsService {
     // STEP 4: Normalize response
     // CRITICAL: Return orderItemId (order_items.id) so frontend can send it as order_item_id
     // CRITICAL: Include sold_quantity, returned_quantity, and remaining_quantity
+    // CRITICAL: never use `remaining || sold` — remaining=0 is valid (fully returned).
     const normalizedItems = orderItems.map(item => {
-      const soldQty = Number(item.sold_quantity || 0);
-      const returnedQty = Number(item.returned_quantity || 0);
-      const remainingQty = Number(item.remaining_quantity || soldQty);
+      const soldQty = Math.max(
+        0,
+        Number(item.sold_quantity != null ? item.sold_quantity : item.qty_sale ?? item.quantity ?? 0) || 0,
+      );
+      const returnedQty = Math.max(0, Number(item.returned_quantity ?? 0) || 0);
+      const computedRemaining = availableToReturnQty(soldQty, returnedQty);
+      const rawRemaining =
+        item.remaining_quantity != null && item.remaining_quantity !== ''
+          ? Number(item.remaining_quantity)
+          : computedRemaining;
+      // Clamp: never advertise more than sold−held; never go negative.
+      const remainingQty = Math.max(0, Math.min(computedRemaining, Number.isFinite(rawRemaining) ? rawRemaining : computedRemaining));
       
       console.log('[RETURNS] Normalizing item with return quantities:', {
         order_items_id: item.order_item_id,
@@ -1849,11 +2679,11 @@ class ReturnsService {
         qty: soldQty, // Original sold quantity
         sold_quantity: soldQty, // Explicit field for sold quantity
         returned_quantity: returnedQty, // Calculated from return_items
-        remaining_quantity: remainingQty, // sold - returned
+        remaining_quantity: remainingQty, // sold - returned (0 when fully returned)
         refundableQty: remainingQty, // Available to return = remaining
         lineTotal: item.line_total || (item.unit_price || 0) * soldQty,
         sale_unit: item.sale_unit,
-        qty_sale: item.qty_sale,
+        qty_sale: item.qty_sale != null ? item.qty_sale : soldQty,
         qty_base: item.qty_base,
         base_price: item.base_price,
         usta_price: item.usta_price,
@@ -1884,9 +2714,14 @@ class ReturnsService {
         total_amount: order.total_amount,
         customer_id: order.customer_id,
         status: order.status,
+        payment_status: order.payment_status,
+        paid_amount: order.paid_amount,
+        credit_amount: order.credit_amount,
+        currency: order.currency,
       },
       items: normalizedItems,
       customer: customer || null,
+      payment_summary: this._getOrderPaymentSummary(orderId, order),
     };
     
     console.log('[RETURNS] getOrderDetails returning:', {
@@ -1921,22 +2756,7 @@ class ReturnsService {
     // Get return record with joined data (order, customer)
     const returnRecord = this.db.prepare(`
       SELECT 
-        sr.id,
-        sr.return_number,
-        sr.order_id,
-        sr.customer_id,
-        sr.cashier_id,
-        sr.user_id,
-        sr.warehouse_id,
-        sr.shift_id,
-        sr.return_reason,
-        sr.total_amount,
-        sr.refund_amount,
-        sr.refund_method,
-        sr.return_mode,
-        sr.status,
-        sr.notes,
-        sr.created_at,
+        sr.*,
         o.order_number as original_order_number,
         o.created_at as order_created_at,
         o.currency as order_currency,
@@ -2123,6 +2943,19 @@ class ReturnsService {
       return_mode: returnRecord.return_mode || 'order',
       status: returnRecord.status,
       notes: returnRecord.notes || null,
+      approved_by: returnRecord.approved_by ?? null,
+      approval_reason: returnRecord.approval_reason ?? null,
+      method_mismatch_reason: returnRecord.method_mismatch_reason ?? null,
+      original_payment_summary: returnRecord.original_payment_summary ?? null,
+      attachment_note: returnRecord.attachment_note ?? null,
+      attachment_url: returnRecord.attachment_url ?? null,
+      attachment_name: returnRecord.attachment_name ?? null,
+      cancelled_at: returnRecord.cancelled_at ?? null,
+      cancelled_by: returnRecord.cancelled_by ?? null,
+      cancel_reason: returnRecord.cancel_reason ?? null,
+      rejected_at: returnRecord.rejected_at ?? null,
+      rejected_by: returnRecord.rejected_by ?? null,
+      reject_reason: returnRecord.reject_reason ?? null,
       created_at: returnRecord.created_at,
       // Joined data
       order: returnRecord.original_order_number ? {
@@ -2491,7 +3324,8 @@ class ReturnsService {
   }
 
   /**
-   * Delete return and rollback stock/order/customer effects
+   * Delete return and rollback stock/order/customer effects.
+   * Completed returns cannot be deleted — use cancelReturn (reverse TX).
    */
   deleteReturn(returnId) {
     if (!returnId) {
@@ -2504,11 +3338,60 @@ class ReturnsService {
         throw createError(ERROR_CODES.NOT_FOUND, `Return ${returnId} not found`);
       }
 
-      const returnItems = this.db.prepare('SELECT * FROM return_items WHERE return_id = ?').all(returnId) || [];
-      const wasCompleted = String(returnRecord.status || '').toLowerCase() === 'completed';
+      const status = String(returnRecord.status || '').toLowerCase().trim();
+      if (status === 'completed') {
+        throw createError(
+          ERROR_CODES.FORBIDDEN,
+          'Completed returns cannot be deleted; cancel with reverse transaction instead',
+        );
+      }
+      if (status === 'cancelled') {
+        throw createError(ERROR_CODES.VALIDATION_ERROR, 'Return is already cancelled');
+      }
 
-      // Batch allocations cleanup (FIFO consistency) — faqat yakunlangan qaytarishda bo'lgan allokatsiyalar
-      if (wasCompleted) {
+      // Draft / pending / rejected / approved (not completed): hard delete without money reverse
+      // (completed money path never ran, or was never finalized).
+      this.db.prepare('DELETE FROM return_items WHERE return_id = ?').run(returnId);
+      this.db.prepare('DELETE FROM sales_returns WHERE id = ?').run(returnId);
+      this._auditReturn('delete', returnRecord, returnRecord.user_id || returnRecord.cashier_id, {
+        status,
+      });
+      return { success: true };
+    })();
+  }
+
+  /**
+   * Cancel a completed return via reverse TX (stock, customer, cash, returned_qty).
+   * Privileged (manager/admin) + cancel reason required. Row kept with status=cancelled.
+   */
+  cancelReturn(returnId, data = {}) {
+    if (!returnId) {
+      throw createError(ERROR_CODES.VALIDATION_ERROR, 'Return ID is required');
+    }
+    const cancelReason = String(data.cancel_reason || data.reason || data.notes || '').trim();
+    const actorId = data.user_id || data.cashier_id || data.cancelled_by || null;
+    this._assertCancelPermission(actorId, { reason: cancelReason });
+
+    return this.db.transaction(() => {
+      const returnRecord = this.db.prepare('SELECT * FROM sales_returns WHERE id = ?').get(returnId);
+      if (!returnRecord) {
+        throw createError(ERROR_CODES.NOT_FOUND, `Return ${returnId} not found`);
+      }
+      const status = String(returnRecord.status || '').toLowerCase().trim();
+      if (status === 'cancelled') {
+        return this.getById(returnId);
+      }
+      if (status !== 'completed') {
+        throw createError(
+          ERROR_CODES.VALIDATION_ERROR,
+          'Only completed returns can be cancelled via reverse transaction',
+        );
+      }
+
+      const returnItems = this.db.prepare('SELECT * FROM return_items WHERE return_id = ?').all(returnId) || [];
+      const now = new Date().toISOString().replace('T', ' ').replace('Z', '').substring(0, 19);
+
+      // Batch allocations cleanup
       try {
         const hasBatchTables =
           this.db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='inventory_batch_allocations'").get() &&
@@ -2543,13 +3426,10 @@ class ReturnsService {
                 AND reference_type = 'return_item'
                 AND reference_id IN (${placeholders})
             `).run(returnItems.map((ri) => ri.id));
-            console.log(`[RETURNS] deleteReturn: rolled back ${allocs.length} batch allocations for return ${returnId}`);
           }
         }
       } catch (batchErr) {
-        // Don't block deletion if batch tables don't exist or schema is older.
-        console.warn('[RETURNS] deleteReturn: batch rollback skipped:', batchErr.message);
-      }
+        console.warn('[RETURNS] cancelReturn: batch rollback skipped:', batchErr.message);
       }
 
       const safeWarehouseId = (() => {
@@ -2562,48 +3442,95 @@ class ReturnsService {
         if (byMain?.id) return String(byMain.id);
         const anyWh = this.db.prepare('SELECT id FROM warehouses ORDER BY created_at ASC LIMIT 1').get();
         if (anyWh?.id) return String(anyWh.id);
-        throw createError(ERROR_CODES.VALIDATION_ERROR, 'No warehouses exist in DB. Cannot rollback return.');
+        throw createError(ERROR_CODES.VALIDATION_ERROR, 'No warehouses exist in DB. Cannot cancel return.');
       })();
 
-      if (wasCompleted) {
-        for (const item of returnItems) {
-          const qtyBase = Number(item.qty_base ?? item.quantity ?? 0) || 0;
-          const qtySale = Number(item.quantity || 0) || 0;
-          if (qtyBase > 0) {
-            const product = this.db.prepare('SELECT track_stock FROM products WHERE id = ?').get(item.product_id);
-            if (product?.track_stock) {
-              if (!this.inventoryService) {
-                throw createError(ERROR_CODES.VALIDATION_ERROR, 'InventoryService is not available. Cannot rollback stock.');
-              }
-              this.inventoryService._updateBalance(
-                item.product_id,
-                safeWarehouseId,
-                -qtyBase,
-                'return_delete',
-                'return',
-                returnId,
-                `Rollback return ${returnRecord.return_number || returnId}`,
-                returnRecord.user_id || returnRecord.cashier_id || 'default-admin-001'
-              );
+      for (const item of returnItems) {
+        const qtyBase = Number(item.qty_base ?? item.quantity ?? 0) || 0;
+        const qtySale = Number(item.quantity || 0) || 0;
+        if (qtyBase > 0) {
+          const product = this.db.prepare('SELECT track_stock FROM products WHERE id = ?').get(item.product_id);
+          if (product?.track_stock) {
+            if (!this.inventoryService) {
+              throw createError(ERROR_CODES.VALIDATION_ERROR, 'InventoryService is not available. Cannot reverse stock.');
             }
-          }
-
-          if (item.order_item_id) {
-            const orderItem = this.db.prepare('SELECT returned_quantity FROM order_items WHERE id = ?').get(item.order_item_id);
-            if (orderItem) {
-              const currentReturned = Number(orderItem.returned_quantity || 0);
-              const nextReturned = Math.max(0, currentReturned - qtySale);
-              this.db.prepare('UPDATE order_items SET returned_quantity = ? WHERE id = ?').run(nextReturned, item.order_item_id);
-            }
+            this.inventoryService._updateBalance(
+              item.product_id,
+              safeWarehouseId,
+              -qtyBase,
+              'return_cancel',
+              'return',
+              returnId,
+              `Cancel return ${returnRecord.return_number || returnId}`,
+              actorId || returnRecord.user_id || returnRecord.cashier_id || 'default-admin-001'
+            );
           }
         }
 
-        this._revertCustomerRefund(returnRecord.customer_id, returnId, Number(returnRecord.refund_amount || 0));
+        if (item.order_item_id) {
+          const orderItem = this.db.prepare('SELECT returned_quantity FROM order_items WHERE id = ?').get(item.order_item_id);
+          if (orderItem) {
+            const currentReturned = Number(orderItem.returned_quantity || 0);
+            const nextReturned = Math.max(0, currentReturned - qtySale);
+            this.db.prepare('UPDATE order_items SET returned_quantity = ? WHERE id = ?').run(nextReturned, item.order_item_id);
+          }
+        }
       }
-      this.db.prepare('DELETE FROM return_items WHERE return_id = ?').run(returnId);
-      this.db.prepare('DELETE FROM sales_returns WHERE id = ?').run(returnId);
-      return { success: true };
+
+      this._revertCustomerRefund(returnRecord.customer_id, returnId, Number(returnRecord.refund_amount || 0));
+      this._revertCashRefundMovement(returnId);
+
+      const setCols = ['status = ?'];
+      const setVals = ['cancelled'];
+      if (this._hasSalesReturnCol('cancelled_at')) {
+        setCols.push('cancelled_at = ?');
+        setVals.push(now);
+      }
+      if (this._hasSalesReturnCol('cancelled_by')) {
+        setCols.push('cancelled_by = ?');
+        setVals.push(actorId);
+      }
+      if (this._hasSalesReturnCol('cancel_reason')) {
+        setCols.push('cancel_reason = ?');
+        setVals.push(cancelReason);
+      }
+      setVals.push(returnId);
+      this.db.prepare(`UPDATE sales_returns SET ${setCols.join(', ')} WHERE id = ?`).run(...setVals);
+
+      const result = this.getById(returnId);
+      this._auditReturn('cancel', result || returnRecord, actorId, { cancel_reason: cancelReason });
+      return result;
     })();
+  }
+
+  /**
+   * Reason breakdown for reports (API/query).
+   */
+  getReasonBreakdown(filters = {}) {
+    let query = `
+      SELECT
+        COALESCE(NULLIF(TRIM(sr.return_reason), ''), 'unknown') AS reason,
+        COUNT(*) AS return_count,
+        COALESCE(SUM(sr.refund_amount), 0) AS refund_total,
+        COALESCE(SUM(CASE WHEN LOWER(TRIM(COALESCE(sr.return_mode,''))) = 'manual' THEN 1 ELSE 0 END), 0) AS orderless_count
+      FROM sales_returns sr
+      WHERE LOWER(TRIM(COALESCE(sr.status,''))) IN ('completed', 'cancelled')
+    `;
+    const params = [];
+    if (filters.date_from) {
+      query += " AND DATE(sr.created_at, 'localtime') >= DATE(?)";
+      params.push(filters.date_from);
+    }
+    if (filters.date_to) {
+      query += " AND DATE(sr.created_at, 'localtime') <= DATE(?)";
+      params.push(filters.date_to);
+    }
+    if (filters.return_mode && filters.return_mode !== 'all') {
+      query += ' AND sr.return_mode = ?';
+      params.push(filters.return_mode);
+    }
+    query += ' GROUP BY reason ORDER BY refund_total DESC';
+    return this.db.prepare(query).all(...params);
   }
 
   /**
@@ -2651,7 +3578,7 @@ class ReturnsService {
     // Do NOT filter out 'completed' returns by default
     if (filters.status && filters.status !== 'all') {
       query += ' AND sr.status = ?';
-      params.push(filters.status);
+      params.push(String(filters.status).toLowerCase() === 'completed' ? 'completed' : filters.status);
       console.log('[RETURNS] Filtering by status:', filters.status);
     }
 
@@ -2663,6 +3590,16 @@ class ReturnsService {
     if (filters.customer_id) {
       query += ' AND sr.customer_id = ?';
       params.push(filters.customer_id);
+    }
+
+    if (filters.return_mode && filters.return_mode !== 'all') {
+      query += ' AND LOWER(TRIM(COALESCE(sr.return_mode, \'order\'))) = ?';
+      params.push(String(filters.return_mode).toLowerCase());
+    }
+
+    if (filters.return_reason && filters.return_reason !== 'all') {
+      query += ' AND sr.return_reason = ?';
+      params.push(filters.return_reason);
     }
 
     // IMPORTANT: Our DB timestamps are stored as UTC-like strings without timezone.

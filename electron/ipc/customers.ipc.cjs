@@ -89,6 +89,9 @@ function registerCustomersHandlers(services) {
     const source = payload?.source ?? null;
     const shift_id = payload?.shift_id ?? payload?.shiftId ?? null;
     const payment_uuid = payload?.payment_uuid ?? payload?.paymentUuid ?? null;
+    const payment_out_kind = payload?.payment_out_kind ?? payload?.paymentOutKind ?? null;
+    const lend_authorized = payload?.lend_authorized === true || payload?.lendAuthorized === true;
+    const approver_user_id = payload?.approver_user_id ?? payload?.approverUserId ?? null;
 
     if (!operation || (operation !== 'payment_in' && operation !== 'payment_out')) {
       throw new Error('Invalid operation type. Must be "payment_in" or "payment_out"');
@@ -106,7 +109,10 @@ function registerCustomersHandlers(services) {
       shift_id || null,
       payload?.currency ?? 'UZS',
       payload?.fx_rate ?? payload?.fxRate ?? null,
-      payment_uuid
+      payment_uuid,
+      payment_out_kind,
+      lend_authorized,
+      approver_user_id
     );
   }));
 
@@ -174,7 +180,27 @@ function registerCustomersHandlers(services) {
     'pos:customers:adjustBonusPoints',
     wrapHandler(async (_event, payload) => {
       const p = payload || {};
-      return customers.adjustBonusPoints(p.actorUserId, p.customerId, p.deltaPoints, p.note);
+      return customers.adjustBonusPoints(p.actorUserId, p.customerId, p.deltaPoints, p.note, {
+        largeApproved: p.largeApproved === true || p.large_approved === true,
+        authorized: p.authorized === true,
+      });
+    })
+  );
+
+  ipcMain.removeHandler('pos:customers:reissueLoyaltyCard');
+  ipcMain.handle(
+    'pos:customers:reissueLoyaltyCard',
+    wrapHandler(async (_event, payload) => {
+      const p = payload || {};
+      return customers.reissueLoyaltyCard(p.customerId, p.actorUserId, p.reason);
+    })
+  );
+
+  ipcMain.removeHandler('pos:customers:findDuplicates');
+  ipcMain.handle(
+    'pos:customers:findDuplicates',
+    wrapHandler(async (_event, payload) => {
+      return customers.findDuplicateCandidates(payload || {});
     })
   );
 
@@ -194,7 +220,11 @@ function registerCustomersHandlers(services) {
     ['pos:creditReminders:updateDueDate', 'pos:creditReminder:updateDueDate', async (_event, payload) => {
       const p = payload || {};
       if (!p.orderId) throw new Error('orderId kerak');
-      return updateOrderDueDate(customers.db, p.orderId, p.dueDate);
+      return updateOrderDueDate(customers.db, p.orderId, p.dueDate, {
+        actorUserId: p.actorUserId || p.actor_user_id || null,
+        reason: p.reason || null,
+        roles: p.roles || null,
+      });
     }],
     ['pos:creditReminders:send', 'pos:creditReminder:send', async (_event, payload) => {
       const p = payload || {};

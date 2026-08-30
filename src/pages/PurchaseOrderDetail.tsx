@@ -28,11 +28,12 @@ import {
   updatePurchaseOrder,
   approvePurchaseOrder,
   getSupplierPayments,
-  deleteSupplierPayment,
+  cancelSupplierPayment,
+  listSupplierAdvances,
   productUpdateEmitter,
 } from '@/db/api';
 import type { PurchaseOrderWithDetails } from '@/types/database';
-import { ArrowLeft, Edit, Package, X, DollarSign, CheckCircle, Trash2, Plus } from 'lucide-react';
+import { ArrowLeft, Edit, Package, X, DollarSign, CheckCircle, Trash2, Plus, Wallet } from 'lucide-react';
 import { formatMoneyUZS } from '@/lib/format';
 import {
   formatPoMoney,
@@ -42,6 +43,7 @@ import {
 } from '@/lib/currency';
 import { formatDate, formatDateTime } from '@/lib/datetime';
 import PaySupplierDialog from '@/components/suppliers/PaySupplierDialog';
+import ApplySupplierAdvanceDialog from '@/components/suppliers/ApplySupplierAdvanceDialog';
 import { useAuth } from '@/contexts/AuthContext';
 import { useConfirmDialog } from '@/contexts/ConfirmDialogContext';
 import {
@@ -54,6 +56,7 @@ import {
 } from '@/components/ui/dialog';
 import MoneyInput from '@/components/common/MoneyInput';
 import { createBackNavigationState, navigateBackTo, resolveBackTarget } from '@/lib/pageState';
+import { canCancelSupplierPayment, hasMinPurchaseRole } from '@/lib/purchase/purchaseHardening';
 
 export default function PurchaseOrderDetail() {
   const { id } = useParams();
@@ -68,12 +71,15 @@ export default function PurchaseOrderDetail() {
   const [showCancelDialog, setShowCancelDialog] = useState(false);
   const [processing, setProcessing] = useState(false);
   const [payDialogOpen, setPayDialogOpen] = useState(false);
+  const [advanceDialogOpen, setAdvanceDialogOpen] = useState(false);
+  const [hasAdvances, setHasAdvances] = useState(false);
   const [expenseTitle, setExpenseTitle] = useState('');
   const [expenseAmount, setExpenseAmount] = useState<number | null>(null);
   const [expenseMethod, setExpenseMethod] = useState<'by_value' | 'by_qty'>('by_value');
   const [expenseSaving, setExpenseSaving] = useState(false);
   const [deletingPayment, setDeletingPayment] = useState(false);
-  const isAdmin = role === 'admin' || profile?.role === 'admin';
+  const canCancelPay = canCancelSupplierPayment(profile?.role || role);
+  const canApplyAdvance = hasMinPurchaseRole(profile?.role || role, 'accountant');
   const backTo = resolveBackTarget(location, '/purchase-orders');
 
   useEffect(() => {
@@ -95,6 +101,16 @@ export default function PurchaseOrderDetail() {
       setLoading(true);
       const data = await getPurchaseOrderById(id!);
       setPurchaseOrder(data);
+      if (data?.supplier_id) {
+        try {
+          const advances = await listSupplierAdvances(data.supplier_id);
+          setHasAdvances(Array.isArray(advances) && advances.some((a: any) => Number(a.amount_remaining) > 0));
+        } catch {
+          setHasAdvances(false);
+        }
+      } else {
+        setHasAdvances(false);
+      }
     } catch (error) {
       toast({
         title: 'Xatolik',
@@ -178,17 +194,17 @@ export default function PurchaseOrderDetail() {
 
   const handleDeleteLatestPayment = async () => {
     if (!purchaseOrder?.supplier_id || !purchaseOrder?.id) return;
-    if (!isAdmin) {
+    if (!canCancelPay) {
       toast({
         title: 'Xatolik',
-        description: 'Faqat administrator to‘lovni o‘chirishi mumkin',
+        description: 'To‘lovni bekor qilish uchun buxgalter/menejer/admin kerak',
         variant: 'destructive',
       });
       return;
     }
     const ok = await confirmDialog({
       title: 'Ogohlantirish',
-      description: 'Oxirgi to‘lovni bekor qilmoqchimisiz? Bu amalni ortga qaytarib bo‘lmaydi.',
+      description: 'Oxirgi to‘lovni bekor qilmoqchimisiz? Sabab audit jurnaliga yoziladi.',
       confirmText: 'Bekor qilish',
       cancelText: 'Yo‘q',
       variant: 'destructive',
@@ -198,7 +214,9 @@ export default function PurchaseOrderDetail() {
     try {
       setDeletingPayment(true);
       const payments = await getSupplierPayments(purchaseOrder.supplier_id);
-      const related = payments.filter((p) => p.purchase_order_id === purchaseOrder.id);
+      const related = payments.filter(
+        (p) => p.purchase_order_id === purchaseOrder.id && !(p as any).cancelled_at,
+      );
       if (related.length === 0) {
         toast({
           title: 'Xatolik',
@@ -212,7 +230,10 @@ export default function PurchaseOrderDetail() {
         const bTime = new Date(b.paid_at || b.created_at || 0).getTime();
         return bTime - aTime;
       })[0];
-      await deleteSupplierPayment(latest.id);
+      await cancelSupplierPayment(latest.id, {
+        reason: 'Cancelled from PO detail (latest payment)',
+        cancelled_by: profile?.id || null,
+      });
       toast({
         title: 'Muvaffaqiyatli',
         description: 'Oxirgi to‘lov bekor qilindi',
@@ -685,7 +706,7 @@ export default function PurchaseOrderDetail() {
                         </Badge>
                       </div>
                       {(purchaseOrder.remaining_amount ?? purchaseOrder.total_amount) > 0 && purchaseOrder.supplier && (
-                        <div className="pt-2">
+                        <div className="pt-2 space-y-2">
                           <Button
                             variant="outline"
                             size="sm"
@@ -695,9 +716,20 @@ export default function PurchaseOrderDetail() {
                             <DollarSign className="h-4 w-4 mr-2" />
                             To'lov qilish
                           </Button>
+                          {hasAdvances && canApplyAdvance ? (
+                            <Button
+                              variant="secondary"
+                              size="sm"
+                              className="w-full"
+                              onClick={() => setAdvanceDialogOpen(true)}
+                            >
+                              <Wallet className="h-4 w-4 mr-2" />
+                              Avansni qo'llash
+                            </Button>
+                          ) : null}
                         </div>
                       )}
-                      {isAdmin &&
+                      {canCancelPay &&
                         (Number(purchaseOrder.paid_amount ?? 0) > 0 ||
                           Number((purchaseOrder as any).paid_amount_usd ?? 0) > 0) && (
                         <div className="pt-2">
@@ -777,6 +809,16 @@ export default function PurchaseOrderDetail() {
           onSuccess={() => {
             loadPurchaseOrder(); // Reload to refresh payment info
           }}
+        />
+      )}
+
+      {purchaseOrder && purchaseOrder.supplier && (
+        <ApplySupplierAdvanceDialog
+          supplier={{ ...purchaseOrder.supplier, balance: 0 } as any}
+          purchaseOrder={purchaseOrder}
+          open={advanceDialogOpen}
+          onOpenChange={setAdvanceDialogOpen}
+          onSuccess={() => loadPurchaseOrder()}
         />
       )}
     </div>

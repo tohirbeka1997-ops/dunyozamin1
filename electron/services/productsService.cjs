@@ -1,6 +1,17 @@
 const { ERROR_CODES, createError } = require('../lib/errors.cjs');
 const { getCategorySubtreeIds } = require('../lib/categoryTree.cjs');
+const {
+  assertProductSalePriceAllowed,
+  assertProductCostPriceAllowed,
+  bulkPriceChangeRequiresApproval,
+  computeBulkNewPrice,
+  assertBulkSaleFinalPrice,
+  isBulkPercentDecreaseBlocked,
+  DEFAULT_MAX_PRODUCT_PRICE,
+} = require('../lib/posHardening.cjs');
 const { randomUUID } = require('crypto');
+const { getCurrentUserId } = require('../lib/currentUser.cjs');
+const { getCurrentUserRole } = require('../lib/ipcAuth.cjs');
 
 /**
  * Products Service
@@ -24,6 +35,18 @@ class ProductsService {
   /** Late-bound to avoid circular init (sales needs products; products refreshes hold orders). */
   bindSalesService(salesService) {
     this.salesService = salesService;
+  }
+
+  _assertCanSetFreeSale(_actorUserId) {
+    const role = String(getCurrentUserRole(this.db) || '').toLowerCase();
+    if (role === 'admin' || role === 'manager') return;
+    // Fallback: if session role unavailable, allow only default admin id
+    const uid = getCurrentUserId();
+    if (uid === 'default-admin-001') return;
+    throw createError(
+      ERROR_CODES.FORBIDDEN,
+      'Free-sale (zero price) requires manager or admin',
+    );
   }
 
   _getOrderItemsColumns() {
@@ -87,12 +110,23 @@ class ProductsService {
 
     const defaultRow = unitRows.find((u) => u.is_default === 1) || unitRows[0];
     const defaultSale = Number(defaultRow?.sale_price ?? product.sale_price ?? 0) || 0;
+    const freeSale =
+      product.free_sale_allowed === 1 || product.free_sale_allowed === true;
 
+    // P0-01: never let unit sync silently write sale_price <= 0 without free-sale flag.
     if (this._hasCol('sale_price') && defaultSale !== Number(product.sale_price ?? 0)) {
+      const check = assertProductSalePriceAllowed(defaultSale, { freeSaleAllowed: freeSale });
+      if (!check.ok) {
+        throw createError(ERROR_CODES.VALIDATION_ERROR, check.error, {
+          field: 'sale_price',
+          code: check.code,
+          product_id: productId,
+        });
+      }
       const now = new Date().toISOString();
       this.db
         .prepare(`UPDATE products SET sale_price = ?, updated_at = ? WHERE id = ?`)
-        .run(defaultSale, now, productId);
+        .run(check.salePrice, now, productId);
     }
 
     const now = new Date().toISOString().replace('T', ' ').replace('Z', '').substring(0, 19);
@@ -338,10 +372,49 @@ class ProductsService {
     return this._getProductsColumns().has(name);
   }
 
+  /** Normalize SKU/barcode for exact compare: case/spaces/specials; keep leading zeros. */
+  _normalizeProductCode(value) {
+    return String(value || '')
+      .trim()
+      .toLowerCase()
+      .replace(/[\s\-_./\\]+/g, '');
+  }
+
   /** WHERE fragment for product text search (name/sku/barcode/article/brand). */
   _productSearchWhere(raw, params) {
     const term = String(raw ?? '').trim();
     if (!term) return '';
+    const termNorm = this._normalizeProductCode(term);
+
+    // Exact SKU or barcode → only those rows (no fuzzy noise like partial SKU in names).
+    // Case-insensitive + trim; leading zeros preserved (00465 ≠ 465).
+    try {
+      const candidates = this.db
+        .prepare(
+          `SELECT id, sku, barcode FROM products
+           WHERE lower(trim(sku)) = lower(trim(?))
+              OR lower(trim(IFNULL(barcode, ''))) = lower(trim(?))
+              OR replace(replace(replace(lower(trim(sku)), '-', ''), ' ', ''), '_', '') = ?
+              OR replace(replace(replace(lower(trim(IFNULL(barcode, ''))), '-', ''), ' ', ''), '_', '') = ?
+           LIMIT 20`,
+        )
+        .all(term, term, termNorm, termNorm);
+      const exactIds = (candidates || [])
+        .filter((row) => {
+          const skuN = this._normalizeProductCode(row.sku);
+          const bcN = this._normalizeProductCode(row.barcode);
+          return skuN === termNorm || bcN === termNorm;
+        })
+        .map((row) => row.id);
+      if (exactIds.length > 0) {
+        const placeholders = exactIds.map(() => '?').join(', ');
+        params.push(...exactIds);
+        return ` AND p.id IN (${placeholders})`;
+      }
+    } catch {
+      // Fall through to fuzzy if lookup fails.
+    }
+
     const search = `%${term}%`;
     const fields = [];
     if (this._hasCol('normalized_name')) {
@@ -744,6 +817,8 @@ class ProductsService {
         row.show_in_marketplace === undefined || row.show_in_marketplace === null
           ? true
           : row.show_in_marketplace === 1 || row.show_in_marketplace === true,
+      free_sale_allowed:
+        row.free_sale_allowed === 1 || row.free_sale_allowed === true,
       variant_options: this._parseVariantOptions(row.variant_options),
     };
   }
@@ -853,20 +928,135 @@ class ProductsService {
 
   _ensureSkuUnique(sku, excludeId = null) {
     const row = this.db
-      .prepare(`SELECT id FROM products WHERE sku = ? ${excludeId ? 'AND id != ?' : ''} LIMIT 1`)
+      .prepare(`SELECT id, sku FROM products WHERE sku = ? ${excludeId ? 'AND id != ?' : ''} LIMIT 1`)
       .get(...(excludeId ? [sku, excludeId] : [sku]));
     if (row?.id) {
-      throw createError(ERROR_CODES.VALIDATION_ERROR, 'SKU must be unique');
+      throw createError(ERROR_CODES.CONFLICT, `SKU already taken: ${row.sku || sku}`, {
+        field: 'sku',
+        sku: row.sku || sku,
+        existing_id: row.id,
+      });
     }
   }
 
   _ensureBarcodeUnique(barcode, excludeId = null) {
     if (!barcode) return;
     const row = this.db
-      .prepare(`SELECT id FROM products WHERE barcode = ? ${excludeId ? 'AND id != ?' : ''} LIMIT 1`)
+      .prepare(
+        `SELECT id, barcode FROM products WHERE barcode = ? ${excludeId ? 'AND id != ?' : ''} LIMIT 1`,
+      )
       .get(...(excludeId ? [barcode, excludeId] : [barcode]));
     if (row?.id) {
-      throw createError(ERROR_CODES.VALIDATION_ERROR, 'Barcode must be unique');
+      throw createError(ERROR_CODES.CONFLICT, `Barcode already taken: ${row.barcode || barcode}`, {
+        field: 'barcode',
+        barcode: row.barcode || barcode,
+        existing_id: row.id,
+      });
+    }
+  }
+
+  _readMaxProductPrice() {
+    try {
+      const row = this.db
+        .prepare("SELECT value FROM settings WHERE key = 'products.max_sale_price'")
+        .get();
+      const n = Number(row?.value);
+      if (Number.isFinite(n) && n > 0) return n;
+    } catch {
+      // ignore
+    }
+    return DEFAULT_MAX_PRODUCT_PRICE;
+  }
+
+  _assertSalePriceForProduct(salePrice, freeSaleAllowed) {
+    const check = assertProductSalePriceAllowed(salePrice, {
+      freeSaleAllowed,
+      maxPrice: this._readMaxProductPrice(),
+    });
+    if (!check.ok) {
+      const code =
+        check.code === 'ZERO_PRICE_BLOCKED' ? ERROR_CODES.VALIDATION_ERROR : ERROR_CODES.VALIDATION_ERROR;
+      throw createError(code, check.error, { field: 'sale_price', code: check.code });
+    }
+    return check.salePrice;
+  }
+
+  _assertCostPriceForProduct(costPrice) {
+    const check = assertProductCostPriceAllowed(costPrice, {
+      maxPrice: this._readMaxProductPrice(),
+    });
+    if (!check.ok) {
+      throw createError(ERROR_CODES.VALIDATION_ERROR, check.error, {
+        field: 'purchase_price',
+        code: check.code,
+      });
+    }
+    return check.costPrice;
+  }
+
+  _assertMasterPriceForProduct(masterPrice) {
+    if (masterPrice === null || masterPrice === undefined || masterPrice === '') {
+      return null;
+    }
+    const check = assertProductCostPriceAllowed(masterPrice, {
+      maxPrice: this._readMaxProductPrice(),
+    });
+    if (!check.ok) {
+      throw createError(ERROR_CODES.VALIDATION_ERROR, check.error.replace(/purchase_price/g, 'master_price'), {
+        field: 'master_price',
+        code: check.code,
+      });
+    }
+    return check.costPrice;
+  }
+
+  _requireFreeSaleReason(freeSaleAllowed, salePrice, reason) {
+    if (!freeSaleAllowed) return null;
+    if (Number(salePrice) > 0) return typeof reason === 'string' ? reason.trim() || null : null;
+    const text = typeof reason === 'string' ? reason.trim() : '';
+    if (!text) {
+      throw createError(
+        ERROR_CODES.VALIDATION_ERROR,
+        'free_sale_reason is required when sale_price <= 0',
+        { field: 'free_sale_reason', code: 'FREE_SALE_REASON_REQUIRED' },
+      );
+    }
+    return text;
+  }
+
+  _auditLog(action, entityType, entityId, oldValues, newValues, userId) {
+    try {
+      const hasTable = this.db
+        .prepare(`SELECT 1 AS ok FROM sqlite_master WHERE type='table' AND name='audit_log' LIMIT 1`)
+        .get();
+      if (!hasTable?.ok) return;
+      this.db
+        .prepare(
+          `INSERT INTO audit_log (
+            id, user_id, action, entity_type, entity_id,
+            old_values, new_values, ip_address, user_agent, created_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?)`,
+        )
+        .run(
+          randomUUID(),
+          userId || null,
+          action,
+          entityType,
+          entityId || null,
+          oldValues != null ? JSON.stringify(oldValues) : null,
+          newValues != null ? JSON.stringify(newValues) : null,
+          new Date().toISOString(),
+        );
+    } catch (err) {
+      console.warn('[productsService] audit log failed', err?.message || err);
+    }
+  }
+
+  _validateProductUnitsSalePrices(units, freeSaleAllowed, catalogSalePrice) {
+    if (!Array.isArray(units) || units.length === 0) return;
+    for (const u of units) {
+      const price = Number(u?.sale_price ?? u?.salePrice ?? catalogSalePrice ?? 0);
+      this._assertSalePriceForProduct(price, freeSaleAllowed);
     }
   }
 
@@ -977,8 +1167,9 @@ class ProductsService {
       }
     })();
 
-    // When a search term is given and no explicit sort is requested, rank by relevance
-    if (listSearch && !sortByRaw) {
+    // When a search term is given, always rank by relevance first (exact SKU on top),
+    // then apply the requested secondary sort.
+    if (listSearch) {
       const rankExpr = this._productSearchRankExpr(listSearch, params);
       if (rankExpr) {
         query += ` ORDER BY ${rankExpr} ASC, ${sortBy} ${sortOrder}`;
@@ -1667,8 +1858,21 @@ class ProductsService {
     const name = this._requireNonEmptyString(data.name, 'Product name');
     const sku = this._requireNonEmptyString(data.sku, 'SKU');
     const barcode = data.barcode ? String(data.barcode).trim() : null;
-    const purchasePrice = this._assertNonNegative(data.purchase_price ?? 0, 'purchase_price');
-    const salePrice = this._assertNonNegative(data.sale_price ?? 0, 'sale_price');
+    const freeSaleAllowed =
+      data.free_sale_allowed === true ||
+      data.free_sale_allowed === 1 ||
+      String(data.free_sale_allowed || '').toLowerCase() === 'true';
+    if (freeSaleAllowed) {
+      this._assertCanSetFreeSale(meta?.actorUserId);
+    }
+    const purchasePrice = this._assertCostPriceForProduct(data.purchase_price ?? 0);
+    const salePrice = this._assertSalePriceForProduct(data.sale_price ?? 0, freeSaleAllowed);
+    const freeSaleReason = this._requireFreeSaleReason(
+      freeSaleAllowed,
+      salePrice,
+      data.free_sale_reason ?? data.freeSaleReason ?? meta.freeSaleReason,
+    );
+    this._validateProductUnitsSalePrices(data.product_units, freeSaleAllowed, salePrice);
     const minStockLevel = this._assertNonNegative(
       data.min_stock_level ?? this._readDefaultMinStock(),
       'min_stock_level'
@@ -1679,6 +1883,12 @@ class ProductsService {
     }
     if (data.master_min_qty !== undefined && data.master_min_qty !== null) {
       this._assertNonNegative(data.master_min_qty, 'master_min_qty');
+    }
+
+    // Base unit required
+    const baseUnitCode = this._normalizeUnitCode(data.base_unit ?? data.unit ?? '');
+    if (!baseUnitCode) {
+      throw createError(ERROR_CODES.VALIDATION_ERROR, 'base unit is required');
     }
 
     this._ensureSkuUnique(sku);
@@ -1713,15 +1923,17 @@ class ProductsService {
         (data.unit ? this._resolveUnitIdFromCode(data.unit) : null);
       add('unit_id', resolvedUnitId ?? null);
     }
-    if (this._hasCol('unit')) add('unit', this._normalizeUnitCode(data.unit ?? 'pcs'));
+    if (this._hasCol('unit')) add('unit', this._normalizeUnitCode(data.unit ?? baseUnitCode));
     if (this._hasCol('base_unit')) {
-      add('base_unit', this._normalizeUnitCode(data.base_unit ?? data.unit ?? 'pcs'));
+      add('base_unit', baseUnitCode);
     }
 
     add('purchase_price', purchasePrice);
     add('sale_price', salePrice);
     // Dual pricing (optional columns)
-    if (data.master_price !== undefined) add('master_price', data.master_price === null ? null : (Number(data.master_price) || 0));
+    if (data.master_price !== undefined) {
+      add('master_price', this._assertMasterPriceForProduct(data.master_price));
+    }
     if (data.master_min_qty !== undefined) add('master_min_qty', data.master_min_qty === null ? null : (Number(data.master_min_qty) || 0));
     // Brand and article (optional columns added in migration 061)
     if (data.brand !== undefined) add('brand', data.brand ? String(data.brand).trim() || null : null);
@@ -1737,6 +1949,9 @@ class ProductsService {
     } else if (this._hasCol('show_in_marketplace')) {
       add('show_in_marketplace', 1);
     }
+    if (this._hasCol('free_sale_allowed')) {
+      add('free_sale_allowed', freeSaleAllowed ? 1 : 0);
+    }
     if (data.variant_options !== undefined && this._hasCol('variant_options')) {
       add('variant_options', this._serializeVariantOptions(data.variant_options));
     }
@@ -1746,8 +1961,8 @@ class ProductsService {
     add('updated_at', now);
 
     this.db.prepare(`INSERT INTO products (${cols.join(', ')}) VALUES (${placeholders.join(', ')})`).run(values);
-    const baseUnit = this._normalizeUnitCode(data.base_unit ?? data.unit ?? 'pcs');
-    this._upsertProductUnits(id, data.product_units, baseUnit, Number(data.sale_price ?? 0) || 0);
+    const baseUnit = baseUnitCode;
+    this._upsertProductUnits(id, data.product_units, baseUnit, Number(salePrice) || 0);
     if (this.cacheService) {
       this.cacheService.invalidateProduct(id);
       this.cacheService.invalidatePricesForProduct(id);
@@ -1766,6 +1981,17 @@ class ProductsService {
         err?.message || err,
       );
     }
+    if (freeSaleAllowed && Number(salePrice) <= 0) {
+      this._auditLog(
+        'product.free_sale_enabled',
+        'product',
+        id,
+        null,
+        { sale_price: salePrice, free_sale_allowed: 1, reason: freeSaleReason },
+        meta?.actorUserId,
+      );
+    }
+    this._auditLog('product.create', 'product', id, null, { sku, sale_price: salePrice }, meta?.actorUserId);
     return created;
   }
 
@@ -1833,13 +2059,51 @@ class ProductsService {
     }
 
     if (data.purchase_price !== undefined) {
-      set('purchase_price', this._assertNonNegative(data.purchase_price, 'purchase_price'));
+      set('purchase_price', this._assertCostPriceForProduct(data.purchase_price));
     }
-    if (data.sale_price !== undefined) {
-      set('sale_price', this._assertNonNegative(data.sale_price, 'sale_price'));
+    if (data.sale_price !== undefined || data.free_sale_allowed !== undefined) {
+      const nextFree =
+        data.free_sale_allowed !== undefined
+          ? data.free_sale_allowed === true ||
+            data.free_sale_allowed === 1 ||
+            String(data.free_sale_allowed || '').toLowerCase() === 'true'
+          : existing.free_sale_allowed === true || existing.free_sale_allowed === 1;
+      const wasFree =
+        existing.free_sale_allowed === true || existing.free_sale_allowed === 1;
+      if (nextFree && !wasFree) {
+        this._assertCanSetFreeSale(meta?.actorUserId);
+      }
+      const nextSale =
+        data.sale_price !== undefined ? data.sale_price : existing.sale_price ?? 0;
+      const assertedSale = this._assertSalePriceForProduct(nextSale, nextFree);
+      const freeSaleReason = this._requireFreeSaleReason(
+        nextFree,
+        assertedSale,
+        data.free_sale_reason ?? data.freeSaleReason ?? meta.freeSaleReason ?? meta.priceChangeReason,
+      );
+      set('sale_price', assertedSale);
+      if (data.free_sale_allowed !== undefined && this._hasCol('free_sale_allowed')) {
+        set('free_sale_allowed', nextFree ? 1 : 0);
+      }
+      if (data.product_units !== undefined) {
+        this._validateProductUnitsSalePrices(data.product_units, nextFree, assertedSale);
+      }
+      if (nextFree && Number(assertedSale) <= 0) {
+        meta = { ...meta, _freeSaleReason: freeSaleReason };
+      }
+    } else if (data.product_units !== undefined) {
+      const nextFree =
+        existing.free_sale_allowed === true || existing.free_sale_allowed === 1;
+      this._validateProductUnitsSalePrices(
+        data.product_units,
+        nextFree,
+        existing.sale_price ?? 0,
+      );
     }
     // Dual pricing (optional columns)
-    if (data.master_price !== undefined) set('master_price', data.master_price === null ? null : (Number(data.master_price) || 0));
+    if (data.master_price !== undefined) {
+      set('master_price', this._assertMasterPriceForProduct(data.master_price));
+    }
     if (data.master_min_qty !== undefined) {
       if (data.master_min_qty === null) {
         set('master_min_qty', null);
@@ -1885,7 +2149,11 @@ class ProductsService {
           (data.unit !== undefined ? data.unit : existing.base_unit ?? existing.unit ?? 'pcs')
       );
     if (data.product_units !== undefined) {
-      this._upsertProductUnits(id, data.product_units, baseUnit, Number(existing.sale_price ?? 0) || 0);
+      const fallbackSale =
+        data.sale_price !== undefined
+          ? Number(data.sale_price)
+          : Number(existing.sale_price ?? 0) || 0;
+      this._upsertProductUnits(id, data.product_units, baseUnit, fallbackSale);
     }
     if (this.cacheService) {
       this.cacheService.invalidateProduct(id);
@@ -1914,6 +2182,20 @@ class ProductsService {
           err?.message || err,
         );
       }
+    }
+    if (meta?._freeSaleReason) {
+      this._auditLog(
+        'product.free_sale_enabled',
+        'product',
+        id,
+        { sale_price: existing.sale_price, free_sale_allowed: existing.free_sale_allowed },
+        {
+          sale_price: after.sale_price,
+          free_sale_allowed: after.free_sale_allowed,
+          reason: meta._freeSaleReason,
+        },
+        meta?.actorUserId,
+      );
     }
     return after;
   }
@@ -1984,8 +2266,22 @@ class ProductsService {
     if (mode === 'percent' && !Number.isFinite(opts.percent)) {
       throw createError(ERROR_CODES.VALIDATION_ERROR, 'percent is required');
     }
+    if (mode === 'percent' && field === 'sale' && isBulkPercentDecreaseBlocked(opts.percent)) {
+      throw createError(
+        ERROR_CODES.VALIDATION_ERROR,
+        'percent decrease of -100% or more is not allowed for sale prices',
+        { code: 'ZERO_PRICE_BLOCKED', percent: opts.percent },
+      );
+    }
     if (mode === 'amount' && !Number.isFinite(opts.amount)) {
       throw createError(ERROR_CODES.VALIDATION_ERROR, 'amount is required');
+    }
+    if (mode === 'set' && (!Number.isFinite(opts.exactPrice) || opts.exactPrice <= 0) && field === 'sale') {
+      throw createError(
+        ERROR_CODES.VALIDATION_ERROR,
+        'exact_price must be > 0 for sale price bulk update',
+        { code: 'ZERO_PRICE_BLOCKED' },
+      );
     }
     if (mode === 'set' && (!Number.isFinite(opts.exactPrice) || opts.exactPrice < 0)) {
       throw createError(ERROR_CODES.VALIDATION_ERROR, 'exact_price must be >= 0');
@@ -1994,52 +2290,141 @@ class ProductsService {
       throw createError(ERROR_CODES.VALIDATION_ERROR, 'round_to must be > 0');
     }
 
+    // Preview-compute ALL rows first (atomic: one error → none apply).
+    const planned = [];
+    const planErrors = [];
+    let maxAbsPercent = 0;
+    let belowCostCount = 0;
+    for (const id of ids) {
+      let product;
+      try {
+        product = this.getById(id);
+      } catch {
+        planErrors.push({ product_id: id, error: 'Product not found' });
+        continue;
+      }
+      const oldPrice =
+        field === 'purchase'
+          ? this._rawStoredPurchasePrice(id) ?? 0
+          : Number(product[map.col] ?? 0) || 0;
+      if (
+        field === 'master' &&
+        mode !== 'set' &&
+        (product.master_price == null || Number(product.master_price) <= 0)
+      ) {
+        continue;
+      }
+      const newPrice = this._computeBulkNewPrice(oldPrice, opts);
+      if (field === 'sale') {
+        const check = assertBulkSaleFinalPrice(newPrice, {
+          sku: product.sku,
+          productId: id,
+        });
+        if (!check.ok) {
+          planErrors.push({
+            product_id: id,
+            sku: product.sku,
+            name: product.name,
+            old_price: oldPrice,
+            new_price: Number(newPrice),
+            error: check.error,
+            code: check.code,
+          });
+          continue;
+        }
+        if (oldPrice > 0 && Number.isFinite(check.newPrice)) {
+          maxAbsPercent = Math.max(
+            maxAbsPercent,
+            Math.abs(((check.newPrice - oldPrice) / oldPrice) * 100),
+          );
+        }
+        const cost = Number(product.purchase_price ?? 0) || 0;
+        if (cost > 0 && check.newPrice < cost) belowCostCount += 1;
+        if (Math.abs(check.newPrice - oldPrice) < 1e-6) continue;
+        planned.push({
+          id,
+          product,
+          oldPrice,
+          newPrice: check.newPrice,
+        });
+      } else {
+        if (!Number.isFinite(newPrice) || newPrice < 0) {
+          planErrors.push({
+            product_id: id,
+            sku: product.sku,
+            error: `Invalid new price: ${newPrice}`,
+          });
+          continue;
+        }
+        if (Math.abs(newPrice - oldPrice) < 1e-6) continue;
+        planned.push({ id, product, oldPrice, newPrice });
+      }
+    }
+
+    if (planErrors.length > 0) {
+      throw createError(
+        ERROR_CODES.VALIDATION_ERROR,
+        `Bulk price blocked: ${planErrors.length} product(s) would get invalid prices`,
+        { code: 'ZERO_PRICE_BLOCKED', errors: planErrors.slice(0, 50), error_count: planErrors.length },
+      );
+    }
+
+    const approval = bulkPriceChangeRequiresApproval({
+      productCount: ids.length,
+      maxAbsPercentChange: maxAbsPercent,
+      userRole: meta.userRole || meta.actorRole,
+      authorized: meta.authorized === true || meta.managerApproved === true,
+    });
+    if (approval.missing) {
+      throw createError(
+        ERROR_CODES.FORBIDDEN,
+        'Manager approval required for bulk price changes (>20 products or >30% change)',
+        { code: 'APPROVAL_REQUIRED', product_count: ids.length, max_percent: maxAbsPercent },
+      );
+    }
+
+    if (field === 'sale' && belowCostCount > 0) {
+      const role = String(meta.userRole || meta.actorRole || '').toLowerCase();
+      const isMgr =
+        meta.authorized === true ||
+        meta.managerApproved === true ||
+        role === 'admin' ||
+        role === 'manager';
+      const reasonOk =
+        typeof payload.reason === 'string' && payload.reason.trim().length > 0;
+      if (!isMgr || !reasonOk) {
+        throw createError(
+          ERROR_CODES.FORBIDDEN,
+          'Below-cost bulk sale price requires manager approval and reason',
+          { code: 'BELOW_COST_APPROVAL_REQUIRED', below_cost_count: belowCostCount },
+        );
+      }
+    }
+
     const batchId = randomUUID();
     const reason =
       typeof payload.reason === 'string' && payload.reason.trim()
         ? payload.reason.trim()
         : 'Ommaviy narx yangilash';
+    if (field === 'sale' && !String(reason).trim()) {
+      throw createError(ERROR_CODES.VALIDATION_ERROR, 'reason is required for bulk price update');
+    }
     const changes = [];
 
     const apply = () => {
-      for (const id of ids) {
-        let product;
-        try {
-          product = this.getById(id);
-        } catch {
-          continue;
-        }
-        // Tannarx uchun ASL omborda saqlangan ustun qiymatini o'qiymiz —
-        // `product.purchase_price` (getById) qabul qilingan PO tannarxi bilan
-        // ustini yopgan bo'lishi mumkin, bu esa hisoblash/undo'ni buzadi.
-        const oldPrice =
-          field === 'purchase'
-            ? this._rawStoredPurchasePrice(id) ?? 0
-            : Number(product[map.col] ?? 0) || 0;
-        // Yirik optom narxi hali belgilanmagan bo'lsa, faqat "set" rejimida
-        // o'rnatamiz (foiz/summa hech narsadan hisoblanmaydi).
-        if (
-          field === 'master' &&
-          mode !== 'set' &&
-          (product.master_price == null || Number(product.master_price) <= 0)
-        ) {
-          continue;
-        }
-        const newPrice = this._computeBulkNewPrice(oldPrice, opts);
-        if (!Number.isFinite(newPrice) || newPrice < 0) continue;
-        if (Math.abs(newPrice - oldPrice) < 1e-6) continue;
+      for (const row of planned) {
         const updateMeta = { actorUserId: meta.actorUserId, batchId, priceChangeReason: reason };
         if (field === 'sale') {
-          this._applySalePriceToProduct(id, newPrice, updateMeta);
+          this._applySalePriceToProduct(row.id, row.newPrice, updateMeta);
         } else {
-          this.update(id, { [map.col]: newPrice }, updateMeta);
+          this.update(row.id, { [map.col]: row.newPrice }, updateMeta);
         }
         changes.push({
-          product_id: id,
-          name: product.name,
-          sku: product.sku,
-          old_price: oldPrice,
-          new_price: newPrice,
+          product_id: row.id,
+          name: row.product.name,
+          sku: row.product.sku,
+          old_price: row.oldPrice,
+          new_price: row.newPrice,
         });
       }
     };
@@ -2049,6 +2434,22 @@ class ProductsService {
     } else {
       apply();
     }
+
+    this._auditLog(
+      'product.bulk_price_update',
+      'product',
+      batchId,
+      null,
+      {
+        field,
+        mode,
+        reason,
+        count: changes.length,
+        below_cost_count: belowCostCount,
+        changes: changes.slice(0, 100),
+      },
+      meta?.actorUserId,
+    );
 
     return {
       batch_id: batchId,
@@ -2087,29 +2488,7 @@ class ProductsService {
   }
 
   _computeBulkNewPrice(oldPrice, opts) {
-    const old = Number(oldPrice) || 0;
-    let np;
-    switch (opts.mode) {
-      case 'percent':
-        np = old * (1 + Number(opts.percent) / 100);
-        break;
-      case 'amount':
-        np = old + Number(opts.amount);
-        break;
-      case 'set':
-        np = Number(opts.exactPrice);
-        break;
-      case 'round': {
-        const step = Number(opts.roundTo) > 0 ? Number(opts.roundTo) : 1000;
-        np = Math.round(old / step) * step;
-        break;
-      }
-      default:
-        np = old;
-    }
-    if (!Number.isFinite(np)) return old;
-    np = Math.round(np);
-    return np < 0 ? 0 : np;
+    return computeBulkNewPrice(oldPrice, opts);
   }
 
   /**
@@ -2233,18 +2612,27 @@ class ProductsService {
   }
 
   /**
-   * Delete product
-   * - If referenced by transactional documents (sales/returns/purchases): soft delete (is_active = 0, archive)
-   * - Otherwise: hard delete (remove inventory/batch traces, delete product row)
+   * Preview hard vs soft delete without mutating.
+   * Soft when product is referenced by sales/returns/purchases.
    */
-  delete(id) {
+  getDeleteImpact(id) {
     if (!id) {
       throw createError(ERROR_CODES.VALIDATION_ERROR, 'Product ID is required');
     }
+    const product = this.getById(id);
+    const refs = this._productTransactionalRefCounts(id);
+    const softDelete = Object.values(refs).some((n) => Number(n) > 0);
+    return {
+      product_id: id,
+      name: product.name,
+      sku: product.sku,
+      softDelete,
+      hardDelete: !softDelete,
+      refs,
+    };
+  }
 
-    // Ensure it exists
-    this.getById(id);
-
+  _productTransactionalRefCounts(id) {
     const tableExists = (name) => {
       try {
         const row = this.db
@@ -2255,29 +2643,42 @@ class ProductsService {
         return false;
       }
     };
-
     const countByProductId = (tableName) => {
       if (!tableExists(tableName)) return 0;
       const row = this.db.prepare(`SELECT COUNT(*) AS count FROM ${tableName} WHERE product_id = ?`).get(id);
       return Number(row?.count || 0) || 0;
     };
-
-    // Block deletion if product is referenced by transactional documents.
-    // These tables intentionally keep product_id for traceability.
     const transactionalTables = [
       'order_items',
-      // returns (new schema)
       'sale_return_items',
-      // returns (legacy schema)
       'return_items',
-      // purchases
       'purchase_order_items',
       'goods_receipt_items',
       'purchase_receipt_items',
       'supplier_return_items',
     ];
+    const refs = {};
+    for (const t of transactionalTables) {
+      refs[t] = countByProductId(t);
+    }
+    return refs;
+  }
 
-    const usedInDocs = transactionalTables.some((t) => countByProductId(t) > 0);
+  /**
+   * Delete product
+   * - If referenced by transactional documents (sales/returns/purchases): soft delete (is_active = 0, archive)
+   * - Otherwise: hard delete (remove inventory/batch traces, delete product row)
+   */
+  delete(id, meta = {}) {
+    if (!id) {
+      throw createError(ERROR_CODES.VALIDATION_ERROR, 'Product ID is required');
+    }
+
+    // Ensure it exists
+    const existing = this.getById(id);
+    const refs = this._productTransactionalRefCounts(id);
+    const usedInDocs = Object.values(refs).some((n) => Number(n) > 0);
+
     if (usedInDocs) {
       // Soft delete (archive): set is_active = 0 to preserve history
       const now = new Date().toISOString().replace('T', ' ').replace('Z', '').substring(0, 19);
@@ -2286,7 +2687,15 @@ class ProductsService {
         this.cacheService.invalidateProduct(id);
         this.cacheService.invalidatePricesForProduct(id);
       }
-      return { success: true, softDeleted: true };
+      this._auditLog(
+        'product.deactivate',
+        'product',
+        id,
+        { is_active: existing.is_active, sku: existing.sku },
+        { is_active: 0, refs },
+        meta?.actorUserId,
+      );
+      return { success: true, softDeleted: true, hardDeleted: false };
     }
 
     // Hard delete with cleanup for tables that reference products via FK and can block the DELETE.
@@ -2312,6 +2721,17 @@ class ProductsService {
       'product_images',
     ];
 
+    const tableExists = (name) => {
+      try {
+        const row = this.db
+          .prepare(`SELECT 1 AS ok FROM sqlite_master WHERE type='table' AND name = ? LIMIT 1`)
+          .get(String(name));
+        return !!row?.ok;
+      } catch {
+        return false;
+      }
+    };
+
     const doCleanupAndDelete = () => {
       for (const t of cleanupTables) {
         if (!tableExists(t)) continue;
@@ -2331,7 +2751,16 @@ class ProductsService {
       this.cacheService.invalidatePricesForProduct(id);
     }
 
-    return { success: true, softDeleted: false };
+    this._auditLog(
+      'product.hard_delete',
+      'product',
+      id,
+      { sku: existing.sku, name: existing.name },
+      null,
+      meta?.actorUserId,
+    );
+
+    return { success: true, softDeleted: false, hardDeleted: true };
   }
 
   /**

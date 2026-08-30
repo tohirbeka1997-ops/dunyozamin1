@@ -32,6 +32,8 @@ export interface DashboardAnalytics {
   total_collected?: number;
   /** Berilgan nasiya / qarz (credit_amount, UZS ekvivalent). */
   credit_issued?: number;
+  /** Sum of positive customer balances (prepaid / advance). */
+  customer_advance?: number;
   total_orders: number;
   total_cogs: number;
   total_profit: number;

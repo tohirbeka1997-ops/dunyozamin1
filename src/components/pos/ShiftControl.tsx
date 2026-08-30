@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useMemo } from 'react';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import {
@@ -26,6 +26,15 @@ import { getShiftSummary, shiftCashIn, shiftCashOut } from '@/db/api';
 import { formatDateTime, formatTime } from '@/lib/datetime';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
+import {
+  isValidPositiveMoneyAmount,
+  isValidNonNegativeMoneyAmount,
+  parsePositiveMoneyAmount,
+  parseNonNegativeMoneyAmount,
+  requiresShiftVarianceReason,
+  sanitizeMoneyInput,
+  SHIFT_VARIANCE_REASON_THRESHOLD,
+} from '@/lib/posHardening';
 
 type ShiftControlProps = {
   /** Compact icon-only toolbar for POS header */
@@ -40,15 +49,16 @@ export default function ShiftControl({ compact = false }: ShiftControlProps) {
   
   const [openDialogOpen, setOpenDialogOpen] = useState(false);
   const [closeDialogOpen, setCloseDialogOpen] = useState(false);
-  const [openingCash, setOpeningCash] = useState<number | null>(null);
-  const [closingCash, setClosingCash] = useState<number | null>(null);
   const [isOpening, setIsOpening] = useState(false);
   const [isClosing, setIsClosing] = useState(false);
 
   // Cash drawer in/out (kassa kirim / chiqim)
   const [movementDialogOpen, setMovementDialogOpen] = useState<null | 'in' | 'out'>(null);
-  const [movementAmount, setMovementAmount] = useState<number | null>(null);
+  const [movementAmountText, setMovementAmountText] = useState('');
   const [movementReason, setMovementReason] = useState('');
+  const [closingCashText, setClosingCashText] = useState('');
+  const [closeVarianceReason, setCloseVarianceReason] = useState('');
+  const [openingCashText, setOpeningCashText] = useState('');
   const [isMoving, setIsMoving] = useState(false);
   const [shiftSummary, setShiftSummary] = useState<{
     shiftId: string;
@@ -103,6 +113,26 @@ export default function ShiftControl({ compact = false }: ShiftControlProps) {
   const [loadingSummary, setLoadingSummary] = useState(false);
   const [checkingShift, setCheckingShift] = useState(false);
   const hasSyncedRef = useRef(false);
+
+  const movementAmountValid = isValidPositiveMoneyAmount(movementAmountText);
+  const openingCashParsed = parseNonNegativeMoneyAmount(openingCashText);
+  const closingCashParsed = parseNonNegativeMoneyAmount(closingCashText);
+  const closingCashValue = closingCashParsed.ok ? closingCashParsed.amount : null;
+  const closeVariance = useMemo(() => {
+    if (closingCashValue === null || !shiftSummary) {
+      return { required: false, diff: 0, missing: false as boolean | undefined };
+    }
+    return requiresShiftVarianceReason(
+      closingCashValue,
+      Number(shiftSummary.expectedCash ?? 0) || 0,
+      closeVarianceReason,
+    );
+  }, [closingCashValue, shiftSummary, closeVarianceReason]);
+  const canSubmitClose =
+    closingCashParsed.ok &&
+    !isClosing &&
+    !loadingSummary &&
+    !(closeVariance.required && closeVariance.missing);
 
   // CRITICAL: Load shift from database on mount (only ONCE per component lifecycle)
   useEffect(() => {
@@ -311,8 +341,8 @@ export default function ShiftControl({ compact = false }: ShiftControlProps) {
       return;
     }
 
-    const cash = Number(openingCash ?? 0);
-    if (openingCash === null || isNaN(cash) || cash < 0) {
+    const parsed = parseNonNegativeMoneyAmount(openingCashText);
+    if (!parsed.ok) {
       toast({
         title: 'Xatolik',
         description: 'Ochilish naqd puli 0 dan katta yoki teng bo\'lishi kerak',
@@ -320,6 +350,7 @@ export default function ShiftControl({ compact = false }: ShiftControlProps) {
       });
       return;
     }
+    const cash = parsed.amount;
 
     // Validate that openShift is a function
     if (typeof openShift !== 'function') {
@@ -336,7 +367,7 @@ export default function ShiftControl({ compact = false }: ShiftControlProps) {
     try {
       await openShift(cash, user.id);
       setOpenDialogOpen(false);
-      setOpeningCash(null);
+      setOpeningCashText('');
       
       // Sync shift from database to update UI
       await syncFromDatabase(user.id);
@@ -384,11 +415,22 @@ export default function ShiftControl({ compact = false }: ShiftControlProps) {
       return;
     }
 
-    const cash = Number(closingCash ?? 0);
-    if (closingCash === null || isNaN(cash) || cash < 0) {
+    const parsed = parseNonNegativeMoneyAmount(closingCashText);
+    if (!parsed.ok) {
       toast({
         title: 'Xatolik',
         description: 'Yopilish naqd puli 0 dan katta yoki teng bo‘lishi kerak',
+        variant: 'destructive',
+      });
+      return;
+    }
+    const cash = parsed.amount;
+    const expected = Number(shiftSummary?.expectedCash ?? 0) || 0;
+    const variance = requiresShiftVarianceReason(cash, expected, closeVarianceReason);
+    if (variance.missing) {
+      toast({
+        title: 'Sabab majburiy',
+        description: `Tafovut ${formatMoneyUZS(variance.diff)} (≥ ${formatMoneyUZS(SHIFT_VARIANCE_REASON_THRESHOLD)}) — sabab kiriting`,
         variant: 'destructive',
       });
       return;
@@ -420,9 +462,10 @@ export default function ShiftControl({ compact = false }: ShiftControlProps) {
             customerDrawerCashNet: 0,
           };
       
-      await closeShift(cash, totals, user.id);
+      await closeShift(cash, totals, user.id, closeVarianceReason.trim() || undefined);
       setCloseDialogOpen(false);
-      setClosingCash(null);
+      setClosingCashText('');
+      setCloseVarianceReason('');
       setShiftSummary(null);
       toast({
         title: 'Muvaffaqiyatli',
@@ -443,15 +486,16 @@ export default function ShiftControl({ compact = false }: ShiftControlProps) {
   const handleCashMovement = async () => {
     if (isMoving) return;
     if (!movementDialogOpen || !currentShift?.id || !user?.id) return;
-    const amt = Number(movementAmount ?? 0);
-    if (!amt || amt <= 0) {
+    const parsed = parsePositiveMoneyAmount(movementAmountText);
+    if (!parsed.ok) {
       toast({
         title: 'Xatolik',
-        description: 'Miqdor 0 dan katta bo‘lishi kerak',
+        description: 'Miqdor 0 dan katta bo‘lishi kerak (faqat musbat son, max 2 kasr)',
         variant: 'destructive',
       });
       return;
     }
+    const amt = parsed.amount;
 
     setIsMoving(true);
     try {
@@ -469,7 +513,7 @@ export default function ShiftControl({ compact = false }: ShiftControlProps) {
           : `Kassadan ${formatMoneyUZS(amt)} chiqim qilindi`,
       });
       setMovementDialogOpen(null);
-      setMovementAmount(null);
+      setMovementAmountText('');
       setMovementReason('');
       if (closeDialogOpen && currentShift?.id) {
         try {
@@ -558,7 +602,7 @@ export default function ShiftControl({ compact = false }: ShiftControlProps) {
         size={compact ? 'icon' : 'sm'}
         onClick={() => {
           setMovementDialogOpen('in');
-          setMovementAmount(null);
+          setMovementAmountText('');
           setMovementReason('');
         }}
         title="Kassaga naqd kirim"
@@ -576,7 +620,7 @@ export default function ShiftControl({ compact = false }: ShiftControlProps) {
         size={compact ? 'icon' : 'sm'}
         onClick={() => {
           setMovementDialogOpen('out');
-          setMovementAmount(null);
+          setMovementAmountText('');
           setMovementReason('');
         }}
         title="Kassadan naqd chiqim (inkassatsiya)"
@@ -641,7 +685,7 @@ export default function ShiftControl({ compact = false }: ShiftControlProps) {
         onOpenChange={(open) => {
           if (!open) {
             setMovementDialogOpen(null);
-            setMovementAmount(null);
+            setMovementAmountText('');
             setMovementReason('');
           }
         }}
@@ -666,16 +710,18 @@ export default function ShiftControl({ compact = false }: ShiftControlProps) {
               </Label>
               <Input
                 id="movement-amount"
-                inputMode="numeric"
-                value={movementAmount ?? ''}
-                onChange={(e) => {
-                  const digits = e.target.value.replace(/[^\d]/g, '');
-                  setMovementAmount(digits ? Number(digits) : null);
-                }}
+                inputMode="decimal"
+                value={movementAmountText}
+                onChange={(e) => setMovementAmountText(sanitizeMoneyInput(e.target.value))}
                 placeholder="0"
                 autoFocus
                 disabled={isMoving}
               />
+              {movementAmountText !== '' && !movementAmountValid && (
+                <p className="text-xs text-destructive">
+                  Faqat musbat son (max 2 kasr). Manfiy, 0 yoki harf mumkin emas.
+                </p>
+              )}
             </div>
             <div className="space-y-2">
               <Label htmlFor="movement-reason">Sabab (ixtiyoriy)</Label>
@@ -702,7 +748,7 @@ export default function ShiftControl({ compact = false }: ShiftControlProps) {
             </Button>
             <Button
               onClick={handleCashMovement}
-              disabled={!movementAmount || movementAmount <= 0 || isMoving}
+              disabled={!movementAmountValid || isMoving}
               className={
                 movementDialogOpen === 'in'
                   ? 'bg-emerald-600 text-white hover:bg-emerald-700'
@@ -732,12 +778,9 @@ export default function ShiftControl({ compact = false }: ShiftControlProps) {
             <div className="space-y-2">
               <Input
                 id="opening-cash"
-                inputMode="numeric"
-                value={openingCash ?? ''}
-                onChange={(e) => {
-                  const digits = e.target.value.replace(/[^\d]/g, '');
-                  setOpeningCash(digits ? Number(digits) : null);
-                }}
+                inputMode="decimal"
+                value={openingCashText}
+                onChange={(e) => setOpeningCashText(sanitizeMoneyInput(e.target.value))}
                 placeholder="0"
                 autoFocus
               />
@@ -750,7 +793,7 @@ export default function ShiftControl({ compact = false }: ShiftControlProps) {
             <Button variant="outline" onClick={() => setOpenDialogOpen(false)}>
               Bekor qilish
             </Button>
-            <Button onClick={handleOpenShift} disabled={openingCash === null || openingCash < 0 || isOpening}>
+            <Button onClick={handleOpenShift} disabled={!openingCashParsed.ok || isOpening}>
               {isOpening ? 'Ochilmoqda...' : 'Smenani ochish'}
             </Button>
           </DialogFooter>
@@ -988,25 +1031,27 @@ export default function ShiftControl({ compact = false }: ShiftControlProps) {
               </Label>
               <Input
                 id="closing-cash"
-                inputMode="numeric"
-                value={closingCash ?? ''}
-                onChange={(e) => {
-                  const digits = e.target.value.replace(/[^\d]/g, '');
-                  setClosingCash(digits ? Number(digits) : null);
-                }}
+                inputMode="decimal"
+                value={closingCashText}
+                onChange={(e) => setClosingCashText(sanitizeMoneyInput(e.target.value))}
                 placeholder="0"
                 autoFocus
                 disabled={isClosing}
               />
               <p className="text-xs text-muted-foreground">
-                Kassada sanab tekshirilgan naqd pulni kiriting
+                Kassada sanab tekshirilgan naqd pulni kiriting (≥ 0)
               </p>
+              {closingCashText !== '' && !closingCashParsed.ok && (
+                <p className="text-xs text-destructive">
+                  Manfiy qiymat yoki noto‘g‘ri format mumkin emas
+                </p>
+              )}
             </div>
 
             {/* Real-time tafovut (closingCash − expectedCash) */}
-            {closingCash !== null && shiftSummary && (() => {
+            {closingCashValue !== null && shiftSummary && (() => {
               const expected = shiftSummary.expectedCash ?? 0;
-              const diff = closingCash - expected;
+              const diff = closingCashValue - expected;
               const absDiff = Math.abs(diff);
               if (absDiff < 0.5) {
                 return (
@@ -1057,12 +1102,32 @@ export default function ShiftControl({ compact = false }: ShiftControlProps) {
                         : 'text-amber-700/80 dark:text-amber-300/80'
                     }`}
                   >
-                    Kiritilgan: {formatMoneyUZS(closingCash)} • Kutilayotgan:{' '}
+                    Kiritilgan: {formatMoneyUZS(closingCashValue)} • Kutilayotgan:{' '}
                     {formatMoneyUZS(expected)}
                   </p>
                 </div>
               );
             })()}
+
+            {closeVariance.required && (
+              <div className="space-y-2">
+                <Label htmlFor="close-variance-reason">
+                  Tafovut sababi <span className="text-destructive">*</span>
+                </Label>
+                <Input
+                  id="close-variance-reason"
+                  value={closeVarianceReason}
+                  onChange={(e) => setCloseVarianceReason(e.target.value)}
+                  placeholder="Masalan: sanash xatosi, mayda pul yo‘qolgan"
+                  disabled={isClosing}
+                />
+                {closeVariance.missing && (
+                  <p className="text-xs text-destructive">
+                    Katta tafovut (≥ {formatMoneyUZS(SHIFT_VARIANCE_REASON_THRESHOLD)}) uchun sabab majburiy
+                  </p>
+                )}
+              </div>
+            )}
 
             <div className="rounded-lg border border-yellow-200 bg-yellow-50 p-3 dark:border-yellow-800 dark:bg-yellow-950">
               <p className="text-sm text-yellow-800 dark:text-yellow-200">
@@ -1076,7 +1141,7 @@ export default function ShiftControl({ compact = false }: ShiftControlProps) {
             </Button>
             <Button
               onClick={handleCloseShift}
-              disabled={closingCash === null || closingCash < 0 || isClosing || loadingSummary}
+              disabled={!canSubmitClose}
               variant="destructive"
               className="text-white"
             >

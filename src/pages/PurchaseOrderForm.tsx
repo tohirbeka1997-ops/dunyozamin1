@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useMemo, useCallback } from 'react';
-import { useNavigate, useParams } from 'react-router-dom';
+import { useNavigate, useParams, useLocation } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -32,6 +32,7 @@ import {
 import { useToast } from '@/hooks/use-toast';
 import { useDebounce } from '@/hooks/use-debounce';
 import { useBarcodeScanner } from '@/hooks/useBarcodeScanner';
+import { useFormListReturn } from '@/hooks/useFormListReturn';
 import { useAuth } from '@/contexts/AuthContext';
 import { formatUnit } from '@/utils/formatters';
 import { formatMoneyUZS } from '@/lib/format';
@@ -213,7 +214,9 @@ function buildReceiptItemsForReceive(
 export default function PurchaseOrderForm() {
   const { id } = useParams();
   const navigate = useNavigate();
+  const location = useLocation();
   const { toast } = useToast();
+  const { goToList, leaveToList } = useFormListReturn({ fallbackListPath: '/purchase-orders' });
   const { profile: user } = useAuth();
   const queryClient = useQueryClient();
   const isEditMode = !!id;
@@ -282,6 +285,55 @@ export default function PurchaseOrderForm() {
   const [qtyViolations, setQtyViolations] = useState<
     Map<string, { receivedQty: number; orderedQty: number }>
   >(new Map());
+  const baselineSnapshotRef = useRef<string | null>(null);
+  const [formBaselineReady, setFormBaselineReady] = useState(false);
+
+  const poFormSnapshot = useMemo(
+    () =>
+      JSON.stringify({
+        supplierId,
+        orderDate,
+        expectedDate,
+        purchaseName,
+        invoiceNumber,
+        notes,
+        status,
+        orderDiscountPercent,
+        paymentAmount,
+        items: items.map((i) => ({
+          product_id: i.product_id,
+          ordered_qty: i.ordered_qty,
+          unit_cost: i.unit_cost,
+          discount_amount: i.discount_amount,
+        })),
+      }),
+    [
+      supplierId,
+      orderDate,
+      expectedDate,
+      purchaseName,
+      invoiceNumber,
+      notes,
+      status,
+      orderDiscountPercent,
+      paymentAmount,
+      items,
+    ],
+  );
+
+  const isPoDirty =
+    baselineSnapshotRef.current !== null && poFormSnapshot !== baselineSnapshotRef.current;
+
+  useEffect(() => {
+    baselineSnapshotRef.current = null;
+    setFormBaselineReady(false);
+  }, [id]);
+
+  useEffect(() => {
+    if (!formBaselineReady || loading) return;
+    if (baselineSnapshotRef.current !== null) return;
+    baselineSnapshotRef.current = poFormSnapshot;
+  }, [formBaselineReady, loading, poFormSnapshot]);
 
   const handleProductCreated = (product: ProductWithCategory) => {
     registerScanProduct(product);
@@ -745,6 +797,7 @@ export default function PurchaseOrderForm() {
       });
     } finally {
       setLoading(false);
+      setFormBaselineReady(true);
     }
   };
 
@@ -1489,11 +1542,11 @@ export default function PurchaseOrderForm() {
         paymentSuccessToast(paid, entryCurrency);
       }
       invalidateDashboardQueries(queryClient);
-      navigate('/purchase-orders');
+      goToList();
       return;
     }
     if (paid <= 0) {
-      navigate('/purchase-orders');
+      goToList();
       return;
     }
     const entryCur: LedgerCurrency = poCurrency === 'USD' ? 'USD' : 'UZS';
@@ -1517,7 +1570,7 @@ export default function PurchaseOrderForm() {
     try {
       await recordPurchaseOrderPayment(poId);
       invalidateDashboardQueries(queryClient);
-      navigate('/purchase-orders');
+      goToList();
     } catch (paymentError: unknown) {
       const msg =
         paymentError instanceof Error ? paymentError.message : "To'lovni saqlab bo'lmadi";
@@ -2433,7 +2486,7 @@ export default function PurchaseOrderForm() {
         onConfirmReceive={showConfirmReceiveButton ? () => void handleConfirmAndReceive() : undefined}
         showConfirmReceiveButton={!!showConfirmReceiveButton}
         confirmReceiveLabel={confirmReceiveLabel}
-        onBack={() => navigate('/purchase-orders')}
+        onBack={() => void leaveToList(isPoDirty)}
       />
 
       <PurchaseOrderBulkAddModal

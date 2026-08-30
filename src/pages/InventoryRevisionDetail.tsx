@@ -13,6 +13,9 @@ import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
+import { Textarea } from '@/components/ui/textarea';
+import { Checkbox } from '@/components/ui/checkbox';
 import {
   Select,
   SelectContent,
@@ -49,10 +52,12 @@ import {
   completeInventoryRevision,
   countInventoryRevisionByBarcode,
   getInventoryRevision,
+  getInventoryRevisionCompletePreview,
   updateInventoryRevisionItemCount,
 } from '@/db/api';
 import { formatNumberUZ } from '@/lib/format';
 import { formatUnit } from '@/utils/formatters';
+import { roleCanApproveInventoryRevision } from '@/lib/posHardening';
 
 type RevisionItem = {
   id: string;
@@ -131,7 +136,7 @@ export default function InventoryRevisionDetail() {
   const { t } = useTranslation();
   const navigate = useNavigate();
   const { toast } = useToast();
-  const { profile } = useAuth();
+  const { profile, user } = useAuth();
 
   const [revision, setRevision] = useState<RevisionDetail | null>(null);
   const [loading, setLoading] = useState(true);
@@ -145,7 +150,21 @@ export default function InventoryRevisionDetail() {
   const [cancelOpen, setCancelOpen] = useState(false);
   const [markZeroOpen, setMarkZeroOpen] = useState(false);
   const [acting, setActing] = useState(false);
+  const [completePreview, setCompletePreview] = useState<{
+    can_complete?: boolean;
+    surplus_qty?: number;
+    shortage_qty?: number;
+    surplus_value?: number;
+    shortage_value?: number;
+    requires_stock_drift_approval?: boolean;
+    movements_during_revision?: unknown[];
+  } | null>(null);
+  const [approveStockDrift, setApproveStockDrift] = useState(false);
+  const [cancelReason, setCancelReason] = useState('');
   const barcodeRef = useRef<HTMLInputElement>(null);
+
+  const userRole = user?.role || profile?.role || null;
+  const canApprove = roleCanApproveInventoryRevision(userRole);
 
   const editable = revision?.status === 'in_progress' || revision?.status === 'draft';
 
@@ -212,20 +231,32 @@ export default function InventoryRevisionDetail() {
     );
   }, [revision]);
 
+  const canComplete = useMemo(() => {
+    if (!summary || !editable || !canApprove) return false;
+    const counted = Number(summary.counted_items || 0);
+    const pending = Number(summary.pending_items || 0);
+    return counted > 0 && pending === 0;
+  }, [summary, editable, canApprove]);
+
   const pendingVisible = useMemo(
     () => (revision?.items || []).filter((i) => i.counted_qty == null),
     [revision]
   );
 
   const openCompleteDialog = async () => {
-    if (!revision) return;
+    if (!revision || !canComplete) return;
     try {
       setActing(true);
-      const refreshed = await getInventoryRevision(revision.id, {
-        filter: countFilter,
-        search: searchDebounced || undefined,
-      });
+      const [refreshed, preview] = await Promise.all([
+        getInventoryRevision(revision.id, {
+          filter: countFilter,
+          search: searchDebounced || undefined,
+        }),
+        getInventoryRevisionCompletePreview(revision.id),
+      ]);
       applyRevision(refreshed);
+      setCompletePreview(preview);
+      setApproveStockDrift(false);
       setCompleteOpen(true);
     } catch (err: any) {
       toast({
@@ -375,6 +406,9 @@ export default function InventoryRevisionDetail() {
       const result = await completeInventoryRevision({
         revision_id: revision.id,
         created_by: profile?.id || null,
+        user_role: userRole,
+        approve_stock_drift: approveStockDrift || canApprove,
+        manager_approved: canApprove,
       });
       applyRevision(result);
       setCompleteOpen(false);
@@ -398,11 +432,23 @@ export default function InventoryRevisionDetail() {
 
   const handleCancel = async () => {
     if (!revision) return;
+    if (!cancelReason.trim()) {
+      toast({
+        title: t('inventory_revision.cancel_reason_required'),
+        variant: 'destructive',
+      });
+      return;
+    }
     try {
       setActing(true);
-      const result = await cancelInventoryRevision({ revision_id: revision.id });
+      const result = await cancelInventoryRevision({
+        revision_id: revision.id,
+        cancel_reason: cancelReason.trim(),
+        cancelled_by: profile?.id || null,
+      });
       applyRevision(result);
       setCancelOpen(false);
+      setCancelReason('');
       toast({ title: t('inventory_revision.cancelled_title') });
     } catch (err: any) {
       toast({
@@ -477,7 +523,16 @@ export default function InventoryRevisionDetail() {
                 <Ban className="mr-1.5 h-4 w-4" />
                 {t('inventory_revision.cancel')}
               </Button>
-              <Button size="sm" onClick={() => void openCompleteDialog()} disabled={acting}>
+              <Button
+                size="sm"
+                onClick={() => void openCompleteDialog()}
+                disabled={acting || !canComplete}
+                title={
+                  !canComplete
+                    ? t('inventory_revision.complete_disabled_hint')
+                    : undefined
+                }
+              >
                 <CheckCircle2 className="mr-1.5 h-4 w-4" />
                 {t('inventory_revision.complete')}
               </Button>
@@ -721,20 +776,72 @@ export default function InventoryRevisionDetail() {
         <AlertDialogContent>
           <AlertDialogHeader>
             <AlertDialogTitle>{t('inventory_revision.complete_confirm_title')}</AlertDialogTitle>
-            <AlertDialogDescription className="space-y-2">
+            <AlertDialogDescription className="space-y-3">
               <p>{t('inventory_revision.complete_confirm_body')}</p>
               <p className="text-sm font-medium text-foreground">
                 {t('inventory_revision.complete_confirm_stats', {
+                  total: summary?.total_items ?? 0,
                   counted: summary?.counted_items ?? 0,
                   pending: summary?.pending_items ?? 0,
                   variance: summary?.variance_items ?? variancePreview.length,
                 })}
               </p>
+              {completePreview && (
+                <div className="rounded-md border bg-muted/40 p-2 text-sm space-y-1">
+                  <p>
+                    {t('inventory_revision.complete_surplus', {
+                      qty: formatNumberUZ(completePreview.surplus_qty || 0),
+                      value: formatNumberUZ(completePreview.surplus_value || 0),
+                    })}
+                  </p>
+                  <p>
+                    {t('inventory_revision.complete_shortage', {
+                      qty: formatNumberUZ(completePreview.shortage_qty || 0),
+                      value: formatNumberUZ(completePreview.shortage_value || 0),
+                    })}
+                  </p>
+                  {Array.isArray(completePreview.movements_during_revision) &&
+                    completePreview.movements_during_revision.length > 0 && (
+                      <div className="pt-1">
+                        <p className="font-medium">
+                          {t('inventory_revision.movements_during', {
+                            count: completePreview.movements_during_revision.length,
+                          })}
+                        </p>
+                        <ul className="mt-1 max-h-24 list-inside list-disc overflow-y-auto text-xs text-muted-foreground">
+                          {completePreview.movements_during_revision.slice(0, 12).map((m: any) => (
+                            <li key={m.id || `${m.product_id}-${m.created_at}`}>
+                              {m.product_name || m.product_sku || m.product_id}: {m.movement_type}{' '}
+                              {m.quantity}
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
+                </div>
+              )}
               {stockDriftCount > 0 && (
                 <p className="text-sm font-medium text-amber-700 dark:text-amber-400">
                   {t('inventory_revision.complete_stock_drift_warn', {
                     count: stockDriftCount,
                   })}
+                </p>
+              )}
+              {completePreview?.requires_stock_drift_approval && canApprove && (
+                <div className="flex items-start gap-2">
+                  <Checkbox
+                    id="approve-drift"
+                    checked={approveStockDrift}
+                    onCheckedChange={(v) => setApproveStockDrift(v === true)}
+                  />
+                  <Label htmlFor="approve-drift" className="text-sm leading-snug">
+                    {t('inventory_revision.approve_stock_drift')}
+                  </Label>
+                </div>
+              )}
+              {!canApprove && (
+                <p className="text-sm text-destructive">
+                  {t('inventory_revision.manager_approval_required')}
                 </p>
               )}
             </AlertDialogDescription>
@@ -743,7 +850,15 @@ export default function InventoryRevisionDetail() {
             <AlertDialogCancel disabled={acting}>
               {t('common.cancel', { defaultValue: 'Bekor' })}
             </AlertDialogCancel>
-            <AlertDialogAction disabled={acting} onClick={(e) => {
+            <AlertDialogAction
+              disabled={
+                acting ||
+                !canComplete ||
+                (canApprove &&
+                  !!completePreview?.requires_stock_drift_approval &&
+                  !approveStockDrift)
+              }
+              onClick={(e) => {
               e.preventDefault();
               void handleComplete();
             }}>
@@ -784,8 +899,18 @@ export default function InventoryRevisionDetail() {
         <AlertDialogContent>
           <AlertDialogHeader>
             <AlertDialogTitle>{t('inventory_revision.cancel_confirm_title')}</AlertDialogTitle>
-            <AlertDialogDescription>
-              {t('inventory_revision.cancel_confirm_body')}
+            <AlertDialogDescription className="space-y-3">
+              <p>{t('inventory_revision.cancel_confirm_body')}</p>
+              <div className="space-y-2">
+                <Label htmlFor="cancel-reason">{t('inventory_revision.cancel_reason_label')}</Label>
+                <Textarea
+                  id="cancel-reason"
+                  value={cancelReason}
+                  onChange={(e) => setCancelReason(e.target.value)}
+                  rows={2}
+                  placeholder={t('inventory_revision.cancel_reason_placeholder')}
+                />
+              </div>
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
@@ -793,7 +918,7 @@ export default function InventoryRevisionDetail() {
               {t('common.back', { defaultValue: 'Orqaga' })}
             </AlertDialogCancel>
             <AlertDialogAction
-              disabled={acting}
+              disabled={acting || !cancelReason.trim()}
               className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
               onClick={(e) => {
                 e.preventDefault();

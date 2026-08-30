@@ -2,19 +2,25 @@
 
 const { randomUUID } = require('crypto');
 const { ERROR_CODES, createError } = require('../lib/errors.cjs');
+const {
+  roleCanApproveInventoryRevision,
+  normalizeProductCode,
+} = require('../lib/posHardening.cjs');
 
 const MAIN_WAREHOUSE_ID = 'main-warehouse-001';
 const ACTIVE_STATUSES = new Set(['draft', 'in_progress']);
+const OPEN_STATUSES_SQL = "'draft', 'in_progress'";
 
 /**
- * Warehouse inventory revision (ombor reviziyasi) — Phase 1.
- * Snapshots system qty, tracks counted vs not counted, applies only counted
- * items via InventoryService.adjustStock({ adjustment_type: 'set' }).
+ * Warehouse inventory revision (ombor reviziyasi).
+ * Snapshots system qty at start; complete requires 100% counted in session scope.
+ * Variances applied as per-item inventory_adjustment movements (counted − live).
  */
 class InventoryRevisionService {
   constructor(db, inventoryService) {
     this.db = db;
     this.inventory = inventoryService;
+    this.audit = null;
   }
 
   _nowIso() {
@@ -78,16 +84,205 @@ class InventoryRevisionService {
       this.db
         .prepare(
           `
-        SELECT id, revision_number, warehouse_id, status, created_at
+        SELECT id, revision_number, warehouse_id, status, revision_type, created_at
         FROM inventory_revisions
         WHERE warehouse_id = ?
-          AND status IN ('draft', 'in_progress')
+          AND status IN (${OPEN_STATUSES_SQL})
         ORDER BY created_at DESC
         LIMIT 1
       `
         )
         .get(id) || null
     );
+  }
+
+  findOpenFullRevision(warehouseId) {
+    if (!this._hasTable('inventory_revisions')) return null;
+    const id = String(warehouseId || MAIN_WAREHOUSE_ID).trim() || MAIN_WAREHOUSE_ID;
+    return (
+      this.db
+        .prepare(
+          `
+        SELECT id, revision_number, warehouse_id, status, revision_type, created_at
+        FROM inventory_revisions
+        WHERE warehouse_id = ?
+          AND status IN (${OPEN_STATUSES_SQL})
+          AND COALESCE(revision_type, 'full') = 'full'
+        ORDER BY created_at DESC
+        LIMIT 1
+      `
+        )
+        .get(id) || null
+    );
+  }
+
+  _parseScope(payload = {}) {
+    const raw = payload.scope ?? payload.scope_json;
+    if (!raw) return null;
+    if (typeof raw === 'string') {
+      try {
+        return JSON.parse(raw);
+      } catch {
+        return null;
+      }
+    }
+    return raw;
+  }
+
+  _scopeProductFilter(scope) {
+    if (!scope || typeof scope !== 'object') return { sql: '', params: [] };
+    const parts = [];
+    const params = [];
+    if (Array.isArray(scope.product_ids) && scope.product_ids.length > 0) {
+      const ph = scope.product_ids.map(() => '?').join(',');
+      parts.push(`p.id IN (${ph})`);
+      params.push(...scope.product_ids.map(String));
+    }
+    if (Array.isArray(scope.category_ids) && scope.category_ids.length > 0) {
+      const ph = scope.category_ids.map(() => '?').join(',');
+      parts.push(`p.category_id IN (${ph})`);
+      params.push(...scope.category_ids.map(String));
+    }
+    if (scope.shelf) {
+      parts.push(`COALESCE(p.shelf, '') = ?`);
+      params.push(String(scope.shelf));
+    }
+    if (scope.zone) {
+      parts.push(`COALESCE(p.zone, '') = ?`);
+      params.push(String(scope.zone));
+    }
+    if (!parts.length) return { sql: '', params: [] };
+    return { sql: ` AND (${parts.join(' OR ')})`, params };
+  }
+
+  _audit(action, revision, userId, extra = {}) {
+    try {
+      if (!this.audit?.log) return;
+      this.audit.log({
+        action,
+        entity_type: 'inventory_revision',
+        entity_id: revision?.id || null,
+        user_id: userId || null,
+        new_values: {
+          revision_number: revision?.revision_number,
+          status: revision?.status,
+          revision_type: revision?.revision_type,
+          ...extra,
+        },
+      });
+    } catch (err) {
+      console.warn('[inventoryRevision] audit failed:', err?.message || err);
+    }
+  }
+
+  _movementsDuringRevision(revision) {
+    if (!revision?.snapshot_at || !this._hasTable('inventory_movements')) {
+      return [];
+    }
+    const since = revision.snapshot_at;
+    const productIds = this.db
+      .prepare(`SELECT DISTINCT product_id FROM inventory_revision_items WHERE revision_id = ?`)
+      .all(revision.id)
+      .map((r) => r.product_id);
+    if (!productIds.length) return [];
+    const ph = productIds.map(() => '?').join(',');
+    return this.db
+      .prepare(
+        `
+      SELECT
+        im.id,
+        im.product_id,
+        im.movement_type,
+        im.quantity,
+        im.before_quantity,
+        im.after_quantity,
+        im.reference_type,
+        im.reference_id,
+        im.reason,
+        im.created_at,
+        p.name AS product_name,
+        p.sku AS product_sku
+      FROM inventory_movements im
+      INNER JOIN products p ON p.id = im.product_id
+      WHERE im.warehouse_id = ?
+        AND im.product_id IN (${ph})
+        AND im.created_at >= ?
+      ORDER BY im.created_at ASC
+      LIMIT 500
+    `
+      )
+      .all(revision.warehouse_id, ...productIds, since);
+  }
+
+  _completePreview(revisionId) {
+    const revision = this._getRevisionRow(revisionId);
+    const snapRows = this.db
+      .prepare(`SELECT * FROM inventory_revision_items WHERE revision_id = ?`)
+      .all(revision.id);
+    const liveByProduct = this._liveQtyMap(revision.id, revision.warehouse_id);
+    const stockDriftItems = this._countStockDrift(snapRows, liveByProduct);
+    const summary = this._revisionSummary(revision.id, stockDriftItems);
+
+    let surplusQty = 0;
+    let shortageQty = 0;
+    let surplusValue = 0;
+    let shortageValue = 0;
+    const varianceLines = [];
+
+    for (const row of snapRows) {
+      if (row.counted_qty == null) continue;
+      const counted = Number(row.counted_qty) || 0;
+      const systemQty = Number(row.system_qty) || 0;
+      const variance = counted - systemQty;
+      if (Math.abs(variance) <= 0.0001) continue;
+      const product = this.db
+        .prepare('SELECT purchase_price, name, sku FROM products WHERE id = ?')
+        .get(row.product_id);
+      const unitCost = Number(product?.purchase_price || 0) || 0;
+      varianceLines.push({
+        product_id: row.product_id,
+        product_name: product?.name || null,
+        product_sku: product?.sku || null,
+        system_qty: systemQty,
+        counted_qty: counted,
+        variance,
+        unit_cost: unitCost,
+        value_impact: variance * unitCost,
+      });
+      if (variance > 0) {
+        surplusQty += variance;
+        surplusValue += variance * unitCost;
+      } else {
+        shortageQty += Math.abs(variance);
+        shortageValue += Math.abs(variance) * unitCost;
+      }
+    }
+
+    return {
+      revision_id: revision.id,
+      revision_number: revision.revision_number,
+      revision_type: revision.revision_type || 'full',
+      status: revision.status,
+      can_complete: summary.pending_items === 0 && summary.total_items > 0,
+      pending_items: summary.pending_items,
+      total_items: summary.total_items,
+      counted_items: summary.counted_items,
+      variance_items: summary.variance_items,
+      stock_drift_items: stockDriftItems,
+      surplus_qty: surplusQty,
+      shortage_qty: shortageQty,
+      surplus_value: surplusValue,
+      shortage_value: shortageValue,
+      variance_lines: varianceLines,
+      movements_during_revision: this._movementsDuringRevision(revision),
+      requires_manager_approval: true,
+      requires_stock_drift_approval: stockDriftItems > 0,
+    };
+  }
+
+  getCompletePreview(revisionId) {
+    this._requireTables();
+    return this._completePreview(revisionId);
   }
 
   _itemCountStatus(item) {
@@ -192,22 +387,48 @@ class InventoryRevisionService {
   createRevision(payload = {}) {
     this._requireTables();
     const warehouseId = this._ensureWarehouse(payload.warehouse_id);
-    const open = this.findOpenRevision(warehouseId);
-    if (open) {
+    const revisionType = payload.revision_type === 'partial' ? 'partial' : 'full';
+    const scope = this._parseScope(payload);
+
+    if (revisionType === 'partial' && (!scope || !this._scopeProductFilter(scope).sql)) {
       throw createError(
         ERROR_CODES.VALIDATION_ERROR,
-        `Ochiq ombor reviziyasi bor (${open.revision_number}). Avval uni yakunlang yoki bekor qiling.`
+        'Partial revision requires scope (category, shelf, zone, or product list)'
       );
     }
+
+    const openAny = this.findOpenRevision(warehouseId);
+    if (openAny) {
+      throw createError(
+        ERROR_CODES.VALIDATION_ERROR,
+        `Ochiq ombor reviziyasi bor (${openAny.revision_number}). Avval uni yakunlang yoki bekor qiling.`
+      );
+    }
+    if (revisionType === 'full') {
+      const openFull = this.findOpenFullRevision(warehouseId);
+      if (openFull) {
+        throw createError(
+          ERROR_CODES.VALIDATION_ERROR,
+          `Ochiq to'liq reviziya bor (${openFull.revision_number}).`
+        );
+      }
+    }
+
     const notes = payload.notes != null ? String(payload.notes).trim() || null : null;
     const createdBy = payload.created_by || null;
+    const responsibleUserId = payload.responsible_user_id || payload.responsible_id || createdBy || null;
+    if (!responsibleUserId) {
+      throw createError(ERROR_CODES.VALIDATION_ERROR, 'Responsible person is required');
+    }
+    const countMethod = payload.count_method ? String(payload.count_method).trim() || null : null;
+    const plannedDate = payload.planned_date ? String(payload.planned_date).trim() || null : null;
     const now = this._nowIso();
     const revisionId = randomUUID();
     const revisionNumber = `REV-${Date.now()}-${randomUUID().slice(0, 8)}`;
+    const scopeJson = scope ? JSON.stringify(scope) : null;
+    const scopeFilter = this._scopeProductFilter(scope);
 
-    const products = this.db
-      .prepare(
-        `
+    let productsSql = `
       SELECT
         p.id,
         COALESCE(u.code, p.unit, p.base_unit) AS unit,
@@ -217,28 +438,49 @@ class InventoryRevisionService {
       LEFT JOIN units u ON u.id = p.unit_id
       WHERE COALESCE(p.track_stock, 1) = 1
         AND COALESCE(p.is_active, 1) = 1
+        ${scopeFilter.sql}
       ORDER BY p.name COLLATE NOCASE ASC
-    `
-      )
-      .all();
+    `;
+    const products = this.db.prepare(productsSql).all(...scopeFilter.params);
 
     if (!products.length) {
-      throw createError(ERROR_CODES.VALIDATION_ERROR, 'No stock-tracked products to revise');
+      throw createError(ERROR_CODES.VALIDATION_ERROR, 'No stock-tracked products to revise for this scope');
     }
 
+    const snapshotVersion = 1;
     const insertRev = this.db.prepare(`
       INSERT INTO inventory_revisions (
-        id, revision_number, warehouse_id, status, notes, created_by, created_at, updated_at
-      ) VALUES (?, ?, ?, 'in_progress', ?, ?, ?, ?)
+        id, revision_number, warehouse_id, status, revision_type, scope_json,
+        count_method, planned_date, responsible_user_id, snapshot_at, snapshot_version,
+        notes, created_by, started_by, started_at, created_at, updated_at
+      ) VALUES (?, ?, ?, 'in_progress', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
     const insertItem = this.db.prepare(`
       INSERT INTO inventory_revision_items (
-        id, revision_id, product_id, system_qty, counted_qty, variance, unit, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, NULL, NULL, ?, ?, ?)
+        id, revision_id, product_id, system_qty, counted_qty, variance, unit,
+        snapshot_version, snapshot_at, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, NULL, NULL, ?, ?, ?, ?, ?)
     `);
 
     this.db.transaction(() => {
-      insertRev.run(revisionId, revisionNumber, warehouseId, notes, createdBy, now, now);
+      insertRev.run(
+        revisionId,
+        revisionNumber,
+        warehouseId,
+        revisionType,
+        scopeJson,
+        countMethod,
+        plannedDate,
+        responsibleUserId,
+        now,
+        snapshotVersion,
+        notes,
+        createdBy,
+        createdBy,
+        now,
+        now,
+        now
+      );
       for (const p of products) {
         const systemQty = Number(this.inventory.getCurrentStock(p.id, warehouseId)) || 0;
         insertItem.run(
@@ -247,13 +489,21 @@ class InventoryRevisionService {
           p.id,
           systemQty,
           p.unit || null,
+          snapshotVersion,
+          now,
           now,
           now
         );
       }
     })();
 
-    return this.getRevision(revisionId);
+    const created = this.getRevision(revisionId);
+    this._audit('create', created, createdBy, {
+      revision_type: revisionType,
+      total_items: created.summary?.total_items,
+      scope: scope || null,
+    });
+    return created;
   }
 
   listRevisions(filters = {}) {
@@ -325,13 +575,33 @@ class InventoryRevisionService {
     }
 
     if (search) {
-      itemsSql += ` AND (
-        LOWER(COALESCE(p.name, '')) LIKE ?
-        OR LOWER(COALESCE(p.sku, '')) LIKE ?
-        OR LOWER(COALESCE(p.barcode, '')) LIKE ?
-      )`;
-      const like = `%${search}%`;
-      params.push(like, like, like);
+      const termNorm = normalizeProductCode(search);
+      const exactRows = this.db
+        .prepare(
+          `SELECT p.id, p.sku, p.barcode FROM products p
+           INNER JOIN inventory_revision_items i ON i.product_id = p.id AND i.revision_id = ?
+           WHERE lower(trim(COALESCE(p.sku, ''))) = lower(trim(?))
+              OR lower(trim(COALESCE(p.barcode, ''))) = lower(trim(?))`
+        )
+        .all(revision.id, search, search)
+        .filter((row) => {
+          const skuN = normalizeProductCode(row.sku);
+          const bcN = normalizeProductCode(row.barcode);
+          return skuN === termNorm || bcN === termNorm;
+        });
+      if (exactRows.length > 0) {
+        const ph = exactRows.map(() => '?').join(',');
+        itemsSql += ` AND p.id IN (${ph})`;
+        params.push(...exactRows.map((r) => r.id));
+      } else {
+        itemsSql += ` AND (
+          LOWER(COALESCE(p.name, '')) LIKE ?
+          OR LOWER(COALESCE(p.sku, '')) LIKE ?
+          OR LOWER(COALESCE(p.barcode, '')) LIKE ?
+        )`;
+        const like = `%${search.toLowerCase()}%`;
+        params.push(like, like, like);
+      }
     }
 
     itemsSql += ' ORDER BY p.name COLLATE NOCASE ASC';
@@ -462,17 +732,25 @@ class InventoryRevisionService {
     const code = String(payload.barcode || payload.code || '').trim();
     if (!code) throw createError(ERROR_CODES.VALIDATION_ERROR, 'barcode is required');
 
-    const product = this.db
+    const termNorm = normalizeProductCode(code);
+    const candidates = this.db
       .prepare(
         `
-      SELECT p.id
+      SELECT p.id, p.sku, p.barcode
       FROM products p
       INNER JOIN inventory_revision_items i ON i.product_id = p.id AND i.revision_id = ?
-      WHERE p.barcode = ? OR p.sku = ?
-      LIMIT 1
+      WHERE lower(trim(COALESCE(p.barcode, ''))) = lower(trim(?))
+         OR lower(trim(COALESCE(p.sku, ''))) = lower(trim(?))
+      LIMIT 20
     `
       )
-      .get(revision.id, code, code);
+      .all(revision.id, code, code);
+    const product =
+      candidates.find((row) => {
+        const skuN = normalizeProductCode(row.sku);
+        const bcN = normalizeProductCode(row.barcode);
+        return skuN === termNorm || bcN === termNorm;
+      }) || null;
     if (!product) {
       throw createError(ERROR_CODES.NOT_FOUND, `Product not found in revision for code: ${code}`);
     }
@@ -501,9 +779,53 @@ class InventoryRevisionService {
     });
   }
 
+  _assertCanComplete(revision, summary, payload = {}) {
+    const userRole = payload.user_role || payload.userRole || null;
+    // Client flags alone are not enough — role must authorize completion.
+    const managerOk = roleCanApproveInventoryRevision(userRole);
+    const approverId =
+      payload.approver_id ||
+      payload.approverId ||
+      (managerOk ? payload.created_by || payload.user_id || null : null);
+
+    if (summary.total_items <= 0) {
+      throw createError(
+        ERROR_CODES.VALIDATION_ERROR,
+        'Cannot complete revision: no products in scope'
+      );
+    }
+    if (summary.counted_items === 0) {
+      throw createError(
+        ERROR_CODES.VALIDATION_ERROR,
+        'Cannot complete revision: no products have been counted'
+      );
+    }
+    if (summary.pending_items > 0) {
+      throw createError(
+        ERROR_CODES.VALIDATION_ERROR,
+        `Cannot complete revision: ${summary.pending_items} product(s) not counted`
+      );
+    }
+    if (summary.counted_items !== summary.total_items) {
+      throw createError(
+        ERROR_CODES.VALIDATION_ERROR,
+        `Cannot complete revision: counted ${summary.counted_items} of ${summary.total_items}`
+      );
+    }
+    if (!managerOk) {
+      throw createError(
+        ERROR_CODES.FORBIDDEN,
+        'Manager or admin approval is required to complete a revision'
+      );
+    }
+    if (!approverId) {
+      throw createError(ERROR_CODES.VALIDATION_ERROR, 'Approver is required');
+    }
+    return { managerOk, approverId: approverId || revision.responsible_user_id || revision.created_by };
+  }
+
   /**
-   * Apply stock set only for counted items; leave uncounted unchanged.
-   * Status claim is atomic inside the transaction so parallel completes cannot double-apply.
+   * Apply per-item stock deltas (counted − live) then mark revision complete atomically.
    */
   completeRevision(payload = {}) {
     this._requireTables();
@@ -512,71 +834,93 @@ class InventoryRevisionService {
       throw createError(ERROR_CODES.VALIDATION_ERROR, 'Revision ID is required');
     }
 
-    const now = this._nowIso();
-    const notesUpdate =
-      payload.notes != null ? String(payload.notes).trim() || null : null;
-
-    const result = this.db.transaction(() => {
-      const claim = this.db
-        .prepare(
-          `
-        UPDATE inventory_revisions
-        SET status = 'completed', completed_at = ?, updated_at = ?, notes = COALESCE(?, notes)
-        WHERE id = ? AND status IN ('draft', 'in_progress')
-      `
-        )
-        .run(now, now, notesUpdate, revisionId);
-
-      if (!claim.changes) {
-        const row = this.db
-          .prepare('SELECT id, status FROM inventory_revisions WHERE id = ?')
-          .get(revisionId);
-        if (!row) {
-          throw createError(ERROR_CODES.NOT_FOUND, `Revision not found: ${revisionId}`);
-        }
-        if (row.status === 'completed') {
-          throw createError(
-            ERROR_CODES.VALIDATION_ERROR,
-            'Revision already completed'
-          );
-        }
-        throw createError(
-          ERROR_CODES.VALIDATION_ERROR,
-          `Revision is ${row.status} and cannot be completed`
-        );
+    const revisionPre = this._getRevisionRow(revisionId);
+    if (!ACTIVE_STATUSES.has(revisionPre.status)) {
+      if (revisionPre.status === 'completed' || revisionPre.status === 'partially_completed') {
+        throw createError(ERROR_CODES.VALIDATION_ERROR, 'Revision already completed');
       }
+      throw createError(
+        ERROR_CODES.VALIDATION_ERROR,
+        `Revision is ${revisionPre.status} and cannot be completed`
+      );
+    }
 
-      const revision = this.db
-        .prepare('SELECT * FROM inventory_revisions WHERE id = ?')
-        .get(revisionId);
-
-      const counted = this.db
-        .prepare(
-          `
-        SELECT * FROM inventory_revision_items
-        WHERE revision_id = ? AND counted_qty IS NOT NULL
-      `
-        )
-        .all(revision.id);
-
-      if (!counted.length) {
+    const preview = this._completePreview(revisionId);
+    if (!preview.can_complete) {
+      if (preview.counted_items === 0) {
         throw createError(
           ERROR_CODES.VALIDATION_ERROR,
           'Cannot complete revision: no products have been counted'
         );
       }
+      throw createError(
+        ERROR_CODES.VALIDATION_ERROR,
+        `Cannot complete revision: ${preview.pending_items} product(s) not counted`
+      );
+    }
 
-      // Always write counted_qty for every counted item (idempotent set).
-      // Do NOT skip when variance vs snapshot is 0 — live stock may have drifted.
+    this._assertCanComplete(revisionPre, preview, payload);
+
+    const approveStockDrift =
+      payload.approve_stock_drift === true ||
+      payload.approveStockDrift === true ||
+      roleCanApproveInventoryRevision(payload.user_role || payload.userRole);
+
+    if (preview.stock_drift_items > 0 && !approveStockDrift) {
+      throw createError(
+        ERROR_CODES.VALIDATION_ERROR,
+        `Stock changed during revision (${preview.stock_drift_items} item(s)); recount or manager approval required`
+      );
+    }
+
+    const now = this._nowIso();
+    const notesUpdate =
+      payload.notes != null ? String(payload.notes).trim() || null : null;
+    const userId = payload.created_by || payload.user_id || revisionPre.created_by || null;
+    const approverId =
+      payload.approver_id ||
+      payload.approverId ||
+      (roleCanApproveInventoryRevision(payload.user_role || payload.userRole) ? userId : null);
+
+    const result = this.db.transaction(() => {
+      const revision = this._getRevisionRow(revisionId);
+      if (!ACTIVE_STATUSES.has(revision.status)) {
+        if (revision.status === 'completed' || revision.status === 'partially_completed') {
+          throw createError(ERROR_CODES.VALIDATION_ERROR, 'Revision already completed');
+        }
+        throw createError(
+          ERROR_CODES.VALIDATION_ERROR,
+          `Revision is ${revision.status} and cannot be completed`
+        );
+      }
+
+      const snapRows = this.db
+        .prepare('SELECT * FROM inventory_revision_items WHERE revision_id = ?')
+        .all(revision.id);
+      const liveByProduct = this._liveQtyMap(revision.id, revision.warehouse_id);
+      const stockDriftItems = this._countStockDrift(snapRows, liveByProduct);
+      const summary = this._revisionSummary(revision.id, stockDriftItems);
+      this._assertCanComplete(revision, summary, payload);
+
+      if (stockDriftItems > 0 && !approveStockDrift) {
+        throw createError(
+          ERROR_CODES.VALIDATION_ERROR,
+          `Stock changed during revision (${stockDriftItems} item(s)); recount or manager approval required`
+        );
+      }
+
+      const counted = snapRows.filter((row) => row.counted_qty != null);
       const toAdjust = [];
       const stockDrift = [];
+
       for (const row of counted) {
         const target = Number(row.counted_qty);
         if (!Number.isFinite(target)) continue;
+        const mappedLive = liveByProduct.get(row.product_id);
         const live =
-          this.inventory && typeof this.inventory.getCurrentStock === 'function'
-            ? Number(this.inventory.getCurrentStock(row.product_id, revision.warehouse_id)) || 0
-            : Number(row.system_qty) || 0;
+          mappedLive != null
+            ? Number(mappedLive) || 0
+            : Number(this.inventory.getCurrentStock(row.product_id, revision.warehouse_id)) || 0;
         const snap = Number(row.system_qty) || 0;
         if (Math.abs(live - snap) > 0.0001) {
           stockDrift.push({
@@ -587,41 +931,78 @@ class InventoryRevisionService {
             counted_qty: target,
           });
         }
-        toAdjust.push(row);
+        const delta = target - live;
+        if (Math.abs(delta) > 0.0001) {
+          toAdjust.push({ ...row, live_qty: live, delta });
+        }
       }
 
-      let adjustment = null;
+      const adjustmentIds = [];
       if (toAdjust.length > 0) {
         if (!this.inventory || typeof this.inventory.adjustStock !== 'function') {
           throw createError(ERROR_CODES.INTERNAL_ERROR, 'InventoryService.adjustStock unavailable');
         }
-        adjustment = this.inventory.adjustStock({
-          warehouse_id: revision.warehouse_id,
-          adjustment_type: 'set',
-          reason: `Ombor reviziyasi ${revision.revision_number}`,
-          notes: `revision_id=${revision.id}`,
-          created_by: payload.created_by || revision.created_by || null,
-          allow_during_open_revision: true,
-          items: toAdjust.map((row) => ({
-            product_id: row.product_id,
-            target_quantity: Number(row.counted_qty),
-            notes: `revision_item_id=${row.id}`,
-          })),
-        });
+        for (const row of toAdjust) {
+          const delta = Number(row.delta);
+          const adjType = delta > 0 ? 'surplus' : 'shortage';
+          const adj = this.inventory.adjustStock({
+            warehouse_id: revision.warehouse_id,
+            adjustment_type: adjType,
+            reason: `Reviziya ${revision.revision_number}: ${adjType}`,
+            notes: `revision_id=${revision.id}; revision_item_id=${row.id}; snapshot=${row.system_qty}; counted=${row.counted_qty}; live=${row.live_qty}`,
+            created_by: userId,
+            approver_id: approverId,
+            authorized: true,
+            allow_during_open_revision: true,
+            items: [
+              {
+                product_id: row.product_id,
+                quantity: delta,
+                notes: `revision_item_id=${row.id}`,
+              },
+            ],
+          });
+          if (adj && adj.id) adjustmentIds.push(adj.id);
+        }
+      }
+
+      const finalStatus =
+        (revision.revision_type || 'full') === 'partial' ? 'partially_completed' : 'completed';
+
+      const claim = this.db
+        .prepare(
+          `
+        UPDATE inventory_revisions
+        SET status = ?, completed_at = ?, updated_at = ?, notes = COALESCE(?, notes),
+            completed_by = ?, approved_by = ?
+        WHERE id = ? AND status IN ('draft', 'in_progress')
+      `
+        )
+        .run(finalStatus, now, now, notesUpdate, userId, approverId, revisionId);
+
+      if (!claim.changes) {
+        throw createError(ERROR_CODES.CONFLICT, 'Revision was already completed by another process');
       }
 
       return {
-        adjustment,
+        adjustmentIds,
         toAdjustCount: toAdjust.length,
         countedCount: counted.length,
         stockDrift,
+        finalStatus,
       };
     })();
 
     const full = this.getRevision(revisionId);
+    this._audit('complete', full, userId, {
+      adjusted_items: result.toAdjustCount,
+      stock_drift_items: result.stockDrift.length,
+      final_status: result.finalStatus,
+    });
     return {
       ...full,
-      adjustment_id: result.adjustment?.id || null,
+      adjustment_ids: result.adjustmentIds,
+      adjustment_id: result.adjustmentIds[0] || null,
       adjusted_items: result.toAdjustCount,
       counted_items: result.countedCount,
       stock_drift_items: result.stockDrift.length,
@@ -630,9 +1011,6 @@ class InventoryRevisionService {
     };
   }
 
-  /**
-   * Set counted_qty for many items at once (e.g. mark filtered pending as zero).
-   */
   bulkSetItemCounts(payload = {}) {
     this._requireTables();
     const revision = this._getRevisionRow(payload.revision_id);
@@ -710,27 +1088,33 @@ class InventoryRevisionService {
   cancelRevision(payload = {}) {
     this._requireTables();
     const revision = this._getRevisionRow(payload.revision_id);
-    if (revision.status === 'completed') {
+    if (revision.status === 'completed' || revision.status === 'partially_completed') {
       throw createError(ERROR_CODES.VALIDATION_ERROR, 'Completed revision cannot be cancelled');
     }
     if (revision.status === 'cancelled') {
       return this.getRevision(revision.id);
     }
+    const cancelReason = String(
+      payload.cancel_reason || payload.reason || payload.notes || ''
+    ).trim();
+    if (!cancelReason) {
+      throw createError(ERROR_CODES.VALIDATION_ERROR, 'Cancel reason is required');
+    }
     const now = this._nowIso();
+    const userId = payload.cancelled_by || payload.user_id || payload.created_by || null;
     this.db
       .prepare(
         `
       UPDATE inventory_revisions
-      SET status = 'cancelled', updated_at = ?, notes = COALESCE(?, notes)
+      SET status = 'cancelled', updated_at = ?, cancel_reason = ?, notes = COALESCE(?, notes),
+          cancelled_by = ?, cancelled_at = ?
       WHERE id = ?
     `
       )
-      .run(
-        now,
-        payload.notes != null ? String(payload.notes).trim() || null : null,
-        revision.id
-      );
-    return this.getRevision(revision.id);
+      .run(now, cancelReason, cancelReason, userId, now, revision.id);
+    const cancelled = this.getRevision(revision.id);
+    this._audit('cancel', cancelled, userId, { cancel_reason: cancelReason });
+    return cancelled;
   }
 }
 

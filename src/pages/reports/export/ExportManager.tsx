@@ -5,6 +5,7 @@ import { ArrowLeft, FileDown, Download } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { useToast } from '@/hooks/use-toast';
 import { logger } from '@/utils/logger';
+import { useAuthStore } from '@/store/useAuth';
 import {
   exportDailySales,
   exportProductSales,
@@ -24,11 +25,15 @@ interface ExportOption {
   name: string;
   description: string;
   formats: ('excel' | 'pdf' | 'csv')[];
+  /** When true, only admin/manager may export (customer / PII-sensitive). */
+  sensitive?: boolean;
 }
 
 export default function ExportManager() {
   const navigate = useNavigate();
   const { toast } = useToast();
+  const role = useAuthStore((s) => s.role);
+  const canExportSensitive = role === 'admin' || role === 'manager';
   const [isExporting, setIsExporting] = useState(false);
   const [exportingKey, setExportingKey] = useState<string | null>(null);
 
@@ -47,6 +52,7 @@ export default function ExportManager() {
       name: 'Mijozlar bo\'yicha sotuvlar',
       description: 'Mijozlar bo\'yicha xaridlar va balans ma\'lumotlari',
       formats: ['excel', 'pdf'],
+      sensitive: true,
     },
     {
       name: 'Ombor qoldiq hisobotlari',
@@ -82,11 +88,13 @@ export default function ExportManager() {
       name: 'Tizimga kirishlar jurnali',
       description: 'Xodimlarning tizimga kirish va chiqishlari',
       formats: ['excel', 'pdf'],
+      sensitive: true,
     },
     {
       name: 'Foyda va zarar hisobotlari',
       description: 'Foyda va zarar, soliqlar va xarajatlar',
       formats: ['excel', 'pdf'],
+      sensitive: true,
     },
     {
       name: 'To\'lov usullari bo\'yicha tahlil',
@@ -145,6 +153,14 @@ export default function ExportManager() {
   };
 
   const handleExport = (option: ExportOption, format: 'excel' | 'pdf' | 'csv') => {
+    if (option.sensitive && !canExportSensitive) {
+      toast({
+        title: 'Ruxsat yo‘q',
+        description: 'Bu eksport faqat admin yoki menejer uchun.',
+        variant: 'destructive',
+      });
+      return;
+    }
     const key = `${option.name}_${format}`;
     
     // Map option names to export functions
@@ -206,7 +222,7 @@ export default function ExportManager() {
                     variant="outline"
                     size="sm"
                     onClick={() => handleExport(option, 'excel')}
-                    disabled={isExporting}
+                    disabled={isExporting || (option.sensitive && !canExportSensitive)}
                   >
                     {isExporting && exportingKey === `${option.name}_excel` ? (
                       <>
@@ -226,7 +242,7 @@ export default function ExportManager() {
                     variant="outline"
                     size="sm"
                     onClick={() => handleExport(option, 'pdf')}
-                    disabled={isExporting}
+                    disabled={isExporting || (option.sensitive && !canExportSensitive)}
                   >
                     {isExporting && exportingKey === `${option.name}_pdf` ? (
                       <>
@@ -246,7 +262,7 @@ export default function ExportManager() {
                     variant="outline"
                     size="sm"
                     onClick={() => handleExport(option, 'csv')}
-                    disabled={isExporting}
+                    disabled={isExporting || (option.sensitive && !canExportSensitive)}
                   >
                     {isExporting && exportingKey === `${option.name}_csv` ? (
                       <>

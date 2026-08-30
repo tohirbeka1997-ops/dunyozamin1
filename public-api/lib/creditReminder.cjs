@@ -913,17 +913,23 @@ function listOpenCreditOrders(db, filters = {}) {
   return db.prepare(sql).all(...params);
 }
 
-function updateOrderDueDate(db, orderId, dueDate) {
+function updateOrderDueDate(db, orderId, dueDate, opts = {}) {
   if (!creditReminderSchemaReady(db)) {
     return { ok: false, error: 'schema_not_ready' };
   }
-  const normalized = normalizeDueDate(dueDate);
-  if (!normalized) {
-    return { ok: false, error: 'invalid_due_date' };
+  const { assertDueDateNotBeforeToday } = require('../../electron/lib/posHardening.cjs');
+  const dueGate = assertDueDateNotBeforeToday(dueDate, todayLocalDate(db));
+  if (!dueGate.ok) {
+    return { ok: false, error: dueGate.error || 'invalid_due_date' };
+  }
+  const normalized = dueGate.due_date;
+  const reason = String(opts.reason || '').trim();
+  if (!reason) {
+    return { ok: false, error: 'reason_required' };
   }
   const order = db
     .prepare(
-      `SELECT id, payment_status, credit_amount FROM orders WHERE id = ?`,
+      `SELECT id, payment_status, credit_amount, due_date FROM orders WHERE id = ?`,
     )
     .get(orderId);
   if (!order) return { ok: false, error: 'order_not_found' };
@@ -933,10 +939,38 @@ function updateOrderDueDate(db, orderId, dueDate) {
   if (Number(order.credit_amount || 0) <= 0) {
     return { ok: false, error: 'no_credit_balance' };
   }
+  const oldDue = order.due_date ? String(order.due_date).slice(0, 10) : null;
   db.prepare(
     `UPDATE orders SET due_date = ?, updated_at = datetime('now') WHERE id = ?`,
   ).run(normalized, orderId);
-  return { ok: true, due_date: normalized, order_id: orderId };
+
+  try {
+    const hasAudit = db
+      .prepare(`SELECT name FROM sqlite_master WHERE type='table' AND name='audit_log'`)
+      .get();
+    if (hasAudit) {
+      const { randomUUID } = require('crypto');
+      db.prepare(
+        `
+        INSERT INTO audit_log (
+          id, user_id, action, entity_type, entity_id,
+          old_values, new_values, ip_address, user_agent, created_at
+        ) VALUES (?, ?, 'credit_due_date_change', 'order', ?, ?, ?, NULL, NULL, ?)
+      `,
+      ).run(
+        randomUUID(),
+        opts.actorUserId || null,
+        orderId,
+        JSON.stringify({ due_date: oldDue }),
+        JSON.stringify({ due_date: normalized, reason }),
+        new Date().toISOString(),
+      );
+    }
+  } catch (_) {
+    /* non-fatal */
+  }
+
+  return { ok: true, due_date: normalized, order_id: orderId, old_due_date: oldDue };
 }
 
 async function runCreditReminderTick(db, options = {}) {

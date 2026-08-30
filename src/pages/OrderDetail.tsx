@@ -41,6 +41,7 @@ import { useTranslation } from 'react-i18next';
 import { invalidateDashboardQueries } from '@/utils/dashboard';
 import { formatOrderDateTime, formatReceiptDateTime } from '@/lib/datetime';
 import { navigateBackTo, resolveBackTarget } from '@/lib/pageState';
+import { canCreateSalesReturnForOrder } from '@/lib/posHardening';
 
 function isWebOrderRow(o: { order_source?: string; id?: string } | null | undefined) {
   return o?.order_source === 'web' || String(o?.id || '').startsWith('web:');
@@ -109,6 +110,27 @@ export default function OrderDetail() {
     };
     const variant = variants[status] || variants.completed;
     return <Badge className={variant.className}>{variant.label}</Badge>;
+  };
+
+  const getReturnStatusBadge = (status: string | null | undefined) => {
+    const key = String(status || 'not_returned').toLowerCase();
+    if (key === 'fully_returned') {
+      return (
+        <Badge className="bg-orange-600 text-white">
+          {t('orders.return_status_fully_returned')}
+        </Badge>
+      );
+    }
+    if (key === 'partially_returned') {
+      return (
+        <Badge variant="outline" className="border-orange-500/50 text-orange-700">
+          {t('orders.return_status_partially_returned')}
+        </Badge>
+      );
+    }
+    return (
+      <Badge variant="outline">{t('orders.return_status_not_returned')}</Badge>
+    );
   };
 
   const getPaymentStatusBadge = (status: string) => {
@@ -211,9 +233,14 @@ export default function OrderDetail() {
   };
 
   const handleCreateReturn = () => {
-    if (!order || !id) return;
+    if (!order || !id || !canCreateSalesReturnForOrder(order)) return;
     navigate(`/returns/create?orderId=${id}`);
   };
+
+  const returnFullyExhausted =
+    order != null &&
+    String(order.status || '').toLowerCase() === 'completed' &&
+    !canCreateSalesReturnForOrder(order);
 
   const handleEditInPos = () => {
     if (!order) return;
@@ -538,10 +565,26 @@ export default function OrderDetail() {
             )}
           </Button>
           {order.status === 'completed' && (
-            <Button onClick={handleCreateReturn}>
-              <RotateCcw className="h-4 w-4 mr-2" />
-              Qaytarish yaratish
-            </Button>
+            returnFullyExhausted ? (
+              <Button
+                disabled
+                title={t('orders.return_fully_returned_tooltip', {
+                  defaultValue: 'Bu sotuv to‘liq qaytarilgan. Yangi qaytarish yaratib bo‘lmaydi.',
+                })}
+                aria-label={t('orders.return_fully_returned_label', {
+                  defaultValue: 'To‘liq qaytarilgan',
+                })}
+                variant="secondary"
+              >
+                <RotateCcw className="h-4 w-4 mr-2" />
+                {t('orders.return_fully_returned_label', { defaultValue: 'To‘liq qaytarilgan' })}
+              </Button>
+            ) : (
+              <Button onClick={handleCreateReturn}>
+                <RotateCcw className="h-4 w-4 mr-2" />
+                {t('orders.return_sale', { defaultValue: 'Qaytarish yaratish' })}
+              </Button>
+            )
           )}
           {canVoid && order.status !== 'voided' && (
             <Button 
@@ -613,6 +656,7 @@ export default function OrderDetail() {
 
             <div className="flex gap-2 flex-wrap items-center">
               {getStatusBadge(order.status)}
+              {getReturnStatusBadge(order.return_status)}
               {getPaymentStatusBadge(order.payment_status)}
               <Badge variant="outline" className="font-mono text-xs">
                 {getOrderSaleCurrency(order)}
@@ -735,8 +779,29 @@ export default function OrderDetail() {
                   </div>
                 )}
                 <div className="flex justify-between text-lg font-bold pt-2 border-t">
-                  <span>Jami:</span>
-                  <span>{formatOrderMoney(order, order.total_amount)}</span>
+                  <span>{t('orders.gross_total')}:</span>
+                  <span>{formatOrderMoney(order, order.gross_total ?? order.total_amount)}</span>
+                </div>
+                {Number(order.returned_total || 0) > 0 && (
+                  <div className="flex justify-between text-destructive">
+                    <span>{t('orders.returned_total')}:</span>
+                    <span className="font-medium">
+                      −{formatOrderMoney(order, order.returned_total)}
+                    </span>
+                  </div>
+                )}
+                <div className="flex justify-between font-semibold">
+                  <span>{t('orders.net_total')}:</span>
+                  <span>
+                    {formatOrderMoney(
+                      order,
+                      order.net_total ??
+                        Math.max(
+                          0,
+                          Number(order.total_amount || 0) - Number(order.returned_total || 0),
+                        ),
+                    )}
+                  </span>
                 </div>
                 <div className="flex justify-between text-success">
                   <span>To'langan summa:</span>

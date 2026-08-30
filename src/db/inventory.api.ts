@@ -194,6 +194,9 @@ export const createStockAdjustment = async (adjustment: {
   quantity: number;
   reason: string;
   notes?: string;
+  adjustment_type?: string;
+  user_role?: string | null;
+  authorized?: boolean;
 }) => {
   // Real POS (Electron + SQLite): use transactional inventory adjustment
   if (hasPosApi()) {
@@ -214,9 +217,11 @@ export const createStockAdjustment = async (adjustment: {
     return ipc<any>(
       api.inventory.adjustStock({
         warehouse_id: MAIN_WAREHOUSE_ID,
-        adjustment_type: 'adjustment',
+        adjustment_type: adjustment.adjustment_type || 'adjustment',
         reason: String(adjustment.reason).trim(),
         notes: adjustment.notes || null,
+        user_role: adjustment.user_role || null,
+        authorized: adjustment.authorized === true,
         items: [
           {
             product_id: adjustment.product_id,
@@ -269,6 +274,16 @@ export const createStockAdjustment = async (adjustment: {
 
 export const createInventoryRevision = async (payload?: {
   warehouse_id?: string;
+  revision_type?: 'full' | 'partial';
+  scope?: {
+    category_ids?: string[];
+    product_ids?: string[];
+    shelf?: string;
+    zone?: string;
+  };
+  count_method?: string;
+  planned_date?: string;
+  responsible_user_id?: string | null;
   notes?: string;
   created_by?: string | null;
 }) => {
@@ -369,10 +384,21 @@ export const bulkSetInventoryRevisionItemCounts = async (payload: {
   throw new Error('Inventory revision requires Electron POS');
 };
 
+export const getInventoryRevisionCompletePreview = async (revisionId: string) => {
+  if (hasPosApi()) {
+    const api = requireElectron();
+    return ipc<any>(api.inventory.getRevisionCompletePreview(revisionId));
+  }
+  throw new Error('Inventory revision requires Electron POS');
+};
+
 export const completeInventoryRevision = async (payload: {
   revision_id: string;
   notes?: string;
   created_by?: string | null;
+  user_role?: string | null;
+  approve_stock_drift?: boolean;
+  manager_approved?: boolean;
 }) => {
   if (hasPosApi()) {
     const api = requireElectron();
@@ -385,7 +411,8 @@ export const completeInventoryRevision = async (payload: {
 
 export const cancelInventoryRevision = async (payload: {
   revision_id: string;
-  notes?: string;
+  cancel_reason: string;
+  cancelled_by?: string | null;
 }) => {
   if (hasPosApi()) {
     const api = requireElectron();

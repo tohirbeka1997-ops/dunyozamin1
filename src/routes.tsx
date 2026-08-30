@@ -151,6 +151,18 @@ export interface RouteConfig {
   allowedRoles?: string[];
 }
 
+/** Purchase / receive / supplier money paths */
+const PURCHASE_ROLES = [
+  'admin',
+  'manager',
+  'accountant',
+  'purchaser',
+  'receiver',
+  'warehouse',
+] as const;
+const PURCHASE_RECEIVE_ROLES = ['admin', 'manager', 'receiver', 'warehouse', 'purchaser'] as const;
+const PURCHASE_MONEY_ROLES = ['admin', 'manager', 'accountant'] as const;
+
 const routes: RouteConfig[] = [
   {
     name: 'Login',
@@ -518,7 +530,7 @@ const routes: RouteConfig[] = [
     element: lazyElement(PurchaseOrders),
     visible: true,
     requireAuth: true,
-    allowedRoles: ['admin', 'manager'],
+    allowedRoles: [...PURCHASE_ROLES],
   },
   {
     name: 'To\'lanishi kerak',
@@ -526,7 +538,7 @@ const routes: RouteConfig[] = [
     element: lazyElement(SupplierPaymentsDueReport),
     visible: false,
     requireAuth: true,
-    allowedRoles: ['admin', 'manager'],
+    allowedRoles: [...PURCHASE_MONEY_ROLES],
   },
   {
     name: 'New Purchase Order',
@@ -534,7 +546,7 @@ const routes: RouteConfig[] = [
     element: lazyElement(PurchaseOrderForm),
     visible: false,
     requireAuth: true,
-    allowedRoles: ['admin', 'manager'],
+    allowedRoles: ['admin', 'manager', 'purchaser'],
   },
   {
     name: 'Edit Purchase Order',
@@ -542,7 +554,7 @@ const routes: RouteConfig[] = [
     element: lazyElement(PurchaseOrderForm),
     visible: false,
     requireAuth: true,
-    allowedRoles: ['admin', 'manager'],
+    allowedRoles: ['admin', 'manager', 'purchaser'],
   },
   {
     name: 'Purchase Order Detail',
@@ -550,7 +562,7 @@ const routes: RouteConfig[] = [
     element: lazyElement(PurchaseOrderDetail),
     visible: false,
     requireAuth: true,
-    allowedRoles: ['admin', 'manager'],
+    allowedRoles: [...PURCHASE_ROLES],
   },
   {
     name: 'Purchase Receipt',
@@ -558,7 +570,7 @@ const routes: RouteConfig[] = [
     element: lazyElement(PurchaseReceiptForm),
     visible: false,
     requireAuth: true,
-    allowedRoles: ['admin', 'manager'],
+    allowedRoles: [...PURCHASE_RECEIVE_ROLES],
   },
   {
     name: 'New Purchase Receipt',
@@ -566,7 +578,7 @@ const routes: RouteConfig[] = [
     element: lazyElement(PurchaseReceiptForm),
     visible: false,
     requireAuth: true,
-    allowedRoles: ['admin', 'manager'],
+    allowedRoles: [...PURCHASE_RECEIVE_ROLES],
   },
   {
     name: 'Suppliers',
@@ -574,7 +586,7 @@ const routes: RouteConfig[] = [
     element: lazyElement(Suppliers),
     visible: true,
     requireAuth: true,
-    allowedRoles: ['admin', 'manager'],
+    allowedRoles: [...PURCHASE_ROLES],
   },
   {
     name: 'New Supplier',
@@ -582,7 +594,7 @@ const routes: RouteConfig[] = [
     element: lazyElement(SupplierForm),
     visible: false,
     requireAuth: true,
-    allowedRoles: ['admin', 'manager'],
+    allowedRoles: ['admin', 'manager', 'purchaser', 'accountant'],
   },
   {
     name: 'Edit Supplier',
@@ -590,7 +602,7 @@ const routes: RouteConfig[] = [
     element: lazyElement(SupplierForm),
     visible: false,
     requireAuth: true,
-    allowedRoles: ['admin', 'manager'],
+    allowedRoles: ['admin', 'manager', 'purchaser', 'accountant'],
   },
   {
     name: 'Supplier Detail',
@@ -598,7 +610,7 @@ const routes: RouteConfig[] = [
     element: lazyElement(SupplierDetail),
     visible: false,
     requireAuth: true,
-    allowedRoles: ['admin', 'manager'],
+    allowedRoles: [...PURCHASE_ROLES],
   },
   {
     name: 'Reports',

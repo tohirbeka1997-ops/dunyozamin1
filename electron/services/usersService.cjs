@@ -52,9 +52,15 @@ class UsersService {
           ? 'Manager'
           : roleCode === 'cashier'
             ? 'Kassir'
-            : roleCode === 'warehouse'
-              ? 'Ombor xodimi'
-              : roleCode;
+            : roleCode === 'senior_cashier'
+              ? 'Katta kassir'
+              : roleCode === 'warehouse' || roleCode === 'receiver'
+                ? 'Ombor / Qabul'
+                : roleCode === 'accountant'
+                  ? 'Buxgalter'
+                  : roleCode === 'purchaser'
+                    ? 'Xaridchi'
+                    : roleCode;
 
     this.db.prepare(
       `

@@ -15,6 +15,7 @@ import {
   Table,
   TableBody,
   TableCell,
+  TableHead,
   TableHeader,
   TableRow,
 } from '@/components/ui/table';
@@ -31,6 +32,7 @@ import { useReportAutoRefresh } from '@/hooks/useReportAutoRefresh';
 import { useTableSort } from '@/hooks/useTableSort';
 import { compareScalar } from '@/lib/tableSort';
 import { SortableTableHead } from '@/components/reports/SortableTableHead';
+import { useReportFilters } from '@/hooks/useReportFilters';
 import SearchableCombobox from '@/components/common/SearchableCombobox';
 
 interface ProductSalesData {
@@ -39,7 +41,9 @@ interface ProductSalesData {
   sku: string;
   category: string;
   quantity_sold: number;
+  return_amount?: number;
   revenue: number;
+  net_revenue?: number;
   revenue_uzs?: number;
   revenue_usd?: number;
   retail_revenue: number;
@@ -77,12 +81,23 @@ export default function ProductSalesReport() {
   const [categories, setCategories] = useState<Category[]>([]);
   const [warehouses, setWarehouses] = useState<Warehouse[]>([]);
   const [loading, setLoading] = useState(true);
-  const [dateFrom, setDateFrom] = useState(() => daysAgoYmd(30));
-  const [dateTo, setDateTo] = useState(() => todayYMD());
-  const [warehouseId, setWarehouseId] = useState<string>('all');
-  const [categoryFilter, setCategoryFilter] = useState<string>('all');
-  const [tierFilter, setTierFilter] = useState<string>('all');
-  const [searchTerm, setSearchTerm] = useState('');
+  const { get, set } = useReportFilters({
+    storageKey: 'reports.product-sales.filters',
+    trackedKeys: ['dateFrom', 'dateTo', 'warehouseId', 'category', 'tier', 'search'],
+    defaults: {
+      dateFrom: daysAgoYmd(30),
+      dateTo: todayYMD(),
+      warehouseId: 'all',
+      category: 'all',
+      tier: 'all',
+    },
+  });
+  const dateFrom = get('dateFrom', daysAgoYmd(30));
+  const dateTo = get('dateTo', todayYMD());
+  const warehouseId = get('warehouseId', 'all');
+  const categoryFilter = get('category', 'all');
+  const tierFilter = get('tier', 'all');
+  const searchTerm = get('search', '');
   const { sortKey, sortOrder, toggleSort } = useTableSort<ProductSalesSortKey>(
     'quantity_sold',
     'desc'
@@ -130,7 +145,9 @@ export default function ProductSalesReport() {
         sku: r.sku,
         category: r.category_name || 'Uncategorized',
         quantity_sold: Number(r.quantity_sold || 0),
+        return_amount: Number(r.return_amount || 0),
         revenue: Number(r.revenue || 0),
+        net_revenue: Number(r.net_revenue ?? r.revenue ?? 0),
         revenue_uzs: Number(r.revenue_uzs ?? r.revenue ?? 0),
         revenue_usd: Number(r.revenue_usd ?? 0),
         retail_revenue: Number(r.retail_revenue || 0),
@@ -321,7 +338,7 @@ export default function ProductSalesReport() {
               <Input
                 type="date"
                 value={dateFrom}
-                onChange={(e) => setDateFrom(e.target.value)}
+                onChange={(e) => set({ dateFrom: e.target.value || null })}
               />
             </div>
             <div>
@@ -331,7 +348,7 @@ export default function ProductSalesReport() {
               <Input
                 type="date"
                 value={dateTo}
-                onChange={(e) => setDateTo(e.target.value)}
+                onChange={(e) => set({ dateTo: e.target.value || null })}
               />
             </div>
             <div>
@@ -340,7 +357,7 @@ export default function ProductSalesReport() {
               </label>
               <SearchableCombobox
                 value={warehouseId}
-                onValueChange={setWarehouseId}
+                onValueChange={(value) => set({ warehouseId: value === 'all' ? null : value })}
                 options={warehouseOptions}
                 placeholder={t('combobox.all_warehouses', 'Barcha omborlar')}
                 searchPlaceholder={t('combobox.search_warehouse', "Ombor nomi bo'yicha qidirish...")}
@@ -353,7 +370,7 @@ export default function ProductSalesReport() {
               </label>
               <SearchableCombobox
                 value={categoryFilter}
-                onValueChange={setCategoryFilter}
+                onValueChange={(value) => set({ category: value === 'all' ? null : value })}
                 options={categoryOptions}
                 placeholder={t(
                   'reports.product_sales_page.filters.all_categories',
@@ -367,7 +384,10 @@ export default function ProductSalesReport() {
               <label className="text-sm text-muted-foreground">
                 {t('reports.product_sales_page.filters.price_tier', 'Narx turi')}
               </label>
-              <Select value={tierFilter} onValueChange={setTierFilter}>
+              <Select
+                value={tierFilter}
+                onValueChange={(value) => set({ tier: value === 'all' ? null : value })}
+              >
                 <SelectTrigger>
                   <SelectValue
                     placeholder={t('reports.product_sales_page.filters.all_tiers', 'Barcha turlar')}
@@ -402,7 +422,7 @@ export default function ProductSalesReport() {
                   "Nomi yoki SKU bo'yicha qidirish..."
                 )}
                 value={searchTerm}
-                onChange={(e) => setSearchTerm(e.target.value)}
+                onChange={(e) => set({ search: e.target.value || null }, true)}
               />
             </div>
           </div>
@@ -575,6 +595,12 @@ export default function ProductSalesReport() {
                   >
                     {t('reports.product_sales_page.table.revenue', 'Daromad (UZS/USD)')}
                   </SortableTableHead>
+                  <TableHead className="text-right">
+                    {t('reports.product_sales_page.table.returned', 'Qaytarilgan')}
+                  </TableHead>
+                  <TableHead className="text-right">
+                    {t('reports.product_sales_page.table.net_revenue', 'Net')}
+                  </TableHead>
                   <SortableTableHead<ProductSalesSortKey>
                     columnKey="retail_revenue"
                     sortKey={sortKey}
@@ -629,6 +655,10 @@ export default function ProductSalesReport() {
                         uzs={product.revenue_uzs ?? product.revenue}
                         usd={product.revenue_usd}
                       />
+                    </TableCell>
+                    <TableCell className="text-right">{formatMoneyUZS(product.return_amount || 0)}</TableCell>
+                    <TableCell className="text-right font-medium">
+                      {formatMoneyUZS(product.net_revenue ?? product.revenue)}
                     </TableCell>
                     <TableCell className="text-right">{formatMoneyUZS(product.retail_revenue)}</TableCell>
                     <TableCell className="text-right">{formatMoneyUZS(product.master_revenue)}</TableCell>

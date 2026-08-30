@@ -522,6 +522,12 @@ export function TelegramReportsSettings() {
               <p className="text-xs text-muted-foreground">
                 {t('settings.telegramReports.dailyPosterHint')}
               </p>
+              <p className="text-xs text-muted-foreground">
+                {t('settings.telegramReports.dailyPosterTodayRubric', {
+                  emoji: t(`settings.telegramReports.posterRubricEmoji${new Date().getDay()}`),
+                  title: t(`settings.telegramReports.posterRubric${new Date().getDay()}`),
+                })}
+              </p>
             </div>
             <Switch
               checked={form.dailyPoster}

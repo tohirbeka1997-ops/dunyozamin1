@@ -16,7 +16,8 @@ interface ShiftState {
   closeShift: (
     closingCash: number,
     totals: { cashSales: number; refunds: number; customerDrawerCashNet?: number },
-    cashierId: string
+    cashierId: string,
+    notes?: string
   ) => Promise<void>;
   addSale: (sale: any) => void;
   addRefund: (refund: any) => void;
@@ -146,7 +147,8 @@ export const useShiftStore = create<ShiftState>((set, get) => ({
   closeShift: async (
     closingCash: number,
     totals: { cashSales: number; refunds: number; customerDrawerCashNet?: number },
-    cashierId: string
+    cashierId: string,
+    notes?: string
   ) => {
     const { currentShift } = get();
     if (!currentShift) {
@@ -159,7 +161,8 @@ export const useShiftStore = create<ShiftState>((set, get) => ({
       currentShift_keys: Object.keys(currentShift),
       closingCash,
       totals,
-      cashierId
+      cashierId,
+      notes,
     });
 
     if (!currentShift.id) {
@@ -184,7 +187,7 @@ export const useShiftStore = create<ShiftState>((set, get) => ({
       const cashDifference = closingCash - expectedCash;
 
       console.log('[ShiftStore] Calling closeShiftAPI with shiftId:', currentShift.id);
-      const closedShift = await closeShiftAPI(currentShift.id, closingCash);
+      const closedShift = await closeShiftAPI(currentShift.id, closingCash, notes);
       
       // Update the shift with closing information
       const updatedShift: Shift = {

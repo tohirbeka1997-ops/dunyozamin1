@@ -2,12 +2,20 @@ import { memo, useCallback, useEffect, useRef } from 'react';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from '@/components/ui/tooltip';
 import type { ProductWithCategory } from '@/types/database';
-import { formatMoneyUZS, formatNumberUZ } from '@/lib/format';
+import { formatMoneyUZS } from '@/lib/format';
+import { formatQuantity } from '@/utils/quantity';
 import { formatUnit } from '@/utils/formatters';
 import { getProductImageDisplayUrl } from '@/lib/productImageUrl';
+import { isProductPriceNotSet, isProductFreeSaleAllowed } from '@/lib/posHardening';
 import { cn } from '@/lib/utils';
-import { Eye, Pencil, Trash2, AlertTriangle, Package, RotateCcw } from 'lucide-react';
+import { Eye, Pencil, Trash2, AlertTriangle, Package, RotateCcw, History } from 'lucide-react';
 
 type StatusFilter = 'active' | 'inactive' | 'all' | string;
 
@@ -17,6 +25,7 @@ type Props = {
   onEdit: (id: string) => void;
   onDelete: (id: string, name: string) => void;
   onRestore?: (id: string) => void;
+  onHistory?: (id: string) => void;
   showRestore?: boolean;
   /** When active/inactive tab is selected, hide redundant Faol/Nofaol badges. */
   statusFilter?: StatusFilter;
@@ -70,6 +79,7 @@ type RowProps = {
   onEdit: (id: string) => void;
   onDelete: (id: string, name: string) => void;
   onRestore?: (id: string) => void;
+  onHistory?: (id: string) => void;
 };
 
 const ProductVirtualRow = memo(function ProductVirtualRow({
@@ -81,6 +91,7 @@ const ProductVirtualRow = memo(function ProductVirtualRow({
   onEdit,
   onDelete,
   onRestore,
+  onHistory,
 }: RowProps) {
   const tone = stockTone(product);
   const active = product.is_active;
@@ -94,6 +105,8 @@ const ProductVirtualRow = memo(function ProductVirtualRow({
   const article = productArticleOf(product);
   const brand = String(product.brand ?? '').trim();
   const unitLabel = formatUnit(product.unit);
+  const priceNotSet = isProductPriceNotSet(product);
+  const freeSale = isProductFreeSaleAllowed(product) && Number(product.sale_price) <= 0;
 
   // Tabs already separate Faol / Nofaol — only show status when browsing "all".
   const showStatusBadge = statusFilter === 'all';
@@ -178,11 +191,31 @@ const ProductVirtualRow = memo(function ProductVirtualRow({
       </div>
 
       {/* Sell */}
-      <div
-        className="truncate text-right text-sm font-medium tabular-nums"
-        title={formatMoneyUZS(product.sale_price)}
-      >
-        {formatMoneyUZS(product.sale_price)}
+      <div className="min-w-0 text-right">
+        {priceNotSet ? (
+          <Badge
+            variant="outline"
+            className="h-5 border-destructive/40 px-1.5 text-[10px] font-medium text-destructive"
+            title={t('products.price_not_set')}
+          >
+            {t('products.price_not_set')}
+          </Badge>
+        ) : freeSale ? (
+          <Badge
+            variant="secondary"
+            className="h-5 px-1.5 text-[10px] font-medium"
+            title={t('products.free_sale_allowed')}
+          >
+            {t('products.free_sale_label')}
+          </Badge>
+        ) : (
+          <div
+            className="truncate text-sm font-medium tabular-nums"
+            title={formatMoneyUZS(product.sale_price)}
+          >
+            {formatMoneyUZS(product.sale_price)}
+          </div>
+        )}
       </div>
 
       {/* Stock + status only when low/out */}
@@ -193,16 +226,29 @@ const ProductVirtualRow = memo(function ProductVirtualRow({
             tone === 'out' && 'text-destructive',
             tone === 'low' && 'text-warning'
           )}
-          title={
-            tone === 'out'
-              ? t('products.out_of_stock_label')
-              : tone === 'low'
-                ? t('products.low_stock_label')
-                : undefined
-          }
+          title={(() => {
+            const stockUnit =
+              (product as any).base_unit || product.unit || 'pcs';
+            const exact = formatQuantity(
+              Number(product.current_stock) || 0,
+              typeof stockUnit === 'string' ? stockUnit : 3,
+            );
+            const tip =
+              tone === 'out'
+                ? t('products.out_of_stock_label')
+                : tone === 'low'
+                  ? t('products.low_stock_label')
+                  : undefined;
+            return tip ? `${tip} · ${exact}` : exact;
+          })()}
         >
           {tone !== 'ok' ? <AlertTriangle className="h-3 w-3 shrink-0" aria-hidden /> : null}
-          <span>{formatNumberUZ(product.current_stock)}</span>
+          <span>
+            {formatQuantity(
+              Number(product.current_stock) || 0,
+              (product as any).base_unit || product.unit || 'pcs',
+            )}
+          </span>
         </div>
         {tone === 'out' ? (
           <div className="truncate text-[10px] leading-tight text-destructive">
@@ -217,32 +263,88 @@ const ProductVirtualRow = memo(function ProductVirtualRow({
 
       {/* Actions */}
       <div className="flex justify-end gap-0.5">
-        <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => onView(product.id)}>
-          <Eye className="h-4 w-4" />
-        </Button>
-        <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => onEdit(product.id)}>
-          <Pencil className="h-4 w-4" />
-        </Button>
-        {showRestore && onRestore ? (
-          <Button
-            variant="ghost"
-            size="icon"
-            className="h-8 w-8"
-            onClick={() => onRestore(product.id)}
-            title={t('products.restore')}
-          >
-            <RotateCcw className="h-4 w-4" />
-          </Button>
-        ) : (
-          <Button
-            variant="ghost"
-            size="icon"
-            className="h-8 w-8"
-            onClick={() => onDelete(product.id, product.name)}
-          >
-            <Trash2 className="h-4 w-4" />
-          </Button>
-        )}
+        <TooltipProvider delayDuration={300}>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button
+                variant="ghost"
+                size="icon"
+                className="h-8 w-8"
+                onClick={() => onView(product.id)}
+                aria-label={t('products.actions.view')}
+                title={t('products.actions.view')}
+              >
+                <Eye className="h-4 w-4" aria-hidden />
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent>{t('products.actions.view')}</TooltipContent>
+          </Tooltip>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button
+                variant="ghost"
+                size="icon"
+                className="h-8 w-8"
+                onClick={() => onEdit(product.id)}
+                aria-label={t('products.actions.edit')}
+                title={t('products.actions.edit')}
+              >
+                <Pencil className="h-4 w-4" aria-hidden />
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent>{t('products.actions.edit')}</TooltipContent>
+          </Tooltip>
+          {onHistory ? (
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="h-8 w-8"
+                  onClick={() => onHistory(product.id)}
+                  aria-label={t('products.actions.history')}
+                  title={t('products.actions.history')}
+                >
+                  <History className="h-4 w-4" aria-hidden />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>{t('products.actions.history')}</TooltipContent>
+            </Tooltip>
+          ) : null}
+          {showRestore && onRestore ? (
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="h-8 w-8"
+                  onClick={() => onRestore(product.id)}
+                  aria-label={t('products.restore')}
+                  title={t('products.restore')}
+                >
+                  <RotateCcw className="h-4 w-4" aria-hidden />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>{t('products.restore')}</TooltipContent>
+            </Tooltip>
+          ) : (
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="h-8 w-8"
+                  onClick={() => onDelete(product.id, product.name)}
+                  aria-label={t('products.actions.deactivate')}
+                  title={t('products.actions.deactivate')}
+                >
+                  <Trash2 className="h-4 w-4" aria-hidden />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>{t('products.actions.deactivate')}</TooltipContent>
+            </Tooltip>
+          )}
+        </TooltipProvider>
       </div>
     </div>
   );
@@ -254,6 +356,7 @@ export default function VirtualizedProductsTable({
   onEdit,
   onDelete,
   onRestore,
+  onHistory,
   showRestore,
   statusFilter = 'active',
   t,
@@ -382,6 +485,7 @@ export default function VirtualizedProductsTable({
                   onEdit={onEdit}
                   onDelete={onDelete}
                   onRestore={onRestore}
+                  onHistory={onHistory}
                 />
               </div>
             );

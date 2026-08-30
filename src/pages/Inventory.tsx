@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -27,24 +27,44 @@ import { Search, Package, AlertTriangle } from 'lucide-react';
 import { highlightMatch } from '@/utils/searchHighlight';
 import StockAdjustmentDialog from '@/components/inventory/StockAdjustmentDialog';
 import { formatUnit } from '@/utils/formatters';
-import { formatNumberUZ } from '@/lib/format';
+import { formatQuantity } from '@/utils/quantity';
 import { useSessionSearchParams } from '@/hooks/useSessionSearchParams';
-import { createBackNavigationState } from '@/lib/pageState';
+import { useMainScrollRestoration } from '@/hooks/useMainScrollRestoration';
+import { buildCurrentPath } from '@/lib/pageState';
+import { listSessionStorageKey, withReturnToPath } from '@/lib/listState';
+import { useInventoryListStore } from '@/store/inventoryListStore';
 import { useTranslation } from 'react-i18next';
+import { filterProductsBySearchTerm } from '@/lib/productSearchMatch';
+import { extractHttpStatus, reportApiFailure } from '@/lib/apiFailureTelemetry';
+import { useAuth } from '@/contexts/AuthContext';
 
 export default function Inventory() {
   const navigate = useNavigate();
   const location = useLocation();
   const { toast } = useToast();
   const { t } = useTranslation();
+  const { user, profile } = useAuth();
+  const listAnchorRef = useRef<HTMLDivElement | null>(null);
   const { searchParams, updateParams } = useSessionSearchParams({
-    storageKey: 'inventory.filters.query',
+    storageKey: listSessionStorageKey(
+      'inventory',
+      user?.id,
+      (profile as { branch_id?: string } | null)?.branch_id,
+    ),
     trackedKeys: ['search', 'category', 'stock', 'sortBy'],
   });
+  const listQueryKey = searchParams.toString();
+  const storedQueryKey = useInventoryListStore((state) => state.queryKey);
+  const storedScrollTop = useInventoryListStore((state) => state.scrollTop);
+  const setStoredScrollTop = useInventoryListStore((state) => state.setScrollTop);
+  const resetForQuery = useInventoryListStore((state) => state.resetForQuery);
+  const restoredScrollTop = storedQueryKey === listQueryKey ? storedScrollTop : 0;
   
   const [products, setProducts] = useState<ProductWithCategory[]>([]);
   const [categories, setCategories] = useState<Category[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [lastUpdatedAt, setLastUpdatedAt] = useState<Date | null>(null);
   const searchTerm = searchParams.get('search') || '';
   const [searchDebounced, setSearchDebounced] = useState('');
   const categoryFilter = searchParams.get('category') || 'all';
@@ -59,7 +79,20 @@ export default function Inventory() {
     revision_number: string;
   } | null>(null);
 
-  // Helper: Get stock from product data (single source of truth - from IPC)
+  useEffect(() => {
+    if (storedQueryKey !== listQueryKey) {
+      resetForQuery(listQueryKey);
+    }
+  }, [storedQueryKey, listQueryKey, resetForQuery]);
+
+  const { saveScroll } = useMainScrollRestoration({
+    scrollTop: restoredScrollTop,
+    setScrollTop: setStoredScrollTop,
+    ready: !loading,
+    anchorRef: listAnchorRef,
+  });
+
+  // Helper: Get stock from product data
   // CRITICAL FIX: Use stock_available (real-time from inventory_movements) instead of current_stock
   const getCurrentStock = (product: ProductWithCategory): number => {
     return product.stock_available ?? product.available_stock ?? product.current_stock ?? product.stock_quantity ?? 0;
@@ -75,6 +108,7 @@ export default function Inventory() {
   const loadData = useCallback(async (opts?: { append?: boolean; pageOverride?: number }) => {
     try {
       setLoading(true);
+      setLoadError(null);
       const effectivePage = opts?.pageOverride ?? 0;
       const offset = effectivePage * PAGE_SIZE;
 
@@ -107,17 +141,33 @@ export default function Inventory() {
       setCategories(categoriesData);
       setPage(effectivePage);
       setHasMore(Array.isArray(productsData) && productsData.length >= PAGE_SIZE);
+      setLastUpdatedAt(new Date());
+      setLoadError(null);
     } catch (error) {
       console.error('Error loading data:', error);
+      // Do NOT clear existing table data on API error/timeout.
+      const httpCode = extractHttpStatus(error);
+      reportApiFailure({
+        page: 'Inventory',
+        apiUrl: 'pos:products:list',
+        httpCode,
+        userRole: user?.role || null,
+        message: error instanceof Error ? error.message : String(error),
+      });
+      setLoadError(t('inventory.load_failed_body', {
+        defaultValue: 'Server vaqtincha javob bermayapti',
+      }));
       toast({
-        title: 'Xatolik',
-        description: "Ombor ma'lumotlarini yuklab bo'lmadi",
+        title: t('inventory.load_failed_title', { defaultValue: "Ma'lumot yuklanmadi" }),
+        description: t('inventory.load_failed_body', {
+          defaultValue: 'Server vaqtincha javob bermayapti',
+        }),
         variant: 'destructive',
       });
     } finally {
       setLoading(false);
     }
-  }, [searchDebounced, categoryFilter, stockFilter, sortBy, toast]);
+  }, [searchDebounced, categoryFilter, stockFilter, sortBy, toast, t, user?.role]);
 
   useEffect(() => {
     const handleProductUpdate = () => {
@@ -156,7 +206,8 @@ export default function Inventory() {
   }, [location.pathname]);
 
   // Products are loaded paginated + mostly filtered server-side via getProducts().
-  // Keep client-side filtering only for "in_stock" which backend doesn't explicitly support.
+  // Client-side search guard prevents showing non-matches while debounce/network lags.
+  // Keep client-side stock filter only for "in_stock" which backend doesn't explicitly support.
   const baseFilteredProducts =
     stockFilter === 'in_stock'
       ? products.filter((p) => {
@@ -165,12 +216,16 @@ export default function Inventory() {
         })
       : products;
 
+  const searchGuardedProducts = searchTerm.trim()
+    ? filterProductsBySearchTerm(baseFilteredProducts, searchTerm)
+    : baseFilteredProducts;
+
   // Optional client-side sorting for stock-based ordering (backend doesn't support it).
   const filteredProducts = (() => {
     const [sortField, sortDir] = String(sortBy || 'name-asc').split('-');
-    if (sortField !== 'stock') return baseFilteredProducts;
+    if (sortField !== 'stock') return searchGuardedProducts;
     const dir = sortDir === 'asc' ? 1 : -1;
-    return [...baseFilteredProducts].sort((a, b) => (getCurrentStock(a) - getCurrentStock(b)) * dir);
+    return [...searchGuardedProducts].sort((a, b) => (getCurrentStock(a) - getCurrentStock(b)) * dir);
   })();
 
   const lowStockCount = products.filter(
@@ -211,9 +266,8 @@ export default function Inventory() {
       });
       return;
     }
-    navigate(`/inventory/${product.id}`, {
-      state: createBackNavigationState(location),
-    });
+    saveScroll();
+    navigate(withReturnToPath(`/inventory/${product.id}`, buildCurrentPath(location)));
   };
 
   const handleAdjustStockClick = (e: React.MouseEvent, product: ProductWithCategory) => {
@@ -222,7 +276,7 @@ export default function Inventory() {
   };
 
   return (
-    <div className="w-full min-w-0 space-y-4">
+    <div className="w-full min-w-0 space-y-4" ref={listAnchorRef}>
       <PageBreadcrumb
         items={[
           { label: 'Bosh sahifa', href: '/' },
@@ -258,6 +312,7 @@ export default function Inventory() {
               variant="outline"
               className="h-8"
               onClick={() => navigate(`/inventory/revisions/${openRevision.id}`)}
+              aria-label={t('inventory_revision.open_banner_action')}
             >
               {t('inventory_revision.open_banner_action')}
             </Button>
@@ -423,14 +478,51 @@ export default function Inventory() {
           </CardTitle>
         </CardHeader>
         <CardContent className="px-0 pb-3 pt-0">
-          {loading ? (
+          {loading && products.length === 0 ? (
             <div className="py-10 text-center text-sm text-muted-foreground">Omborni yuklanmoqda...</div>
+          ) : loadError && products.length === 0 ? (
+            <div className="mx-4 my-8 space-y-3 rounded-lg border border-destructive/30 bg-destructive/5 py-10 text-center">
+              <p className="text-sm font-medium text-destructive">
+                {t('inventory.load_failed_title', { defaultValue: "Ma'lumot yuklanmadi" })}
+              </p>
+              <p className="text-sm text-muted-foreground">{loadError}</p>
+              {lastUpdatedAt && (
+                <p className="text-xs text-muted-foreground">
+                  {t('inventory.last_updated', {
+                    defaultValue: 'Oxirgi yangilanish',
+                  })}
+                  : {lastUpdatedAt.toLocaleString()}
+                </p>
+              )}
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                onClick={() => void loadData({ append: false, pageOverride: 0 })}
+              >
+                {t('common.retry', { defaultValue: 'Qayta urinish' })}
+              </Button>
+            </div>
           ) : filteredProducts.length === 0 ? (
             <div className="mx-4 my-8 rounded-lg border bg-muted/20 py-10 text-center text-sm text-muted-foreground">
               Filtrga mos mahsulotlar topilmadi
             </div>
           ) : (
             <>
+              {loadError && (
+                <div className="mx-4 mb-2 flex flex-wrap items-center justify-between gap-2 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-100">
+                  <span>{loadError}</span>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    className="h-7"
+                    onClick={() => void loadData({ append: false, pageOverride: 0 })}
+                  >
+                    {t('common.retry', { defaultValue: 'Qayta urinish' })}
+                  </Button>
+                </div>
+              )}
               <div className="overflow-x-auto">
                 <Table>
                   <TableHeader>
@@ -447,8 +539,13 @@ export default function Inventory() {
                   <TableBody>
                     {filteredProducts.map((product) => {
                       const currentStock = getCurrentStock(product);
-                      const isLowStock = currentStock > 0 && currentStock <= product.min_stock_level;
+                      const minLevel = Number(product.min_stock_level) || 0;
                       const isOutOfStock = currentStock === 0;
+                      const isAtMin =
+                        minLevel > 0 && Math.abs(currentStock - minLevel) < 0.0001;
+                      const isBelowMin =
+                        minLevel > 0 && currentStock > 0 && currentStock < minLevel;
+                      const isLowStock = isAtMin || isBelowMin;
 
                       return (
                         <TableRow
@@ -484,18 +581,29 @@ export default function Inventory() {
                                     : 'font-medium text-green-600 dark:text-green-400'
                               }`}
                             >
-                              {formatNumberUZ(currentStock)}
+                              {formatQuantity(Number(currentStock) || 0, product.unit)}
                             </span>
                           </TableCell>
                           <TableCell className="py-2 text-xs tabular-nums text-muted-foreground">
                             {Number(product.min_stock_level) > 0
-                              ? formatNumberUZ(product.min_stock_level)
+                              ? formatQuantity(Number(product.min_stock_level) || 0, product.unit)
                               : '—'}
                           </TableCell>
                           <TableCell className="py-2">
                             {isOutOfStock ? (
                               <Badge variant="destructive" className="px-1.5 py-0 text-[10px] font-normal sm:text-xs">
                                 Omborda yo'q
+                              </Badge>
+                            ) : isBelowMin ? (
+                              <Badge variant="destructive" className="px-1.5 py-0 text-[10px] font-normal sm:text-xs">
+                                {t('inventory.stock_critical', { defaultValue: 'Kritik kam' })}
+                              </Badge>
+                            ) : isAtMin ? (
+                              <Badge
+                                variant="outline"
+                                className="border-yellow-400 px-1.5 py-0 text-[10px] font-normal text-yellow-800 dark:border-yellow-600 dark:text-yellow-400 sm:text-xs"
+                              >
+                                {t('inventory.stock_at_min', { defaultValue: 'Minimalda' })}
                               </Badge>
                             ) : isLowStock ? (
                               <Badge
@@ -516,6 +624,25 @@ export default function Inventory() {
                               size="sm"
                               className="h-8 px-2 text-xs"
                               disabled={!!openRevision}
+                              aria-label={
+                                openRevision
+                                  ? t('inventory_revision.adjust_blocked_aria', {
+                                      defaultValue:
+                                        'Qo‘lda to‘g‘rilash bloklangan — ochiq reviziya bor',
+                                    })
+                                  : t('inventory.adjust_stock_aria', {
+                                      defaultValue: 'Qoldiqni to‘g‘rilash',
+                                    })
+                              }
+                              title={
+                                openRevision
+                                  ? t('inventory_revision.open_banner_body', {
+                                      number: openRevision.revision_number,
+                                    })
+                                  : t('inventory.adjust_stock_aria', {
+                                      defaultValue: 'Qoldiqni to‘g‘rilash',
+                                    })
+                              }
                               onClick={(e) => handleAdjustStockClick(e, product)}
                             >
                               Qoldiqni to'g'rilash

@@ -12,6 +12,10 @@ import {
   getQuantityMin,
   isFractionalUnit,
 } from '@/utils/quantity';
+import {
+  filterProductsBySearchTerm,
+  productMatchesSearchTerm,
+} from '@/lib/productSearchMatch';
 
 export const POS_QUICK_PRODUCT_IDS_KEY = 'pos:quickProductIds';
 export const MAX_POS_QUICK_PRODUCTS = 8;
@@ -213,19 +217,17 @@ export const normalizeArticle = (value: string) =>
 
 export const normalizeText = (value: string) => String(value || '').trim().toLowerCase();
 
-/** POS mahsulot qidiruvi: nom, SKU, shtrix-kod, artikul, brend */
+/** POS mahsulot qidiruvi: exact SKU/barcode first, then fuzzy name/partial. */
 export function productMatchesPosTextFilter(product: Product, term: string): boolean {
-  const q = normalizeText(term);
-  if (!q) return true;
-  const article = normalizeArticle(String(product.article ?? ''));
-  const brand = normalizeText(String(product.brand ?? ''));
-  return (
-    product.name.toLowerCase().includes(q) ||
-    String(product.sku || '').toLowerCase().includes(q) ||
-    String((product as { barcode?: string | null }).barcode || '').toLowerCase().includes(q) ||
-    (article.length > 0 && article.includes(q.replace(/[\s\-_]/g, ''))) ||
-    (brand.length > 0 && brand.includes(q))
-  );
+  return productMatchesSearchTerm(product, term);
+}
+
+/** Filter POS product lists with exact-code precedence (suppress unrelated contains hits). */
+export function filterPosProductsBySearchTerm<T extends Product>(
+  products: T[],
+  term: string,
+): T[] {
+  return filterProductsBySearchTerm(products, term);
 }
 
 /** Compact secondary codes for POS lists/cart: SKU · Artikul · Brend (non-empty only). */

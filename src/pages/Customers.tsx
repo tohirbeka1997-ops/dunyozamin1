@@ -67,20 +67,30 @@ import { useDebounce } from '@/hooks/use-debounce';
 import { formatDate } from '@/lib/datetime';
 import { useSessionSearchParams } from '@/hooks/useSessionSearchParams';
 import { useMainScrollRestoration } from '@/hooks/useMainScrollRestoration';
-import { createBackNavigationState } from '@/lib/pageState';
+import { createBackNavigationState, buildCurrentPath } from '@/lib/pageState';
 import { useCustomersListStore } from '@/store/customersListStore';
+import {
+  clampListPage,
+  listSessionStorageKey,
+  pageToZeroBasedIndex,
+  parseListPageParam,
+  withReturnToPath,
+} from '@/lib/listState';
 
 export default function Customers() {
   const { t } = useTranslation();
   const navigate = useNavigate();
   const location = useLocation();
   const { toast } = useToast();
-  const { user, loading: authLoading } = useAuth();
+  const { user, profile, loading: authLoading } = useAuth();
+  const isAdmin = profile?.role === 'admin';
+  const canDelete = profile?.role === 'admin' || profile?.role === 'manager';
+  const canEdit = !!profile?.role;
   const [customers, setCustomers] = useState<Customer[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<Error | null>(null);
   const { updateParams, searchParams } = useSessionSearchParams({
-    storageKey: 'customers.filters.query',
+    storageKey: listSessionStorageKey('customers', user?.id, (profile as { branch_id?: string } | null)?.branch_id),
     trackedKeys: ['search', 'type', 'status', 'sortBy', 'sortOrder', 'page', 'pageSize'],
   });
   const searchTerm = searchParams.get('search') || '';
@@ -89,7 +99,9 @@ export default function Customers() {
   const statusFilter = searchParams.get('status') || 'all';
   const sortBy = (searchParams.get('sortBy') || 'created_at') as 'created_at' | 'balance' | 'last_order_date' | 'total_sales' | 'name';
   const sortOrder = (searchParams.get('sortOrder') || 'desc') as 'asc' | 'desc';
-  const page = Math.max(0, Number(searchParams.get('page') || 0) || 0);
+  /** URL page is 1-based for users (legacy page=0 → 1). */
+  const page = parseListPageParam(searchParams.get('page'), 1);
+  const pageIndex = pageToZeroBasedIndex(page);
   const pageSizeRaw = Number(searchParams.get('pageSize') || 50) || 50;
   const pageSize = [25, 50, 100].includes(pageSizeRaw) ? pageSizeRaw : 50;
   const [paymentDialogOpen, setPaymentDialogOpen] = useState(false);
@@ -183,14 +195,21 @@ export default function Customers() {
     }
     if (prevFilterKeyRef.current !== filterKey) {
       prevFilterKeyRef.current = filterKey;
-      updateParams({ page: '0' });
+      // Filter/sort/size change → reset to first page (1-based URL)
+      updateParams({ page: '1' });
     }
   }, [filterKey, updateParams]);
 
   useEffect(() => {
-    const maxPage = Math.max(0, Math.ceil(customers.length / pageSize) - 1);
-    if (page > maxPage) updateParams({ page: String(maxPage) });
-  }, [customers.length, pageSize, page]);
+    // Never clamp while loading — empty list would force page→1 and wipe deep-links / back nav
+    const next = clampListPage({
+      page,
+      totalItems: customers.length,
+      pageSize,
+      loading,
+    });
+    if (next !== page) updateParams({ page: String(next) });
+  }, [loading, customers.length, pageSize, page, updateParams]);
 
   const handleDelete = async (id: string, name: string) => {
     try {
@@ -253,7 +272,7 @@ export default function Customers() {
   };
 
   const totalPages = Math.max(1, Math.ceil(customers.length / pageSize));
-  const pagedCustomers = customers.slice(page * pageSize, page * pageSize + pageSize);
+  const pagedCustomers = customers.slice(pageIndex * pageSize, pageIndex * pageSize + pageSize);
 
   const getStatusBadge = (status: string) => {
     return status === 'active' ? (
@@ -294,7 +313,18 @@ export default function Customers() {
 
       // Check if window.posApi exists (Electron)
       if (typeof window !== 'undefined' && (window as any).posApi?.customers?.exportCsv) {
-        const result = await (window as any).posApi.customers.exportCsv(filters);
+        if (!isAdmin) {
+          toast({
+            title: 'Xatolik',
+            description: t('customers.export_admin_only'),
+            variant: 'destructive',
+          });
+          return;
+        }
+        const result = await (window as any).posApi.customers.exportCsv({
+          ...filters,
+          actorUserId: user?.id || profile?.id || null,
+        });
         
         if (result.cancelled) {
           // User cancelled, no toast needed
@@ -355,7 +385,8 @@ export default function Customers() {
             size="sm"
             className="h-8 text-xs"
             onClick={handleExport}
-            disabled={exporting || loading}
+            disabled={exporting || loading || !isAdmin}
+            title={!isAdmin ? t('customers.export_admin_only') : undefined}
           >
             {exporting ? (
               <>
@@ -372,7 +403,7 @@ export default function Customers() {
           <Button
             size="sm"
             className="h-8 text-xs"
-            onClick={() => navigate('/customers/new', { state: createBackNavigationState(location) })}
+            onClick={() => navigate(withReturnToPath('/customers/new', buildCurrentPath(location)))}
           >
             <Plus className="mr-2 h-3.5 w-3.5" />
             Yangi mijoz qo'shish
@@ -476,7 +507,7 @@ export default function Customers() {
               <Button
                 size="sm"
                 className="mt-4 h-8 text-xs"
-                onClick={() => navigate('/customers/new', { state: createBackNavigationState(location) })}
+                onClick={() => navigate(withReturnToPath('/customers/new', buildCurrentPath(location)))}
               >
                 <Plus className="mr-2 h-3.5 w-3.5" />
                 Birinchi mijozni qo'shish
@@ -547,9 +578,10 @@ export default function Customers() {
 
                     const handleRowClick = () => {
                       saveScroll();
-                      navigate(`/customers/${customer.id}`, {
-                        state: createBackNavigationState(location),
-                      });
+                      navigate(
+                        withReturnToPath(`/customers/${customer.id}`, buildCurrentPath(location)),
+                        { state: createBackNavigationState(location) },
+                      );
                     };
 
                     const handleActionClick = (e: React.MouseEvent) => {
@@ -573,11 +605,19 @@ export default function Customers() {
                           </div>
                         </TableCell>
                         <TableCell className="max-w-[9rem] truncate py-2 text-xs">
-                          {customer.phone
-                            ? debouncedSearchTerm
-                              ? highlightMatch(customer.phone, debouncedSearchTerm)
-                              : customer.phone
-                            : '-'}
+                          {customer.phone ? (
+                            <a
+                              href={`tel:${String(customer.phone).replace(/[^\d+]/g, '')}`}
+                              className="text-primary underline-offset-2 hover:underline"
+                              onClick={(e) => e.stopPropagation()}
+                            >
+                              {debouncedSearchTerm
+                                ? highlightMatch(customer.phone, debouncedSearchTerm)
+                                : customer.phone}
+                            </a>
+                          ) : (
+                            '-'
+                          )}
                         </TableCell>
                         <TableCell className="py-2">{getTypeBadge(customer.type)}</TableCell>
                         <TableCell className="py-2 text-right text-xs tabular-nums font-medium">
@@ -630,8 +670,15 @@ export default function Customers() {
 
                             <DropdownMenu>
                               <DropdownMenuTrigger asChild>
-                                <Button variant="ghost" size="icon" className="h-8 w-8 shrink-0" onClick={handleActionClick}>
-                                  <MoreVertical className="h-4 w-4" />
+                                <Button
+                                  variant="ghost"
+                                  size="icon"
+                                  className="h-8 w-8 shrink-0"
+                                  onClick={handleActionClick}
+                                  aria-label={t('customers.row_actions')}
+                                  title={t('customers.row_actions')}
+                                >
+                                  <MoreVertical className="h-4 w-4" aria-hidden="true" />
                                 </Button>
                               </DropdownMenuTrigger>
                               <DropdownMenuContent align="end" onClick={handleActionClick}>
@@ -663,26 +710,32 @@ export default function Customers() {
                                   onClick={(e) => {
                                     e.stopPropagation();
                                     saveScroll();
-                                    navigate(`/customers/${customer.id}`, {
-                                      state: createBackNavigationState(location),
-                                    });
+                                    navigate(
+                                      withReturnToPath(`/customers/${customer.id}`, buildCurrentPath(location)),
+                                      { state: createBackNavigationState(location) },
+                                    );
                                   }}
                                 >
                                   <Eye className="h-4 w-4 mr-2" />
                                   Ko'rish
                                 </DropdownMenuItem>
+                                {canEdit && (
                                 <DropdownMenuItem 
                                   onClick={(e) => {
                                     e.stopPropagation();
                                     saveScroll();
-                                    navigate(`/customers/${customer.id}/edit`, {
-                                      state: createBackNavigationState(location),
-                                    });
+                                    navigate(
+                                      withReturnToPath(`/customers/${customer.id}/edit`, buildCurrentPath(location)),
+                                      { state: createBackNavigationState(location) },
+                                    );
                                   }}
                                 >
                                   <Edit className="h-4 w-4 mr-2" />
                                   Tahrirlash
                                 </DropdownMenuItem>
+                                )}
+                                {canDelete && (
+                                  <>
                                 <DropdownMenuSeparator />
                                 <AlertDialog>
                                   <AlertDialogTrigger asChild>
@@ -700,7 +753,7 @@ export default function Customers() {
                                     <AlertDialogHeader>
                                       <AlertDialogTitle>Mijozni o'chirish?</AlertDialogTitle>
                                       <AlertDialogDescription>
-                                        "{customer.name}" ni o'chirishni xohlaysizmi? Agar bu mijozning buyurtmalari bo'lsa, ular faol emas deb belgilanadi.
+                                        "{customer.name}" ni o'chirishni xohlaysizmi? Agar bu mijozning buyurtmalari yoki tarixi bo'lsa, u faol emas deb belgilanadi (o'chirilmaydi).
                                       </AlertDialogDescription>
                                     </AlertDialogHeader>
                                     <AlertDialogFooter>
@@ -713,6 +766,8 @@ export default function Customers() {
                                     </AlertDialogFooter>
                                   </AlertDialogContent>
                                 </AlertDialog>
+                                  </>
+                                )}
                               </DropdownMenuContent>
                             </DropdownMenu>
                           </div>
@@ -725,12 +780,12 @@ export default function Customers() {
             </div>
             <div className="flex items-center justify-between px-4 pt-3">
               <div className="text-xs text-muted-foreground">
-                Jami: {customers.length} ta • Sahifa {page + 1} / {totalPages}
+                Jami: {customers.length} ta • Sahifa {page} / {totalPages}
               </div>
               <div className="flex items-center gap-2">
                 <Select
                   value={String(pageSize)}
-                  onValueChange={(v) => updateParams({ pageSize: String(Number(v) || 50), page: '0' })}
+                  onValueChange={(v) => updateParams({ pageSize: String(Number(v) || 50), page: '1' })}
                 >
                   <SelectTrigger className="h-8 w-[100px] text-xs">
                     <SelectValue />
@@ -745,8 +800,8 @@ export default function Customers() {
                   variant="outline"
                   size="sm"
                   className="h-8 text-xs"
-                  onClick={() => updateParams({ page: String(Math.max(0, page - 1)) })}
-                  disabled={page <= 0}
+                  onClick={() => updateParams({ page: String(Math.max(1, page - 1)) })}
+                  disabled={page <= 1}
                 >
                   Oldingi
                 </Button>
@@ -754,8 +809,8 @@ export default function Customers() {
                   variant="outline"
                   size="sm"
                   className="h-8 text-xs"
-                  onClick={() => updateParams({ page: String(Math.min(totalPages - 1, page + 1)) })}
-                  disabled={page >= totalPages - 1}
+                  onClick={() => updateParams({ page: String(Math.min(totalPages, page + 1)) })}
+                  disabled={page >= totalPages}
                 >
                   Keyingi
                 </Button>

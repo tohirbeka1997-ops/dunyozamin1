@@ -8,6 +8,7 @@ import {
 import { Crown } from 'lucide-react';
 import { formatCustomerBalance } from '@/lib/format';
 import { getCustomerBalances } from '@/lib/currency';
+import { phoneToTelHref } from '@/lib/posHardening';
 import type { Customer } from '@/types/database';
 
 interface CustomerInfoBadgeProps {
@@ -19,6 +20,7 @@ export default function CustomerInfoBadge({ customer }: CustomerInfoBadgeProps) 
   const balances = getCustomerBalances(customer);
   const uzsInfo = formatCustomerBalance(balances.uzs, 'UZS');
   const usdInfo = formatCustomerBalance(balances.usd, 'USD');
+  const telHref = phoneToTelHref(customer.phone);
 
   const getBadgeInfo = () => {
     if (isVIP) {
@@ -75,7 +77,20 @@ export default function CustomerInfoBadge({ customer }: CustomerInfoBadgeProps) 
               <div className="space-y-1 text-sm">
                 <p className="font-semibold">{customer.name}</p>
                 {customer.phone && (
-                  <p className="text-muted-foreground">Phone: {customer.phone}</p>
+                  <p className="text-muted-foreground">
+                    Phone:{' '}
+                    {telHref ? (
+                      <a
+                        href={telHref}
+                        className="underline underline-offset-2 hover:text-foreground"
+                        onClick={(e) => e.stopPropagation()}
+                      >
+                        {customer.phone}
+                      </a>
+                    ) : (
+                      customer.phone
+                    )}
+                  </p>
                 )}
                 {customer.email && (
                   <p className="text-muted-foreground">Email: {customer.email}</p>

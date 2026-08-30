@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -34,16 +34,32 @@ import { useToast } from '@/hooks/use-toast';
 import { formatLedgerMoney } from '@/lib/currency';
 import { formatDate } from '@/lib/datetime';
 import { useSessionSearchParams } from '@/hooks/useSessionSearchParams';
-import { createBackNavigationState } from '@/lib/pageState';
+import { useMainScrollRestoration } from '@/hooks/useMainScrollRestoration';
+import { buildCurrentPath } from '@/lib/pageState';
+import { listSessionStorageKey, withReturnToPath } from '@/lib/listState';
+import { useSuppliersListStore } from '@/store/suppliersListStore';
+import { useAuth } from '@/contexts/AuthContext';
 
 export default function Suppliers() {
   const navigate = useNavigate();
   const location = useLocation();
   const { toast } = useToast();
+  const { user, profile } = useAuth();
+  const listAnchorRef = useRef<HTMLDivElement | null>(null);
   const { searchParams, updateParams } = useSessionSearchParams({
-    storageKey: 'suppliers.filters.query',
+    storageKey: listSessionStorageKey(
+      'suppliers',
+      user?.id,
+      (profile as { branch_id?: string } | null)?.branch_id,
+    ),
     trackedKeys: ['search', 'status', 'sortBy'],
   });
+  const listQueryKey = searchParams.toString();
+  const storedQueryKey = useSuppliersListStore((state) => state.queryKey);
+  const storedScrollTop = useSuppliersListStore((state) => state.scrollTop);
+  const setStoredScrollTop = useSuppliersListStore((state) => state.setScrollTop);
+  const resetForQuery = useSuppliersListStore((state) => state.resetForQuery);
+  const restoredScrollTop = storedQueryKey === listQueryKey ? storedScrollTop : 0;
   const [suppliers, setSuppliers] = useState<SupplierWithBalance[]>([]);
   const [loading, setLoading] = useState(true);
   const searchTerm = searchParams.get('search') || '';
@@ -53,7 +69,25 @@ export default function Suppliers() {
   const [supplierToDelete, setSupplierToDelete] = useState<SupplierWithBalance | null>(null);
   const [deleting, setDeleting] = useState(false);
 
-  // Reload suppliers when status filter changes or when navigating back to this page
+  useEffect(() => {
+    if (storedQueryKey !== listQueryKey) {
+      resetForQuery(listQueryKey);
+    }
+  }, [storedQueryKey, listQueryKey, resetForQuery]);
+
+  const { saveScroll } = useMainScrollRestoration({
+    scrollTop: restoredScrollTop,
+    setScrollTop: setStoredScrollTop,
+    ready: !loading,
+    anchorRef: listAnchorRef,
+  });
+
+  const navigateWithReturnTo = (detailPath: string) => {
+    saveScroll();
+    navigate(withReturnToPath(detailPath, buildCurrentPath(location)));
+  };
+
+  // Reload suppliers when status filter changes
   useEffect(() => {
     // Always reload when pathname changes (including navigation from form)
     loadSuppliers();
@@ -223,7 +257,7 @@ export default function Suppliers() {
   }
 
   return (
-    <div className="w-full min-w-0 space-y-4">
+    <div className="w-full min-w-0 space-y-4" ref={listAnchorRef}>
       <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
         <div className="min-w-0 space-y-0.5">
           <h1 className="page-heading">Yetkazib beruvchilar</h1>
@@ -232,7 +266,7 @@ export default function Suppliers() {
         <Button
           size="sm"
           className="h-8 shrink-0 text-xs"
-          onClick={() => navigate('/suppliers/new', { state: createBackNavigationState(location) })}
+          onClick={() => navigateWithReturnTo('/suppliers/new')}
         >
           <Plus className="mr-2 h-3.5 w-3.5" />
           Yangi yetkazib beruvchi
@@ -312,7 +346,7 @@ export default function Suppliers() {
               <Button
                 size="sm"
                 className="mt-4 h-8 text-xs"
-                onClick={() => navigate('/suppliers/new', { state: createBackNavigationState(location) })}
+                onClick={() => navigateWithReturnTo('/suppliers/new')}
               >
                 <Plus className="mr-2 h-3.5 w-3.5" />
                 Birinchi yetkazib beruvchini yaratish
@@ -337,11 +371,7 @@ export default function Suppliers() {
                     <TableRow
                       key={supplier.id}
                       className="cursor-pointer text-sm hover:bg-muted/50"
-                      onClick={() =>
-                        navigate(`/suppliers/${supplier.id}`, {
-                          state: createBackNavigationState(location),
-                        })
-                      }
+                      onClick={() => navigateWithReturnTo(`/suppliers/${supplier.id}`)}
                     >
                       <TableCell className="max-w-[14rem] truncate py-2 font-medium">{supplier.name}</TableCell>
                       <TableCell className="max-w-[10rem] truncate py-2 text-xs">{supplier.phone || '-'}</TableCell>
@@ -371,11 +401,10 @@ export default function Suppliers() {
                             className="h-8 w-8"
                             onClick={(e) => {
                               e.stopPropagation();
-                              navigate(`/suppliers/${supplier.id}/edit`, {
-                                state: createBackNavigationState(location),
-                              });
+                              navigateWithReturnTo(`/suppliers/${supplier.id}/edit`);
                             }}
                             title="Tahrirlash"
+                            aria-label="Yetkazib beruvchini tahrirlash"
                           >
                             <Edit className="h-4 w-4" />
                           </Button>
@@ -388,6 +417,8 @@ export default function Suppliers() {
                               handleDeleteClick(supplier);
                             }}
                             title="O'chirish"
+                            aria-label="Yetkazib beruvchini o'chirish"
+                            aria-disabled={deleting ? true : undefined}
                           >
                             <Trash2 className="h-4 w-4" />
                           </Button>

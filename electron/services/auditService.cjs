@@ -108,10 +108,24 @@ class AuditService {
       action: 'adjust',
       entity_type: 'inventory',
       entity_id: adjustment.id,
+      old_values: {
+        items: (adjustment.items || []).map((it) => ({
+          product_id: it.product_id,
+          before_quantity: it.before_quantity,
+        })),
+      },
       new_values: {
         adjustment_number: adjustment.adjustment_number,
         warehouse_id: adjustment.warehouse_id,
+        reason: adjustment.reason,
         items_count: adjustment.items?.length || 0,
+        items: (adjustment.items || []).map((it) => ({
+          product_id: it.product_id,
+          product_name: it.product_name,
+          before_quantity: it.before_quantity,
+          adjustment_quantity: it.adjustment_quantity,
+          after_quantity: it.after_quantity,
+        })),
       },
       user_id: userId,
     });

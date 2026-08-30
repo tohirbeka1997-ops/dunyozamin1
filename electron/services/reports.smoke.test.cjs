@@ -208,7 +208,11 @@ async function runAsync(name, fn, validate) {
     runSync('profitAndLossSQL', () => reports.getProfitAndLossSQL(filters), (r) => {
       assertObject(r, 'profitAndLossSQL');
     });
-    runSync('cashFlow', () => reports.getCashFlow(filters), assertArray);
+    runSync('cashFlow', () => reports.getCashFlow(filters), (r) => {
+      assertObject(r, 'cashFlow');
+      assert.ok(Array.isArray(r.rows), 'cashFlow.rows');
+      assert.ok(Array.isArray(r.by_source), 'cashFlow.by_source');
+    });
     runSync('cashDiscrepancies', () => reports.getCashDiscrepancies(filters), assertArray);
     runSync('aging', () => reports.getAging({ as_of_date: today }), assertObject);
     runSync('purchaseSaleSpread', () => reports.getPurchaseSaleSpread(filters), assertArray);

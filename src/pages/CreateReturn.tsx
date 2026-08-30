@@ -1,6 +1,6 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
-import { useNavigate, useSearchParams } from 'react-router-dom';
+import { useNavigate, useSearchParams, useLocation } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
@@ -22,20 +22,24 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table';
-import {
-  getOrders,
-  getOrderForReturn,
-  createSalesReturn,
-  getProducts,
-  getCustomers,
-  getProductTierPrice,
-  getSalesReturnById,
-  getSettingsByCategory,
-} from '@/db/api';
+import { getOrders, getOrderForReturn, createSalesReturn, getProducts, getCustomers, getProductTierPrice, getSalesReturnById, getSettingsByCategory, getShiftSummary } from '@/db/api';
 import type { Customer, OrderWithDetails, Product, CompanySettings } from '@/types/database';
-import { Search, ArrowLeft, Package, AlertCircle } from 'lucide-react';
+import { Search, ArrowLeft, Package, AlertCircle, Paperclip } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
+import { ToastAction } from '@/components/ui/toast';
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from '@/components/ui/alert-dialog';
 import { useInventoryStore } from '@/store/inventoryStore';
+import { readLocalImageFile, uploadProductImage } from '@/lib/uploadProductImage';
+import { getElectronAPI, handleIpcResponse } from '@/utils/electron';
 import { useAuth } from '@/contexts/AuthContext';
 import { formatMoneyUZS, formatOrderMoney } from '@/lib/format';
 import { useQueryClient } from '@tanstack/react-query';
@@ -45,6 +49,10 @@ import { formatQuantity } from '@/utils/quantity';
 import { formatUnit } from '@/utils/formatters';
 import { printReturnReceipt } from '@/lib/receipts/printReturnReceipt';
 import { useReceiptSettings } from '@/hooks/useReceiptSettings';
+import { createBackNavigationState } from '@/lib/pageState';
+import { useFormListReturn } from '@/hooks/useFormListReturn';
+import { availableToReturnQty } from '@/lib/posHardening';
+import { useShiftStore } from '@/store/shiftStore';
 
 interface ReturnItem {
   product_id: string;
@@ -77,16 +85,31 @@ function buildReturnItems(orderData: any): ReturnItem[] {
   const itemsRaw = orderData.items || [];
   const orderDiscount = Number(orderData.discount_amount || orderData.discountAmount || 0) || 0;
   const preDiscountTotal = itemsRaw.reduce((sum: number, item: any) => {
-    const soldQty = Number(item.qty_sale || item.sold_quantity || item.quantity || item.qty) || 0;
+    const soldQty =
+      Number(item.qty_sale ?? item.sold_quantity ?? item.quantity ?? item.qty) || 0;
     const unitPrice = Number(item.unit_price || item.price) || 0;
     return sum + unitPrice * soldQty;
   }, 0);
 
   return itemsRaw.map((item: any) => {
-    const soldQty = Number(item.qty_sale || item.sold_quantity || item.quantity || item.qty) || 0;
-    const returnedQty = Number(item.returned_quantity || 0);
-    const remainingQty = Number(item.remaining_quantity || (soldQty - returnedQty));
-    const availableQty = remainingQty;
+    // Prefer sale qty; never treat remaining=0 as missing (backend used to coalesce 0→sold).
+    const soldQty =
+      Number(item.qty_sale ?? item.sold_quantity ?? item.quantity ?? item.qty) || 0;
+    const returnedQty = Number(item.returned_quantity ?? 0) || 0;
+    const computedAvailable = availableToReturnQty(soldQty, returnedQty);
+    const backendRemaining =
+      item.remaining_quantity != null && item.remaining_quantity !== ''
+        ? Number(item.remaining_quantity)
+        : computedAvailable;
+    // Clamp: never show returnable > sold−returned even if a field is stale/wrong.
+    const availableQty = Math.max(
+      0,
+      Math.min(
+        computedAvailable,
+        Number.isFinite(backendRemaining) ? backendRemaining : computedAvailable,
+      ),
+    );
+    const remainingQty = availableQty;
     const unitPrice = Number(item.unit_price || item.price) || 0;
     const basePrice = Number(item.base_price ?? item.basePrice ?? unitPrice);
     const ustaPrice = item.usta_price ?? item.ustaPrice ?? null;
@@ -172,26 +195,42 @@ export default function CreateReturn() {
   const { t } = useTranslation();
   const { toast } = useToast();
   const navigate = useNavigate();
+  const location = useLocation();
   const [searchParams] = useSearchParams();
-  const { profile } = useAuth();
+  const { profile, role } = useAuth();
+  const isManagerOrAdmin = role === 'admin' || role === 'manager';
+  const isSeniorOrAbove = role === 'admin' || role === 'manager' || role === 'senior_cashier';
   const { addMovement } = useInventoryStore();
   const queryClient = useQueryClient();
   const receiptSettings = useReceiptSettings();
+  const { leaveToList } = useFormListReturn({ fallbackListPath: '/returns' });
   const [companySettings, setCompanySettings] = useState<CompanySettings | null>(null);
   const [step, setStep] = useState(1);
   const [loading, setLoading] = useState(false);
+  const [confirmOpen, setConfirmOpen] = useState(false);
+  const [submitIntent, setSubmitIntent] = useState<'complete' | 'draft' | 'pending'>('complete');
+  const [returnIdempotencyKey, setReturnIdempotencyKey] = useState<string | null>(null);
   const [returnMode, setReturnMode] = useState<'order' | 'manual'>(
     searchParams.get('mode') === 'manual' ? 'manual' : 'order'
   );
+  const currentShift = useShiftStore((s) => s.currentShift);
+  const LARGE_RETURN_THRESHOLD = 500_000;
   
   // Step 1: Order Selection
   const [orders, setOrders] = useState<any[]>([]);
   const [searchTerm, setSearchTerm] = useState('');
   const [selectedOrder, setSelectedOrder] = useState<OrderWithDetails | null>(null);
+  const [paymentSummary, setPaymentSummary] = useState<{
+    primary?: string | null;
+    isMixed?: boolean;
+    allocation?: Array<{ method: string; amount: number }>;
+    methods?: string[];
+  } | null>(null);
   const [products, setProducts] = useState<Product[]>([]);
   const [customers, setCustomers] = useState<Customer[]>([]);
   const [productSearchTerm, setProductSearchTerm] = useState('');
   const [selectedCustomerId, setSelectedCustomerId] = useState<string>('none');
+  const [isVisitor, setIsVisitor] = useState(false);
   
   // Step 2: Return Items
   const [returnItems, setReturnItems] = useState<ReturnItem[]>([]);
@@ -199,7 +238,36 @@ export default function CreateReturn() {
   // Step 3: Additional Info
   const [reason, setReason] = useState('');
   const [notes, setNotes] = useState('');
+  const [attachmentNote, setAttachmentNote] = useState('');
+  const [attachmentFile, setAttachmentFile] = useState<File | null>(null);
+  const [attachmentSourcePath, setAttachmentSourcePath] = useState<string | null>(null);
+  const [approvalReason, setApprovalReason] = useState('');
+  const [methodMismatchReason, setMethodMismatchReason] = useState('');
   const [refundMethod, setRefundMethod] = useState<'cash' | 'card' | 'customer_account' | ''>('');
+  const [drawerExpectedCash, setDrawerExpectedCash] = useState<number | null>(null);
+
+  const isDirty = useMemo(
+    () =>
+      step > 1 ||
+      selectedOrder !== null ||
+      returnItems.some((item) => item.return_quantity > 0) ||
+      reason.trim() !== '' ||
+      notes.trim() !== '' ||
+      searchTerm.trim() !== '' ||
+      productSearchTerm.trim() !== '' ||
+      (returnMode === 'manual' && selectedCustomerId !== 'none'),
+    [
+      step,
+      selectedOrder,
+      returnItems,
+      reason,
+      notes,
+      searchTerm,
+      productSearchTerm,
+      returnMode,
+      selectedCustomerId,
+    ],
+  );
 
   useEffect(() => {
     loadOrders();
@@ -219,13 +287,53 @@ export default function CreateReturn() {
     setStep(1);
     setReturnItems([]);
     setSelectedOrder(null);
+    setPaymentSummary(null);
     setSearchTerm('');
     setProductSearchTerm('');
     setSelectedCustomerId('none');
+    setIsVisitor(false);
     setRefundMethod('');
     setReason('');
     setNotes('');
+    setAttachmentNote('');
+    setApprovalReason('');
+    setMethodMismatchReason('');
   }, [returnMode]);
+
+  useEffect(() => {
+    if (!currentShift?.id || refundMethod !== 'cash') {
+      setDrawerExpectedCash(null);
+      return;
+    }
+    let cancelled = false;
+    void getShiftSummary(String(currentShift.id))
+      .then((s: any) => {
+        if (cancelled) return;
+        setDrawerExpectedCash(Number(s?.expectedCash ?? s?.expected_cash ?? 0) || 0);
+      })
+      .catch(() => {
+        if (!cancelled) setDrawerExpectedCash(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [currentShift?.id, refundMethod]);
+
+  const normalizeRefundMethodKey = (m: string) => {
+    const v = String(m || '').toLowerCase();
+    if (v === 'credit' || v === 'customer_account' || v === 'store_credit') return 'customer_account';
+    if (v === 'card' || v === 'qr' || v === 'terminal') return 'card';
+    if (v === 'cash' || v === 'naqd') return 'cash';
+    return v;
+  };
+
+  const methodMismatch =
+    returnMode === 'order' &&
+    !!refundMethod &&
+    refundMethod !== 'customer_account' &&
+    Array.isArray(paymentSummary?.methods) &&
+    paymentSummary!.methods!.length > 0 &&
+    !paymentSummary!.methods!.map(normalizeRefundMethodKey).includes(normalizeRefundMethodKey(refundMethod));
 
   const loadOrders = async () => {
     try {
@@ -245,8 +353,12 @@ export default function CreateReturn() {
         console.log('[RETURN] Normalized first order:', normalized);
       }
       
-      // Filter for completed orders only
-      const completedOrders = data.filter((order: any) => order.status === 'completed');
+      // Completed sales only; fully returned orders are not selectable for another return.
+      const completedOrders = data.filter((order: any) => {
+        if (order.status !== 'completed') return false;
+        const rs = String(order.return_status || '').toLowerCase();
+        return rs !== 'fully_returned';
+      });
       setOrders(completedOrders);
       
       console.log(`[RETURN] Loaded ${completedOrders.length} completed orders`);
@@ -386,6 +498,7 @@ export default function CreateReturn() {
       });
       
       setSelectedOrder(orderData);
+      setPaymentSummary((orderData as any)?.payment_summary || null);
       
       // Initialize return items from order items
       // CRITICAL: Store orderItemId (order_items.id) so we can send it as order_item_id
@@ -406,9 +519,15 @@ export default function CreateReturn() {
       }
 
       if (!items.some((item) => item.available_quantity > 0)) {
-        throw new Error(
-          'Bu buyurtmadagi barcha mahsulotlar allaqachon qaytarilgan. Qolgan qaytariladigan miqdor yo‘q.'
-        );
+        // Still show lines (qty disabled) with localized fully-returned message.
+        setReturnItems(items);
+        setStep(2);
+        toast({
+          title: t('common.warning'),
+          description: t('sales_returns.create.all_items_already_returned'),
+          variant: 'destructive',
+        });
+        return;
       }
       
       setReturnItems(items);
@@ -478,6 +597,7 @@ export default function CreateReturn() {
       });
       
       setSelectedOrder(orderData);
+      setPaymentSummary((orderData as any)?.payment_summary || null);
       
       // Initialize return items from order items
       // CRITICAL: Store orderItemId (order_items.id) so we can send it as order_item_id
@@ -498,9 +618,14 @@ export default function CreateReturn() {
       }
 
       if (!items.some((item) => item.available_quantity > 0)) {
-        throw new Error(
-          'Bu buyurtmadagi barcha mahsulotlar allaqachon qaytarilgan. Qolgan qaytariladigan miqdor yo‘q.'
-        );
+        setReturnItems(items);
+        setStep(2);
+        toast({
+          title: t('common.warning'),
+          description: t('sales_returns.create.all_items_already_returned'),
+          variant: 'destructive',
+        });
+        return;
       }
       
       setReturnItems(items);
@@ -587,7 +712,8 @@ export default function CreateReturn() {
     return { subtotal, taxAmount, totalRefund };
   };
 
-  const handleSubmit = async () => {
+  const handleSubmit = (intent: 'complete' | 'draft' | 'pending' = 'complete') => {
+    setSubmitIntent(intent);
     if (returnMode === 'order' && !selectedOrder) {
       toast({
         title: t('common.error'),
@@ -596,9 +722,8 @@ export default function CreateReturn() {
       });
       return;
     }
-    
-    // Validate at least one item is being returned
-    const itemsToReturn = returnItems.filter(item => item.return_quantity > 0);
+
+    const itemsToReturn = returnItems.filter((item) => item.return_quantity > 0);
     if (itemsToReturn.length === 0) {
       toast({
         title: t('sales_returns.create.no_items_selected_title'),
@@ -607,8 +732,34 @@ export default function CreateReturn() {
       });
       return;
     }
-    
-    // Validate reason
+
+    // FE hard stop: never allow qty above available (sold − completed − pending).
+    const overLine = itemsToReturn.find(
+      (item) =>
+        !item.is_manual &&
+        Number(item.return_quantity) > Number(item.available_quantity) + 1e-9,
+    );
+    if (overLine) {
+      toast({
+        title: t('sales_returns.create.invalid_quantity_title'),
+        description: t('sales_returns.create.qty_exceeds_returnable', {
+          product: overLine.product_name,
+          available: overLine.available_quantity,
+        }),
+        variant: 'destructive',
+      });
+      return;
+    }
+
+    if (!itemsToReturn.some((item) => item.is_manual || item.available_quantity > 0)) {
+      toast({
+        title: t('common.warning'),
+        description: t('sales_returns.create.all_items_already_returned'),
+        variant: 'destructive',
+      });
+      return;
+    }
+
     if (!reason || reason.trim() === '') {
       toast({
         title: t('sales_returns.create.reason_required_title'),
@@ -617,8 +768,16 @@ export default function CreateReturn() {
       });
       return;
     }
-    
-    // Validate refund method
+
+    if (reason === 'other' && !notes.trim()) {
+      toast({
+        title: t('sales_returns.create.reason_required_title'),
+        description: t('sales_returns.create.other_reason_notes_required'),
+        variant: 'destructive',
+      });
+      return;
+    }
+
     if (!refundMethod) {
       toast({
         title: t('sales_returns.create.refund_method_required_title'),
@@ -627,8 +786,62 @@ export default function CreateReturn() {
       });
       return;
     }
-    
-    // Validate store credit requires a registered customer
+
+    const { totalRefund: refundCheck } = calculateTotals();
+
+    if (intent === 'complete' && refundMethod === 'cash' && !currentShift?.id) {
+      toast({
+        title: t('common.error'),
+        description: t('sales_returns.create.cash_requires_open_shift'),
+        variant: 'destructive',
+      });
+      return;
+    }
+
+    if (
+      intent === 'complete' &&
+      refundMethod === 'cash' &&
+      drawerExpectedCash != null &&
+      refundCheck > drawerExpectedCash + 0.009
+    ) {
+      toast({
+        title: t('common.error'),
+        description: t('sales_returns.create.insufficient_drawer_cash', {
+          need: refundCheck,
+          available: drawerExpectedCash,
+        }),
+        variant: 'destructive',
+      });
+      return;
+    }
+
+    if (returnMode === 'manual' && intent === 'complete' && !isManagerOrAdmin) {
+      toast({
+        title: t('common.error'),
+        description: t('sales_returns.create.orderless_manager_only'),
+        variant: 'destructive',
+      });
+      return;
+    }
+
+    if (returnMode === 'manual' && !notes.trim()) {
+      toast({
+        title: t('common.error'),
+        description: t('sales_returns.create.orderless_note_required'),
+        variant: 'destructive',
+      });
+      return;
+    }
+
+    if (returnMode === 'manual' && selectedCustomerId === 'none' && !isVisitor) {
+      toast({
+        title: t('common.error'),
+        description: t('sales_returns.create.orderless_customer_or_visitor'),
+        variant: 'destructive',
+      });
+      return;
+    }
+
     if (
       returnMode === 'order' &&
       refundMethod === 'customer_account' &&
@@ -650,10 +863,63 @@ export default function CreateReturn() {
       });
       return;
     }
-    
-    // Validate refund amount
-    const { totalRefund } = calculateTotals();
-    if (totalRefund <= 0) {
+
+    const isLarge = refundCheck >= LARGE_RETURN_THRESHOLD;
+    if (isLarge && !notes.trim()) {
+      toast({
+        title: t('common.error'),
+        description: t('sales_returns.create.large_amount_note_required', { threshold: LARGE_RETURN_THRESHOLD }),
+        variant: 'destructive',
+      });
+      return;
+    }
+
+    if (intent === 'complete' && isLarge && !isManagerOrAdmin) {
+      toast({
+        title: t('common.error'),
+        description: t('sales_returns.create.submit_pending_hint'),
+        variant: 'destructive',
+      });
+      return;
+    }
+    if (intent === 'complete' && methodMismatch && !isSeniorOrAbove) {
+      toast({
+        title: t('common.error'),
+        description: t('sales_returns.create.submit_pending_hint'),
+        variant: 'destructive',
+      });
+      return;
+    }
+
+    if (
+      intent === 'complete' &&
+      (returnMode === 'manual' || methodMismatch || isLarge) &&
+      !approvalReason.trim() &&
+      !methodMismatchReason.trim()
+    ) {
+      toast({
+        title: t('common.error'),
+        description: t('sales_returns.create.manager_approval_reason_required'),
+        variant: 'destructive',
+      });
+      return;
+    }
+
+    if (
+      intent === 'complete' &&
+      methodMismatch &&
+      !methodMismatchReason.trim() &&
+      !approvalReason.trim()
+    ) {
+      toast({
+        title: t('common.error'),
+        description: t('sales_returns.create.method_mismatch_reason_required'),
+        variant: 'destructive',
+      });
+      return;
+    }
+
+    if (refundCheck <= 0) {
       toast({
         title: t('sales_returns.create.invalid_amount_title'),
         description: t('sales_returns.create.invalid_amount'),
@@ -661,10 +927,18 @@ export default function CreateReturn() {
       });
       return;
     }
-    
+
+    setConfirmOpen(true);
+  };
+
+  const confirmAndCreateReturn = async () => {
+    setConfirmOpen(false);
+    const itemsToReturn = returnItems.filter((item) => item.return_quantity > 0);
+    const { totalRefund: refundTotal } = calculateTotals();
+
     try {
       setLoading(true);
-      
+
       if (!profile?.id) {
         toast({
           title: t('common.error'),
@@ -675,19 +949,59 @@ export default function CreateReturn() {
       }
 
       const selectedCustomer = getSelectedCustomer();
+      const idempotencyKey =
+        returnIdempotencyKey ||
+        (typeof crypto !== 'undefined' && crypto.randomUUID
+          ? crypto.randomUUID()
+          : `ret-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+      if (!returnIdempotencyKey) setReturnIdempotencyKey(idempotencyKey);
+
+      let attachmentUrl: string | null = null;
+      let attachmentName: string | null = null;
+      if (attachmentFile) {
+        try {
+          const tempId = `ret-${idempotencyKey.slice(0, 12)}`;
+          attachmentUrl = await uploadProductImage(attachmentFile, tempId, 0, attachmentSourcePath);
+          attachmentName = attachmentFile.name || null;
+        } catch (upErr) {
+          toast({
+            title: t('common.error'),
+            description:
+              upErr instanceof Error
+                ? upErr.message
+                : t('sales_returns.create.attachment_upload_failed'),
+            variant: 'destructive',
+          });
+          return;
+        }
+      }
+
       const createdReturn = await createSalesReturn({
         mode: returnMode,
         order_id: returnMode === 'order' ? selectedOrder!.id : null,
         customer_id:
           returnMode === 'order'
             ? selectedOrder!.customer_id
-            : selectedCustomer?.id || null,
+            : isVisitor
+              ? null
+              : selectedCustomer?.id || null,
         cashier_id: profile.id,
-        total_amount: totalRefund,
+        total_amount: refundTotal,
         refund_method: refundMethod as 'cash' | 'card' | 'customer_account',
         reason: reason.trim(),
         notes: notes.trim() || null,
-        items: itemsToReturn.map(item => ({
+        idempotency_key: idempotencyKey,
+        shift_id: currentShift?.id || null,
+        visitor: returnMode === 'manual' ? isVisitor : undefined,
+        approval_reason: approvalReason.trim() || methodMismatchReason.trim() || null,
+        method_mismatch_reason: methodMismatchReason.trim() || null,
+        attachment_note: attachmentNote.trim() || null,
+        attachment_url: attachmentUrl,
+        attachment_name: attachmentName,
+        save_as_draft: submitIntent === 'draft',
+        submit_for_approval: submitIntent === 'pending',
+        status: submitIntent === 'draft' ? 'draft' : submitIntent === 'pending' ? 'pending' : undefined,
+        items: itemsToReturn.map((item) => ({
           product_id: item.product_id,
           product_name: item.product_name,
           quantity: item.return_quantity,
@@ -696,7 +1010,9 @@ export default function CreateReturn() {
           order_item_id: item.order_item_id || null,
           sale_unit: item.sale_unit,
           qty_sale: item.return_quantity,
-          qty_base: item.qty_base ? (item.qty_base / Math.max(item.sold_quantity || 1, 1)) * item.return_quantity : item.return_quantity,
+          qty_base: item.qty_base
+            ? (item.qty_base / Math.max(item.sold_quantity || 1, 1)) * item.return_quantity
+            : item.return_quantity,
           base_price: item.base_price ?? item.product?.sale_price ?? item.unit_price,
           usta_price: item.usta_price ?? item.product?.master_price ?? null,
           discount_type: item.discount_type ?? 'none',
@@ -707,24 +1023,24 @@ export default function CreateReturn() {
         })),
       });
 
-      // Invalidate dashboard queries
       invalidateDashboardQueries(queryClient);
-      
-      // CRITICAL: Invalidate returns list query so new return appears immediately
+
       queryClient.invalidateQueries({ queryKey: ['returns'] });
       queryClient.invalidateQueries({ queryKey: ['sales-returns'] });
       queryClient.invalidateQueries({ queryKey: ['salesReturns'] });
-      
-      // CRITICAL: Refetch order details to update returned_quantity in UI
-      // This ensures the table shows updated returned/remaining quantities immediately
+      queryClient.invalidateQueries({ queryKey: ['orders'] });
+      queryClient.invalidateQueries({ queryKey: ['order'] });
+      if (returnMode === 'order' && selectedOrder?.id) {
+        queryClient.invalidateQueries({ queryKey: ['order', selectedOrder.id] });
+      }
+
       if (returnMode === 'order' && selectedOrder?.id) {
         console.log('[RETURN] Refetching order details to update returned quantities');
         try {
           const updatedOrderData = await getOrderForReturn(selectedOrder.id);
           if (updatedOrderData) {
             setSelectedOrder(updatedOrderData);
-            
-            // Update returnItems with new returned_quantity values
+
             const updatedItems: ReturnItem[] = buildReturnItems(updatedOrderData).map((item) => {
               const existingItem = returnItems.find((ri) => ri.order_item_id === item.order_item_id);
               return {
@@ -732,19 +1048,17 @@ export default function CreateReturn() {
                 return_quantity: existingItem?.return_quantity || 0,
               };
             });
-            
+
             setReturnItems(updatedItems);
             console.log('[RETURN] Updated returnItems with new returned_quantity values');
           }
         } catch (refetchError) {
           console.warn('[RETURN] Failed to refetch order details (non-critical):', refetchError);
-          // Non-critical: UI will update on next page load
         }
       }
-      
+
       console.log('[RETURN] Invalidated returns list queries');
 
-      // Record inventory movements for returned items
       itemsToReturn.forEach((item) => {
         if (item.return_quantity > 0) {
           const now = new Date().toISOString();
@@ -758,7 +1072,7 @@ export default function CreateReturn() {
             movement_number: `RET-MOV-${Date.now()}`,
             product_id: item.product_id,
             movement_type: 'return',
-            quantity: qtyBase, // return = IN (positive)
+            quantity: qtyBase,
             before_quantity: 0,
             after_quantity: 0,
             reference_type: 'return',
@@ -773,11 +1087,31 @@ export default function CreateReturn() {
           });
         }
       });
-      
+
+      const originalOrderId =
+        returnMode === 'order' ? selectedOrder?.id || null : null;
       toast({
         title: t('common.success'),
-        description: t('sales_returns.create.success'),
+        description: createdReturn?.return_number
+          ? t('sales_returns.create.success_with_number', {
+              number: createdReturn.return_number,
+            })
+          : t('sales_returns.create.success'),
+        action: originalOrderId ? (
+          <ToastAction
+            altText={t('sales_returns.create.view_original_order')}
+            onClick={() =>
+              navigate(`/orders/${originalOrderId}`, {
+                state: createBackNavigationState(location),
+              })
+            }
+          >
+            {t('sales_returns.create.view_original_order')}
+          </ToastAction>
+        ) : undefined,
       });
+
+      setReturnIdempotencyKey(null);
 
       try {
         const returnId = createdReturn?.id;
@@ -800,8 +1134,14 @@ export default function CreateReturn() {
       } catch (printError) {
         console.warn('[RETURN] Auto-print failed (non-critical):', printError);
       }
-      
-      navigate('/returns');
+
+      navigate('/returns', {
+        state: {
+          createdReturnNumber: createdReturn?.return_number || null,
+          createdReturnId: createdReturn?.id || null,
+          originalOrderId,
+        },
+      });
     } catch (error) {
       console.error('Error creating return:', error);
       toast({
@@ -834,12 +1174,18 @@ export default function CreateReturn() {
   });
 
   const { subtotal, taxAmount, totalRefund } = calculateTotals();
+  const hasReturnableLines =
+    returnMode === 'manual' || returnItems.some((item) => item.available_quantity > 0);
+  const canContinueFromItems =
+    returnMode === 'manual'
+      ? returnItems.some((item) => item.return_quantity > 0)
+      : hasReturnableLines && returnItems.some((item) => item.return_quantity > 0);
 
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-4">
-          <Button variant="ghost" size="icon" onClick={() => navigate('/sales-returns')}>
+          <Button variant="ghost" size="icon" onClick={() => void leaveToList(isDirty)}>
             <ArrowLeft className="h-4 w-4" />
           </Button>
           <div>
@@ -866,9 +1212,21 @@ export default function CreateReturn() {
           </Button>
           <Button
             variant={returnMode === 'manual' ? 'default' : 'outline'}
-            onClick={() => setReturnMode('manual')}
+            onClick={() => {
+              if (!isManagerOrAdmin) {
+                toast({
+                  title: t('common.error'),
+                  description: t('sales_returns.create.orderless_manager_only'),
+                  variant: 'destructive',
+                });
+                return;
+              }
+              setReturnMode('manual');
+            }}
+            disabled={!isManagerOrAdmin}
+            title={!isManagerOrAdmin ? t('sales_returns.create.orderless_manager_only') : undefined}
           >
-            Ordersiz qaytarish
+            {t('sales_returns.create.manual_return_label')}
           </Button>
         </CardContent>
       </Card>
@@ -1081,6 +1439,12 @@ export default function CreateReturn() {
               <CardTitle>{t('sales_returns.create.return_items')}</CardTitle>
             </CardHeader>
             <CardContent>
+              {returnMode === 'order' && !hasReturnableLines && (
+                <div className="mb-4 flex items-start gap-2 rounded-md border border-destructive/40 bg-destructive/5 p-3 text-sm text-destructive">
+                  <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
+                  <p>{t('sales_returns.create.all_items_already_returned')}</p>
+                </div>
+              )}
               <Table>
                 <TableHeader>
                   <TableRow>
@@ -1178,7 +1542,7 @@ export default function CreateReturn() {
                 <Button variant="outline" onClick={() => setStep(1)}>
                   {t('common.back')}
                 </Button>
-                <Button onClick={() => setStep(3)}>
+                <Button onClick={() => setStep(3)} disabled={!canContinueFromItems}>
                   {t('sales_returns.create.continue')}
                 </Button>
               </div>
@@ -1228,45 +1592,179 @@ export default function CreateReturn() {
                   <SelectContent>
                     <SelectItem value="cash">{t('pos.cash')}</SelectItem>
                     <SelectItem value="card">{t('pos.card')}</SelectItem>
-                    <SelectItem value="customer_account">Mijoz hisobiga</SelectItem>
+                    <SelectItem value="customer_account">{t('sales_returns.create.store_credit')}</SelectItem>
                   </SelectContent>
                 </Select>
                 {!refundMethod && (
                   <p className="text-sm text-destructive">{t('sales_returns.create.select_refund_method_error')}</p>
+                )}
+                {paymentSummary?.allocation && paymentSummary.allocation.length > 0 && (
+                  <div className="rounded-md border bg-muted/40 px-3 py-2 text-sm space-y-1">
+                    <p className="font-medium">{t('sales_returns.create.original_payment_allocation')}</p>
+                    {paymentSummary.allocation.map((row) => (
+                      <div key={row.method} className="flex justify-between text-muted-foreground">
+                        <span>{row.method}</span>
+                        <span>{formatOrderMoney(selectedOrder ?? {}, row.amount)}</span>
+                      </div>
+                    ))}
+                    {paymentSummary.isMixed && (
+                      <p className="text-xs text-amber-700">{t('sales_returns.create.mixed_payment_hint')}</p>
+                    )}
+                    {methodMismatch && (
+                      <p className="text-xs text-destructive">{t('sales_returns.create.method_mismatch_hint')}</p>
+                    )}
+                  </div>
+                )}
+                {refundMethod === 'cash' && drawerExpectedCash != null && (
+                  <p className="text-xs text-muted-foreground">
+                    {t('sales_returns.create.drawer_cash_available')}: {formatMoneyUZS(drawerExpectedCash)}
+                  </p>
                 )}
               </div>
 
               {(returnMode === 'manual' || refundMethod === 'customer_account') && (
                 <div className="space-y-2">
                   <Label htmlFor="return-customer">
-                    Mijoz {refundMethod === 'customer_account' ? <span className="text-destructive">*</span> : null}
+                    {t('sales_returns.customer')}{' '}
+                    {refundMethod === 'customer_account' || returnMode === 'manual' ? (
+                      <span className="text-destructive">*</span>
+                    ) : null}
                   </Label>
                   {returnMode === 'order' ? (
                     <div className={`rounded-md border px-3 py-2 text-sm ${refundMethod === 'customer_account' && !selectedOrder?.customer_id ? 'border-destructive' : 'border-input'}`}>
-                      {selectedOrder?.customer?.name || 'Mijoz tanlanmagan'}
+                      {selectedOrder?.customer?.name || t('pos.walk_in_customer')}
                     </div>
                   ) : (
-                    <SearchableCustomerCombobox
-                      id="return-customer"
-                      value={selectedCustomerId}
-                      onValueChange={setSelectedCustomerId}
-                      knownCustomers={customers}
-                      status="active"
-                      prefixOptions={[
-                        { value: 'none', label: t('combobox.none_customer', 'Mijoz tanlanmagan') },
-                      ]}
-                      triggerClassName={
-                        refundMethod === 'customer_account' && selectedCustomerId === 'none'
-                          ? 'border-destructive'
-                          : undefined
-                      }
-                    />
+                    <>
+                      <SearchableCustomerCombobox
+                        id="return-customer"
+                        value={isVisitor ? 'none' : selectedCustomerId}
+                        onValueChange={(v) => {
+                          setIsVisitor(false);
+                          setSelectedCustomerId(v);
+                        }}
+                        knownCustomers={customers}
+                        status="active"
+                        prefixOptions={[
+                          { value: 'none', label: t('combobox.none_customer', 'Mijoz tanlanmagan') },
+                        ]}
+                        triggerClassName={
+                          !isVisitor &&
+                          (refundMethod === 'customer_account' || returnMode === 'manual') &&
+                          selectedCustomerId === 'none'
+                            ? 'border-destructive'
+                            : undefined
+                        }
+                      />
+                      <label className="flex items-center gap-2 text-sm">
+                        <input
+                          type="checkbox"
+                          checked={isVisitor}
+                          onChange={(e) => {
+                            setIsVisitor(e.target.checked);
+                            if (e.target.checked) setSelectedCustomerId('none');
+                          }}
+                        />
+                        {t('sales_returns.create.visitor_customer')}
+                      </label>
+                    </>
                   )}
                 </div>
               )}
 
+              {(reason === 'damaged' || reason === 'defective') && (
+                <div className="space-y-2">
+                  <Label htmlFor="attachment_note">{t('sales_returns.create.attachment_note_optional')}</Label>
+                  <Textarea
+                    id="attachment_note"
+                    placeholder={t('sales_returns.create.attachment_note_placeholder')}
+                    value={attachmentNote}
+                    onChange={(e) => setAttachmentNote(e.target.value)}
+                    rows={2}
+                  />
+                  <div className="flex flex-wrap items-center gap-2">
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      onClick={async () => {
+                        try {
+                          const api = getElectronAPI();
+                          if (api?.files?.selectImageFile) {
+                            const res = await handleIpcResponse<{
+                              canceled?: boolean;
+                              filePaths?: string[];
+                            }>(api.files.selectImageFile());
+                            const path = res?.filePaths?.[0];
+                            if (!path || res?.canceled) return;
+                            const file = await readLocalImageFile(path);
+                            setAttachmentFile(file);
+                            setAttachmentSourcePath(path);
+                            return;
+                          }
+                        } catch {
+                          /* fall through to input */
+                        }
+                        const input = document.createElement('input');
+                        input.type = 'file';
+                        input.accept = 'image/*';
+                        input.onchange = () => {
+                          const f = input.files?.[0] || null;
+                          setAttachmentFile(f);
+                          setAttachmentSourcePath(null);
+                        };
+                        input.click();
+                      }}
+                    >
+                      <Paperclip className="h-4 w-4 mr-1" />
+                      {t('sales_returns.create.attach_photo')}
+                    </Button>
+                    {attachmentFile ? (
+                      <span className="text-xs text-muted-foreground truncate max-w-[220px]">
+                        {attachmentFile.name}
+                      </span>
+                    ) : null}
+                    {attachmentFile ? (
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => {
+                          setAttachmentFile(null);
+                          setAttachmentSourcePath(null);
+                        }}
+                      >
+                        {t('common.clear', { defaultValue: 'Clear' })}
+                      </Button>
+                    ) : null}
+                  </div>
+                </div>
+              )}
+
+              {(methodMismatch || returnMode === 'manual' || totalRefund >= LARGE_RETURN_THRESHOLD) && (
+                <div className="space-y-2">
+                  <Label htmlFor="approval_reason">
+                    {t('sales_returns.create.manager_approval_reason')} <span className="text-destructive">*</span>
+                  </Label>
+                  <Textarea
+                    id="approval_reason"
+                    value={methodMismatch ? methodMismatchReason || approvalReason : approvalReason}
+                    onChange={(e) => {
+                      if (methodMismatch) setMethodMismatchReason(e.target.value);
+                      setApprovalReason(e.target.value);
+                    }}
+                    rows={2}
+                    placeholder={t('sales_returns.create.manager_approval_reason_placeholder')}
+                  />
+                </div>
+              )}
+
               <div className="space-y-2">
-                <Label htmlFor="notes">{t('sales_returns.create.notes_optional')}</Label>
+                <Label htmlFor="notes">
+                  {reason === 'other' || returnMode === 'manual' || totalRefund >= LARGE_RETURN_THRESHOLD
+                    ? t('sales_returns.create.notes_required')
+                    : t('sales_returns.create.notes_optional')}
+                </Label>
                 <Textarea
                   id="notes"
                   placeholder={t('sales_returns.create.notes_placeholder')}
@@ -1307,20 +1805,121 @@ export default function CreateReturn() {
                 </div>
               </div>
 
-              <div className="flex justify-between pt-4">
+              <div className="flex flex-wrap justify-between gap-2 pt-4">
                 <Button variant="outline" onClick={() => setStep(2)}>
                   {t('common.back')}
                 </Button>
-                <Button 
-                  onClick={handleSubmit} 
-                  disabled={loading || !reason || !refundMethod || totalRefund <= 0}
-                >
-                  {loading ? t('sales_returns.create.creating') : t('sales_returns.create.submit_return')}
-                </Button>
+                <div className="flex flex-wrap gap-2">
+                  <Button
+                    variant="outline"
+                    onClick={() => handleSubmit('draft')}
+                    disabled={loading || !reason || !refundMethod || totalRefund <= 0}
+                  >
+                    {t('sales_returns.create.save_draft')}
+                  </Button>
+                  {!isManagerOrAdmin && (
+                    <Button
+                      variant="secondary"
+                      onClick={() => handleSubmit('pending')}
+                      disabled={loading || !reason || !refundMethod || totalRefund <= 0}
+                    >
+                      {t('sales_returns.create.submit_pending')}
+                    </Button>
+                  )}
+                  <Button
+                    onClick={() => handleSubmit('complete')}
+                    disabled={loading || !reason || !refundMethod || totalRefund <= 0}
+                  >
+                    {loading ? t('sales_returns.create.creating') : t('sales_returns.create.submit_return')}
+                  </Button>
+                </div>
               </div>
           </CardContent>
         </Card>
       )}
+
+      <AlertDialog open={confirmOpen} onOpenChange={setConfirmOpen}>
+        <AlertDialogContent className="max-w-lg max-h-[85vh] overflow-y-auto">
+          <AlertDialogHeader>
+            <AlertDialogTitle>{t('sales_returns.create.confirm_title')}</AlertDialogTitle>
+            <AlertDialogDescription asChild>
+              <div className="space-y-2 text-sm text-muted-foreground">
+                <p>
+                  {t('sales_returns.create.summary.order')}:{' '}
+                  {returnMode === 'order' ? selectedOrder?.order_number || '—' : t('sales_returns.create.manual_return_label')}
+                </p>
+                <p>
+                  {t('sales_returns.create.customer')}:{' '}
+                  {(returnMode === 'order'
+                    ? selectedOrder?.customer?.name
+                    : getSelectedCustomer()?.name) || '—'}
+                </p>
+                <p>
+                  {t('sales_returns.create.reason_for_return')}:{' '}
+                  {reason ? t(`sales_returns.create.reasons.${reason}`, { defaultValue: reason }) : '—'}
+                </p>
+                <p>
+                  {t('sales_returns.create.refund_method')}:{' '}
+                  {refundMethod === 'customer_account'
+                    ? t('sales_returns.create.store_credit')
+                    : refundMethod || '—'}
+                </p>
+                {notes.trim() ? (
+                  <p>
+                    {t('sales_returns.create.notes_optional')}: {notes.trim()}
+                  </p>
+                ) : null}
+                <p>
+                  {t('sales_returns.create.confirm_cashier')}: {profile?.full_name || profile?.username || '—'}
+                </p>
+                <p>
+                  {t('sales_returns.create.confirm_shift')}:{' '}
+                  {currentShift?.id ? t('sales_returns.create.confirm_shift_open') : t('sales_returns.create.confirm_shift_none')}
+                </p>
+                <p>{t('sales_returns.create.confirm_stock_note')}</p>
+                {(refundMethod === 'customer_account' ||
+                  (returnMode === 'manual' && selectedCustomerId !== 'none')) && (
+                  <p>
+                    {t('sales_returns.create.confirm_balance_note', {
+                      amount: formatMoneyUZS(totalRefund),
+                    })}
+                  </p>
+                )}
+                <div className="rounded-md border p-2 space-y-1">
+                  <p className="font-medium text-foreground">
+                    {t('sales_returns.create.summary.items_to_return')}
+                  </p>
+                  {returnItems
+                    .filter((i) => i.return_quantity > 0)
+                    .map((item) => (
+                      <p key={item.order_item_id || item.product_id}>
+                        {item.product_name}: {formatQuantity(item.return_quantity, item.sale_unit)}{' '}
+                        {formatUnit(item.sale_unit)} × {formatMoneyUZS(item.unit_price)} ={' '}
+                        {formatMoneyUZS(item.line_total)}
+                      </p>
+                    ))}
+                </div>
+                <p className="font-medium text-foreground">
+                  {t('sales_returns.create.summary.total_refund')}:{' '}
+                  {formatOrderMoney(selectedOrder ?? {}, totalRefund)}
+                </p>
+              </div>
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={loading}>{t('common.cancel')}</AlertDialogCancel>
+            <AlertDialogAction
+              disabled={loading}
+              onClick={(e) => {
+                e.preventDefault();
+                void confirmAndCreateReturn();
+              }}
+            >
+              {loading ? t('sales_returns.create.creating') : t('sales_returns.create.confirm_submit')}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }

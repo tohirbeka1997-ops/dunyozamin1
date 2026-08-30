@@ -118,6 +118,11 @@ function registerShiftsHandlers(services) {
     const filters = p && typeof p === 'object' && !Array.isArray(p) ? p : {};
     return shifts.listShiftCashMovements(shiftId, filters);
   }));
+
+  ipcMain.removeHandler('pos:shifts:reopen');
+  ipcMain.handle('pos:shifts:reopen', wrapHandler(async (_event, shiftId, data) => {
+    return shifts.reopenShift(shiftId, data || {});
+  }));
 }
 
 module.exports = { registerShiftsHandlers };
