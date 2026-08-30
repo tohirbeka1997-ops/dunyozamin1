@@ -3463,6 +3463,23 @@ class SalesService {
         throw createError(ERROR_CODES.VALIDATION_ERROR, 'No items found to refund.');
       }
 
+      const paymentRows = this.db
+        .prepare(
+          `SELECT payment_method, amount FROM payments WHERE order_id = ? ORDER BY rowid ASC`,
+        )
+        .all(orderId);
+      const creditPaid =
+        paymentRows.some(
+          (p) => String(p.payment_method || '').toLowerCase() === 'credit' && Number(p.amount || 0) > 0,
+        ) ||
+        Number(order.credit_amount || 0) > 0 ||
+        String(order.payment_status || '').toLowerCase().includes('credit');
+      const refundMethod = creditPaid ? 'credit' : 'cash';
+      const mismatchReason =
+        typeof refundItems === 'string' && refundItems.trim()
+          ? refundItems.trim()
+          : 'System refund via refundOrder';
+
       // 4. Delegate to the canonical returns flow (single, completed return).
       // This validates quantities, restocks via the inventory ledger, reverses
       // the customer balance/ledger when the order carried debt, and links the
@@ -3470,8 +3487,10 @@ class SalesService {
       const result = this.returnsService.createReturn({
         order_id: orderId,
         items: lineItems,
-        return_reason: 'Refund via refundOrder',
-        refund_method: 'cash',
+        return_reason: mismatchReason,
+        refund_method: refundMethod,
+        method_mismatch_reason:
+          refundMethod === 'cash' && creditPaid ? mismatchReason : undefined,
         cashier_id: userId,
         user_id: userId,
       });
