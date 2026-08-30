@@ -99,7 +99,7 @@ test('updateOrderDueDate sets due_date on open credit order', () =>
     seedCreditOrder(db, { orderId: 'ord-cr-upd', customerId: 'cust-cr-upd', dueDate: null });
     db.prepare(`UPDATE orders SET due_date = NULL WHERE id = 'ord-cr-upd'`).run();
     const { updateOrderDueDate, listOpenCreditOrders } = require('./creditReminder.cjs');
-    const out = updateOrderDueDate(db, 'ord-cr-upd', today);
+    const out = updateOrderDueDate(db, 'ord-cr-upd', today, { reason: 'Test muddat yangilash' });
     assert.equal(out.ok, true);
     assert.equal(out.due_date, today);
     const rows = listOpenCreditOrders(db, { customerId: 'cust-cr-upd' });

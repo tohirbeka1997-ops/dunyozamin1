@@ -190,9 +190,10 @@ test('staff returns: sell → returnable → partial return → stock restored',
             refund_method: 'cash',
           }),
         });
-        assert.equal(overRes.status, 400);
+        assert.equal(overRes.status, 409);
         const overBody = await overRes.json();
-        assert.equal(overBody.error, 'validation_error');
+        assert.equal(overBody.code, 'RETURN_LIMIT_EXCEEDED');
+        assert.equal(overBody.error, 'return_limit_exceeded');
 
         const fullRes = await fetch(`${base}/v1/staff/returns`, {
           method: 'POST',

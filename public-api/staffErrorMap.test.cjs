@@ -27,6 +27,20 @@ test('mapStaffServiceError maps shift_closed to 409', () => {
   assert.equal(res.body.error, 'shift_closed');
 });
 
+test('mapStaffServiceError maps RETURN_LIMIT_EXCEEDED to 409', () => {
+  const res = mockRes();
+  mapStaffServiceError(
+    Object.assign(new Error('Sotuv to‘liq qaytarilgan'), {
+      code: ERROR_CODES.RETURN_LIMIT_EXCEEDED,
+    }),
+    res,
+    { logTag: '[test]' },
+  );
+  assert.equal(res.statusCode, 409);
+  assert.equal(res.body.code, 'RETURN_LIMIT_EXCEEDED');
+  assert.equal(res.body.error, 'return_limit_exceeded');
+});
+
 test('mapStaffServiceError maps CONFLICT to 409', () => {
   const res = mockRes();
   mapStaffServiceError(
