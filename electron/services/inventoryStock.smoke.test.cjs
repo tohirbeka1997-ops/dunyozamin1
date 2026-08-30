@@ -129,6 +129,8 @@ try {
     purchase_price: 500,
     track_stock: 1,
     current_stock: 0,
+    unit: 'pcs',
+    base_unit: 'pcs',
   });
   const productId = product.id;
   ok('create product');

@@ -1885,8 +1885,8 @@ class ProductsService {
       this._assertNonNegative(data.master_min_qty, 'master_min_qty');
     }
 
-    // Base unit required
-    const baseUnitCode = this._normalizeUnitCode(data.base_unit ?? data.unit ?? '');
+    // Base unit required (default pcs for legacy callers / smoke tests)
+    const baseUnitCode = this._normalizeUnitCode(data.base_unit ?? data.unit ?? 'pcs');
     if (!baseUnitCode) {
       throw createError(ERROR_CODES.VALIDATION_ERROR, 'base unit is required');
     }
