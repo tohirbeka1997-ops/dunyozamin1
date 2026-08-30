@@ -185,6 +185,66 @@ test('assertPaymentOutAllowed: cashier blocked over advance; manager lend needs 
   });
   assert.equal(spoof.ok, false);
   assert.equal(spoof.code, 'LEND_FORBIDDEN');
+
+  const noLimit = assertPaymentOutAllowed({
+    oldBalance: -59990,
+    amount: 10000,
+    roles: ['manager'],
+    kindRequested: 'lend',
+    reason: 'test',
+    creditLimit: 0,
+  });
+  assert.equal(noLimit.ok, false);
+  assert.equal(noLimit.code, 'CREDIT_LIMIT_NOT_SET');
+  assert.match(String(noLimit.error), /kredit limiti belgilanmagan/i);
+
+  const overLimit = assertPaymentOutAllowed({
+    oldBalance: -59990,
+    amount: 10000,
+    roles: ['manager'],
+    kindRequested: 'lend',
+    reason: 'test',
+    creditLimit: 65000,
+  });
+  assert.equal(overLimit.ok, false);
+  assert.equal(overLimit.code, 'CREDIT_LIMIT_EXCEEDED');
+  if (!overLimit.ok) {
+    assert.equal(overLimit.new_debt, 69990);
+    assert.equal(overLimit.over_by, 4990);
+  }
+
+  const lendFromDebt = assertPaymentOutAllowed({
+    oldBalance: -59990,
+    amount: 10000,
+    roles: ['manager'],
+    kindRequested: 'lend',
+    reason: 'test',
+    creditLimit: 100000,
+  });
+  assert.equal(lendFromDebt.ok, true);
+  if (lendFromDebt.ok) {
+    assert.equal(lendFromDebt.new_balance, -69990);
+  }
+
+  const payoutNeedsReason = assertPaymentOutAllowed({
+    oldBalance: 5000,
+    amount: 1000,
+    roles: ['manager'],
+    kindRequested: 'payout',
+    reason: '',
+  });
+  assert.equal(payoutNeedsReason.ok, false);
+  assert.equal(payoutNeedsReason.code, 'PAYOUT_REASON_REQUIRED');
+
+  const cashierPayoutBlocked = assertPaymentOutAllowed({
+    oldBalance: 5000,
+    amount: 1000,
+    roles: ['cashier'],
+    kindRequested: 'payout',
+    reason: 'refund',
+  });
+  assert.equal(cashierPayoutBlocked.ok, false);
+  assert.equal(cashierPayoutBlocked.code, 'PAYOUT_FORBIDDEN');
 });
 
 test('assertBonusCorrection requires integer reason and blocks empty', () => {

@@ -21,6 +21,7 @@ process.env.POS_VERBOSE_LOGS = '0';
 const { open, close, getDb } = require('../db/open.cjs');
 const { createServices } = require('./index.cjs');
 const { readBalanceInCurrency } = require('../lib/customerBalance.cjs');
+const { setCurrentUserId } = require('../lib/currentUser.cjs');
 
 console.log('\n=== CUSTOMER payout vs lend SMOKE ===');
 console.log(`Temp DB: ${tmpDir}\n`);
@@ -31,6 +32,7 @@ try {
   open();
   const db = getDb();
   const { customers, shifts } = createServices(db);
+  setCurrentUserId(ADMIN);
 
   // Ensure admin has admin role for lend
   try {
@@ -79,6 +81,7 @@ try {
     payment_method: 'cash',
     operation: 'payment_out',
     payment_out_kind: 'payout',
+    notes: 'Avans qisman qaytarish',
     received_by: ADMIN,
     shift_id: shift.id,
     payment_uuid: randomUUID(),
@@ -97,6 +100,7 @@ try {
       payment_method: 'cash',
       operation: 'payment_out',
       payment_out_kind: 'payout',
+      notes: 'too much',
       received_by: ADMIN,
       shift_id: shift.id,
       payment_uuid: randomUUID(),
@@ -104,7 +108,9 @@ try {
   } catch (e) {
     blocked = true;
     assert.ok(
-      String(e.message || '').includes('advance') || e.details?.code === 'PAYOUT_EXCEEDS_ADVANCE'
+      String(e.message || '').includes('avansi') ||
+        String(e.message || '').includes('advance') ||
+        e.details?.code === 'PAYOUT_EXCEEDS_ADVANCE'
     );
   }
   assert.strictEqual(blocked, true);
@@ -160,6 +166,106 @@ try {
   }
   assert.strictEqual(zeroBlocked, true);
   console.log('  ✓ zero payment rejected');
+
+  // credit_limit = 0 blocks lend
+  const noLimitCustomer = customers.create({
+    name: 'No Credit Limit',
+    phone: '+998901239903',
+    allow_credit: 1,
+    allow_debt: 1,
+    credit_limit: 0,
+  });
+  let limitBlocked = false;
+  try {
+    customers.receivePayment({
+      customer_id: noLimitCustomer.id,
+      amount: 10000,
+      payment_method: 'cash',
+      operation: 'payment_out',
+      payment_out_kind: 'lend',
+      notes: 'should fail',
+      received_by: ADMIN,
+      shift_id: shift.id,
+      payment_uuid: randomUUID(),
+    });
+  } catch (e) {
+    limitBlocked = true;
+    assert.ok(
+      e.details?.code === 'CREDIT_LIMIT_NOT_SET' ||
+        String(e.message || '').includes('kredit limiti belgilanmagan')
+    );
+    assert.ok(!String(e.message || '').includes('Exceeds customer credit limit'));
+  }
+  assert.strictEqual(limitBlocked, true);
+  console.log('  ✓ credit_limit=0 blocks lend (UZ message)');
+
+  // Debt 59990 + lend 10000 → 69990
+  const debtCustomer = customers.create({
+    name: 'Debt Lend Customer',
+    phone: '+998901239904',
+    allow_credit: 1,
+    allow_debt: 1,
+    credit_limit: 200000,
+  });
+  // Seed debt via ledger-style: payment_out lend
+  customers.receivePayment({
+    customer_id: debtCustomer.id,
+    amount: 59990,
+    payment_method: 'cash',
+    operation: 'payment_out',
+    payment_out_kind: 'lend',
+    notes: 'seed debt',
+    received_by: ADMIN,
+    shift_id: shift.id,
+    payment_uuid: randomUUID(),
+  });
+  assert.strictEqual(readBalanceInCurrency(db, debtCustomer.id, 'UZS'), -59990);
+  customers.receivePayment({
+    customer_id: debtCustomer.id,
+    amount: 10000,
+    payment_method: 'cash',
+    operation: 'payment_out',
+    payment_out_kind: 'lend',
+    notes: 'add debt',
+    received_by: ADMIN,
+    shift_id: shift.id,
+    payment_uuid: randomUUID(),
+  });
+  assert.strictEqual(readBalanceInCurrency(db, debtCustomer.id, 'UZS'), -69990);
+  console.log('  ✓ debt 59990 + lend 10000 → 69990');
+
+  // Payment in: debt 5000 + pay 10000 → advance 5000
+  const payInCustomer = customers.create({
+    name: 'Pay In Split',
+    phone: '+998901239905',
+    allow_credit: 1,
+    allow_debt: 1,
+    credit_limit: 100000,
+  });
+  customers.receivePayment({
+    customer_id: payInCustomer.id,
+    amount: 5000,
+    payment_method: 'cash',
+    operation: 'payment_out',
+    payment_out_kind: 'lend',
+    notes: 'seed',
+    received_by: ADMIN,
+    shift_id: shift.id,
+    payment_uuid: randomUUID(),
+  });
+  const payIn = customers.receivePayment({
+    customer_id: payInCustomer.id,
+    amount: 10000,
+    payment_method: 'cash',
+    operation: 'payment_in',
+    received_by: ADMIN,
+    shift_id: shift.id,
+    payment_uuid: randomUUID(),
+  });
+  assert.strictEqual(readBalanceInCurrency(db, payInCustomer.id, 'UZS'), 5000);
+  assert.strictEqual(Number(payIn.debt_portion), 5000);
+  assert.strictEqual(Number(payIn.advance_portion), 5000);
+  console.log('  ✓ pay 10000 on debt 5000 → advance 5000');
 
   console.log('\n✅ payout/lend smoke passed\n');
 } catch (e) {

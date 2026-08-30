@@ -981,6 +981,25 @@ class CustomersService {
       data.bonus_points = bonusGate.points;
     }
 
+    if (data.credit_limit !== undefined && data.credit_limit !== null) {
+      const limitNum = Number(data.credit_limit);
+      if (!Number.isFinite(limitNum) || limitNum < 0) {
+        throw createError(ERROR_CODES.VALIDATION_ERROR, 'Kredit limiti 0 yoki undan katta bo‘lishi kerak.');
+      }
+      if (limitNum > 0) {
+        const actorId = getCurrentUserId();
+        const actorRoles = this._getUserRoleCodes(actorId);
+        const isAdmin = (actorRoles || []).some((r) => String(r).toLowerCase() === 'admin');
+        if (!isAdmin) {
+          throw createError(
+            ERROR_CODES.FORBIDDEN,
+            'Kredit limitini faqat admin belgilashi mumkin.'
+          );
+        }
+      }
+      data.credit_limit = limitNum;
+    }
+
     if (!data._skipDuplicateCheck && resolvedPhone.phone_normalized) {
       const existing = this.findByNormalizedPhone(resolvedPhone.phone_normalized);
       if (existing) {
@@ -1113,8 +1132,34 @@ class CustomersService {
     }
 
     if (data.credit_limit !== undefined) {
+      const actorId = getCurrentUserId();
+      const actorRoles = this._getUserRoleCodes(actorId);
+      const isAdmin = (actorRoles || []).some((r) => String(r).toLowerCase() === 'admin');
+      if (!isAdmin) {
+        throw createError(
+          ERROR_CODES.FORBIDDEN,
+          'Kredit limitini faqat admin belgilashi mumkin.'
+        );
+      }
+      const limitNum = Number(data.credit_limit);
+      if (!Number.isFinite(limitNum) || limitNum < 0) {
+        throw createError(ERROR_CODES.VALIDATION_ERROR, 'Kredit limiti 0 yoki undan katta bo‘lishi kerak.');
+      }
       updates.push('credit_limit = ?');
-      params.push(data.credit_limit);
+      params.push(limitNum);
+      if (this._hasCol('credit_limit_currency')) {
+        const cur = String(data.credit_limit_currency || 'UZS').toUpperCase() === 'USD' ? 'USD' : 'UZS';
+        updates.push('credit_limit_currency = ?');
+        params.push(cur);
+      }
+      if (this._hasCol('credit_limit_updated_at')) {
+        updates.push('credit_limit_updated_at = ?');
+        params.push(nowSqlInTimeZone());
+      }
+      if (this._hasCol('credit_limit_updated_by')) {
+        updates.push('credit_limit_updated_by = ?');
+        params.push(actorId || null);
+      }
     }
 
     if (data.allow_debt !== undefined) {
@@ -1187,7 +1232,21 @@ class CustomersService {
         WHERE id = ?
       `).run(...params);
 
-      return this.getById(id);
+      const updated = this.getById(id);
+      if (data.credit_limit !== undefined) {
+        this._safeAuditLog({
+          user_id: getCurrentUserId(),
+          action: 'customer_credit_limit_update',
+          entity_type: 'customer',
+          entity_id: id,
+          old_values: { credit_limit: Number(existing.credit_limit) || 0 },
+          new_values: {
+            credit_limit: Number(updated?.credit_limit) || 0,
+            credit_limit_currency: updated?.credit_limit_currency || 'UZS',
+          },
+        });
+      }
+      return updated;
     } catch (error) {
       if (error.code === 'SQLITE_CONSTRAINT_UNIQUE') {
         if (
@@ -1516,13 +1575,13 @@ class CustomersService {
     // Validation: amount must be positive number (reject 0 / neg / bad format)
     const amountParsed = parsePositiveMoneyAmount(amount);
     if (!amountParsed.ok) {
-      throw createError(ERROR_CODES.VALIDATION_ERROR, amountParsed.error);
+      throw createError(ERROR_CODES.VALIDATION_ERROR, 'Summa 0 dan katta bo‘lishi kerak.');
     }
     const requestedAmount = amountParsed.amount;
 
     // Validation: payment method required
     if (!paymentMethod) {
-      throw createError(ERROR_CODES.VALIDATION_ERROR, 'Payment method is required');
+      throw createError(ERROR_CODES.VALIDATION_ERROR, 'To‘lov usuli majburiy.');
     }
 
     // Validate operation type
@@ -1589,6 +1648,13 @@ class CustomersService {
 
       // Read current customer balance
       const customer = this.getById(normalizedCustomerId);
+      if (!customer) {
+        throw createError(ERROR_CODES.NOT_FOUND, 'Mijoz topilmadi.');
+      }
+      const customerStatus = String(customer.status || 'active').toLowerCase();
+      if (customerStatus && customerStatus !== 'active') {
+        throw createError(ERROR_CODES.VALIDATION_ERROR, 'Mijoz faol emas. Operatsiya bloklandi.');
+      }
       const balancesBefore = readCustomerBalances(this.db, normalizedCustomerId);
       const oldBalance = readBalanceInCurrency(this.db, normalizedCustomerId, payCurrency);
 
@@ -1615,6 +1681,10 @@ class CustomersService {
               advance: outGate.advance,
               amount: outGate.amount,
               debt_created: outGate.debt_created,
+              new_debt: outGate.new_debt,
+              current_debt: outGate.current_debt,
+              credit_limit: outGate.credit_limit,
+              over_by: outGate.over_by,
             }
           );
         }
@@ -1708,8 +1778,8 @@ class CustomersService {
                 `Pul qabul qilindi: ${paymentMethod} (qarz: ${allocation.debt_portion}; oldindan: ${allocation.advance_portion})`
               : paymentOutMeta?.kind === 'lend'
                 ? notes ||
-                  `Qarz berildi (lend): ${paymentMethod}; yaratilgan qarz: ${paymentOutMeta.debt_created}`
-                : notes || `Pul berildi (payout): ${paymentMethod}`;
+                  `Mijozga yangi qarz berildi: ${paymentMethod}; yaratilgan qarz: ${paymentOutMeta.debt_created}`
+                : notes || `Mijoz avansi qaytarildi: ${paymentMethod}`;
           
           const ledgerCols = [
             'id',
@@ -1751,11 +1821,11 @@ class CustomersService {
             .run(...ledgerVals);
           console.log('✅ Ledger entry inserted for payment:', { customerId: normalizedCustomerId, operation, signedAmount, newBalance });
         } else {
-          console.warn('⚠️ customer_ledger table does not exist. Run migration 020_create_customer_ledger.sql');
+          throw new Error('customer_ledger jadvali topilmadi. Migratsiyani ishga tushiring.');
         }
       } catch (ledgerError) {
-        console.error('❌ Failed to insert ledger entry (non-critical):', ledgerError.message);
-        // Don't throw - ledger insertion failure should not break payment
+        console.error('❌ Failed to insert ledger entry:', ledgerError.message);
+        throw ledgerError;
       }
 
       // Insert payment record into ledger with all balance tracking fields
@@ -1874,23 +1944,58 @@ class CustomersService {
       });
     }
 
-    if (result && !result.duplicate && result.operation === 'payment_out') {
-      this._safeAuditLog({
-        user_id: resolvedReceivedBy,
-        action: result.payment_out_kind === 'lend' ? 'customer_lend' : 'customer_payout',
-        entity_type: 'customer',
-        entity_id: result.customer_id,
-        old_values: { balance: result.old_balance },
-        new_values: {
-          balance: result.new_balance,
-          amount: result.applied_amount,
-          kind: result.payment_out_kind,
-          debt_created: result.debt_created,
-          payment_id: result.payment_id,
-          approver_user_id: result.approver_user_id,
-          notes: notes || null,
-        },
-      });
+    if (result && !result.duplicate) {
+      if (result.operation === 'payment_out') {
+        this._safeAuditLog({
+          user_id: resolvedReceivedBy,
+          action: result.payment_out_kind === 'lend' ? 'customer_lend' : 'customer_payout',
+          entity_type: 'customer',
+          entity_id: result.customer_id,
+          old_values: {
+            balance: result.old_balance,
+            open_debt: Math.max(0, -Number(result.old_balance) || 0),
+            advance: Math.max(0, Number(result.old_balance) || 0),
+          },
+          new_values: {
+            balance: result.new_balance,
+            open_debt: Math.max(0, -Number(result.new_balance) || 0),
+            advance: Math.max(0, Number(result.new_balance) || 0),
+            amount: result.applied_amount,
+            kind: result.payment_out_kind,
+            debt_created: result.debt_created,
+            payment_id: result.payment_id,
+            payment_method: paymentMethod,
+            currency: result.currency,
+            credit_limit: Number(this.getById(result.customer_id)?.credit_limit) || 0,
+            approver_user_id: result.approver_user_id,
+            notes: notes || null,
+          },
+        });
+      } else if (result.operation === 'payment_in') {
+        this._safeAuditLog({
+          user_id: resolvedReceivedBy,
+          action: 'customer_payment_in',
+          entity_type: 'customer',
+          entity_id: result.customer_id,
+          old_values: {
+            balance: result.old_balance,
+            open_debt: Math.max(0, -Number(result.old_balance) || 0),
+            advance: Math.max(0, Number(result.old_balance) || 0),
+          },
+          new_values: {
+            balance: result.new_balance,
+            open_debt: Math.max(0, -Number(result.new_balance) || 0),
+            advance: Math.max(0, Number(result.new_balance) || 0),
+            amount: result.applied_amount,
+            debt_portion: result.debt_portion,
+            advance_portion: result.advance_portion,
+            payment_id: result.payment_id,
+            payment_method: paymentMethod,
+            currency: result.currency,
+            notes: notes || null,
+          },
+        });
+      }
     }
 
     return result;

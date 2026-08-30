@@ -5,6 +5,8 @@ const { ERROR_CODES, createError } = require('../lib/errors.cjs');
 const {
   roleCanApproveInventoryRevision,
   normalizeProductCode,
+  matchesRevisionProductSearch,
+  isRevisionExactBarcodeQuery,
 } = require('../lib/posHardening.cjs');
 
 const MAIN_WAREHOUSE_ID = 'main-warehouse-001';
@@ -543,11 +545,69 @@ class InventoryRevisionService {
     return this.db.prepare(sql).all(...params);
   }
 
+  _cleanScanCode(raw) {
+    return String(raw || '')
+      .replace(/[\u0000-\u001F\u007F]/g, '')
+      .replace(/\s+/g, '')
+      .trim();
+  }
+
+  _isExactCodeQuery(raw) {
+    // Only full numeric barcodes are exclusive exact queries.
+    // Short tokens like "evn" / "2188" use partial normalized search.
+    return isRevisionExactBarcodeQuery(raw);
+  }
+
+  _encodeItemCursor(row) {
+    const name = String(row.product_name || row.name || '');
+    const id = String(row.id || '');
+    return Buffer.from(JSON.stringify({ n: name, i: id }), 'utf8').toString('base64url');
+  }
+
+  _decodeItemCursor(cursor) {
+    if (!cursor) return null;
+    try {
+      const raw = Buffer.from(String(cursor), 'base64url').toString('utf8');
+      const parsed = JSON.parse(raw);
+      if (!parsed || typeof parsed !== 'object') return null;
+      return { name: String(parsed.n || ''), id: String(parsed.i || '') };
+    } catch {
+      return null;
+    }
+  }
+
+  _hasScanEventsTable() {
+    return this._hasTable('inventory_revision_scan_events');
+  }
+
+  _hasProductCol(col) {
+    if (!this._productColCache) {
+      try {
+        this._productColCache = new Set(
+          this.db.prepare(`PRAGMA table_info(products)`).all().map((c) => c.name)
+        );
+      } catch {
+        this._productColCache = new Set();
+      }
+    }
+    return this._productColCache.has(col);
+  }
+
   getRevision(revisionId, opts = {}) {
     this._requireTables();
     const revision = this._getRevisionRow(revisionId);
-    const filter = String(opts.count_filter || opts.filter || 'all').toLowerCase();
-    const search = String(opts.search || '').trim().toLowerCase();
+    const filter = String(opts.count_filter || opts.filter || opts.status || 'all').toLowerCase();
+    const searchRaw = String(opts.search || opts.query || '').trim();
+    const focusItemId = opts.focus_item_id || opts.focusItemId || null;
+    const limitRaw = opts.limit != null ? Number(opts.limit) : null;
+    const limit =
+      limitRaw != null && Number.isFinite(limitRaw)
+        ? Math.min(Math.max(Math.trunc(limitRaw), 1), 500)
+        : null;
+    const cursor = this._decodeItemCursor(opts.cursor || opts.after || null);
+
+    const hasArticle = this._hasProductCol('article');
+    const hasBrand = this._hasProductCol('brand');
 
     let itemsSql = `
       SELECT
@@ -555,6 +615,8 @@ class InventoryRevisionService {
         p.name AS product_name,
         p.sku AS product_sku,
         p.barcode AS product_barcode,
+        ${hasArticle ? 'p.article AS product_article,' : ''}
+        ${hasBrand ? 'p.brand AS product_brand,' : ''}
         COALESCE(u.code, p.unit, p.base_unit, i.unit) AS product_unit
       FROM inventory_revision_items i
       INNER JOIN products p ON p.id = i.product_id
@@ -562,6 +624,11 @@ class InventoryRevisionService {
       WHERE i.revision_id = ?
     `;
     const params = [revision.id];
+
+    if (focusItemId) {
+      itemsSql += ' AND i.id = ?';
+      params.push(String(focusItemId));
+    }
 
     if (filter === 'counted') {
       itemsSql += ' AND i.counted_qty IS NOT NULL';
@@ -574,8 +641,12 @@ class InventoryRevisionService {
       `;
     }
 
-    if (search) {
-      const termNorm = normalizeProductCode(search);
+    let searchApplied = false;
+    let exactMatch = false;
+    let useJsPartialSearch = false;
+    if (searchRaw && !focusItemId) {
+      const isExactBarcode = this._isExactCodeQuery(searchRaw);
+      const termNorm = normalizeProductCode(searchRaw);
       const exactRows = this.db
         .prepare(
           `SELECT p.id, p.sku, p.barcode FROM products p
@@ -583,30 +654,78 @@ class InventoryRevisionService {
            WHERE lower(trim(COALESCE(p.sku, ''))) = lower(trim(?))
               OR lower(trim(COALESCE(p.barcode, ''))) = lower(trim(?))`
         )
-        .all(revision.id, search, search)
+        .all(revision.id, searchRaw, searchRaw)
         .filter((row) => {
           const skuN = normalizeProductCode(row.sku);
           const bcN = normalizeProductCode(row.barcode);
           return skuN === termNorm || bcN === termNorm;
         });
       if (exactRows.length > 0) {
+        exactMatch = true;
+        searchApplied = true;
         const ph = exactRows.map(() => '?').join(',');
         itemsSql += ` AND p.id IN (${ph})`;
         params.push(...exactRows.map((r) => r.id));
-      } else {
-        itemsSql += ` AND (
-          LOWER(COALESCE(p.name, '')) LIKE ?
-          OR LOWER(COALESCE(p.sku, '')) LIKE ?
-          OR LOWER(COALESCE(p.barcode, '')) LIKE ?
-        )`;
-        const like = `%${search.toLowerCase()}%`;
-        params.push(like, like, like);
+      } else if (isExactBarcode) {
+        // Full barcode with no hit → empty (do not fall back to name search).
+        searchApplied = true;
+        itemsSql += ' AND 1 = 0';
+      } else if (searchRaw.length >= 2) {
+        // Partial / token search: fetch candidates then filter with shared normalize.
+        searchApplied = true;
+        useJsPartialSearch = true;
       }
     }
 
-    itemsSql += ' ORDER BY p.name COLLATE NOCASE ASC';
+    // Keyset cursor only when not doing full JS search pass (search re-filters all).
+    if (!useJsPartialSearch && cursor && cursor.id) {
+      itemsSql += ` AND (
+        p.name COLLATE NOCASE > ?
+        OR (p.name COLLATE NOCASE = ? AND i.id > ?)
+      )`;
+      params.push(cursor.name, cursor.name, cursor.id);
+    }
 
-    const rawItems = this.db.prepare(itemsSql).all(...params);
+    itemsSql += ' ORDER BY p.name COLLATE NOCASE ASC, i.id ASC';
+
+    const fetchLimit = !useJsPartialSearch && limit != null ? limit + 1 : null;
+    if (fetchLimit != null) {
+      itemsSql += ' LIMIT ?';
+      params.push(fetchLimit);
+    }
+
+    let rawItems = this.db.prepare(itemsSql).all(...params);
+
+    if (useJsPartialSearch) {
+      rawItems = rawItems.filter((row) =>
+        matchesRevisionProductSearch(
+          {
+            name: row.product_name,
+            sku: row.product_sku,
+            barcode: row.product_barcode,
+            article: row.product_article,
+            brand: row.product_brand,
+          },
+          searchRaw
+        )
+      );
+      if (cursor && cursor.id) {
+        const cName = String(cursor.name || '').toLowerCase();
+        rawItems = rawItems.filter((row) => {
+          const name = String(row.product_name || '').toLowerCase();
+          const id = String(row.id || '');
+          return name > cName || (name === cName && id > cursor.id);
+        });
+      }
+    }
+
+    let hasMore = false;
+    let pageRows = rawItems;
+    if (limit != null && rawItems.length > limit) {
+      hasMore = true;
+      pageRows = rawItems.slice(0, limit);
+    }
+
     const liveByProduct = this._liveQtyMap(revision.id, revision.warehouse_id);
     const snapRows = this.db
       .prepare(
@@ -614,10 +733,12 @@ class InventoryRevisionService {
       )
       .all(revision.id);
     const stockDriftItems = this._countStockDrift(snapRows, liveByProduct);
-    const items = rawItems.map((row) =>
+    const items = pageRows.map((row) =>
       this._enrichItem(row, liveByProduct.get(row.product_id))
     );
     const summary = this._revisionSummary(revision.id, stockDriftItems);
+    const nextCursor =
+      hasMore && items.length > 0 ? this._encodeItemCursor(items[items.length - 1]) : null;
 
     return {
       ...revision,
@@ -626,6 +747,13 @@ class InventoryRevisionService {
           ?.name || null,
       items,
       summary,
+      pagination: {
+        limit: limit,
+        has_more: hasMore,
+        next_cursor: nextCursor,
+        exact_match: exactMatch,
+        search_applied: searchApplied,
+      },
     };
   }
 
@@ -724,19 +852,55 @@ class InventoryRevisionService {
   /**
    * Resolve barcode/SKU within a revision and set counted qty (quick count).
    * Default behaviour: set counted_qty to the given qty (or +1 if omit and already counted).
+   * Supports scan_event_id idempotency and multi-match disambiguation.
    */
   countByBarcode(payload = {}) {
     this._requireTables();
     const revision = this._getRevisionRow(payload.revision_id);
     this._assertEditable(revision);
-    const code = String(payload.barcode || payload.code || '').trim();
+
+    const code = this._cleanScanCode(payload.barcode || payload.code || '');
     if (!code) throw createError(ERROR_CODES.VALIDATION_ERROR, 'barcode is required');
+
+    const scanEventId = String(payload.scan_event_id || payload.scanEventId || '').trim() || null;
+    const userId = payload.user_id || payload.userId || payload.created_by || null;
+    const deviceId = payload.device_id || payload.deviceId || null;
+
+    if (scanEventId && this._hasScanEventsTable()) {
+      const existing = this.db
+        .prepare(`SELECT * FROM inventory_revision_scan_events WHERE scan_event_id = ?`)
+        .get(scanEventId);
+      if (existing) {
+        const focused = this.getRevision(revision.id, {
+          filter: 'all',
+          focus_item_id: existing.item_id,
+        });
+        const matched =
+          (focused.items || []).find((it) => it.id === existing.item_id) || null;
+        return {
+          ...focused,
+          matched_item: matched,
+          focus_item_id: existing.item_id,
+          counted_qty: existing.new_counted_qty,
+          previous_counted_qty: existing.previous_counted_qty,
+          scan_event_id: scanEventId,
+          idempotent_replay: true,
+        };
+      }
+    }
 
     const termNorm = normalizeProductCode(code);
     const candidates = this.db
       .prepare(
         `
-      SELECT p.id, p.sku, p.barcode
+      SELECT
+        p.id AS product_id,
+        p.name AS product_name,
+        p.sku,
+        p.barcode,
+        i.id AS item_id,
+        i.counted_qty,
+        i.system_qty
       FROM products p
       INNER JOIN inventory_revision_items i ON i.product_id = p.id AND i.revision_id = ?
       WHERE lower(trim(COALESCE(p.barcode, ''))) = lower(trim(?))
@@ -744,39 +908,149 @@ class InventoryRevisionService {
       LIMIT 20
     `
       )
-      .all(revision.id, code, code);
-    const product =
-      candidates.find((row) => {
+      .all(revision.id, code, code)
+      .filter((row) => {
         const skuN = normalizeProductCode(row.sku);
         const bcN = normalizeProductCode(row.barcode);
         return skuN === termNorm || bcN === termNorm;
-      }) || null;
-    if (!product) {
-      throw createError(ERROR_CODES.NOT_FOUND, `Product not found in revision for code: ${code}`);
+      });
+
+    if (candidates.length === 0) {
+      throw createError(
+        ERROR_CODES.NOT_FOUND,
+        'Mahsulot ushbu reviziyada topilmadi',
+        { code: 'REVISION_PRODUCT_NOT_FOUND', barcode: code }
+      );
     }
 
+    if (candidates.length > 1) {
+      throw createError(
+        ERROR_CODES.CONFLICT,
+        'Bir nechta mahsulot topildi — tanlang',
+        {
+          code: 'REVISION_BARCODE_AMBIGUOUS',
+          barcode: code,
+          candidates: candidates.map((c) => ({
+            product_id: c.product_id,
+            item_id: c.item_id,
+            product_name: c.product_name,
+            sku: c.sku,
+            barcode: c.barcode,
+          })),
+        }
+      );
+    }
+
+    const product = candidates[0];
     const item = this.db
       .prepare('SELECT * FROM inventory_revision_items WHERE revision_id = ? AND product_id = ?')
-      .get(revision.id, product.id);
+      .get(revision.id, product.product_id);
+    if (!item) {
+      throw createError(ERROR_CODES.NOT_FOUND, 'Mahsulot ushbu reviziyada topilmadi');
+    }
+
+    const previousCounted =
+      item.counted_qty != null && Number.isFinite(Number(item.counted_qty))
+        ? Number(item.counted_qty)
+        : null;
 
     let countedQty;
     if (payload.counted_qty !== undefined && payload.counted_qty !== null && payload.counted_qty !== '') {
       countedQty = Number(payload.counted_qty);
     } else if (payload.increment) {
-      const prev = item.counted_qty != null ? Number(item.counted_qty) : 0;
+      const prev = previousCounted != null ? previousCounted : 0;
       countedQty = prev + (Number(payload.increment) || 1);
-    } else if (item.counted_qty != null) {
-      countedQty = Number(item.counted_qty) + 1;
+    } else if (previousCounted != null) {
+      countedQty = previousCounted + 1;
     } else {
       countedQty = 1;
     }
 
-    return this.updateItemCount({
+    if (!Number.isFinite(countedQty) || countedQty < 0) {
+      throw createError(ERROR_CODES.VALIDATION_ERROR, 'counted_qty must be a non-negative number');
+    }
+
+    this.updateItemCount({
       revision_id: revision.id,
-      product_id: product.id,
+      product_id: product.product_id,
       counted_qty: countedQty,
       notes: payload.notes,
     });
+
+    if (scanEventId && this._hasScanEventsTable()) {
+      try {
+        this.db
+          .prepare(
+            `
+          INSERT INTO inventory_revision_scan_events (
+            scan_event_id, revision_id, item_id, product_id, barcode,
+            previous_counted_qty, new_counted_qty, user_id, device_id, created_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `
+          )
+          .run(
+            scanEventId,
+            revision.id,
+            item.id,
+            product.product_id,
+            code,
+            previousCounted,
+            countedQty,
+            userId,
+            deviceId,
+            this._nowIso()
+          );
+      } catch (err) {
+        // Unique race: treat as replay
+        if (String(err?.message || '').includes('UNIQUE')) {
+          const existing = this.db
+            .prepare(`SELECT * FROM inventory_revision_scan_events WHERE scan_event_id = ?`)
+            .get(scanEventId);
+          if (existing) {
+            const focused = this.getRevision(revision.id, {
+              filter: 'all',
+              focus_item_id: existing.item_id,
+            });
+            return {
+              ...focused,
+              matched_item: (focused.items || [])[0] || null,
+              focus_item_id: existing.item_id,
+              counted_qty: existing.new_counted_qty,
+              previous_counted_qty: existing.previous_counted_qty,
+              scan_event_id: scanEventId,
+              idempotent_replay: true,
+            };
+          }
+        }
+        console.warn('[inventoryRevision] scan_event insert failed:', err?.message || err);
+      }
+    }
+
+    this._audit('scan_count', revision, userId, {
+      barcode: code,
+      product_id: product.product_id,
+      item_id: item.id,
+      previous_counted_qty: previousCounted,
+      new_counted_qty: countedQty,
+      scan_event_id: scanEventId,
+      device_id: deviceId,
+    });
+
+    const focused = this.getRevision(revision.id, {
+      filter: 'all',
+      focus_item_id: item.id,
+    });
+    const matched = (focused.items || []).find((it) => it.id === item.id) || null;
+
+    return {
+      ...focused,
+      matched_item: matched,
+      focus_item_id: item.id,
+      counted_qty: countedQty,
+      previous_counted_qty: previousCounted,
+      scan_event_id: scanEventId,
+      idempotent_replay: false,
+    };
   }
 
   _assertCanComplete(revision, summary, payload = {}) {

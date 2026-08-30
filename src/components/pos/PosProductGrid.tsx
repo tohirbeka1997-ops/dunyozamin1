@@ -112,7 +112,11 @@ function PosProductGridInner({
       <div className="flex h-full items-center justify-center p-3 text-muted-foreground">
         <div className="text-center">
           <Package className="mx-auto mb-2 h-10 w-10 opacity-50" />
-          <p className="text-sm font-medium">{t('pos.no_products')}</p>
+          <p className="text-sm font-medium">
+            {searchTerm.trim()
+              ? t('pos.product_not_found', { defaultValue: 'Mahsulot topilmadi' })
+              : t('pos.no_products')}
+          </p>
           <p className="mt-1 text-xs">{t('pos.try_searching')}</p>
         </div>
       </div>
@@ -194,6 +198,8 @@ function PosProductGridInner({
               .filter(Boolean)
               .join(' · ');
 
+            const exactSingleHighlight = Boolean(searchTerm.trim()) && products.length === 1;
+
             return (
               <div
                 key={product.id}
@@ -231,6 +237,8 @@ function PosProductGridInner({
                       ? 'cursor-not-allowed opacity-60'
                       : 'cursor-pointer hover:bg-primary/5 dark:hover:bg-primary/10',
                     !productShowInMarketplace(product) && 'opacity-[0.92]',
+                    exactSingleHighlight &&
+                      'bg-emerald-50 ring-2 ring-inset ring-emerald-500/70 dark:bg-emerald-950/40',
                   )}
                 >
                   <div className="col-span-6 min-w-0 text-left">

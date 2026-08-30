@@ -593,9 +593,23 @@ export default function CustomerDetail() {
                 <>
                   <div className="space-y-1.5 text-sm">
                     <div className="flex justify-between gap-2">
-                      <span className="text-muted-foreground">Oldindan (UZS)</span>
+                      <span className="text-muted-foreground">Kredit limiti</span>
+                      <span className="font-semibold tabular-nums">
+                        {Number(customer.credit_limit) > 0
+                          ? formatMoneyUZS(customer.credit_limit)
+                          : 'Belgilanmagan'}
+                      </span>
+                    </div>
+                    <div className="flex justify-between gap-2">
+                      <span className="text-muted-foreground">Mijoz avansi (UZS)</span>
                       <span className="font-semibold text-green-600 tabular-nums">
                         {formatMoneyUZS(balanceMetrics.advance)}
+                      </span>
+                    </div>
+                    <div className="flex justify-between gap-2">
+                      <span className="text-muted-foreground">Ochiq qarz (ledger)</span>
+                      <span className="font-semibold text-destructive tabular-nums">
+                        {formatMoneyUZS(Math.max(0, -b.uzs))}
                       </span>
                     </div>
                     <div className="flex justify-between gap-2">

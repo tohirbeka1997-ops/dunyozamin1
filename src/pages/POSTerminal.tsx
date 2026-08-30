@@ -210,6 +210,8 @@ import {
   registerProductScanIndexes,
   normalizeSearchTerm,
   normalizeSku,
+  normalizeArticle,
+  normalizeSearch,
   classifyQuery,
   filterPosProductsBySearchTerm,
   formatPosProductCodeMeta,
@@ -240,6 +242,7 @@ import {
   getQuickAddSaleQty,
   type PosNavCartDraft,
 } from './posTerminalHelpers';
+import { reportApiFailure } from '@/lib/apiFailureTelemetry';
 import {
   buildProductScanIndex,
   lookupProductByScanCode,
@@ -1559,13 +1562,15 @@ export default function POSTerminal() {
     () =>
       allProducts.map((product) => ({
         product,
-        skuNormalized: normalizeSku(String(product.sku || '')),
-        barcode: String((product as any).barcode || '').trim(),
-        nameLower: String(product.name || '').toLowerCase(),
-        normArticle: String(product.article ?? '')
-          .toLowerCase()
-          .replace(/[\s\-_]/g, ''),
-        brandLower: String(product.brand ?? '').trim().toLowerCase(),
+        skuNormalized: normalizeSku(product.sku),
+        barcode: normalizeSearchTerm(
+          String((product as { barcode?: string | number | null }).barcode ?? ''),
+        ),
+        nameLower: normalizeSearch(product.name),
+        normArticle: normalizeArticle(
+          (product as { article?: string | number | null }).article,
+        ),
+        brandLower: normalizeSearch((product as { brand?: string | number | null }).brand),
       })),
     [allProducts],
   );
@@ -1594,8 +1599,8 @@ export default function POSTerminal() {
         let score = 0;
         let matched = false;
 
-        // Exact barcode match (numeric EAN / QR payload with letters, etc.)
-        if (barcode && barcode === query.raw) {
+        // Exact barcode match (case-insensitive)
+        if (barcode && barcode.toLocaleLowerCase('uz-UZ') === query.raw.toLocaleLowerCase('uz-UZ')) {
           score += 1000;
           matched = true;
         }
@@ -1670,14 +1675,21 @@ export default function POSTerminal() {
 
     // Exact SKU / barcode / article: do not mix in fuzzy/partial noise
     const exactHits = directResults.filter((p) => {
-      const skuN = normalizeSku(String(p.sku || ''));
-      const bc = String((p as { barcode?: string | null }).barcode || '').trim().toLowerCase();
-      const art = normalizeArticle(String((p as { article?: string | null }).article || ''));
-      return (
-        (skuN && skuN === query.normalizedSku) ||
-        (bc && bc === query.raw.toLowerCase()) ||
-        (art && art === query.normalizedSku)
-      );
+      try {
+        const skuN = normalizeSku(p.sku);
+        const bc = normalizeSearch(
+          String((p as { barcode?: string | number | null }).barcode ?? ''),
+        );
+        const art = normalizeArticle((p as { article?: string | number | null }).article);
+        const qRaw = normalizeSearch(query.raw);
+        return (
+          (skuN && skuN === query.normalizedSku) ||
+          (bc && bc === qRaw) ||
+          (art && art === query.normalizedSku)
+        );
+      } catch {
+        return false;
+      }
     });
     if (exactHits.length > 0) {
       return exactHits;
@@ -1733,7 +1745,21 @@ export default function POSTerminal() {
         }
       }
     } catch (error) {
-      console.error('Error searching products:', error);
+      // Keep current catalog; never surface stack traces to the cashier.
+      reportApiFailure({
+        page: 'POSTerminal',
+        apiUrl: 'pos/search',
+        message: error instanceof Error ? error.message : String(error),
+        userRole: profile?.role || null,
+      });
+      if (searchSeqRef.current === currentSeq) {
+        toast({
+          title: t('pos.search_error', {
+            defaultValue: 'Qidiruvda xato yuz berdi',
+          }),
+          variant: 'destructive',
+        });
+      }
     } finally {
       if (perfEnabled) {
         const ms = Math.round(performance.now() - start);
@@ -1751,17 +1777,18 @@ export default function POSTerminal() {
       searchDebounceRef.current = null;
     }
     if (term.length < MIN_SEARCH_LENGTH) {
+      // Empty / short query → restore full catalog immediately
       setSearchResults([]);
       return;
     }
-    // Scanner wedge in search box: skip fuzzy search for barcode-shaped input (Enter / global hook handles add).
     const q = classifyQuery(term);
-    if (q.isBarcodeLike || (q.numericOnly && term.length >= 8)) {
-      setSearchResults([]);
+    // Barcode / full SKU: exact match immediately (no name debounce)
+    if (q.isBarcodeLike || q.isSkuLike || (q.numericOnly && term.length >= 4)) {
+      void runSearch(term, selectedCategory);
       return;
     }
     searchDebounceRef.current = window.setTimeout(() => {
-      runSearch(term, selectedCategory);
+      void runSearch(term, selectedCategory);
     }, SEARCH_DEBOUNCE_MS);
   };
 
@@ -5554,12 +5581,22 @@ export default function POSTerminal() {
     const merchCredit = Math.max(0, total - orderCash);
     const activeBalBefore = getActiveBucketBalance(selectedCustomer, saleCurrency);
     const projectedBalance = activeBalBefore + initialPayment - total;
+    const creditLimit = Number(selectedCustomer.credit_limit) || 0;
 
-    if (selectedCustomer.credit_limit > 0 && projectedBalance < 0) {
-      if (Math.abs(projectedBalance) > selectedCustomer.credit_limit) {
+    if (merchCredit > 0.01 && !(creditLimit > 0)) {
+      toast({
+        title: t('pos.credit_limit_exceeded_title'),
+        description: 'Qarz berib bo‘lmaydi: mijoz kredit limiti belgilanmagan.',
+        variant: 'destructive',
+      });
+      return;
+    }
+
+    if (creditLimit > 0 && projectedBalance < 0) {
+      if (Math.abs(projectedBalance) > creditLimit) {
         toast({
           title: t('pos.credit_limit_exceeded_title'),
-          description: `${t('pos.credit_limit_exceeded_desc')} ${formatCurrency(selectedCustomer.credit_limit)}. ${t('pos.new_debt_label')} ${formatCurrency(Math.abs(projectedBalance))}`,
+          description: `Qarz berib bo‘lmaydi: yangi qarz mijoz kredit limitidan oshadi. ${t('pos.credit_limit_exceeded_desc')} ${formatCurrency(creditLimit)}. ${t('pos.new_debt_label')} ${formatCurrency(Math.abs(projectedBalance))}`,
           variant: 'destructive',
         });
         return;
@@ -6033,14 +6070,18 @@ export default function POSTerminal() {
 
   // Get products to display (search results or all products filtered by category)
   const displayProducts = useMemo(() => {
-    if (searchResults.length > 0) return searchResults;
+    const activeSearch = searchTerm.trim().length >= 2;
+    if (activeSearch) {
+      // Searching: show only ranked hits (empty → "Mahsulot topilmadi", not full catalog)
+      return searchResults;
+    }
     if (selectedCategory) {
       return allProducts.filter((p) =>
         productMatchesCategoryFilter(p.category_id, selectedCategory, categories)
       );
     }
     return allProducts;
-  }, [searchResults, allProducts, selectedCategory, categories]);
+  }, [searchResults, allProducts, selectedCategory, categories, searchTerm]);
 
   const MAX_DISPLAY = displayProducts.length;
   const isTruncated = false;
@@ -6180,13 +6221,24 @@ export default function POSTerminal() {
                       onKeyDown={(e) => {
                         if (e.key === 'Enter') {
                           e.preventDefault();
+                          // Only add when a product was found — never mutate cart on empty search
                           if (searchResults.length > 0) {
                             requestAddToCart(searchResults[0]);
                             focusSearchInput();
                             return;
                           }
-                          const raw = (e.currentTarget as HTMLInputElement)?.value || '';
-                          if (raw) handleBarcodeSearch(raw, { clearSearch: true });
+                          const raw = String(
+                            (e.currentTarget as HTMLInputElement)?.value || searchTerm || '',
+                          ).trim();
+                          if (!raw) return;
+                          // Barcode path: handleBarcodeSearch only adds when resolved
+                          void handleBarcodeSearch(raw, { clearSearch: true });
+                        }
+                        if (e.key === 'Escape') {
+                          e.preventDefault();
+                          setSearchTerm('');
+                          setSearchResults([]);
+                          focusSearchInput();
                         }
                       }}
                       className={cn(
@@ -7811,10 +7863,12 @@ export default function POSTerminal() {
                 const prepaidExtra = Math.max(0, orderCash - total);
                 const currentBalance = getActiveBucketBalance(selectedCustomer, saleCurrency);
                 const projectedBalance = currentBalance + initialPaymentUi - total;
+                const creditLimit = Number(selectedCustomer.credit_limit) || 0;
+                const creditLimitNotSet = merchCredit > 0.01 && !(creditLimit > 0);
                 const creditLimitExceeded =
-                  selectedCustomer.credit_limit > 0 &&
+                  creditLimit > 0 &&
                   projectedBalance < 0 &&
-                  Math.abs(projectedBalance) > selectedCustomer.credit_limit;
+                  Math.abs(projectedBalance) > creditLimit;
 
                 const fmtBalLine = (b: number) => {
                   if (b < -0.01) return `−${formatCurrency(Math.abs(b))} (qarz)`;
@@ -7926,10 +7980,18 @@ export default function POSTerminal() {
                     </div>
 
                     {/* Credit Limit Warning */}
+                    {creditLimitNotSet && (
+                      <div className="p-3 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-lg">
+                        <p className="text-sm text-red-600 dark:text-red-400 font-medium">
+                          Qarz berib bo‘lmaydi: mijoz kredit limiti belgilanmagan.
+                        </p>
+                      </div>
+                    )}
                     {creditLimitExceeded && (
                       <div className="p-3 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-lg">
                         <p className="text-sm text-red-600 dark:text-red-400 font-medium">
-                          {t('pos.credit_limit_warning')} {formatCurrency(selectedCustomer.credit_limit)}
+                          Qarz berib bo‘lmaydi: yangi qarz mijoz kredit limitidan oshadi. Limit:{' '}
+                          {formatCurrency(creditLimit)}
                         </p>
                       </div>
                     )}
@@ -7940,6 +8002,7 @@ export default function POSTerminal() {
                     disabled={
                       isProcessingPayment ||
                       selectedCustomer.status !== 'active' ||
+                      creditLimitNotSet ||
                       creditLimitExceeded ||
                       payInvalid ||
                       isDiscountActionDisabled

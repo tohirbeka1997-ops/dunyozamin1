@@ -201,21 +201,21 @@ export type { ProductScanIndex, ScanLookupHit } from '@/lib/pos/productBarcodeIn
 
 // ----- Qidiruv matnini normallashtirish -----
 
-export const normalizeSearchTerm = (value: string) => String(value || '').trim();
-
-export const normalizeSku = (value: string) =>
-  String(value || '')
+/** Safe search normalize: null/undefined/number → string, never throws. */
+export const normalizeSearch = (value?: string | number | null) =>
+  String(value ?? '')
     .trim()
-    .toLowerCase()
-    .replace(/[\s\-_]/g, '');
+    .toLocaleLowerCase('uz-UZ');
 
-export const normalizeArticle = (value: string) =>
-  String(value || '')
-    .trim()
-    .toLowerCase()
-    .replace(/[\s\-_]/g, '');
+export const normalizeSearchTerm = (value?: string | number | null) => String(value ?? '').trim();
 
-export const normalizeText = (value: string) => String(value || '').trim().toLowerCase();
+export const normalizeSku = (value?: string | number | null) =>
+  normalizeSearch(value).replace(/[\s\-_]/g, '');
+
+export const normalizeArticle = (value?: string | number | null) =>
+  normalizeSearch(value).replace(/[\s\-_]/g, '');
+
+export const normalizeText = (value?: string | number | null) => normalizeSearch(value);
 
 /** POS mahsulot qidiruvi: exact SKU/barcode first, then fuzzy name/partial. */
 export function productMatchesPosTextFilter(product: Product, term: string): boolean {

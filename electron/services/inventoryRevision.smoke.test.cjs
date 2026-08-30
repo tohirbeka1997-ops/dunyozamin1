@@ -471,6 +471,126 @@ try {
   assert.strictEqual(partialDone.status, 'partially_completed');
   ok('partial revision completes as partially_completed with manager role');
 
+  // --- Scan idempotency + exact search + pagination ---
+  const revScan = inventoryRevisions.createRevision({
+    warehouse_id: WH,
+    revision_type: 'full',
+    created_by: ADMIN,
+  });
+  const scanId = `scan-evt-${Date.now()}`;
+  const firstScan = inventoryRevisions.countByBarcode({
+    revision_id: revScan.id,
+    barcode: pA.barcode,
+    scan_event_id: scanId,
+    user_id: ADMIN,
+  });
+  assert.ok(firstScan.focus_item_id);
+  assert.ok(firstScan.matched_item);
+  assert.equal(firstScan.idempotent_replay, false);
+  const qtyAfterFirst = Number(firstScan.counted_qty);
+  const replay = inventoryRevisions.countByBarcode({
+    revision_id: revScan.id,
+    barcode: pA.barcode,
+    scan_event_id: scanId,
+    user_id: ADMIN,
+  });
+  assert.equal(replay.idempotent_replay, true);
+  assert.equal(Number(replay.counted_qty), qtyAfterFirst);
+  ok('scan_event_id idempotent — second call does not double-count');
+
+  let missingBlocked = false;
+  try {
+    inventoryRevisions.countByBarcode({
+      revision_id: revScan.id,
+      barcode: 'NO-SUCH-BARCODE-999',
+      scan_event_id: `scan-miss-${Date.now()}`,
+    });
+  } catch (e) {
+    missingBlocked =
+      /topilmadi|not found/i.test(String(e.message || e)) || e.code === 'NOT_FOUND';
+  }
+  assert.ok(missingBlocked);
+  ok('unknown barcode does not change counts');
+
+  const exactSearch = inventoryRevisions.getRevision(revScan.id, {
+    search: pA.barcode,
+    limit: 25,
+  });
+  assert.ok(exactSearch.pagination?.exact_match);
+  assert.equal(exactSearch.items.length, 1);
+  assert.equal(exactSearch.items[0].product_id, pA.id);
+  ok('exact barcode search returns single row without LIKE fallback');
+
+  const paged = inventoryRevisions.getRevision(revScan.id, { limit: 1 });
+  assert.equal(paged.items.length, 1);
+  assert.equal(paged.pagination?.has_more, true);
+  assert.ok(paged.pagination?.next_cursor);
+  const page2 = inventoryRevisions.getRevision(revScan.id, {
+    limit: 1,
+    cursor: paged.pagination.next_cursor,
+  });
+  assert.equal(page2.items.length, 1);
+  assert.notEqual(page2.items[0].id, paged.items[0].id);
+  ok('keyset cursor pagination advances without offset');
+
+  // Partial name search (punctuation-insensitive) — close scan rev first (one open at a time)
+  try {
+    inventoryRevisions.cancelRevision({
+      revision_id: revScan.id,
+      user_id: ADMIN,
+      reason: 'search smoke cleanup',
+    });
+  } catch (_e) {
+    /* already closed */
+  }
+
+  const pEvn = products.create({
+    name: 'EVN-A/650U Nasos',
+    sku: '2188-EVN',
+    barcode: `4600999${String(Date.now()).slice(-5)}`,
+    sale_price: 1000,
+    purchase_price: 500,
+    track_stock: 1,
+    current_stock: 0,
+    unit: 'dona',
+    base_unit: 'dona',
+  });
+  inventory.adjustStock({
+    warehouse_id: WH,
+    reason: 'EVN search seed',
+    adjustment_type: 'set',
+    created_by: ADMIN,
+    items: [{ product_id: pEvn.id, target_quantity: 3 }],
+  });
+  const revSearch = inventoryRevisions.createRevision({
+    warehouse_id: WH,
+    revision_type: 'partial',
+    created_by: ADMIN,
+    scope: { product_ids: [pA.id, pB.id, pEvn.id] },
+  });
+  const t0 = Date.now();
+  const byEvn = inventoryRevisions.getRevision(revSearch.id, { search: 'evn', limit: 50 });
+  const elapsed = Date.now() - t0;
+  assert.ok(byEvn.items.some((i) => i.product_id === pEvn.id), 'evn finds EVN-A/650U');
+  assert.ok(elapsed < 500, `partial search within 500ms (was ${elapsed}ms)`);
+  ok(`partial "evn" finds EVN product (${elapsed}ms)`);
+
+  const byToken = inventoryRevisions.getRevision(revSearch.id, { search: 'evn 650' });
+  assert.ok(byToken.items.some((i) => i.product_id === pEvn.id));
+  ok('multi-token "evn 650" matches');
+
+  const byCompact = inventoryRevisions.getRevision(revSearch.id, { search: 'evna650u' });
+  assert.ok(byCompact.items.some((i) => i.product_id === pEvn.id));
+  ok('compact "evna650u" matches EVN-A/650U');
+
+  const bySku = inventoryRevisions.getRevision(revSearch.id, { search: '2188' });
+  assert.ok(bySku.items.some((i) => i.product_id === pEvn.id));
+  ok('partial SKU "2188" matches');
+
+  const byNasos = inventoryRevisions.getRevision(revSearch.id, { search: 'nasos' });
+  assert.ok(byNasos.items.some((i) => i.product_id === pEvn.id));
+  ok('name substring "nasos" matches');
+
   console.log(`\nResult: ${passed} passed, ${failed} failed\n`);
   close();
   try {

@@ -321,7 +321,15 @@ export const getOpenInventoryRevision = async (warehouseId?: string) => {
 
 export const getInventoryRevision = async (
   revisionId: string,
-  opts?: { filter?: string; search?: string }
+  opts?: {
+    filter?: string;
+    search?: string;
+    query?: string;
+    status?: string;
+    cursor?: string;
+    limit?: number;
+    focus_item_id?: string;
+  }
 ) => {
   if (hasPosApi()) {
     const api = requireElectron();
@@ -361,6 +369,9 @@ export const countInventoryRevisionByBarcode = async (payload: {
   barcode: string;
   counted_qty?: number;
   increment?: number;
+  scan_event_id?: string;
+  user_id?: string | null;
+  device_id?: string | null;
 }) => {
   if (hasPosApi()) {
     const api = requireElectron();

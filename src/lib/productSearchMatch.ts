@@ -15,14 +15,78 @@ export type ProductSearchFields = {
   barcode?: string | null;
   article?: string | null;
   brand?: string | null;
+  product_name?: string | null;
+  product_sku?: string | null;
+  product_barcode?: string | null;
 };
 
 /** Normalize product codes for exact compare without dropping leading zeros. */
 export function normalizeProductCode(value: unknown): string {
-  return String(value || '')
+  return String(value ?? '')
     .trim()
-    .toLowerCase()
+    .toLocaleLowerCase('uz-UZ')
     .replace(/[\s\-_./\\]+/g, '');
+}
+
+/**
+ * Shared FE/BE revision search normalize:
+ * lowercase + strip everything except letters/digits.
+ */
+export function normalizeProductSearchValue(value: unknown): string {
+  return String(value ?? '')
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}]/gu, '');
+}
+
+/** Whitespace-split then normalize each token. */
+export function revisionSearchTokens(query: unknown): string[] {
+  const raw = String(query ?? '')
+    .trim()
+    .toLowerCase();
+  if (!raw) return [];
+  return raw
+    .split(/\s+/)
+    .map((part) => normalizeProductSearchValue(part))
+    .filter((t) => t.length > 0);
+}
+
+export function buildRevisionSearchHaystack(product: ProductSearchFields): string {
+  return normalizeProductSearchValue(
+    [
+      product.name,
+      product.product_name,
+      product.sku,
+      product.product_sku,
+      product.barcode,
+      product.product_barcode,
+      product.article,
+      product.brand,
+    ]
+      .filter((v) => v != null && String(v).trim() !== '')
+      .join(' '),
+  );
+}
+
+/** Partial includes + multi-token AND across name/sku/barcode/article/brand. */
+export function matchesRevisionProductSearch(
+  product: ProductSearchFields,
+  query: unknown,
+): boolean {
+  const trimmed = String(query ?? '').trim();
+  if (!trimmed) return true;
+  if (trimmed.length < 2) return false;
+  const tokens = revisionSearchTokens(trimmed);
+  if (!tokens.length) return false;
+  const hay = buildRevisionSearchHaystack(product);
+  if (!hay) return false;
+  return tokens.every((t) => hay.includes(t));
+}
+
+/** Safe display/search normalize (null/number safe). */
+export function normalizeSearchValue(value?: string | number | null): string {
+  return String(value ?? '')
+    .trim()
+    .toLocaleLowerCase('uz-UZ');
 }
 
 export function productHasExactCodeMatch(
@@ -42,23 +106,16 @@ export function productMatchesSearchTermFuzzy(
   product: ProductSearchFields,
   rawTerm: string | null | undefined,
 ): boolean {
-  const term = String(rawTerm || '').trim().toLowerCase();
+  const term = String(rawTerm || '').trim();
   if (!term) return true;
-  const termNorm = normalizeProductCode(term);
+  // Prefer punctuation-insensitive includes (same as revision search).
+  if (matchesRevisionProductSearch(product, term)) return true;
+  const lower = term.toLowerCase();
   const name = String(product.name || '').toLowerCase();
   const sku = String(product.sku || '').toLowerCase();
   const barcode = String(product.barcode || '').toLowerCase();
-  const article = normalizeProductCode(product.article);
   const brand = String(product.brand || '').toLowerCase();
-  return (
-    name.includes(term) ||
-    sku.includes(term) ||
-    barcode.includes(term) ||
-    (termNorm.length > 0 && article.includes(termNorm)) ||
-    brand.includes(term) ||
-    (termNorm.length > 0 && normalizeProductCode(product.sku).includes(termNorm)) ||
-    (termNorm.length > 0 && normalizeProductCode(product.barcode).includes(termNorm))
-  );
+  return name.includes(lower) || sku.includes(lower) || barcode.includes(lower) || brand.includes(lower);
 }
 
 /**

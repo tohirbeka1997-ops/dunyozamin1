@@ -404,7 +404,7 @@ export function classifyPaymentOut(
   const bal = Number(oldBalance) || 0;
   const amt = Number(amount) || 0;
   if (!(amt > 0) || !Number.isFinite(amt)) {
-    return { ok: false, error: 'amount must be greater than 0', code: 'INVALID_AMOUNT' };
+    return { ok: false, error: 'Summa 0 dan katta bo‘lishi kerak.', code: 'INVALID_AMOUNT' };
   }
   const advance = bal > 0 ? bal : 0;
   const new_balance = bal - amt;
@@ -433,8 +433,9 @@ function normalizeRoleSet(roles: unknown[] | null | undefined): Set<string> {
 }
 
 export function roleCanPayoutWithinAdvance(roles: unknown[] | null | undefined): boolean {
+  // TZ: avans qaytarish — menejer/admin (kassir emas)
   const set = normalizeRoleSet(roles);
-  return set.has('admin') || set.has('manager') || set.has('senior_cashier') || set.has('cashier');
+  return set.has('admin') || set.has('manager') || set.has('senior_cashier');
 }
 
 export function roleCanLendCreateDebt(
@@ -486,7 +487,9 @@ export function assertPaymentOutAllowed(opts: {
       amount?: number;
       debt_created?: number;
       new_debt?: number;
+      current_debt?: number;
       credit_limit?: number;
+      over_by?: number;
     } {
   const classified = classifyPaymentOut(opts.oldBalance, opts.amount);
   if (!classified.ok) return classified;
@@ -498,7 +501,7 @@ export function assertPaymentOutAllowed(opts: {
   if (kindRequested === 'payout' && classified.kind === 'lend') {
     return {
       ok: false,
-      error: 'Payout amount exceeds customer advance; use lend action',
+      error: 'Avans qaytarib bo‘lmaydi: mijoz avansi yetarli emas.',
       code: 'PAYOUT_EXCEEDS_ADVANCE',
       advance: classified.advance,
       amount: classified.amount,
@@ -510,7 +513,7 @@ export function assertPaymentOutAllowed(opts: {
     if (!roleCanLendCreateDebt(roles, opts.lendAuthorized)) {
       return {
         ok: false,
-        error: 'Lending (creating debt) requires manager or admin approval',
+        error: 'Bu operatsiya uchun menejer ruxsati kerak.',
         code: 'LEND_FORBIDDEN',
         advance: classified.advance,
         amount: classified.amount,
@@ -520,28 +523,43 @@ export function assertPaymentOutAllowed(opts: {
     if (!reasonText) {
       return {
         ok: false,
-        error: 'Lend reason is required',
+        error: 'Qarz berish sababi majburiy.',
         code: 'LEND_REASON_REQUIRED',
         advance: classified.advance,
         amount: classified.amount,
         debt_created: classified.debt_created,
       };
     }
-    const limit = Number(opts.creditLimit);
-    if (Number.isFinite(limit) && limit >= 0) {
-      const newDebt = Math.max(0, -classified.new_balance);
-      if (newDebt > limit + 1e-6) {
-        return {
-          ok: false,
-          error: `Exceeds customer credit limit (${limit})`,
-          code: 'CREDIT_LIMIT_EXCEEDED',
-          advance: classified.advance,
-          amount: classified.amount,
-          debt_created: classified.debt_created,
-          new_debt: newDebt,
-          credit_limit: limit,
-        };
-      }
+    const rawLimit = opts.creditLimit;
+    const limit = Number(rawLimit);
+    const hasPositiveLimit = Number.isFinite(limit) && limit > 0;
+    if (!hasPositiveLimit) {
+      return {
+        ok: false,
+        error: 'Qarz berib bo‘lmaydi: mijoz kredit limiti belgilanmagan.',
+        code: 'CREDIT_LIMIT_NOT_SET',
+        advance: classified.advance,
+        amount: classified.amount,
+        debt_created: classified.debt_created,
+        new_debt: Math.max(0, -classified.new_balance),
+        credit_limit: Number.isFinite(limit) ? limit : 0,
+      };
+    }
+    const newDebt = Math.max(0, -classified.new_balance);
+    if (newDebt > limit + 1e-6) {
+      const currentDebt = Math.max(0, -Number(opts.oldBalance) || 0);
+      return {
+        ok: false,
+        error: 'Qarz berib bo‘lmaydi: yangi qarz mijoz kredit limitidan oshadi.',
+        code: 'CREDIT_LIMIT_EXCEEDED',
+        advance: classified.advance,
+        amount: classified.amount,
+        debt_created: classified.debt_created,
+        new_debt: newDebt,
+        current_debt: currentDebt,
+        credit_limit: limit,
+        over_by: Math.max(0, newDebt - limit),
+      };
     }
     return {
       ok: true,
@@ -557,8 +575,26 @@ export function assertPaymentOutAllowed(opts: {
   if (!roleCanPayoutWithinAdvance(roles)) {
     return {
       ok: false,
-      error: 'Payout not allowed for this role',
+      error: 'Bu operatsiya uchun menejer ruxsati kerak.',
       code: 'PAYOUT_FORBIDDEN',
+      advance: classified.advance,
+      amount: classified.amount,
+    };
+  }
+  if (classified.advance <= 1e-9) {
+    return {
+      ok: false,
+      error: 'Avans qaytarib bo‘lmaydi: mijoz avansi yetarli emas.',
+      code: 'PAYOUT_EXCEEDS_ADVANCE',
+      advance: 0,
+      amount: classified.amount,
+    };
+  }
+  if (!reasonText) {
+    return {
+      ok: false,
+      error: 'Avans qaytarish sababi majburiy.',
+      code: 'PAYOUT_REASON_REQUIRED',
       advance: classified.advance,
       amount: classified.amount,
     };
@@ -570,6 +606,7 @@ export function assertPaymentOutAllowed(opts: {
     amount: classified.amount,
     debt_created: 0,
     new_balance: classified.new_balance,
+    reason: reasonText,
   };
 }
 

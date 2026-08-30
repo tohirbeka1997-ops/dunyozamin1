@@ -8,6 +8,8 @@ import {
   Ban,
   ScanBarcode,
   X,
+  Loader2,
+  RefreshCw,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -45,6 +47,7 @@ import PageBreadcrumb from '@/components/common/PageBreadcrumb';
 import { useToast } from '@/hooks/use-toast';
 import { useAuth } from '@/contexts/AuthContext';
 import { useBarcodeScanner } from '@/hooks/useBarcodeScanner';
+import { useSessionSearchParams } from '@/hooks/useSessionSearchParams';
 import {
   bulkSetInventoryRevisionItemCounts,
   cancelInventoryRevision,
@@ -58,6 +61,12 @@ import {
 import { formatNumberUZ } from '@/lib/format';
 import { formatUnit } from '@/utils/formatters';
 import { roleCanApproveInventoryRevision } from '@/lib/posHardening';
+import {
+  cleanRevisionScanCode,
+  createScanEventId,
+  isRevisionExactCodeQuery,
+  type PendingRevisionScan,
+} from '@/lib/inventoryRevisionScan';
 
 type RevisionItem = {
   id: string;
@@ -138,8 +147,16 @@ export default function InventoryRevisionDetail() {
   const { toast } = useToast();
   const { profile, user } = useAuth();
 
+  const sessionKey = `inventory-revision-detail:${id || 'unknown'}`;
+  const { searchParams, updateParams, restored } = useSessionSearchParams({
+    storageKey: sessionKey,
+    trackedKeys: ['q', 'filter', 'focus'],
+  });
+
   const [revision, setRevision] = useState<RevisionDetail | null>(null);
   const [loading, setLoading] = useState(true);
+  const [searching, setSearching] = useState(false);
+  const [searchError, setSearchError] = useState<string | null>(null);
   const [countFilter, setCountFilter] = useState<CountFilter>('all');
   const [search, setSearch] = useState('');
   const [searchDebounced, setSearchDebounced] = useState('');
@@ -149,7 +166,11 @@ export default function InventoryRevisionDetail() {
   const [completeOpen, setCompleteOpen] = useState(false);
   const [cancelOpen, setCancelOpen] = useState(false);
   const [markZeroOpen, setMarkZeroOpen] = useState(false);
+  const [filterOpen, setFilterOpen] = useState(false);
   const [acting, setActing] = useState(false);
+  const [highlightItemId, setHighlightItemId] = useState<string | null>(null);
+  const [activeRowIndex, setActiveRowIndex] = useState(0);
+  const [pendingScans, setPendingScans] = useState<PendingRevisionScan[]>([]);
   const [completePreview, setCompletePreview] = useState<{
     can_complete?: boolean;
     surplus_qty?: number;
@@ -162,16 +183,81 @@ export default function InventoryRevisionDetail() {
   const [approveStockDrift, setApproveStockDrift] = useState(false);
   const [cancelReason, setCancelReason] = useState('');
   const barcodeRef = useRef<HTMLInputElement>(null);
+  const searchRef = useRef<HTMLInputElement>(null);
+  const rowRefs = useRef<Map<string, HTMLTableRowElement>>(new Map());
+  const highlightTimerRef = useRef<number | null>(null);
+  const loadSeqRef = useRef(0);
+  const scanInFlightRef = useRef(false);
+  const skipNextLoadRef = useRef(false);
+  const hydratedFromUrlRef = useRef(false);
 
   const userRole = user?.role || profile?.role || null;
   const canApprove = roleCanApproveInventoryRevision(userRole);
 
   const editable = revision?.status === 'in_progress' || revision?.status === 'draft';
 
+  // Restore filter/search from URL once
   useEffect(() => {
-    const timer = setTimeout(() => setSearchDebounced(search.trim()), 200);
-    return () => clearTimeout(timer);
+    if (!restored || hydratedFromUrlRef.current) return;
+    hydratedFromUrlRef.current = true;
+    const q = searchParams.get('q') || '';
+    const filter = (searchParams.get('filter') || 'all') as CountFilter;
+    if (q) {
+      setSearch(q);
+      setSearchDebounced(q.trim());
+    }
+    if (['all', 'counted', 'pending', 'variance'].includes(filter)) {
+      setCountFilter(filter);
+    }
+  }, [restored, searchParams]);
+
+  // Persist filter/search to URL + session
+  useEffect(() => {
+    if (!restored || !hydratedFromUrlRef.current) return;
+    updateParams(
+      {
+        q: search.trim() || null,
+        filter: countFilter === 'all' ? null : countFilter,
+      },
+      { replace: true }
+    );
+  }, [search, countFilter, restored, updateParams]);
+
+  // Debounce: exact code → immediate; name → 250ms; short name (<2) clears
+  useEffect(() => {
+    const trimmed = search.trim();
+    if (!trimmed) {
+      setSearchDebounced('');
+      return;
+    }
+    if (isRevisionExactCodeQuery(trimmed)) {
+      setSearchDebounced(trimmed);
+      return;
+    }
+    if (trimmed.length < 2) {
+      setSearchDebounced('');
+      return;
+    }
+    const timer = window.setTimeout(() => setSearchDebounced(trimmed), 250);
+    return () => window.clearTimeout(timer);
   }, [search]);
+
+  const flashHighlight = useCallback((itemId: string) => {
+    setHighlightItemId(itemId);
+    if (highlightTimerRef.current) window.clearTimeout(highlightTimerRef.current);
+    highlightTimerRef.current = window.setTimeout(() => {
+      setHighlightItemId((cur) => (cur === itemId ? null : cur));
+    }, 2000);
+  }, []);
+
+  const scrollToItem = useCallback((itemId: string) => {
+    requestAnimationFrame(() => {
+      const el = rowRefs.current.get(itemId);
+      if (el) {
+        el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      }
+    });
+  }, []);
 
   const applyRevision = useCallback((rev: RevisionDetail) => {
     setRevision(rev);
@@ -184,29 +270,51 @@ export default function InventoryRevisionDetail() {
     setQtyDrafts(drafts);
   }, []);
 
-  const load = useCallback(async () => {
-    if (!id) return;
-    try {
-      setLoading(true);
-      const rev = await getInventoryRevision(id, {
-        filter: countFilter,
-        search: searchDebounced || undefined,
-      });
-      applyRevision(rev);
-    } catch (err: any) {
-      toast({
-        title: t('common.error', { defaultValue: 'Xato' }),
-        description: err?.message || String(err),
-        variant: 'destructive',
-      });
-    } finally {
-      setLoading(false);
-    }
-  }, [id, countFilter, searchDebounced, applyRevision, toast, t]);
+  const load = useCallback(
+    async (opts?: { soft?: boolean }) => {
+      if (!id) return;
+      const soft = opts?.soft === true;
+      const seq = ++loadSeqRef.current;
+      try {
+        if (soft) setSearching(true);
+        else setLoading(true);
+        setSearchError(null);
+        const rev = await getInventoryRevision(id, {
+          filter: countFilter,
+          search: searchDebounced || undefined,
+        });
+        if (seq !== loadSeqRef.current) return;
+        applyRevision(rev);
+      } catch (err: any) {
+        if (seq !== loadSeqRef.current) return;
+        const msg = err?.message || String(err);
+        setSearchError(msg);
+        toast({
+          title: t('inventory_revision.search_failed', {
+            defaultValue: 'Qidiruv bajarilmadi. Qayta urinib ko‘ring.',
+          }),
+          description: msg,
+          variant: 'destructive',
+        });
+      } finally {
+        if (seq === loadSeqRef.current) {
+          setLoading(false);
+          setSearching(false);
+        }
+      }
+    },
+    [id, countFilter, searchDebounced, applyRevision, toast, t]
+  );
 
   useEffect(() => {
-    load();
-  }, [load]);
+    if (!restored) return;
+    if (skipNextLoadRef.current) {
+      skipNextLoadRef.current = false;
+      return;
+    }
+    void load({ soft: Boolean(revision) });
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- reload on filter/search only
+  }, [load, restored]);
 
   const summary = revision?.summary;
 
@@ -359,37 +467,164 @@ export default function InventoryRevisionDetail() {
     }
   };
 
+  const focusBarcode = useCallback(() => {
+    barcodeRef.current?.focus();
+    barcodeRef.current?.select();
+  }, []);
+
+  const focusSearch = useCallback(() => {
+    searchRef.current?.focus();
+    searchRef.current?.select();
+  }, []);
+
+  const locateScannedItem = useCallback(
+    async (itemId: string, productName: string | undefined, countedQty: number) => {
+      skipNextLoadRef.current = true;
+      setSearch('');
+      setSearchDebounced('');
+      setCountFilter('all');
+      updateParams({ q: null, filter: null, focus: itemId }, { replace: true });
+      try {
+        if (id) {
+          const full = await getInventoryRevision(id, {
+            filter: 'all',
+          });
+          const hasItem = (full.items || []).some((it: RevisionItem) => it.id === itemId);
+          if (hasItem) {
+            applyRevision(full);
+          } else {
+            const focused = await getInventoryRevision(id, {
+              filter: 'all',
+              focus_item_id: itemId,
+            });
+            applyRevision(focused);
+          }
+        }
+      } catch {
+        /* keep current list */
+      }
+      flashHighlight(itemId);
+      window.setTimeout(() => scrollToItem(itemId), 50);
+      toast({
+        title: t('inventory_revision.scan_accepted', {
+          defaultValue: 'Qabul qilindi: {{name}}, sanalgan: {{qty}}',
+          name: productName || itemId,
+          qty: countedQty,
+        }),
+      });
+    },
+    [id, applyRevision, flashHighlight, scrollToItem, toast, t, updateParams]
+  );
+
   const handleBarcode = async (code: string) => {
     if (!revision || !editable) return;
-    const barcode = String(code || '').trim();
+    if (scanInFlightRef.current) return;
+    const barcode = cleanRevisionScanCode(code);
     if (!barcode) return;
+
+    const scanEventId = createScanEventId();
+    scanInFlightRef.current = true;
     try {
       setActing(true);
-      await countInventoryRevisionByBarcode({
+      const result = await countInventoryRevisionByBarcode({
         revision_id: revision.id,
         barcode,
+        scan_event_id: scanEventId,
+        user_id: profile?.id || null,
       });
-      const refreshed = await getInventoryRevision(revision.id, {
-        filter: countFilter,
-        search: searchDebounced || undefined,
-      });
-      applyRevision(refreshed);
-      toast({
-        title: t('inventory_revision.scan_ok'),
-        description: barcode,
-      });
+
+      if (result?.idempotent_replay) {
+        // Already applied — still show the row, do not double-toast as new count
+      }
+
+      const matched = result?.matched_item || result?.items?.[0];
+      const itemId = result?.focus_item_id || matched?.id;
+      const countedQty = Number(result?.counted_qty ?? matched?.counted_qty ?? 0);
+
+      if (itemId) {
+        await locateScannedItem(itemId, matched?.product_name, countedQty);
+      } else {
+        toast({
+          title: t('inventory_revision.scan_ok'),
+          description: barcode,
+        });
+      }
       setBarcodeInput('');
-      barcodeRef.current?.focus();
+      focusBarcode();
     } catch (err: any) {
-      toast({
-        title: t('inventory_revision.scan_fail'),
-        description: err?.message || String(err),
-        variant: 'destructive',
-      });
+      const details = err?.details || err?.data?.details;
+      if (err?.code === 'CONFLICT' || details?.code === 'REVISION_BARCODE_AMBIGUOUS') {
+        toast({
+          title: t('inventory_revision.scan_ambiguous', {
+            defaultValue: 'Bir nechta mahsulot topildi — tanlang',
+          }),
+          description: barcode,
+          variant: 'destructive',
+        });
+        const candidates = details?.candidates;
+        if (Array.isArray(candidates) && candidates[0]?.product_name) {
+          setSearch(String(candidates[0].sku || barcode));
+          setSearchDebounced(String(candidates[0].sku || barcode));
+        }
+      } else {
+        // Queue for retry on network-ish failures
+        const msg = String(err?.message || '');
+        if (/network|offline|failed to fetch|ECONN|timeout/i.test(msg)) {
+          setPendingScans((prev) => [
+            ...prev,
+            { scan_event_id: scanEventId, barcode, created_at: Date.now() },
+          ]);
+          toast({
+            title: t('inventory_revision.scan_queued', {
+              defaultValue: 'Tarmoq uzildi — skan navbatga qo‘yildi',
+            }),
+            description: barcode,
+          });
+        } else {
+          toast({
+            title: t('inventory_revision.scan_not_found', {
+              defaultValue: 'Mahsulot ushbu reviziyada topilmadi',
+            }),
+            description: err?.message || barcode,
+            variant: 'destructive',
+          });
+        }
+      }
+      setBarcodeInput('');
+      focusBarcode();
     } finally {
+      scanInFlightRef.current = false;
       setActing(false);
     }
   };
+
+  // Flush pending scans when back online / idle
+  useEffect(() => {
+    if (!editable || !revision || !pendingScans.length || acting) return;
+    let cancelled = false;
+    const flush = async () => {
+      const next = pendingScans[0];
+      if (!next) return;
+      try {
+        await countInventoryRevisionByBarcode({
+          revision_id: revision.id,
+          barcode: next.barcode,
+          scan_event_id: next.scan_event_id,
+          user_id: profile?.id || null,
+        });
+        if (cancelled) return;
+        setPendingScans((prev) => prev.filter((p) => p.scan_event_id !== next.scan_event_id));
+        await load({ soft: true });
+      } catch {
+        /* keep in queue */
+      }
+    };
+    const tmr = window.setTimeout(() => void flush(), 800);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(tmr);
+    };
+  }, [pendingScans, editable, revision, acting, profile?.id, load]);
 
   useBarcodeScanner({
     enabled: editable,
@@ -398,6 +633,137 @@ export default function InventoryRevisionDetail() {
     },
     whenInputFocused: 'auto',
   });
+
+  const goToNextByStatus = useCallback(
+    (status: 'pending' | 'variance') => {
+      const items = revision?.items || [];
+      if (!items.length) return;
+      const start = Math.max(0, activeRowIndex);
+      for (let offset = 1; offset <= items.length; offset += 1) {
+        const idx = (start + offset) % items.length;
+        const item = items[idx];
+        const st = item.count_status || (item.is_counted ? 'counted' : 'pending');
+        const isPending = item.counted_qty == null || st === 'pending';
+        const isVariance =
+          item.counted_qty != null &&
+          Math.abs(Number(item.variance ?? Number(item.counted_qty) - Number(item.system_qty))) >
+            0.0001;
+        if (status === 'pending' && isPending) {
+          setActiveRowIndex(idx);
+          flashHighlight(item.id);
+          scrollToItem(item.id);
+          return;
+        }
+        if (status === 'variance' && isVariance) {
+          setActiveRowIndex(idx);
+          flashHighlight(item.id);
+          scrollToItem(item.id);
+          return;
+        }
+      }
+      toast({
+        title:
+          status === 'pending'
+            ? t('inventory_revision.no_more_pending', {
+                defaultValue: 'Sanamagan mahsulot qolmadi',
+              })
+            : t('inventory_revision.no_more_variance', {
+                defaultValue: 'Farqli mahsulot qolmadi',
+              }),
+      });
+    },
+    [revision, activeRowIndex, flashHighlight, scrollToItem, toast, t]
+  );
+
+  // Hotkeys: F2/F3/F4/F6/F7/Esc/arrows — do not block Ctrl+K, Ctrl+R, F5
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      const target = e.target as HTMLElement | null;
+      const tag = String(target?.tagName || '').toLowerCase();
+      const inEditableField =
+        tag === 'textarea' ||
+        (tag === 'input' &&
+          target !== barcodeRef.current &&
+          target !== searchRef.current &&
+          (target as HTMLInputElement)?.type !== 'checkbox');
+
+      if (e.key === 'F2') {
+        e.preventDefault();
+        focusBarcode();
+        return;
+      }
+      if (e.key === 'F3') {
+        e.preventDefault();
+        focusSearch();
+        return;
+      }
+      if (e.key === 'F4') {
+        e.preventDefault();
+        setFilterOpen(true);
+        return;
+      }
+      if (e.key === 'F6') {
+        e.preventDefault();
+        goToNextByStatus('pending');
+        return;
+      }
+      if (e.key === 'F7') {
+        e.preventDefault();
+        goToNextByStatus('variance');
+        return;
+      }
+      if (e.key === 'Escape') {
+        if (completeOpen || cancelOpen || markZeroOpen) return;
+        e.preventDefault();
+        setSearch('');
+        setSearchDebounced('');
+        setFilterOpen(false);
+        focusBarcode();
+        return;
+      }
+      if (e.key === 'ArrowDown' && !inEditableField) {
+        const items = revision?.items || [];
+        if (!items.length) return;
+        e.preventDefault();
+        const next = Math.min(items.length - 1, activeRowIndex + 1);
+        setActiveRowIndex(next);
+        scrollToItem(items[next].id);
+        return;
+      }
+      if (e.key === 'ArrowUp' && !inEditableField) {
+        const items = revision?.items || [];
+        if (!items.length) return;
+        e.preventDefault();
+        const next = Math.max(0, activeRowIndex - 1);
+        setActiveRowIndex(next);
+        scrollToItem(items[next].id);
+        return;
+      }
+      if (e.key === 'Enter' && e.ctrlKey && !e.altKey && !e.metaKey) {
+        const items = revision?.items || [];
+        const item = items[activeRowIndex];
+        if (!item || !editable) return;
+        const draft = qtyDrafts[item.id];
+        if (draft == null || draft === '') return;
+        e.preventDefault();
+        void saveCount(item, draft);
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [
+    focusBarcode,
+    focusSearch,
+    goToNextByStatus,
+    completeOpen,
+    cancelOpen,
+    markZeroOpen,
+    revision,
+    activeRowIndex,
+    scrollToItem,
+    editable,
+    qtyDrafts,
+  ]);
 
   const handleComplete = async () => {
     if (!revision) return;
@@ -575,16 +941,20 @@ export default function InventoryRevisionDetail() {
         <CardContent className="space-y-3 px-3 pb-3">
           <div className="flex flex-col gap-2 lg:flex-row lg:items-center">
             <Input
+              ref={searchRef}
               value={search}
               onChange={(e) => setSearch(e.target.value)}
               placeholder={t('inventory_revision.search_placeholder')}
               className="h-8 max-w-md text-xs sm:text-sm"
+              aria-label={t('inventory_revision.search_placeholder')}
             />
             <Select
               value={countFilter}
+              open={filterOpen}
+              onOpenChange={setFilterOpen}
               onValueChange={(v) => setCountFilter(v as CountFilter)}
             >
-              <SelectTrigger className="h-8 w-[14rem] text-xs">
+              <SelectTrigger className="h-8 w-[14rem] text-xs" aria-label={t('inventory_revision.filter_all')}>
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
@@ -606,18 +976,61 @@ export default function InventoryRevisionDetail() {
                 {t('inventory_revision.mark_zero')} ({pendingVisible.length})
               </Button>
             )}
+            {pendingScans.length > 0 && (
+              <Badge variant="outline" className="h-8 gap-1 text-xs">
+                {t('inventory_revision.pending_scans', {
+                  defaultValue: 'Navbatdagi skan: {{count}}',
+                  count: pendingScans.length,
+                })}
+              </Badge>
+            )}
           </div>
 
-          {loading ? (
+          <p className="text-[11px] text-muted-foreground">
+            {t('inventory_revision.hotkeys_hint', {
+              defaultValue: 'F2 skaner · F3 qidiruv · F4 filtr · F6 sanamagan · F7 farqli · Esc tozalash',
+            })}
+          </p>
+
+          {loading && !revision ? (
             <p className="py-8 text-center text-sm text-muted-foreground">
               {t('common.loading', { defaultValue: 'Yuklanmoqda...' })}
             </p>
+          ) : searchError && !revision?.items?.length ? (
+            <div className="flex flex-col items-center gap-3 py-8">
+              <p className="text-center text-sm text-destructive">
+                {t('inventory_revision.search_failed', {
+                  defaultValue: 'Qidiruv bajarilmadi. Qayta urinib ko‘ring.',
+                })}
+              </p>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={() => void load({ soft: true })}
+              >
+                <RefreshCw className="mr-1.5 h-3.5 w-3.5" />
+                {t('common.retry', { defaultValue: 'Qayta urinish' })}
+              </Button>
+            </div>
           ) : !revision?.items?.length ? (
             <p className="py-8 text-center text-sm text-muted-foreground">
-              {t('inventory_revision.no_items')}
+              {searchDebounced || countFilter !== 'all'
+                ? t('inventory_revision.no_search_results', {
+                    defaultValue: 'Qidiruv bo‘yicha mahsulot topilmadi',
+                  })
+                : t('inventory_revision.no_items')}
             </p>
           ) : (
-            <div className="overflow-x-auto rounded-md border">
+            <div className="relative overflow-x-auto rounded-md border">
+              {searching && (
+                <div className="pointer-events-none absolute inset-0 z-10 flex items-start justify-center bg-background/40 pt-16">
+                  <div className="flex items-center gap-2 rounded-md border bg-background px-3 py-1.5 text-xs shadow-sm">
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                    {t('common.loading', { defaultValue: 'Yuklanmoqda...' })}
+                  </div>
+                </div>
+              )}
               <Table>
                 <TableHeader>
                   <TableRow>
@@ -631,7 +1044,7 @@ export default function InventoryRevisionDetail() {
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {revision.items.map((item) => {
+                  {revision.items.map((item, rowIdx) => {
                     const unit = formatUnit(item.unit || item.product_unit || '');
                     const draft = qtyDrafts[item.id] ?? '';
                     const live =
@@ -644,18 +1057,31 @@ export default function InventoryRevisionDetail() {
                       item.counted_qty != null
                         ? Number(item.variance ?? Number(item.counted_qty) - Number(item.system_qty))
                         : null;
+                    const isHighlighted = highlightItemId === item.id;
+                    const isActive = activeRowIndex === rowIdx;
                     return (
                       <TableRow
                         key={item.id}
-                        className={
-                          item.stock_drift
-                            ? 'bg-amber-50/70 dark:bg-amber-950/25'
-                            : item.count_status === 'variance'
-                              ? 'bg-amber-50/60 dark:bg-amber-950/20'
-                              : item.is_counted
-                                ? 'bg-emerald-50/40 dark:bg-emerald-950/10'
-                                : undefined
-                        }
+                        ref={(el) => {
+                          if (el) rowRefs.current.set(item.id, el);
+                          else rowRefs.current.delete(item.id);
+                        }}
+                        data-item-id={item.id}
+                        onClick={() => setActiveRowIndex(rowIdx)}
+                        className={[
+                          isHighlighted
+                            ? 'animate-[revScanFlash_2s_ease] bg-emerald-100/90 dark:bg-emerald-900/40'
+                            : item.stock_drift
+                              ? 'bg-amber-50/70 dark:bg-amber-950/25'
+                              : item.count_status === 'variance'
+                                ? 'bg-amber-50/60 dark:bg-amber-950/20'
+                                : item.is_counted
+                                  ? 'bg-emerald-50/40 dark:bg-emerald-950/10'
+                                  : undefined,
+                          isActive && !isHighlighted ? 'ring-1 ring-inset ring-primary/40' : '',
+                        ]
+                          .filter(Boolean)
+                          .join(' ')}
                       >
                         <TableCell>
                           <div className="min-w-0">
@@ -930,6 +1356,14 @@ export default function InventoryRevisionDetail() {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+
+      <style>{`
+        @keyframes revScanFlash {
+          0% { background-color: rgb(167 243 208 / 0.95); }
+          70% { background-color: rgb(167 243 208 / 0.55); }
+          100% { background-color: transparent; }
+        }
+      `}</style>
     </div>
   );
 }

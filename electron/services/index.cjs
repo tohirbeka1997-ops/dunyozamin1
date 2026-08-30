@@ -192,6 +192,7 @@ function createServices(db) {
   // Soft-lock: InventoryService.adjustStock consults open revisions.
   inventoryService.inventoryRevisions = services.inventoryRevisions;
   inventoryService.audit = services.audit;
+  services.inventoryRevisions.audit = services.audit;
   // Same soft-lock for stock-affecting POS sales.
   salesService.inventoryRevisions = services.inventoryRevisions;
   // prior_debt_payment → customer_payments (shift drawer) inside sale TX

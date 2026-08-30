@@ -54,6 +54,7 @@ export default function CustomerForm() {
     status: 'active' as 'active' | 'inactive',
     notes: '',
     bonus_points: 0,
+    credit_limit: 0,
     telegram: '',
   });
   const baselineSnapshotRef = useRef<string | null>(null);
@@ -116,6 +117,7 @@ export default function CustomerForm() {
         status: customer.status === 'inactive' ? 'inactive' : 'active',
         notes: customer.notes || '',
         bonus_points: Number((customer as Customer).bonus_points) || 0,
+        credit_limit: Math.max(0, Number(customer.credit_limit) || 0),
         telegram: telegramDisplay,
       });
     } catch (error) {
@@ -242,7 +244,12 @@ export default function CustomerForm() {
           status: formData.status,
           notes: formData.notes || null,
           telegram: formData.telegram.trim() || null,
-          ...(isAdmin ? { bonus_points: Math.max(0, Math.floor(Number(formData.bonus_points) || 0)) } : {}),
+          ...(isAdmin
+            ? {
+                bonus_points: Math.max(0, Math.floor(Number(formData.bonus_points) || 0)),
+                credit_limit: Math.max(0, Number(formData.credit_limit) || 0),
+              }
+            : {}),
         } as Partial<Customer> & { telegram?: string | null });
         toast({
           title: 'Muvaffaqiyatli',
@@ -276,7 +283,12 @@ export default function CustomerForm() {
           status: formData.status,
           notes: formData.notes || null,
           telegram: formData.telegram.trim() || null,
-          ...(isAdmin ? { bonus_points: Math.max(0, Math.floor(Number(formData.bonus_points) || 0)) } : {}),
+          ...(isAdmin
+            ? {
+                bonus_points: Math.max(0, Math.floor(Number(formData.bonus_points) || 0)),
+                credit_limit: Math.max(0, Number(formData.credit_limit) || 0),
+              }
+            : {}),
         });
         toast({
           title: 'Muvaffaqiyatli',
@@ -437,15 +449,34 @@ export default function CustomerForm() {
                           bonus_points: Math.max(0, Math.floor(v ?? 0)),
                         }))
                       }
-                      allowZero
+                      placeholder="0"
                       min={0}
-                      readOnly={!isAdmin}
                       disabled={!isAdmin}
                     />
+                    {!isAdmin && (
+                      <p className="text-xs text-muted-foreground">Bonusni faqat admin o‘zgartiradi.</p>
+                    )}
+                  </div>
+                )}
+
+                {isAdmin && (
+                  <div className="space-y-2">
+                    <Label htmlFor="credit_limit">Kredit limiti (UZS)</Label>
+                    <NumberInput
+                      id="credit_limit"
+                      value={formData.credit_limit > 0 ? formData.credit_limit : null}
+                      onValueChange={(v) =>
+                        setFormData((prev) => ({
+                          ...prev,
+                          credit_limit: Math.max(0, Number(v ?? 0)),
+                        }))
+                      }
+                      placeholder="0 = nasiya/qarz berish yo‘q"
+                      min={0}
+                      allowZero
+                    />
                     <p className="text-xs text-muted-foreground">
-                      {isAdmin
-                        ? 'Sozlamalarda usta bonusi yoqilgan bo‘lsa, sotuvdan keyin ball avtomatik qo‘shiladi.'
-                        : 'Faqat admin bonusni tahrirlashi mumkin.'}
+                      0 yoki bo‘sh — yangi qarz berish va nasiya sotuv bloklanadi.
                     </p>
                   </div>
                 )}

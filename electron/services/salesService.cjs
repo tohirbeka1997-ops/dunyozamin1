@@ -239,7 +239,8 @@ class SalesService {
 
   /**
    * Server-side nasiya gate (POS UI is not enough).
-   * - credit_limit > 0 → projected |debt| must not exceed limit (always)
+   * - credit_limit must be > 0 to allow any credit sale
+   * - projected |debt| must not exceed credit_limit
    * - allow_debt / allow_credit: when sales.credit.require_allow_debt=true,
    *   at least one flag OR a positive credit_limit is required
    */
@@ -266,7 +267,7 @@ class SalesService {
     if (status && status !== 'active') {
       throw createError(
         ERROR_CODES.VALIDATION_ERROR,
-        `Cannot sell on credit to inactive customer: "${row.name}".`
+        `Faol bo‘lmagan mijozga nasiya qilib bo‘lmaydi: "${row.name}".`
       );
     }
 
@@ -280,7 +281,13 @@ class SalesService {
       );
     }
 
-    if (!(limit > 0)) return;
+    if (!(limit > 0)) {
+      throw createError(
+        ERROR_CODES.VALIDATION_ERROR,
+        'Qarz berib bo‘lmaydi: mijoz kredit limiti belgilanmagan.',
+        { code: 'CREDIT_LIMIT_NOT_SET', credit_limit: 0 }
+      );
+    }
 
     const currency = normalizeCustomerCurrency(saleCurrency);
     const bal = readBalanceInCurrency(this.db, customerId, currency);
@@ -289,7 +296,12 @@ class SalesService {
       const curLabel = currency === 'USD' ? 'USD' : "so'm";
       throw createError(
         ERROR_CODES.VALIDATION_ERROR,
-        `Kredit limiti oshib ketdi (${row.name}). Limit: ${limit} ${curLabel}. Yangi qarz: ${Math.abs(projected).toFixed(2)} ${curLabel}.`
+        `Qarz berib bo‘lmaydi: yangi qarz mijoz kredit limitidan oshadi. Limit: ${limit} ${curLabel}. Yangi qarz: ${Math.abs(projected).toFixed(2)} ${curLabel}.`,
+        {
+          code: 'CREDIT_LIMIT_EXCEEDED',
+          credit_limit: limit,
+          new_debt: Math.abs(projected),
+        }
       );
     }
   }
