@@ -315,6 +315,15 @@ class SalesService {
     return Number.isFinite(v) && v > 0 ? Math.floor(v) : 30;
   }
 
+  _dbLocalTodayYmd() {
+    try {
+      const row = this.db.prepare(`SELECT date('now', 'localtime') AS d`).get();
+      return row?.d ? String(row.d).slice(0, 10) : null;
+    } catch {
+      return null;
+    }
+  }
+
   _normalizeDueDate(value) {
     if (value == null || value === '') return null;
     const s = String(value).trim().slice(0, 10);
@@ -339,7 +348,7 @@ class SalesService {
     if (credit <= 0.009 || !this._isCreditPaymentStatus(paymentStatus)) return null;
     const explicit = this._normalizeDueDate(orderData?.due_date);
     if (explicit) {
-      const check = assertDueDateNotBeforeToday(explicit);
+      const check = assertDueDateNotBeforeToday(explicit, this._dbLocalTodayYmd());
       if (!check.ok) {
         throw createError(ERROR_CODES.VALIDATION_ERROR, check.error);
       }
@@ -1968,7 +1977,7 @@ class SalesService {
 
       // Explicit nasiya due date cannot be in the past (server-side).
       if (orderData.due_date != null && String(orderData.due_date).trim() !== '') {
-        const dueCheck = assertDueDateNotBeforeToday(orderData.due_date);
+        const dueCheck = assertDueDateNotBeforeToday(orderData.due_date, this._dbLocalTodayYmd());
         if (!dueCheck.ok) {
           throw createError(ERROR_CODES.VALIDATION_ERROR, dueCheck.error);
         }
