@@ -978,6 +978,7 @@ export function createRemotePosApi(baseUrl: string, secret: string) {
       clearRevisionItemCount: inv('pos:inventory:clearRevisionItemCount'),
       countRevisionByBarcode: inv('pos:inventory:countRevisionByBarcode'),
       bulkSetRevisionItemCounts: inv('pos:inventory:bulkSetRevisionItemCounts'),
+      getRevisionCompletePreview: inv('pos:inventory:getRevisionCompletePreview'),
       completeRevision: inv('pos:inventory:completeRevision'),
       cancelRevision: inv('pos:inventory:cancelRevision'),
     },

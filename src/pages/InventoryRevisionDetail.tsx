@@ -140,6 +140,33 @@ function CountStatusBadge({
   );
 }
 
+/** Read-only fallback if preview RPC is not wired — does not change counts. */
+function localCompletePreview(revision: RevisionDetail) {
+  let surplus_qty = 0;
+  let shortage_qty = 0;
+  for (const item of revision.items || []) {
+    if (item.counted_qty == null) continue;
+    const variance = Number(
+      item.variance ?? Number(item.counted_qty) - Number(item.system_qty)
+    );
+    if (!Number.isFinite(variance) || Math.abs(variance) <= 0.0001) continue;
+    if (variance > 0) surplus_qty += variance;
+    else shortage_qty += Math.abs(variance);
+  }
+  const stockDrift =
+    Number(revision.summary?.stock_drift_items || revision.stock_drift_items || 0) > 0 ||
+    (revision.items || []).some((i) => i.stock_drift);
+  return {
+    can_complete: true,
+    surplus_qty,
+    shortage_qty,
+    surplus_value: 0,
+    shortage_value: 0,
+    requires_stock_drift_approval: stockDrift,
+    movements_during_revision: [] as unknown[],
+  };
+}
+
 export default function InventoryRevisionDetail() {
   const { id } = useParams<{ id: string }>();
   const { t } = useTranslation();
@@ -355,14 +382,17 @@ export default function InventoryRevisionDetail() {
     if (!revision || !canComplete) return;
     try {
       setActing(true);
-      const [refreshed, preview] = await Promise.all([
-        getInventoryRevision(revision.id, {
-          filter: countFilter,
-          search: searchDebounced || undefined,
-        }),
-        getInventoryRevisionCompletePreview(revision.id),
-      ]);
+      const refreshed = await getInventoryRevision(revision.id, {
+        filter: countFilter,
+        search: searchDebounced || undefined,
+      });
       applyRevision(refreshed);
+      let preview: ReturnType<typeof localCompletePreview> | null = null;
+      try {
+        preview = await getInventoryRevisionCompletePreview(revision.id);
+      } catch {
+        preview = localCompletePreview(refreshed || revision);
+      }
       setCompletePreview(preview);
       setApproveStockDrift(false);
       setCompleteOpen(true);

@@ -119,6 +119,7 @@ module.exports = {
     'pos:inventory:clearRevisionItemCount',
     'pos:inventory:countRevisionByBarcode',
     'pos:inventory:bulkSetRevisionItemCounts',
+    'pos:inventory:getRevisionCompletePreview',
     'pos:inventory:completeRevision',
     'pos:inventory:cancelRevision',
 

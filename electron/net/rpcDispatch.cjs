@@ -1504,6 +1504,11 @@ function createRpcDispatcher({ services, db, sessions }) {
           throw createError(ERROR_CODES.INTERNAL_ERROR, 'InventoryRevisionService not available');
         }
         return services.inventoryRevisions.bulkSetItemCounts(a[0] || {});
+      case 'pos:inventory:getRevisionCompletePreview':
+        if (!services.inventoryRevisions) {
+          throw createError(ERROR_CODES.INTERNAL_ERROR, 'InventoryRevisionService not available');
+        }
+        return services.inventoryRevisions.getCompletePreview(a[0]);
       case 'pos:inventory:completeRevision':
         if (!services.inventoryRevisions) {
           throw createError(ERROR_CODES.INTERNAL_ERROR, 'InventoryRevisionService not available');

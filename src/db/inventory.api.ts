@@ -398,7 +398,13 @@ export const bulkSetInventoryRevisionItemCounts = async (payload: {
 export const getInventoryRevisionCompletePreview = async (revisionId: string) => {
   if (hasPosApi()) {
     const api = requireElectron();
-    return ipc<any>(api.inventory.getRevisionCompletePreview(revisionId));
+    const fn = api.inventory?.getRevisionCompletePreview;
+    if (typeof fn !== 'function') {
+      const err = new Error('COMPLETE_PREVIEW_UNAVAILABLE');
+      (err as Error & { code?: string }).code = 'COMPLETE_PREVIEW_UNAVAILABLE';
+      throw err;
+    }
+    return ipc<any>(fn(revisionId));
   }
   throw new Error('Inventory revision requires Electron POS');
 };
