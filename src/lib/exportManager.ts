@@ -1050,10 +1050,10 @@ export const exportProfitLoss = async (
     });
     const summary = report?.summary || {};
     rows = buildRows(
-      Number(summary.gross_revenue ?? summary.revenue || 0),
-      Number(summary.discounts ?? summary.discount || 0),
+      Number(summary.gross_revenue ?? summary.revenue ?? 0),
+      Number(summary.discounts ?? summary.discount ?? 0),
       Number(summary.returns_revenue || 0),
-      Number(summary.net_revenue ?? summary.net_sales || 0),
+      Number(summary.net_revenue ?? summary.net_sales ?? 0),
       Number(summary.cogs || 0),
       Number(summary.gross_profit || 0),
       Number(summary.expenses || 0),

@@ -168,7 +168,7 @@ export default function OverallSummaryReport() {
       setActSverka(act);
       setPurchaseOrders((pos || []) as any);
       setInventorySummary(inv);
-      const actInv = Number(act?.period?.inventory_value ?? act?.current?.inventory_value || 0);
+      const actInv = Number(act?.period?.inventory_value ?? act?.current?.inventory_value ?? 0);
       if (Math.abs(actInv - Number(inv?.total_value || 0)) > 1) {
         console.warn('[OverallSummary] inventory value divergence', {
           act_sverka: actInv,
@@ -282,7 +282,7 @@ export default function OverallSummaryReport() {
   const returnsAmount = Number(pnl.returns_revenue ?? analytics?.returns_amount ?? 0);
   const grossProfit = Number(pnl.gross_profit ?? netSales - totalCogs);
   const netProfit = Number.isFinite(Number(pnl.net_profit ?? analytics?.net_profit))
-    ? Number(pnl.net_profit ?? analytics?.net_profit || 0)
+    ? Number(pnl.net_profit ?? analytics?.net_profit ?? 0)
     : grossProfit - totalExpenses;
 
   return (

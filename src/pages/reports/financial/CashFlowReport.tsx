@@ -555,7 +555,7 @@ export default function CashFlowReport() {
               <p className="text-muted-foreground">{t('reports.cash_flow.closing', 'Yakuniy')}</p>
               <p className="font-semibold">
                 {reconciliation.closing_is_provisional
-                  ? formatMoneyUZS(Number(reconciliation.expected_closing_cash ?? reconciliation.closing_cash || 0))
+                    ? formatMoneyUZS(Number(reconciliation.expected_closing_cash ?? reconciliation.closing_cash ?? 0))
                   : formatMoneyUZS(reconciliation.closing_cash)}
               </p>
               {reconciliation.closing_is_provisional ? (

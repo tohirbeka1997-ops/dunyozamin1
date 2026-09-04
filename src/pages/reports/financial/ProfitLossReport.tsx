@@ -183,11 +183,11 @@ export default function ProfitLossReport() {
 
   const summary = reportData?.summary || {};
   const meta = reportData?.meta || {};
-  const grossSales = Number(summary.gross_revenue ?? summary.revenue || 0);
+  const grossSales = Number(summary.gross_revenue ?? summary.revenue ?? 0);
   const grossSalesUzs = Number(summary.gross_revenue_uzs ?? summary.revenue_uzs ?? grossSales);
   const grossSalesUsd = Number(summary.gross_revenue_usd ?? summary.revenue_usd ?? 0);
-  const totalDiscounts = Number(summary.discounts ?? summary.discount || 0);
-  const netSales = Number(summary.net_revenue ?? summary.net_sales || 0);
+  const totalDiscounts = Number(summary.discounts ?? summary.discount ?? 0);
+  const netSales = Number(summary.net_revenue ?? summary.net_sales ?? 0);
   const netSalesUzs = Number(summary.net_sales_uzs ?? netSales);
   const netSalesUsd = Number(summary.net_sales_usd ?? 0);
   const cogs = Number(summary.cogs || 0);
