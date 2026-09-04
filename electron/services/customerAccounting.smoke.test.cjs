@@ -185,25 +185,11 @@ function ok(name) {
       amount: 2000,
       dueDate: '2099-03-01',
     });
-    // Without heal: card shows open debt + advance (no silent settle on read).
-    const cardNoSettle = customers.getById(c1.id);
-    assert.ok(
-      Math.abs(Number(cardNoSettle.position?.open_order_debt || 0) - 2000) < 0.05,
-      `without heal open stays 2000 got ${cardNoSettle.position?.open_order_debt}`
-    );
-    // Opt-in: CUSTOMER_AR_HEAL settles when ortiqcha fully covers new nasiya.
-    const prevHealSale3 = process.env.CUSTOMER_AR_HEAL;
-    process.env.CUSTOMER_AR_HEAL = '1';
-    let cardAfterSale3;
-    try {
-      cardAfterSale3 = customers.getById(c1.id);
-    } finally {
-      if (prevHealSale3 == null) delete process.env.CUSTOMER_AR_HEAL;
-      else process.env.CUSTOMER_AR_HEAL = prevHealSale3;
-    }
+    // Sale TX applies ortiqcha when it fully covers new nasiya (write path — not list/getById).
+    const cardAfterSale3 = customers.getById(c1.id);
     assert.ok(
       Number(cardAfterSale3.position?.open_order_debt || 0) < 0.05,
-      `open after auto-settle ${cardAfterSale3.position?.open_order_debt}`
+      `open after sale settle ${cardAfterSale3.position?.open_order_debt}`
     );
     assert.ok(
       Math.abs(Number(cardAfterSale3.position?.advance || 0) - 1000) < 0.05,
@@ -211,7 +197,13 @@ function ok(name) {
     );
     const o3 = db.prepare(`SELECT credit_amount FROM orders WHERE id = ?`).get(sale3.order_id);
     assert.ok(Number(o3.credit_amount) <= 0.02, `order credit after settle ${o3.credit_amount}`);
-    ok('4. ortiqcha auto-nets new credit only when CUSTOMER_AR_HEAL=1');
+    const debtAfterSale3 = readCustomerDebtAdvance(db, c1.id, 'UZS');
+    // Opening the card again must not rewrite buckets (CUSTOMER_AR_HEAL off).
+    customers.getById(c1.id);
+    const debtAgain = readCustomerDebtAdvance(db, c1.id, 'UZS');
+    assert.ok(Math.abs(debtAgain.debt - debtAfterSale3.debt) < 0.02, 'getById does not rewrite debt');
+    assert.ok(Math.abs(debtAgain.advance - debtAfterSale3.advance) < 0.02, 'getById does not rewrite advance');
+    ok('4. sale TX nets ortiqcha onto new credit; getById does not rewrite');
 
     customers.receivePayment({
       customer_id: c1.id,

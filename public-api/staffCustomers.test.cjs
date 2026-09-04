@@ -61,13 +61,13 @@ function seedDatabase(dbPath) {
   ).run(STAFF_USER_ID);
 
   db.prepare(
-    `INSERT INTO customers (id, name, phone, status, balance, total_sales, total_orders, created_at, updated_at)
-     VALUES (?, 'Test Mijoz', '998901234567', 'active', -50000, 0, 0, datetime('now'), datetime('now'))`,
+    `INSERT INTO customers (id, name, phone, status, balance, debt_uzs, advance_uzs, allow_credit, allow_debt, credit_limit, total_sales, total_orders, created_at, updated_at)
+     VALUES (?, 'Test Mijoz', '998901234567', 'active', -50000, 50000, 0, 1, 1, 5000000, 0, 0, datetime('now'), datetime('now'))`,
   ).run(CUSTOMER_ID);
 
   db.prepare(
-    `INSERT INTO customers (id, name, phone, status, balance, total_sales, total_orders, created_at, updated_at)
-     VALUES ('cust-ali-001', 'Alisher Karimov', '998901112233', 'active', 0, 0, 0, datetime('now'), datetime('now'))`,
+    `INSERT INTO customers (id, name, phone, status, balance, debt_uzs, advance_uzs, total_sales, total_orders, created_at, updated_at)
+     VALUES ('cust-ali-001', 'Alisher Karimov', '998901112233', 'active', 0, 0, 0, 0, 0, datetime('now'), datetime('now'))`,
   ).run();
 
   db.prepare(

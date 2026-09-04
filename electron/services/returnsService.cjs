@@ -857,16 +857,12 @@ class ReturnsService {
         note: `Qaytarish — ortiqcha ochiq qarzga qo‘llandi: ${meta.returnNumber || meta.returnId || ''}`,
       });
       const pos = computeCustomerPosition(this.db, customerId, cur);
-      const buckets = readCustomerDebtAdvance(this.db, customerId, cur);
-      const loanNet = roundCustomerMoney(
-        Math.max(0, Number(pos.loan_issued || 0) - Number(pos.loan_repaid || 0))
-      );
       writeDebtAdvanceNet(
         this.db,
         customerId,
         cur,
-        roundCustomerMoney(pos.open_order_debt + loanNet),
-        buckets.advance,
+        roundCustomerMoney(pos.total_debt),
+        roundCustomerMoney(pos.advance),
         now
       );
     } catch (syncErr) {

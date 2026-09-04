@@ -24,6 +24,7 @@ const {
   allocateInboundToOpenOrders,
   insertPaymentAllocation,
   syncCustomerDebtFromPosition,
+  settleAdvanceAgainstOpenDebt,
   roundMoney: roundCustomerMoney,
   OP: CUSTOMER_OP,
   appendLedgerAuditCols,
@@ -3103,19 +3104,63 @@ class SalesService {
             now
           );
         }
+        // Credit increases debt_uzs without consuming advance (dual buckets).
+        // applyCustomerBalanceDelta(-credit) would wrongly eat ortiqcha first.
+        // Prepaid / inbound overpay / refund paths above already adjusted buckets.
+        if (finalCreditAmount > payEps) {
+          const b = readCustomerDebtAdvance(this.db, orderData.customer_id, saleCurrency);
+          writeDebtAdvanceNet(
+            this.db,
+            orderData.customer_id,
+            saleCurrency,
+            roundCustomerMoney(b.debt + finalCreditAmount),
+            b.advance,
+            now
+          );
+        }
         const posSale = computeCustomerPosition(this.db, orderData.customer_id, saleCurrency);
-        const bucketsSale = readCustomerDebtAdvance(this.db, orderData.customer_id, saleCurrency);
-        const loanNetSale = roundCustomerMoney(
-          Math.max(0, Number(posSale.loan_issued || 0) - Number(posSale.loan_repaid || 0))
-        );
         writeDebtAdvanceNet(
           this.db,
           orderData.customer_id,
           saleCurrency,
-          roundCustomerMoney(posSale.open_order_debt + loanNetSale),
-          bucketsSale.advance,
+          posSale.total_debt,
+          posSale.advance,
           now
         );
+        // Sale TX (not list/getById): if ortiqcha fully covers new open nasiya, apply it now.
+        let posAfterSale = posSale;
+        if (
+          Number(posSale.advance || 0) > 0.009 &&
+          Number(posSale.open_order_debt || 0) > 0.009 &&
+          Number(posSale.advance || 0) + 0.01 >= Number(posSale.open_order_debt || 0)
+        ) {
+          try {
+            const settled = settleAdvanceAgainstOpenDebt(this.db, orderData.customer_id, saleCurrency, {
+              createdAt: now,
+              createdBy: orderData.cashier_id || orderData.user_id || null,
+              refNo: order.order_number || orderId,
+              note: `Sotuv — ortiqcha ochiq nasiyaga qo‘llandi: ${order.order_number || orderId}`,
+            });
+            if ((settled.applied_to_orders || 0) > 0.009) {
+              posAfterSale = computeCustomerPosition(this.db, orderData.customer_id, saleCurrency);
+              writeDebtAdvanceNet(
+                this.db,
+                orderData.customer_id,
+                saleCurrency,
+                posAfterSale.total_debt,
+                posAfterSale.advance,
+                now
+              );
+            }
+          } catch (settleSaleErr) {
+            console.warn(
+              '[SALE] settleAdvanceAgainstOpenDebt skipped:',
+              settleSaleErr?.message || settleSaleErr
+            );
+          }
+        }
+        const bucketsSale = readCustomerDebtAdvance(this.db, orderData.customer_id, saleCurrency);
+        void posAfterSale;
 
         const balancesAfter = readCustomerBalances(this.db, orderData.customer_id);
         const newBalance = readBalanceInCurrency(this.db, orderData.customer_id, saleCurrency);
