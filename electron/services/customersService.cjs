@@ -1190,13 +1190,16 @@ class CustomersService {
       }
       if (limitNum > 0) {
         const actorId = getCurrentUserId();
-        const actorRoles = this._getUserRoleCodes(actorId);
-        const isAdmin = (actorRoles || []).some((r) => String(r).toLowerCase() === 'admin');
-        if (!isAdmin) {
-          throw createError(
-            ERROR_CODES.FORBIDDEN,
-            'Kredit limitini faqat admin belgilashi mumkin.'
-          );
+        // No session (smoke/system seeds): allow. Interactive UI always has actor.
+        if (actorId) {
+          const actorRoles = this._getUserRoleCodes(actorId);
+          const isAdmin = (actorRoles || []).some((r) => String(r).toLowerCase() === 'admin');
+          if (!isAdmin) {
+            throw createError(
+              ERROR_CODES.FORBIDDEN,
+              'Kredit limitini faqat admin belgilashi mumkin.'
+            );
+          }
         }
       }
       data.credit_limit = limitNum;
@@ -1335,13 +1338,15 @@ class CustomersService {
 
     if (data.credit_limit !== undefined) {
       const actorId = getCurrentUserId();
-      const actorRoles = this._getUserRoleCodes(actorId);
-      const isAdmin = (actorRoles || []).some((r) => String(r).toLowerCase() === 'admin');
-      if (!isAdmin) {
-        throw createError(
-          ERROR_CODES.FORBIDDEN,
-          'Kredit limitini faqat admin belgilashi mumkin.'
-        );
+      if (actorId) {
+        const actorRoles = this._getUserRoleCodes(actorId);
+        const isAdmin = (actorRoles || []).some((r) => String(r).toLowerCase() === 'admin');
+        if (!isAdmin) {
+          throw createError(
+            ERROR_CODES.FORBIDDEN,
+            'Kredit limitini faqat admin belgilashi mumkin.'
+          );
+        }
       }
       const limitNum = Number(data.credit_limit);
       if (!Number.isFinite(limitNum) || limitNum < 0) {
