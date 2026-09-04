@@ -22,6 +22,7 @@ const {
   useUnifiedSales,
   posCartReturnExcludeWhere,
 } = require('../lib/unifiedSalesSql.cjs');
+const { computePnL } = require('../lib/financialCalc.cjs');
 
 /**
  * Dashboard Service
@@ -488,73 +489,77 @@ class DashboardService {
           .all(...cogsParams)
       : [];
 
-    const totalSales = Number(salesRow?.total_sales || 0) || 0;
-    const totalCogs = Number(cogsRow?.total_cogs || 0) || 0;
-    const soldRevenue = Number(cogsRow?.sold_revenue || 0) || 0;
-    const totalProfit = soldRevenue > 0 ? soldRevenue - totalCogs : totalSales - totalCogs;
-    const totalExpenses = Number(expensesRow?.total_expenses || 0) || 0;
+    const pnl = computePnL(this, {
+      date_from: dateFrom,
+      date_to: dateTo,
+      warehouse_id: warehouseId,
+      sales_channel: filters.sales_channel,
+    });
+    const totalSales = pnl.gross_revenue;
+    const totalCogs = pnl.cogs;
+    const totalProfit = pnl.gross_profit;
+    const totalExpenses = pnl.expenses;
     const totalCommission = sumPaymentFeesForPeriod(this.db, {
       dateFrom,
       dateTo,
       warehouseId,
       tzDateExpr: (col) => this._tzDateExpr(col),
     });
-    const returnsAmount = (Number(returnsRow?.returns_amount || 0) || 0) + posCartReturnsAmount;
-    const returnsCogs = (Number(returnsCogsRow?.returns_cogs || 0) || 0) + posCartReturnsCogs;
-    const returnsCount = (Number(returnsRow?.returns_count || 0) || 0) + posCartReturnsCount;
-    const netSales = Math.max(0, totalSales - returnsAmount);
+    const returnsAmount = pnl.returns_revenue;
+    const returnsCogs = pnl.returns_cogs;
+    const returnsCount = Number(pnl.returns_count || 0) || 0;
+    const netSales = pnl.net_revenue;
     let customerAdvance = 0;
+    let customerDebt = 0;
     try {
       if (this._hasTable('customers')) {
-        const adv = this.db
-          .prepare(
-            `
-            SELECT COALESCE(SUM(CASE WHEN balance > 0 THEN balance ELSE 0 END), 0) AS customer_advance
-            FROM customers
-            WHERE COALESCE(status, 'active') = 'active'
-          `,
-          )
-          .get();
-        customerAdvance = Number(adv?.customer_advance || 0) || 0;
+        // Same AR truth as customer card: open orders + loans (not raw SUM(debt_uzs)).
+        const { sumComputedDebtAll } = require('../lib/customerPosition.cjs');
+        const computed = sumComputedDebtAll(this.db, 'UZS');
+        customerDebt = Number(computed.debt || 0) || 0;
+        customerAdvance = Number(computed.advance || 0) || 0;
       }
     } catch {
       customerAdvance = 0;
+      customerDebt = 0;
     }
-    const netProfit = calculateNetProfit({
-      grossProfit: totalProfit,
-      returnsRevenue: returnsAmount,
-      returnsCogs,
-      expenses: totalExpenses,
-      commission: totalCommission,
-    });
-    const profitMargin = totalSales > 0 ? (netProfit / totalSales) * 100 : 0;
+    const netProfit = pnl.net_profit;
+    const profitMargin = netSales > 0 ? (netProfit / netSales) * 100 : 0;
 
     return {
       period: { date_from: dateFrom, date_to: dateTo },
       warehouse_id: warehouseId || null,
       total_sales: totalSales,
-      total_sales_uzs: Number(salesRow?.total_sales_uzs ?? totalSales) || 0,
-      total_sales_usd: Number(salesRow?.total_sales_usd || 0) || 0,
+      total_sales_uzs: pnl.gross_revenue_uzs,
+      total_sales_usd: pnl.gross_revenue_usd,
+      discounts: pnl.discounts,
+      gross_revenue: pnl.gross_revenue,
       total_collected: Number(salesRow?.total_collected || 0) || 0,
       credit_issued: Number(salesRow?.credit_issued || 0) || 0,
       customer_advance: customerAdvance,
-      total_orders: Number(salesRow?.total_orders || 0) || 0,
-      average_order_value: Number(salesRow?.average_order_value || 0) || 0,
+      customer_debt: customerDebt,
+      total_orders: Number(pnl.orders_count || salesRow?.total_orders || 0) || 0,
+      average_order_value: pnl.avg_order_value,
       total_cogs: totalCogs,
       total_profit: totalProfit,
       net_sales: netSales,
+      net_sales_uzs: pnl.net_sales_uzs,
+      net_sales_usd: pnl.net_sales_usd,
       net_profit: netProfit,
       profit_margin: profitMargin,
       total_expenses: totalExpenses,
       total_commission: totalCommission,
       payment_fees: totalCommission,
+      cogs_source: pnl.cogs_source,
+      cogs_source_breakdown: pnl.cogs_source_breakdown,
       low_stock_count: lowStockCount,
       active_customers: Number(activeCustomers?.active_customers || 0) || 0,
-      items_sold: Number(cogsRow?.items_sold || 0) || 0,
+      items_sold: Number(pnl.items_sold || cogsRow?.items_sold || 0) || 0,
       returns_count: returnsCount,
       returns_amount: returnsAmount,
       returns_cogs: returnsCogs,
       pending_purchase_orders: 0,
+      meta: pnl.meta,
       warnings: {
         missing_cost_count: Number(missingCost?.missing_cost_count || 0) || 0,
         cogs_missing: Number(missingCost?.missing_cost_count || 0) > 0,

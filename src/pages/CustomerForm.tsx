@@ -155,18 +155,16 @@ export default function CustomerForm() {
       return;
     }
 
-    const phoneInput = formData.phone?.trim();
-    if (phoneInput) {
-      const phoneGate = assertOptionalUzPhone(phoneInput);
-      if (!phoneGate.ok) {
-        toast({
-          title: 'Validatsiya xatosi',
-          description: "Telefon raqami noto'g'ri formatda. Masalan: +998 90 123 45 67",
-          variant: 'destructive',
-        });
-        return;
-      }
+    const phoneGate = assertOptionalUzPhone(formData.phone);
+    if (!phoneGate.ok) {
+      toast({
+        title: 'Validatsiya xatosi',
+        description: "Telefon raqami noto'g'ri formatda. Masalan: +998 90 123 45 67",
+        variant: 'destructive',
+      });
+      return;
     }
+    const resolvedPhone = phoneGate.phone;
 
     const emailGate = assertOptionalEmail(formData.email);
     if (!emailGate.ok) {
@@ -214,7 +212,7 @@ export default function CustomerForm() {
 
       if (!id) {
         const dups = await findCustomerDuplicates({
-          phone: phoneInput || null,
+          phone: resolvedPhone,
           email: emailGate.email,
           name: formData.name.trim(),
         });
@@ -234,7 +232,7 @@ export default function CustomerForm() {
       if (id) {
         await updateCustomer(id, {
           name: formData.name,
-          phone: formData.phone || null,
+          phone: resolvedPhone,
           email: emailGate.email,
           address: formData.address || null,
           type: formData.type,
@@ -257,9 +255,8 @@ export default function CustomerForm() {
         });
         goToList();
       } else {
-        const phoneInput2 = formData.phone?.trim();
-        if (phoneInput2) {
-          const existingByPhone = await findCustomerByPhone(phoneInput2);
+        if (phoneGate.normalized && resolvedPhone) {
+          const existingByPhone = await findCustomerByPhone(resolvedPhone);
           if (existingByPhone) {
             toast({
               title: 'Xatolik',
@@ -273,7 +270,7 @@ export default function CustomerForm() {
 
         const newCustomer = await createCustomer({
           name: formData.name,
-          phone: formData.phone || null,
+          phone: resolvedPhone,
           email: emailGate.email,
           address: formData.address || null,
           type: formData.type,

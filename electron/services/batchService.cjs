@@ -673,6 +673,11 @@ class BatchService {
 
     const now = this._nowSql();
     const batchId = randomUUID();
+    const batchNo =
+      payload.batchNo ||
+      payload.batch_no ||
+      (payload.docNo ? `${payload.docNo}-${String(receiptItemId).slice(0, 8)}` : null) ||
+      `RCV-${String(receiptId).slice(0, 8)}`;
     this._insertBatch({
       id: batchId,
       product_id: productId2,
@@ -693,6 +698,8 @@ class BatchService {
       supplier_id: payload.supplierId || null,
       supplier_name: payload.supplierName || null,
       doc_no: payload.docNo || null,
+      batch_no: batchNo,
+      expiry_date: payload.expiryDate || payload.expiry_date || null,
       status: 'active',
       created_at: now,
     });
@@ -771,7 +778,7 @@ class BatchService {
           AND status = 'active'
           AND remaining_qty > 0
           ${supplierFilter}
-        ORDER BY opened_at ASC, created_at ASC, id ASC
+        ORDER BY opened_at ASC, created_at ASC, rowid ASC
       `
       )
       .all(...batchParams);
@@ -782,17 +789,19 @@ class BatchService {
       if (!(available > 0)) continue;
 
       const take = Math.min(available, remaining);
-      const after = available - take;
-
-      this.db
+      const upd = this.db
         .prepare(
           `
           UPDATE inventory_batches
-          SET remaining_qty = ?, status = CASE WHEN ? <= 0 THEN 'closed' ELSE status END
+          SET remaining_qty = remaining_qty - ?,
+              status = CASE WHEN remaining_qty <= 0 THEN 'closed' ELSE status END
           WHERE id = ?
+            AND status = 'active'
+            AND remaining_qty >= ?
         `
         )
-        .run(after, after, b.id);
+        .run(take, b.id, take);
+      if (!upd.changes) continue;
 
       const allocId = randomUUID();
       this._insertAllocation({
@@ -864,6 +873,23 @@ class BatchService {
   /**
    * FIFO allocation with protected fallback: never throws when strict block is off.
    */
+  _existingOutAllocations(referenceType, referenceId) {
+    return (
+      this.db
+        .prepare(
+          `
+          SELECT id, batch_id, quantity, unit_cost
+          FROM inventory_batch_allocations
+          WHERE direction = 'out'
+            AND reference_type = ?
+            AND reference_id = ?
+          ORDER BY created_at ASC, id ASC
+        `
+        )
+        .all(referenceType, referenceId) || []
+    );
+  }
+
   allocateFIFOWithFallback(arg1, productId, warehouseId, quantity) {
     this._requireBatchTables();
     const payload = arg1 && typeof arg1 === 'object'
@@ -877,6 +903,17 @@ class BatchService {
     if (!orderItemId2) throw createError(ERROR_CODES.VALIDATION_ERROR, 'orderItemId is required');
     if (!productId2) throw createError(ERROR_CODES.VALIDATION_ERROR, 'productId is required');
     if (!(requested > 0)) throw createError(ERROR_CODES.VALIDATION_ERROR, 'quantity must be > 0');
+
+    // Idempotent: parallel/retry finalize must not consume the same batch twice.
+    const existing = this._existingOutAllocations('order_item', orderItemId2);
+    if (existing.length > 0) {
+      return existing.map((a) => ({
+        id: a.id,
+        batch_id: a.batch_id,
+        quantity: Number(a.quantity || 0) || 0,
+        unit_cost: Number(a.unit_cost || 0) || 0,
+      }));
+    }
 
     const first = this._fifoTakeFromBatches({
       productId: productId2,
@@ -944,6 +981,16 @@ class BatchService {
     if (!orderItemId2) throw createError(ERROR_CODES.VALIDATION_ERROR, 'orderItemId is required');
     if (!productId2) throw createError(ERROR_CODES.VALIDATION_ERROR, 'productId is required');
     if (!(requested > 0)) throw createError(ERROR_CODES.VALIDATION_ERROR, 'quantity must be > 0');
+
+    const existing = this._existingOutAllocations('order_item', orderItemId2);
+    if (existing.length > 0) {
+      return existing.map((a) => ({
+        id: a.id,
+        batch_id: a.batch_id,
+        quantity: Number(a.quantity || 0) || 0,
+        unit_cost: Number(a.unit_cost || 0) || 0,
+      }));
+    }
 
     const { allocations, remaining } = this._fifoTakeFromBatches({
       productId: productId2,
@@ -1191,7 +1238,7 @@ class BatchService {
           AND warehouse_id = ?
           AND status = 'active'
           AND remaining_qty > 0
-        ORDER BY opened_at ASC, created_at ASC, id ASC
+        ORDER BY opened_at ASC, created_at ASC, rowid ASC
       `
       )
       .all(productId, wh);
@@ -1270,7 +1317,28 @@ class BatchService {
     if (delta > 0) {
       const cost = Number(unitCostForIn2 ?? 0);
       if (!(cost >= 0)) throw createError(ERROR_CODES.VALIDATION_ERROR, 'unitCostForIn must be >= 0 for adjustment_in');
+      const allowZero =
+        payload.allowZeroCost === true ||
+        (() => {
+          try {
+            const row = this.db
+              .prepare(`SELECT value FROM settings WHERE key = 'inventory.batch_require_cost_on_increase' LIMIT 1`)
+              .get();
+            if (!row) return false;
+            const v = String(row.value ?? '1').trim().toLowerCase();
+            return v === '0' || v === 'false' || v === 'off';
+          } catch {
+            return false;
+          }
+        })();
+      if (!(cost > 0) && !allowZero) {
+        throw createError(
+          ERROR_CODES.VALIDATION_ERROR,
+          'Korreksiya/ortiqcha kirim uchun tannarx majburiy (FIFO). unit_cost > 0 kiriting yoki inventory.batch_require_cost_on_increase=0 qiling.'
+        );
+      }
       const batchId = randomUUID();
+      const batchNo = payload.batchNo || `ADJ-${String(adjustmentId2).slice(0, 8)}-${String(now).slice(0, 10)}`;
       this._insertBatch({
         id: batchId,
         product_id: productId2,
@@ -1284,7 +1352,9 @@ class BatchService {
         source_id: adjustmentId2,
         supplier_id: null,
         supplier_name: null,
-        doc_no: null,
+        doc_no: batchNo,
+        batch_no: batchNo,
+        expiry_date: payload.expiryDate || null,
         status: 'active',
         created_at: now,
       });
@@ -1513,25 +1583,24 @@ class BatchService {
     let remaining = Number(excessQty || 0);
     if (!(remaining > 0)) return 0;
 
+    // Newest first so later duplicate opening snapshots are closed before older cost layers.
+    // Include already-allocated batches: leftover remaining_qty after sales/revision
+    // must still be trimmed down to live stock.
     const batches = this.db
       .prepare(
         `
-        SELECT b.id, b.remaining_qty
+        SELECT b.id, b.remaining_qty, b.unit_cost
         FROM inventory_batches b
         WHERE b.product_id = ?
           AND b.warehouse_id = ?
-          AND b.status = 'active'
           AND COALESCE(b.remaining_qty, 0) > 0
-          AND b.id NOT IN (
-            SELECT DISTINCT batch_id
-            FROM inventory_batch_allocations
-            WHERE direction = 'out' AND batch_id IS NOT NULL
-          )
         ORDER BY b.opened_at DESC, b.created_at DESC, b.id DESC
       `
       )
       .all(productId, wh);
 
+    const now = this._nowSql();
+    const repairRef = `repair-coverage:${now}:${productId}`;
     let reducedTotal = 0;
     for (const b of batches) {
       if (remaining <= 0) break;
@@ -1549,6 +1618,19 @@ class BatchService {
           `
           )
           .run(after, after, b.id);
+        this._insertAllocation({
+          id: randomUUID(),
+          batch_id: b.id,
+          direction: 'out',
+          product_id: productId,
+          warehouse_id: wh,
+          quantity: take,
+          unit_cost: Number(b.unit_cost || 0),
+          reference_type: 'repair_coverage',
+          reference_id: repairRef,
+          note: 'Zaxira qoldig‘iga moslash: ortiqcha partiya yopildi',
+          created_at: now,
+        });
       }
       reducedTotal += take;
       remaining -= take;

@@ -97,23 +97,31 @@ function registerCustomersHandlers(services) {
       throw new Error('Invalid operation type. Must be "payment_in" or "payment_out"');
     }
 
-    return customers.receivePayment(
+    return customers.receivePayment({
       customer_id,
       amount,
+      payment_method: method,
       method,
-      notes || null,
-      received_by || null,
-      order_id || null,
-      source || null,
+      notes: notes || null,
+      received_by: received_by || null,
+      order_id: order_id || null,
+      source: source || null,
       operation,
-      shift_id || null,
-      payload?.currency ?? 'UZS',
-      payload?.fx_rate ?? payload?.fxRate ?? null,
+      shift_id: shift_id || null,
+      currency: payload?.currency ?? 'UZS',
+      fx_rate: payload?.fx_rate ?? payload?.fxRate ?? null,
       payment_uuid,
       payment_out_kind,
       lend_authorized,
-      approver_user_id
-    );
+      approver_user_id,
+      allocations: payload?.allocations ?? payload?.order_allocations ?? null,
+    });
+  }));
+
+  console.log('Registering pos:customers:applyAdvanceToOrder handler...');
+  ipcMain.removeHandler('pos:customers:applyAdvanceToOrder');
+  ipcMain.handle('pos:customers:applyAdvanceToOrder', wrapHandler(async (_event, payload) => {
+    return customers.applyAdvanceToOrder(payload || {});
   }));
 
   console.log('Registering pos:customers:getTotalDebt handler...');
@@ -141,7 +149,8 @@ function registerCustomersHandlers(services) {
         offset: payload.offset || 0,
         from: payload.from,
         to: payload.to,
-        type: payload.type
+        type: payload.type,
+        order: payload.order || payload.sort,
       });
     } else {
       // Separate parameters format: (customerId, filters)

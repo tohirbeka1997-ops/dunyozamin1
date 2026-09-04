@@ -126,6 +126,27 @@ export default function SearchableCombobox({
             placeholder={resolvedSearchPlaceholder}
             value={search}
             onValueChange={setSearch}
+            onKeyDown={(event) => {
+              if (event.key !== 'Enter' || loading) return;
+              const term = normalizeSearch(search);
+              if (!term) return;
+              const exact = filteredOptions.find((option) => {
+                const skuHay = `${option.keywords || ''} ${option.label}`.toLowerCase();
+                const tokens = skuHay.split(/[\s()]+/).filter(Boolean);
+                return tokens.includes(term) || option.label.toLowerCase() === term;
+              });
+              const others = filteredOptions.filter((o) => o.value !== 'all');
+              const pick =
+                exact ||
+                (filteredOptions.length === 1 ? filteredOptions[0] : null) ||
+                (others.length === 1 ? others[0] : null);
+              if (pick) {
+                event.preventDefault();
+                onValueChange(pick.value);
+                setOpen(false);
+                setSearch('');
+              }
+            }}
           />
           <CommandList>
             {loading ? (

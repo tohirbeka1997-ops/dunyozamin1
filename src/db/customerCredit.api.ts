@@ -299,6 +299,8 @@ export const receiveCustomerPayment = async (_paymentData: {
   lendAuthorized?: boolean;
   approver_user_id?: string | null;
   approverUserId?: string | null;
+  allocations?: Array<{ order_id: string; amount: number }>;
+  order_allocations?: Array<{ order_id: string; amount: number }>;
 }): Promise<{
   success: boolean;
   payment_number?: string;
@@ -348,6 +350,7 @@ export const receiveCustomerPayment = async (_paymentData: {
         lend_authorized:
           _paymentData.lend_authorized === true || _paymentData.lendAuthorized === true,
         approver_user_id: _paymentData.approver_user_id ?? _paymentData.approverUserId ?? null,
+        allocations: _paymentData.allocations ?? _paymentData.order_allocations ?? null,
       })
     );
   }
@@ -360,6 +363,21 @@ export const receiveCustomerPayment = async (_paymentData: {
   }
   await delay();
   return { success: true, payment_number: await generatePaymentNumber() };
+};
+
+export const applyCustomerAdvanceToOrder = async (payload: {
+  customerId: string;
+  orderId: string;
+  amount: number;
+  receivedBy?: string | null;
+  notes?: string | null;
+}): Promise<{ success: boolean; applied_amount?: number; error?: string }> => {
+  if (hasPosApi()) {
+    const api = requireElectron();
+    return ipc(api.customers.applyAdvanceToOrder(payload));
+  }
+  await delay();
+  return { success: false, error: 'Faqat desktop ilovada mavjud' };
 };
 
 export const getCustomerPayments = async (
@@ -381,11 +399,17 @@ export const getCustomerPayments = async (
 
 export const getCustomerLedger = async (
   _customerId: string,
-  _opts?: { limit?: number; offset?: number }
+  _opts?: { limit?: number; offset?: number; order?: "asc" | "desc" | "oldest" | "newest" }
 ): Promise<CustomerLedgerEntry[]> => {
   if (hasPosApi()) {
     const api = requireElectron();
-    return ipc<CustomerLedgerEntry[]>(api.customers.getLedger(_customerId, { limit: _opts?.limit ?? 100, offset: _opts?.offset ?? 0 }));
+    return ipc<CustomerLedgerEntry[]>(
+      api.customers.getLedger(_customerId, {
+        limit: _opts?.limit ?? 100,
+        offset: _opts?.offset ?? 0,
+        order: _opts?.order ?? "asc",
+      }),
+    );
   }
   await delay();
   return [];
@@ -454,6 +478,8 @@ export type OpenCreditOrderRow = {
   customer_name?: string | null;
   customer_phone?: string | null;
   credit_amount: number;
+  paid_amount?: number;
+  total_amount?: number;
   due_date?: string | null;
   credit_reminder_note?: string | null;
   payment_status?: string | null;

@@ -8,7 +8,15 @@ const {
   readCustomerBalances,
   readBalanceInCurrency,
   applyCustomerBalanceDeltaOnce,
+  writeDebtAdvanceNet,
+  readCustomerDebtAdvance,
 } = require('../lib/customerBalance.cjs');
+const {
+  applyReturnToOrderRemaining,
+  settleAdvanceAgainstOpenDebt,
+  computeCustomerPosition,
+  roundMoney: roundCustomerMoney,
+} = require('../lib/customerPosition.cjs');
 const { availableToReturnQty, assertReturnQtyAllowed, RETURN_LIMIT_EXCEEDED_CODE, RETURN_LIMIT_EXCEEDED_MESSAGE, isSalesReturnFullyExhausted } = require('../lib/posHardening.cjs');
 const {
   summarizeOrderPayments,
@@ -825,6 +833,10 @@ class ReturnsService {
       }
     }
 
+    if (meta.orderId) {
+      applyReturnToOrderRemaining(this.db, meta.orderId, amount, now);
+    }
+
     const { applied, balances: balancesAfter } = applyCustomerBalanceDeltaOnce(
       this.db,
       customerId,
@@ -833,6 +845,33 @@ class ReturnsService {
       ledgerRefId,
       now
     );
+    try {
+      // Apply refund credit to still-open nasiya/loans before parking remainder as ortiqcha.
+      // Without this, delta nets stored debt into advance, then open_order_debt is restored
+      // and the card shows large −ortiqcha with open orders still listed underneath.
+      settleAdvanceAgainstOpenDebt(this.db, customerId, cur, {
+        createdAt: now,
+        createdBy: meta.createdBy || null,
+        refNo: meta.returnNumber || meta.returnId || null,
+        includeLoans: true,
+        note: `Qaytarish — ortiqcha ochiq qarzga qo‘llandi: ${meta.returnNumber || meta.returnId || ''}`,
+      });
+      const pos = computeCustomerPosition(this.db, customerId, cur);
+      const buckets = readCustomerDebtAdvance(this.db, customerId, cur);
+      const loanNet = roundCustomerMoney(
+        Math.max(0, Number(pos.loan_issued || 0) - Number(pos.loan_repaid || 0))
+      );
+      writeDebtAdvanceNet(
+        this.db,
+        customerId,
+        cur,
+        roundCustomerMoney(pos.open_order_debt + loanNet),
+        buckets.advance,
+        now
+      );
+    } catch (syncErr) {
+      console.warn('[RETURNS] position sync skipped:', syncErr?.message || syncErr);
+    }
     const newBalance = readBalanceInCurrency(this.db, customerId, cur);
 
     if (applied) {
@@ -1664,6 +1703,7 @@ class ReturnsService {
             const balanceResult = this._applyCustomerRefund(customerId, refundAmount, {
               returnId,
               returnNumber,
+              orderId: data.order_id || order?.id,
               currency: order.currency,
               method: data.refund_method || 'customer_account',
               createdAt: now,
@@ -2397,6 +2437,7 @@ class ReturnsService {
             this._applyCustomerRefund(customerId, refundAmount, {
               returnId,
               returnNumber: sr.return_number || null,
+              orderId: sr.order_id || order?.id,
               currency: order.currency,
               method: refundMethod || 'customer_account',
               createdAt: now,

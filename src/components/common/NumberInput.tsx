@@ -26,6 +26,7 @@ export interface NumberInputProps {
   error?: string;
   onBlur?: (e: FocusEvent<HTMLInputElement>) => void;
   autoFocus?: boolean;
+  title?: string;
   syncWhileFocused?: boolean;
 }
 
@@ -46,6 +47,7 @@ export default function NumberInput({
   error,
   onBlur,
   autoFocus,
+  title,
   syncWhileFocused = false,
 }: NumberInputProps) {
   const [displayValue, setDisplayValue] = useState('');
@@ -137,6 +139,7 @@ export default function NumberInput({
     }
     if (/^\d$/.test(e.key)) return;
     if (e.key === '-' && min < 0) return;
+    if (/^F\d{1,2}$/.test(e.key)) return;
     e.preventDefault();
   };
 
@@ -163,6 +166,7 @@ export default function NumberInput({
         disabled={disabled}
         readOnly={readOnly}
         autoFocus={autoFocus}
+        title={title}
         className={cn(error && 'border-destructive', className)}
       />
       {error && <p className="text-sm text-destructive">{error}</p>}

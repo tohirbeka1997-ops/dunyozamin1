@@ -1022,21 +1022,19 @@ export const exportProfitLoss = async (
   const buildRows = (
     grossSales: number,
     totalDiscounts: number,
+    returnsRevenue: number,
     netSales: number,
     cogs: number,
     grossProfit: number,
-    returnsRevenue: number,
-    returnsCogs: number,
     totalExpenses: number,
     netProfit: number
   ): Array<[string, string]> => [
-    ['Yalpi sotuv', formatUzs(grossSales)],
+    ['Brutto sotuv', formatUzs(grossSales)],
     ['Chegirmalar', formatMinusMoney(totalDiscounts)],
-    ['Sof sotuv', formatUzs(netSales)],
+    ['Sotuv qaytarishlari', formatMinusMoney(returnsRevenue)],
+    ['Sof tushum', formatUzs(netSales)],
     ['Sotilgan mahsulotlar tannarxi (COGS)', formatMinusMoney(cogs)],
     ['Yalpi foyda', formatUzs(grossProfit)],
-    ['Qaytarishlar', formatMinusMoney(returnsRevenue)],
-    ['Qaytarilgan tannarx (COGS qaytishi)', formatUzs(returnsCogs)],
     ['Tasdiqlangan xarajatlar', formatMinusMoney(totalExpenses)],
     ['Sof foyda', formatUzs(netProfit)],
   ];
@@ -1052,13 +1050,12 @@ export const exportProfitLoss = async (
     });
     const summary = report?.summary || {};
     rows = buildRows(
-      Number(summary.revenue || 0),
-      Number(summary.discount || 0),
-      Number(summary.net_sales || 0),
+      Number(summary.gross_revenue ?? summary.revenue || 0),
+      Number(summary.discounts ?? summary.discount || 0),
+      Number(summary.returns_revenue || 0),
+      Number(summary.net_revenue ?? summary.net_sales || 0),
       Number(summary.cogs || 0),
       Number(summary.gross_profit || 0),
-      Number(summary.returns_revenue || 0),
-      Number(summary.returns_cogs || 0),
       Number(summary.expenses || 0),
       Number(summary.net_profit || 0)
     );
@@ -1144,10 +1141,9 @@ export const exportProfitLoss = async (
 
     const grossSales = completedOrders.reduce((sum, o) => sum + calculateOrderGrossSales(o), 0);
     const totalDiscounts = completedOrders.reduce((sum, o) => sum + calculateOrderDiscount(o), 0);
-    const netSales = grossSales - totalDiscounts;
-    const cogs = completedOrders.reduce((sum, o) => sum + calculateCOGS(o), 0);
-    const grossProfit = netSales - cogs;
     const returnsRevenue = completedReturnsDetailed.reduce((sum, r) => sum + Number((r as any).total_amount || 0), 0);
+    const netSales = grossSales - totalDiscounts - returnsRevenue;
+    const cogsSold = completedOrders.reduce((sum, o) => sum + calculateCOGS(o), 0);
     const returnsCogs = completedReturnsDetailed.reduce((sum, r: any) => {
       const items = Array.isArray(r.items) ? r.items : [];
       const c = items.reduce((s: number, it: any) => {
@@ -1159,17 +1155,18 @@ export const exportProfitLoss = async (
       }, 0);
       return sum + c;
     }, 0);
+    const cogs = cogsSold - returnsCogs;
+    const grossProfit = netSales - cogs;
     const totalExpenses = approvedExpenses.reduce((sum, e) => sum + Number(e.amount || 0), 0);
-    const netProfit = grossProfit - returnsRevenue + returnsCogs - totalExpenses;
+    const netProfit = grossProfit - totalExpenses;
 
     rows = buildRows(
       grossSales,
       totalDiscounts,
+      returnsRevenue,
       netSales,
       cogs,
       grossProfit,
-      returnsRevenue,
-      returnsCogs,
       totalExpenses,
       netProfit
     );

@@ -101,7 +101,9 @@ export default function PosCustomerReferrerPanel({
         <div className="min-w-0">
           <div className="mb-0.5 flex items-center gap-1 px-0.5">
             <UserRound className="h-3 w-3 shrink-0 text-muted-foreground" aria-hidden />
-            <span className="truncate text-[10px] text-muted-foreground">{t('pos.customer')}</span>
+            <span className="truncate text-[10px] text-muted-foreground">
+              {t('pos.customer')} (F1)
+            </span>
           </div>
           <div className="flex items-center gap-1">
             <Popover
@@ -113,14 +115,15 @@ export default function PosCustomerReferrerPanel({
             >
               <PopoverTrigger asChild>
                 <Button
+                  id="pos-customer-combobox-trigger"
                   variant="outline"
                   role="combobox"
                   aria-expanded={customerComboboxOpen}
-                  aria-label={t('pos.customer')}
+                  aria-label={`${t('pos.customer')} (F1)`}
                   title={
                     selectedCustomer?.phone
-                      ? `${selectedCustomer.name} — ${selectedCustomer.phone}`
-                      : undefined
+                      ? `${selectedCustomer.name} — ${selectedCustomer.phone} (F1)`
+                      : `${t('pos.hotkey_customer_focus')} (F1)`
                   }
                   className="h-7 min-w-0 flex-1 justify-between px-2 text-[11px]"
                 >

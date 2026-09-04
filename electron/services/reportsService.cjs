@@ -1,6 +1,9 @@
 const { ERROR_CODES, createError } = require('../lib/errors.cjs');
 const {
   formatYmdInTimeZone,
+  shiftYmd,
+  ymdRangeInclusive,
+  UZBEKISTAN_TIMEZONE,
   UZBEKISTAN_TZ_SQLITE_OFFSET,
   UZBEKISTAN_TZ_ISO_OFFSET,
 } = require('../lib/timezone.cjs');
@@ -17,6 +20,7 @@ const {
   paymentAmountUzsSql,
 } = require('../lib/orderAmount.cjs');
 const { orderIsUsdExpr, hasCustomerBalanceUsd, reconcileCustomerLedgerVsBalance } = require('../lib/customerBalance.cjs');
+const { computeCustomerPosition } = require('../lib/customerPosition.cjs');
 const {
   useUnifiedSales,
   salesFrom,
@@ -37,9 +41,27 @@ const {
   isPosCartReturnAmount,
   posCartReturnExcludeWhere,
 } = require('../lib/unifiedSalesSql.cjs');
+const {
+  actualCogsLineSql,
+  computePnL,
+  computeFinancialActSverka,
+  compareFinancialSnapshots,
+  logReportDivergence,
+  expectedClosingCash,
+  roundUzs,
+  periodCashSnapshot,
+  reportMeta,
+} = require('../lib/financialCalc.cjs');
 const { movementBalanceCteSql } = require('../lib/inventorySnapshot.cjs');
+const {
+  runInventoryValuation,
+  summarizeInventoryValuation,
+  valuationMeta,
+  normalizeCostMethod,
+} = require('../lib/inventoryValuationQuery.cjs');
 const { sumPaymentFeesForPeriod, classifyPaymentMethodGroup } = require('../lib/paymentFee.cjs');
 const { classifyAbcRows } = require('../lib/abcAnalysis.cjs');
+const { runPurchasePlanning } = require('../lib/purchasePlanningQuery.cjs');
 const {
   DEFAULT_WALK_IN_CUSTOMER,
   bucketAgeDays,
@@ -97,8 +119,13 @@ class ReportsService {
     return saleItemsFrom(this.db);
   }
 
-  _cogsLineSql(itemAlias = 'oi', qtyExpr = null) {
-    return cogsLineSql(itemAlias, qtyExpr);
+  _cogsLineSql(itemAlias = 'oi', qtyExpr = null, options = {}) {
+    const fromUnified =
+      options.fromUnified != null ? !!options.fromUnified : this._useUnifiedSales();
+    return actualCogsLineSql(this.db, itemAlias, qtyExpr, {
+      usePurchaseFallback: this._isTruthySetting('accounting.cogs_legacy_fallback'),
+      fromUnified,
+    });
   }
 
   _soldLineRevenueSql(itemAlias = 'oi') {
@@ -1159,216 +1186,175 @@ class ReportsService {
   }
 
   /**
+   * FIFO on-hand vs leftover-batch (phantom) expressions.
+   * stock_value = tannarx faqat joriy zaxira doirasida.
+   * phantom_batch_value = partiyada qolgan, lekin zaxirada yo‘q qiymat.
+   */
+  _fifoOnHandValueSql(qtyExpr) {
+    const stock = `COALESCE(${qtyExpr}, 0)`;
+    const remQty = `COALESCE(bc.remaining_qty, 0)`;
+    const remVal = `COALESCE(bc.remaining_value, 0)`;
+    const pp = `COALESCE(p.purchase_price, 0)`;
+    return `CASE
+      WHEN ${stock} <= 0 THEN 0
+      WHEN ${remQty} <= 0 THEN ${stock} * ${pp}
+      WHEN ${remQty} <= ${stock} THEN ${remVal} + (${stock} - ${remQty}) * ${pp}
+      ELSE ${remVal} * (${stock} * 1.0 / ${remQty})
+    END`;
+  }
+
+  _fifoOnHandExprs(qtyExpr) {
+    const stock = `COALESCE(${qtyExpr}, 0)`;
+    const remQty = `COALESCE(bc.remaining_qty, 0)`;
+    const remVal = `COALESCE(bc.remaining_value, 0)`;
+    const onHand = this._fifoOnHandValueSql(qtyExpr);
+    return `
+      ${stock} AS current_stock,
+      CASE
+        WHEN ${stock} > 0 THEN (${onHand}) / ${stock}
+        ELSE COALESCE(NULLIF(p.purchase_price, 0), 0)
+      END AS unit_cost,
+      (${onHand}) AS stock_value,
+      CASE
+        WHEN ${remQty} <= 0 THEN 0
+        WHEN ${stock} <= 0 THEN ${remVal}
+        WHEN ${remQty} <= ${stock} THEN 0
+        ELSE ${remVal} * (1.0 - ${stock} * 1.0 / ${remQty})
+      END AS phantom_batch_value,
+      CASE
+        WHEN ${remQty} > ${stock} THEN ${remQty} - ${stock}
+        ELSE 0
+      END AS phantom_batch_qty
+    `;
+  }
+
+  /**
    * Inventory valuation (accounting-safe).
-   * filters: { warehouse_id?: string|'ALL', status?: 'active'|'inactive'|'all' }
+   * filters: {
+   *   warehouse_id?: string|'ALL',
+   *   status?: 'active'|'inactive'|'all',
+   *   cost_method?: 'weighted_average'|'fifo'|'compare',
+   *   as_of?: 'YYYY-MM-DD',
+   *   search?, category_id?, stock_status?, diffs_only?, sort?, sort_order?
+   * }
+   * Without cost_method: legacy auto-FIFO when fifo/batch mode is on (phase2).
    */
   getInventoryValuation(filters = {}) {
-    const warehouseIdRaw = filters.warehouse_id;
-    const isAllWarehouses = !warehouseIdRaw || String(warehouseIdRaw).toUpperCase() === 'ALL';
-    const warehouseId = isAllWarehouses ? null : warehouseIdRaw;
-    if (!this._hasTable('products') || !this._hasTable('stock_balances')) {
-      return [];
-    }
+    return runInventoryValuation(this, filters);
+  }
 
+  _summarizeInventoryValuation(rows) {
+    return summarizeInventoryValuation(rows);
+  }
+
+  _valuationMeta(filters = {}, extras = {}) {
     const fifoEnabled =
       this._isTruthySetting('inventory.fifo_enabled') ||
       this._isTruthySetting('inventory.batch_mode_enabled') ||
       this._isTruthySetting('batch_mode_enabled');
-    const hasBatches = this._hasTable('inventory_batches');
-    const useFifo = fifoEnabled && hasBatches;
-    let batchCostExpr = 'COALESCE(unit_cost, 0)';
-    if (useFifo) {
-      try {
-        const batchCols = new Set(
-          (this.db.prepare(`PRAGMA table_info(inventory_batches)`).all() || []).map((c) => c.name)
-        );
-        if (batchCols.has('cost_price_uzs')) {
-          batchCostExpr = 'COALESCE(cost_price_uzs, unit_cost, 0)';
-        }
-      } catch {
-        /* keep unit_cost */
-      }
-    }
-
-    const statusFilter = filters.status || 'active';
-    const statusWhere =
-      statusFilter === 'inactive'
-        ? `AND p.is_active = 0`
-        : statusFilter === 'all'
-          ? `AND 1=1`
-          : `AND p.is_active = 1`;
-
-    if (useFifo) {
-      if (isAllWarehouses) {
-        return this.db
-          .prepare(
-            `
-            WITH batch_costs AS (
-              SELECT
-                product_id,
-                SUM(remaining_qty) AS remaining_qty,
-                SUM(remaining_qty * ${batchCostExpr}) AS remaining_value
-              FROM inventory_batches
-              GROUP BY product_id
-            ),
-            stock_totals AS (
-              SELECT product_id, SUM(quantity) AS quantity
-              FROM stock_balances
-              GROUP BY product_id
-            )
-            SELECT
-              p.id AS product_id,
-              p.name AS product_name,
-              p.sku AS product_sku,
-              p.category_id,
-              c.name AS category_name,
-              COALESCE(p.min_stock_level, 0) AS min_stock_level,
-              COALESCE(st.quantity, 0) AS current_stock,
-              CASE
-                WHEN COALESCE(st.quantity, 0) > 0 THEN (
-                  COALESCE(bc.remaining_value, 0)
-                  + MAX(0, COALESCE(st.quantity, 0) - COALESCE(bc.remaining_qty, 0)) * COALESCE(p.purchase_price, 0)
-                ) / st.quantity
-                ELSE COALESCE(NULLIF(p.purchase_price, 0), 0)
-              END AS unit_cost,
-              (
-                COALESCE(bc.remaining_value, 0)
-                + MAX(0, COALESCE(st.quantity, 0) - COALESCE(bc.remaining_qty, 0)) * COALESCE(p.purchase_price, 0)
-              ) AS stock_value
-            FROM products p
-            LEFT JOIN categories c ON c.id = p.category_id
-            LEFT JOIN stock_totals st ON st.product_id = p.id
-            LEFT JOIN batch_costs bc ON bc.product_id = p.id
-            WHERE 1=1
-              ${statusWhere}
-            ORDER BY p.name ASC
-          `
-          )
-          .all();
-      }
-      return this.db
-        .prepare(
-          `
-          WITH batch_costs AS (
-            SELECT
-              product_id,
-              warehouse_id,
-              SUM(remaining_qty) AS remaining_qty,
-              SUM(remaining_qty * ${batchCostExpr}) AS remaining_value
-            FROM inventory_batches
-            WHERE warehouse_id = ?
-            GROUP BY product_id, warehouse_id
-          )
-          SELECT
-            p.id AS product_id,
-            p.name AS product_name,
-            p.sku AS product_sku,
-            p.category_id,
-            c.name AS category_name,
-            COALESCE(p.min_stock_level, 0) AS min_stock_level,
-            COALESCE(sb.quantity, 0) AS current_stock,
-            CASE
-              WHEN COALESCE(sb.quantity, 0) > 0 THEN (
-                COALESCE(bc.remaining_value, 0)
-                + MAX(0, COALESCE(sb.quantity, 0) - COALESCE(bc.remaining_qty, 0)) * COALESCE(p.purchase_price, 0)
-              ) / sb.quantity
-              ELSE COALESCE(NULLIF(p.purchase_price, 0), 0)
-            END AS unit_cost,
-            (
-              COALESCE(bc.remaining_value, 0)
-              + MAX(0, COALESCE(sb.quantity, 0) - COALESCE(bc.remaining_qty, 0)) * COALESCE(p.purchase_price, 0)
-            ) AS stock_value
-          FROM products p
-          LEFT JOIN categories c ON c.id = p.category_id
-          LEFT JOIN stock_balances sb ON sb.product_id = p.id AND sb.warehouse_id = ?
-          LEFT JOIN batch_costs bc ON bc.product_id = p.id AND bc.warehouse_id = ?
-          WHERE 1=1
-            ${statusWhere}
-          ORDER BY p.name ASC
-        `
-        )
-        .all(warehouseId, warehouseId, warehouseId);
-    }
-
-    if (isAllWarehouses) {
-      return this.db
-        .prepare(
-          `
-          WITH stock_totals AS (
-            SELECT product_id, SUM(quantity) AS quantity
-            FROM stock_balances
-            GROUP BY product_id
-          )
-          SELECT
-            p.id AS product_id,
-            p.name AS product_name,
-            p.sku AS product_sku,
-            p.category_id,
-            c.name AS category_name,
-            COALESCE(p.min_stock_level, 0) AS min_stock_level,
-            COALESCE(st.quantity, 0) AS current_stock,
-            COALESCE(NULLIF(p.purchase_price, 0), 0) AS unit_cost,
-            COALESCE(st.quantity, 0) * COALESCE(p.purchase_price, 0) AS stock_value
-          FROM products p
-          LEFT JOIN categories c ON c.id = p.category_id
-          LEFT JOIN stock_totals st ON st.product_id = p.id
-          WHERE 1=1
-            ${statusWhere}
-          ORDER BY p.name ASC
-        `
-        )
-        .all();
-    }
-
-    return this.db
-      .prepare(
-        `
-        SELECT
-          p.id AS product_id,
-          p.name AS product_name,
-          p.sku AS product_sku,
-          p.category_id,
-          c.name AS category_name,
-          COALESCE(p.min_stock_level, 0) AS min_stock_level,
-          COALESCE(sb.quantity, 0) AS current_stock,
-          COALESCE(NULLIF(p.purchase_price, 0), 0) AS unit_cost,
-          COALESCE(sb.quantity, 0) * COALESCE(p.purchase_price, 0) AS stock_value
-        FROM products p
-        LEFT JOIN categories c ON c.id = p.category_id
-        LEFT JOIN stock_balances sb ON sb.product_id = p.id AND sb.warehouse_id = ?
-        WHERE 1=1
-          ${statusWhere}
-        ORDER BY p.name ASC
-      `
-      )
-      .all(warehouseId);
+    return valuationMeta(this, filters, { ...extras, legacyFifo: fifoEnabled && !normalizeCostMethod(filters.cost_method) });
   }
 
   getInventoryValuationSummary(filters = {}) {
-    const rows = this.getInventoryValuation(filters);
-    const total_value = rows.reduce((sum, r) => sum + Number(r.stock_value || 0), 0);
-    const total_quantity = rows.reduce((sum, r) => sum + Number(r.current_stock || 0), 0);
-    const products_count = rows.length;
-    const out_of_stock_count = rows.filter((r) => Number(r.current_stock || 0) === 0).length;
-    const low_stock_count = rows.filter((r) => {
-      const stock = Number(r.current_stock || 0);
-      const min = Number(r.min_stock_level || 0);
-      return stock > 0 && stock <= min;
-    }).length;
-    return {
-      total_value,
-      total_quantity,
-      products_count,
-      out_of_stock_count,
-      low_stock_count,
-    };
+    return this._summarizeInventoryValuation(this.getInventoryValuation(filters));
+  }
+
+  getInventoryValuationSeries(filters = {}) {
+    const from = this._ymd(filters.as_of_from || filters.date_from);
+    const to = this._ymd(filters.as_of_to || filters.date_to || from);
+    const days = ymdRangeInclusive(from, to, 62);
+    if (!days.length) {
+      throw createError(ERROR_CODES.VALIDATION_ERROR, 'as_of_from va as_of_to noto‘g‘ri yoki 62 kundan uzun');
+    }
+    const base = { ...filters };
+    delete base.as_of_from;
+    delete base.as_of_to;
+    delete base.date_from;
+    delete base.date_to;
+    delete base.page;
+    delete base.page_size;
+    return days.map((ymd) => {
+      const rows = this.getInventoryValuation({ ...base, as_of: ymd });
+      const summary = this._summarizeInventoryValuation(rows);
+      return {
+        as_of_date: ymd,
+        total_value: summary.total_value,
+        wavg_total: summary.wavg_total,
+        fifo_total: summary.fifo_total,
+        diff_amount: summary.diff_amount,
+        total_quantity: summary.total_quantity,
+        products_count: summary.products_count,
+      };
+    });
   }
 
   getInventoryValuationReport(filters = {}) {
-    const rows = this.getInventoryValuation(filters);
-    const summary = this.getInventoryValuationSummary(filters);
+    const asOfMode = String(filters.as_of_mode || filters.mode || '').toLowerCase();
+    const isRange = asOfMode === 'range' || Boolean(filters.as_of_from && filters.as_of_to);
+    const series = isRange ? this.getInventoryValuationSeries(filters) : null;
+
+    const pageSize = Number.isFinite(Number(filters.page_size))
+      ? Math.min(Math.max(Number(filters.page_size), 1), 5000)
+      : null;
+    const page = Number.isFinite(Number(filters.page)) ? Math.max(Number(filters.page), 1) : 1;
+
+    const allRows = this.getInventoryValuation(filters);
+    const summary = this._summarizeInventoryValuation(allRows);
+    const start = pageSize ? (page - 1) * pageSize : 0;
+    const rows = pageSize ? allRows.slice(start, start + pageSize) : allRows;
     const warnings = this._accountingWarnings({ warehouse_id: filters.warehouse_id });
-    return { rows, summary, warnings };
+    const meta = this._valuationMeta(filters, { as_of_mode: isRange ? 'range' : filters.as_of ? 'date' : 'today' });
+
+    const reportWavg = Number(summary.wavg_total || 0);
+    const reportFifo = Number(summary.fifo_total || 0);
+    const warnFifo = warnings?.fifo_total;
+    const warnWavg = warnings?.weighted_total;
+    const today = this._ymd(new Date());
+    const asOfYmd = filters.as_of ? this._ymd(filters.as_of) : today;
+    const isHistorical = Boolean(asOfYmd && asOfYmd < today);
+    let dashboard_divergence = false;
+    if (!isHistorical) {
+      if (warnFifo != null && Math.abs(Number(warnFifo) - reportFifo) > 1) dashboard_divergence = true;
+      if (warnWavg != null && Math.abs(Number(warnWavg) - reportWavg) > 1) dashboard_divergence = true;
+    }
+    if (dashboard_divergence) {
+      console.warn('[reportsService] valuation/export/dashboard divergence', {
+        report_wavg: reportWavg,
+        report_fifo: reportFifo,
+        dashboard_wavg: warnWavg,
+        dashboard_fifo: warnFifo,
+        as_of: meta.as_of_date,
+        cost_method: meta.cost_method,
+      });
+    }
+
+    const diffFromRows = allRows.reduce((s, r) => s + Number(r.diff_amount || 0), 0);
+    if (Math.abs(diffFromRows - Number(summary.diff_amount || 0)) > 0.05) {
+      console.warn('[reportsService] valuation total diff != sum(row.diff)', {
+        summary: summary.diff_amount,
+        rows: diffFromRows,
+      });
+    }
+
+    return {
+      rows,
+      summary: {
+        ...summary,
+        page,
+        page_size: pageSize || allRows.length,
+        products_total: allRows.length,
+      },
+      series,
+      warnings: {
+        ...warnings,
+        fifo_total: warnings?.fifo_total ?? reportFifo,
+        weighted_total: warnings?.weighted_total ?? reportWavg,
+        valuation_diff_amount: summary.diff_amount,
+        valuation_mismatch: Boolean(warnings?.valuation_mismatch) || Math.abs(summary.diff_amount || 0) > 0.009,
+        dashboard_divergence,
+      },
+      meta,
+    };
   }
 
   /**
@@ -1508,437 +1494,124 @@ class ReportsService {
    * filters: { date_from?, date_to?, warehouse_id?, price_tier_id? }
    */
   getProfitAndLossSQL(filters = {}) {
-    const salesTable = this._salesTable();
-    const itemsTable = this._saleItemsTable();
-    // Schema safety — return zero P&L if base tables are missing
     if (!this._hasSaleSource()) {
+      const dateFrom = filters.date_from ? this._ymd(filters.date_from) : null;
+      const dateTo = filters.date_to ? this._ymd(filters.date_to) : null;
       return {
-        revenue: 0, cogs: 0, gross_profit: 0,
-        discount: 0, orders_count: 0,
-        returns_revenue: 0, returns_cogs: 0,
-        net_revenue: 0, net_cogs: 0, net_gross_profit: 0,
-        total_expenses: 0, total_commission: 0, net_profit: 0,
-        gross_profit_margin: 0, net_profit_margin: 0,
-        period: { date_from: filters.date_from || null, date_to: filters.date_to || null },
+        filters: { date_from: dateFrom, date_to: dateTo, warehouse_id: filters.warehouse_id || null, price_tier_id: filters.price_tier_id ?? null },
+        summary: {
+          revenue: 0, revenue_uzs: 0, revenue_usd: 0,
+          gross_revenue: 0, gross_revenue_uzs: 0, gross_revenue_usd: 0,
+          discount: 0, discount_uzs: 0, discount_usd: 0, discounts: 0,
+          net_sales: 0, net_sales_uzs: 0, net_sales_usd: 0, net_revenue: 0,
+          cogs: 0, sold_cogs: 0, gross_profit: 0,
+          returns_revenue: 0, returns_revenue_uzs: 0, returns_revenue_usd: 0,
+          returns_cogs: 0, expenses: 0, total_commission: 0, payment_fees: 0,
+          net_profit: 0, profit_margin: 0, return_rate: 0, orders_count: 0, avg_order_value: 0,
+          cogs_source: 'insufficient',
+          cogs_source_breakdown: { fifo: 0, weighted_average: 0, historical_fallback: 0, insufficient: 0 },
+        },
+        series: [],
+        warnings: {},
+        meta: { computed_at: null, timezone: 'Asia/Tashkent', period: { date_from: dateFrom, date_to: dateTo }, data_version: 'financial.v2' },
       };
     }
 
+    const pnl = computePnL(this, filters);
     const dateFrom = filters.date_from ? this._ymd(filters.date_from) : null;
     const dateTo = filters.date_to ? this._ymd(filters.date_to) : null;
     const warehouseId = filters.warehouse_id || null;
     const priceTierId = filters.price_tier_id ?? null;
-
-    const hasPriceTierId = (() => {
-      try {
-        return !!this.db
-          .prepare(`SELECT 1 AS ok FROM pragma_table_info('orders') WHERE name = 'price_tier_id' LIMIT 1`)
-          .get()?.ok;
-      } catch {
-        return false;
-      }
-    })();
-    const hasPaymentType = (() => {
-      try {
-        return !!this.db
-          .prepare(`SELECT 1 AS ok FROM pragma_table_info('orders') WHERE name = 'payment_type' LIMIT 1`)
-          .get()?.ok;
-      } catch {
-        return false;
-      }
-    })();
-
-    const params = [];
-    let where = `WHERE ${completedStatusWhere(this.db, 'o')}`;
-    const orderDateExpr = this._tzDateExpr('o.created_at');
-    const orderJoinCol = this._useUnifiedSales() ? 'unified_order_id' : 'order_id';
-    const salesJoinCol = this._useUnifiedSales() ? 'unified_id' : 'id';
-    if (warehouseId) {
-      where += ` AND o.warehouse_id = ?`;
-      params.push(warehouseId);
-    }
-    if (dateFrom) {
-      where += ` AND ${orderDateExpr} >= date(?)`;
-      params.push(dateFrom);
-    }
-    if (dateTo) {
-      where += ` AND ${orderDateExpr} <= date(?)`;
-      params.push(dateTo);
-    }
-    if (priceTierId != null && hasPriceTierId && !this._useUnifiedSales()) {
-      where += ` AND o.price_tier_id = ?`;
-      params.push(priceTierId);
-    }
-    where += salesChannelWhere('o', filters.sales_channel, params);
-    where += ` AND ${posCartReturnExcludeWhere(this.db, 'o')}`;
-
-    const summaryParams = params.concat(params);
-    const revUzs = `CASE
-      WHEN UPPER(TRIM(COALESCE(o.currency, 'UZS'))) = 'USD'
-        THEN COALESCE(a.revenue, 0) * COALESCE(o.fx_rate, 0)
-      ELSE COALESCE(a.revenue, 0)
-    END`;
-    const discUzs = this._useUnifiedSales()
-      ? `CASE WHEN UPPER(TRIM(COALESCE(o.currency, 'UZS'))) = 'USD' THEN COALESCE(o.discount_amount, 0) * COALESCE(o.fx_rate, 0) ELSE COALESCE(o.discount_amount, 0) END`
-      : orderFieldUzsSql(this.db, 'o', 'discount_amount');
-    const cogsItemExpr = this._cogsLineSql('oi');
-    const soldRevExpr = this._soldLineRevenueSql('oi');
-    const summary = this.db
-      .prepare(
-        `
-        WITH order_items_agg AS (
-          SELECT
-            oi.${orderJoinCol} AS order_key,
-            SUM(${soldRevExpr}) AS revenue,
-            SUM(${cogsItemExpr}) AS cogs
-          FROM ${itemsTable} oi
-          INNER JOIN ${salesTable} o ON o.${salesJoinCol} = oi.${orderJoinCol}
-          ${where}
-          GROUP BY oi.${orderJoinCol}
-        )
-        SELECT
-          COALESCE(SUM(${revUzs}), 0) AS revenue,
-          COALESCE(SUM(CASE
-            WHEN UPPER(TRIM(COALESCE(o.currency, 'UZS'))) = 'USD' THEN 0
-            ELSE COALESCE(a.revenue, 0)
-          END), 0) AS revenue_uzs,
-          COALESCE(SUM(CASE
-            WHEN UPPER(TRIM(COALESCE(o.currency, 'UZS'))) = 'USD' THEN COALESCE(a.revenue, 0)
-            ELSE 0
-          END), 0) AS revenue_usd,
-          COALESCE(SUM(a.cogs), 0) AS cogs,
-          COALESCE(SUM(${discUzs}), 0) AS discount,
-          COALESCE(SUM(CASE
-            WHEN UPPER(TRIM(COALESCE(o.currency, 'UZS'))) = 'USD' THEN 0
-            ELSE COALESCE(o.discount_amount, 0)
-          END), 0) AS discount_uzs,
-          COALESCE(SUM(CASE
-            WHEN UPPER(TRIM(COALESCE(o.currency, 'UZS'))) = 'USD' THEN COALESCE(o.discount_amount, 0)
-            ELSE 0
-          END), 0) AS discount_usd,
-          COUNT(DISTINCT o.${salesJoinCol}) AS orders_count
-        FROM ${salesTable} o
-        LEFT JOIN order_items_agg a ON a.order_key = o.${salesJoinCol}
-        ${where}
-      `
-      )
-      .get(summaryParams);
-
-    const returnsTable = this._hasTable('sales_returns')
-      ? 'sales_returns'
-      : this._hasTable('sale_returns')
-        ? 'sale_returns'
-        : null;
-
-    let returnsRevenue = 0;
-    let returnsRevenueUzs = 0;
-    let returnsRevenueUsd = 0;
-    let returnsCogs = 0;
-    if (returnsTable) {
-      // Schema introspection — return tables vary across migrations
-      const _retCols = (() => {
-        try {
-          return new Set(
-            (this.db.prepare(`PRAGMA table_info(${returnsTable})`).all() || []).map((c) => c.name)
-          );
-        } catch {
-          return new Set();
-        }
-      })();
-      const _retHasRefundAmount = _retCols.has('refund_amount');
-      const _retHasWarehouseId = _retCols.has('warehouse_id');
-
-      const returnsParams = [];
-      let returnsWhere = `WHERE LOWER(COALESCE(r.status, '')) = 'completed'`;
-      const returnDateExpr = this._tzDateExpr('r.created_at');
-      if (warehouseId && _retHasWarehouseId) {
-        returnsWhere += ` AND r.warehouse_id = ?`;
-        returnsParams.push(warehouseId);
-      }
-      if (dateFrom) {
-        returnsWhere += ` AND ${returnDateExpr} >= date(?)`;
-        returnsParams.push(dateFrom);
-      }
-      if (dateTo) {
-        returnsWhere += ` AND ${returnDateExpr} <= date(?)`;
-        returnsParams.push(dateTo);
-      }
-      if (priceTierId != null && hasPriceTierId) {
-        returnsWhere += ` AND o.price_tier_id = ?`;
-        returnsParams.push(priceTierId);
-      }
-
-      const _revAmountExpr = _retHasRefundAmount
-        ? `COALESCE(r.refund_amount, r.total_amount, 0)`
-        : `COALESCE(r.total_amount, 0)`;
-      const _revUzsExpr = returnRefundUzsSql(this.db, 'r', 'o', _revAmountExpr);
-      const revRow = this.db
-        .prepare(
-          `
-          SELECT
-            COALESCE(SUM(${_revUzsExpr}), 0) AS returns_revenue,
-            COALESCE(SUM(CASE
-              WHEN o.id IS NOT NULL AND UPPER(TRIM(COALESCE(o.currency, 'UZS'))) = 'USD' THEN 0
-              ELSE (${_revAmountExpr})
-            END), 0) AS returns_revenue_uzs,
-            COALESCE(SUM(CASE
-              WHEN o.id IS NOT NULL AND UPPER(TRIM(COALESCE(o.currency, 'UZS'))) = 'USD'
-              THEN (${_revAmountExpr})
-              ELSE 0
-            END), 0) AS returns_revenue_usd
-          FROM ${returnsTable} r
-          LEFT JOIN orders o ON o.id = r.order_id
-          ${returnsWhere}
-        `
-        )
-        .get(returnsParams);
-      returnsRevenue = Number(revRow?.returns_revenue || 0) || 0;
-      returnsRevenueUzs = Number(revRow?.returns_revenue_uzs || 0) || 0;
-      returnsRevenueUsd = Number(revRow?.returns_revenue_usd || 0) || 0;
-
-      // Items table varies by schema generation
-      const returnItemsTable = returnsTable === 'sale_returns' ? 'sale_return_items' : 'return_items';
-      if (this._hasTable(returnItemsTable)) {
-        const _hasQtyBase = (() => {
-          try {
-            return !!this.db
-              .prepare(`SELECT 1 AS ok FROM pragma_table_info(?) WHERE name = 'qty_base' LIMIT 1`)
-              .get(returnItemsTable)?.ok;
-          } catch {
-            return false;
-          }
-        })();
-        const _hasOrderItemId = (() => {
-          try {
-            return !!this.db
-              .prepare(`SELECT 1 AS ok FROM pragma_table_info(?) WHERE name = 'order_item_id' LIMIT 1`)
-              .get(returnItemsTable)?.ok;
-          } catch {
-            return false;
-          }
-        })();
-        const _hasProductId = (() => {
-          try {
-            return !!this.db
-              .prepare(`SELECT 1 AS ok FROM pragma_table_info(?) WHERE name = 'product_id' LIMIT 1`)
-              .get(returnItemsTable)?.ok;
-          } catch {
-            return false;
-          }
-        })();
-        const _qty = _hasQtyBase ? `COALESCE(ri.qty_base, ri.quantity, 0)` : `COALESCE(ri.quantity, 0)`;
-        const _retCogsExpr = this._returnCogsLineSql('oi', _qty);
-
-        let cogsSql = null;
-        if (_hasOrderItemId) {
-          cogsSql = `
-            SELECT COALESCE(SUM(${_retCogsExpr}), 0) AS returns_cogs
-            FROM ${returnItemsTable} ri
-            INNER JOIN ${returnsTable} r ON r.id = ri.return_id
-            LEFT JOIN order_items oi ON oi.id = ri.order_item_id
-            LEFT JOIN orders o ON o.id = r.order_id
-            ${returnsWhere}
-          `;
-        } else if (_hasProductId) {
-          cogsSql = `
-            SELECT COALESCE(SUM(${_qty} * COALESCE((
-              SELECT purchase_price FROM products WHERE id = ri.product_id LIMIT 1
-            ), 0)), 0) AS returns_cogs
-            FROM ${returnItemsTable} ri
-            INNER JOIN ${returnsTable} r ON r.id = ri.return_id
-            LEFT JOIN orders o ON o.id = r.order_id
-            ${returnsWhere}
-          `;
-        }
-
-        if (cogsSql) {
-          const cogsRow = this.db.prepare(cogsSql).get(returnsParams);
-          returnsCogs = Number(cogsRow?.returns_cogs || 0) || 0;
-        }
-      }
-    }
-
-    if (this._hasTable('orders') && this._hasTable('order_items')) {
-      try {
-        const posParams = [];
-        let posWhere = `WHERE o.status = 'completed' AND ${unifiedAmountUzsSql(this.db, 'o')} < -0.009`;
-        const posDateExpr = this._tzDateExpr('o.created_at');
-        if (warehouseId) {
-          posWhere += ` AND o.warehouse_id = ?`;
-          posParams.push(warehouseId);
-        }
-        if (dateFrom) {
-          posWhere += ` AND ${posDateExpr} >= date(?)`;
-          posParams.push(dateFrom);
-        }
-        if (dateTo) {
-          posWhere += ` AND ${posDateExpr} <= date(?)`;
-          posParams.push(dateTo);
-        }
-        posWhere += salesChannelWhere('o', filters.sales_channel, posParams);
-        const posAmtUzs = unifiedAmountUzsSql(this.db, 'o');
-        const posCogsExpr = this._cogsLineSql('oi');
-        const posRow = this.db
-          .prepare(
-            `
-            SELECT
-              COALESCE(SUM(ABS(${posAmtUzs})), 0) AS returns_revenue,
-              COALESCE(SUM(ABS(item_cogs.cogs)), 0) AS returns_cogs
-            FROM orders o
-            LEFT JOIN (
-              SELECT oi.order_id, SUM(${posCogsExpr}) AS cogs
-              FROM order_items oi
-              GROUP BY oi.order_id
-            ) item_cogs ON item_cogs.order_id = o.id
-            ${posWhere}
-          `
-          )
-          .get(...posParams);
-        returnsRevenue += Number(posRow?.returns_revenue || 0) || 0;
-        returnsCogs += Number(posRow?.returns_cogs || 0) || 0;
-      } catch {
-        /* orders schema partial */
-      }
-    }
-
-    const hasExpenseWh = (() => {
-      if (!warehouseId || !this._hasTable('expenses')) return false;
-      try {
-        return !!this.db.prepare(`SELECT 1 AS ok FROM pragma_table_info('expenses') WHERE name = 'warehouse_id' LIMIT 1`).get()?.ok;
-      } catch {
-        return false;
-      }
-    })();
-    const expenseDateExpr = this._tzDateExpr('COALESCE(e.expense_date, e.created_at)');
-    const expenseParams = [...(!dateFrom ? [] : [dateFrom]), ...(!dateTo ? [] : [dateTo])];
-    if (hasExpenseWh && warehouseId) expenseParams.push(warehouseId);
-    const expensesRow = this._hasTable('expenses')
-      ? this.db
-          .prepare(
-            `
-            SELECT COALESCE(SUM(${expenseAmountUzsSql(this.db, 'e')}), 0) AS total_expenses
-            FROM expenses e
-            WHERE COALESCE(LOWER(e.status), 'approved') = 'approved'
-              ${dateFrom ? `AND ${expenseDateExpr} >= date(?)` : ''}
-              ${dateTo ? `AND ${expenseDateExpr} <= date(?)` : ''}
-              ${hasExpenseWh && warehouseId ? `AND e.warehouse_id = ?` : ''}
-          `
-          )
-          .get(expenseParams)
-      : { total_expenses: 0 };
-
+    const totalCommission = this._sumPeriodCommissions(dateFrom, dateTo, warehouseId);
     const warnings = this._accountingWarnings({
       warehouse_id: warehouseId,
       date_from: dateFrom,
       date_to: dateTo,
       sales_channel: filters.sales_channel,
     });
-
-    const revenue = Number(summary?.revenue || 0) || 0;
-    const revenueUzs = Number(summary?.revenue_uzs ?? revenue) || 0;
-    const revenueUsd = Number(summary?.revenue_usd || 0) || 0;
-    const discount = Number(summary?.discount || 0) || 0;
-    const discountUzs = Number(summary?.discount_uzs ?? discount) || 0;
-    const discountUsd = Number(summary?.discount_usd || 0) || 0;
-    const cogs = Number(summary?.cogs || 0) || 0;
-    const ordersCount = Number(summary?.orders_count || 0) || 0;
-    const netSales = revenue;
-    const grossProfit = netSales - cogs;
-    const totalExpenses = Number(expensesRow?.total_expenses || 0) || 0;
-    const totalCommission = this._sumPeriodCommissions(dateFrom, dateTo, warehouseId);
-    const netProfit = this._calculateNetProfit({
-      grossProfit,
-      returnsRevenue,
-      returnsCogs,
-      expenses: totalExpenses,
-      commission: totalCommission,
-    });
-    const profitMargin = netSales > 0 ? (grossProfit / netSales) * 100 : 0;
-    const returnRate = revenue > 0 ? (returnsRevenue / revenue) * 100 : 0;
-    const avgOrderValue = ordersCount > 0 ? netSales / ordersCount : 0;
-
-    const dailyRows = this.db
-      .prepare(
-        `
-        WITH orders_in_range AS (
-          SELECT o.${salesJoinCol} AS order_key, o.created_at, o.discount_amount, o.currency, o.fx_rate
-          FROM ${salesTable} o
-          ${where}
-        ),
-        items_agg AS (
-          SELECT
-            oi.${orderJoinCol} AS order_key,
-            SUM(${soldRevExpr}) AS revenue,
-            SUM(${cogsItemExpr}) AS cogs
-          FROM ${itemsTable} oi
-          INNER JOIN orders_in_range o ON o.order_key = oi.${orderJoinCol}
-          GROUP BY oi.${orderJoinCol}
-        )
-        SELECT
-          ${this._tzDateExpr('o.created_at')} AS day,
-          COALESCE(SUM(CASE
-            WHEN UPPER(TRIM(COALESCE(o.currency, 'UZS'))) = 'USD'
-              THEN COALESCE(a.revenue, 0) * COALESCE(o.fx_rate, 0)
-            ELSE COALESCE(a.revenue, 0)
-          END), 0) AS revenue,
-          COALESCE(SUM(a.cogs), 0) AS cogs,
-          COALESCE(SUM(CASE
-            WHEN UPPER(TRIM(COALESCE(o.currency, 'UZS'))) = 'USD'
-              THEN COALESCE(o.discount_amount, 0) * COALESCE(o.fx_rate, 0)
-            ELSE COALESCE(o.discount_amount, 0)
-          END), 0) AS discount
-        FROM orders_in_range o
-        LEFT JOIN items_agg a ON a.order_key = o.order_key
-        GROUP BY ${this._tzDateExpr('o.created_at')}
-        ORDER BY day ASC
-      `
-      )
-      .all(params);
-
-    const series = (dailyRows || []).map((r) => {
-      const dayRevenue = Number(r.revenue || 0) || 0;
-      const dayDiscount = Number(r.discount || 0) || 0;
-      const dayCogs = Number(r.cogs || 0) || 0;
-      const dayNetSales = dayRevenue;
-      return {
-        day: r.day,
-        revenue: dayRevenue,
-        discount: dayDiscount,
-        net_sales: dayNetSales,
-        cogs: dayCogs,
-        gross_profit: dayNetSales - dayCogs,
-      };
-    });
+    if (Number(pnl.meta?.insufficient_cogs_lines || 0) > 0) {
+      warnings.missing_cost_count = Number(pnl.meta.insufficient_cogs_lines);
+      warnings.cogs_missing = true;
+    }
+    warnings.cogs_source = pnl.cogs_source;
+    warnings.cogs_source_breakdown = pnl.cogs_source_breakdown;
 
     return {
       filters: { date_from: dateFrom, date_to: dateTo, warehouse_id: warehouseId, price_tier_id: priceTierId },
       summary: {
-        revenue,
-        revenue_uzs: revenueUzs,
-        revenue_usd: revenueUsd,
-        discount,
-        discount_uzs: discountUzs,
-        discount_usd: discountUsd,
-        net_sales: netSales,
-        net_sales_uzs: Math.max(0, revenueUzs - discountUzs),
-        net_sales_usd: Math.max(0, revenueUsd - discountUsd),
-        cogs,
-        gross_profit: grossProfit,
-        returns_revenue: returnsRevenue,
-        returns_revenue_uzs: returnsRevenueUzs,
-        returns_revenue_usd: returnsRevenueUsd,
-        returns_cogs: returnsCogs,
-        expenses: totalExpenses,
+        revenue: pnl.gross_revenue,
+        revenue_uzs: pnl.gross_revenue_uzs,
+        revenue_usd: pnl.gross_revenue_usd,
+        gross_revenue: pnl.gross_revenue,
+        gross_revenue_uzs: pnl.gross_revenue_uzs,
+        gross_revenue_usd: pnl.gross_revenue_usd,
+        discount: pnl.discounts,
+        discount_uzs: pnl.discount_uzs,
+        discount_usd: pnl.discount_usd,
+        discounts: pnl.discounts,
+        net_sales: pnl.net_revenue,
+        net_sales_uzs: pnl.net_sales_uzs,
+        net_sales_usd: pnl.net_sales_usd,
+        net_revenue: pnl.net_revenue,
+        cogs: pnl.cogs,
+        sold_cogs: pnl.sold_cogs,
+        gross_profit: pnl.gross_profit,
+        returns_revenue: pnl.returns_revenue,
+        returns_revenue_uzs: pnl.returns_revenue_uzs,
+        returns_revenue_usd: pnl.returns_revenue_usd,
+        returns_cogs: pnl.returns_cogs,
+        expenses: pnl.expenses,
         total_commission: totalCommission,
         payment_fees: totalCommission,
-        net_profit: netProfit,
-        profit_margin: profitMargin,
-        return_rate: returnRate,
-        orders_count: ordersCount,
-        avg_order_value: avgOrderValue,
+        net_profit: pnl.net_profit,
+        profit_margin: pnl.profit_margin,
+        return_rate: pnl.return_rate,
+        orders_count: pnl.orders_count,
+        avg_order_value: pnl.avg_order_value,
+        cogs_source: pnl.cogs_source,
+        cogs_source_breakdown: pnl.cogs_source_breakdown,
       },
-      series,
+      series: pnl.series,
       warnings,
+      meta: pnl.meta,
     };
+  }
+
+  getFinancialActSverka(filters = {}) {
+    const dateTo = filters.date_to ? this._ymd(filters.date_to) : this._ymd(new Date());
+    const warehouseId = filters.warehouse_id || null;
+    const inventory = this.getInventoryValuationSummary({
+      warehouse_id: warehouseId || 'ALL',
+      as_of: dateTo,
+      cost_method: filters.cost_method || 'weighted_average',
+      status: 'active',
+    });
+    const payload = computeFinancialActSverka(this, filters, {
+      inventorySummary: inventory,
+      inventory_value: inventory?.total_value,
+    });
+    const pl = this.getProfitAndLossSQL(filters);
+    const diffs = compareFinancialSnapshots(payload.pnl, {
+      gross_revenue: pl.summary?.gross_revenue,
+      discounts: pl.summary?.discounts,
+      returns_revenue: pl.summary?.returns_revenue,
+      net_revenue: pl.summary?.net_revenue,
+      cogs: pl.summary?.cogs,
+      gross_profit: pl.summary?.gross_profit,
+      expenses: pl.summary?.expenses,
+      net_profit: pl.summary?.net_profit,
+    });
+    if (diffs.length) {
+      logReportDivergence(this, {
+        report: 'act_sverka_vs_pnl',
+        left: payload.pnl,
+        right: pl.summary,
+        diffs,
+      });
+      payload.warnings = { ...(payload.warnings || {}), report_divergence: diffs };
+    }
+    payload.inventory = inventory;
+    return payload;
   }
 
   /**
@@ -2406,8 +2079,8 @@ class ReportsService {
   /**
    * Per-customer sales aggregation for a date range.
    * Gross completed sales (UZS equiv.), excluding POS cart-return orders
-   * (same `posCartReturnExcludeWhere` as daily / product sales). Uses
-   * `customers.balance` / `balance_usd` as live ledger saldo — NOT sum(credit_amount).
+   * (same `posCartReturnExcludeWhere` as daily / product sales).
+   * Qoldiq uses computeCustomerPosition (open orders + loans), not raw customers.balance.
    *
    * Returns:
    *   [{
@@ -2498,6 +2171,19 @@ class ReportsService {
         !r.customer_id ||
         r.customer_id === '__walkin__' ||
         r.customer_id === 'default-customer-001';
+      let balance = 0;
+      let balanceUsd = 0;
+      if (!isWalkin && r.customer_id) {
+        try {
+          const pos = computeCustomerPosition(this.db, r.customer_id, 'UZS');
+          const posUsd = computeCustomerPosition(this.db, r.customer_id, 'USD');
+          balance = Number(pos.net) || 0;
+          balanceUsd = Number(posUsd.net) || 0;
+        } catch {
+          balance = Number(r.balance) || 0;
+          balanceUsd = Number(r.balance_usd) || 0;
+        }
+      }
       return {
         customer_id: isWalkin ? 'walk-in' : r.customer_id,
         customer_name: r.customer_name || (isWalkin ? 'Yangi mijoz' : "Noma'lum mijoz"),
@@ -2505,9 +2191,8 @@ class ReportsService {
         order_count: orders,
         total_purchases: total,
         average_order_value: orders > 0 ? total / orders : 0,
-        // Live customers.balance / balance_usd (walk-in / placeholder → 0)
-        balance: isWalkin ? 0 : Number(r.balance) || 0,
-        balance_usd: isWalkin ? 0 : Number(r.balance_usd) || 0,
+        balance,
+        balance_usd: balanceUsd,
       };
     });
   }
@@ -2594,7 +2279,12 @@ class ReportsService {
   /**
    * Act Sverka (FIFO costing summary by product)
    * Requires batch mode tables.
-   * filters: { category_id? }
+   * filters: { category_id?, product_id?, search?, warehouse_id?, limit? }
+   *
+   * Equation (qty):
+   *   opening + purchase + return_in + adjustment_in
+   *   - sale - return_out - supplier_return - adjustment_out
+   *   ≈ remaining  (diff reported as qty_balance_diff)
    */
   getActSverka(filters = {}) {
     if (
@@ -2606,16 +2296,60 @@ class ReportsService {
     }
     const hasCategories = this._hasTable('categories');
     const hasOrders = this._hasTable('orders') && this._hasTable('order_items');
+    const hasBarcode = (() => {
+      try {
+        return (this.db.prepare(`PRAGMA table_info(products)`).all() || []).some((c) => c.name === 'barcode');
+      } catch {
+        return false;
+      }
+    })();
 
     const params = [];
-    let where = `WHERE p.is_active = 1`;
+    const search = String(filters.search || '').trim();
+    const productId = filters.product_id || null;
+    const warehouseId = filters.warehouse_id || null;
+    const limitRaw = Number(filters.limit);
+    // When searching / filtering to one product, do not truncate the catalog.
+    const limit =
+      search || productId
+        ? Math.min(Math.max(Number.isFinite(limitRaw) && limitRaw > 0 ? limitRaw : 5000, 1), 20000)
+        : Math.min(Math.max(Number.isFinite(limitRaw) && limitRaw > 0 ? limitRaw : 5000, 1), 20000);
+
+    let where = `WHERE 1=1`;
+    if (!search && !productId) {
+      where += ` AND p.is_active = 1`;
+    }
     if (filters.category_id) {
       where += ` AND p.category_id = ?`;
       params.push(filters.category_id);
     }
+    if (productId) {
+      where += ` AND p.id = ?`;
+      params.push(productId);
+    }
+    if (search) {
+      const like = `%${search}%`;
+      if (hasBarcode) {
+        where += ` AND (
+          p.name LIKE ? COLLATE NOCASE
+          OR COALESCE(p.sku, '') LIKE ? COLLATE NOCASE
+          OR COALESCE(p.barcode, '') LIKE ? COLLATE NOCASE
+        )`;
+        params.push(like, like, like);
+      } else {
+        where += ` AND (
+          p.name LIKE ? COLLATE NOCASE
+          OR COALESCE(p.sku, '') LIKE ? COLLATE NOCASE
+        )`;
+        params.push(like, like);
+      }
+    }
 
-    // The "fallback" sold_orders + revenue CTEs only make sense when orders/order_items exist.
-    // Otherwise we serve a batches-only view (FIFO ledger) without sales data.
+    const batchWh = warehouseId ? ' AND b.warehouse_id = ?' : '';
+    const allocWh = warehouseId ? ' AND a.warehouse_id = ?' : '';
+    const batchParams = warehouseId ? [warehouseId] : [];
+    const allocParams = warehouseId ? [warehouseId] : [];
+
     const ordersCte = hasOrders
       ? `,
           sold_orders AS (
@@ -2632,6 +2366,7 @@ class ReportsService {
             INNER JOIN orders o ON o.id = oi.order_id
             LEFT JOIN products pr ON pr.id = oi.product_id
             WHERE o.status = 'completed'
+            ${warehouseId ? 'AND o.warehouse_id = ?' : ''}
             GROUP BY oi.product_id
           ),
           revenue AS (
@@ -2641,6 +2376,7 @@ class ReportsService {
             FROM order_items oi
             INNER JOIN orders o ON o.id = oi.order_id
             WHERE o.status = 'completed'
+            ${warehouseId ? 'AND o.warehouse_id = ?' : ''}
             GROUP BY oi.product_id
           )`
       : '';
@@ -2650,36 +2386,56 @@ class ReportsService {
         LEFT JOIN revenue r ON r.product_id = p.id`
       : '';
     const soldQtyExpr = hasOrders
-      ? `COALESCE(CASE WHEN COALESCE(sb.total_sold_qty, 0) > 0 THEN sb.total_sold_qty ELSE so.total_sold_qty END, 0)`
-      : `COALESCE(sb.total_sold_qty, 0)`;
+      ? `COALESCE(CASE WHEN COALESCE(al.sale_qty, 0) > 0 THEN al.sale_qty ELSE so.total_sold_qty END, 0)`
+      : `COALESCE(al.sale_qty, 0)`;
     const cogsExpr = hasOrders
-      ? `COALESCE(CASE WHEN COALESCE(sb.total_cogs, 0) > 0 THEN sb.total_cogs ELSE so.total_cogs END, 0)`
-      : `COALESCE(sb.total_cogs, 0)`;
+      ? `COALESCE(CASE WHEN COALESCE(al.sale_cogs, 0) > 0 THEN al.sale_cogs ELSE so.total_cogs END, 0)`
+      : `COALESCE(al.sale_cogs, 0)`;
     const revenueExpr = hasOrders ? `COALESCE(r.total_sold_revenue, 0)` : `0`;
     const categoryJoin = hasCategories
       ? 'LEFT JOIN categories c ON c.id = p.category_id'
       : '';
     const categoryNameExpr = hasCategories ? `COALESCE(c.name, '')` : `''`;
 
+    const orderParams = hasOrders && warehouseId ? [warehouseId, warehouseId] : [];
+
     const rows = this.db
       .prepare(
         `
         WITH
-          purchased AS (
+          batch_layers AS (
             SELECT
               b.product_id,
-              COALESCE(SUM(b.initial_qty), 0) AS total_purchased_qty,
-              COALESCE(SUM(b.initial_qty * b.unit_cost), 0) AS total_purchased_cost,
-              COALESCE(SUM(b.remaining_qty), 0) AS remaining_qty
+              COALESCE(SUM(CASE WHEN b.source_type = 'opening' THEN b.initial_qty ELSE 0 END), 0) AS opening_qty,
+              COALESCE(SUM(CASE WHEN b.source_type = 'opening' THEN b.initial_qty * b.unit_cost ELSE 0 END), 0) AS opening_cost,
+              COALESCE(SUM(CASE WHEN b.source_type = 'purchase_receive' THEN b.initial_qty ELSE 0 END), 0) AS purchase_qty,
+              COALESCE(SUM(CASE WHEN b.source_type = 'purchase_receive' THEN b.initial_qty * b.unit_cost ELSE 0 END), 0) AS purchase_cost,
+              COALESCE(SUM(CASE WHEN b.source_type = 'adjustment_in' THEN b.initial_qty ELSE 0 END), 0) AS adjustment_in_qty,
+              COALESCE(SUM(CASE WHEN b.source_type = 'adjustment_in' THEN b.initial_qty * b.unit_cost ELSE 0 END), 0) AS adjustment_in_cost,
+              COALESCE(SUM(b.initial_qty), 0) AS total_inbound_qty,
+              COALESCE(SUM(b.initial_qty * b.unit_cost), 0) AS total_inbound_cost,
+              COALESCE(SUM(b.remaining_qty), 0) AS remaining_qty,
+              COALESCE(SUM(b.remaining_qty * b.unit_cost), 0) AS remaining_cost
             FROM inventory_batches b
+            WHERE 1=1${batchWh}
             GROUP BY b.product_id
           ),
-          sold_batch AS (
+          alloc_layers AS (
             SELECT
               a.product_id,
-              COALESCE(SUM(CASE WHEN a.direction = 'out' AND a.reference_type = 'order_item' THEN a.quantity ELSE 0 END), 0) AS total_sold_qty,
-              COALESCE(SUM(CASE WHEN a.direction = 'out' AND a.reference_type = 'order_item' THEN a.quantity * a.unit_cost ELSE 0 END), 0) AS total_cogs
+              COALESCE(SUM(CASE WHEN a.direction = 'out' AND a.reference_type = 'order_item' THEN a.quantity ELSE 0 END), 0) AS sale_qty,
+              COALESCE(SUM(CASE WHEN a.direction = 'out' AND a.reference_type = 'order_item' THEN a.quantity * a.unit_cost ELSE 0 END), 0) AS sale_cogs,
+              COALESCE(SUM(CASE WHEN a.direction = 'in' AND a.reference_type = 'return_item' THEN a.quantity ELSE 0 END), 0) AS return_in_qty,
+              COALESCE(SUM(CASE WHEN a.direction = 'in' AND a.reference_type = 'return_item' THEN a.quantity * a.unit_cost ELSE 0 END), 0) AS return_in_cost,
+              COALESCE(SUM(CASE WHEN a.direction = 'out' AND a.reference_type = 'supplier_return' THEN a.quantity ELSE 0 END), 0) AS supplier_return_qty,
+              COALESCE(SUM(CASE WHEN a.direction = 'out' AND a.reference_type = 'supplier_return' THEN a.quantity * a.unit_cost ELSE 0 END), 0) AS supplier_return_cost,
+              COALESCE(SUM(CASE WHEN a.direction = 'out' AND a.reference_type = 'adjustment' THEN a.quantity ELSE 0 END), 0) AS adjustment_out_qty,
+              COALESCE(SUM(CASE WHEN a.direction = 'out' AND a.reference_type = 'adjustment' THEN a.quantity * a.unit_cost ELSE 0 END), 0) AS adjustment_out_cost,
+              COALESCE(SUM(CASE WHEN a.direction = 'out' AND a.reference_type = 'repair_coverage' THEN a.quantity ELSE 0 END), 0) AS repair_out_qty,
+              COALESCE(SUM(CASE WHEN a.direction = 'out' AND a.reference_type NOT IN ('order_item', 'supplier_return', 'adjustment', 'repair_coverage') THEN a.quantity ELSE 0 END), 0) AS other_out_qty,
+              COALESCE(SUM(CASE WHEN a.direction = 'in' AND a.reference_type NOT IN ('return_item') THEN a.quantity ELSE 0 END), 0) AS other_in_qty
             FROM inventory_batch_allocations a
+            WHERE 1=1${allocWh}
             GROUP BY a.product_id
           )${ordersCte}
         SELECT
@@ -2687,10 +2443,28 @@ class ReportsService {
           p.name AS product_name,
           p.sku AS product_sku,
           ${categoryNameExpr} AS category_name,
-          COALESCE(pu.total_purchased_qty, 0) AS total_purchased_qty,
+          COALESCE(bl.opening_qty, 0) AS opening_qty,
+          COALESCE(bl.opening_cost, 0) AS opening_cost,
+          COALESCE(bl.purchase_qty, 0) AS purchase_qty,
+          COALESCE(bl.purchase_cost, 0) AS purchase_cost,
+          COALESCE(bl.adjustment_in_qty, 0) AS adjustment_in_qty,
+          COALESCE(bl.adjustment_in_cost, 0) AS adjustment_in_cost,
+          COALESCE(al.return_in_qty, 0) AS return_in_qty,
+          COALESCE(al.return_in_cost, 0) AS return_in_cost,
+          ${soldQtyExpr} AS sale_qty,
+          ${cogsExpr} AS sale_cogs,
+          COALESCE(al.supplier_return_qty, 0) AS supplier_return_qty,
+          COALESCE(al.supplier_return_cost, 0) AS supplier_return_cost,
+          COALESCE(al.adjustment_out_qty, 0) AS adjustment_out_qty,
+          COALESCE(al.adjustment_out_cost, 0) AS adjustment_out_cost,
+          COALESCE(al.repair_out_qty, 0) AS repair_out_qty,
+          COALESCE(al.other_out_qty, 0) AS transfer_out_qty,
+          COALESCE(al.other_in_qty, 0) AS transfer_in_qty,
+          COALESCE(bl.remaining_qty, 0) AS remaining_qty,
+          COALESCE(bl.remaining_cost, 0) AS remaining_cost,
+          COALESCE(bl.total_inbound_qty, 0) AS total_purchased_qty,
+          COALESCE(bl.total_inbound_cost, 0) AS total_purchased_cost,
           ${soldQtyExpr} AS total_sold_qty,
-          COALESCE(pu.remaining_qty, 0) AS remaining_qty,
-          COALESCE(pu.total_purchased_cost, 0) AS total_purchased_cost,
           ${revenueExpr} AS total_sold_revenue,
           (${revenueExpr} - ${cogsExpr}) AS total_profit,
           CASE
@@ -2700,25 +2474,89 @@ class ReportsService {
           END AS profit_margin
         FROM products p
         ${categoryJoin}
-        LEFT JOIN purchased pu ON pu.product_id = p.id
-        LEFT JOIN sold_batch sb ON sb.product_id = p.id${ordersJoins}
+        LEFT JOIN batch_layers bl ON bl.product_id = p.id
+        LEFT JOIN alloc_layers al ON al.product_id = p.id${ordersJoins}
         ${where}
-        ORDER BY total_profit DESC, p.name ASC
-        LIMIT 2000
+        ORDER BY
+          CASE
+            WHEN ? != '' AND LOWER(COALESCE(p.sku, '')) = LOWER(?) THEN 0
+            WHEN ? != '' AND LOWER(COALESCE(p.sku, '')) LIKE LOWER(?) THEN 1
+            ELSE 2
+          END,
+          total_profit DESC,
+          p.name ASC
+        LIMIT ${limit}
       `
       )
-      .all(params);
+      .all(
+        ...batchParams,
+        ...allocParams,
+        ...orderParams,
+        ...params,
+        search,
+        search,
+        search,
+        search ? `${search}%` : '',
+      );
 
-    return rows.map((row) => ({
-      ...row,
-      total_purchased_qty: Number(row.total_purchased_qty || 0) || 0,
-      total_sold_qty: Number(row.total_sold_qty || 0) || 0,
-      remaining_qty: Number(row.remaining_qty || 0) || 0,
-      total_purchased_cost: Number(row.total_purchased_cost || 0) || 0,
-      total_sold_revenue: Number(row.total_sold_revenue || 0) || 0,
-      total_profit: Number(row.total_profit || 0) || 0,
-      profit_margin: Number(row.profit_margin || 0) || 0,
-    }));
+    return rows.map((row) => {
+      const openingQty = Number(row.opening_qty || 0) || 0;
+      const purchaseQty = Number(row.purchase_qty || 0) || 0;
+      const adjustmentInQty = Number(row.adjustment_in_qty || 0) || 0;
+      const returnInQty = Number(row.return_in_qty || 0) || 0;
+      const transferInQty = Number(row.transfer_in_qty || 0) || 0;
+      const saleQty = Number(row.sale_qty || 0) || 0;
+      const supplierReturnQty = Number(row.supplier_return_qty || 0) || 0;
+      const adjustmentOutQty = Number(row.adjustment_out_qty || 0) || 0;
+      const repairOutQty = Number(row.repair_out_qty || 0) || 0;
+      const transferOutQty = Number(row.transfer_out_qty || 0) || 0;
+      const remainingQty = Number(row.remaining_qty || 0) || 0;
+      const expectedRemaining =
+        openingQty +
+        purchaseQty +
+        adjustmentInQty +
+        returnInQty +
+        transferInQty -
+        saleQty -
+        supplierReturnQty -
+        adjustmentOutQty -
+        repairOutQty -
+        transferOutQty;
+      const qtyBalanceDiff = remainingQty - expectedRemaining;
+      const totalSoldQty = Number(row.total_sold_qty || 0) || 0;
+      const totalPurchasedQty = Number(row.total_purchased_qty || 0) || 0;
+      return {
+        ...row,
+        opening_qty: openingQty,
+        opening_cost: Number(row.opening_cost || 0) || 0,
+        purchase_qty: purchaseQty,
+        purchase_cost: Number(row.purchase_cost || 0) || 0,
+        adjustment_in_qty: adjustmentInQty,
+        adjustment_in_cost: Number(row.adjustment_in_cost || 0) || 0,
+        return_in_qty: returnInQty,
+        return_in_cost: Number(row.return_in_cost || 0) || 0,
+        sale_qty: saleQty,
+        sale_cogs: Number(row.sale_cogs || 0) || 0,
+        supplier_return_qty: supplierReturnQty,
+        supplier_return_cost: Number(row.supplier_return_cost || 0) || 0,
+        adjustment_out_qty: adjustmentOutQty,
+        adjustment_out_cost: Number(row.adjustment_out_cost || 0) || 0,
+        repair_out_qty: repairOutQty,
+        transfer_out_qty: transferOutQty,
+        transfer_in_qty: transferInQty,
+        remaining_qty: remainingQty,
+        remaining_cost: Number(row.remaining_cost || 0) || 0,
+        expected_remaining_qty: expectedRemaining,
+        qty_balance_diff: qtyBalanceDiff,
+        // Legacy aliases used by existing UI / exports
+        total_purchased_qty: totalPurchasedQty,
+        total_purchased_cost: Number(row.total_purchased_cost || 0) || 0,
+        total_sold_qty: totalSoldQty,
+        total_sold_revenue: Number(row.total_sold_revenue || 0) || 0,
+        total_profit: Number(row.total_profit || 0) || 0,
+        profit_margin: Number(row.profit_margin || 0) || 0,
+      };
+    });
   }
 
   /**
@@ -2970,31 +2808,181 @@ class ReportsService {
 
     const rows = this.db.prepare(sql).all(...allParams) || [];
 
+    const costMethod = normalizeCostMethod(filters.cost_method) || 'weighted_average';
+    const cogsMethod = costMethod === 'compare' ? 'weighted_average' : costMethod;
+    const openingAsOf = shiftYmd(dateFrom, -1) || dateFrom;
+    const valFilters = {
+      warehouse_id: warehouseId || 'ALL',
+      status: 'all',
+      cost_method: cogsMethod,
+    };
+    let openingVal = [];
+    let closingVal = [];
+    try {
+      openingVal = this.getInventoryValuation({ ...valFilters, as_of: openingAsOf });
+      closingVal = this.getInventoryValuation({ ...valFilters, as_of: dateTo });
+    } catch (err) {
+      console.warn('[productActSverka] valuation enrich failed:', err?.message || err);
+    }
+    const openById = new Map((openingVal || []).map((r) => [r.product_id, r]));
+    const closeById = new Map((closingVal || []).map((r) => [r.product_id, r]));
+
+    const moveStats = new Map();
+    if (this._hasTable('inventory_movements')) {
+      const moveDate = this._tzDateExpr('im.created_at');
+      const mParams = [dateFrom, dateTo];
+      let mWh = '';
+      if (warehouseId) {
+        mWh = 'AND im.warehouse_id = ?';
+        mParams.push(warehouseId);
+      }
+      const moveRows =
+        this.db
+          .prepare(
+            `
+            SELECT
+              im.product_id,
+              SUM(CASE
+                WHEN im.quantity < 0 AND LOWER(COALESCE(im.movement_type, '')) NOT IN ('sale', 'return')
+                  THEN -im.quantity
+                ELSE 0
+              END) AS outbound_qty,
+              SUM(CASE
+                WHEN LOWER(COALESCE(im.movement_type, '')) IN ('revision', 'adjustment', 'surplus', 'shortage')
+                  THEN im.quantity
+                ELSE 0
+              END) AS revision_qty,
+              SUM(CASE
+                WHEN LOWER(COALESCE(im.movement_type, '')) IN ('transfer', 'transfer_in', 'transfer_out')
+                  THEN im.quantity
+                ELSE 0
+              END) AS transfer_qty
+            FROM inventory_movements im
+            WHERE ${moveDate} BETWEEN date(?) AND date(?)
+              ${mWh}
+            GROUP BY im.product_id
+          `,
+          )
+          .all(...mParams) || [];
+      for (const m of moveRows) {
+        moveStats.set(m.product_id, {
+          outbound_qty: Number(m.outbound_qty || 0) || 0,
+          revision_qty: Number(m.revision_qty || 0) || 0,
+          transfer_qty: Number(m.transfer_qty || 0) || 0,
+        });
+      }
+    }
+
+    const valueOf = (row, method) => {
+      if (!row) return { qty: 0, unit: 0, value: 0 };
+      const qty = Number(row.current_stock || 0) || 0;
+      if (method === 'fifo') {
+        return {
+          qty,
+          unit: Number(row.fifo_unit_cost || row.unit_cost || 0) || 0,
+          value: Number(row.fifo_value || row.stock_value || 0) || 0,
+        };
+      }
+      return {
+        qty,
+        unit: Number(row.wavg_unit_cost || row.unit_cost || 0) || 0,
+        value: Number(row.wavg_value || row.stock_value || 0) || 0,
+      };
+    };
+
     const mapped = (rows || []).map((r) => {
       const netRev = Number(r.net_revenue || 0) || 0;
-      const netP = Number(r.net_profit || 0) || 0;
+      const opening = valueOf(openById.get(r.product_id), cogsMethod);
+      const closing = valueOf(closeById.get(r.product_id), cogsMethod);
+      const purchaseAmount = Number(r.purchase_amount || 0) || 0;
+      const methodCogs = opening.value + purchaseAmount - closing.value;
+      const netP = netRev - methodCogs;
+      const moves = moveStats.get(r.product_id) || { outbound_qty: 0, revision_qty: 0 };
       return {
         product_id: r.product_id,
         product_name: r.product_name,
         product_sku: r.product_sku,
         category_name: r.category_name,
+        unit: closeById.get(r.product_id)?.unit || openById.get(r.product_id)?.unit || 'pcs',
+        opening_qty: opening.qty,
+        opening_unit_cost: opening.unit,
+        opening_value: opening.value,
         purchase_qty: Number(r.purchase_qty || 0) || 0,
-        purchase_amount: Number(r.purchase_amount || 0) || 0,
+        purchase_amount: purchaseAmount,
         sold_qty: Number(r.sold_qty || 0) || 0,
         sold_revenue: Number(r.sold_revenue || 0) || 0,
         sold_cogs: Number(r.sold_cogs || 0) || 0,
         return_qty: Number(r.return_qty || 0) || 0,
         return_amount: Number(r.return_amount || 0) || 0,
         return_cogs: Number(r.return_cogs || 0) || 0,
+        outbound_qty: moves.outbound_qty,
+        revision_qty: moves.revision_qty,
+        transfer_qty: moves.transfer_qty || 0,
+        closing_qty: closing.qty,
+        closing_value: closing.value,
         net_sold_qty: Number(r.net_sold_qty || 0) || 0,
         net_revenue: netRev,
-        net_cogs: Number(r.net_cogs || 0) || 0,
+        net_cogs: methodCogs,
         net_profit: netP,
+        gross_profit: netP,
         profit_margin_percent: netRev > 0 ? (netP / netRev) * 100 : 0,
+        cost_method: cogsMethod,
       };
     });
 
-    const totals = mapped.reduce(
+    const known = new Set(mapped.map((r) => r.product_id));
+    for (const row of openingVal || []) {
+      const opening = valueOf(row, cogsMethod);
+      if (known.has(row.product_id) || Math.abs(opening.qty) < 0.0000001) continue;
+      if (productId && row.product_id !== productId) continue;
+      if (categoryId && row.category_id !== categoryId) continue;
+      const closing = valueOf(closeById.get(row.product_id), cogsMethod);
+      const moves = moveStats.get(row.product_id) || { outbound_qty: 0, revision_qty: 0 };
+      const methodCogs = opening.value - closing.value;
+      mapped.push({
+        product_id: row.product_id,
+        product_name: row.product_name,
+        product_sku: row.product_sku,
+        category_name: row.category_name || '',
+        unit: row.unit || 'pcs',
+        opening_qty: opening.qty,
+        opening_unit_cost: opening.unit,
+        opening_value: opening.value,
+        purchase_qty: 0,
+        purchase_amount: 0,
+        sold_qty: 0,
+        sold_revenue: 0,
+        sold_cogs: 0,
+        return_qty: 0,
+        return_amount: 0,
+        return_cogs: 0,
+        outbound_qty: moves.outbound_qty,
+        revision_qty: moves.revision_qty,
+        transfer_qty: moves.transfer_qty || 0,
+        closing_qty: closing.qty,
+        closing_value: closing.value,
+        net_sold_qty: 0,
+        net_revenue: 0,
+        net_cogs: methodCogs,
+        net_profit: -methodCogs,
+        gross_profit: -methodCogs,
+        profit_margin_percent: 0,
+        cost_method: cogsMethod,
+      });
+      known.add(row.product_id);
+    }
+
+    const search = String(filters.search || filters.searchTerm || '').trim().toLowerCase();
+    const filtered = search
+      ? mapped.filter(
+          (r) =>
+            String(r.product_name || '').toLowerCase().includes(search) ||
+            String(r.product_sku || '').toLowerCase().includes(search) ||
+            String(r.category_name || '').toLowerCase().includes(search),
+        )
+      : mapped;
+
+    const totals = filtered.reduce(
       (acc, row) => ({
         purchase_qty: acc.purchase_qty + row.purchase_qty,
         purchase_amount: acc.purchase_amount + row.purchase_amount,
@@ -3002,6 +2990,11 @@ class ReportsService {
         sold_revenue: acc.sold_revenue + row.sold_revenue,
         return_qty: acc.return_qty + row.return_qty,
         return_amount: acc.return_amount + row.return_amount,
+        opening_qty: acc.opening_qty + row.opening_qty,
+        opening_value: acc.opening_value + row.opening_value,
+        closing_qty: acc.closing_qty + row.closing_qty,
+        closing_value: acc.closing_value + row.closing_value,
+        net_cogs: acc.net_cogs + row.net_cogs,
         net_revenue: acc.net_revenue + row.net_revenue,
         net_profit: acc.net_profit + row.net_profit,
       }),
@@ -3012,18 +3005,32 @@ class ReportsService {
         sold_revenue: 0,
         return_qty: 0,
         return_amount: 0,
+        opening_qty: 0,
+        opening_value: 0,
+        closing_qty: 0,
+        closing_value: 0,
+        net_cogs: 0,
         net_revenue: 0,
         net_profit: 0,
       }
     );
 
     return {
-      period: { date_from: dateFrom, date_to: dateTo, timezone: 'Asia/Tashkent' },
-      rows: mapped,
+      period: { date_from: dateFrom, date_to: dateTo, timezone: UZBEKISTAN_TIMEZONE },
+      rows: filtered,
       totals: {
         ...totals,
-        product_count: mapped.length,
+        product_count: filtered.length,
         profit_margin_percent: totals.net_revenue > 0 ? (totals.net_profit / totals.net_revenue) * 100 : 0,
+        cost_method: cogsMethod,
+      },
+      meta: {
+        computed_at: new Date().toISOString(),
+        timezone: UZBEKISTAN_TIMEZONE,
+        cost_method: cogsMethod,
+        data_source: 'purchase_receipts + orders + sales_returns + inventory_movements.after_quantity + valuation service',
+        opening_as_of: openingAsOf,
+        closing_as_of: dateTo,
       },
     };
   }
@@ -3212,9 +3219,78 @@ class ReportsService {
       return { period: { date_from: dateFrom, date_to: dateTo, timezone: 'Asia/Tashkent' }, rows: [] };
     }
 
-    // Ombordagi qoldiq — tanlangan davr (Tashkent kuni) BOSHLANGANDAN OLDIN, xuddi yuqoridagi hujjatlardagidek
+    if (this._hasTable('inventory_movements')) {
+      const imD = this._tzDateExpr('im.created_at');
+      let wMv = `im.product_id = ? AND ${imD} BETWEEN date(?) AND date(?)
+        AND LOWER(COALESCE(im.movement_type, '')) IN ('revision', 'adjustment', 'write_off', 'writeoff')`;
+      const pMv = [productId, dateFrom, dateTo];
+      if (warehouseId) {
+        wMv += ` AND im.warehouse_id = ?`;
+        pMv.push(warehouseId);
+      }
+      parts.push({
+        sql: `
+        SELECT
+          im.created_at AS event_at,
+          CASE LOWER(COALESCE(im.movement_type, ''))
+            WHEN 'revision' THEN 'revision'
+            WHEN 'adjustment' THEN 'adjustment'
+            ELSE 'write_off'
+          END AS event_kind,
+          CASE LOWER(COALESCE(im.movement_type, ''))
+            WHEN 'revision' THEN 'Reviziya'
+            WHEN 'adjustment' THEN 'Tuzatish'
+            ELSE 'Chiqim / hisobdan chiqarish'
+          END AS event_label,
+          im.movement_number AS doc_no,
+          im.id AS doc_id,
+          'inventory_movement' AS doc_type,
+          COALESCE(im.reason, 'Ombor') AS counterparty,
+          NULL AS payment_label,
+          CASE WHEN im.quantity > 0 THEN im.quantity ELSE 0 END AS qty_in,
+          CASE WHEN im.quantity < 0 THEN ABS(im.quantity) ELSE 0 END AS qty_out,
+          0.0 AS amount_uzs,
+          im.id AS line_id
+        FROM inventory_movements im
+        WHERE ${wMv}
+      `,
+        p: pMv,
+      });
+    }
+
+    // Davr oldi qoldiq = harakatlar jurnalidagi oxirgi `after_quantity` (keyin).
     let openingQty = 0;
-    if (this._hasTable('purchase_receipts') && this._hasTable('purchase_receipt_items')) {
+    if (this._hasTable('inventory_movements')) {
+      const imD = this._tzDateExpr('im.created_at');
+      const openParams = [productId, dateFrom];
+      let openWh = '';
+      if (warehouseId) {
+        openWh = 'AND im.warehouse_id = ?';
+        openParams.push(warehouseId);
+      }
+      const openRow = this.db
+        .prepare(
+          `
+          SELECT SUM(after_quantity) AS qty
+          FROM (
+            SELECT
+              im.warehouse_id,
+              im.after_quantity,
+              ROW_NUMBER() OVER (
+                PARTITION BY im.warehouse_id
+                ORDER BY datetime(replace(replace(im.created_at, 'T', ' '), 'Z', '')) DESC, im.rowid DESC
+              ) AS rn
+            FROM inventory_movements im
+            WHERE im.product_id = ?
+              AND ${imD} < date(?)
+              ${openWh}
+          ) x
+          WHERE rn = 1
+        `,
+        )
+        .get(...openParams);
+      openingQty = Number(openRow?.qty || 0) || 0;
+    } else if (this._hasTable('purchase_receipts') && this._hasTable('purchase_receipt_items')) {
       let oW = `pri.product_id = ? AND ${prD} < date(?)`;
       const oP = [productId, dateFrom];
       if (warehouseId) {
@@ -3230,49 +3306,21 @@ class ReportsService {
         )
         .get(...oP);
       openingQty += Number(rOpen?.v || 0) || 0;
-    }
-    let oSaleW = `oi.product_id = ? AND o.status = 'completed' AND ${oD} < date(?)`;
-    const oSaleP = [productId, dateFrom];
-    if (warehouseId) {
-      oSaleW += ` AND o.warehouse_id = ?`;
-      oSaleP.push(warehouseId);
-    }
-    const sOpen = this.db
-      .prepare(
-        `SELECT COALESCE(SUM(${qo}),0) AS v
-         FROM order_items oi
-         INNER JOIN orders o ON o.id = oi.order_id
-         WHERE ${oSaleW}`
-      )
-      .get(...oSaleP);
-    openingQty -= Number(sOpen?.v || 0) || 0;
-    if (hasReturns && returnsTable && returnItemsTable && srD) {
-      let oRw = `ri.product_id = ? AND LOWER(COALESCE(sr.status, 'completed')) = 'completed' AND ${srD} < date(?)`;
-      const oRP = [productId, dateFrom];
+      let oSaleW = `oi.product_id = ? AND o.status = 'completed' AND ${oD} < date(?)`;
+      const oSaleP = [productId, dateFrom];
       if (warehouseId) {
-        const oHasWh = (() => {
-          try {
-            return (this.db.prepare(`PRAGMA table_info(${returnsTable})`).all() || []).some(
-              (c) => c.name === 'warehouse_id',
-            );
-          } catch {
-            return false;
-          }
-        })();
-        if (oHasWh) {
-          oRw += ` AND sr.warehouse_id = ?`;
-          oRP.push(warehouseId);
-        }
+        oSaleW += ` AND o.warehouse_id = ?`;
+        oSaleP.push(warehouseId);
       }
-      const retOpen = this.db
+      const sOpen = this.db
         .prepare(
-          `SELECT COALESCE(SUM(ri.quantity),0) AS v
-           FROM ${returnItemsTable} ri
-           INNER JOIN ${returnsTable} sr ON sr.id = ri.return_id
-           WHERE ${oRw}`
+          `SELECT COALESCE(SUM(${qo}),0) AS v
+           FROM order_items oi
+           INNER JOIN orders o ON o.id = oi.order_id
+           WHERE ${oSaleW}`
         )
-        .get(...oRP);
-      openingQty += Number(retOpen?.v || 0) || 0;
+        .get(...oSaleP);
+      openingQty -= Number(sOpen?.v || 0) || 0;
     }
 
     // Do not wrap each branch in (...): some SQLite / driver builds misparenthesize (?, ?, ?) (?) UNION
@@ -3457,6 +3505,13 @@ ${innerUnion}
       const closingBalance =
         normalized.length > 0 ? Number(normalized[normalized.length - 1].balance_after ?? 0) || 0 : openingBalance;
 
+      let position = null;
+      try {
+        position = computeCustomerPosition(this.db, customerId, 'UZS');
+      } catch {
+        position = null;
+      }
+
       return {
         customer,
         period: { date_from: dateFrom, date_to: dateTo },
@@ -3464,6 +3519,7 @@ ${innerUnion}
         closing_balance: closingBalance,
         totals: { ...totals, net_amount: totals.in_amount - totals.out_amount },
         rows: normalized,
+        position,
       };
     }
 
@@ -3522,6 +3578,20 @@ ${innerUnion}
     })();
     const poAmountCol = settlementCurrency === 'USD' && hasPoTotalUsd ? 'total_usd' : 'total_amount';
     const payAmountCol = settlementCurrency === 'USD' && hasPayAmountUsd ? 'amount_usd' : 'amount';
+    const hasAdvancePortion = (() => {
+      try {
+        return this.db.prepare(`PRAGMA table_info(supplier_payments)`).all().some((c) => c.name === 'is_advance_portion');
+      } catch {
+        return false;
+      }
+    })();
+    const hasSettlementLedger = (() => {
+      try {
+        return !!this.db.prepare(`SELECT 1 FROM sqlite_master WHERE type='table' AND name='supplier_settlement_ledger'`).get();
+      } catch {
+        return false;
+      }
+    })();
 
     // Opening balance = (sum purchases - sum payments) before date_from
     let openingBalance = 0;
@@ -3566,6 +3636,35 @@ ${innerUnion}
 
     const poWhereExtra = poDateWhere.length ? ` AND ${poDateWhere.join(' AND ')}` : '';
     const payWhereExtra = payDateWhere.length ? ` AND ${payDateWhere.join(' AND ')}` : '';
+    const ledgerWhereExtra = (() => {
+      const parts = [];
+      if (dateFrom) parts.push(`${this._tzDateExpr('ssl.created_at')} >= date(?)`);
+      if (dateTo) parts.push(`${this._tzDateExpr('ssl.created_at')} <= date(?)`);
+      return parts.length ? ` AND ${parts.join(' AND ')}` : '';
+    })();
+    const ledgerUnion = hasSettlementLedger
+      ? `
+          UNION ALL
+          SELECT
+            ssl.id as id,
+            ssl.created_at as created_at,
+            ssl.op_type as type,
+            ssl.purchase_order_id as ref_id,
+            COALESCE(ssl.op_type, ssl.id) as ref_no,
+            CAST(ssl.amount as REAL) as amount,
+            CAST(0 as REAL) as delta,
+            NULL as po_status,
+            ssl.payment_method as method,
+            ssl.reason as note,
+            ssl.created_by as created_by,
+            u3.full_name as created_by_name
+          FROM supplier_settlement_ledger ssl
+          LEFT JOIN users u3 ON u3.id = ssl.created_by
+          WHERE ssl.supplier_id = ?
+            AND ssl.payment_id IS NULL
+            ${ledgerWhereExtra}
+        `
+      : '';
 
     const rows = this.db
       .prepare(
@@ -3599,7 +3698,12 @@ ${innerUnion}
           SELECT
             sp.id as id,
             sp.paid_at as created_at,
-            CASE WHEN sp.payment_method = 'credit_note' THEN 'credit_note' ELSE 'payment' END as type,
+            CASE
+              WHEN sp.payment_method = 'credit_note' THEN 'credit_note'
+              WHEN CAST(sp.${payAmountCol} as REAL) < 0 THEN 'receive'
+              ${hasAdvancePortion ? "WHEN COALESCE(sp.is_advance_portion, 0) = 1 THEN 'advance_out'" : ''}
+              ELSE 'payment'
+            END as type,
             sp.purchase_order_id as ref_id,
             sp.payment_number as ref_no,
             CAST(sp.${payAmountCol} as REAL) as amount,
@@ -3613,6 +3717,7 @@ ${innerUnion}
           LEFT JOIN users u2 ON u2.id = sp.created_by
           WHERE sp.supplier_id = ?
             ${payWhereExtra}
+          ${ledgerUnion}
         )
         ORDER BY datetime(created_at) ASC
       `
@@ -3626,14 +3731,19 @@ ${innerUnion}
         if (dateTo) dateParams.push(dateTo);
         // purchase_orders: supplierId + dateParams
         // supplier_payments: supplierId + dateParams
-        return [...base, ...dateParams, supplierId, ...dateParams];
+        // settlement ledger (payment_id IS NULL): supplierId + dateParams
+        const args = [...base, ...dateParams, supplierId, ...dateParams];
+        if (hasSettlementLedger) args.push(supplierId, ...dateParams);
+        return args;
       })());
 
     let running = openingBalance;
     const normalized = (rows || []).map((r) => {
       const delta = Number(r.delta ?? 0) || 0;
       running += delta;
-      const inAmt = delta > 0 ? delta : 0;
+      const type = String(r.type || '');
+      const absAmt = Math.abs(Number(r.amount ?? 0) || 0);
+      const inAmt = delta > 0 ? delta : (type.startsWith('debit_note') ? absAmt : 0);
       const outAmt = delta < 0 ? Math.abs(delta) : 0;
       return {
         id: r.id,
@@ -3663,12 +3773,21 @@ ${innerUnion}
 
     const closingBalance = normalized.length > 0 ? Number(normalized[normalized.length - 1].balance_after ?? 0) || 0 : openingBalance;
 
+    let settlement = null;
+    try {
+      const SupplierService = require('./supplierService.cjs');
+      settlement = new SupplierService(this.db).getSettlement(supplierId);
+    } catch {
+      settlement = null;
+    }
+
     return {
       supplier: { ...supplier, settlement_currency: settlementCurrency },
       period: { date_from: dateFrom, date_to: dateTo },
       opening_balance: openingBalance,
       closing_balance: closingBalance,
       totals: { ...totals, net_amount: totals.in_amount - totals.out_amount },
+      settlement,
       rows: normalized,
     };
   }
@@ -4419,9 +4538,17 @@ ${innerUnion}
         })()
       : false;
 
+    const hasCashMovements = this._hasTable('cash_movements');
+    const hasCpOp = hasCustomerPayments
+      ? !!this.db.prepare(`SELECT 1 AS ok FROM pragma_table_info('customer_payments') WHERE name = 'operation' LIMIT 1`).get()?.ok
+      : false;
+    const hasCpOld = hasCustomerPayments
+      ? !!this.db.prepare(`SELECT 1 AS ok FROM pragma_table_info('customer_payments') WHERE name = 'old_balance' LIMIT 1`).get()?.ok
+      : false;
+
     // If there is no data source at all, return empty bundle.
-    if (!hasPayments && !hasCustomerPayments && !hasExpenses && !hasSupplierPayments && !returnsTable) {
-      return { rows: [], by_source: [], reconciliation: null };
+    if (!hasPayments && !hasCustomerPayments && !hasExpenses && !hasSupplierPayments && !returnsTable && !hasCashMovements) {
+      return { rows: [], by_source: [], reconciliation: null, meta: null };
     }
 
     const params = [];
@@ -4461,13 +4588,44 @@ ${innerUnion}
 
     if (hasCustomerPayments) {
       const cpUzs = customerPaymentAmountUzsSql(this.db, 'cp');
+      const opExpr = hasCpOp ? `COALESCE(cp.operation, 'payment_in')` : `'payment_in'`;
+      const advancePred = hasCpOld
+        ? `COALESCE(cp.old_balance, 0) >= -0.009`
+        : `0`;
+      const debtPred = hasCpOld
+        ? `COALESCE(cp.old_balance, 0) < -0.009`
+        : `1=1`;
       parts.push(`
         SELECT
           ${this._tzDateExpr('cp.paid_at')} AS d,
           cp.payment_method AS method,
-          COALESCE(SUM(${cpUzs}), 0) AS inflow,
+          COALESCE(SUM(CASE WHEN ${opExpr} != 'payment_out' AND ${debtPred} THEN ${cpUzs} ELSE 0 END), 0) AS inflow,
           0 AS outflow,
           'customer_payments' AS source
+        FROM customer_payments cp
+        ${whereDate('cp.paid_at')}
+          AND COALESCE(LOWER(cp.payment_method), '') NOT IN ('credit', 'on_credit', 'debt')
+        GROUP BY ${this._tzDateExpr('cp.paid_at')}, cp.payment_method
+      `);
+      parts.push(`
+        SELECT
+          ${this._tzDateExpr('cp.paid_at')} AS d,
+          cp.payment_method AS method,
+          COALESCE(SUM(CASE WHEN ${opExpr} != 'payment_out' AND ${advancePred} THEN ${cpUzs} ELSE 0 END), 0) AS inflow,
+          0 AS outflow,
+          'customer_advances' AS source
+        FROM customer_payments cp
+        ${whereDate('cp.paid_at')}
+          AND COALESCE(LOWER(cp.payment_method), '') NOT IN ('credit', 'on_credit', 'debt')
+        GROUP BY ${this._tzDateExpr('cp.paid_at')}, cp.payment_method
+      `);
+      parts.push(`
+        SELECT
+          ${this._tzDateExpr('cp.paid_at')} AS d,
+          cp.payment_method AS method,
+          0 AS inflow,
+          COALESCE(SUM(CASE WHEN ${opExpr} = 'payment_out' THEN ABS(${cpUzs}) ELSE 0 END), 0) AS outflow,
+          'customer_loans' AS source
         FROM customer_payments cp
         ${whereDate('cp.paid_at')}
           AND COALESCE(LOWER(cp.payment_method), '') NOT IN ('credit', 'on_credit', 'debt')
@@ -4496,12 +4654,37 @@ ${innerUnion}
         SELECT
           ${this._tzDateExpr('sp.paid_at')} AS d,
           sp.payment_method AS method,
-          COALESCE(SUM(CASE WHEN COALESCE(LOWER(sp.payment_method), '') IN ('credit_note') THEN 0 WHEN ${spUzs} < 0 THEN ABS(${spUzs}) ELSE 0 END), 0) AS inflow,
+          0 AS inflow,
           COALESCE(SUM(CASE WHEN COALESCE(LOWER(sp.payment_method), '') IN ('credit_note') THEN 0 WHEN ${spUzs} > 0 THEN ${spUzs} ELSE 0 END), 0) AS outflow,
           'supplier_payments' AS source
         FROM supplier_payments sp
         ${whereDate('sp.paid_at')}
         GROUP BY ${this._tzDateExpr('sp.paid_at')}, sp.payment_method
+      `);
+      parts.push(`
+        SELECT
+          ${this._tzDateExpr('sp.paid_at')} AS d,
+          sp.payment_method AS method,
+          COALESCE(SUM(CASE WHEN COALESCE(LOWER(sp.payment_method), '') IN ('credit_note') THEN 0 WHEN ${spUzs} < 0 THEN ABS(${spUzs}) ELSE 0 END), 0) AS inflow,
+          0 AS outflow,
+          'supplier_refunds' AS source
+        FROM supplier_payments sp
+        ${whereDate('sp.paid_at')}
+        GROUP BY ${this._tzDateExpr('sp.paid_at')}, sp.payment_method
+      `);
+    }
+
+    if (this._hasTable('cash_movements')) {
+      parts.push(`
+        SELECT
+          ${this._tzDateExpr('cm.created_at')} AS d,
+          'cash' AS method,
+          COALESCE(SUM(CASE WHEN LOWER(TRIM(COALESCE(cm.movement_type, ''))) = 'deposit' THEN COALESCE(cm.amount, 0) ELSE 0 END), 0) AS inflow,
+          COALESCE(SUM(CASE WHEN LOWER(TRIM(COALESCE(cm.movement_type, ''))) = 'withdrawal' THEN COALESCE(cm.amount, 0) ELSE 0 END), 0) AS outflow,
+          'cash_movements' AS source
+        FROM cash_movements cm
+        ${whereDate('cm.created_at')}
+        GROUP BY ${this._tzDateExpr('cm.created_at')}
       `);
     }
 
@@ -4592,44 +4775,44 @@ ${innerUnion}
     let reconciliation = null;
     if (this._hasTable('shifts')) {
       try {
-        const shiftParams = [];
-        const closedDateExpr = `COALESCE(${this._tzDateExpr('s.closed_at')}, ${this._tzDateExpr('s.opened_at')})`;
-        let shiftWhere = `WHERE s.status = 'closed' AND ${closedDateExpr} IS NOT NULL`;
-        if (dateFrom) {
-          shiftWhere += ` AND ${closedDateExpr} >= date(?)`;
-          shiftParams.push(dateFrom);
-        }
-        if (dateTo) {
-          shiftWhere += ` AND ${closedDateExpr} <= date(?)`;
-          shiftParams.push(dateTo);
-        }
-        const shiftRow = this.db
-          .prepare(
-            `
-            SELECT
-              COALESCE(SUM(s.opening_cash), 0) AS opening_cash,
-              COALESCE(SUM(s.closing_cash), 0) AS closing_cash
-            FROM shifts s
-            ${shiftWhere}
-          `,
-          )
-          .get(...shiftParams);
-        const cashRows = mappedRows.filter((r) => String(r.method || '').toLowerCase() === 'cash');
+        const cashSnap = periodCashSnapshot(this, { date_from: dateFrom, date_to: dateTo });
+        const cashRows = mappedRows.filter((r) => {
+          const m = String(r.method || '').toLowerCase();
+          return m === 'cash' || m === 'naqd';
+        });
         const netCashMovement = cashRows.reduce((sum, r) => sum + Number(r.net || 0), 0);
-        const opening = Number(shiftRow?.opening_cash || 0) || 0;
-        const closing = Number(shiftRow?.closing_cash || 0) || 0;
+        const expected = Number(cashSnap.expected_closing_cash || 0) || 0;
+        const actual = cashSnap.actual_closing_cash;
+        const opening = Number(cashSnap.opening_cash || 0) || 0;
         reconciliation = {
           opening_cash: opening,
-          closing_cash: closing,
+          closing_cash: cashSnap.closing_cash,
+          expected_closing_cash: expected,
+          actual_closing_cash: actual,
+          closing_is_provisional: Boolean(cashSnap.closing_is_provisional),
           net_cash_movement: netCashMovement,
-          delta: closing - opening - netCashMovement,
+          delta: actual == null ? null : roundUzs(actual - expected),
+          shifts: (cashSnap.shifts || []).map((s) => ({
+            shift_id: s.id,
+            user_id: s.user_id || s.cashier_id,
+            status: s.status,
+            opening_cash: Number(s.opening_cash || 0) || 0,
+            expected_cash: s.expected_cash != null ? Number(s.expected_cash) : null,
+            actual_closing_cash: String(s.status) === 'closed' ? Number(s.closing_cash) : null,
+            cash_difference: s.cash_difference != null ? Number(s.cash_difference) : null,
+          })),
         };
       } catch {
         reconciliation = null;
       }
     }
 
-    return { rows: mappedRows, by_source, reconciliation };
+    return {
+      rows: mappedRows,
+      by_source,
+      reconciliation,
+      meta: reportMeta(this, { date_from: dateFrom, date_to: dateTo }, { cogs_method: 'n/a' }),
+    };
   }
 
   /**
@@ -4691,7 +4874,7 @@ ${innerUnion}
     `;
 
     const rows = this.db.prepare(query).all(params);
-    return (rows || []).map((r) => ({
+    const mapped = (rows || []).map((r) => ({
       user_id: r.user_id,
       cashier_name: r.cashier_name || r.user_id,
       shift_count: Number(r.shift_count || 0) || 0,
@@ -4700,7 +4883,178 @@ ${innerUnion}
       short_amount: Number(r.short_amount || 0) || 0,
       avg_diff: Number(r.avg_diff || 0) || 0,
       last_closed_at: r.last_closed_at || null,
+      shifts: [],
     }));
+
+    try {
+      const detailParams = [];
+      let detailWhere = `WHERE s.status = 'closed' AND ${closedDateExpr} IS NOT NULL`;
+      if (dateFrom) {
+        detailWhere += ` AND ${closedDateExpr} >= date(?)`;
+        detailParams.push(dateFrom);
+      }
+      if (dateTo) {
+        detailWhere += ` AND ${closedDateExpr} <= date(?)`;
+        detailParams.push(dateTo);
+      }
+      const shiftRows = this.db
+        .prepare(
+          `
+          SELECT
+            s.id,
+            s.user_id,
+            s.cashier_id,
+            s.opened_at,
+            s.closed_at,
+            COALESCE(s.opening_cash, 0) AS opening_cash,
+            s.closing_cash,
+            s.expected_cash,
+            s.cash_difference,
+            s.notes,
+            s.closed_by
+          FROM shifts s
+          ${detailWhere}
+          ORDER BY datetime(s.closed_at) DESC
+        `
+        )
+        .all(...detailParams);
+      const byUser = new Map(mapped.map((r) => [String(r.user_id), r]));
+      for (const s of shiftRows || []) {
+        const uid = String(s.user_id || s.cashier_id || '');
+        const bucket = byUser.get(uid);
+        if (!bucket) continue;
+        bucket.shifts.push({
+          shift_id: s.id,
+          user_id: s.user_id || s.cashier_id,
+          closed_by: s.closed_by || s.user_id,
+          opened_at: s.opened_at,
+          closed_at: s.closed_at,
+          opening_cash: Number(s.opening_cash || 0) || 0,
+          expected_cash: s.expected_cash != null ? Number(s.expected_cash) : null,
+          actual_closing_cash: s.closing_cash != null ? Number(s.closing_cash) : null,
+          cash_difference: Number(s.cash_difference || 0) || 0,
+          notes: s.notes || null,
+          documents: this._shiftCashDocuments(s.id),
+        });
+      }
+    } catch (e) {
+      console.warn('[reports] cash discrepancy details:', e.message);
+    }
+
+    return mapped;
+  }
+
+  _shiftCashDocuments(shiftId) {
+    const docs = [];
+    const sid = String(shiftId || '').trim();
+    if (!sid) return docs;
+    try {
+      if (this._hasTable('payments')) {
+        const payUzs = paymentAmountUzsSql(this.db, 'p', 'o');
+        const rows = this.db
+          .prepare(
+            `
+            SELECT p.id, p.payment_method, ${payUzs} AS amount, p.paid_at, o.user_id, o.order_number
+            FROM payments p
+            INNER JOIN orders o ON o.id = p.order_id
+            WHERE o.shift_id = ?
+              AND LOWER(TRIM(COALESCE(p.payment_method, ''))) IN ('cash', 'naqd', 'refund_cash')
+          `
+          )
+          .all(sid);
+        for (const r of rows || []) {
+          docs.push({
+            source: String(r.payment_method || '').toLowerCase() === 'refund_cash' ? 'refunds' : 'order_payments',
+            document_id: r.id,
+            document_ref: r.order_number || r.id,
+            user_id: r.user_id || null,
+            amount: Number(r.amount || 0) || 0,
+            at: r.paid_at,
+          });
+        }
+      }
+    } catch { /* ignore */ }
+    try {
+      if (this._hasTable('customer_payments')) {
+        const cols = this.db.prepare('PRAGMA table_info(customer_payments)').all();
+        if (cols.some((c) => c.name === 'shift_id')) {
+          const rows = this.db
+            .prepare(
+              `
+              SELECT id, operation, amount, payment_method, paid_at, received_by, notes
+              FROM customer_payments
+              WHERE shift_id = ?
+                AND LOWER(TRIM(COALESCE(payment_method, ''))) IN ('cash', 'naqd')
+            `
+            )
+            .all(sid);
+          for (const r of rows || []) {
+            const op = String(r.operation || 'payment_in');
+            docs.push({
+              source: op === 'payment_out' ? 'customer_loans' : 'customer_payments',
+              document_id: r.id,
+              document_ref: r.id,
+              user_id: r.received_by || null,
+              amount: Number(r.amount || 0) || 0,
+              at: r.paid_at,
+            });
+          }
+        }
+      }
+    } catch { /* ignore */ }
+    try {
+      if (this._hasTable('expenses')) {
+        const cols = this.db.prepare('PRAGMA table_info(expenses)').all();
+        if (cols.some((c) => c.name === 'shift_id')) {
+          const rows = this.db
+            .prepare(
+              `
+              SELECT id, expense_number, amount, created_by, expense_date
+              FROM expenses
+              WHERE shift_id = ?
+                AND LOWER(TRIM(COALESCE(payment_method, ''))) IN ('cash', 'naqd')
+                AND COALESCE(LOWER(status), 'approved') IN ('approved', 'paid')
+            `
+            )
+            .all(sid);
+          for (const r of rows || []) {
+            docs.push({
+              source: 'expenses',
+              document_id: r.id,
+              document_ref: r.expense_number || r.id,
+              user_id: r.created_by || null,
+              amount: -Math.abs(Number(r.amount || 0) || 0),
+              at: r.expense_date,
+            });
+          }
+        }
+      }
+    } catch { /* ignore */ }
+    try {
+      if (this._hasTable('cash_movements')) {
+        const rows = this.db
+          .prepare(
+            `
+            SELECT id, movement_type, amount, created_by, created_at
+            FROM cash_movements
+            WHERE shift_id = ?
+          `
+          )
+          .all(sid);
+        for (const r of rows || []) {
+          const type = String(r.movement_type || '').toLowerCase();
+          docs.push({
+            source: 'cash_movements',
+            document_id: r.id,
+            document_ref: type,
+            user_id: r.created_by || null,
+            amount: type === 'withdrawal' ? -Math.abs(Number(r.amount || 0) || 0) : Number(r.amount || 0) || 0,
+            at: r.created_at,
+          });
+        }
+      }
+    } catch { /* ignore */ }
+    return docs;
   }
 
   /**
@@ -4884,9 +5238,11 @@ ${innerUnion}
       const outstandingByCustomer = new Map();
       for (const o of orders || []) {
         const total = Number(o.total_amount || 0) || 0;
-        const paid = Number(paidByOrder.get(o.id) || 0) || 0;
-        const linked = Number(linkedCustomerPaidByOrder.get(o.id) || 0) || 0;
-        let outstanding = Math.max(0, total - paid - linked);
+        const creditRem = Number(o.credit_amount || 0) || 0;
+        let outstanding =
+          creditRem > 0.009
+            ? creditRem
+            : Math.max(0, total - paid - linked);
         if (outstanding <= 0.009) continue;
         const cur = String(o.currency || 'UZS').toUpperCase() === 'USD' ? 'USD' : 'UZS';
         const arr = outstandingByCustomer.get(o.customer_id) || [];
@@ -4903,15 +5259,10 @@ ${innerUnion}
       }
 
       for (const [customerId, arr] of outstandingByCustomer.entries()) {
-        const cpPool = unlinkedCustomerPaidByCustomer.get(customerId) || { uzs: 0, usd: 0 };
-        const ledgerPool = ledgerAdjustByCustomer.get(customerId) || { uzs: 0, usd: 0 };
-        let availableUzs = Math.max(0, Number(cpPool.uzs || 0) + Number(ledgerPool.uzs || 0));
-        let availableUsd = Math.max(0, Number(cpPool.usd || 0) + Number(ledgerPool.usd || 0));
-
-        const uzsInvoices = arr.filter((inv) => inv.currency !== 'USD');
-        const usdInvoices = arr.filter((inv) => inv.currency === 'USD');
-        allocateFifoPool(uzsInvoices, availableUzs);
-        allocateFifoPool(usdInvoices, availableUsd);
+        // Payments are allocated onto orders at receive-payment time.
+        // Remaining credit_amount is the AR truth — do not re-apply unlinked cash here.
+        void customerId;
+        void arr;
       }
 
       const customerNames = new Map();
@@ -5404,8 +5755,8 @@ ${innerUnion}
         SUM(a.quantity * ${unitPriceExpr}) AS sales_amount_uzs,
         SUM(a.quantity * ${discountPerUnitExpr}) AS discount_uzs,
         SUM(a.quantity * (${unitPriceExpr} - ${discountPerUnitExpr})) AS net_sales_uzs,
-        SUM(a.quantity * (${this._cogsLineSql('oi', '1')})) AS cogs_uzs,
-        SUM(a.quantity * ((${unitPriceExpr} - ${discountPerUnitExpr}) - (${this._cogsLineSql('oi', '1')}))) AS gross_profit_uzs
+        SUM(a.quantity * (${this._cogsLineSql('oi', '1', { fromUnified: false })})) AS cogs_uzs,
+        SUM(a.quantity * ((${unitPriceExpr} - ${discountPerUnitExpr}) - (${this._cogsLineSql('oi', '1', { fromUnified: false })}))) AS gross_profit_uzs
       FROM inventory_batch_allocations a
       JOIN inventory_batches b ON b.id = a.batch_id
       JOIN order_items oi ON oi.id = a.reference_id
@@ -5511,8 +5862,8 @@ ${innerUnion}
         SUM(oi.quantity * ${unitPriceExpr}) AS sales_amount_uzs,
         SUM(COALESCE(oi.discount_amount, 0)) AS discount_uzs,
         SUM((oi.quantity * ${unitPriceExpr}) - COALESCE(oi.discount_amount, 0)) AS net_sales_uzs,
-        SUM(${this._cogsLineSql('oi')}) AS cogs_uzs,
-        SUM((oi.quantity * ${unitPriceExpr}) - COALESCE(oi.discount_amount, 0) - (${this._cogsLineSql('oi')})) AS gross_profit_uzs
+        SUM(${this._cogsLineSql('oi', null, { fromUnified: false })}) AS cogs_uzs,
+        SUM((oi.quantity * ${unitPriceExpr}) - COALESCE(oi.discount_amount, 0) - (${this._cogsLineSql('oi', null, { fromUnified: false })})) AS gross_profit_uzs
       FROM order_items oi
       JOIN orders o ON o.id = oi.order_id
       LEFT JOIN products p ON p.id = oi.product_id
@@ -6275,7 +6626,7 @@ ${innerUnion}
           `
           SELECT
             o.customer_id,
-            COALESCE(SUM(${this._cogsLineSql('oi')}), 0) AS total_cost
+            COALESCE(SUM(${this._cogsLineSql('oi', null, { fromUnified: false })}), 0) AS total_cost
           FROM order_items oi
           INNER JOIN orders o ON o.id = oi.order_id
           ${hasProducts ? 'LEFT JOIN products p ON p.id = oi.product_id' : ''}
@@ -6768,175 +7119,7 @@ ${innerUnion}
    * - Safety stock: fixed 2 days
    */
   getPurchasePlanning(filters = {}) {
-    const analysisDaysRaw = Number(filters.analysis_days ?? 7);
-    const planDaysRaw = Number(filters.plan_days ?? 7);
-    const analysisDays = [7, 14, 30].includes(analysisDaysRaw) ? analysisDaysRaw : 7;
-    const planDays = [7, 14].includes(planDaysRaw) ? planDaysRaw : 7;
-    const safetyDays = 2;
-
-    // Schema safety
-    if (!this._hasTable('products')) return [];
-
-    // Resolve warehouse: explicit filter > default warehouse > main-warehouse-001 (legacy fallback)
-    let warehouseId = filters.warehouse_id || null;
-    if (!warehouseId && this._hasTable('warehouses')) {
-      try {
-        const def = this.db
-          .prepare(`SELECT id FROM warehouses WHERE is_default = 1 LIMIT 1`)
-          .get();
-        warehouseId = def?.id || 'main-warehouse-001';
-      } catch {
-        warehouseId = 'main-warehouse-001';
-      }
-    } else if (!warehouseId) {
-      warehouseId = 'main-warehouse-001';
-    }
-
-    const dateTo = this._ymd(filters.date_to || new Date());
-    const end = new Date(`${dateTo}T00:00:00Z`);
-    const start = new Date(end.getTime() - (analysisDays - 1) * 86400000);
-    const dateFrom = this._ymd(start);
-
-    // Products (active)
-    const hasProductsCurrentStock = (() => {
-      try {
-        return !!this.db.prepare(`SELECT 1 AS ok FROM pragma_table_info('products') WHERE name = 'current_stock' LIMIT 1`).get()
-          ?.ok;
-      } catch {
-        return false;
-      }
-    })();
-
-    let productQuery = `
-      SELECT 
-        p.id as product_id,
-        p.name as product_name,
-        p.sku as product_sku,
-        p.unit as unit,
-        ${hasProductsCurrentStock ? 'COALESCE(p.current_stock, 0) as product_current_stock,' : '0 as product_current_stock,'}
-        p.category_id as category_id,
-        c.name as category_name
-      FROM products p
-      LEFT JOIN categories c ON c.id = p.category_id
-      WHERE p.is_active = 1
-    `;
-    const productParams = [];
-    if (filters.category_id) {
-      productQuery += ` AND p.category_id = ?`;
-      productParams.push(filters.category_id);
-    }
-    productQuery += ` ORDER BY p.name ASC`;
-    const products = this.db.prepare(productQuery).all(productParams);
-
-    if (!products?.length) return [];
-
-    // Sales totals per product for analysis window — TZ-aware (Tashkent calendar)
-    const salesRows = this._hasTable('orders') && this._hasTable('order_items')
-      ? this.db
-          .prepare(
-            `
-            SELECT
-              oi.product_id,
-              COALESCE(SUM(oi.quantity), 0) as total_sold
-            FROM order_items oi
-            INNER JOIN orders o ON o.id = oi.order_id
-            WHERE COALESCE(LOWER(o.status), '') = 'completed'
-              AND ${this._tzDateExpr('o.created_at')} BETWEEN date(?) AND date(?)
-            GROUP BY oi.product_id
-          `
-          )
-          .all(dateFrom, dateTo)
-      : [];
-    const soldByProduct = new Map();
-    for (const r of salesRows || []) {
-      soldByProduct.set(r.product_id, Number(r.total_sold || 0) || 0);
-    }
-
-    // Stock balances per product for main warehouse
-    const stockRows = this._hasTable('stock_balances')
-      ? this.db
-          .prepare(
-            `
-            SELECT product_id, COALESCE(quantity, 0) as quantity
-            FROM stock_balances
-            WHERE warehouse_id = ?
-          `
-          )
-          .all(warehouseId)
-      : [];
-    const stockByProduct = new Map();
-    for (const r of stockRows || []) {
-      stockByProduct.set(r.product_id, Number(r.quantity || 0) || 0);
-    }
-
-    const onlyRisk = Boolean(filters.only_risk);
-
-    const roundQty = (qty, unit) => {
-      const n = Number(qty || 0) || 0;
-      const u = String(unit || '').toLowerCase();
-      if (u === 'kg') {
-        // Round up to grams (0.001 kg)
-        return Math.ceil(n * 1000) / 1000;
-      }
-      return Math.ceil(n);
-    };
-
-    const rows = products.map((p) => {
-      const totalSold = Number(soldByProduct.get(p.product_id) || 0) || 0;
-      const avgDailySales = analysisDays > 0 ? totalSold / analysisDays : 0;
-      const stockFromBalances = stockByProduct.has(p.product_id)
-        ? Number(stockByProduct.get(p.product_id) || 0) || 0
-        : null;
-      const currentStock =
-        stockFromBalances !== null
-          ? stockFromBalances
-          : (Number(p.product_current_stock || 0) || 0);
-
-      const stockDays = avgDailySales > 0 ? currentStock / avgDailySales : (currentStock > 0 ? Infinity : 0);
-      const shortageRaw = (avgDailySales * planDays) - currentStock;
-      const shortage = shortageRaw > 0 ? shortageRaw : 0;
-      const safetyQty = avgDailySales * safetyDays;
-      const recommended = shortage + safetyQty;
-
-      let status = 'OK';
-      if (avgDailySales > 0) {
-        if (stockDays < 0.5 * planDays) status = 'SHORTAGE';
-        else if (stockDays < planDays) status = 'RISK';
-      }
-
-      return {
-        product_id: p.product_id,
-        product_name: p.product_name,
-        product_sku: p.product_sku,
-        unit: p.unit,
-        category_id: p.category_id ?? null,
-        category_name: p.category_name ?? null,
-
-        analysis_days: analysisDays,
-        plan_days: planDays,
-        period_sales_qty: totalSold,
-        avg_daily_sales: avgDailySales,
-        current_stock: currentStock,
-        stock_days: stockDays,
-        shortage_qty: shortage,
-        safety_qty: safetyQty,
-        recommended_qty: roundQty(recommended, p.unit),
-        status,
-      };
-    });
-
-    const filtered = onlyRisk ? rows.filter((r) => r.status !== 'OK') : rows;
-
-    // Sort: SHORTAGE first, then RISK, then OK; within, higher recommended first
-    const rank = (s) => (s === 'SHORTAGE' ? 0 : s === 'RISK' ? 1 : 2);
-    filtered.sort((a, b) => {
-      const ra = rank(a.status);
-      const rb = rank(b.status);
-      if (ra !== rb) return ra - rb;
-      return Number(b.recommended_qty || 0) - Number(a.recommended_qty || 0);
-    });
-
-    return filtered;
+    return runPurchasePlanning(this.db, filters || {}, (col) => this._tzDateExpr(col));
   }
 
   /**
@@ -8503,11 +8686,15 @@ ${innerUnion}
 
     const totalDebt = customerDebtVal + supplierDebtVal;
 
-    // Inventory value (FIFO if enabled, else weighted avg fallback)
+    // Inventory value — same engine as valuation report (default weighted average).
     const inventoryValue = (() => {
       try {
-        const totals = this.validateAccountingConsistency({ warehouse_id: filters.warehouse_id });
-        return totals?.fifo_total ?? totals?.weighted_total ?? 0;
+        const summary = this.getInventoryValuationSummary({
+          warehouse_id: filters.warehouse_id || 'ALL',
+          status: 'active',
+          cost_method: 'weighted_average',
+        });
+        return Number(summary?.total_value || 0) || 0;
       } catch {
         return 0;
       }
@@ -8660,10 +8847,7 @@ ${innerUnion}
               WHERE warehouse_id = ?
               GROUP BY product_id
             )
-            SELECT COALESCE(SUM(
-              COALESCE(bc.remaining_value, 0)
-              + MAX(0, COALESCE(sb.quantity, 0) - COALESCE(bc.remaining_qty, 0)) * COALESCE(p.purchase_price, 0)
-            ), 0) AS fifo_value
+            SELECT COALESCE(SUM(${this._fifoOnHandValueSql('sb.quantity')}), 0) AS fifo_value
             FROM stock_balances sb
             INNER JOIN products p ON p.id = sb.product_id
             LEFT JOIN batch_costs bc ON bc.product_id = sb.product_id
@@ -8702,8 +8886,9 @@ ${innerUnion}
               GROUP BY pri.product_id, pr.warehouse_id
             )
             SELECT
-              COALESCE(SUM(COALESCE(sb.quantity, 0) * COALESCE((rc.cost_uzs / NULLIF(rc.qty, 0)), 0)), 0) AS weighted_value
+              COALESCE(SUM(COALESCE(sb.quantity, 0) * COALESCE((rc.cost_uzs / NULLIF(rc.qty, 0)), p.purchase_price, 0)), 0) AS weighted_value
             FROM stock_balances sb
+            INNER JOIN products p ON p.id = sb.product_id
             LEFT JOIN receipt_costs rc ON rc.product_id = sb.product_id AND rc.warehouse_id = sb.warehouse_id
             WHERE sb.warehouse_id = ?
           `

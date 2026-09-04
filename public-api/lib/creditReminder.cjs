@@ -888,6 +888,8 @@ function listOpenCreditOrders(db, filters = {}) {
       o.order_number,
       o.customer_id,
       o.credit_amount,
+      o.paid_amount,
+      o.total_amount,
       o.due_date,
       o.payment_status,
       o.created_at,

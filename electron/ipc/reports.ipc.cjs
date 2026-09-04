@@ -97,6 +97,15 @@ function registerReportsHandlers(services) {
     })
   );
 
+  console.log('Registering pos:reports:financialActSverka handler...');
+  ipcMain.removeHandler('pos:reports:financialActSverka');
+  ipcMain.handle(
+    'pos:reports:financialActSverka',
+    wrapHandler(async (_event, filters) => {
+      return reports.getFinancialActSverka(filters || {});
+    })
+  );
+
   console.log('Registering pos:reports:dailySalesSQL handler...');
   ipcMain.removeHandler('pos:reports:dailySalesSQL');
   ipcMain.handle(

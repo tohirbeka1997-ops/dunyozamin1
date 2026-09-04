@@ -128,8 +128,31 @@ function enableBatchMode(db) {
       assert.ok(row, 'fifo valuation row');
       assert.strictEqual(Number(row.current_stock), 10, 'display stock from balances');
       assert.strictEqual(Number(row.stock_value), 4 * 250 + 6 * 999, 'batches + leftover at purchase_price');
+      assert.strictEqual(Number(row.phantom_batch_value || 0), 0, 'no leftover when remaining_qty < stock');
       const detail = inventory.getProductDetail(p.id);
       assert.strictEqual(Number(detail.stock_value), 4 * 250 + 6 * 999, 'product card FIFO matches valuation');
+    });
+
+    runStep('FIFO valuation excludes leftover batches when stock is 0', () => {
+      const p = products.create({
+        name: 'Val Phantom',
+        sku: `VP-${Date.now()}`,
+        sale_price: 3000,
+        purchase_price: 147840,
+        track_stock: 1,
+        current_stock: 0,
+      });
+      db.prepare('DELETE FROM inventory_batches WHERE product_id = ?').run(p.id);
+      batches.createOpeningBatch(p.id, WH, 5, 147840, '2000-01-01 00:00:00', 'P2-PHANTOM');
+      const rows = reports.getInventoryValuation({ warehouse_id: WH, status: 'active' });
+      const row = rows.find((r) => r.product_id === p.id);
+      assert.ok(row, 'phantom valuation row');
+      assert.strictEqual(Number(row.current_stock), 0);
+      assert.strictEqual(Number(row.stock_value), 0, 'on-hand value is 0 when stock is 0');
+      assert.strictEqual(Number(row.phantom_batch_value), 5 * 147840, 'leftover batch value is split out');
+      assert.strictEqual(Number(row.phantom_batch_qty), 5);
+      const detail = inventory.getProductDetail(p.id);
+      assert.strictEqual(Number(detail.stock_value), 0, 'product card on-hand value is 0 when stock is 0');
     });
 
     runStep('PO edit updates remaining batch unit_cost, not closed history', () => {

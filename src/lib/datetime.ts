@@ -3,13 +3,17 @@
  *
  * Problem this solves:
  * - SQLite often stores timestamps as `YYYY-MM-DD HH:mm:ss` (no timezone).
- * - In our backend we frequently use UTC (`datetime('now')`), but the string has no "Z".
+ * - Canonical storage for sales/ledger is UTC-naive (`nowSqlUtc` / ISO stripped).
  * - `new Date('2025-12-24 10:00:00')` is interpreted as LOCAL time by JS,
  *   which makes printed receipts show a shifted time (e.g. Uzbekistan is UTC+5).
  *
  * This module:
  * - Parses DB timestamps safely (treats `YYYY-MM-DD HH:mm:ss` as UTC)
  * - Formats to `dd.MM.yyyy HH:mm` in Asia/Tashkent (default for this POS)
+ *
+ * Customer ledger caveat: legacy payment rows may still be Tashkent-naive.
+ * Hisob tarixi uses `resolveLedgerEventTimes` in customerLedgerDisplay.ts
+ * so mixed UTC + legacy-local rows do not double-shift (+5h twice).
  */
 
 export type DbDateInput = Date | string | number | null | undefined;

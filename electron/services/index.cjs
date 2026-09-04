@@ -189,6 +189,8 @@ function createServices(db) {
   };
   services.suppliers.auditService = services.audit;
   services.purchases.auditService = services.audit;
+  services.purchases.bindReportsService(services.reports);
+  services.supplierReturns.supplierService = services.suppliers;
   // Soft-lock: InventoryService.adjustStock consults open revisions.
   inventoryService.inventoryRevisions = services.inventoryRevisions;
   inventoryService.audit = services.audit;

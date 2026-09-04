@@ -22,6 +22,7 @@ import type { Customer } from '@/types/database';
 import { Plus } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { DUPLICATE_PHONE_MESSAGE_UZ, formatUserFacingError } from '@/utils/electron';
+import { assertOptionalUzPhone } from '@/lib/posHardening';
 
 interface QuickCustomerCreateProps {
   onCreated?: (customer: Customer) => void;
@@ -46,7 +47,6 @@ export default function QuickCustomerCreate({ onCreated, showLabel = false, clas
 
   const handleSave = async () => {
     const cleanName = name.trim();
-    const cleanPhone = phone.trim();
     if (!cleanName) {
       toast({
         title: 'Validatsiya',
@@ -56,12 +56,23 @@ export default function QuickCustomerCreate({ onCreated, showLabel = false, clas
       return;
     }
 
+    const phoneGate = assertOptionalUzPhone(phone);
+    if (!phoneGate.ok) {
+      toast({
+        title: 'Validatsiya xatosi',
+        description: "Telefon raqami noto'g'ri formatda. Masalan: +998 90 123 45 67",
+        variant: 'destructive',
+      });
+      return;
+    }
+    const resolvedPhone = phoneGate.phone;
+
     if (saving) return;
 
     try {
       setSaving(true);
-      if (cleanPhone) {
-        const existingByPhone = await findCustomerByPhone(cleanPhone);
+      if (phoneGate.normalized && resolvedPhone) {
+        const existingByPhone = await findCustomerByPhone(resolvedPhone);
         if (existingByPhone) {
           toast({
             title: 'Xatolik',
@@ -77,7 +88,7 @@ export default function QuickCustomerCreate({ onCreated, showLabel = false, clas
 
       const created = await createCustomer({
         name: cleanName,
-        phone: cleanPhone || null,
+        phone: resolvedPhone,
         email: null,
         address: null,
         type: 'individual',

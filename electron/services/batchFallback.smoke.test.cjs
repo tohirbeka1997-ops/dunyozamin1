@@ -213,6 +213,43 @@ try {
   assert.strictEqual(healthAfter.drift_count, 0, 'drift should be zero after repair');
   ok('repairBatchCoverage zeros drift');
 
+  const excessProduct = products.create({
+    name: 'Repair Allocated Excess',
+    sku: `BFB-EX-${Date.now()}`,
+    sale_price: 4000,
+    purchase_price: 1000,
+    track_stock: 1,
+    current_stock: 0,
+  });
+  db.prepare(`UPDATE settings SET value='0' WHERE key='inventory.batch_mode_enabled'`).run();
+  inventory.adjustStock({
+    warehouse_id: WH,
+    adjustment_type: 'set',
+    reason: 'allocated excess before',
+    created_by: ADMIN,
+    items: [{ product_id: excessProduct.id, target_quantity: 3 }],
+  });
+  enableBatchMode(db, batches, cutoverAt);
+  db.prepare('DELETE FROM inventory_batches WHERE product_id = ?').run(excessProduct.id);
+  const opening = batches.createOpeningBatch(
+    excessProduct.id,
+    WH,
+    10,
+    1000,
+    '2000-01-01 00:00:00',
+    'P2-ALLOC-EX',
+  );
+  batches.allocateFIFOForAdjustment('adj-alloc-ex', excessProduct.id, WH, 2);
+  assert.strictEqual(batchStockOf(batches, excessProduct.id), 8);
+  assert.strictEqual(stockOf(inventory, excessProduct.id), 3);
+  const excessRepair = batches.repairBatchCoverage({ warehouseId: WH, dryRun: false });
+  assert.ok(excessRepair.reduced > 0, 'allocated leftover must be reduced');
+  assert.strictEqual(batchStockOf(batches, excessProduct.id), 3, 'remaining_qty matches stock');
+  assert.strictEqual(stockOf(inventory, excessProduct.id), 3, 'stock unchanged by batch repair');
+  const leftover = db.prepare('SELECT remaining_qty, status FROM inventory_batches WHERE id = ?').get(opening.id);
+  assert.strictEqual(Number(leftover.remaining_qty), 3);
+  ok('repairBatchCoverage trims allocated leftover down to live stock');
+
   const product2 = products.create({
     name: 'Cutover Resume Smoke',
     sku: `BFB2-${Date.now()}`,

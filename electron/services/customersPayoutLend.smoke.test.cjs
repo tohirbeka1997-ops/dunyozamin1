@@ -1,6 +1,7 @@
 /* eslint-disable no-console */
 /**
- * Payout within advance vs lend (over-advance) smoke.
+ * Payout within advance vs lend (Pul berildi) smoke.
+ * Dual-bucket: explicit lend never nets against advance.
  * Run: npx electron electron/services/customersPayoutLend.smoke.test.cjs
  */
 'use strict';
@@ -20,7 +21,10 @@ process.env.POS_VERBOSE_LOGS = '0';
 
 const { open, close, getDb } = require('../db/open.cjs');
 const { createServices } = require('./index.cjs');
-const { readBalanceInCurrency } = require('../lib/customerBalance.cjs');
+const {
+  readBalanceInCurrency,
+  readCustomerDebtAdvance,
+} = require('../lib/customerBalance.cjs');
 const { setCurrentUserId } = require('../lib/currentUser.cjs');
 
 console.log('\n=== CUSTOMER payout vs lend SMOKE ===');
@@ -72,6 +76,8 @@ try {
     payment_uuid: randomUUID(),
   });
   assert.strictEqual(readBalanceInCurrency(db, customerId, 'UZS'), 10000);
+  assert.strictEqual(readCustomerDebtAdvance(db, customerId, 'UZS').advance, 10000);
+  assert.strictEqual(readCustomerDebtAdvance(db, customerId, 'UZS').debt, 0);
   console.log('  ✓ seed advance 10000');
 
   // Payout within advance
@@ -89,6 +95,7 @@ try {
   assert.notStrictEqual(payout.duplicate, true);
   assert.strictEqual(payout.payment_out_kind, 'payout');
   assert.strictEqual(readBalanceInCurrency(db, customerId, 'UZS'), 6000);
+  assert.strictEqual(readCustomerDebtAdvance(db, customerId, 'UZS').advance, 6000);
   console.log('  ✓ payout 4000 within advance → 6000');
 
   // Over-advance as payout must fail
@@ -117,7 +124,8 @@ try {
   assert.strictEqual(readBalanceInCurrency(db, customerId, 'UZS'), 6000);
   console.log('  ✓ over-advance payout blocked');
 
-  // Lend with reason succeeds and creates debt past zero
+  // Explicit lend while advance remains: advance unchanged, debt += amount
+  // advance 6000 + lend 10000 → advance 6000, debt 10000, net -4000
   const lendUuid = randomUUID();
   const lend = customers.receivePayment({
     customer_id: customerId,
@@ -131,8 +139,14 @@ try {
     payment_uuid: lendUuid,
   });
   assert.strictEqual(lend.payment_out_kind, 'lend');
+  const afterLend = readCustomerDebtAdvance(db, customerId, 'UZS');
+  assert.strictEqual(afterLend.advance, 6000);
+  assert.strictEqual(afterLend.debt, 10000);
   assert.strictEqual(readBalanceInCurrency(db, customerId, 'UZS'), -4000);
-  console.log('  ✓ lend 10000 → balance -4000 (debt)');
+  assert.strictEqual(Number(lend.new_advance), 6000);
+  assert.strictEqual(Number(lend.new_debt), 10000);
+  assert.strictEqual(Number(lend.debt_created), 10000);
+  console.log('  ✓ lend 10000 with advance 6000 → debt 10000, advance stays 6000');
 
   // Idempotent lend retry
   const lendRetry = customers.receivePayment({
@@ -147,8 +161,98 @@ try {
     payment_uuid: lendUuid,
   });
   assert.strictEqual(lendRetry.duplicate, true);
-  assert.strictEqual(readBalanceInCurrency(db, customerId, 'UZS'), -4000);
+  assert.strictEqual(readCustomerDebtAdvance(db, customerId, 'UZS').debt, 10000);
+  assert.strictEqual(readCustomerDebtAdvance(db, customerId, 'UZS').advance, 6000);
   console.log('  ✓ lend idempotent (same payment_uuid)');
+
+  // AC1: advance 1000, debt 0, loan 1000 → advance 1000, debt 1000
+  const ac1 = customers.create({
+    name: 'AC1 Advance+Lend',
+    phone: '+998901239910',
+    allow_credit: 1,
+    allow_debt: 1,
+    credit_limit: 100000,
+  });
+  customers.receivePayment({
+    customer_id: ac1.id,
+    amount: 1000,
+    payment_method: 'cash',
+    operation: 'payment_in',
+    received_by: ADMIN,
+    shift_id: shift.id,
+    payment_uuid: randomUUID(),
+  });
+  customers.receivePayment({
+    customer_id: ac1.id,
+    amount: 1000,
+    payment_method: 'cash',
+    operation: 'payment_out',
+    payment_out_kind: 'lend',
+    notes: 'Pul berildi AC1',
+    received_by: ADMIN,
+    shift_id: shift.id,
+    payment_uuid: randomUUID(),
+  });
+  const ac1b = readCustomerDebtAdvance(db, ac1.id, 'UZS');
+  assert.strictEqual(ac1b.advance, 1000);
+  assert.strictEqual(ac1b.debt, 1000);
+  assert.strictEqual(readBalanceInCurrency(db, ac1.id, 'UZS'), 0);
+  console.log('  ✓ AC1: advance 1000 + lend 1000 → advance 1000, debt 1000');
+
+  // AC2: limit 10000, debt 9500 → 500 OK, 501 blocked
+  const ac2 = customers.create({
+    name: 'AC2 Limit',
+    phone: '+998901239911',
+    allow_credit: 1,
+    allow_debt: 1,
+    credit_limit: 10000,
+  });
+  customers.receivePayment({
+    customer_id: ac2.id,
+    amount: 9500,
+    payment_method: 'cash',
+    operation: 'payment_out',
+    payment_out_kind: 'lend',
+    notes: 'seed debt 9500',
+    received_by: ADMIN,
+    shift_id: shift.id,
+    payment_uuid: randomUUID(),
+  });
+  customers.receivePayment({
+    customer_id: ac2.id,
+    amount: 500,
+    payment_method: 'cash',
+    operation: 'payment_out',
+    payment_out_kind: 'lend',
+    notes: 'at limit',
+    received_by: ADMIN,
+    shift_id: shift.id,
+    payment_uuid: randomUUID(),
+  });
+  assert.strictEqual(readCustomerDebtAdvance(db, ac2.id, 'UZS').debt, 10000);
+  let ac2Blocked = false;
+  try {
+    customers.receivePayment({
+      customer_id: ac2.id,
+      amount: 501,
+      payment_method: 'cash',
+      operation: 'payment_out',
+      payment_out_kind: 'lend',
+      notes: 'over limit',
+      received_by: ADMIN,
+      shift_id: shift.id,
+      payment_uuid: randomUUID(),
+    });
+  } catch (e) {
+    ac2Blocked = true;
+    assert.ok(
+      e.details?.code === 'CREDIT_LIMIT_EXCEEDED' ||
+        String(e.message || '').includes('kredit limitidan oshadi')
+    );
+  }
+  assert.strictEqual(ac2Blocked, true);
+  assert.strictEqual(readCustomerDebtAdvance(db, ac2.id, 'UZS').debt, 10000);
+  console.log('  ✓ AC2: limit 10000 debt 9500 → 500 OK, 501 blocked');
 
   // Zero / negative payment rejected
   let zeroBlocked = false;
@@ -207,7 +311,6 @@ try {
     allow_debt: 1,
     credit_limit: 200000,
   });
-  // Seed debt via ledger-style: payment_out lend
   customers.receivePayment({
     customer_id: debtCustomer.id,
     amount: 59990,
@@ -219,7 +322,7 @@ try {
     shift_id: shift.id,
     payment_uuid: randomUUID(),
   });
-  assert.strictEqual(readBalanceInCurrency(db, debtCustomer.id, 'UZS'), -59990);
+  assert.strictEqual(readCustomerDebtAdvance(db, debtCustomer.id, 'UZS').debt, 59990);
   customers.receivePayment({
     customer_id: debtCustomer.id,
     amount: 10000,
@@ -231,10 +334,10 @@ try {
     shift_id: shift.id,
     payment_uuid: randomUUID(),
   });
-  assert.strictEqual(readBalanceInCurrency(db, debtCustomer.id, 'UZS'), -69990);
+  assert.strictEqual(readCustomerDebtAdvance(db, debtCustomer.id, 'UZS').debt, 69990);
   console.log('  ✓ debt 59990 + lend 10000 → 69990');
 
-  // Payment in: debt 5000 + pay 10000 → advance 5000
+  // Payment in: debt 5000 + pay 10000 → debt 0, advance 5000
   const payInCustomer = customers.create({
     name: 'Pay In Split',
     phone: '+998901239905',
@@ -262,10 +365,35 @@ try {
     shift_id: shift.id,
     payment_uuid: randomUUID(),
   });
+  const payInBuckets = readCustomerDebtAdvance(db, payInCustomer.id, 'UZS');
+  assert.strictEqual(payInBuckets.debt, 0);
+  assert.strictEqual(payInBuckets.advance, 5000);
   assert.strictEqual(readBalanceInCurrency(db, payInCustomer.id, 'UZS'), 5000);
   assert.strictEqual(Number(payIn.debt_portion), 5000);
   assert.strictEqual(Number(payIn.advance_portion), 5000);
   console.log('  ✓ pay 10000 on debt 5000 → advance 5000');
+
+  // Audit: lend writes Pul berildi with debt/advance before/after
+  const audit = db
+    .prepare(
+      `SELECT action, old_values, new_values FROM audit_log
+       WHERE entity_id = ? AND action = 'customer_lend'
+       ORDER BY created_at DESC LIMIT 1`
+    )
+    .get(ac1.id);
+  if (audit) {
+    const oldV = typeof audit.old_values === 'string' ? JSON.parse(audit.old_values) : audit.old_values;
+    const newV = typeof audit.new_values === 'string' ? JSON.parse(audit.new_values) : audit.new_values;
+    assert.strictEqual(Number(oldV.advance), 1000);
+    assert.strictEqual(Number(oldV.open_debt), 0);
+    assert.strictEqual(Number(newV.open_debt), 1000);
+    assert.strictEqual(Number(newV.advance), 1000);
+    assert.strictEqual(Number(newV.expense), 1000);
+    assert.ok(newV.operation_name === 'Pul berildi' || newV.kind === 'lend');
+    console.log('  ✓ audit Pul berildi has before/after debt+advance');
+  } else {
+    console.log('  ⚠ audit_log row not found (schema optional) — skipped');
+  }
 
   console.log('\n✅ payout/lend smoke passed\n');
 } catch (e) {

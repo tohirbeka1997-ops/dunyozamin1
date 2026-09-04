@@ -15,6 +15,7 @@ import {
 } from '@/components/ui/table';
 import { useToast } from '@/hooks/use-toast';
 import { formatMoneyUZS } from '@/lib/format';
+import { formatQuantity } from '@/utils/quantity';
 import { aggregatePurchaseOrders, formatMoney, splitSupplierBalances } from '@/lib/currency';
 import { DualCurrencyAmount } from '@/components/common/DualCurrencyAmount';
 import { formatDateTime, todayYMD } from '@/lib/datetime';
@@ -23,6 +24,7 @@ import SearchableCombobox from '@/components/common/SearchableCombobox';
 import { useTranslation } from 'react-i18next';
 import {
   getDashboardAnalytics,
+  getFinancialActSverka,
   getInventoryValuationSummary,
   getPurchaseOrders,
   getSuppliers,
@@ -57,6 +59,7 @@ export default function OverallSummaryReport() {
   const [dateFrom, setDateFrom] = useState(todayYMD());
   const [dateTo, setDateTo] = useState(todayYMD());
 
+  const [actSverka, setActSverka] = useState<any>(null);
   const [analytics, setAnalytics] = useState<any>(null);
   const [purchaseOrders, setPurchaseOrders] = useState<PurchaseOrderWithDetails[]>([]);
   const [inventorySummary, setInventorySummary] = useState<null | {
@@ -147,17 +150,31 @@ export default function OverallSummaryReport() {
       const warehouse_id = warehouseId === 'all' ? undefined : warehouseId;
       const { from, to, fromYMD, toYMD } = selectedRange;
 
-      const [a, pos, inv, custDebt, suppliers] = await Promise.all([
+      const [a, act, pos, inv, custDebt, suppliers] = await Promise.all([
         getDashboardAnalytics(from, to, { warehouse_id }),
+        getFinancialActSverka({
+          date_from: fromYMD,
+          date_to: toYMD,
+          warehouse_id,
+          cost_method: 'weighted_average',
+        }).catch(() => null),
         getPurchaseOrders({ date_from: fromYMD, date_to: toYMD, include_items: true, warehouse_id }),
-        getInventoryValuationSummary({ warehouse_id: warehouse_id || 'ALL', status: 'active' }),
+        getInventoryValuationSummary({ warehouse_id: warehouse_id || 'ALL', status: 'active', cost_method: 'weighted_average', as_of: toYMD }),
         getTotalCustomerDebt(),
         getSuppliers(true),
       ]);
 
       setAnalytics(a);
+      setActSverka(act);
       setPurchaseOrders((pos || []) as any);
       setInventorySummary(inv);
+      const actInv = Number(act?.period?.inventory_value ?? act?.current?.inventory_value || 0);
+      if (Math.abs(actInv - Number(inv?.total_value || 0)) > 1) {
+        console.warn('[OverallSummary] inventory value divergence', {
+          act_sverka: actInv,
+          valuation: inv?.total_value,
+        });
+      }
       setCustomerDebtUzs(Number(custDebt?.debt_uzs || 0));
       setCustomerDebtUsd(Number(custDebt?.debt_usd || 0));
 
@@ -217,17 +234,22 @@ export default function OverallSummaryReport() {
 
   const exportAuditCsv = async () => {
     if (!isElectron()) return;
-    const rows: Array<[string, string]> = [
-      ['Band', 'So‘m'],
-      ['Tovar kirimi (qabul qilingan)', String(purchaseTotals.receivedUzs)],
-      ['Sotuv tushumi', String(netSales)],
-      ['Sotilgan tovar tannarxi (COGS)', String(-totalCogs)],
-      ['Yalpi foyda', String(grossProfit)],
-      ['Tijoriy xarajatlar', String(-totalExpenses)],
-      ['Sotuv qaytarishlari', String(-returnsAmount)],
-      ['Qaytish tannarxi (COGS qaytishi)', String(returnsCogs)],
-      ['Sof foyda', String(netProfit)],
-    ];
+    const rows: Array<[string, string]> = [['Band', 'So‘m']];
+    const lines = Array.isArray(actSverka?.lines) ? actSverka.lines : [];
+    if (lines.length) {
+      for (const line of lines) {
+        rows.push([String(line.label || line.key), String(line.amount ?? 0)]);
+      }
+    } else {
+      rows.push(
+        ['Tovar kirimi (qabul qilingan)', String(purchaseTotals.receivedUzs)],
+        ['Sof tushum', String(netSales)],
+        ['Sotilgan tovar tannarxi (COGS)', String(-totalCogs)],
+        ['Yalpi foyda', String(grossProfit)],
+        ['Tasdiqlangan xarajatlar', String(-totalExpenses)],
+        ['Sof foyda', String(netProfit)],
+      );
+    }
     const content = rows.map((r) => `${r[0]},${r[1]}`).join('\n');
     const api = requireElectron();
     await handleIpcResponse(
@@ -249,18 +271,19 @@ export default function OverallSummaryReport() {
     );
   }
 
-  const netSalesUzs = Number(analytics?.total_sales_uzs ?? analytics?.total_sales ?? 0);
-  const netSalesUsd = Number(analytics?.total_sales_usd ?? 0);
-  const netSales = Number(analytics?.total_sales || 0);
-  const totalCogs = Number(analytics?.total_cogs || 0);
-  const totalExpenses = Number(analytics?.total_expenses || 0);
-  const returnsAmount = Number(analytics?.returns_amount || 0);
-  const returnsCogs = Number(analytics?.returns_cogs || 0);
-  // API `total_profit` = sotuv − tannarx (yalpi). Sof foyda: yalpi − xarajat − qaytarishlar.
-  const grossProfit = netSales - totalCogs;
-  const netProfit = Number.isFinite(Number(analytics?.net_profit))
-    ? Number(analytics?.net_profit || 0)
-    : grossProfit - totalExpenses - returnsAmount + returnsCogs;
+  const pnl = actSverka?.pnl || {};
+  const netSalesUzs = Number(pnl.net_sales_uzs ?? analytics?.net_sales_uzs ?? analytics?.total_sales_uzs ?? analytics?.total_sales ?? 0);
+  const netSalesUsd = Number(pnl.net_sales_usd ?? analytics?.net_sales_usd ?? analytics?.total_sales_usd ?? 0);
+  const netSales = Number(pnl.net_revenue ?? analytics?.net_sales ?? analytics?.total_sales ?? 0);
+  const grossRevenue = Number(pnl.gross_revenue ?? analytics?.gross_revenue ?? analytics?.total_sales ?? 0);
+  const discounts = Number(pnl.discounts ?? analytics?.discounts ?? 0);
+  const totalCogs = Number(pnl.cogs ?? analytics?.total_cogs ?? 0);
+  const totalExpenses = Number(pnl.expenses ?? analytics?.total_expenses ?? 0);
+  const returnsAmount = Number(pnl.returns_revenue ?? analytics?.returns_amount ?? 0);
+  const grossProfit = Number(pnl.gross_profit ?? netSales - totalCogs);
+  const netProfit = Number.isFinite(Number(pnl.net_profit ?? analytics?.net_profit))
+    ? Number(pnl.net_profit ?? analytics?.net_profit || 0)
+    : grossProfit - totalExpenses;
 
   return (
     <div className="space-y-6">
@@ -356,30 +379,37 @@ export default function OverallSummaryReport() {
       <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4">
         <Card>
           <CardHeader className="pb-2">
-            <CardTitle className="text-sm text-muted-foreground">Jami sotuv (sof)</CardTitle>
+            <CardTitle className="text-sm text-muted-foreground">Sof tushum</CardTitle>
           </CardHeader>
           <CardContent>
             <div className="text-2xl font-bold">
               <DualCurrencyAmount uzs={netSalesUzs} usd={netSalesUsd} />
             </div>
             <div className="text-sm text-muted-foreground">
-              Buyurtmalar: {Number(analytics?.total_orders || 0)} · Tovarlar: {Number(analytics?.items_sold || 0)}
-              {netSalesUsd > 0 && (
-                <span className="block text-xs mt-1">
-                  P&L (UZS ekv.): {formatMoneyUZS(netSales)}
-                </span>
-              )}
+              Brutto: {formatMoneyUZS(grossRevenue)} · Chegirma: {formatMoneyUZS(discounts)}
+              {returnsAmount > 0 ? ` · Qaytarish: ${formatMoneyUZS(returnsAmount)}` : ''}
             </div>
           </CardContent>
         </Card>
 
         <Card>
           <CardHeader className="pb-2">
-            <CardTitle className="text-sm text-muted-foreground">Tannarx</CardTitle>
+            <CardTitle className="text-sm text-muted-foreground">Sotilgan mahsulot tannarxi</CardTitle>
           </CardHeader>
           <CardContent>
             <div className="text-2xl font-bold">{formatMoneyUZS(totalCogs)}</div>
-            <div className="text-sm text-muted-foreground">Hisob: order_items × mahsulot tannarxi (taxmin)</div>
+            <div className="text-sm text-muted-foreground">
+              Manba:{' '}
+              {pnl.cogs_source === 'fifo'
+                ? 'FIFO'
+                : pnl.cogs_source === 'weighted_average'
+                  ? 'Weighted average'
+                  : pnl.cogs_source === 'historical_fallback'
+                    ? 'Tarixiy fallback'
+                    : pnl.cogs_source === 'insufficient'
+                      ? 'Ma’lumot yetarli emas'
+                      : 'Yagona moliyaviy model'}
+            </div>
           </CardContent>
         </Card>
 
@@ -424,51 +454,45 @@ export default function OverallSummaryReport() {
               </TableRow>
             </TableHeader>
             <TableBody>
-              <TableRow>
-                <TableCell className="text-muted-foreground">1. Tovar kirimi (qabul qilingan, xarid bo‘yicha)</TableCell>
-                <TableCell className="text-right font-medium">{formatMoneyUZS(purchaseTotals.receivedUzs)}</TableCell>
-              </TableRow>
-              <TableRow>
-                <TableCell className="text-muted-foreground">2. Sotuv tushumi (yakunlangan buyurtmalar)</TableCell>
-                <TableCell className="text-right font-medium">{formatMoneyUZS(netSales)}</TableCell>
-              </TableRow>
-              <TableRow>
-                <TableCell className="text-muted-foreground">3. Sotilgan tovarning tannarxi (COGS)</TableCell>
-                <TableCell className="text-right">−{formatMoneyUZS(totalCogs)}</TableCell>
-              </TableRow>
-              <TableRow>
-                <TableCell className="font-medium">4. Yalpi foyda (2 − 3)</TableCell>
-                <TableCell className="text-right font-semibold">{formatMoneyUZS(grossProfit)}</TableCell>
-              </TableRow>
-              <TableRow>
-                <TableCell className="text-muted-foreground">5. Tijoriy xarajatlar (tasdiqlangan)</TableCell>
-                <TableCell className="text-right">−{formatMoneyUZS(totalExpenses)}</TableCell>
-              </TableRow>
-              {returnsAmount > 0 && (
-                <TableRow>
-                  <TableCell className="text-muted-foreground">6. Sotuv qaytarishlari (davr)</TableCell>
-                  <TableCell className="text-right">−{formatMoneyUZS(returnsAmount)}</TableCell>
-                </TableRow>
-              )}
-              {returnsCogs > 0 && (
-                <TableRow>
-                  <TableCell className="text-muted-foreground">7. Qaytgan tovar tannarxi (COGS qaytishi)</TableCell>
-                  <TableCell className="text-right">+{formatMoneyUZS(returnsCogs)}</TableCell>
-                </TableRow>
-              )}
-              <TableRow className="bg-muted/50">
-                <TableCell className="font-medium">
-                  {returnsAmount > 0 ? (returnsCogs > 0 ? '8' : '7') : '6'}. Sof foyda (yakuniy)
-                </TableCell>
-                <TableCell className={`text-right text-lg font-bold ${netProfit >= 0 ? 'text-success' : 'text-destructive'}`}>
-                  {formatMoneyUZS(netProfit)}
-                </TableCell>
-              </TableRow>
+              {(Array.isArray(actSverka?.lines) && actSverka.lines.length
+                ? actSverka.lines
+                : [
+                    { key: 'inbound_goods', label: 'Tovar kirimi', amount: purchaseTotals.receivedUzs },
+                    { key: 'gross_revenue', label: 'Brutto sotuv', amount: grossRevenue },
+                    { key: 'discounts', label: 'Chegirmalar', amount: discounts },
+                    { key: 'sales_returns', label: 'Sotuv qaytarishlari', amount: returnsAmount },
+                    { key: 'net_revenue', label: 'Sof tushum', amount: netSales },
+                    { key: 'cogs', label: 'Sotilgan mahsulot tannarxi', amount: totalCogs },
+                    { key: 'gross_profit', label: 'Yalpi foyda', amount: grossProfit },
+                    { key: 'approved_expenses', label: 'Tasdiqlangan xarajatlar', amount: totalExpenses },
+                    { key: 'net_profit', label: 'Sof foyda', amount: netProfit },
+                  ]
+              ).map((line: any, idx: number) => {
+                const highlight = line.key === 'net_profit' || line.key === 'gross_profit' || line.key === 'net_revenue';
+                const minus = ['discounts', 'sales_returns', 'cogs', 'approved_expenses'].includes(String(line.key));
+                return (
+                  <TableRow key={line.key || idx} className={line.key === 'net_profit' ? 'bg-muted/50' : undefined}>
+                    <TableCell className={highlight ? 'font-medium' : 'text-muted-foreground'}>
+                      {idx + 1}. {line.label}
+                    </TableCell>
+                    <TableCell className={`text-right ${highlight ? 'font-semibold' : 'font-medium'}`}>
+                      {minus && Number(line.amount || 0) !== 0 ? '−' : ''}
+                      {formatMoneyUZS(Math.abs(Number(line.amount || 0)))}
+                    </TableCell>
+                  </TableRow>
+                );
+              })}
             </TableBody>
           </Table>
           <div className="p-4 pt-0 text-xs text-muted-foreground border-t">
-            Sotuvlar va tannarx serverdagi yuklangan buyurtmalar bo‘yicha. Tovar kirimi: xarid qatorlarida qabul
-            soni va narxdan. Qarz va ombor stavkasi pastdagi kartalarda.
+            Davr bloki yagona moliyaviy modeldan. Qarz kartalarida joriy holat alohida. Ombor qiymati — davr oxiri
+            (as-of).
+            {actSverka?.meta?.computed_at
+              ? ` · ${actSverka.meta.computed_at} · ${actSverka.meta.timezone || ''} · ${actSverka.meta.data_version || ''}`
+              : ''}
+            {actSverka?.period?.closing_is_provisional
+              ? ' · Smena yopilmagan: davr oxiridagi kassa kutilayotgan qiymat (haqiqiy 0 emas).'
+              : ''}
           </div>
         </CardContent>
       </Card>
@@ -476,11 +500,12 @@ export default function OverallSummaryReport() {
       <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
         <Card>
           <CardHeader>
-            <CardTitle>Qarzlar (global holat)</CardTitle>
+            <CardTitle>Qarzlar (joriy holat)</CardTitle>
           </CardHeader>
           <CardContent className="space-y-3">
             <div className="rounded-md bg-muted px-3 py-2 text-xs text-muted-foreground">
-              Bu blok umumiy balansni ko‘rsatadi va davr/ombor filtrlaridan mustaqil.
+              Joriy holat: umumiy balans, davr filtrlari bilan aralashtirilmaydi. Davr o‘zgarishi akt-sverka
+              jadvalida (11–13-satrlar).
             </div>
             <div className="flex items-center justify-between">
               <span className="text-muted-foreground">Mijozlardan qarz (hozir)</span>
@@ -589,11 +614,18 @@ export default function OverallSummaryReport() {
             </div>
             <div className="flex items-center justify-between">
               <span className="text-muted-foreground">Jami qoldiq (miqdor)</span>
-              <span className="font-bold">{Number(inventorySummary?.total_quantity || 0)}</span>
+              <span className="font-bold">{formatQuantity(Number(inventorySummary?.total_quantity || 0), 'pcs')}</span>
             </div>
             <div className="text-xs text-muted-foreground">
               Tugagan: {Number(inventorySummary?.out_of_stock_count || 0)} · Kam zaxira: {Number(inventorySummary?.low_stock_count || 0)}
             </div>
+            {Math.abs(Number(actSverka?.period?.inventory_value || 0) - Number(inventorySummary?.total_value || 0)) > 1 ? (
+              <p className="text-xs text-destructive">
+                Ogohlantirish: moliyaviy bosh sahifa ({formatMoneyUZS(Number(analytics?.inventory_value || 0))}) va
+                baholash hisoboti ({formatMoneyUZS(Number(inventorySummary?.total_value || 0))}) farq qiladi. Diagnostika
+                jurnaliga yozildi.
+              </p>
+            ) : null}
           </CardContent>
         </Card>
       </div>

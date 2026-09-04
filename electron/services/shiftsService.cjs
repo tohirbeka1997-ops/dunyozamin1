@@ -13,6 +13,8 @@ const {
   parseNonNegativeMoneyAmount,
   requiresShiftVarianceReason,
 } = require('../lib/posHardening.cjs');
+const { supplierPaymentCashUzsSql } = require('../lib/currencyLedger.cjs');
+const { expectedClosingCash } = require('../lib/financialCalc.cjs');
 const { randomUUID } = require('crypto');
 
 /**
@@ -262,7 +264,13 @@ class ShiftsService {
    * - debtRepaidCash: shundan naqd/naqd
    */
   _getCustomerPaymentsShiftRollup(shiftId) {
-    const empty = { customerDrawerCashNet: 0, debtRepaidTotal: 0, debtRepaidCash: 0 };
+    const empty = {
+      customerDrawerCashNet: 0,
+      customerPaymentsCash: 0,
+      customerLoanIssuedCash: 0,
+      debtRepaidTotal: 0,
+      debtRepaidCash: 0,
+    };
     if (!shiftId) return empty;
     const sid = String(shiftId).trim();
     if (!sid) return empty;
@@ -270,26 +278,44 @@ class ShiftsService {
       const cols = this.db.prepare('PRAGMA table_info(customer_payments)').all();
       if (!cols.some((c) => c.name === 'shift_id')) return empty;
       const hasOld = cols.some((c) => c.name === 'old_balance');
+      const hasOp = cols.some((c) => c.name === 'operation');
+      const opExpr = hasOp ? `COALESCE(operation, 'payment_in')` : `'payment_in'`;
 
-      const cashNetRow = this.db
+      const cashRow = this.db
         .prepare(
           `
-        SELECT COALESCE(SUM(
-          CASE
-            WHEN LOWER(TRIM(COALESCE(payment_method, ''))) NOT IN ('cash', 'naqd') THEN 0
-            WHEN COALESCE(operation, 'payment_in') = 'payment_out' THEN -ABS(COALESCE(amount, 0))
-            ELSE COALESCE(amount, 0)
-          END
-        ), 0) AS s
+        SELECT
+          COALESCE(SUM(
+            CASE
+              WHEN LOWER(TRIM(COALESCE(payment_method, ''))) NOT IN ('cash', 'naqd') THEN 0
+              WHEN ${opExpr} = 'payment_out' THEN 0
+              ELSE COALESCE(amount, 0)
+            END
+          ), 0) AS payments_in,
+          COALESCE(SUM(
+            CASE
+              WHEN LOWER(TRIM(COALESCE(payment_method, ''))) NOT IN ('cash', 'naqd') THEN 0
+              WHEN ${opExpr} = 'payment_out' THEN ABS(COALESCE(amount, 0))
+              ELSE 0
+            END
+          ), 0) AS loans_out
         FROM customer_payments
         WHERE shift_id = ?
       `
         )
         .get(sid);
-      const customerDrawerCashNet = Number(cashNetRow?.s || 0) || 0;
+      const customerPaymentsCash = Number(cashRow?.payments_in || 0) || 0;
+      const customerLoanIssuedCash = Number(cashRow?.loans_out || 0) || 0;
+      const customerDrawerCashNet = customerPaymentsCash - customerLoanIssuedCash;
 
       if (!hasOld) {
-        return { customerDrawerCashNet, debtRepaidTotal: 0, debtRepaidCash: 0 };
+        return {
+          customerDrawerCashNet,
+          customerPaymentsCash,
+          customerLoanIssuedCash,
+          debtRepaidTotal: 0,
+          debtRepaidCash: 0,
+        };
       }
 
       const debtAll = this.db
@@ -298,7 +324,7 @@ class ShiftsService {
         SELECT COALESCE(SUM(COALESCE(amount, 0)), 0) AS s
         FROM customer_payments
         WHERE shift_id = ?
-          AND (operation IS NULL OR operation = 'payment_in')
+          AND ${opExpr} != 'payment_out'
           AND COALESCE(old_balance, 0) < -0.009
       `
         )
@@ -309,7 +335,7 @@ class ShiftsService {
         SELECT COALESCE(SUM(COALESCE(amount, 0)), 0) AS s
         FROM customer_payments
         WHERE shift_id = ?
-          AND (operation IS NULL OR operation = 'payment_in')
+          AND ${opExpr} != 'payment_out'
           AND COALESCE(old_balance, 0) < -0.009
           AND LOWER(TRIM(COALESCE(payment_method, ''))) IN ('cash', 'naqd')
       `
@@ -318,11 +344,57 @@ class ShiftsService {
 
       return {
         customerDrawerCashNet,
+        customerPaymentsCash,
+        customerLoanIssuedCash,
         debtRepaidTotal: Number(debtAll?.s || 0) || 0,
         debtRepaidCash: Number(debtCash?.s || 0) || 0,
       };
     } catch (e) {
       console.warn('[SHIFT] _getCustomerPaymentsShiftRollup:', e.message);
+      return empty;
+    }
+  }
+
+  _getSupplierCashShiftRollup(shift) {
+    const empty = { supplierPaymentsCash: 0, supplierRefundsCash: 0 };
+    if (!shift?.id) return empty;
+    try {
+      const exists = this.db
+        .prepare(`SELECT 1 AS ok FROM sqlite_master WHERE type='table' AND name = 'supplier_payments' LIMIT 1`)
+        .get();
+      if (!exists) return empty;
+      const amt = supplierPaymentCashUzsSql(this.db, 'sp');
+      const opened = shift.opened_at || shift.openedAt;
+      const closed = shift.closed_at || shift.closedAt || null;
+      const row = this.db
+        .prepare(
+          `
+        SELECT
+          COALESCE(SUM(CASE
+            WHEN LOWER(TRIM(COALESCE(sp.payment_method, ''))) NOT IN ('cash', 'naqd') THEN 0
+            WHEN LOWER(TRIM(COALESCE(sp.payment_method, ''))) = 'credit_note' THEN 0
+            WHEN ${amt} > 0 THEN ${amt}
+            ELSE 0
+          END), 0) AS pay,
+          COALESCE(SUM(CASE
+            WHEN LOWER(TRIM(COALESCE(sp.payment_method, ''))) NOT IN ('cash', 'naqd') THEN 0
+            WHEN ${amt} < 0 THEN ABS(${amt})
+            ELSE 0
+          END), 0) AS refund
+        FROM supplier_payments sp
+        WHERE datetime(replace(replace(COALESCE(sp.paid_at, sp.created_at), 'T', ' '), 'Z', ''))
+              >= datetime(replace(replace(?, 'T', ' '), 'Z', ''))
+          AND datetime(replace(replace(COALESCE(sp.paid_at, sp.created_at), 'T', ' '), 'Z', ''))
+              <= datetime(replace(replace(COALESCE(?, datetime('now')), 'T', ' '), 'Z', ''))
+      `
+        )
+        .get(opened, closed);
+      return {
+        supplierPaymentsCash: Number(row?.pay || 0) || 0,
+        supplierRefundsCash: Number(row?.refund || 0) || 0,
+      };
+    } catch (e) {
+      console.warn('[SHIFT] _getSupplierCashShiftRollup:', e.message);
       return empty;
     }
   }
@@ -523,6 +595,7 @@ class ShiftsService {
       const custRoll = this._getCustomerPaymentsShiftRollup(shiftId);
       const cashOutflow = this._getCashOutflowBreakdown(shiftId);
       const cashDeposits = this._getCashDepositsTotal(shiftId);
+      const supplierCash = this._getSupplierCashShiftRollup(shift);
 
       let creditDebtIssuedClose = 0;
       try {
@@ -537,15 +610,18 @@ class ShiftsService {
         /* ignore */
       }
 
-      // Kutilayotgan naqd = ochilish + buyurtma naqdi + mijoz balansiga naqd (qarz / oldindan)
-      //                   + qo'lda kirim − naqd qaytarishlar − naqd xarajatlar − qo'lda chiqim
-      const expectedCash =
-        (shift.opening_cash || 0)
-        + cashTotal
-        + custRoll.customerDrawerCashNet
-        + cashDeposits
-        - cashRefundsOut
-        - cashOutflow.total;
+      const expectedCash = expectedClosingCash({
+        openingCash: shift.opening_cash || 0,
+        cashSales: cashTotal,
+        customerPaymentsCash: custRoll.customerPaymentsCash,
+        otherCashIn: supplierCash.supplierRefundsCash,
+        cashRefunds: cashRefundsOut,
+        supplierPaymentsCash: supplierCash.supplierPaymentsCash,
+        customerLoanIssuedCash: custRoll.customerLoanIssuedCash,
+        cashExpenses: cashOutflow.cashExpenses,
+        cashWithdrawals: cashOutflow.cashWithdrawals,
+        cashDeposits,
+      });
 
       // Calculate difference = closing_cash - expected_cash
       const difference = closingCash - expectedCash;
@@ -909,7 +985,7 @@ class ShiftsService {
 
     // Get shift basic info
     const shift = this.db.prepare(`
-      SELECT opening_cash, opened_at, closed_at, status
+      SELECT id, user_id, cashier_id, opening_cash, opened_at, closed_at, status
       FROM shifts
       WHERE id = ?
     `).get(bindId);
@@ -1051,23 +1127,19 @@ class ShiftsService {
     const paymentsByMethod = this._getPaymentsByMethod(bindId);
     const cashOutflow = this._getCashOutflowBreakdown(bindId);
     const cashDeposits = this._getCashDepositsTotal(bindId);
-    /**
-     * Kutilayotgan naqd =
-     *   ochilish naqd
-     *   + naqd savdo
-     *   + mijoz balansiga naqd (qarz to'lash / oldindan to'lov)
-     *   + qo'lda kirim (deposit)
-     *   − naqd qaytarishlar
-     *   − naqd xarajatlar
-     *   − qo'lda chiqim (withdrawal / inkassatsiya)
-     */
-    const expectedCash =
-      openingCash
-      + cashSales
-      + custRoll.customerDrawerCashNet
-      + cashDeposits
-      - cashRefundsOut
-      - cashOutflow.total;
+    const supplierCash = this._getSupplierCashShiftRollup(shift);
+    const expectedCash = expectedClosingCash({
+      openingCash,
+      cashSales,
+      customerPaymentsCash: custRoll.customerPaymentsCash,
+      otherCashIn: supplierCash.supplierRefundsCash,
+      cashRefunds: cashRefundsOut,
+      supplierPaymentsCash: supplierCash.supplierPaymentsCash,
+      customerLoanIssuedCash: custRoll.customerLoanIssuedCash,
+      cashExpenses: cashOutflow.cashExpenses,
+      cashWithdrawals: cashOutflow.cashWithdrawals,
+      cashDeposits,
+    });
 
     // CRITICAL: Return camelCase keys (not snake_case)
     // This ensures frontend can access fields correctly
@@ -1117,7 +1189,13 @@ class ShiftsService {
       cashOutflowTotal: cashOutflow.total ?? 0,
       /** Smena ichida kassaga qo'l bilan qilingan naqd kirim */
       cashDeposits: cashDeposits ?? 0,
-      expectedCash: expectedCash ?? openingCash ?? 0
+      supplierPaymentsCash: supplierCash.supplierPaymentsCash ?? 0,
+      supplierRefundsCash: supplierCash.supplierRefundsCash ?? 0,
+      customerPaymentsCash: custRoll.customerPaymentsCash ?? 0,
+      customerLoanIssuedCash: custRoll.customerLoanIssuedCash ?? 0,
+      expectedCash: expectedCash ?? openingCash ?? 0,
+      actualClosingCash: String(shift.status) === 'closed' ? (Number(shift.closing_cash) || 0) : null,
+      closingIsProvisional: String(shift.status) !== 'closed',
     };
 
     console.log('[SHIFT] getShiftSummary returning:', summary);

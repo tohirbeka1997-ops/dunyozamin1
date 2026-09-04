@@ -496,6 +496,8 @@ function createRpcDispatcher({ services, db, sessions }) {
         }
         return services.customers.receivePayment(raw || {});
       }
+      case 'pos:customers:applyAdvanceToOrder':
+        return services.customers.applyAdvanceToOrder(a[0] || {});
       case 'pos:customers:getTotalDebt':
         return services.customers.getTotalDebt();
       case 'pos:customers:getPayments':
@@ -569,6 +571,18 @@ function createRpcDispatcher({ services, db, sessions }) {
         return services.suppliers.getLedger(a[0], a[1] || {});
       case 'pos:suppliers:createPayment':
         return services.suppliers.createPayment(a[0] || {});
+      case 'pos:suppliers:cancelPayment':
+        return services.suppliers.cancelPayment(a[0], a[1] || {});
+      case 'pos:suppliers:listAdvances':
+        return services.suppliers.listAdvances(a[0], a[1] || {});
+      case 'pos:suppliers:applyAdvance':
+        return services.suppliers.applyAdvanceToPurchaseOrder(a[0] || {});
+      case 'pos:suppliers:getSettlement':
+        return services.suppliers.getSettlement(a[0]);
+      case 'pos:suppliers:previewSettlement':
+        return services.suppliers.previewSettlement(a[0] || {});
+      case 'pos:suppliers:settle':
+        return services.suppliers.settleSupplier(a[0] || {});
       case 'pos:suppliers:getPayments':
         return services.suppliers.getPayments(a[0]);
       case 'pos:suppliers:getPurchaseSummary':
@@ -717,6 +731,10 @@ function createRpcDispatcher({ services, db, sessions }) {
         return services.purchases.addExpense(a[0], a[1] || {});
       case 'pos:purchases:deleteExpense':
         return services.purchases.deleteExpense(a[0], a[1]);
+      case 'pos:purchases:previewPlanningDraft':
+        return services.purchases.previewDraftFromPlanning(a[0] || {});
+      case 'pos:purchases:createPlanningDraft':
+        return services.purchases.createDraftFromPlanning(a[0] || {});
 
       // Expenses
       case 'pos:expenses:listCategories':
@@ -1725,6 +1743,8 @@ function createRpcDispatcher({ services, db, sessions }) {
         return services.reports.getDailySalesReportSQL(a[0] || {});
       case 'pos:reports:profitAndLossSQL':
         return services.reports.getProfitAndLossSQL(a[0] || {});
+      case 'pos:reports:financialActSverka':
+        return services.reports.getFinancialActSverka(a[0] || {});
       case 'pos:reports:promotionUsage':
         return services.reports.getPromotionUsageReport(a[0] || {});
       case 'pos:reports:inventoryValuation':

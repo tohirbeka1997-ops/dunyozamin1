@@ -228,6 +228,8 @@ import {
   computeOrderOutstandingForAmend,
   netPriorDebtForAmendCheckout,
   computeCheckoutGrandTotal,
+  buildMixedPaymentLines,
+  validateMixedCheckout,
   resolveLoyaltyRedeemOnOrderImport,
   isPosAmendCheckoutError,
   cartOrderDiscountBase,
@@ -238,8 +240,20 @@ import {
   newCheckoutIdempotencyKey,
   buildCheckoutIdempotencySignature,
   getCartLineQuantitySign,
+  canToggleExchangeReturnMode,
   canQuickAddWithoutNumpad,
   getQuickAddSaleQty,
+  clampListIndex,
+  stepListIndex,
+  activateListIndex,
+  isRecentScanDedupe,
+  isProductListJumpKey,
+  isCartJumpKey,
+  isPosTypingTarget,
+  planCartLineQtyStep,
+  resolveListLeftCartIndex,
+  nextCartIndexAfterLineChange,
+  POS_SCAN_DEDUPE_MS,
   type PosNavCartDraft,
 } from './posTerminalHelpers';
 import { reportApiFailure } from '@/lib/apiFailureTelemetry';
@@ -264,6 +278,23 @@ export default function POSTerminal() {
   const { addMovement } = useInventoryStore();
   const queryClient = useQueryClient();
   const searchInputRef = useRef<HTMLInputElement>(null);
+  const productListFocusRef = useRef<HTMLDivElement>(null);
+  const cartFocusRef = useRef<HTMLDivElement>(null);
+  const visibleProductsRef = useRef<Product[]>([]);
+  const requestAddToCartRef = useRef<(product: Product) => void | Promise<void>>(() => {});
+  const selectedProductIndexRef = useRef(-1);
+  const productListNavActiveRef = useRef(false);
+  const cartNavActiveRef = useRef(false);
+  const selectedCartIndexRef = useRef(-1);
+  const updateQuantityRef = useRef<
+    (productId: string, quantity: number, opts?: { moveToTop?: boolean; highlight?: boolean }) => void
+  >(() => {});
+  const openQuantityNumpadRef = useRef<
+    (productId: string, currentQuantity: number, maxStock: number) => void
+  >(() => {});
+  const quickAddOneToCartRef = useRef<
+    (product: Product, opts?: { keepListFocus?: boolean; openNumpadIfNeeded?: boolean }) => void
+  >(() => {});
   /** F3 shortcut — `handleHoldOrder` keyinroq e'lon qilinadi */
   const handleHoldOrderShortcutRef = useRef<() => Promise<void>>(async () => {});
   
@@ -313,6 +344,11 @@ export default function POSTerminal() {
   /** Mijozning oldingi qarzini shu safar savat bilan birga yopish (default: o‘chiq — faqat savat) */
   const [includePriorDebtInPayment, setIncludePriorDebtInPayment] = useState(false);
   const [payments, setPayments] = useState<{ method: PaymentMethod; amount: number }[]>([]);
+  const [mixedCash, setMixedCash] = useState<number | null>(null);
+  const [mixedCard, setMixedCard] = useState<number | null>(null);
+  const [mixedQr, setMixedQr] = useState<number | null>(null);
+  const [creditUseAdvance, setCreditUseAdvance] = useState(false);
+  const [creditAdvanceAmount, setCreditAdvanceAmount] = useState<number | null>(null);
   const [cashReceived, setCashReceived] = useState<number | null>(null);
   const [editingQuantity, setEditingQuantity] = useState<{ [key: string]: string }>({});
   const [manualPricePopoverProductId, setManualPricePopoverProductId] = useState<string | null>(null);
@@ -487,13 +523,39 @@ export default function POSTerminal() {
   /** POS: o‘lchovli mahsulotni savatga — birlik yoki so‘m summasi bo‘yicha */
   const [weightedCartAddMode, setWeightedCartAddMode] = useState<'sale_qty' | 'amount_uzs'>('sale_qty');
   const [exchangeReturnMode, setExchangeReturnMode] = useState(false);
+  // Empty cart must not turn this off — cashiers press F8 first, then scan return lines.
 
-  useEffect(() => {
-    if (cart.length === 0 && exchangeReturnMode) {
-      setExchangeReturnMode(false);
+  const toggleExchangeReturnMode = useCallback(() => {
+    if (
+      !canToggleExchangeReturnMode({
+        cartLength: cart.length,
+        paymentDialogOpen,
+        waitingOrdersDialogOpen,
+      })
+    ) {
+      return;
     }
-  }, [cart.length, exchangeReturnMode]);
+    setExchangeReturnMode((v) => {
+      if (!v) {
+        const ok = window.confirm(
+          t('pos.exchange.return_mode_confirm', {
+            defaultValue:
+              'Qaytarish rejimiga o‘tasizmi? Keyingi mahsulotlar manfiy (qaytarish) qator sifatida qo‘shiladi.',
+          }),
+        );
+        if (!ok) return v;
+      }
+      return !v;
+    });
+  }, [cart.length, paymentDialogOpen, waitingOrdersDialogOpen, t]);
   const [selectedCartIndex, setSelectedCartIndex] = useState<number>(-1);
+  const [selectedProductIndex, setSelectedProductIndex] = useState(-1);
+  const [productListNavActive, setProductListNavActive] = useState(false);
+  const [cartNavActive, setCartNavActive] = useState(false);
+  selectedProductIndexRef.current = selectedProductIndex;
+  selectedCartIndexRef.current = selectedCartIndex;
+  productListNavActiveRef.current = productListNavActive;
+  cartNavActiveRef.current = cartNavActive;
   const [showCostPrice, setShowCostPrice] = useState(false);
   const [posUiMode, setPosUiMode] = useState<'beginner' | 'fast'>(() => {
     try {
@@ -515,8 +577,9 @@ export default function POSTerminal() {
   const skuIndexRef = useRef<Map<string, Product>>(scanIndexRef.current.sku);
   const barcodeCacheOrderRef = useRef<string[]>([]);
   const priceCacheRef = useRef<Map<string, number>>(new Map());
-  /** Dedupe identical scan within ~80ms (double-beep); never block different items. */
+  /** Dedupe identical scan within ~350ms (double-beep); never block different items. */
   const lastScanDedupeRef = useRef<{ raw: string; at: number }>({ raw: '', at: 0 });
+  const scanInFlightRef = useRef<string | null>(null);
   const searchDebounceRef = useRef<number | null>(null);
   const searchSeqRef = useRef(0);
   const catalogLoadGenRef = useRef(0);
@@ -610,6 +673,10 @@ export default function POSTerminal() {
     if (paymentDialogOpen) {
       setCreditDueDate(defaultCreditDueDate());
       setCreditReminderNote('');
+      setMixedCash(null);
+      setMixedCard(null);
+      setMixedQr(null);
+      setCreditAdvanceAmount(null);
     }
   }, [paymentDialogOpen, defaultCreditDueDate]);
 
@@ -750,6 +817,27 @@ export default function POSTerminal() {
     if (typeof input.setSelectionRange === 'function') {
       input.setSelectionRange(len, len);
     }
+  }, []);
+
+  const focusOrderDiscountInput = useCallback(() => {
+    const discountInput =
+      (document.getElementById('pos-order-discount-amount') as HTMLInputElement | null) ||
+      (document.getElementById('pos-order-discount-percent') as HTMLInputElement | null) ||
+      (document.getElementById('pos-promo-code-checkout') as HTMLInputElement | null);
+    if (!discountInput || discountInput.disabled) return;
+    const alreadyFocused = document.activeElement === discountInput;
+    discountInput.focus({ preventScroll: true });
+    if (alreadyFocused && typeof discountInput.select === 'function') {
+      discountInput.select();
+    }
+  }, []);
+
+  /** F1 — open customer picker (same UX as clicking the customer combobox). */
+  const openCustomerSelect = useCallback(() => {
+    setProductListNavActive(false);
+    setCartNavActive(false);
+    setBonusReferrerComboboxOpen(false);
+    setCustomerComboboxOpen(true);
   }, []);
 
   const getCustomerDebtInCurrency = useCallback(
@@ -1481,10 +1569,19 @@ export default function POSTerminal() {
       setSelectedCartIndex(0);
     } else if (cart.length === 0) {
       setSelectedCartIndex(-1);
+      if (cartNavActiveRef.current) setCartNavActive(false);
     } else if (selectedCartIndex >= cart.length) {
       setSelectedCartIndex(cart.length - 1);
     }
   }, [cart.length]);
+
+  useEffect(() => {
+    if (!cartNavActive || selectedCartIndex < 0) return;
+    const el = cartFocusRef.current?.querySelector<HTMLElement>(
+      `[data-pos-cart-row="${selectedCartIndex}"]`,
+    );
+    el?.scrollIntoView({ block: 'nearest' });
+  }, [cartNavActive, selectedCartIndex]);
 
 
   const handleCancelHeldOrder = async (orderId: string) => {
@@ -1877,11 +1974,13 @@ export default function POSTerminal() {
     }
 
     const now = Date.now();
-    if (rawInput === lastScanDedupeRef.current.raw && now - lastScanDedupeRef.current.at < 80) {
+    if (rawInput === lastScanDedupeRef.current.raw && now - lastScanDedupeRef.current.at < POS_SCAN_DEDUPE_MS) {
       if (perfEnabled) console.debug('[POS PERF] scan deduped');
       return;
     }
+    if (scanInFlightRef.current === rawInput) return;
     lastScanDedupeRef.current = { raw: rawInput, at: now };
+    scanInFlightRef.current = rawInput;
 
     const lookupKeys = collectScanLookupKeys(rawInput);
     const digitsOnly = rawInput.replace(/[^\d]/g, '');
@@ -2058,6 +2157,7 @@ export default function POSTerminal() {
     } catch (error) {
       console.error('Error searching by barcode:', error);
     } finally {
+      if (scanInFlightRef.current === rawInput) scanInFlightRef.current = null;
       if (perfEnabled && perfStart) {
         const ms = Math.round(performance.now() - perfStart);
         console.debug(`[POS PERF] scan ${perfNote} → ${ms}ms`);
@@ -2438,8 +2538,21 @@ export default function POSTerminal() {
     });
     setNumpadOpen(true);
   }, [selectedCustomer, getLinePricing, exchangeReturnMode, toast, t]);
+  requestAddToCartRef.current = requestAddToCart;
 
-  const quickAddOneToCart = useCallback(async (product: Product) => {
+  const quickAddOneToCart = useCallback(async (
+    product: Product,
+    opts?: { keepListFocus?: boolean; openNumpadIfNeeded?: boolean },
+  ) => {
+    const restoreListFocus = () => {
+      if (!opts?.keepListFocus) {
+        focusSearchInput();
+        return;
+      }
+      setProductListNavActive(true);
+      setCartNavActive(false);
+      window.setTimeout(() => productListFocusRef.current?.focus({ preventScroll: true }), 0);
+    };
     const resolvedProduct = await resolveProductForCart(product);
     if (!exchangeReturnMode && isOutOfStockForSale(resolvedProduct)) {
       toast({
@@ -2450,16 +2563,18 @@ export default function POSTerminal() {
         }),
         variant: 'destructive',
       });
-      focusSearchInput();
+      restoreListFocus();
       return;
     }
-    if (canQuickAddWithoutNumpad(resolvedProduct)) {
+    const allowNumpad = opts?.openNumpadIfNeeded !== false;
+    if (!allowNumpad || canQuickAddWithoutNumpad(resolvedProduct)) {
       void addToCartRef.current(resolvedProduct, getQuickAddSaleQty(resolvedProduct));
     } else {
       await requestAddToCart(resolvedProduct);
     }
-    focusSearchInput();
+    restoreListFocus();
   }, [focusSearchInput, requestAddToCart, exchangeReturnMode, toast, t]);
+  quickAddOneToCartRef.current = quickAddOneToCart;
 
   const addToCart = async (product: Product, quantity: number = 1, saleUnit?: string) => {
     const perfStart = perfEnabled ? performance.now() : 0;
@@ -3605,6 +3720,15 @@ export default function POSTerminal() {
   );
 
   useLayoutEffect(() => {
+    const customerId = (location.state as { customerId?: string } | null)?.customerId;
+    if (!customerId || customers.length === 0) return;
+    const customer = customers.find((item) => item.id === customerId);
+    if (!customer) return;
+    applySelectedCustomer(customer);
+    navigate('/pos', { replace: true, state: {} });
+  }, [applySelectedCustomer, customers, location.state, navigate]);
+
+  useLayoutEffect(() => {
     const raw = (location.state as { importWebOrderId?: number } | null)?.importWebOrderId;
     if (raw == null || raw === undefined) return;
     const id = Number(raw);
@@ -3942,6 +4066,7 @@ export default function POSTerminal() {
       return next;
     });
   };
+  updateQuantityRef.current = updateQuantity;
 
   const handleQuantityInputChange = (productId: string, value: string) => {
     const cartItem = cart.find(item => item.product.id === productId);
@@ -4039,6 +4164,7 @@ export default function POSTerminal() {
     });
     setNumpadOpen(true);
   };
+  openQuantityNumpadRef.current = openQuantityNumpad;
 
   const openDiscountNumpad = (productId: string, currentDiscount: number, maxDiscount: number) => {
     setNumpadConfig({
@@ -4902,6 +5028,7 @@ export default function POSTerminal() {
     let paidAmount = 0;
     let changeAmount = 0;
     let creditAmountValue = 0;
+    let applyOverpayAsPrepaidFlag = false;
 
     // Check if there's a credit payment in the payments array (from partial credit flow)
     const creditPayment = payments.find((p) => p.method === 'credit');
@@ -5053,27 +5180,28 @@ export default function POSTerminal() {
         });
         return;
       }
-      if (orderPayments.length === 0) {
+      const mixedLines = buildMixedPaymentLines({
+        cash: isPaymentEnabled('cash') ? mixedCash : 0,
+        card: isPaymentEnabled('card') ? mixedCard : 0,
+        qr: isPaymentEnabled('qr') ? mixedQr : 0,
+      });
+      const mixedCheck = validateMixedCheckout({
+        requiredAmount: amountDueWithDebt,
+        lines: mixedLines,
+        hasRegisteredCustomer: Boolean(selectedCustomer && !isWalkInCustomer(selectedCustomer)),
+      });
+      if (!mixedCheck.ok) {
         toast({
-          title: 'No Payment Methods',
-          description: 'Please add at least one payment method for mixed payment',
+          title: 'Aralash to‘lov',
+          description: mixedCheck.error,
           variant: 'destructive',
         });
         return;
       }
-      const totalPaid = orderPayments.reduce((sum, p) => sum + p.amount, 0);
-      const requiredAmount = amountDueWithDebt;
-      
-      if (Math.abs(totalPaid - requiredAmount) > 0.01) {
-        toast({
-          title: 'Payment Mismatch',
-          description: `Payment amounts do not match required amount. Paid: ${formatMoneyUZS(totalPaid)}, Required: ${formatMoneyUZS(requiredAmount)}`,
-          variant: 'destructive',
-        });
-        return;
-      }
-      paidAmount = totalPaid;
-      changeAmount = totalPaid - requiredAmount;
+      orderPayments = mixedLines.map((line) => ({ method: line.method, amount: line.amount }));
+      paidAmount = mixedCheck.paid;
+      changeAmount = 0;
+      applyOverpayAsPrepaidFlag = mixedCheck.overpay > 0.01;
     } else {
       toast({
         title: t('pos.process_payment'),
@@ -5171,6 +5299,7 @@ export default function POSTerminal() {
         ...(selectedBonusReferrer?.id ? { bonus_referrer_customer_id: selectedBonusReferrer.id } : {}),
         ...orderCurrencyFields(saleCurrency, saleFxRate),
         ...(replacesOrderIdForSale ? { replaces_order_id: replacesOrderIdForSale } : {}),
+        ...(applyOverpayAsPrepaidFlag ? { apply_overpay_as_prepaid: true } : {}),
       };
 
       const orderItems = buildOrderItemsSnapshot(checkoutCart, globalDiscountAmount + loyaltyDiscountUzs);
@@ -5178,8 +5307,11 @@ export default function POSTerminal() {
       const orderPaymentsData = orderPayments.map((payment) => ({
         payment_number: '',
         payment_method: payment.method,
+        method: payment.method,
         amount: payment.amount,
+        currency: saleCurrency,
         reference_number: null,
+        transactionReference: null,
         notes: null,
       }));
 
@@ -5203,6 +5335,11 @@ export default function POSTerminal() {
         setCashReceived(null);
         setCreditAmount(null);
         setPayments([]);
+        setMixedCash(null);
+        setMixedCard(null);
+        setMixedQr(null);
+        setCreditAdvanceAmount(null);
+        setCreditUseAdvance(false);
       });
       clearCartAndNavDraft();
 
@@ -5578,7 +5715,20 @@ export default function POSTerminal() {
     const toPrior = Number.isFinite(toPriorRaw) ? Math.max(0, toPriorRaw) : 0;
     const safePriorPaymentAmount = Math.round(toPrior);
     const orderCash = Math.max(0, initialPayment - toPrior);
-    const merchCredit = Math.max(0, total - orderCash);
+    const afterCash = Math.max(0, total - orderCash);
+    const advanceAvail = getCustomerCreditInCurrency(selectedCustomer, saleCurrency);
+    const autoApplyAdvance = Boolean(posTerminalSettings.auto_apply_advance_to_sale);
+    const useAdvance = autoApplyAdvance || creditUseAdvance;
+    const defaultPrepaid = Math.min(advanceAvail, afterCash);
+    const prepaidApplied = useAdvance
+      ? Math.min(
+          defaultPrepaid,
+          creditAdvanceAmount != null && creditAdvanceAmount >= 0
+            ? creditAdvanceAmount
+            : defaultPrepaid,
+        )
+      : 0;
+    const merchCredit = Math.max(0, total - orderCash - prepaidApplied);
     const activeBalBefore = getActiveBucketBalance(selectedCustomer, saleCurrency);
     const projectedBalance = activeBalBefore + initialPayment - total;
     const creditLimit = Number(selectedCustomer.credit_limit) || 0;
@@ -5633,7 +5783,7 @@ export default function POSTerminal() {
         error?: string;
       };
 
-      if (orderCash > 0 || safePriorPaymentAmount > 0 || merchCredit > 0.01) {
+      if (orderCash > 0 || safePriorPaymentAmount > 0 || merchCredit > 0.01 || prepaidApplied > 0.01) {
         const applyPrepaid = orderCash > total + 0.01;
         const order: Record<string, unknown> = {
           order_number: '',
@@ -5654,6 +5804,7 @@ export default function POSTerminal() {
           payment_status: (merchCredit > 0.01 ? 'partially_paid' : 'paid') as 'partially_paid' | 'paid',
           notes: null,
           apply_overpay_as_prepaid: applyPrepaid,
+          ...(prepaidApplied > 0.01 ? { prepaid_applied: prepaidApplied } : {}),
           ...(safePriorPaymentAmount > 0 ? { prior_debt_payment: safePriorPaymentAmount } : {}),
           ...(merchCredit > 0.01 && creditDueDate ? { due_date: creditDueDate } : {}),
           ...(merchCredit > 0.01 && creditReminderNote.trim()
@@ -5727,6 +5878,11 @@ export default function POSTerminal() {
         setCashReceived(null);
         setCreditAmount(null);
         setPayments([]);
+        setMixedCash(null);
+        setMixedCard(null);
+        setMixedQr(null);
+        setCreditAdvanceAmount(null);
+        setCreditUseAdvance(false);
       });
       clearCartAndNavDraft();
 
@@ -5895,14 +6051,114 @@ export default function POSTerminal() {
     return checkoutGrandTotal - paidAmount;
   }, [checkoutGrandTotal, paidAmount]);
 
+  const mixedLines = useMemo(
+    () =>
+      buildMixedPaymentLines({
+        cash: mixedCash,
+        card: mixedCard,
+        qr: mixedQr,
+      }),
+    [mixedCash, mixedCard, mixedQr],
+  );
+  const mixedCheckoutCheck = useMemo(
+    () =>
+      validateMixedCheckout({
+        requiredAmount: checkoutGrandTotal,
+        lines: mixedLines,
+        hasRegisteredCustomer: Boolean(selectedCustomer && !isWalkInCustomer(selectedCustomer)),
+      }),
+    [checkoutGrandTotal, mixedLines, selectedCustomer, isWalkInCustomer],
+  );
+
   // Keyboard shortcuts (after checkoutGrandTotal / handleCompletePayment to avoid TDZ)
   useEffect(() => {
+    const overlayBlocksListNav =
+      numpadOpen ||
+      paymentDialogOpen ||
+      waitingOrdersDialogOpen ||
+      hotkeyGuideOpen ||
+      categorySheetOpen ||
+      customerPaymentOpen ||
+      cartReviewOpen ||
+      customerComboboxOpen;
+
+    const targetIsSearch = (el: EventTarget | null) => el === searchInputRef.current;
+
+    const blurTypingTarget = () => {
+      if (targetIsSearch(document.activeElement)) {
+        searchInputRef.current?.blur();
+      } else if (document.activeElement instanceof HTMLElement) {
+        const tag = document.activeElement.tagName;
+        if (tag === 'INPUT' || tag === 'TEXTAREA') document.activeElement.blur();
+      }
+    };
+
+    const jumpToProductList = () => {
+      const list = visibleProductsRef.current;
+      if (list.length === 0) return false;
+      const next = activateListIndex(list.length, selectedProductIndexRef.current);
+      setSelectedProductIndex(next);
+      setProductListNavActive(true);
+      setCartNavActive(false);
+      blurTypingTarget();
+      window.setTimeout(() => productListFocusRef.current?.focus({ preventScroll: true }), 0);
+      return true;
+    };
+
+    const jumpToCart = () => {
+      const len = cartRef.current.length;
+      if (len <= 0) return false;
+      const next = activateListIndex(len, selectedCartIndexRef.current);
+      setSelectedCartIndex(next);
+      setCartNavActive(true);
+      setProductListNavActive(false);
+      blurTypingTarget();
+      window.setTimeout(() => cartFocusRef.current?.focus({ preventScroll: true }), 0);
+      return true;
+    };
+
+    const applyCartLineStep = (index: number, direction: -1 | 1) => {
+      const items = cartRef.current;
+      const item = items[index];
+      if (!item) return;
+      const qty = Number(item.qty_sale ?? item.quantity ?? 0) || 0;
+      const plan = planCartLineQtyStep(qty, direction);
+      if (plan.action === 'noop') return;
+      const removed = plan.action === 'remove';
+      updateQuantityRef.current(item.product.id, removed ? 0 : plan.nextQty);
+      const nextIdx = nextCartIndexAfterLineChange(index, items.length, removed);
+      setSelectedCartIndex(nextIdx);
+      if (removed && nextIdx < 0 && cartNavActiveRef.current) {
+        setCartNavActive(false);
+        if (!jumpToProductList()) focusSearchInput();
+      }
+    };
+
     const handleKeyDown = (e: KeyboardEvent) => {
       const target = e.target as HTMLElement;
-      const isInput = target.tagName === 'INPUT' || target.tagName === 'TEXTAREA';
+      const fromSearch = targetIsSearch(target);
+      const typing = isPosTypingTarget({
+        tagName: target.tagName,
+        isContentEditable: Boolean(target.isContentEditable),
+        role: target.getAttribute?.('role'),
+        insideCombobox: Boolean(
+          customerComboboxOpen || target.closest?.('[role="combobox"]'),
+        ),
+      });
+
+      if (e.key === 'F1') {
+        e.preventDefault();
+        if (paymentDialogOpen || customerPaymentOpen || numpadOpen || waitingOrdersDialogOpen) {
+          return;
+        }
+        openCustomerSelect();
+        return;
+      }
 
       if (e.key === 'F2') {
         e.preventDefault();
+        setProductListNavActive(false);
+        setCartNavActive(false);
         searchInputRef.current?.focus();
         return;
       }
@@ -5941,19 +6197,22 @@ export default function POSTerminal() {
 
       if (e.key === 'F8') {
         e.preventDefault();
-        if (paymentDialogOpen || waitingOrdersDialogOpen) return;
-        setExchangeReturnMode((v) => {
-          if (!v) {
-            const ok = window.confirm(
-              t('pos.exchange.return_mode_confirm', {
-                defaultValue:
-                  'Qaytarish rejimiga o‘tasizmi? Keyingi mahsulotlar manfiy (qaytarish) qator sifatida qo‘shiladi.',
-              }),
-            );
-            if (!ok) return v;
-          }
-          return !v;
-        });
+        toggleExchangeReturnMode();
+        return;
+      }
+
+      if (e.key === 'F6') {
+        e.preventDefault();
+        setShowCostPrice((prev) => !prev);
+        return;
+      }
+
+      if (e.key === 'F7') {
+        e.preventDefault();
+        if (paymentDialogOpen || customerPaymentOpen || numpadOpen) return;
+        setProductListNavActive(false);
+        setCartNavActive(false);
+        focusOrderDiscountInput();
         return;
       }
 
@@ -5965,11 +6224,49 @@ export default function POSTerminal() {
         return;
       }
 
+      if (e.key === 'F5') {
+        e.preventDefault();
+        if (!overlayBlocksListNav) jumpToCart();
+        return;
+      }
+
+      if (
+        !overlayBlocksListNav &&
+        isCartJumpKey(e.key, {
+          fromList: productListNavActiveRef.current && !fromSearch,
+          cartLength: cartRef.current.length,
+          shiftKey: e.shiftKey,
+        })
+      ) {
+        if (jumpToCart()) e.preventDefault();
+        return;
+      }
+
+      if (!overlayBlocksListNav && isProductListJumpKey(e.key, { fromSearch, shiftKey: e.shiftKey })) {
+        if (jumpToProductList()) e.preventDefault();
+        return;
+      }
+
       if (e.key === 'Escape') {
         if (paymentDialogOpen) {
           setPaymentDialogOpen(false);
+          setMixedCash(null);
+          setMixedCard(null);
+          setMixedQr(null);
+          setIsProcessingPayment(false);
         } else if (waitingOrdersDialogOpen) {
           setWaitingOrdersDialogOpen(false);
+        } else if (cartNavActiveRef.current) {
+          e.preventDefault();
+          setCartNavActive(false);
+          if (!jumpToProductList()) {
+            setProductListNavActive(false);
+            focusSearchInput();
+          }
+        } else if (productListNavActiveRef.current) {
+          e.preventDefault();
+          setProductListNavActive(false);
+          focusSearchInput();
         } else if (searchTerm) {
           setSearchTerm('');
           setSearchResults([]);
@@ -5977,10 +6274,46 @@ export default function POSTerminal() {
         return;
       }
 
-      if (e.key === 'Enter' && target === searchInputRef.current && searchResults.length > 0) {
+      if (e.key === 'Enter' && fromSearch && searchResults.length > 0) {
         e.preventDefault();
         requestAddToCart(searchResults[0]);
         focusSearchInput();
+        return;
+      }
+
+      if (
+        e.key === 'Enter' &&
+        !fromSearch &&
+        !overlayBlocksListNav &&
+        cartNavActiveRef.current &&
+        !typing
+      ) {
+        if (isRecentScanDedupe(lastScanDedupeRef.current.at, Date.now())) return;
+        const item = cartRef.current[selectedCartIndexRef.current];
+        if (item) {
+          e.preventDefault();
+          openQuantityNumpadRef.current(
+            item.product.id,
+            item.qty_sale ?? item.quantity,
+            item.product.current_stock,
+          );
+        }
+        return;
+      }
+
+      if (
+        e.key === 'Enter' &&
+        !fromSearch &&
+        !overlayBlocksListNav &&
+        productListNavActiveRef.current
+      ) {
+        if (isRecentScanDedupe(lastScanDedupeRef.current.at, Date.now())) return;
+        const list = visibleProductsRef.current;
+        const product = list[selectedProductIndexRef.current];
+        if (product) {
+          e.preventDefault();
+          void requestAddToCartRef.current(product);
+        }
         return;
       }
 
@@ -6013,19 +6346,55 @@ export default function POSTerminal() {
         return;
       }
 
-      if (target === searchInputRef.current) return;
-      if (isInput) return;
+      if (fromSearch || typing || overlayBlocksListNav) return;
 
-      if (e.key === 'ArrowUp') {
-        e.preventDefault();
-        setSelectedCartIndex((prev) => Math.max(0, prev - 1));
-        return;
+      if (productListNavActiveRef.current) {
+        if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
+          e.preventDefault();
+          const delta = e.key === 'ArrowDown' ? 1 : -1;
+          setSelectedProductIndex((prev) =>
+            stepListIndex(prev, visibleProductsRef.current.length, delta),
+          );
+          return;
+        }
+        if (e.key === 'ArrowRight' || e.key === 'ArrowLeft') {
+          if (isRecentScanDedupe(lastScanDedupeRef.current.at, Date.now())) return;
+          e.preventDefault();
+          if (e.key === 'ArrowRight') {
+            const product = visibleProductsRef.current[selectedProductIndexRef.current];
+            if (product) {
+              void quickAddOneToCartRef.current(product, {
+                keepListFocus: true,
+                openNumpadIfNeeded: false,
+              });
+            }
+            return;
+          }
+          const idx = resolveListLeftCartIndex(
+            selectedCartIndexRef.current,
+            cartRef.current.length,
+          );
+          if (idx < 0) return;
+          applyCartLineStep(idx, -1);
+          return;
+        }
       }
 
-      if (e.key === 'ArrowDown') {
-        e.preventDefault();
-        setSelectedCartIndex((prev) => Math.min(cart.length - 1, prev + 1));
-        return;
+      if (cartNavActiveRef.current) {
+        if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
+          e.preventDefault();
+          const delta = e.key === 'ArrowDown' ? 1 : -1;
+          setSelectedCartIndex((prev) => stepListIndex(prev, cartRef.current.length, delta));
+          return;
+        }
+        if (e.key === 'ArrowRight' || e.key === 'ArrowLeft') {
+          if (isRecentScanDedupe(lastScanDedupeRef.current.at, Date.now())) return;
+          e.preventDefault();
+          const idx = clampListIndex(selectedCartIndexRef.current, cartRef.current.length);
+          if (idx < 0) return;
+          applyCartLineStep(idx, e.key === 'ArrowRight' ? 1 : -1);
+          return;
+        }
       }
 
       if ((e.key === '+' || e.key === '=') && selectedCartIndex >= 0 && cart[selectedCartIndex]) {
@@ -6066,6 +6435,17 @@ export default function POSTerminal() {
     stockBlockedReason,
     t,
     toast,
+    numpadOpen,
+    hotkeyGuideOpen,
+    categorySheetOpen,
+    customerPaymentOpen,
+    cartReviewOpen,
+    customerComboboxOpen,
+    focusSearchInput,
+    focusOrderDiscountInput,
+    openCustomerSelect,
+    requestAddToCart,
+    toggleExchangeReturnMode,
   ]);
 
   // Get products to display (search results or all products filtered by category)
@@ -6086,6 +6466,7 @@ export default function POSTerminal() {
   const MAX_DISPLAY = displayProducts.length;
   const isTruncated = false;
   const visibleProducts = displayProducts;
+  visibleProductsRef.current = visibleProducts;
   const categoryNameById = useMemo(
     () => Object.fromEntries(categories.map((c) => [c.id, c.name])),
     [categories],
@@ -6099,6 +6480,10 @@ export default function POSTerminal() {
       cancelled = true;
     };
   }, [visibleProducts]);
+
+  useEffect(() => {
+    setSelectedProductIndex((prev) => clampListIndex(prev, visibleProducts.length));
+  }, [visibleProducts.length, searchTerm, selectedCategory]);
 
   const quickProductCandidates = useMemo(() => {
     const term = quickProductSearch.trim();
@@ -6217,8 +6602,19 @@ export default function POSTerminal() {
                       ref={searchInputRef}
                       placeholder={t('pos.search_placeholder')}
                       value={searchTerm}
-                      onChange={(e) => handleSearch(e.target.value)}
+                      onChange={(e) => {
+                        setProductListNavActive(false);
+                        setCartNavActive(false);
+                        handleSearch(e.target.value);
+                      }}
                       onKeyDown={(e) => {
+                        if (e.key === 'ArrowDown' || (e.key === 'Tab' && !e.shiftKey)) {
+                          if (visibleProductsRef.current.length > 0) {
+                            // Window handler jumps into the product list; stop native tab/caret move.
+                            e.preventDefault();
+                          }
+                          return;
+                        }
                         if (e.key === 'Enter') {
                           e.preventDefault();
                           // Only add when a product was found — never mutate cart on empty search
@@ -6238,6 +6634,8 @@ export default function POSTerminal() {
                           e.preventDefault();
                           setSearchTerm('');
                           setSearchResults([]);
+                          setProductListNavActive(false);
+                          setCartNavActive(false);
                           focusSearchInput();
                         }
                       }}
@@ -6350,7 +6748,13 @@ export default function POSTerminal() {
             </div>
 
             {/* Product List - virtualized grid (cart updates do not re-render rows when props stable) */}
-            <div className="flex min-h-0 flex-1 flex-col">
+            <div
+              ref={productListFocusRef}
+              tabIndex={-1}
+              className="flex min-h-0 flex-1 flex-col outline-none"
+              data-pos-product-list
+              aria-label={t('pos.hotkey_list_section', { defaultValue: "Mahsulot ro'yxati" })}
+            >
               <PosProductGrid
                 products={visibleProducts}
                 totalCount={displayProducts.length}
@@ -6371,6 +6775,7 @@ export default function POSTerminal() {
                 allowOutOfStockAdd={exchangeReturnMode}
                 loadError={catalogLoadError}
                 onRetryLoad={() => void loadAllProducts()}
+                highlightedIndex={productListNavActive ? selectedProductIndex : -1}
                 t={t}
               />
             </div>
@@ -6490,7 +6895,13 @@ export default function POSTerminal() {
                     <p className="text-[10px] text-muted-foreground">{t('pos.exchange.cart_hint_returns')}</p>
                   )}
                 </div>
-                <div className="flex min-h-0 flex-1 flex-col overflow-y-auto">
+                <div
+                  ref={cartFocusRef}
+                  tabIndex={-1}
+                  data-pos-cart-list
+                  aria-label={t('pos.hotkey_cart_section', { defaultValue: 'Savat' })}
+                  className="flex min-h-0 flex-1 flex-col overflow-y-auto outline-none"
+                >
               {cart.length === 0 ? (
                 <div className="flex flex-1 flex-col items-center justify-center py-8 px-3 text-muted-foreground">
                   <div className="text-center max-w-[220px]">
@@ -6519,17 +6930,31 @@ export default function POSTerminal() {
                   const isRecent = item.product.id === recentCartItemId;
                   const codeMeta = formatPosProductCodeMeta(item.product);
                   return (
-                    <div key={`${item.product.id}-${index}`} className="group relative">
+                    <div
+                      key={`${item.product.id}-${index}`}
+                      data-pos-cart-row={index}
+                      className="group relative"
+                    >
                       {/* Main Row */}
                       <div
-                        className={`flex items-center justify-between bg-white dark:bg-gray-800 transition-colors ${
-                          posUiMode === 'beginner' ? 'p-2' : 'p-1.5'
-                        } ${
-                          isSelected ? 'bg-primary/10 ring-1 ring-inset ring-primary/20' : ''
-                        } ${isRecent ? 'bg-blue-50 dark:bg-blue-900/20' : ''} ${
-                          isBelowCost && showCostPrice ? 'bg-red-50 dark:bg-red-900/10' : ''
-                        }`}
-                        onClick={() => setSelectedCartIndex(index)}
+                        className={cn(
+                          'flex items-center justify-between bg-white transition-colors dark:bg-gray-800',
+                          posUiMode === 'beginner' ? 'p-2' : 'p-1.5',
+                          isSelected &&
+                            cartNavActive &&
+                            'bg-primary/10 ring-2 ring-inset ring-primary/60 dark:bg-primary/20',
+                          isSelected &&
+                            !cartNavActive &&
+                            'bg-primary/10 ring-1 ring-inset ring-primary/20',
+                          isRecent && !cartNavActive && 'bg-blue-50 dark:bg-blue-900/20',
+                          isBelowCost && showCostPrice && 'bg-red-50 dark:bg-red-900/10',
+                        )}
+                        onClick={() => {
+                          setProductListNavActive(false);
+                          setCartNavActive(true);
+                          setSelectedCartIndex(index);
+                          window.setTimeout(() => cartFocusRef.current?.focus({ preventScroll: true }), 0);
+                        }}
                       >
                         {/* Left Side - Product Info */}
                         <div className="flex flex-col flex-1 min-w-0 mr-2">
@@ -7019,7 +7444,12 @@ export default function POSTerminal() {
               </div>
 
               <div className="space-y-1.5 border-t pt-2">
-                <Label className="text-[11px] font-normal text-muted-foreground">{t('pos.order_discount')}</Label>
+                <Label
+                  className="text-[11px] font-normal text-muted-foreground"
+                  title={`${t('pos.hotkey_discount_focus')} (F7)`}
+                >
+                  {t('pos.order_discount')} (F7)
+                </Label>
                 <div className="flex items-center gap-1.5">
                   <Select
                     value={discount.type}
@@ -7030,7 +7460,9 @@ export default function POSTerminal() {
                     <SelectTrigger
                       className="h-8 w-[3.75rem] shrink-0 text-xs"
                       title={
-                        discount.type === 'promo' ? t('pos.promo_code_select_hint') : undefined
+                        discount.type === 'promo'
+                          ? t('pos.promo_code_select_hint')
+                          : `${t('pos.hotkey_discount_focus')} (F7)`
                       }
                     >
                       <SelectValue />
@@ -7056,6 +7488,7 @@ export default function POSTerminal() {
                         placeholder={t('pos.promo_code_placeholder')}
                         className="h-8 min-w-0 flex-1 font-mono text-xs uppercase"
                         disabled={cart.length === 0}
+                        title={`${t('pos.hotkey_discount_focus')} (F7)`}
                       />
                       {promoCodeInput ? (
                         <Button
@@ -7073,6 +7506,7 @@ export default function POSTerminal() {
                     </>
                   ) : discount.type === 'amount' ? (
                     <MoneyInput
+                      id="pos-order-discount-amount"
                       value={parsedDiscountValue}
                       onValueChange={(v) =>
                         setDiscount({
@@ -7084,11 +7518,13 @@ export default function POSTerminal() {
                       allowZero
                       placeholder="0"
                       disabled={cart.length === 0}
+                      title={`${t('pos.hotkey_discount_focus')} (F7)`}
                       containerClassName="min-w-0 flex-1 space-y-0"
                       className={cn('h-8 text-xs', discountError !== '' && 'border-destructive')}
                     />
                   ) : (
                     <NumberInput
+                      id="pos-order-discount-percent"
                       value={parsedDiscountValue}
                       onValueChange={(v) =>
                         setDiscount({
@@ -7100,6 +7536,7 @@ export default function POSTerminal() {
                       allowZero
                       placeholder="0"
                       disabled={cart.length === 0}
+                      title={`${t('pos.hotkey_discount_focus')} (F7)`}
                       containerClassName="min-w-0 flex-1 space-y-0"
                       className={cn('h-8 text-xs', discountError !== '' && 'border-destructive')}
                     />
@@ -7194,20 +7631,7 @@ export default function POSTerminal() {
               title={`${t('pos.exchange.return_mode_short')} (F8)`}
               aria-label={`${t('pos.exchange.return_mode_short')} (F8)`}
               aria-pressed={exchangeReturnMode}
-              onClick={() =>
-                setExchangeReturnMode((v) => {
-                  if (!v) {
-                    const ok = window.confirm(
-                      t('pos.exchange.return_mode_confirm', {
-                        defaultValue:
-                          'Qaytarish rejimiga o‘tasizmi? Keyingi mahsulotlar manfiy (qaytarish) qator sifatida qo‘shiladi.',
-                      }),
-                    );
-                    if (!ok) return v;
-                  }
-                  return !v;
-                })
-              }
+              onClick={toggleExchangeReturnMode}
             >
               <ArrowLeftRight className="h-5 w-5" />
             </Button>
@@ -7217,8 +7641,8 @@ export default function POSTerminal() {
               size="icon"
               className="h-12 w-12 shrink-0"
               onClick={() => setShowCostPrice(!showCostPrice)}
-              title={showCostPrice ? "Tannarx yashirish" : "Tannarx ko'rish"}
-              aria-label={showCostPrice ? "Tannarx yashirish" : "Tannarx ko'rish"}
+              title={`${showCostPrice ? t('pos.hide_cost_price') : t('pos.show_cost_price')} (F6)`}
+              aria-label={`${showCostPrice ? t('pos.hide_cost_price') : t('pos.show_cost_price')} (F6)`}
             >
               {showCostPrice ? <Eye className="h-5 w-5" /> : <EyeOff className="h-5 w-5" />}
             </Button>
@@ -7555,6 +7979,12 @@ export default function POSTerminal() {
             return;
           }
           setPaymentDialogOpen(open);
+          if (!open) {
+            setMixedCash(null);
+            setMixedCard(null);
+            setMixedQr(null);
+            setIsProcessingPayment(false);
+          }
         }}
       >
         <DialogContent className="flex max-h-[min(92dvh,840px)] w-[min(calc(100vw-1rem),42rem)] max-w-[min(calc(100vw-1rem),42rem)] flex-col gap-4 overflow-y-auto overflow-x-hidden pb-[max(1.25rem,env(safe-area-inset-bottom))] sm:max-w-2xl">
@@ -7780,53 +8210,97 @@ export default function POSTerminal() {
                   </div>
                   <div className="flex justify-between">
                     <span className="text-sm text-muted-foreground">{t('pos.cash_received')}:</span>
-                    <span className="font-bold">{formatCurrency(paidAmount)}</span>
+                    <span className="font-bold">
+                      {formatCurrency(mixedCheckoutCheck.ok ? mixedCheckoutCheck.paid : mixedLines.reduce((s, l) => s + l.amount, 0))}
+                    </span>
                   </div>
                   <div className="flex justify-between">
                     <span className="text-sm text-muted-foreground">{t('pos.remaining_to_pay')}:</span>
-                    <span className={`font-bold ${remainingAmount > 0 ? 'text-destructive' : 'text-green-600'}`}>
-                      {formatCurrency(remainingAmount)}
+                    <span
+                      className={`font-bold ${
+                        mixedCheckoutCheck.ok
+                          ? mixedCheckoutCheck.overpay > 0.01
+                            ? 'text-emerald-600'
+                            : 'text-green-600'
+                          : 'text-destructive'
+                      }`}
+                    >
+                      {formatCurrency(
+                        mixedCheckoutCheck.ok
+                          ? mixedCheckoutCheck.overpay > 0.01
+                            ? 0
+                            : mixedCheckoutCheck.remaining
+                          : Math.max(0, checkoutGrandTotal - mixedLines.reduce((s, l) => s + l.amount, 0)),
+                      )}
                     </span>
                   </div>
+                  {mixedCheckoutCheck.ok && mixedCheckoutCheck.overpay > 0.01 && (
+                    <p className="text-xs text-emerald-700">
+                      Ortiqcha {formatCurrency(mixedCheckoutCheck.overpay)} mijoz balansiga (−) o‘tadi.
+                    </p>
+                  )}
+                  {!mixedCheckoutCheck.ok && (
+                    <p className="text-xs text-destructive">{mixedCheckoutCheck.error}</p>
+                  )}
                 </div>
-                <div className="grid grid-cols-2 gap-2">
-                  <Button
-                    variant="outline"
-                    onClick={() => {
-                      const half =
-                        checkoutGrandTotal > 0 ? checkoutGrandTotal / 2 : 0;
-                      const amount = Math.min(remainingAmount, half);
-                      setPayments([...payments, { method: 'cash', amount }]);
-                    }}
-                    disabled={remainingAmount <= 0}
-                  >
-                    <Banknote className="h-4 w-4 mr-2" />
-                    {t('pos.add_cash')}
-                  </Button>
-                  <Button
-                    variant="outline"
-                    onClick={() => {
-                      setPayments([...payments, { method: 'card', amount: remainingAmount }]);
-                    }}
-                    disabled={remainingAmount <= 0}
-                  >
-                    <CreditCard className="h-4 w-4 mr-2" />
-                    {t('pos.add_card')}
-                  </Button>
+                <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+                  {isPaymentEnabled('cash') && (
+                    <div className="space-y-1">
+                      <Label>Naqd</Label>
+                      <MoneyInput
+                        value={mixedCash}
+                        onValueChange={setMixedCash}
+                        placeholder="0"
+                        allowZero
+                        min={0}
+                        containerClassName="space-y-0"
+                      />
+                    </div>
+                  )}
+                  {isPaymentEnabled('card') && (
+                    <div className="space-y-1">
+                      <Label>Karta</Label>
+                      <MoneyInput
+                        value={mixedCard}
+                        onValueChange={setMixedCard}
+                        placeholder="0"
+                        allowZero
+                        min={0}
+                        containerClassName="space-y-0"
+                      />
+                    </div>
+                  )}
+                  {isPaymentEnabled('qr') && (
+                    <div className="space-y-1">
+                      <Label>QR</Label>
+                      <MoneyInput
+                        value={mixedQr}
+                        onValueChange={setMixedQr}
+                        placeholder="0"
+                        allowZero
+                        min={0}
+                        containerClassName="space-y-0"
+                      />
+                    </div>
+                  )}
                 </div>
-                {payments.length > 0 && (
+                {mixedLines.length > 0 && (
                   <div className="space-y-2">
                     <Label>{t('pos.payment_methods')}:</Label>
-                    {payments.map((payment, index) => (
-                      <div key={index} className="flex justify-between items-center p-2 border rounded">
-                        <span className="capitalize">{payment.method}</span>
+                    {mixedLines.map((line) => (
+                      <div key={line.method} className="flex justify-between items-center p-2 border rounded">
+                        <span className="capitalize">
+                          {line.method === 'cash' ? 'Naqd' : line.method === 'card' ? 'Karta' : 'QR'}
+                        </span>
                         <div className="flex items-center gap-2">
-                          <span>{formatCurrency(payment.amount)}</span>
+                          <span>{formatCurrency(line.amount)}</span>
                           <Button
                             variant="ghost"
                             size="sm"
                             onClick={() => {
-                              setPayments(payments.filter((_, i) => i !== index));
+                              if (line.method === 'cash') setMixedCash(null);
+                              if (line.method === 'card') setMixedCard(null);
+                              if (line.method === 'qr') setMixedQr(null);
                             }}
                           >
                             <Trash2 className="h-4 w-4" />
@@ -7839,8 +8313,14 @@ export default function POSTerminal() {
                 <Button
                   className="w-full"
                   onClick={() => handleCompletePayment('mixed')}
-                  disabled={remainingAmount > 0 || isDiscountActionDisabled || isProcessingPayment}
-                  title={isDiscountActionDisabled ? discountActionDisabledReason : undefined}
+                  disabled={!mixedCheckoutCheck.ok || isDiscountActionDisabled || isProcessingPayment}
+                  title={
+                    !mixedCheckoutCheck.ok
+                      ? mixedCheckoutCheck.error
+                      : isDiscountActionDisabled
+                        ? discountActionDisabledReason
+                        : undefined
+                  }
                 >
                   {isProcessingPayment ? 'Jarayonda...' : t('pos.complete_payment')}
                 </Button>
@@ -7859,10 +8339,25 @@ export default function POSTerminal() {
                 const priorAmt = includePriorDebtInPayment ? priorDebtForCheckout : 0;
                 const toPrior = priorAmt > 0 ? Math.min(initialPaymentUi, priorAmt) : 0;
                 const orderCash = Math.max(0, initialPaymentUi - toPrior);
-                const merchCredit = Math.max(0, total - orderCash);
+                const afterCash = Math.max(0, total - orderCash);
+                const advanceAvail = priorCreditInSaleCurrency;
+                const autoApplyAdvance = Boolean(posTerminalSettings.auto_apply_advance_to_sale);
+                const useAdvance = autoApplyAdvance || creditUseAdvance;
+                const defaultPrepaid = Math.min(advanceAvail, afterCash);
+                const prepaidAppliedUi = useAdvance
+                  ? Math.min(
+                      defaultPrepaid,
+                      creditAdvanceAmount != null && creditAdvanceAmount >= 0
+                        ? creditAdvanceAmount
+                        : defaultPrepaid,
+                    )
+                  : 0;
+                const merchCredit = Math.max(0, total - orderCash - prepaidAppliedUi);
                 const prepaidExtra = Math.max(0, orderCash - total);
                 const currentBalance = getActiveBucketBalance(selectedCustomer, saleCurrency);
                 const projectedBalance = currentBalance + initialPaymentUi - total;
+                const finalAdvance = Math.max(0, advanceAvail - prepaidAppliedUi + prepaidExtra);
+                const finalDebt = Math.max(0, priorAmt - toPrior) + merchCredit;
                 const creditLimit = Number(selectedCustomer.credit_limit) || 0;
                 const creditLimitNotSet = merchCredit > 0.01 && !(creditLimit > 0);
                 const creditLimitExceeded =
@@ -7871,8 +8366,9 @@ export default function POSTerminal() {
                   Math.abs(projectedBalance) > creditLimit;
 
                 const fmtBalLine = (b: number) => {
-                  if (b < -0.01) return `−${formatCurrency(Math.abs(b))} (qarz)`;
-                  if (b > 0.01) return `+${formatCurrency(b)} (oldindan)`;
+                  // b is legacy net (advance − debt). Cashier signed flips: + owes, − prepaid.
+                  if (b < -0.01) return `+${formatCurrency(Math.abs(b))}`;
+                  if (b > 0.01) return `−${formatCurrency(b)}`;
                   return '0';
                 };
 
@@ -7934,26 +8430,30 @@ export default function POSTerminal() {
                     {/* Visual Summary Card */}
                     <div className="p-4 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg space-y-2 text-sm">
                       <div className="flex justify-between items-center">
-                        <span className="text-muted-foreground">Ushbu savat (nasiya qismi):</span>
+                        <span className="text-muted-foreground">Savat jami:</span>
                         <span className="font-medium tabular-nums">{formatCurrency(total)}</span>
+                      </div>
+                      <div className="flex justify-between items-center text-xs">
+                        <span className="text-muted-foreground">Boshlang‘ich to‘lov:</span>
+                        <span className="tabular-nums">{formatCurrency(initialPaymentUi)}</span>
                       </div>
                       {priorAmt > 0 && (
                         <div className="flex justify-between items-center text-xs">
-                          <span className="text-muted-foreground">Oldingi qarz (yopish tartibi: avval):</span>
-                          <span className="font-medium text-destructive tabular-nums">{formatCurrency(priorAmt)}</span>
+                          <span className="text-muted-foreground">Oldingi buyurtmalarga:</span>
+                          <span className="font-medium text-destructive tabular-nums">{formatCurrency(toPrior)}</span>
                         </div>
                       )}
-                      <div className="flex justify-between items-center text-xs border-t border-dashed pt-2">
-                        <span className="text-muted-foreground">Naqd → oldingi qarzga:</span>
-                        <span className="tabular-nums">{formatCurrency(toPrior)}</span>
-                      </div>
                       <div className="flex justify-between items-center text-xs">
                         <span className="text-muted-foreground">Naqd → ushbu savatga:</span>
                         <span className="tabular-nums">{formatCurrency(orderCash)}</span>
                       </div>
+                      <div className="flex justify-between items-center text-xs">
+                        <span className="text-muted-foreground">Ortiqcha to‘lovdan qoplanadi:</span>
+                        <span className="tabular-nums">{formatCurrency(prepaidAppliedUi)}</span>
+                      </div>
                       {merchCredit > 0.01 && (
                         <div className="flex justify-between items-center text-orange-600 dark:text-orange-400">
-                          <span>Nasiyada qoladi (savat):</span>
+                          <span>Yangi nasiya qarzi:</span>
                           <span className="font-semibold tabular-nums">{formatCurrency(merchCredit)}</span>
                         </div>
                       )}
@@ -7963,6 +8463,14 @@ export default function POSTerminal() {
                           <span className="font-semibold tabular-nums">{formatCurrency(prepaidExtra)}</span>
                         </div>
                       )}
+                      <div className="flex justify-between items-center text-xs border-t border-dashed pt-2">
+                        <span className="text-muted-foreground">Yakuniy ortiqcha:</span>
+                        <span className="tabular-nums">{formatCurrency(finalAdvance)}</span>
+                      </div>
+                      <div className="flex justify-between items-center text-xs">
+                        <span className="text-muted-foreground">Yakuniy qarz:</span>
+                        <span className="tabular-nums">{formatCurrency(finalDebt)}</span>
+                      </div>
                       <div className="border-t border-gray-200 dark:border-gray-700 pt-2 flex justify-between items-center">
                         <span className="text-base font-bold">Yangi balans:</span>
                         <span
@@ -7978,6 +8486,46 @@ export default function POSTerminal() {
                         </span>
                       </div>
                     </div>
+
+                    {advanceAvail > 0.01 && (
+                      <div className="space-y-2 rounded-lg border p-3">
+                        <div className="flex items-center justify-between gap-2">
+                          <div>
+                            <p className="text-sm font-medium">Ortiqcha to‘lovdan foydalanish</p>
+                            <p className="text-xs text-muted-foreground">
+                              Mavjud ortiqcha: {formatCurrency(advanceAvail)}
+                            </p>
+                          </div>
+                          {!autoApplyAdvance && (
+                            <Button
+                              type="button"
+                              variant={creditUseAdvance ? 'default' : 'outline'}
+                              size="sm"
+                              onClick={() => {
+                                setCreditUseAdvance((v) => {
+                                  const next = !v;
+                                  if (next) setCreditAdvanceAmount(defaultPrepaid);
+                                  else setCreditAdvanceAmount(null);
+                                  return next;
+                                });
+                              }}
+                            >
+                              {creditUseAdvance ? 'Bekor' : 'Ortiqcha to‘lovdan'}
+                            </Button>
+                          )}
+                        </div>
+                        {(autoApplyAdvance || creditUseAdvance) && (
+                          <MoneyInput
+                            value={creditAdvanceAmount ?? defaultPrepaid}
+                            onValueChange={setCreditAdvanceAmount}
+                            min={0}
+                            max={defaultPrepaid}
+                            allowZero
+                            containerClassName="space-y-0"
+                          />
+                        )}
+                      </div>
+                    )}
 
                     {/* Credit Limit Warning */}
                     {creditLimitNotSet && (
@@ -8045,6 +8593,20 @@ export default function POSTerminal() {
                 className="h-14 justify-between"
                 onClick={() => {
                   setHotkeyGuideOpen(false);
+                  window.setTimeout(() => openCustomerSelect(), 0);
+                }}
+              >
+                <span>{t('pos.hotkey_customer_focus')}</span>
+                <kbd className="rounded bg-muted px-2 py-1 font-mono text-xs">F1</kbd>
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                className="h-14 justify-between"
+                onClick={() => {
+                  setHotkeyGuideOpen(false);
+                  setProductListNavActive(false);
+                  setCartNavActive(false);
                   window.setTimeout(() => searchInputRef.current?.focus(), 0);
                 }}
               >
@@ -8066,25 +8628,83 @@ export default function POSTerminal() {
               </Button>
               <Button
                 type="button"
-                variant={exchangeReturnMode ? 'default' : 'outline'}
+                variant="outline"
                 className="h-14 justify-between"
                 onClick={() => {
-                  setExchangeReturnMode((v) => {
-                    if (!v) {
-                      const ok = window.confirm(
-                        t('pos.exchange.return_mode_confirm', {
-                          defaultValue:
-                            'Qaytarish rejimiga o‘tasizmi? Keyingi mahsulotlar manfiy (qaytarish) qator sifatida qo‘shiladi.',
-                        }),
-                      );
-                      if (!ok) return v;
-                    }
-                    return !v;
-                  });
+                  setHotkeyGuideOpen(false);
+                  window.setTimeout(() => {
+                    const list = visibleProductsRef.current;
+                    if (list.length === 0) return;
+                    const next = activateListIndex(list.length, selectedProductIndexRef.current);
+                    setSelectedProductIndex(next);
+                    setProductListNavActive(true);
+                    setCartNavActive(false);
+                    productListFocusRef.current?.focus({ preventScroll: true });
+                  }, 0);
+                }}
+              >
+                <span>{t('pos.hotkey_list_section')}</span>
+                <kbd className="rounded bg-muted px-2 py-1 font-mono text-xs">F4</kbd>
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                className="h-14 justify-between"
+                disabled={cart.length === 0}
+                onClick={() => {
+                  setHotkeyGuideOpen(false);
+                  window.setTimeout(() => {
+                    const len = cartRef.current.length;
+                    if (len === 0) return;
+                    const next = activateListIndex(len, selectedCartIndexRef.current);
+                    setSelectedCartIndex(next);
+                    setCartNavActive(true);
+                    setProductListNavActive(false);
+                    cartFocusRef.current?.focus({ preventScroll: true });
+                  }, 0);
+                }}
+              >
+                <span>{t('pos.hotkey_cart_section')}</span>
+                <kbd className="rounded bg-muted px-2 py-1 font-mono text-xs">F5</kbd>
+              </Button>
+              <Button
+                type="button"
+                variant={showCostPrice ? 'default' : 'outline'}
+                className="h-14 justify-between"
+                onClick={() => {
+                  setShowCostPrice((prev) => !prev);
                   setHotkeyGuideOpen(false);
                 }}
               >
-                <span>Qaytim</span>
+                <span>{t('pos.hotkey_cost_toggle')}</span>
+                <kbd className="rounded bg-muted px-2 py-1 font-mono text-xs">F6</kbd>
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                className="h-14 justify-between"
+                onClick={() => {
+                  setHotkeyGuideOpen(false);
+                  window.setTimeout(() => {
+                    setProductListNavActive(false);
+                    setCartNavActive(false);
+                    focusOrderDiscountInput();
+                  }, 0);
+                }}
+              >
+                <span>{t('pos.hotkey_discount_focus')}</span>
+                <kbd className="rounded bg-muted px-2 py-1 font-mono text-xs">F7</kbd>
+              </Button>
+              <Button
+                type="button"
+                variant={exchangeReturnMode ? 'default' : 'outline'}
+                className="h-14 justify-between"
+                onClick={() => {
+                  toggleExchangeReturnMode();
+                  setHotkeyGuideOpen(false);
+                }}
+              >
+                <span>{t('pos.exchange.return_mode_short')}</span>
                 <kbd className="rounded bg-muted px-2 py-1 font-mono text-xs">F8</kbd>
               </Button>
               <Button
@@ -8142,17 +8762,44 @@ export default function POSTerminal() {
             </div>
 
             <div className="mt-4 rounded-md border bg-muted/20 p-3">
-              <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Savat qatori</p>
+              <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                {t('pos.hotkey_list_section')}
+              </p>
               <div className="grid grid-cols-2 gap-2">
                 {[
-                  ['Arrow Up/Down', 'Qator tanlash'],
+                  ['F4 / ↓ / Tab', t('pos.hotkey_list_jump')],
+                  ['↑ / ↓', t('pos.hotkey_list_move')],
+                  ['→', t('pos.hotkey_list_add')],
+                  ['←', t('pos.hotkey_list_remove')],
+                  ['Enter', t('pos.hotkey_list_enter')],
+                  ['Esc', t('pos.hotkey_list_back')],
+                ].map(([keyName, label]) => (
+                  <div key={`${keyName}-${label}`} className="flex items-center justify-between gap-2 rounded-lg border bg-background px-3 py-2">
+                    <span className="text-muted-foreground">{label}</span>
+                    <kbd className="rounded bg-muted px-2 py-1 font-mono text-xs font-semibold">{keyName}</kbd>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            <div className="mt-4 rounded-md border bg-muted/20 p-3">
+              <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                {t('pos.hotkey_cart_section')}
+              </p>
+              <div className="grid grid-cols-2 gap-2">
+                {[
+                  ['F5 / Tab', t('pos.hotkey_cart_jump')],
+                  ['↑ / ↓', t('pos.hotkey_cart_move')],
+                  ['→', t('pos.hotkey_cart_add')],
+                  ['←', t('pos.hotkey_cart_remove')],
+                  ['Enter', t('pos.hotkey_cart_enter')],
+                  ['Esc', t('pos.hotkey_cart_back')],
                   ['+', 'Miqdor +'],
                   ['-', 'Miqdor -'],
                   ['Alt+1', '+1 qator'],
                   ['Alt+5', '+5 qator'],
                   ['Alt+-', '-1 qator'],
                   ['Alt+1..8', 'Tez mahsulot'],
-                  ['Enter', "1-mahsulot qo'shish"],
                 ].map(([keyName, label]) => (
                   <div key={`${keyName}-${label}`} className="flex items-center justify-between gap-2 rounded-lg border bg-background px-3 py-2">
                     <span className="text-muted-foreground">{label}</span>
@@ -8336,6 +8983,11 @@ export default function POSTerminal() {
           if (!open) {
             setNumpadConfig(null);
             setWeightedCartAddMode('sale_qty');
+            if (cartNavActiveRef.current) {
+              window.setTimeout(() => cartFocusRef.current?.focus({ preventScroll: true }), 0);
+            } else if (productListNavActiveRef.current) {
+              window.setTimeout(() => productListFocusRef.current?.focus({ preventScroll: true }), 0);
+            }
           }
         }}
         title={(() => {

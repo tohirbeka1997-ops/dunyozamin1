@@ -182,11 +182,12 @@ export default function ProfitLossReport() {
   }
 
   const summary = reportData?.summary || {};
-  const grossSales = Number(summary.revenue || 0);
-  const grossSalesUzs = Number(summary.revenue_uzs ?? grossSales);
-  const grossSalesUsd = Number(summary.revenue_usd ?? 0);
-  const totalDiscounts = Number(summary.discount || 0);
-  const netSales = Number(summary.net_sales || 0);
+  const meta = reportData?.meta || {};
+  const grossSales = Number(summary.gross_revenue ?? summary.revenue || 0);
+  const grossSalesUzs = Number(summary.gross_revenue_uzs ?? summary.revenue_uzs ?? grossSales);
+  const grossSalesUsd = Number(summary.gross_revenue_usd ?? summary.revenue_usd ?? 0);
+  const totalDiscounts = Number(summary.discounts ?? summary.discount || 0);
+  const netSales = Number(summary.net_revenue ?? summary.net_sales || 0);
   const netSalesUzs = Number(summary.net_sales_uzs ?? netSales);
   const netSalesUsd = Number(summary.net_sales_usd ?? 0);
   const cogs = Number(summary.cogs || 0);
@@ -194,11 +195,11 @@ export default function ProfitLossReport() {
   const returnsRevenue = Number(summary.returns_revenue || 0);
   const returnsRevenueUzs = Number(summary.returns_revenue_uzs ?? returnsRevenue);
   const returnsRevenueUsd = Number(summary.returns_revenue_usd ?? 0);
-  const returnsCogs = Number(summary.returns_cogs || 0);
   const totalExpenses = Number(summary.expenses || 0);
   const finalProfit = Number(summary.net_profit || 0);
   const profitMargin = Number(summary.profit_margin || 0);
   const returnRate = Number(summary.return_rate || 0);
+  const cogsSource = String(summary.cogs_source || '');
 
   const formatMinusMoney = (value: number) => {
     // UX: don't show "-0 so'm"
@@ -390,20 +391,6 @@ export default function ProfitLossReport() {
                 <span className="text-destructive">{formatMinusMoney(totalDiscounts)}</span>
               </div>
               <div className="flex justify-between items-center pb-2 border-b">
-                <span className="font-medium">{t('reports.profit_loss_page.statement.net_sales')}</span>
-                <span className="font-bold">
-                  <DualCurrencyAmount uzs={netSalesUzs} usd={netSalesUsd} />
-                </span>
-              </div>
-              <div className="flex justify-between items-center pb-2 border-b">
-                <span className="text-muted-foreground">{t('reports.profit_loss_page.statement.cogs')}</span>
-                <span className="text-destructive">{formatMinusMoney(cogs)}</span>
-              </div>
-              <div className="flex justify-between items-center pb-2 border-b">
-                <span className="font-medium">{t('reports.profit_loss_page.statement.gross_profit')}</span>
-                <span className="font-bold text-success">{formatMoneyUZS(grossProfit)}</span>
-              </div>
-              <div className="flex justify-between items-center pb-2 border-b">
                 <span className="text-muted-foreground">{t('reports.profit_loss_page.statement.returns')}</span>
                 <span className="text-destructive">
                   {returnsRevenueUsd > 0 ? (
@@ -415,14 +402,34 @@ export default function ProfitLossReport() {
                   )}
                 </span>
               </div>
-              {returnsCogs > 0 && (
-                <div className="flex justify-between items-center pb-2 border-b">
-                  <span className="text-muted-foreground">
-                    {t('reports.profit_loss_page.statement.returns_cogs')}
+              <div className="flex justify-between items-center pb-2 border-b">
+                <span className="font-medium">{t('reports.profit_loss_page.statement.net_sales')}</span>
+                <span className="font-bold">
+                  <DualCurrencyAmount uzs={netSalesUzs} usd={netSalesUsd} />
+                </span>
+              </div>
+              <div className="flex justify-between items-center pb-2 border-b">
+                <span className="text-muted-foreground">{t('reports.profit_loss_page.statement.cogs')}</span>
+                <span className="text-destructive">{formatMinusMoney(cogs)}</span>
+              </div>
+              {cogsSource ? (
+                <div className="flex justify-between items-center pb-2 text-xs text-muted-foreground">
+                  <span>{t('reports.profit_loss_page.statement.cogs_source', 'COGS manbasi')}</span>
+                  <span>
+                    {cogsSource === 'fifo'
+                      ? 'FIFO'
+                      : cogsSource === 'weighted_average'
+                        ? 'Weighted average'
+                        : cogsSource === 'historical_fallback'
+                          ? t('reports.profit_loss_page.statement.cogs_fallback', 'Tarixiy fallback')
+                          : t('reports.profit_loss_page.statement.cogs_insufficient', 'Ma’lumot yetarli emas')}
                   </span>
-                  <span className="text-success">{formatMoneyUZS(returnsCogs)}</span>
                 </div>
-              )}
+              ) : null}
+              <div className="flex justify-between items-center pb-2 border-b">
+                <span className="font-medium">{t('reports.profit_loss_page.statement.gross_profit')}</span>
+                <span className="font-bold text-success">{formatMoneyUZS(grossProfit)}</span>
+              </div>
               <div className="flex justify-between items-center pb-2 border-b">
                 <span className="text-muted-foreground">{t('reports.profit_loss_page.statement.approved_expenses')}</span>
                 <span className="text-destructive">{formatMinusMoney(totalExpenses)}</span>
@@ -439,6 +446,18 @@ export default function ProfitLossReport() {
                 COGS, xarajatlar va yakuniy foyda UZS ekvivalentida (USD sotuvlar kurs bo‘yicha).
               </p>
             )}
+            {meta?.computed_at ? (
+              <p className="mt-2 text-xs text-muted-foreground">
+                {t('reports.profit_loss_page.meta', 'Hisoblangan')}: {String(meta.computed_at)}
+                {meta.timezone ? ` · ${meta.timezone}` : ''}
+                {meta.period?.date_from ? ` · ${meta.period.date_from}` : ''}
+                {meta.period?.date_to && meta.period.date_to !== meta.period.date_from
+                  ? ` — ${meta.period.date_to}`
+                  : ''}
+                {meta.data_version ? ` · ${meta.data_version}` : ''}
+                {meta.cogs_method ? ` · COGS: ${meta.cogs_method}` : ''}
+              </p>
+            ) : null}
             {reportData?.warnings?.valuation_mismatch ? (
               <div className="mt-4 text-xs text-destructive">
                 FIFO va weighted avg baholashlarida farq aniqlandi. Hisobotni tekshiring.

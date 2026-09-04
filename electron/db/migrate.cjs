@@ -806,6 +806,21 @@ function runMigrations(db) {
             console.log('    ✓ Added inventory_batch_allocations.note');
           }
           db.exec(sql);
+        } else if (file === '137_batch_fifo_trace_columns.sql') {
+          if (hasTable(db, 'inventory_batches')) {
+            if (safeAddColumn(db, 'inventory_batches', 'batch_no', 'TEXT')) {
+              console.log('    ✓ Added inventory_batches.batch_no');
+            }
+            if (safeAddColumn(db, 'inventory_batches', 'expiry_date', 'TEXT')) {
+              console.log('    ✓ Added inventory_batches.expiry_date');
+            }
+          }
+          if (hasTable(db, 'inventory_batch_allocations')) {
+            if (safeAddColumn(db, 'inventory_batch_allocations', 'stock_movement_id', 'TEXT')) {
+              console.log('    ✓ Added inventory_batch_allocations.stock_movement_id');
+            }
+          }
+          db.exec(sql);
         } else if (file === '101_unified_loyalty.sql') {
           if (hasTable(db, 'customers')) {
             if (!hasColumn(db, 'customers', 'loyalty_card_code')) {
@@ -1093,6 +1108,95 @@ function runMigrations(db) {
             }
           }
           db.exec(sql);
+        } else if (file === '138_purchase_planning_columns.sql') {
+          if (hasTable(db, 'products')) {
+            if (safeAddColumn(db, 'products', 'preferred_supplier_id', 'TEXT')) {
+              console.log('    ✓ Added products.preferred_supplier_id');
+            }
+            if (safeAddColumn(db, 'products', 'lead_time_days', 'INTEGER')) {
+              console.log('    ✓ Added products.lead_time_days');
+            }
+            if (safeAddColumn(db, 'products', 'moq', 'REAL')) {
+              console.log('    ✓ Added products.moq');
+            }
+            if (safeAddColumn(db, 'products', 'order_step', 'REAL')) {
+              console.log('    ✓ Added products.order_step');
+            }
+            if (safeAddColumn(db, 'products', 'qty_precision', 'INTEGER')) {
+              console.log('    ✓ Added products.qty_precision');
+            }
+          }
+          if (hasTable(db, 'stock_balances')) {
+            if (safeAddColumn(db, 'stock_balances', 'blocked_quantity', 'REAL NOT NULL DEFAULT 0')) {
+              console.log('    ✓ Added stock_balances.blocked_quantity');
+            }
+            if (safeAddColumn(db, 'stock_balances', 'in_transfer_quantity', 'REAL NOT NULL DEFAULT 0')) {
+              console.log('    ✓ Added stock_balances.in_transfer_quantity');
+            }
+          }
+          db.exec(sql);
+        } else if (file === '139_customer_payment_allocations.sql') {
+          if (hasTable(db, 'customers')) {
+            safeAddColumn(db, 'customers', 'credit_term_days', 'INTEGER');
+          }
+          if (hasTable(db, 'customer_payments')) {
+            safeAddColumn(db, 'customer_payments', 'op_type', 'TEXT');
+            safeAddColumn(db, 'customer_payments', 'remainder_to_advance', 'REAL');
+            safeAddColumn(db, 'customer_payments', 'reversed_by_id', 'TEXT');
+            safeAddColumn(db, 'customer_payments', 'direction', 'TEXT');
+          }
+          if (hasTable(db, 'customer_ledger')) {
+            safeAddColumn(db, 'customer_ledger', 'op_code', 'TEXT');
+            safeAddColumn(db, 'customer_ledger', 'debt_before', 'REAL');
+            safeAddColumn(db, 'customer_ledger', 'debt_after', 'REAL');
+            safeAddColumn(db, 'customer_ledger', 'advance_before', 'REAL');
+            safeAddColumn(db, 'customer_ledger', 'advance_after', 'REAL');
+          }
+          db.exec(sql);
+        } else if (file === '140_payment_allocation_audit.sql') {
+          if (hasTable(db, 'customer_payment_allocations')) {
+            if (safeAddColumn(db, 'customer_payment_allocations', 'allocated_amount', 'REAL')) {
+              console.log('    ✓ Added customer_payment_allocations.allocated_amount');
+            }
+            if (safeAddColumn(db, 'customer_payment_allocations', 'allocated_at', 'TEXT')) {
+              console.log('    ✓ Added customer_payment_allocations.allocated_at');
+            }
+            if (safeAddColumn(db, 'customer_payment_allocations', 'allocated_by', 'TEXT')) {
+              console.log('    ✓ Added customer_payment_allocations.allocated_by');
+            }
+            if (safeAddColumn(db, 'customer_payment_allocations', 'allocation_type', 'TEXT')) {
+              console.log('    ✓ Added customer_payment_allocations.allocation_type');
+            }
+            try {
+              db.exec(`
+                UPDATE customer_payment_allocations
+                SET allocated_amount = COALESCE(allocated_amount, applied_amount)
+                WHERE allocated_amount IS NULL;
+                UPDATE customer_payment_allocations
+                SET allocated_at = COALESCE(allocated_at, created_at)
+                WHERE allocated_at IS NULL;
+                UPDATE customer_payment_allocations
+                SET allocation_type = COALESCE(allocation_type, CASE
+                  WHEN order_id IS NULL THEN 'advance_received'
+                  ELSE 'debt_payment'
+                END)
+                WHERE allocation_type IS NULL;
+              `);
+            } catch (e) {
+              console.warn('    ⚠ allocation backfill:', e.message);
+            }
+          }
+        } else if (file === '141_allocation_remainder_advance_received.sql') {
+          if (hasTable(db, 'customer_payment_allocations')) {
+            const cols = new Set(
+              db.prepare(`PRAGMA table_info(customer_payment_allocations)`).all().map((c) => c.name)
+            );
+            if (cols.has('allocation_type') && cols.has('remainder_to_advance')) {
+              db.exec(sql);
+            } else {
+              console.warn('    ⚠ 141 skipped: allocation_type/remainder_to_advance missing');
+            }
+          }
         } else {
           // Execute migration SQL normally
           // SQL files should use IF NOT EXISTS for tables/indexes

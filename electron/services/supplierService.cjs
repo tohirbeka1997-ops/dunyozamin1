@@ -10,6 +10,12 @@ const {
   canCancelSupplierPayment,
   computeFxDiffAmount,
 } = require('../lib/purchaseHardening.cjs');
+const {
+  normalizeSettlementCurrency,
+  cashSourceFromMethod,
+  emptyBuckets,
+  previewSettlementMutation,
+} = require('../lib/supplierSettlement.cjs');
 
 /**
  * Supplier Service
@@ -265,6 +271,7 @@ class SupplierService {
     basisPurchaseOrderId,
     notes,
     createdBy,
+    kind = 'advance',
   }) {
     if (!this._tableExists('supplier_advances')) {
       throw createError(
@@ -275,34 +282,387 @@ class SupplierService {
     const id = randomUUID();
     const advanceNumber = `SADV-${Date.now()}`;
     const now = new Date().toISOString();
+    const hasKind = this._tableExists('supplier_advances') && this._getCols('supplier_advances').has('kind');
+    const advanceKind = String(kind || 'advance') === 'pending_refund' ? 'pending_refund' : 'advance';
+    const cols = [
+      'id',
+      'advance_number',
+      'supplier_id',
+      'currency',
+      'amount',
+      'amount_remaining',
+      'fx_rate',
+      'fx_rate_source',
+      'fx_rate_date',
+      'basis_payment_id',
+      'basis_purchase_order_id',
+      'notes',
+      'created_by',
+      'created_at',
+      'updated_at',
+    ];
+    const vals = [
+      id,
+      advanceNumber,
+      supplierId,
+      currency,
+      amount,
+      amount,
+      fxRate ?? null,
+      fxRateSource || null,
+      now.slice(0, 10),
+      basisPaymentId || null,
+      basisPurchaseOrderId || null,
+      notes || null,
+      createdBy || null,
+      now,
+      now,
+    ];
+    if (hasKind) {
+      cols.push('kind');
+      vals.push(advanceKind);
+    }
+    this.db
+      .prepare(
+        `INSERT INTO supplier_advances (${cols.join(', ')}) VALUES (${cols.map(() => '?').join(', ')})`,
+      )
+      .run(...vals);
+    return this.db.prepare('SELECT * FROM supplier_advances WHERE id = ?').get(id);
+  }
+
+  _poCurrency(po) {
+    return String(po?.currency || 'UZS').toUpperCase() === 'USD' ? 'USD' : 'UZS';
+  }
+
+  _paymentActiveSql(alias = 'sp') {
+    const hasCancelled = this._hasSupplierPaymentCol('cancelled_at');
+    return hasCancelled ? ` AND ${alias}.cancelled_at IS NULL` : '';
+  }
+
+  /**
+   * Dual-bucket remainders: unpaid received POs (debt) vs supplier_advances (advance).
+   * UZS and USD are never mixed.
+   */
+  getSettlement(supplierId) {
+    if (!supplierId) {
+      throw createError(ERROR_CODES.VALIDATION_ERROR, 'Supplier ID is required');
+    }
+    const supplier = this.db.prepare('SELECT id, name, settlement_currency FROM suppliers WHERE id = ?').get(supplierId);
+    if (!supplier) {
+      throw createError(ERROR_CODES.NOT_FOUND, `Supplier with id ${supplierId} not found`);
+    }
+
+    const buckets = emptyBuckets();
+    const hasTotalUsd = this._hasPurchaseOrderCol('total_usd');
+    const hasAmountUsd = this._hasSupplierPaymentCol('amount_usd');
+    const hasCurrency = this._hasPurchaseOrderCol('currency');
+    const activePay = this._paymentActiveSql('sp');
+    const advancePortion = this._hasSupplierPaymentCol('is_advance_portion')
+      ? ' AND COALESCE(sp.is_advance_portion, 0) = 0'
+      : '';
+
+    const pos = this.db
+      .prepare(
+        `
+        SELECT
+          po.id,
+          po.currency,
+          po.total_amount,
+          ${hasTotalUsd ? 'po.total_usd' : 'NULL AS total_usd'}
+        FROM purchase_orders po
+        WHERE po.supplier_id = ?
+          AND po.status IN ('received', 'partially_received')
+      `,
+      )
+      .all(supplierId);
+
+    for (const po of pos) {
+      const cur = hasCurrency ? this._poCurrency(po) : 'UZS';
+      let remaining = 0;
+      if (cur === 'USD' && hasAmountUsd) {
+        const paid = this.db
+          .prepare(
+            `SELECT COALESCE(SUM(COALESCE(sp.amount_usd, 0)), 0) AS paid
+             FROM supplier_payments sp
+             WHERE sp.purchase_order_id = ? ${activePay} ${advancePortion}`,
+          )
+          .get(po.id);
+        remaining = Math.max(0, Number(po.total_usd || 0) - Number(paid?.paid || 0));
+      } else {
+        const paid = this.db
+          .prepare(
+            `SELECT COALESCE(SUM(sp.amount), 0) AS paid
+             FROM supplier_payments sp
+             WHERE sp.purchase_order_id = ? ${activePay} ${advancePortion}`,
+          )
+          .get(po.id);
+        remaining = Math.max(0, Number(po.total_amount || 0) - Number(paid?.paid || 0));
+      }
+      if (cur === 'USD') buckets.debt_usd += remaining;
+      else buckets.debt_uzs += remaining;
+    }
+
+    if (this._tableExists('supplier_advances')) {
+      const hasKind = this._getCols('supplier_advances').has('kind');
+      const rows = this.db
+        .prepare(
+          `
+          SELECT currency, amount_remaining
+                 ${hasKind ? ', kind' : ", 'advance' AS kind"}
+          FROM supplier_advances
+          WHERE supplier_id = ? AND amount_remaining > 0
+        `,
+        )
+        .all(supplierId);
+      for (const row of rows) {
+        const cur = normalizeSettlementCurrency(row.currency);
+        const rem = Number(row.amount_remaining || 0) || 0;
+        const kind = String(row.kind || 'advance');
+        if (kind === 'pending_refund') {
+          if (cur === 'USD') buckets.pending_refund_usd += rem;
+          else buckets.pending_refund_uzs += rem;
+        } else if (cur === 'USD') buckets.advance_usd += rem;
+        else buckets.advance_uzs += rem;
+      }
+    }
+
+    const unallocSql = `
+      SELECT
+        COALESCE(sp.currency, 'UZS') AS currency,
+        COALESCE(SUM(CASE
+          WHEN UPPER(COALESCE(sp.currency, 'UZS')) = 'USD'
+            THEN COALESCE(sp.amount_usd, 0)
+          ELSE COALESCE(sp.amount, 0)
+        END), 0) AS amt
+      FROM supplier_payments sp
+      WHERE sp.supplier_id = ?
+        AND sp.purchase_order_id IS NULL
+        AND COALESCE(sp.payment_method, '') != 'credit_note'
+        AND COALESCE(sp.amount, 0) > 0
+        ${this._hasSupplierPaymentCol('is_advance_portion') ? 'AND COALESCE(sp.is_advance_portion, 0) = 0' : ''}
+        ${this._hasSupplierPaymentCol('advance_id') ? 'AND sp.advance_id IS NULL' : ''}
+        ${activePay}
+      GROUP BY COALESCE(sp.currency, 'UZS')
+    `;
+    try {
+      const unalloc = this.db.prepare(unallocSql).all(supplierId);
+      for (const row of unalloc) {
+        const cur = normalizeSettlementCurrency(row.currency);
+        const amt = Number(row.amt || 0) || 0;
+        if (cur === 'USD') buckets.unallocated_usd += amt;
+        else buckets.unallocated_uzs += amt;
+      }
+    } catch {
+      // older schemas without currency on payments
+    }
+
+    const settlementCurrency = normalizeSettlementCurrency(supplier.settlement_currency);
+    return {
+      supplier_id: supplierId,
+      supplier_name: supplier.name,
+      settlement_currency: settlementCurrency,
+      ...buckets,
+      debt: settlementCurrency === 'USD' ? buckets.debt_usd : buckets.debt_uzs,
+      advance: settlementCurrency === 'USD' ? buckets.advance_usd : buckets.advance_uzs,
+      pending_refund:
+        settlementCurrency === 'USD' ? buckets.pending_refund_usd : buckets.pending_refund_uzs,
+      unallocated:
+        settlementCurrency === 'USD' ? buckets.unallocated_usd : buckets.unallocated_uzs,
+    };
+  }
+
+  previewSettlement(payload = {}) {
+    const supplierId = payload.supplier_id;
+    const amount = Number(payload.amount);
+    const currency = normalizeSettlementCurrency(payload.currency);
+    const opKind = String(payload.op_kind || payload.opKind || 'pay').trim().toLowerCase();
+    const settlement = this.getSettlement(supplierId);
+    return {
+      settlement,
+      preview: previewSettlementMutation(settlement, {
+        op_kind: opKind,
+        amount,
+        currency,
+        accept_as_advance: !!(payload.accept_as_advance || payload.acceptAsAdvance),
+      }),
+    };
+  }
+
+  _listUnpaidReceivedPos(supplierId, currency) {
+    const cur = normalizeSettlementCurrency(currency);
+    const pos = this.db
+      .prepare(
+        `
+        SELECT id, currency, total_amount, total_usd, order_date, created_at, po_number
+        FROM purchase_orders
+        WHERE supplier_id = ?
+          AND status IN ('received', 'partially_received')
+        ORDER BY datetime(COALESCE(order_date, created_at)) ASC, created_at ASC
+      `,
+      )
+      .all(supplierId);
+    const unpaid = [];
+    for (const po of pos) {
+      if (this._poCurrency(po) !== cur) continue;
+      const meta = this._getPoRemainingForPayment(po.id);
+      if (Number(meta.remaining || 0) > moneyTolerance(cur)) {
+        unpaid.push(meta);
+      }
+    }
+    return unpaid;
+  }
+
+  _consumeSupplierAdvances({ supplierId, currency, amount, now, preferPending = true }) {
+    const cur = normalizeSettlementCurrency(currency);
+    const tol = moneyTolerance(cur);
+    if (!(Number(amount) > 0)) return [];
+    if (!this._tableExists('supplier_advances')) {
+      throw createError(ERROR_CODES.VALIDATION_ERROR, 'Yetkazib beruvchi avansi jadvali yo‘q');
+    }
+    const hasKind = this._getCols('supplier_advances').has('kind');
+    const order = preferPending
+      ? hasKind
+        ? `CASE WHEN COALESCE(kind, 'advance') = 'pending_refund' THEN 0 ELSE 1 END, created_at ASC`
+        : 'created_at ASC'
+      : hasKind
+        ? `CASE WHEN COALESCE(kind, 'advance') = 'pending_refund' THEN 1 ELSE 0 END, created_at ASC`
+        : 'created_at ASC';
+    const rows = this.db
+      .prepare(
+        `
+        SELECT * FROM supplier_advances
+        WHERE supplier_id = ? AND UPPER(COALESCE(currency, 'UZS')) = ? AND amount_remaining > 0
+        ORDER BY ${order}
+      `,
+      )
+      .all(supplierId, cur);
+    let left = Number(amount);
+    const consumed = [];
+    for (const row of rows) {
+      if (left <= tol) break;
+      const take = Math.min(left, Number(row.amount_remaining || 0));
+      if (!(take > 0)) continue;
+      this.db
+        .prepare(
+          `UPDATE supplier_advances SET amount_remaining = amount_remaining - ?, updated_at = ? WHERE id = ?`,
+        )
+        .run(take, now, row.id);
+      consumed.push({ id: row.id, amount: take, kind: row.kind || 'advance' });
+      left -= take;
+    }
+    if (left > 1e-6) {
+      throw createError(
+        ERROR_CODES.VALIDATION_ERROR,
+        `Refund avansdan oshadi (qoldiq yetmadi: ${left})`,
+      );
+    }
+    return consumed;
+  }
+
+  _recordSettlementLedger(entry) {
+    if (!this._tableExists('supplier_settlement_ledger')) return null;
+    const id = randomUUID();
+    const now = entry.created_at || new Date().toISOString();
+    const key = String(entry.idempotency_key || '').trim() || null;
+    if (key) {
+      const existing = this.db
+        .prepare(`SELECT * FROM supplier_settlement_ledger WHERE idempotency_key = ? LIMIT 1`)
+        .get(key);
+      if (existing) return existing;
+    }
     this.db
       .prepare(
         `
-        INSERT INTO supplier_advances (
-          id, advance_number, supplier_id, currency, amount, amount_remaining,
-          fx_rate, fx_rate_source, fx_rate_date, basis_payment_id, basis_purchase_order_id,
-          notes, created_by, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO supplier_settlement_ledger (
+          id, supplier_id, op_type, currency, amount,
+          debt_before, debt_after, advance_before, advance_after,
+          purchase_order_id, payment_id, return_id, reason, payment_method, cash_source,
+          created_by, created_at, idempotency_key
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `,
       )
       .run(
         id,
-        advanceNumber,
-        supplierId,
-        currency,
-        amount,
-        amount,
-        fxRate ?? null,
-        fxRateSource || null,
-        now.slice(0, 10),
-        basisPaymentId || null,
-        basisPurchaseOrderId || null,
-        notes || null,
-        createdBy || null,
+        entry.supplier_id,
+        entry.op_type,
+        normalizeSettlementCurrency(entry.currency),
+        Number(entry.amount || 0),
+        Number(entry.debt_before || 0),
+        Number(entry.debt_after || 0),
+        Number(entry.advance_before || 0),
+        Number(entry.advance_after || 0),
+        entry.purchase_order_id || null,
+        entry.payment_id || null,
+        entry.return_id || null,
+        entry.reason || null,
+        entry.payment_method || null,
+        entry.cash_source || cashSourceFromMethod(entry.payment_method),
+        entry.created_by || null,
         now,
-        now,
+        key,
       );
-    return this.db.prepare('SELECT * FROM supplier_advances WHERE id = ?').get(id);
+    return this.db.prepare('SELECT * FROM supplier_settlement_ledger WHERE id = ?').get(id);
+  }
+
+  settleSupplier(payload = {}) {
+    const supplierId = payload.supplier_id;
+    if (!supplierId) {
+      throw createError(ERROR_CODES.VALIDATION_ERROR, 'Supplier ID is required');
+    }
+    const amount = Number(payload.amount ?? payload.amount_usd);
+    if (!(amount > 0)) {
+      throw createError(ERROR_CODES.VALIDATION_ERROR, 'Summa 0 dan katta bo‘lishi kerak');
+    }
+    const currency = normalizeSettlementCurrency(payload.currency);
+    const opKind = String(payload.op_kind || payload.opKind || 'pay').trim().toLowerCase();
+    const allowed = new Set([
+      'pay',
+      'advance_out',
+      'receive',
+      'debit_note_reduce_debt',
+      'debit_note_create_advance',
+      'debit_note_demand_refund',
+    ]);
+    if (!allowed.has(opKind)) {
+      throw createError(ERROR_CODES.VALIDATION_ERROR, `Noma’lum operatsiya: ${opKind}`);
+    }
+
+    if (opKind.startsWith('debit_note')) {
+      throw createError(
+        ERROR_CODES.VALIDATION_ERROR,
+        'Qaytarish/debit note uchun createReturn + settlement_mode ishlating',
+      );
+    }
+
+    const previewWrap = this.previewSettlement({
+      supplier_id: supplierId,
+      op_kind: opKind,
+      amount,
+      currency,
+      accept_as_advance: payload.accept_as_advance,
+    });
+    if (previewWrap.preview.blocked) {
+      throw createError(ERROR_CODES.VALIDATION_ERROR, previewWrap.preview.blocked);
+    }
+
+    const payment = this.createPayment({
+      ...payload,
+      supplier_id: supplierId,
+      amount: currency === 'USD' ? 0 : amount,
+      amount_usd: currency === 'USD' ? amount : payload.amount_usd ?? null,
+      currency,
+      op_kind: opKind,
+      notes: payload.reason || payload.notes || payload.note,
+      note: payload.reason || payload.notes || payload.note,
+    });
+
+    const settlement = this.getSettlement(supplierId);
+    return {
+      ...payment,
+      op_kind: opKind,
+      preview: previewWrap.preview,
+      settlement,
+    };
   }
 
   /**
@@ -470,9 +830,19 @@ class SupplierService {
       LIMIT 200
     `).all(id);
 
+    let settlement = null;
+    try {
+      settlement = this.getSettlement(id);
+    } catch {
+      settlement = null;
+    }
+
     return {
       ...supplier,
       purchase_orders: purchaseOrders,
+      settlement,
+      debt: settlement ? settlement.debt : Math.max(0, Number(supplier.balance || 0)),
+      advance: settlement ? settlement.advance : Math.max(0, -Number(supplier.balance || 0)),
     };
   }
 
@@ -1013,14 +1383,137 @@ class SupplierService {
     const createdBy = data.created_by || null;
     const note = (data.note ?? data.notes)?.trim?.() || null;
     const acceptAsAdvance = !!(data.accept_as_advance || data.acceptAsAdvance);
+    const opKindRaw = String(data.op_kind || data.opKind || '').trim().toLowerCase();
+    const opKind =
+      opKindRaw === 'receive' || Number(inputAmountFinal) < 0
+        ? 'receive'
+        : opKindRaw === 'advance_out' || data.as_advance
+          ? 'advance_out'
+          : 'pay';
+    const absAmount = Math.abs(Number(inputAmountFinal));
+    const bucketCurrency = paymentCurrency === 'USD' ? 'USD' : 'UZS';
 
     const run = this.db.transaction(() => {
-      let settleAmount = Number(inputAmountFinal);
+      const beforeSettlement = this.getSettlement(data.supplier_id);
+
+      if (opKind === 'receive') {
+        if (!(absAmount > 0)) {
+          throw createError(ERROR_CODES.VALIDATION_ERROR, 'Summa 0 dan katta bo‘lishi kerak');
+        }
+        const preview = previewSettlementMutation(beforeSettlement, {
+          op_kind: 'receive',
+          amount: absAmount,
+          currency: bucketCurrency,
+        });
+        if (preview.blocked) {
+          throw createError(ERROR_CODES.VALIDATION_ERROR, preview.blocked);
+        }
+        this._consumeSupplierAdvances({
+          supplierId: data.supplier_id,
+          currency: bucketCurrency,
+          amount: absAmount,
+          now,
+          preferPending: true,
+        });
+        const recvId = randomUUID();
+        const recvUzs = bucketCurrency === 'USD' ? 0 : -absAmount;
+        const recvUsd = bucketCurrency === 'USD' ? -absAmount : null;
+        const recvRow = this._insertPaymentRow({
+          id: recvId,
+          paymentNumber: `SPAY-IN-${Date.now()}`,
+          supplierId: data.supplier_id,
+          purchaseOrderId: null,
+          amountUzs: recvUzs,
+          amountUsd: recvUsd,
+          paymentCurrency: bucketCurrency,
+          paymentMethod: data.payment_method || 'cash',
+          paidAt: data.paid_at || now,
+          note: note || 'Yetkazib beruvchidan pul qabul qilish',
+          createdBy,
+          now,
+          fxRate,
+          fxRateSource,
+          fxDiffAmount: null,
+          idempotencyKey,
+          advanceId: null,
+          isAdvancePortion: false,
+          acceptAsAdvance: false,
+        });
+        const afterSettlement = this.getSettlement(data.supplier_id);
+        this._recordSettlementLedger({
+          supplier_id: data.supplier_id,
+          op_type: 'receive',
+          currency: bucketCurrency,
+          amount: absAmount,
+          debt_before: preview.debt_before,
+          debt_after: afterSettlement[bucketCurrency === 'USD' ? 'debt_usd' : 'debt_uzs'],
+          advance_before: preview.advance_before,
+          advance_after: afterSettlement[bucketCurrency === 'USD' ? 'advance_usd' : 'advance_uzs'],
+          payment_id: recvRow.id,
+          reason: note,
+          payment_method: data.payment_method || 'cash',
+          created_by: createdBy,
+          created_at: now,
+          idempotency_key: idempotencyKey ? `${idempotencyKey}:ledger` : null,
+        });
+        this._audit(
+          'receive',
+          'supplier_payment',
+          recvRow.id,
+          { debt: preview.debt_before, advance: preview.advance_before },
+          { debt: preview.debt_after, advance: preview.advance_after, amount: absAmount },
+          createdBy,
+        );
+        return {
+          ...recvRow,
+          op_kind: 'receive',
+          settle_amount: 0,
+          advance_amount: 0,
+          settlement: afterSettlement,
+        };
+      }
+
+      let settleAmount = Number(absAmount);
       let advanceAmount = 0;
       let poMeta = null;
+      let fifoAllocations = [];
+
+      if (opKind === 'advance_out' && !data.purchase_order_id) {
+        settleAmount = 0;
+        advanceAmount = absAmount;
+      } else if (!data.purchase_order_id && Number(absAmount) > 0) {
+        const unpaid = this._listUnpaidReceivedPos(data.supplier_id, bucketCurrency);
+        const totalRemaining = unpaid.reduce((s, m) => s + Number(m.remaining || 0), 0);
+        const split = splitPaymentAgainstRemainder(absAmount, totalRemaining, bucketCurrency);
+        if (split.requiresAdvanceAck) {
+          if (!acceptAsAdvance) {
+            throw createError(
+              ERROR_CODES.VALIDATION_ERROR,
+              'To\'lov qoldiqdan oshadi. Ortiqcha summani yetkazib beruvchi avansi sifatida qabul qilish uchun accept_as_advance=true yuboring',
+            );
+          }
+          const role = this._primaryPurchaseRole(createdBy);
+          if (!canAcceptSupplierOverpayAsAdvance(role)) {
+            throw createError(
+              ERROR_CODES.FORBIDDEN || ERROR_CODES.VALIDATION_ERROR,
+              'Overpay as supplier advance requires accountant/manager/admin',
+            );
+          }
+        }
+        settleAmount = split.settleAmount;
+        advanceAmount = split.advanceAmount;
+        let left = settleAmount;
+        for (const meta of unpaid) {
+          if (left <= moneyTolerance(bucketCurrency)) break;
+          const take = Math.min(left, Number(meta.remaining || 0));
+          if (!(take > 0)) continue;
+          fifoAllocations.push({ purchaseOrderId: meta.po.id, amount: take, poCur: meta.poCur });
+          left -= take;
+        }
+      }
 
       // Convert payment into PO document currency for remainder checks
-      if (data.purchase_order_id && Number(inputAmountFinal) > 0) {
+      if (data.purchase_order_id && Number(absAmount) > 0 && opKind !== 'advance_out') {
         poMeta = this._getPoRemainingForPayment(data.purchase_order_id);
         const { poCur, remaining } = poMeta;
 
@@ -1115,7 +1608,36 @@ class SupplierService {
 
       // If we only have advance (remaining was 0) — still record cash as advance portion
       let settleRow = null;
-      if (settleAmount > moneyTolerance(poMeta?.poCur || paymentCurrency)) {
+      const fifoRows = [];
+      if (fifoAllocations.length > 0) {
+        fifoAllocations.forEach((alloc, idx) => {
+          const isUsd = alloc.poCur === 'USD';
+          const row = this._insertPaymentRow({
+            id: idx === 0 ? settleId : randomUUID(),
+            paymentNumber: idx === 0 ? paymentNumber : `SPAY-${Date.now()}-${idx}`,
+            supplierId: data.supplier_id,
+            purchaseOrderId: alloc.purchaseOrderId,
+            amountUzs: isUsd ? (fxRate > 0 ? alloc.amount * fxRate : 0) : alloc.amount,
+            amountUsd: isUsd ? alloc.amount : null,
+            paymentCurrency: isUsd ? 'USD' : 'UZS',
+            paymentMethod: data.payment_method || 'cash',
+            paidAt: data.paid_at || now,
+            note,
+            createdBy,
+            now,
+            fxRate,
+            fxRateSource,
+            fxDiffAmount: idx === 0 ? computedFxDiff : null,
+            idempotencyKey: idx === 0 ? idempotencyKey : idempotencyKey ? `${idempotencyKey}:fifo:${idx}` : null,
+            advanceId: null,
+            isAdvancePortion: false,
+            acceptAsAdvance: false,
+          });
+          fifoRows.push(row);
+          this._refreshPurchaseOrderPaymentCache(alloc.purchaseOrderId);
+        });
+        settleRow = fifoRows[0] || null;
+      } else if (settleAmount > moneyTolerance(poMeta?.poCur || paymentCurrency)) {
         settleRow = this._insertPaymentRow({
           id: settleId,
           paymentNumber,
@@ -1156,9 +1678,9 @@ class SupplierService {
           currency: poMeta?.poCur || paymentCurrency,
           fxRate,
           fxRateSource,
-          basisPaymentId: settleRow?.id || advPayId,
+          basisPaymentId: settleRow?.id || null,
           basisPurchaseOrderId: data.purchase_order_id || null,
-          notes: note || 'Overpay accepted as supplier advance',
+          notes: note || (opKind === 'advance_out' ? 'Yetkazib beruvchiga avans' : 'Overpay accepted as supplier advance'),
           createdBy,
         });
 
@@ -1178,11 +1700,21 @@ class SupplierService {
           fxRate,
           fxRateSource,
           fxDiffAmount: null,
-          idempotencyKey: idempotencyKey ? `${idempotencyKey}:advance` : null,
+          idempotencyKey: settleRow ? (idempotencyKey ? `${idempotencyKey}:advance` : null) : idempotencyKey,
           advanceId: advance.id,
           isAdvancePortion: true,
           acceptAsAdvance: true,
         });
+
+        if (!settleRow && advance?.id && advancePayment?.id) {
+          try {
+            this.db
+              .prepare(`UPDATE supplier_advances SET basis_payment_id = ? WHERE id = ?`)
+              .run(advancePayment.id, advance.id);
+          } catch {
+            /* optional FK update */
+          }
+        }
 
         if (this._hasPurchaseOrderCol('has_supplier_advance') && data.purchase_order_id) {
           this.db
@@ -1198,6 +1730,30 @@ class SupplierService {
       }
 
       const primary = settleRow || advancePayment;
+      const afterSettlement = this.getSettlement(data.supplier_id);
+      const ledgerCur = normalizeSettlementCurrency(poMeta?.poCur || bucketCurrency);
+      this._recordSettlementLedger({
+        supplier_id: data.supplier_id,
+        op_type:
+          opKind === 'advance_out'
+            ? 'advance_out'
+            : settleAmount > moneyTolerance(ledgerCur)
+              ? 'pay'
+              : 'advance_out',
+        currency: ledgerCur,
+        amount: absAmount,
+        debt_before: beforeSettlement[ledgerCur === 'USD' ? 'debt_usd' : 'debt_uzs'],
+        debt_after: afterSettlement[ledgerCur === 'USD' ? 'debt_usd' : 'debt_uzs'],
+        advance_before: beforeSettlement[ledgerCur === 'USD' ? 'advance_usd' : 'advance_uzs'],
+        advance_after: afterSettlement[ledgerCur === 'USD' ? 'advance_usd' : 'advance_uzs'],
+        purchase_order_id: data.purchase_order_id || fifoAllocations[0]?.purchaseOrderId || null,
+        payment_id: primary?.id,
+        reason: note,
+        payment_method: data.payment_method || 'cash',
+        created_by: createdBy,
+        created_at: now,
+        idempotency_key: idempotencyKey ? `${idempotencyKey}:ledger` : null,
+      });
       this._audit(
         'create',
         'supplier_payment',
@@ -1210,6 +1766,11 @@ class SupplierService {
           advance_amount: advanceAmount,
           accept_as_advance: acceptAsAdvance,
           fx_diff_amount: computedFxDiff,
+          op_kind: opKind,
+          debt_before: beforeSettlement[ledgerCur === 'USD' ? 'debt_usd' : 'debt_uzs'],
+          debt_after: afterSettlement[ledgerCur === 'USD' ? 'debt_usd' : 'debt_uzs'],
+          advance_before: beforeSettlement[ledgerCur === 'USD' ? 'advance_usd' : 'advance_uzs'],
+          advance_after: afterSettlement[ledgerCur === 'USD' ? 'advance_usd' : 'advance_uzs'],
         },
         createdBy,
       );
@@ -1240,6 +1801,9 @@ class SupplierService {
         settle_amount: settleAmount,
         advance_amount: advanceAmount,
         fx_diff_amount: computedFxDiff,
+        op_kind: opKind,
+        allocations: fifoRows.length ? fifoRows : undefined,
+        settlement: afterSettlement,
         payment_status_hint: advanceAmount > 0 ? 'PAID_WITH_ADVANCE' : undefined,
       };
     });
@@ -1290,6 +1854,7 @@ class SupplierService {
     const run = this.db.transaction(() => {
       const advance = this.db.prepare('SELECT * FROM supplier_advances WHERE id = ?').get(advance_id);
       if (!advance) throw createError(ERROR_CODES.NOT_FOUND, 'Supplier advance not found');
+      const beforeSettlement = this.getSettlement(advance.supplier_id);
       const remainingAdv = Number(advance.amount_remaining || 0);
       const applyAmt = amount != null ? Number(amount) : remainingAdv;
       if (!(applyAmt > 0)) {
@@ -1371,6 +1936,25 @@ class SupplierService {
       }
 
       this._refreshPurchaseOrderPaymentCache(purchase_order_id);
+      const afterSettlement = this.getSettlement(advance.supplier_id);
+      const cur = normalizeSettlementCurrency(advance.currency || poMeta.poCur);
+      this._recordSettlementLedger({
+        supplier_id: advance.supplier_id,
+        op_type: 'apply_advance',
+        currency: cur,
+        amount: applyAmt,
+        debt_before: beforeSettlement[cur === 'USD' ? 'debt_usd' : 'debt_uzs'],
+        debt_after: afterSettlement[cur === 'USD' ? 'debt_usd' : 'debt_uzs'],
+        advance_before: beforeSettlement[cur === 'USD' ? 'advance_usd' : 'advance_uzs'],
+        advance_after: afterSettlement[cur === 'USD' ? 'advance_usd' : 'advance_uzs'],
+        purchase_order_id,
+        payment_id: payId,
+        reason: notes || `Applied advance ${advance.advance_number}`,
+        payment_method: 'advance',
+        cash_source: 'none',
+        created_by: created_by || null,
+        created_at: now,
+      });
       this._audit(
         'apply_advance',
         'supplier_advance',

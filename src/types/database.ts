@@ -124,8 +124,18 @@ export interface CustomerLedgerEntry {
   balance_after: number;
   note: string | null;
   method?: string | null;
+  op_code?: string | null;
+  debt_before?: number | null;
+  debt_after?: number | null;
+  advance_before?: number | null;
+  advance_after?: number | null;
+  /** Joined from orders when ref_id is an order id. */
+  order_paid_amount?: number | null;
+  order_total_amount?: number | null;
   created_at: string;
   created_by: string | null;
+  created_by_name?: string | null;
+  allocations?: CustomerPaymentAllocation[];
 }
 
 /** Bonus points ledger (`customer_bonus_ledger`) */
@@ -226,6 +236,12 @@ export interface Customer {
   balance: number;
   /** USD bucket: negative = debt, positive = prepaid (same sign as balance). */
   balance_usd?: number;
+  /** Dual-bucket debt (UZS); coexists with advance; net = advance - debt. */
+  debt_uzs?: number;
+  /** Dual-bucket advance / prepaid (UZS). */
+  advance_uzs?: number;
+  debt_usd?: number;
+  advance_usd?: number;
   total_sales: number;
   total_orders: number;
   last_order_date: string | null;
@@ -362,6 +378,21 @@ export interface Payment {
   created_at: string;
 }
 
+export interface CustomerPaymentAllocation {
+  id: string;
+  payment_id: string;
+  customer_id?: string;
+  order_id: string | null;
+  applied_amount?: number;
+  allocated_amount?: number;
+  allocated_at?: string | null;
+  allocated_by?: string | null;
+  allocation_type?: 'debt_payment' | 'advance_used' | 'advance_received' | 'manual_adjustment' | string;
+  order_balance_before?: number | null;
+  order_balance_after?: number | null;
+  remainder_to_advance?: number | null;
+}
+
 export interface CustomerPayment {
   id: string;
   payment_number: string;
@@ -371,6 +402,7 @@ export interface CustomerPayment {
   fx_rate?: number | null;
   payment_method: 'cash' | 'card' | 'qr';
   operation?: 'payment_in' | 'payment_out';
+  op_type?: string | null;
   old_balance?: number;
   applied_amount?: number;
   new_balance?: number;
@@ -378,6 +410,7 @@ export interface CustomerPayment {
   notes: string | null;
   received_by: string | null;
   created_at: string;
+  allocations?: CustomerPaymentAllocation[];
 }
 
 export interface SalesReturn {
@@ -848,6 +881,8 @@ export interface POSSettings {
   auto_logout_minutes: number;
   show_low_stock_warning: boolean;
   quick_access_limit: number;
+  /** Nasiya savdoda mijoz avansini avtomatik savatga qo‘llash */
+  auto_apply_advance_to_sale: boolean;
 }
 
 export interface PaymentSettings {

@@ -93,6 +93,43 @@ class CostService {
     return Number(row.cost_price || 0) || 0;
   }
 
+  getWeightedAverageUnitCost(productId, warehouseId = null) {
+    if (!productId) return null;
+    if (this._hasTable('inventory_batches')) {
+      try {
+        const row = warehouseId
+          ? this.db
+              .prepare(
+                `
+                SELECT
+                  COALESCE(SUM(remaining_qty * COALESCE(unit_cost, 0)), 0) AS cost,
+                  COALESCE(SUM(remaining_qty), 0) AS qty
+                FROM inventory_batches
+                WHERE product_id = ? AND warehouse_id = ? AND COALESCE(remaining_qty, 0) > 0
+              `
+              )
+              .get(productId, warehouseId)
+          : this.db
+              .prepare(
+                `
+                SELECT
+                  COALESCE(SUM(remaining_qty * COALESCE(unit_cost, 0)), 0) AS cost,
+                  COALESCE(SUM(remaining_qty), 0) AS qty
+                FROM inventory_batches
+                WHERE product_id = ? AND COALESCE(remaining_qty, 0) > 0
+              `
+              )
+              .get(productId);
+        const qty = Number(row?.qty || 0) || 0;
+        const cost = Number(row?.cost || 0) || 0;
+        if (qty > 0 && cost > 0) return cost / qty;
+      } catch {
+        /* ignore */
+      }
+    }
+    return null;
+  }
+
   resolveCostForSale(productId, quantity, warehouseId, orderItemId = null) {
     if (!productId) {
       throw createError(ERROR_CODES.VALIDATION_ERROR, 'productId is required');
@@ -100,17 +137,22 @@ class CostService {
 
     let unitCost = null;
 
-    // 1. Try batch allocation cost (FIFO)
+    // 1. FIFO allocations for this sale line
     if (orderItemId) {
       unitCost = this.calculateBatchAllocationCost(orderItemId);
     }
 
-    // 2. Try latest purchase receipt cost
+    // 2. Weighted average frozen at sale time (on-hand batches)
+    if (!(unitCost > 0)) {
+      unitCost = this.getWeightedAverageUnitCost(productId, warehouseId);
+    }
+
+    // 3. Latest purchase receipt
     if (!(unitCost > 0)) {
       unitCost = this.getLatestReceiptCost(productId);
     }
 
-    // 3. Always fall back to products.purchase_price
+    // 4. Catalog snapshot (frozen onto order_items.cost_price; reports do not re-read it)
     if (!(unitCost > 0)) {
       const row = this.db.prepare('SELECT purchase_price FROM products WHERE id = ?').get(productId);
       unitCost = Number(row?.purchase_price || 0) || 0;

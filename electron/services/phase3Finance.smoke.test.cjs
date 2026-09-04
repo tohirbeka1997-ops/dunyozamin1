@@ -11,9 +11,10 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { formatYmdInTimeZone } = require('../lib/timezone.cjs');
-const { calculateNetProfit } = require('../lib/unifiedSalesSql.cjs');
 const { computePaymentFee } = require('../lib/paymentFee.cjs');
 const { reconcileCustomerLedgerVsBalance } = require('../lib/customerBalance.cjs');
+const { randomUUID } = require('crypto');
+const { setCurrentUserId } = require('../lib/currentUser.cjs');
 
 const WH = 'main-warehouse-001';
 const ADMIN = 'default-admin-001';
@@ -63,6 +64,20 @@ function cartLine(product, qty, unit) {
   try {
     open();
     const db = getDb();
+    setCurrentUserId(ADMIN);
+    try {
+      const role = db.prepare(`SELECT id FROM roles WHERE code = 'admin' LIMIT 1`).get();
+      if (role) {
+        const has = db.prepare(`SELECT 1 AS ok FROM user_roles WHERE user_id = ? AND role_id = ?`).get(ADMIN, role.id);
+        if (!has) {
+          db.prepare(
+            `INSERT INTO user_roles (id, user_id, role_id, assigned_at) VALUES (?, ?, ?, datetime('now'))`
+          ).run(randomUUID(), ADMIN, role.id);
+        }
+      }
+    } catch {
+      /* best-effort */
+    }
     const { products, inventory, sales, shifts, reports, dashboard, customers } = createServices(db);
 
     runStep('payment_fees table exists', () => {
@@ -131,17 +146,11 @@ function cartLine(product, qty, unit) {
 
     const filters = { date_from: today, date_to: today, warehouse_id: WH };
 
-    runStep('P&L subtracts commission from net profit', () => {
+    runStep('P&L records commission and net profit is yalpi − xarajat', () => {
       const pl = reports.getProfitAndLossSQL(filters);
       const commission = Number(pl.summary?.total_commission ?? pl.summary?.payment_fees ?? 0);
       assert.ok(Math.abs(commission - expectedFee) < 0.02, `commission ${commission} expected ${expectedFee}`);
-      const expectedNet = calculateNetProfit({
-        grossProfit: pl.summary.gross_profit,
-        returnsRevenue: pl.summary.returns_revenue,
-        returnsCogs: pl.summary.returns_cogs,
-        expenses: pl.summary.expenses,
-        commission,
-      });
+      const expectedNet = Number(pl.summary.gross_profit) - Number(pl.summary.expenses || 0);
       assert.strictEqual(Number(pl.summary.net_profit), expectedNet);
     });
 
@@ -154,13 +163,7 @@ function cartLine(product, qty, unit) {
       assert.ok(Number(dayBrief.total_commission) >= expectedFee - 0.02);
       assert.strictEqual(
         Number(dash.net_profit),
-        calculateNetProfit({
-          grossProfit: dash.total_profit,
-          returnsRevenue: dash.returns_amount,
-          returnsCogs: dash.returns_cogs,
-          expenses: dash.total_expenses,
-          commission: dash.total_commission,
-        }),
+        Number(dash.total_profit) - Number(dash.total_expenses || 0),
       );
     });
 

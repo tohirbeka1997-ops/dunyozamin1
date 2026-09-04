@@ -64,6 +64,7 @@ import * as XLSX from 'xlsx';
 import { printHtml } from '@/lib/print';
 import SearchableCustomerCombobox from '@/components/common/SearchableCustomerCombobox';
 import { useFormListReturn } from '@/hooks/useFormListReturn';
+import { assertOptionalUzPhone } from '@/lib/posHardening';
 
 type PriceType = 'retail' | 'usta';
 
@@ -596,11 +597,20 @@ export default function QuoteForm() {
       toast({ title: t('common.error'), description: t('quotes.error_customer_name'), variant: 'destructive' });
       return;
     }
+    const phoneGate = assertOptionalUzPhone(phone);
+    if (!phoneGate.ok) {
+      toast({
+        title: t('common.error'),
+        description: t('validation.invalid_phone'),
+        variant: 'destructive',
+      });
+      return;
+    }
     try {
       setCreatingCustomer(true);
       const created = await createCustomer({
         name,
-        phone: phone.trim() || undefined,
+        phone: phoneGate.phone,
         type: 'individual',
         status: 'active',
       });

@@ -47,11 +47,70 @@ import { withReturnToPath } from '@/lib/listState';
 import { useOrdersListStore } from '@/store/ordersListStore';
 import { useDebounce } from '@/hooks/use-debounce';
 import { useTranslation } from 'react-i18next';
+import SearchableCombobox, {
+  type SearchableComboboxOption,
+  type SearchableComboboxProps,
+} from '@/components/common/SearchableCombobox';
 import SearchableCustomerCombobox from '@/components/common/SearchableCustomerCombobox';
+import { ErrorBoundary } from '@/components/common/ErrorBoundary';
 import { canCreateSalesReturnForOrder } from '@/lib/posHardening';
 
 function isWebOrderRow(o: { order_source?: string; id?: string } | null | undefined) {
   return o?.order_source === 'web' || String(o?.id || '').startsWith('web:');
+}
+
+/** Plain select fallback so Orders filters never white-screen the page. */
+function OrdersFilterSelect({
+  value,
+  onValueChange,
+  options,
+  placeholder,
+  triggerClassName,
+}: {
+  value: string;
+  onValueChange: (value: string) => void;
+  options: SearchableComboboxOption[];
+  placeholder?: string;
+  triggerClassName?: string;
+}) {
+  return (
+    <Select value={value} onValueChange={onValueChange}>
+      <SelectTrigger
+        className={
+          triggerClassName
+            ? `w-full min-w-0 [&_span]:truncate ${triggerClassName}`
+            : 'h-8 w-full min-w-0 bg-background px-2 text-xs [&_span]:truncate'
+        }
+      >
+        <SelectValue placeholder={placeholder} />
+      </SelectTrigger>
+      <SelectContent>
+        {options.map((opt) => (
+          <SelectItem key={opt.value} value={opt.value}>
+            {opt.label}
+          </SelectItem>
+        ))}
+      </SelectContent>
+    </Select>
+  );
+}
+
+function SafeOrdersFilterCombobox(props: SearchableComboboxProps) {
+  return (
+    <ErrorBoundary
+      fallback={
+        <OrdersFilterSelect
+          value={props.value}
+          onValueChange={props.onValueChange}
+          options={props.options}
+          placeholder={props.placeholder}
+          triggerClassName={props.triggerClassName}
+        />
+      }
+    >
+      <SearchableCombobox {...props} />
+    </ErrorBoundary>
+  );
 }
 
 function canEditOrderInPos(o: { status?: string; order_source?: string; id?: string } | null | undefined) {
@@ -674,7 +733,7 @@ export default function Orders() {
             </div>
 
             <div className="min-w-[6.5rem] shrink-0 flex-1 basis-0">
-            <SearchableCombobox
+            <SafeOrdersFilterCombobox
               value={cashierFilter}
               onValueChange={(value) => updateParams({ cashier: value })}
               options={cashierOptions}
@@ -707,7 +766,7 @@ export default function Orders() {
             </div>
 
             <div className="min-w-[6.5rem] shrink-0 flex-1 basis-0">
-            <SearchableCombobox
+            <SafeOrdersFilterCombobox
               value={warehouseFilter}
               onValueChange={(value) => updateParams({ warehouse: value })}
               options={warehouseOptions}

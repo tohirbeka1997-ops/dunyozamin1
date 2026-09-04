@@ -22,9 +22,15 @@ import { formatDateYMD, todayYMD } from '@/lib/datetime';
 
 type LedgerAllocation = {
   batch_id: string;
+  batch_no?: string | null;
   quantity: number;
   unit_cost: number;
   line_cost: number;
+  remaining_qty?: number | null;
+  initial_qty?: number | null;
+  receipt_id?: string | null;
+  source_type?: string | null;
+  expiry_date?: string | null;
 };
 
 type LedgerRow = {
@@ -88,10 +94,32 @@ export default function ProductTraceabilityReport() {
   async function searchProducts() {
     try {
       setLoadingProducts(true);
-      const data = await getProducts(false, { searchTerm: productSearch, limit: 50, offset: 0, sortBy: 'name', sortOrder: 'asc', stockStatus: 'all' });
-      setProducts(Array.isArray(data) ? data : []);
-      if (!productId && Array.isArray(data) && data.length > 0) {
-        setProductId(data[0].id);
+      const data = await getProducts(false, {
+        searchTerm: productSearch,
+        limit: 50,
+        offset: 0,
+        sortBy: 'name',
+        sortOrder: 'asc',
+        stockStatus: 'all',
+      });
+      const list = Array.isArray(data) ? data : [];
+      setProducts(list);
+      const term = productSearch.trim().toLowerCase();
+      if (term && list.length) {
+        const exact =
+          list.find((p) => String(p.sku || '').toLowerCase() === term) ||
+          list.find((p) => String(p.barcode || '').toLowerCase() === term);
+        if (exact) {
+          setProductId(exact.id);
+          return;
+        }
+        if (list.length === 1) {
+          setProductId(list[0].id);
+          return;
+        }
+      }
+      if (!productId && list.length > 0 && !term) {
+        setProductId(list[0].id);
       }
     } catch (e) {
       console.error('[ProductTraceabilityReport] searchProducts error:', e);
@@ -264,6 +292,9 @@ export default function ProductTraceabilityReport() {
                   placeholder="Nomi / SKU / barcode..."
                   value={productSearch}
                   onChange={(e) => setProductSearch(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') void searchProducts();
+                  }}
                 />
                 <Button variant="outline" onClick={searchProducts} disabled={loadingProducts}>
                   <Search className="h-4 w-4" />
@@ -380,7 +411,9 @@ export default function ProductTraceabilityReport() {
                 {rows.map((r, idx) => {
                   const rowKey = String(r.movement_id || idx);
                   const hasAllocations = Array.isArray(r.allocations) && r.allocations.length > 0;
-                  const missingCost = r.qty_out > 0 && r.cost_price == null;
+                  const missingCost =
+                    (r.qty_out > 0 && r.cost_price == null) ||
+                    (String(r.movement_type) === 'adjustment' && r.qty_in > 0 && !(Number(r.cost_price) > 0));
                   const negativeMargin = r.qty_out > 0 && r.margin < 0;
                   const negativeBalance = r.running_balance < 0;
                   const warnings = [missingCost && 'Tannarx yo‘q', negativeMargin && 'Manfiy marja', negativeBalance && 'Manfiy qoldiq']
@@ -438,19 +471,32 @@ export default function ProductTraceabilityReport() {
                             <Table>
                               <TableHeader>
                                 <TableRow>
-                                  <TableHead>Batch ID</TableHead>
+                                  <TableHead>Batch / lot</TableHead>
+                                  <TableHead>Manba</TableHead>
                                   <TableHead className="text-right">Miqdor</TableHead>
+                                  <TableHead className="text-right">Qoldiq</TableHead>
                                   <TableHead className="text-right">Batch tannarx</TableHead>
                                   <TableHead className="text-right">Line tannarx</TableHead>
+                                  <TableHead>Yaroqlilik</TableHead>
                                 </TableRow>
                               </TableHeader>
                               <TableBody>
                                 {(r.allocations || []).map((a) => (
                                   <TableRow key={`${rowKey}-${a.batch_id}`}>
-                                    <TableCell>{a.batch_id}</TableCell>
+                                    <TableCell className="font-mono text-xs">
+                                      <div>{a.batch_no || a.batch_id}</div>
+                                      {a.batch_no ? (
+                                        <div className="text-muted-foreground">{a.batch_id}</div>
+                                      ) : null}
+                                    </TableCell>
+                                    <TableCell>{a.source_type || a.receipt_id || '—'}</TableCell>
                                     <TableCell className="text-right">{formatNumberUZ(a.quantity)}</TableCell>
+                                    <TableCell className="text-right">
+                                      {a.remaining_qty == null ? '—' : formatNumberUZ(a.remaining_qty)}
+                                    </TableCell>
                                     <TableCell className="text-right">{formatMoneyUZS(a.unit_cost)}</TableCell>
                                     <TableCell className="text-right">{formatMoneyUZS(a.line_cost)}</TableCell>
+                                    <TableCell>{a.expiry_date || '—'}</TableCell>
                                   </TableRow>
                                 ))}
                               </TableBody>

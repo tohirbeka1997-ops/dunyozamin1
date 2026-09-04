@@ -37,6 +37,31 @@ function formatYmdInTimeZone(input = new Date(), timeZone = UZBEKISTAN_TIMEZONE)
   return `${parts.year}-${parts.month}-${parts.day}`;
 }
 
+function shiftYmd(ymd, days) {
+  const raw = String(ymd || '').slice(0, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(raw)) return null;
+  const [y, m, d] = raw.split('-').map((v) => Number(v));
+  const dt = new Date(Date.UTC(y, m - 1, d));
+  dt.setUTCDate(dt.getUTCDate() + Number(days || 0));
+  return formatYmdInTimeZone(dt);
+}
+
+function ymdRangeInclusive(fromYmd, toYmd, maxDays = 62) {
+  const from = String(fromYmd || '').slice(0, 10);
+  const to = String(toYmd || '').slice(0, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(from) || !/^\d{4}-\d{2}-\d{2}$/.test(to)) return [];
+  if (from > to) return [];
+  const out = [];
+  let cur = from;
+  for (let i = 0; i < maxDays; i += 1) {
+    out.push(cur);
+    if (cur >= to) break;
+    cur = shiftYmd(cur, 1);
+    if (!cur) break;
+  }
+  return out;
+}
+
 /**
  * Parse a DB timestamp to epoch ms for sorting/comparison.
  * Matches frontend `parseDbDate` — SQLite `YYYY-MM-DD HH:mm:ss` is UTC (no Z suffix).
@@ -92,13 +117,44 @@ function nowSqlInTimeZone(timeZone = UZBEKISTAN_TIMEZONE) {
   return `${map.year}-${map.month}-${map.day} ${map.hour || pad2(d.getHours())}:${map.minute || pad2(d.getMinutes())}:${map.second || pad2(d.getSeconds())}`;
 }
 
+/**
+ * UTC wall-clock as SQLite-friendly `YYYY-MM-DD HH:mm:ss` (no T/Z).
+ *
+ * Storage convention (customer_ledger / payments / sales / returns):
+ * - Write with `nowSqlUtc` (UTC-naive). Do NOT use `nowSqlInTimeZone` for ledger rows.
+ * - UI parses naive stamps as UTC, then shows Asia/Tashkent (`formatDateTime`).
+ * - Legacy payment rows may still be Tashkent-naive; frontend
+ *   `resolveLedgerEventTimes` undoes the double-shift for mixed histories.
+ */
+function nowSqlUtc(date = new Date()) {
+  const d = date instanceof Date ? date : new Date(date);
+  if (Number.isNaN(d.getTime())) {
+    return nowSqlUtc(new Date());
+  }
+  return d.toISOString().replace('T', ' ').replace('Z', '').substring(0, 19);
+}
+
+/**
+ * Normalize mixed timestamp strings so SQLite `datetime()` does not return NULL.
+ * Takes first 19 chars after T→space / Z-strip → `YYYY-MM-DD HH:mm:ss`
+ * (drops fractional seconds and trailing `+HH:MM` offsets).
+ */
+function sqlNormalizeDatetimeExpr(columnSql) {
+  const col = String(columnSql || 'created_at');
+  return `datetime(substr(replace(replace(${col}, 'T', ' '), 'Z', ''), 1, 19))`;
+}
+
 module.exports = {
   UZBEKISTAN_TIMEZONE,
   UZBEKISTAN_TZ_HOURS_OFFSET,
   UZBEKISTAN_TZ_SQLITE_OFFSET,
   UZBEKISTAN_TZ_ISO_OFFSET,
   formatYmdInTimeZone,
+  shiftYmd,
+  ymdRangeInclusive,
   nowSqlInTimeZone,
+  nowSqlUtc,
+  sqlNormalizeDatetimeExpr,
   parseDbTimestamp,
 };
 

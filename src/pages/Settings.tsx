@@ -138,9 +138,9 @@ const SETTINGS_NAV_GROUPS: SettingsNavGroup[] = [
     id: 'pos',
     labelKey: 'settings.groups.pos',
     items: [
-      { value: 'pos', labelKey: 'settings.tabs.pos', icon: Monitor },
-      { value: 'payment', labelKey: 'settings.tabs.payment', icon: CreditCard },
-      { value: 'creditReminders', labelKey: 'settings.tabs.creditReminders', icon: Bell },
+      { value: 'pos', labelKey: 'settings.tabs.pos', icon: Monitor, adminOnly: true },
+      { value: 'payment', labelKey: 'settings.tabs.payment', icon: CreditCard, adminOnly: true },
+      { value: 'creditReminders', labelKey: 'settings.tabs.creditReminders', icon: Bell, adminOnly: true },
       { value: 'telegramReports', labelKey: 'settings.tabs.telegramReports', icon: MessageSquare, adminOnly: true },
       { value: 'receipt', labelKey: 'settings.tabs.receipt', icon: Receipt },
       { value: 'numbering', labelKey: 'settings.tabs.numbering', icon: ListOrdered },
@@ -439,6 +439,7 @@ export default function Settings() {
     auto_logout_minutes: 0,
     show_low_stock_warning: true,
     quick_access_limit: 12,
+    auto_apply_advance_to_sale: false,
   });
 
   const [paymentSettings, setPaymentSettings] = useState<PaymentSettings>({
@@ -841,6 +842,7 @@ export default function Settings() {
           enable_mixed_payment: toBool(p.enable_mixed_payment, prev.enable_mixed_payment ?? true),
           require_customer_for_credit: toBool(p.require_customer_for_credit, prev.require_customer_for_credit ?? true),
           show_low_stock_warning: toBool(p.show_low_stock_warning, prev.show_low_stock_warning ?? true),
+          auto_apply_advance_to_sale: toBool(p.auto_apply_advance_to_sale, prev.auto_apply_advance_to_sale ?? false),
           auto_logout_minutes: toIntInRange(p.auto_logout_minutes, prev.auto_logout_minutes ?? 0, 0, 480),
           quick_access_limit: toIntInRange(p.quick_access_limit, prev.quick_access_limit ?? 12, 4, 24),
         } as POSSettings;
@@ -1775,6 +1777,20 @@ export default function Settings() {
                       }}
                     />
                   </div>
+
+                  <div className="flex items-center justify-between">
+                    <div className="space-y-1">
+                      <Label>{t('settings.pos.autoApplyAdvance')}</Label>
+                      <p className="text-sm text-muted-foreground">{t('settings.pos.autoApplyAdvanceDesc')}</p>
+                    </div>
+                    <Switch
+                      checked={!!posSettings.auto_apply_advance_to_sale}
+                      onCheckedChange={(checked) => {
+                        setPosSettings({ ...posSettings, auto_apply_advance_to_sale: checked });
+                        setHasUnsavedChanges(true);
+                      }}
+                    />
+                  </div>
                 </div>
               </div>
 
@@ -1800,6 +1816,7 @@ export default function Settings() {
                       enable_mixed_payment: !!posSettings.enable_mixed_payment,
                       require_customer_for_credit: !!posSettings.require_customer_for_credit,
                       show_low_stock_warning: !!posSettings.show_low_stock_warning,
+                      auto_apply_advance_to_sale: !!posSettings.auto_apply_advance_to_sale,
                       mode: posSettings.mode === 'restaurant' ? 'restaurant' : 'retail',
                     };
                     handleSave('pos', normalized);

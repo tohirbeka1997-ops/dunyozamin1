@@ -146,7 +146,9 @@
     "requireCustomerCreditDesc": "Qarzga sotilganda albatta mijozni tanlashni talab qilish",
     "requireCustomerAlways": "Eslatma: tizim har doim qarzga sotish uchun mijozni majbur qiladi — bu sozlama faqat ma'lumot uchun.",
     "lowStock": "Qoldiq kamaysa ogohlantirish",
-    "lowStockDesc": "Mahsulot qoldig'i kam bo'lganda (min stock yoki 10 ta) savatga qo'shganda toast ko'rsatiladi"
+    "lowStockDesc": "Mahsulot qoldig'i kam bo'lganda (min stock yoki 10 ta) savatga qo'shganda toast ko'rsatiladi",
+    "autoApplyAdvance": "Nasiyada avansni avtomatik ishlatish",
+    "autoApplyAdvanceDesc": "Yoqilsa, nasiya savdoda mijoz avansi savatga avtomatik qoplanadi. O‘chiq bo‘lsa kassir «Avansdan foydalanish» tugmasini bosadi."
   },
   "loyalty": {
     "cardTitle": "Usta mijoz bonusi",

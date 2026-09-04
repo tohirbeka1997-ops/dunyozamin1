@@ -32,6 +32,7 @@ import MoneyInput from '@/components/common/MoneyInput';
 import { Plus, Trash2, RotateCcw, PackageCheck } from 'lucide-react';
 import { formatMoney, normalizeCurrency, type AppCurrency } from '@/lib/currency';
 import { useAuth } from '@/contexts/AuthContext';
+import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group';
 
 type ReturnItemRow = {
   temp_id: string;
@@ -69,6 +70,7 @@ export default function SupplierReturnDialog({ supplier, open, onOpenChange, onS
   const [unitCost, setUnitCost] = useState<number | null>(null);
   const [returnReason, setReturnReason] = useState('');
   const [notes, setNotes] = useState('');
+  const [settlementMode, setSettlementMode] = useState<'reduce_debt' | 'create_advance' | 'demand_refund'>('reduce_debt');
   const [items, setItems] = useState<ReturnItemRow[]>([]);
   const [confirmReturnAllOpen, setConfirmReturnAllOpen] = useState(false);
 
@@ -268,6 +270,7 @@ export default function SupplierReturnDialog({ supplier, open, onOpenChange, onS
         notes: notes.trim() || null,
         created_by: profile?.id || null,
         cost_currency: settlementCurrency,
+        settlement_mode: settlementMode,
         items: items.map((it) => ({
           product_id: it.product_id,
           quantity: it.quantity,
@@ -280,7 +283,13 @@ export default function SupplierReturnDialog({ supplier, open, onOpenChange, onS
 
       toast({
         title: '✅ Qaytarish saqlandi',
-        description: `Jami: ${formatMoney(totalAmount, settlementCurrency)}. Qarzdorlik kamayadi, ombordagi qoldiq ham kamayadi.`,
+        description: `Jami: ${formatMoney(totalAmount, settlementCurrency)}. ${
+          settlementMode === 'create_advance'
+            ? 'Avans yaratildi'
+            : settlementMode === 'demand_refund'
+              ? 'Refund kutilmoqda'
+              : 'Qarz kamayadi'
+        }, ombordagi qoldiq ham kamayadi.`,
         className: 'bg-green-50 border-green-200',
       });
 
@@ -435,6 +444,28 @@ export default function SupplierReturnDialog({ supplier, open, onOpenChange, onS
                   </Button>
                 </div>
               </div>
+            </div>
+
+            <div className="space-y-2">
+              <Label>Qaytarish/debit note hisob-kitobi</Label>
+              <RadioGroup
+                value={settlementMode}
+                onValueChange={(v) => setSettlementMode(v as typeof settlementMode)}
+                className="gap-2"
+              >
+                <label className="flex items-start gap-2 text-sm">
+                  <RadioGroupItem value="reduce_debt" className="mt-0.5" />
+                  <span>Yetkazib beruvchi qarzini kamaytirish</span>
+                </label>
+                <label className="flex items-start gap-2 text-sm">
+                  <RadioGroupItem value="create_advance" className="mt-0.5" />
+                  <span>Yetkazib beruvchi avansini yaratish</span>
+                </label>
+                <label className="flex items-start gap-2 text-sm">
+                  <RadioGroupItem value="demand_refund" className="mt-0.5" />
+                  <span>Naqd/bank refund talab qilish</span>
+                </label>
+              </RadioGroup>
             </div>
 
             <div className="space-y-2">

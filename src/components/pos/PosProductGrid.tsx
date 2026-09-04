@@ -1,4 +1,4 @@
-import { memo, useRef, Fragment, type ReactNode } from 'react';
+import { memo, useRef, useEffect, Fragment, type ReactNode } from 'react';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import { Package, Plus, Store, AlertCircle, RefreshCw } from 'lucide-react';
 import { Button } from '@/components/ui/button';
@@ -40,6 +40,8 @@ export type PosProductGridProps = {
   /** Catalog fetch failed — show error+retry instead of empty "not found". */
   loadError?: string | null;
   onRetryLoad?: () => void;
+  /** Keyboard highlight in the visible catalog/search list (−1 = none). */
+  highlightedIndex?: number;
   t: TFunction;
 };
 
@@ -71,6 +73,7 @@ function PosProductGridInner({
   allowOutOfStockAdd = false,
   loadError = null,
   onRetryLoad,
+  highlightedIndex = -1,
   t,
 }: PosProductGridProps) {
   const parentRef = useRef<HTMLDivElement>(null);
@@ -80,6 +83,11 @@ function PosProductGridInner({
     estimateSize: () => ROW_HEIGHT,
     overscan: 10,
   });
+
+  useEffect(() => {
+    if (highlightedIndex < 0 || highlightedIndex >= products.length) return;
+    virtualizer.scrollToIndex(highlightedIndex, { align: 'auto' });
+  }, [highlightedIndex, products.length, virtualizer]);
 
   if (products.length === 0 && loadError) {
     return (
@@ -199,11 +207,13 @@ function PosProductGridInner({
               .join(' · ');
 
             const exactSingleHighlight = Boolean(searchTerm.trim()) && products.length === 1;
+            const isKeyboardHighlight = highlightedIndex === virtualRow.index;
 
             return (
               <div
                 key={product.id}
                 data-index={virtualRow.index}
+                data-pos-product-row={isKeyboardHighlight ? 'active' : undefined}
                 ref={virtualizer.measureElement}
                 style={{
                   position: 'absolute',
@@ -215,8 +225,9 @@ function PosProductGridInner({
               >
                 <div
                   role="button"
-                  tabIndex={rowDisabled ? -1 : 0}
+                  tabIndex={rowDisabled ? -1 : isKeyboardHighlight ? 0 : -1}
                   aria-disabled={rowDisabled || undefined}
+                  aria-selected={isKeyboardHighlight || undefined}
                   onClick={() => {
                     if (rowDisabled) return;
                     onRequestAddToCart(product);
@@ -227,6 +238,7 @@ function PosProductGridInner({
                     if (e.target !== e.currentTarget) return;
                     if (e.key === 'Enter' || e.key === ' ') {
                       e.preventDefault();
+                      e.stopPropagation();
                       onRequestAddToCart(product);
                       onFocusSearch();
                     }
@@ -239,6 +251,8 @@ function PosProductGridInner({
                     !productShowInMarketplace(product) && 'opacity-[0.92]',
                     exactSingleHighlight &&
                       'bg-emerald-50 ring-2 ring-inset ring-emerald-500/70 dark:bg-emerald-950/40',
+                    isKeyboardHighlight &&
+                      'bg-primary/10 ring-2 ring-inset ring-primary/60 dark:bg-primary/20',
                   )}
                 >
                   <div className="col-span-6 min-w-0 text-left">

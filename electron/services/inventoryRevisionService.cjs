@@ -1233,6 +1233,10 @@ class InventoryRevisionService {
                 product_id: row.product_id,
                 quantity: delta,
                 notes: `revision_item_id=${row.id}`,
+                unit_cost:
+                  delta > 0 && this.inventory?.batchService?.defaultUnitCost
+                    ? this.inventory.batchService.defaultUnitCost(row.product_id)
+                    : undefined,
               },
             ],
           });

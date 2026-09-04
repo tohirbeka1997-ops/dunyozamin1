@@ -36,6 +36,7 @@ export interface MoneyInputProps {
   error?: string;
   onBlur?: (e: FocusEvent<HTMLInputElement>) => void;
   autoFocus?: boolean;
+  title?: string;
   /** If true, reflect external `value` updates even while the input is focused (useful for on-screen numpads). */
   syncWhileFocused?: boolean;
   /** Allow fractional values (supports ',' or '.' as decimal separator). Default: false (UZS integer-style). */
@@ -61,6 +62,7 @@ export default function MoneyInput({
   error,
   onBlur,
   autoFocus,
+  title,
   syncWhileFocused = false,
   allowDecimals = false,
   decimalScale = 2,
@@ -303,6 +305,11 @@ export default function MoneyInput({
       return;
     }
 
+    // Let POS F-keys (F2–F10) reach the window handler while this field is focused.
+    if (/^F\d{1,2}$/.test(e.key)) {
+      return;
+    }
+
     // Block everything else
     e.preventDefault();
   };
@@ -330,6 +337,7 @@ export default function MoneyInput({
         disabled={disabled}
         readOnly={readOnly}
         autoFocus={autoFocus}
+        title={title}
         className={cn(error && 'border-destructive', className)}
       />
       {error && (

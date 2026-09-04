@@ -6,6 +6,8 @@ const os = require('os');
 const { isServerMode } = require('../lib/runtime.cjs');
 const {
   nowSqlInTimeZone,
+  nowSqlUtc,
+  sqlNormalizeDatetimeExpr,
   formatYmdInTimeZone,
   UZBEKISTAN_TZ_SQLITE_OFFSET,
 } = require('../lib/timezone.cjs');
@@ -17,18 +19,34 @@ const {
   hasCustomerLedgerRef,
   normalizeCustomerCurrency,
   readCustomerBalances,
+  readCustomerDebtAdvance,
   readBalanceInCurrency,
   applyCustomerBalanceDelta,
   applyCustomerBalanceDeltaOnce,
+  applyCustomerLendDeltaOnce,
   computeSaleCreditAmount,
   assertCreditAmountAligned,
   paymentAmountInSaleCurrency,
+  writeDebtAdvanceNet,
 } = require('../lib/customerBalance.cjs');
+const {
+  OP: CUSTOMER_OP,
+  computeCustomerPosition,
+  totalExposure,
+  assertCreditExposure,
+  syncCustomerDebtFromPosition,
+  allocateInboundToOpenOrders,
+  attachPosition,
+  classifyInboundOpType,
+  ledgerOpCodeForPayment,
+  appendLedgerAuditCols,
+  applyReturnToOrderRemaining,
+  roundMoney: roundCustomerMoney,
+} = require('../lib/customerPosition.cjs');
 const { normalizePhoneUz, formatPhoneUz } = require('../lib/phoneNormalize.cjs');
 const { recordPaymentFee } = require('../lib/paymentFee.cjs');
 const {
   parsePositiveMoneyAmount,
-  allocatePaymentInToDebtAndAdvance,
   assertPaymentOutAllowed,
   assertBonusCorrection,
   assertInitialBonusPoints,
@@ -37,6 +55,7 @@ const {
   maskPhoneForExport,
   roleCanExportCustomers,
   roleCanReissueLoyaltyQr,
+  roleCanManualPaymentAllocation,
   DEFAULT_BONUS_CORRECTION_PER_OP,
   DEFAULT_BONUS_CORRECTION_PER_DAY,
   DEFAULT_BONUS_LARGE_CORRECTION,
@@ -77,16 +96,13 @@ class CustomersService {
     if (!gate.ok) {
       throw createError(ERROR_CODES.VALIDATION_ERROR, gate.error, { code: gate.code });
     }
-    const phone_normalized = normalizePhoneUz(raw);
-    if (!phone_normalized) {
-      throw createError(ERROR_CODES.VALIDATION_ERROR, 'invalid UZ phone format', {
-        code: 'PHONE_INVALID',
-      });
+    if (!gate.normalized) {
+      return { phone: null, phone_normalized: null };
     }
     const formatted = formatPhoneUz(raw);
     return {
       phone: formatted || raw,
-      phone_normalized,
+      phone_normalized: gate.normalized,
     };
   }
 
@@ -646,6 +662,176 @@ class CustomersService {
   }
 
   /**
+   * Apply customer advance to a specific open credit order (no cash movement).
+   */
+  applyAdvanceToOrder({ customerId, orderId, amount, receivedBy = null, notes = null } = {}) {
+    const normalizedCustomerId = customerId != null ? String(customerId).trim() : '';
+    if (!normalizedCustomerId) {
+      throw createError(ERROR_CODES.VALIDATION_ERROR, 'Customer ID is required');
+    }
+    if (!orderId) {
+      throw createError(ERROR_CODES.VALIDATION_ERROR, 'order_id majburiy.');
+    }
+    const amountParsed = parsePositiveMoneyAmount(amount);
+    if (!amountParsed.ok) {
+      throw createError(ERROR_CODES.VALIDATION_ERROR, amountParsed.error);
+    }
+    const requested = amountParsed.amount;
+    const resolvedReceivedBy = this._resolveReceivedByForPayment(receivedBy);
+    // UTC-naive — same clock as sales/returns/payment ledger rows.
+    const now = nowSqlUtc();
+
+    return this.db.transaction(() => {
+      const customer = this.getById(normalizedCustomerId);
+      const order = this.db.prepare(`SELECT * FROM orders WHERE id = ?`).get(orderId);
+      if (!order || String(order.customer_id) !== normalizedCustomerId) {
+        throw createError(ERROR_CODES.NOT_FOUND, 'Buyurtma topilmadi.');
+      }
+      const payCurrency = normalizeCustomerCurrency(order.currency);
+      const buckets = readCustomerDebtAdvance(this.db, normalizedCustomerId, payCurrency);
+      if (buckets.advance + 1e-6 < requested) {
+        throw createError(
+          ERROR_CODES.VALIDATION_ERROR,
+          `Avans yetarli emas. Mavjud: ${buckets.advance}.`
+        );
+      }
+      const remaining = Math.max(0, Number(order.credit_amount || 0) || 0);
+      const applied = roundCustomerMoney(Math.min(requested, remaining));
+      if (!(applied > 0.009)) {
+        throw createError(ERROR_CODES.VALIDATION_ERROR, 'Bu buyurtmada ochiq qarz yo‘q.');
+      }
+      const paymentId = randomUUID();
+      const paymentNumber = `ADV-${Date.now()}-${paymentId.substring(0, 8).toUpperCase()}`;
+      allocateInboundToOpenOrders(this.db, {
+        customerId: normalizedCustomerId,
+        paymentId,
+        amount: applied,
+        currency: payCurrency,
+        preferredOrderId: orderId,
+        paymentMethod: 'advance',
+        createdAt: now,
+        createdBy: resolvedReceivedBy,
+        cashDocId: paymentNumber,
+        allocation_type: 'advance_used',
+      });
+      writeDebtAdvanceNet(
+        this.db,
+        normalizedCustomerId,
+        payCurrency,
+        readCustomerDebtAdvance(this.db, normalizedCustomerId, payCurrency).debt,
+        roundCustomerMoney(buckets.advance - applied),
+        now
+      );
+      const pos = computeCustomerPosition(this.db, normalizedCustomerId, payCurrency);
+      writeDebtAdvanceNet(
+        this.db,
+        normalizedCustomerId,
+        payCurrency,
+        pos.open_order_debt +
+          roundCustomerMoney(Math.max(0, pos.loan_issued - pos.loan_repaid)),
+        roundCustomerMoney(buckets.advance - applied),
+        now
+      );
+
+      const tableInfo = this.db.prepare('PRAGMA table_info(customer_payments)').all();
+      const cols = [
+        'id',
+        'payment_number',
+        'customer_id',
+        'order_id',
+        'amount',
+        'payment_method',
+        'notes',
+        'received_by',
+        'paid_at',
+        'created_at',
+      ];
+      const vals = [
+        paymentId,
+        paymentNumber,
+        normalizedCustomerId,
+        orderId,
+        applied,
+        'advance',
+        notes || 'Avans buyurtmaga qo‘llandi',
+        resolvedReceivedBy,
+        now,
+        now,
+      ];
+      if (tableInfo.some((c) => c.name === 'operation')) {
+        cols.push('operation');
+        vals.push('payment_in');
+      }
+      if (tableInfo.some((c) => c.name === 'op_type')) {
+        cols.push('op_type');
+        vals.push(CUSTOMER_OP.ADVANCE_APPLIED_TO_ORDER);
+      }
+      const ph = cols.map(() => '?').join(', ');
+      this.db.prepare(`INSERT INTO customer_payments (${cols.join(', ')}) VALUES (${ph})`).run(...vals);
+
+      const ledgerExists = this.db
+        .prepare(`SELECT name FROM sqlite_master WHERE type='table' AND name='customer_ledger'`)
+        .get();
+      if (ledgerExists) {
+        const bucketsAfter = readCustomerDebtAdvance(this.db, normalizedCustomerId, payCurrency);
+        const ledgerCols = [
+          'id',
+          'customer_id',
+          'type',
+          'ref_id',
+          'ref_no',
+          'amount',
+          'balance_after',
+          'note',
+          'created_at',
+          'created_by',
+        ];
+        const netAfter = roundCustomerMoney(bucketsAfter.advance - bucketsAfter.debt);
+        const ledgerVals = [
+          randomUUID(),
+          normalizedCustomerId,
+          'adjustment',
+          paymentId,
+          paymentNumber,
+          0,
+          netAfter,
+          notes || `Avans qo‘llandi: ${order.order_number} (${applied})`,
+          now,
+          resolvedReceivedBy,
+        ];
+        appendLedgerAuditCols(this.db, ledgerCols, ledgerVals, {
+          op_code: CUSTOMER_OP.ADVANCE_APPLIED_TO_ORDER,
+          debt_before: buckets.debt,
+          debt_after: bucketsAfter.debt,
+          advance_before: buckets.advance,
+          advance_after: bucketsAfter.advance,
+        });
+        const placeholders = ledgerCols.map(() => '?').join(', ');
+        this.db
+          .prepare(`INSERT INTO customer_ledger (${ledgerCols.join(', ')}) VALUES (${placeholders})`)
+          .run(...ledgerVals);
+      }
+
+      this._safeAuditLog({
+        user_id: resolvedReceivedBy,
+        action: 'customer_advance_applied',
+        entity_type: 'customer',
+        entity_id: normalizedCustomerId,
+        old_values: { advance: buckets.advance, order_id: orderId },
+        new_values: { amount: applied, payment_id: paymentId },
+      });
+
+      return {
+        success: true,
+        payment_id: paymentId,
+        applied_amount: applied,
+        position: computeCustomerPosition(this.db, normalizedCustomerId, payCurrency),
+        customer: this.getById(normalizedCustomerId),
+      };
+    })();
+  }
+
+  /**
    * List customers
    */
   list(filters = {}) {
@@ -700,7 +886,16 @@ class CustomersService {
       params.push(limit, offset);
     }
 
-    return this.db.prepare(query).all(params);
+    const rows = this.db.prepare(query).all(params) || [];
+    // Display: open-order debt + loans (computed). DB heal only if CUSTOMER_AR_HEAL=1.
+    return rows.map((row) => {
+      try {
+        return attachPosition(row, this.db, 'UZS', { sync: true });
+      } catch (err) {
+        console.warn('[CustomersService.list] attachPosition failed:', err?.message || err);
+        return row;
+      }
+    });
   }
 
   _hasTable(name) {
@@ -835,6 +1030,13 @@ class CustomersService {
       customer.total_sales = stats.total_sales_uzs;
     } catch (reconcileErr) {
       console.warn('[CustomersService.getById] reconcileOrderStats failed:', reconcileErr.message);
+    }
+
+    try {
+      // Display overlay only by default. Heal/backfill/sync writes require CUSTOMER_AR_HEAL=1.
+      attachPosition(customer, this.db, 'UZS', { sync: true });
+    } catch (posErr) {
+      console.warn('[CustomersService.getById] compute position failed:', posErr.message);
     }
 
     return customer;
@@ -1326,19 +1528,22 @@ class CustomersService {
    */
   getTotalDebt() {
     const hasUsd = hasCustomerBalanceUsd(this.db);
-    const row = this.db
-      .prepare(
-        `
-        SELECT
-          COALESCE(SUM(CASE WHEN COALESCE(balance,0) < 0 THEN -balance ELSE 0 END), 0) AS debt_uzs
-          ${hasUsd ? `, COALESCE(SUM(CASE WHEN COALESCE(balance_usd,0) < 0 THEN -balance_usd ELSE 0 END), 0) AS debt_usd` : ''}
-        FROM customers
-      `
-      )
-      .get();
+    const ids = this.db.prepare(`SELECT id FROM customers WHERE COALESCE(status, 'active') = 'active'`).all() || [];
+    let debt_uzs = 0;
+    let debt_usd = 0;
+    for (const row of ids) {
+      try {
+        debt_uzs += Number(computeCustomerPosition(this.db, row.id, 'UZS').total_debt || 0) || 0;
+        if (hasUsd) {
+          debt_usd += Number(computeCustomerPosition(this.db, row.id, 'USD').total_debt || 0) || 0;
+        }
+      } catch {
+        /* skip broken row */
+      }
+    }
     return {
-      debt_uzs: Number(row?.debt_uzs || 0),
-      debt_usd: Number(hasUsd ? row?.debt_usd || 0 : 0),
+      debt_uzs: Math.round(debt_uzs * 100) / 100,
+      debt_usd: Math.round(debt_usd * 100) / 100,
     };
   }
 
@@ -1449,7 +1654,9 @@ class CustomersService {
     const resolvedReceivedBy = this._resolveReceivedByForPayment(receivedBy);
     const normalizedOrderId = this._normalizeOrderIdForPayment(orderId);
     const normalizedShiftId = this._normalizeShiftIdForPayment(shiftId);
-    const now = paidAt || nowSqlInTimeZone();
+    const now = paidAt
+      ? String(paidAt).replace('T', ' ').replace('Z', '').substring(0, 19)
+      : nowSqlUtc();
     const paymentId = randomUUID();
     const paymentNumber = `PAY-${Date.now()}-${paymentId.substring(0, 8).toUpperCase()}`;
 
@@ -1543,7 +1750,8 @@ class CustomersService {
     paymentUuid = null,
     paymentOutKind = null,
     lendAuthorized = false,
-    approverUserId = null
+    approverUserId = null,
+    manualAllocations = null
   ) {
     if (customerId && typeof customerId === 'object' && !Array.isArray(customerId)) {
       const p = customerId;
@@ -1562,7 +1770,8 @@ class CustomersService {
         p.payment_uuid ?? p.paymentUuid ?? null,
         p.payment_out_kind ?? p.paymentOutKind ?? null,
         p.lend_authorized === true || p.lendAuthorized === true,
-        p.approver_user_id ?? p.approverUserId ?? null
+        p.approver_user_id ?? p.approverUserId ?? null,
+        p.allocations ?? p.order_allocations ?? null
       );
     }
 
@@ -1607,6 +1816,16 @@ class CustomersService {
         ? String(paymentUuid).trim()
         : null;
 
+    if (Array.isArray(manualAllocations) && manualAllocations.length > 0) {
+      const allocRoles = this._getUserRoleCodes(resolvedReceivedBy);
+      if (!roleCanManualPaymentAllocation(allocRoles)) {
+        throw createError(
+          ERROR_CODES.FORBIDDEN,
+          'Qo‘lda taqsimlash faqat menejer yoki admin uchun.'
+        );
+      }
+    }
+
     // Use transaction for atomicity and consistency
     const result = this.db.transaction(() => {
       const paymentId = randomUUID();
@@ -1641,7 +1860,7 @@ class CustomersService {
           signed_amount: ledgerAmount,
           payment_id: paymentId,
           payment_number: ledgerRow?.ref_no || paymentNumber,
-          created_at: ledgerRow?.created_at || nowSqlInTimeZone(),
+          created_at: ledgerRow?.created_at || nowSqlUtc(),
           operation,
         };
       }
@@ -1657,6 +1876,8 @@ class CustomersService {
       }
       const balancesBefore = readCustomerBalances(this.db, normalizedCustomerId);
       const oldBalance = readBalanceInCurrency(this.db, normalizedCustomerId, payCurrency);
+      const bucketsBefore = readCustomerDebtAdvance(this.db, normalizedCustomerId, payCurrency);
+      const posBefore = computeCustomerPosition(this.db, normalizedCustomerId, payCurrency);
 
       let paymentOutMeta = null;
       if (operation === 'payment_out') {
@@ -1669,6 +1890,8 @@ class CustomersService {
           reason: notes,
           creditLimit: customer?.credit_limit,
           lendAuthorized: lendAuthorized === true,
+          currentDebt: posBefore.total_debt,
+          currentAdvance: posBefore.advance,
         });
         if (!outGate.ok) {
           throw createError(
@@ -1682,6 +1905,7 @@ class CustomersService {
               amount: outGate.amount,
               debt_created: outGate.debt_created,
               new_debt: outGate.new_debt,
+              new_advance: outGate.new_advance,
               current_debt: outGate.current_debt,
               credit_limit: outGate.credit_limit,
               over_by: outGate.over_by,
@@ -1701,14 +1925,32 @@ class CustomersService {
       
       // Calculate new balance: balance = balance + signedAmount
       // payment_in: balance = balance + amount (increases)
-      // payment_out: balance = balance - amount (decreases)
-      const newBalance = oldBalance + signedAmount;
+      // payment_out payout: balance = balance - amount (decreases / nets advance)
+      // payment_out lend: net = advance - (debt + amount); advance unchanged
+      const isExplicitLend = operation === 'payment_out' && paymentOutMeta?.kind === 'lend';
+      const newBalance = isExplicitLend
+        ? Number(paymentOutMeta.new_balance)
+        : oldBalance + signedAmount;
       const allocation =
         operation === 'payment_in'
-          ? allocatePaymentInToDebtAndAdvance(oldBalance, requestedAmount)
+          ? (() => {
+              // Dual-bucket: close debt first, excess → advance (do not use signed net alone)
+              const debtPortion = Math.min(requestedAmount, bucketsBefore.debt);
+              const advancePortion = Math.max(0, requestedAmount - debtPortion);
+              return {
+                debt_portion: Math.round(debtPortion * 100) / 100,
+                advance_portion: Math.round(advancePortion * 100) / 100,
+                new_balance:
+                  Math.round(
+                    (bucketsBefore.advance + advancePortion - (bucketsBefore.debt - debtPortion)) *
+                      100,
+                  ) / 100,
+              };
+            })()
           : { debt_portion: 0, advance_portion: 0, new_balance: newBalance };
 
-      const now = nowSqlInTimeZone();
+      // UTC-naive (same as sales/returns ledger) so Hisob tarixi sorts with one clock.
+      const now = nowSqlUtc();
 
       // Log payment operation for debugging
       const operationLabel = operation === 'payment_in' ? 'Receiving' : 'Giving';
@@ -1722,6 +1964,9 @@ class CustomersService {
         new_balance: newBalance,
         debt_portion: allocation.debt_portion,
         advance_portion: allocation.advance_portion,
+        payment_out_kind: paymentOutMeta?.kind || null,
+        debt_before: bucketsBefore.debt,
+        advance_before: bucketsBefore.advance,
         method: paymentMethod,
         source: source || 'unknown',
         balance_type: oldBalance < 0 ? 'debt' : oldBalance > 0 ? 'credit' : 'zero'
@@ -1734,23 +1979,84 @@ class CustomersService {
       if (operation === 'payment_out' && signedAmount !== -requestedAmount) {
         throw new Error(`CRITICAL: For payment_out, signed_amount (${signedAmount}) must equal -requested_amount (${-requestedAmount})`);
       }
-      if (newBalance !== oldBalance + signedAmount) {
-        throw new Error(`CRITICAL: new_balance (${newBalance}) must equal old_balance (${oldBalance}) + signed_amount (${signedAmount})`);
+      if (isExplicitLend) {
+        const expectedNet =
+          Math.round((bucketsBefore.advance - (posBefore.total_debt + requestedAmount)) * 100) / 100;
+        if (Math.abs(Number(paymentOutMeta.new_balance) - expectedNet) > 1e-6) {
+          throw new Error(
+            `CRITICAL: lend new_balance (${paymentOutMeta.new_balance}) must equal advance - (exposure + amount) (${expectedNet})`
+          );
+        }
       }
 
       // Update customer balance atomically (idempotent per ledger ref_id)
-      const { applied, balances: balancesAfterApply } = applyCustomerBalanceDeltaOnce(
-        this.db,
-        normalizedCustomerId,
-        signedAmount,
-        payCurrency,
-        ledgerRefId,
-        now
-      );
-      if (!applied) {
+      // Explicit lend: increase debt only — never consume advance.
+      // Payment in: FIFO onto open orders, leftover closes loan then advance.
+      let inboundAlloc = { allocations: [], remainder: 0, applied_to_orders: 0 };
+      let inboundOpType = CUSTOMER_OP.CUSTOMER_PAYMENT;
+      let applyResult;
+      if (isExplicitLend) {
+        applyResult = applyCustomerLendDeltaOnce(
+            this.db,
+            normalizedCustomerId,
+            requestedAmount,
+            payCurrency,
+            ledgerRefId,
+            now
+          );
+      } else if (operation === 'payment_in') {
+        if (posBefore.open_order_debt > 0.009 || (Array.isArray(manualAllocations) && manualAllocations.length)) {
+          inboundAlloc = allocateInboundToOpenOrders(this.db, {
+            customerId: normalizedCustomerId,
+            paymentId,
+            amount: requestedAmount,
+            currency: payCurrency,
+            preferredOrderId: normalizedOrderId,
+            paymentMethod,
+            fxRate: payFx,
+            shiftId: normalizedShiftId,
+            createdAt: now,
+            createdBy: resolvedReceivedBy,
+            cashDocId: paymentNumber,
+            manualAllocations,
+          });
+        }
+        applyResult = applyCustomerBalanceDeltaOnce(
+          this.db,
+          normalizedCustomerId,
+          signedAmount,
+          payCurrency,
+          ledgerRefId,
+          now
+        );
+        inboundOpType = classifyInboundOpType(
+          inboundAlloc.applied_to_orders || Math.min(requestedAmount, bucketsBefore.debt),
+          Math.max(0, requestedAmount - Math.min(requestedAmount, bucketsBefore.debt)),
+          0
+        );
+      } else {
+        applyResult = applyCustomerBalanceDeltaOnce(
+            this.db,
+            normalizedCustomerId,
+            signedAmount,
+            payCurrency,
+            ledgerRefId,
+            now
+          );
+      }
+      if (!applyResult.applied) {
         throw new Error(`CRITICAL: balance replay guard failed for ref_id ${ledgerRefId}`);
       }
-      void balancesAfterApply;
+      void applyResult.balances;
+
+      const bucketsAfter = readCustomerDebtAdvance(this.db, normalizedCustomerId, payCurrency);
+      const actualNewBalance = readBalanceInCurrency(this.db, normalizedCustomerId, payCurrency);
+      const paymentInDebtPortion = roundCustomerMoney(
+        Math.min(requestedAmount, bucketsBefore.debt)
+      );
+      const paymentInAdvancePortion = roundCustomerMoney(
+        Math.max(0, requestedAmount - paymentInDebtPortion)
+      );
 
       // Generate payment ID and number (ledgerRefId uses paymentId when no order)
       
@@ -1775,11 +2081,12 @@ class CustomersService {
           const ledgerNote =
             operation === 'payment_in'
               ? notes ||
-                `Pul qabul qilindi: ${paymentMethod} (qarz: ${allocation.debt_portion}; oldindan: ${allocation.advance_portion})`
+                `Pul qabul qilindi: ${paymentMethod} (buyurtmalar: ${inboundAlloc.applied_to_orders || 0}; oldindan: ${inboundAlloc.remainder || 0})`
               : paymentOutMeta?.kind === 'lend'
                 ? notes ||
-                  `Mijozga yangi qarz berildi: ${paymentMethod}; yaratilgan qarz: ${paymentOutMeta.debt_created}`
+                  `Mijozga yangi qarz berildi: ${paymentMethod}; yangi qarz: ${paymentOutMeta.new_debt ?? bucketsAfter.debt}; avans: ${bucketsAfter.advance}`
                 : notes || `Mijoz avansi qaytarildi: ${paymentMethod}`;
+          const opCode = ledgerOpCodeForPayment(operation, paymentOutMeta?.kind, inboundOpType);
           
           const ledgerCols = [
             'id',
@@ -1798,7 +2105,7 @@ class CustomersService {
             ledgerRefId,
             paymentNumber,
             signedAmount,
-            newBalance,
+            actualNewBalance,
             ledgerNote,
           ];
           if (hasLedgerCur) {
@@ -1813,6 +2120,13 @@ class CustomersService {
             ledgerCols.push('method');
             ledgerVals.push(paymentMethod);
           }
+          appendLedgerAuditCols(this.db, ledgerCols, ledgerVals, {
+            op_code: opCode,
+            debt_before: posBefore.total_debt,
+            debt_after: bucketsAfter.debt,
+            advance_before: bucketsBefore.advance,
+            advance_after: bucketsAfter.advance,
+          });
           ledgerCols.push('created_at', 'created_by');
           ledgerVals.push(now, resolvedReceivedBy);
           const ph = ledgerCols.map(() => '?').join(', ');
@@ -1872,10 +2186,113 @@ class CustomersService {
         cols.push('operation');
         vals.push(operation);
       }
+      const hasOpType = tableInfo.some((col) => col.name === 'op_type');
+      const payOpType =
+        operation === 'payment_out' && paymentOutMeta?.kind === 'lend'
+          ? CUSTOMER_OP.CUSTOMER_LOAN_ISSUED
+          : operation === 'payment_out'
+            ? CUSTOMER_OP.ADVANCE_REFUND
+            : inboundOpType;
+      if (hasOpType) {
+        cols.push('op_type');
+        vals.push(payOpType);
+      }
+      if (tableInfo.some((col) => col.name === 'remainder_to_advance')) {
+        cols.push('remainder_to_advance');
+        vals.push(
+          operation === 'payment_in'
+            ? inboundAlloc.remainder > 0.009
+              ? inboundAlloc.remainder
+              : paymentInAdvancePortion
+            : 0
+        );
+      }
+      if (tableInfo.some((col) => col.name === 'direction')) {
+        cols.push('direction');
+        vals.push(operation === 'payment_out' ? 'out' : 'in');
+      }
       const ph = cols.map(() => '?').join(', ');
       this.db
         .prepare(`INSERT INTO customer_payments (${cols.join(', ')}) VALUES (${ph})`)
         .run(...vals);
+
+      // Track non-order loan repayment so position.loan_debt drops (no second cash movement).
+      if (operation === 'payment_in' && hasOpType) {
+        const loanNetBefore = roundCustomerMoney(
+          Math.max(0, Number(posBefore.loan_issued || 0) - Number(posBefore.loan_repaid || 0))
+        );
+        const loanRepay = roundCustomerMoney(
+          Math.min(
+            loanNetBefore,
+            Math.max(0, paymentInDebtPortion - (inboundAlloc.applied_to_orders || 0))
+          )
+        );
+        if (loanRepay > 0.009) {
+          const repayId = randomUUID();
+          const repayNumber = `LR-${Date.now()}-${repayId.substring(0, 8).toUpperCase()}`;
+          const rCols = [
+            'id',
+            'payment_number',
+            'customer_id',
+            'order_id',
+            'amount',
+            'payment_method',
+            'reference_number',
+            'notes',
+            'received_by',
+            'paid_at',
+            'created_at',
+          ];
+          const rVals = [
+            repayId,
+            repayNumber,
+            normalizedCustomerId,
+            null,
+            loanRepay,
+            paymentMethod,
+            paymentId,
+            `CUSTOMER_LOAN_REPAID ref ${paymentNumber}`,
+            resolvedReceivedBy,
+            now,
+            now,
+          ];
+          if (hasLedgerFields) {
+            rCols.push('old_balance', 'applied_amount', 'new_balance');
+            rVals.push(actualNewBalance, loanRepay, actualNewBalance);
+          }
+          if (hasShiftIdCol) {
+            rCols.push('shift_id');
+            rVals.push(normalizedShiftId);
+          }
+          if (hasOperationCol) {
+            rCols.push('operation');
+            // Not payment_in: cash-flow reports must not double-count this allocation row.
+            rVals.push('loan_repay');
+          }
+          rCols.push('op_type');
+          rVals.push(CUSTOMER_OP.CUSTOMER_LOAN_REPAID);
+          if (tableInfo.some((col) => col.name === 'direction')) {
+            rCols.push('direction');
+            rVals.push('in');
+          }
+          const rPh = rCols.map(() => '?').join(', ');
+          this.db
+            .prepare(`INSERT INTO customer_payments (${rCols.join(', ')}) VALUES (${rPh})`)
+            .run(...rVals);
+        }
+      }
+
+      if (isExplicitLend) {
+        const posLend = computeCustomerPosition(this.db, normalizedCustomerId, payCurrency);
+        const loanNet = roundCustomerMoney(
+          Math.max(0, Number(posLend.loan_issued || 0) - Number(posLend.loan_repaid || 0))
+        );
+        const floor = roundCustomerMoney(posLend.open_order_debt + loanNet);
+        const b = readCustomerDebtAdvance(this.db, normalizedCustomerId, payCurrency);
+        if (floor > b.debt + 0.02) {
+          writeDebtAdvanceNet(this.db, normalizedCustomerId, payCurrency, floor, b.advance, now);
+        }
+      }
 
       if (operation === 'payment_in') {
         try {
@@ -1894,32 +2311,39 @@ class CustomersService {
         }
       }
 
-      if (normalizedOrderId && operation === 'payment_in') {
-        this._applyLinkedOrderPayment(
-          normalizedOrderId,
-          requestedAmount,
-          payCurrency,
-          payFx
-        );
-      }
-
-      // Return standardized response with all required fields
+      const bucketsFinal = readCustomerDebtAdvance(this.db, normalizedCustomerId, payCurrency);
       const finalBalances = readCustomerBalances(this.db, normalizedCustomerId);
+      const posFinal = computeCustomerPosition(this.db, normalizedCustomerId, payCurrency);
+
       return {
         success: true,
         customer_id: normalizedCustomerId,
         currency: payCurrency,
         old_balance: oldBalance,
-        new_balance: newBalance,
+        new_balance: finalBalances[payCurrency === 'USD' ? 'usd' : 'uzs'],
         old_balance_uzs: balancesBefore.uzs,
         new_balance_uzs: finalBalances.uzs,
         old_balance_usd: balancesBefore.usd,
         new_balance_usd: finalBalances.usd,
+        old_debt: posBefore.total_debt,
+        new_debt: posFinal.total_debt,
+        old_advance: bucketsBefore.advance,
+        new_advance: bucketsFinal.advance,
         requested_amount: requestedAmount,
         applied_amount: requestedAmount,
         signed_amount: signedAmount,
-        debt_portion: allocation.debt_portion,
-        advance_portion: allocation.advance_portion,
+        debt_portion: operation === 'payment_in' ? paymentInDebtPortion : allocation.debt_portion,
+        advance_portion: operation === 'payment_in' ? paymentInAdvancePortion : allocation.advance_portion,
+        allocations: inboundAlloc.allocations || [],
+        applied_to_orders: inboundAlloc.applied_to_orders || 0,
+        remainder_to_advance:
+          operation === 'payment_in'
+            ? inboundAlloc.remainder > 0.009
+              ? inboundAlloc.remainder
+              : paymentInAdvancePortion
+            : 0,
+        position: posFinal,
+        op_type: payOpType,
         payment_out_kind: paymentOutMeta?.kind || null,
         debt_created: paymentOutMeta?.debt_created ?? 0,
         payment_id: paymentId,
@@ -1953,13 +2377,13 @@ class CustomersService {
           entity_id: result.customer_id,
           old_values: {
             balance: result.old_balance,
-            open_debt: Math.max(0, -Number(result.old_balance) || 0),
-            advance: Math.max(0, Number(result.old_balance) || 0),
+            open_debt: result.old_debt ?? Math.max(0, -Number(result.old_balance) || 0),
+            advance: result.old_advance ?? Math.max(0, Number(result.old_balance) || 0),
           },
           new_values: {
             balance: result.new_balance,
-            open_debt: Math.max(0, -Number(result.new_balance) || 0),
-            advance: Math.max(0, Number(result.new_balance) || 0),
+            open_debt: result.new_debt ?? Math.max(0, -Number(result.new_balance) || 0),
+            advance: result.new_advance ?? Math.max(0, Number(result.new_balance) || 0),
             amount: result.applied_amount,
             kind: result.payment_out_kind,
             debt_created: result.debt_created,
@@ -1969,6 +2393,9 @@ class CustomersService {
             credit_limit: Number(this.getById(result.customer_id)?.credit_limit) || 0,
             approver_user_id: result.approver_user_id,
             notes: notes || null,
+            operation_name: result.payment_out_kind === 'lend' ? 'Pul berildi' : 'Avans qaytarildi',
+            income: 0,
+            expense: result.applied_amount,
           },
         });
       } else if (result.operation === 'payment_in') {
@@ -1979,13 +2406,13 @@ class CustomersService {
           entity_id: result.customer_id,
           old_values: {
             balance: result.old_balance,
-            open_debt: Math.max(0, -Number(result.old_balance) || 0),
-            advance: Math.max(0, Number(result.old_balance) || 0),
+            open_debt: result.old_debt ?? Math.max(0, -Number(result.old_balance) || 0),
+            advance: result.old_advance ?? Math.max(0, Number(result.old_balance) || 0),
           },
           new_values: {
             balance: result.new_balance,
-            open_debt: Math.max(0, -Number(result.new_balance) || 0),
-            advance: Math.max(0, Number(result.new_balance) || 0),
+            open_debt: result.new_debt ?? Math.max(0, -Number(result.new_balance) || 0),
+            advance: result.new_advance ?? Math.max(0, Number(result.new_balance) || 0),
             amount: result.applied_amount,
             debt_portion: result.debt_portion,
             advance_portion: result.advance_portion,
@@ -2052,6 +2479,40 @@ class CustomersService {
     return Number.isFinite(n) && n > 0 ? n : fallback;
   }
 
+  _attachPaymentAllocations(rows, idField = 'id') {
+    const list = Array.isArray(rows) ? rows : [];
+    if (!list.length) return list;
+    try {
+      const exists = this.db
+        .prepare(`SELECT 1 AS ok FROM sqlite_master WHERE type='table' AND name='customer_payment_allocations'`)
+        .get();
+      if (!exists) return list.map((r) => ({ ...r, allocations: [] }));
+      const ids = [...new Set(list.map((r) => r?.[idField]).filter(Boolean))];
+      if (!ids.length) return list.map((r) => ({ ...r, allocations: [] }));
+      const ph = ids.map(() => '?').join(',');
+      const allocs = this.db
+        .prepare(
+          `SELECT * FROM customer_payment_allocations WHERE payment_id IN (${ph}) ORDER BY created_at ASC`
+        )
+        .all(...ids);
+      const byPay = new Map();
+      for (const a of allocs || []) {
+        const key = String(a.payment_id);
+        if (!byPay.has(key)) byPay.set(key, []);
+        byPay.get(key).push({
+          ...a,
+          allocated_amount: Number(a.allocated_amount ?? a.applied_amount ?? 0),
+        });
+      }
+      return list.map((r) => ({
+        ...r,
+        allocations: byPay.get(String(r[idField] || '')) || [],
+      }));
+    } catch {
+      return list.map((r) => ({ ...r, allocations: r.allocations || [] }));
+    }
+  }
+
   /**
    * List customer payments (customer_payments table)
    * @param {string} customerId - Customer ID
@@ -2082,7 +2543,8 @@ class CustomersService {
       }
     }
 
-    return this.db.prepare(query).all(params);
+    const rows = this.db.prepare(query).all(params);
+    return this._attachPaymentAllocations(rows, 'id');
   }
 
   /**
@@ -2112,49 +2574,73 @@ class CustomersService {
     // Check if method column exists in customer_ledger table
     const tableInfo = this.db.prepare("PRAGMA table_info(customer_ledger)").all();
     const hasMethodColumn = tableInfo.some(col => col.name === 'method');
+    const hasOpCode = tableInfo.some((col) => col.name === 'op_code');
+    const hasDebtAudit = tableInfo.some((col) => col.name === 'debt_before');
+    const hasLedgerCur = hasCustomerLedgerCurrency(this.db);
     
     // Build query based on actual schema
-    const methodColumn = hasMethodColumn ? 'method' : 'NULL as method';
+    const methodColumn = hasMethodColumn ? 'customer_ledger.method' : 'NULL as method';
+    const opCodeColumn = hasOpCode ? 'customer_ledger.op_code' : 'NULL as op_code';
+    const currencyColumn = hasLedgerCur ? 'customer_ledger.currency' : `'UZS' as currency`;
+    const debtAuditColumns = hasDebtAudit
+      ? 'customer_ledger.debt_before, customer_ledger.debt_after, customer_ledger.advance_before, customer_ledger.advance_after'
+      : 'NULL as debt_before, NULL as debt_after, NULL as advance_before, NULL as advance_after';
+    const staff = this._staffNameSql('customer_ledger.created_by');
+    const hasOrders = this._hasTable('orders');
+    const orderPaidSelect = hasOrders
+      ? 'o.paid_amount AS order_paid_amount, o.total_amount AS order_total_amount'
+      : 'NULL AS order_paid_amount, NULL AS order_total_amount';
+    const orderJoin = hasOrders
+      ? 'LEFT JOIN orders o ON o.id = customer_ledger.ref_id'
+      : '';
     let query = `
       SELECT 
-        id,
-        customer_id,
-        type,
-        ref_id,
-        ref_no,
-        amount,
-        balance_after,
-        note,
+        customer_ledger.id,
+        customer_ledger.customer_id,
+        customer_ledger.type,
+        customer_ledger.ref_id,
+        customer_ledger.ref_no,
+        customer_ledger.amount,
+        customer_ledger.balance_after,
+        customer_ledger.note,
         ${methodColumn},
-        created_at,
-        created_by
+        ${opCodeColumn},
+        ${currencyColumn},
+        ${debtAuditColumns},
+        customer_ledger.created_at,
+        customer_ledger.created_by,
+        ${staff.select},
+        ${orderPaidSelect}
       FROM customer_ledger
-      WHERE customer_id = ?
+      ${staff.join}
+      ${orderJoin}
+      WHERE customer_ledger.customer_id = ?
     `;
     const params = [customerId];
 
     // Filter by type if provided
     if (filters.type && filters.type !== 'all') {
-      query += ' AND type = ?';
+      query += ' AND customer_ledger.type = ?';
       params.push(filters.type);
     }
 
     // Filter by date range if provided
     if (filters.from) {
-      query += ` AND ${this._tzDateExpr('created_at')} >= date(?)`;
+      query += ` AND ${this._tzDateExpr('customer_ledger.created_at')} >= date(?)`;
       params.push(filters.from);
     }
     if (filters.to) {
-      query += ` AND ${this._tzDateExpr('created_at')} <= date(?)`;
+      query += ` AND ${this._tzDateExpr('customer_ledger.created_at')} <= date(?)`;
       params.push(filters.to);
     }
 
-    // Order by normalized datetime DESC (latest first).
-    // We normalize mixed formats like:
-    // - 2026-04-24 20:47:45
-    // - 2026-04-24 20:47:45.7082
-    // - 2026-04-24T20:47:45.708Z
-    query += " ORDER BY datetime(replace(replace(created_at, 'T', ' '), 'Z', '')) DESC, created_at DESC";
+    // Order by normalized datetime + id for stable ties.
+    // Default DESC for backward compatibility; CustomerDetail passes order: 'asc'.
+    // substr(1,19) after T/Z normalize keeps datetime() valid across ISO / offset / fractional forms.
+    const orderRaw = String(filters.order || filters.sort || "desc").toLowerCase();
+    const orderDir = orderRaw === "asc" || orderRaw === "oldest" ? "ASC" : "DESC";
+    const orderTs = sqlNormalizeDatetimeExpr('customer_ledger.created_at');
+    query += ` ORDER BY ${orderTs} ${orderDir}, customer_ledger.id ${orderDir}`;
 
     // Apply limit and offset if provided
     if (filters.limit) {
@@ -2172,7 +2658,7 @@ class CustomersService {
     try {
       const results = this.db.prepare(query).all(params);
       console.log(`✅ Fetched ${results.length} ledger entries for customer ${customerId}`);
-      return results;
+      return this._attachPaymentAllocations(results, 'ref_id');
     } catch (error) {
       console.error('❌ Error fetching ledger:', error.message);
       return [];
@@ -2232,6 +2718,21 @@ class CustomersService {
       return (rows || []).map((r) => String(r.code));
     } catch {
       return [];
+    }
+  }
+
+  _staffNameSql(createdByExpr) {
+    try {
+      const hasUsers = this.db
+        .prepare(`SELECT name FROM sqlite_master WHERE type='table' AND name='users'`)
+        .get();
+      if (!hasUsers) return { select: 'NULL AS created_by_name', join: '' };
+      return {
+        select: `COALESCE(NULLIF(TRIM(u_staff.full_name), ''), u_staff.username, ${createdByExpr}) AS created_by_name`,
+        join: `LEFT JOIN users u_staff ON u_staff.id = ${createdByExpr}`,
+      };
+    } catch {
+      return { select: 'NULL AS created_by_name', join: '' };
     }
   }
 

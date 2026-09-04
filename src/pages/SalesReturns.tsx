@@ -1,8 +1,13 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { useAuth } from '@/contexts/AuthContext';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import {
+  Collapsible,
+  CollapsibleContent,
+  CollapsibleTrigger,
+} from '@/components/ui/collapsible';
 import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
 import {
@@ -23,7 +28,7 @@ import {
 } from '@/components/ui/table';
 import { getSalesReturns, getCustomers, getSalesReturnById, getSettingsByCategory, getSalesReturnReasonBreakdown } from '@/db/api';
 import type { CompanySettings, Customer, SalesReturnWithDetails } from '@/types/database';
-import { Plus, Search, Eye, Printer, RotateCcw, Edit, RefreshCw } from 'lucide-react';
+import { ChevronDown, Plus, Search, Eye, Printer, RotateCcw, Edit, RefreshCw } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 import { formatReturnMoney, aggregateReturnAmounts, formatMoneyUZS } from '@/lib/format';
 import { DualCurrencyAmount } from '@/components/common/DualCurrencyAmount';
@@ -43,6 +48,55 @@ import {
 import { useSalesReturnsListStore } from '@/store/salesReturnsListStore';
 import { useTranslation } from 'react-i18next';
 import { Skeleton } from '@/components/ui/skeleton';
+
+const KNOWN_RETURN_REASON_SLUGS = new Set([
+  'damaged',
+  'incorrect',
+  'defective',
+  'dissatisfaction',
+  'expired',
+  'other',
+  'exchange',
+  'unknown',
+]);
+
+type ReasonBreakdownRow = {
+  reason: string;
+  return_count: number;
+  refund_total: number;
+  orderless_count: number;
+};
+
+function formatReturnReasonLabel(
+  reason: string | null | undefined,
+  translate: (key: string) => string,
+): string {
+  const raw = String(reason ?? '').trim();
+  if (!raw) return translate('sales_returns.create.reasons.unknown');
+  const slug = raw.toLowerCase();
+  if (KNOWN_RETURN_REASON_SLUGS.has(slug)) {
+    return translate(`sales_returns.create.reasons.${slug}`);
+  }
+  return raw;
+}
+
+function sortReasonBreakdown(rows: ReasonBreakdownRow[]): ReasonBreakdownRow[] {
+  return [...rows].sort((a, b) => {
+    const byCount = Number(b.return_count || 0) - Number(a.return_count || 0);
+    if (byCount !== 0) return byCount;
+    return Number(b.refund_total || 0) - Number(a.refund_total || 0);
+  });
+}
+
+const REASON_BREAKDOWN_OPEN_KEY = 'salesReturns:reasonBreakdownOpen';
+
+function readReasonBreakdownOpen(): boolean {
+  try {
+    return sessionStorage.getItem(REASON_BREAKDOWN_OPEN_KEY) === '1';
+  } catch {
+    return false;
+  }
+}
 
 export default function SalesReturns() {
   const { toast } = useToast();
@@ -83,10 +137,17 @@ export default function SalesReturns() {
   const filterKey = `${searchTerm}|${startDate}|${endDate}|${selectedCustomer}|${selectedStatus}|${selectedMode}|${pageSize}`;
   const [printingReturnId, setPrintingReturnId] = useState<string | null>(null);
   const [companySettings, setCompanySettings] = useState<CompanySettings | null>(null);
-  const [reasonBreakdown, setReasonBreakdown] = useState<
-    Array<{ reason: string; return_count: number; refund_total: number; orderless_count: number }>
-  >([]);
+  const [reasonBreakdown, setReasonBreakdown] = useState<ReasonBreakdownRow[]>([]);
+  const [reasonBreakdownOpen, setReasonBreakdownOpen] = useState(readReasonBreakdownOpen);
   const receiptSettings = useReceiptSettings();
+
+  useEffect(() => {
+    try {
+      sessionStorage.setItem(REASON_BREAKDOWN_OPEN_KEY, reasonBreakdownOpen ? '1' : '0');
+    } catch {
+      /* ignore quota / private mode */
+    }
+  }, [reasonBreakdownOpen]);
 
   useEffect(() => {
     if (storedQueryKey !== listQueryKey) {
@@ -129,7 +190,7 @@ export default function SalesReturns() {
       ]);
       setReturns(returnsData);
       setCustomers(customersData);
-      setReasonBreakdown(Array.isArray(reasons) ? reasons : []);
+      setReasonBreakdown(Array.isArray(reasons) ? (reasons as ReasonBreakdownRow[]) : []);
     } catch (error) {
       console.error('Error loading sales returns:', error);
       const errorMessage = error instanceof Error ? error.message : "Qaytarishlarni yuklab bo'lmadi";
@@ -268,6 +329,19 @@ export default function SalesReturns() {
   const pendingReturns = loading
     ? null
     : filteredReturns.filter((ret) => ret.status === 'Pending').length;
+  const sortedReasonBreakdown = useMemo(
+    () => sortReasonBreakdown(reasonBreakdown),
+    [reasonBreakdown],
+  );
+  const reasonBreakdownSummary = useMemo(() => {
+    let count = 0;
+    let total = 0;
+    for (const row of sortedReasonBreakdown) {
+      count += Number(row.return_count || 0);
+      total += Number(row.refund_total || 0);
+    }
+    return { count, total };
+  }, [sortedReasonBreakdown]);
 
   return (
     <div className="space-y-4" ref={listAnchorRef}>
@@ -349,46 +423,72 @@ export default function SalesReturns() {
         </CardContent>
       </Card>
 
-      {!loading && reasonBreakdown.length > 0 ? (
-        <Card className="gap-0 py-0 shadow-sm">
-          <CardHeader className="px-3 py-2 sm:px-4">
-            <CardTitle className="text-sm font-semibold">
-              {t('sales_returns.reason_breakdown_title')}
-            </CardTitle>
-          </CardHeader>
-          <CardContent className="px-3 pb-3 sm:px-4">
-            <div className="overflow-x-auto">
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead>{t('sales_returns.create.reason_for_return')}</TableHead>
-                    <TableHead className="text-right">{t('sales_returns.reason_count')}</TableHead>
-                    <TableHead className="text-right">{t('sales_returns.total')}</TableHead>
-                    <TableHead className="text-right">{t('sales_returns.filters.mode_orderless')}</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {reasonBreakdown.map((row) => (
-                    <TableRow key={row.reason}>
-                      <TableCell className="text-sm">
-                        {t(`sales_returns.create.reasons.${row.reason}`, {
-                          defaultValue: row.reason,
-                        })}
-                      </TableCell>
-                      <TableCell className="text-right tabular-nums">{row.return_count}</TableCell>
-                      <TableCell className="text-right tabular-nums">
-                        {formatMoneyUZS(Number(row.refund_total || 0))}
-                      </TableCell>
-                      <TableCell className="text-right tabular-nums">
-                        {Number(row.orderless_count || 0)}
-                      </TableCell>
-                    </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
-            </div>
-          </CardContent>
-        </Card>
+      {!loading && sortedReasonBreakdown.length > 0 ? (
+        <Collapsible
+          open={reasonBreakdownOpen}
+          onOpenChange={setReasonBreakdownOpen}
+          className="group"
+        >
+          <Card className="gap-0 py-0 shadow-sm">
+            <CollapsibleTrigger asChild>
+              <button
+                type="button"
+                className="flex w-full items-center justify-between gap-3 px-3 py-2 text-left sm:px-4"
+                aria-expanded={reasonBreakdownOpen}
+              >
+                <div className="min-w-0 flex flex-1 flex-wrap items-baseline gap-x-3 gap-y-0.5">
+                  <span className="text-sm font-semibold">
+                    {t('sales_returns.reason_breakdown_title')}
+                  </span>
+                  <span className="text-xs tabular-nums text-muted-foreground">
+                    {reasonBreakdownSummary.count} · {formatMoneyUZS(reasonBreakdownSummary.total)}
+                  </span>
+                </div>
+                <ChevronDown className="h-4 w-4 shrink-0 text-muted-foreground transition-transform group-data-[state=open]:rotate-180" />
+              </button>
+            </CollapsibleTrigger>
+            <CollapsibleContent>
+              <CardContent className="border-t px-3 pb-3 pt-2 sm:px-4">
+                <div className="overflow-x-auto">
+                  <Table>
+                    <TableHeader>
+                      <TableRow className="hover:bg-transparent">
+                        <TableHead className="whitespace-nowrap text-xs font-semibold sm:text-sm">
+                          {t('sales_returns.reason_column')}
+                        </TableHead>
+                        <TableHead className="w-[5.5rem] whitespace-nowrap text-right text-xs font-semibold sm:text-sm">
+                          {t('sales_returns.reason_count')}
+                        </TableHead>
+                        <TableHead className="w-[9.5rem] whitespace-nowrap text-right text-xs font-semibold sm:text-sm">
+                          {t('sales_returns.total')}
+                        </TableHead>
+                        <TableHead className="w-[6.5rem] whitespace-nowrap text-right text-xs font-semibold sm:text-sm">
+                          {t('sales_returns.filters.mode_orderless')}
+                        </TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {sortedReasonBreakdown.map((row) => (
+                        <TableRow key={row.reason}>
+                          <TableCell className="text-sm">
+                            {formatReturnReasonLabel(row.reason, t)}
+                          </TableCell>
+                          <TableCell className="text-right tabular-nums">{row.return_count}</TableCell>
+                          <TableCell className="text-right tabular-nums">
+                            {formatMoneyUZS(Number(row.refund_total || 0))}
+                          </TableCell>
+                          <TableCell className="text-right tabular-nums">
+                            {Number(row.orderless_count || 0)}
+                          </TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                </div>
+              </CardContent>
+            </CollapsibleContent>
+          </Card>
+        </Collapsible>
       ) : null}
 
       <Card className="gap-0 py-0 shadow-sm">
@@ -524,12 +624,12 @@ export default function SalesReturns() {
               <TableHeader>
                 <TableRow className="hover:bg-transparent">
                   <TableHead className="whitespace-nowrap text-xs font-semibold sm:text-sm">Qaytarish raqami</TableHead>
+                  <TableHead className="whitespace-nowrap text-xs font-semibold sm:text-sm">Sana va vaqt</TableHead>
                   <TableHead className="whitespace-nowrap text-xs font-semibold sm:text-sm">Buyurtma raqami</TableHead>
                   <TableHead className="min-w-[8rem] text-xs font-semibold sm:text-sm">Mijoz</TableHead>
-                  <TableHead className="whitespace-nowrap text-xs font-semibold sm:text-sm">Sana va vaqt</TableHead>
+                  <TableHead className="text-xs font-semibold sm:text-sm">Kassir</TableHead>
                   <TableHead className="whitespace-nowrap text-right text-xs font-semibold sm:text-sm">Summa</TableHead>
                   <TableHead className="text-xs font-semibold sm:text-sm">Holati</TableHead>
-                  <TableHead className="text-xs font-semibold sm:text-sm">Kassir</TableHead>
                   <TableHead className="text-right text-xs font-semibold sm:text-sm">Amallar</TableHead>
                 </TableRow>
               </TableHeader>
@@ -537,6 +637,9 @@ export default function SalesReturns() {
                 {pagedReturns.map((ret) => (
                   <TableRow key={ret.id} className="text-sm">
                     <TableCell className="max-w-[11rem] truncate py-2 font-medium font-mono text-xs">{ret.return_number}</TableCell>
+                    <TableCell className="whitespace-nowrap py-2 text-xs">
+                      {formatOrderDateTime(ret.created_at)}
+                    </TableCell>
                     <TableCell className="max-w-[9rem] truncate py-2 text-xs">
                       {ret.order_id ? (
                         <button
@@ -555,16 +658,13 @@ export default function SalesReturns() {
                       )}
                     </TableCell>
                     <TableCell className="max-w-[10rem] truncate py-2">{ret.customer?.name || 'Yangi mijoz'}</TableCell>
-                    <TableCell className="whitespace-nowrap py-2 text-xs">
-                      {formatOrderDateTime(ret.created_at)}
-                    </TableCell>
+                    <TableCell className="max-w-[7rem] truncate py-2 text-xs">{ret.cashier?.username || '-'}</TableCell>
                     <TableCell className="py-2 text-right text-xs tabular-nums font-medium">
                       {formatReturnMoney(ret, {
                         currency: (ret as any).order_currency ?? ret.order?.currency,
                       })}
                     </TableCell>
                     <TableCell className="py-2">{getStatusBadge(ret.status)}</TableCell>
-                    <TableCell className="max-w-[7rem] truncate py-2 text-xs">{ret.cashier?.username || '-'}</TableCell>
                     <TableCell className="py-2 text-right">
                       <div className="flex items-center justify-end gap-1">
                         <Button

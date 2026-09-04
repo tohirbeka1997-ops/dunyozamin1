@@ -190,7 +190,12 @@ async function runAsync(name, fn, validate) {
       assertObject(r, 'inventoryValuationReport');
       assert.ok(Array.isArray(r.rows), 'rows');
     });
-    runSync('purchasePlanning', () => reports.getPurchasePlanning({ plan_days: 7, analysis_days: 7 }), assertArray);
+    runSync('purchasePlanning', () => reports.getPurchasePlanning({ plan_days: 7, analysis_days: 7 }), (r) => {
+      assertObject(r, 'purchasePlanning');
+      assert.ok(Array.isArray(r.rows), 'purchasePlanning.rows');
+      assert.ok(r.totals && typeof r.totals === 'object', 'purchasePlanning.totals');
+      assert.ok(r.meta && typeof r.meta === 'object', 'purchasePlanning.meta');
+    });
     runSync('abcAnalysis', () => reports.getAbcAnalysis(filters), (r) => {
       assertObject(r, 'abcAnalysis');
       assert.ok(Array.isArray(r.rows), 'abcAnalysis.rows');

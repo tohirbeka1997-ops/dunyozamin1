@@ -29,7 +29,7 @@
       "scale_offline_hint": "Tarozi ulanmagan. Og‘irlikni qo‘lda kiriting.",
       "print_offline_before_receipt": "Chop etish agenti ulanmagan. Chek brauzer orqali ochilishi mumkin."
     },
-    "search_placeholder": "Nom, SKU, shtrix-kod… (F2 · Enter)",
+    "search_placeholder": "Nom, SKU, shtrix-kod… (F2 · ↓/F4 · Enter)",
     "brand_label": "Brend",
     "article_label": "Artikul",
     "quick_product_search_placeholder": "Nom, SKU, artikul yoki shtrix-kod...",
@@ -105,10 +105,34 @@
     "manual_price_invalid": "Narx 0 yoki undan katta bo'lishi kerak",
     "manual_price_badge": "Erkin narx",
     "rail_hints_title": "Klaviatura",
+    "rail_hint_f1": "F1 — mijoz",
     "rail_hint_f2": "F2 — qidiruv",
     "rail_hint_f3": "F3 — saqlash",
+    "rail_hint_f4": "F4 — mahsulotlar",
+    "rail_hint_f5": "F5 — savat",
+    "rail_hint_f6": "F6 — tannarx",
+    "rail_hint_f7": "F7 — chegirma",
     "rail_hint_f8": "F8 — qaytarish",
     "rail_hint_f9": "F9 — to‘lash",
+    "hotkey_cost_toggle": "Tannarx (ko'rsatish/yashirish)",
+    "hotkey_customer_focus": "Mijoz tanlash",
+    "hotkey_discount_focus": "Chegirma",
+    "show_cost_price": "Tannarx ko'rish",
+    "hide_cost_price": "Tannarx yashirish",
+    "hotkey_list_section": "Mahsulot ro'yxati",
+    "hotkey_list_jump": "Ro'yxatga o'tish",
+    "hotkey_list_move": "Qator tanlash",
+    "hotkey_list_enter": "Miqdor kiritish",
+    "hotkey_list_add": "Savatga +1 (belgilangan mahsulot)",
+    "hotkey_list_remove": "Savatdan −1 (tanlangan/birinchi qator)",
+    "hotkey_list_back": "Qidiruvga qaytish",
+    "hotkey_cart_section": "Savat",
+    "hotkey_cart_jump": "Savatga o'tish",
+    "hotkey_cart_move": "Savat qatorini tanlash",
+    "hotkey_cart_add": "Tanlangan qatorga +1",
+    "hotkey_cart_remove": "Tanlangan qatordan −1 (0 da o'chirish)",
+    "hotkey_cart_enter": "Miqdor tahrirlash",
+    "hotkey_cart_back": "Ro'yxatga qaytish",
     "add_products": "Katalogdan mahsulot qo'shing",
     "line_discount": "Qator chegirmasi (UZS)",
     "max": "Maks",
@@ -215,7 +239,7 @@
       "return_mode_short": "Qaytarish (F8)",
       "cart_count": "Savat ({{count}} mahsulot)",
       "empty_cart_return_hint": "Qaytarish rejimi yoqilgan. Mahsulotni skanerlang yoki ro'yxatdan tanlang — birinchi qator manfiy miqdorda qo'shiladi.",
-      "return_mode_title": "Keyingi qatorlar qaytarish (manfiy miqdor) sifatida qo'shiladi. F8 — rejimni yoqish/o'chirish. Rejim faqat o'zingiz tugma yoki F8 bilan o'zgartiriladi.",
+      "return_mode_title": "Bo'sh savatda ham F8 qaytarish rejimini yoqadi. Keyingi qatorlar qaytarish (manfiy miqdor) sifatida qo'shiladi. F8 yoki tugma — yoqish/o'chirish. Rejim avtomatik o'chmaydi.",
       "return_mode_banner": "Skaner yoki tanlov — manfiy qator. Rejim avtomatik o'chmaydi; F8 yoki tugma bilan o'chiring.",
       "return_mode_confirm": "Qaytarish rejimiga o‘tasizmi? Keyingi mahsulotlar manfiy (qaytarish) qator sifatida qo‘shiladi.",
       "cart_hint_returns": "Savatda qaytarish (manfiy) qatorlari bor — jami musbat, nol yoki manfiy bo'lishi mumkin.",
@@ -766,6 +790,47 @@
     "payment_method": "To'lov usuli",
     "reference_number": "Referens raqami",
     "payment_notes": "To'lov eslatmalari",
+    "payment_modal": {
+      "title_in": "Pul olindi (kirim)",
+      "title_out": "Pul berildi (chiqim)",
+      "desc_in": "{{name}} — qarz yopiladi, ortiqchasi balansga (−) o‘tadi",
+      "desc_out": "{{name}} — ortiqcha (−) bo‘lsa qaytariladi, aks holda qarz beriladi",
+      "direction_label": "Amal",
+      "direction_in": "Olindi",
+      "direction_out": "Berildi",
+      "direction_in_hint": "Kirim",
+      "direction_out_hint": "Chiqim",
+      "direction_out_forbidden": "Menejer ruxsati kerak",
+      "close_full_debt": "Butun qarzni yopish",
+      "alloc_fifo_hint": "Standart: muddati yaqin → eski buyurtma",
+      "alloc_auto": "Avto FIFO",
+      "alloc_manual": "Qo‘lda taqsimlash",
+      "out_excess_hint": "Ortiqcha qaytarish maksimali: {{amount}}. Undan ko‘p — qarz berish.",
+      "out_lend_hint": "Diqqat: kassadan chiqim va mijoz balansi (+) oshadi.",
+      "out_no_credit_limit": "Qarz berib bo‘lmaydi: mijoz kredit limiti belgilanmagan.",
+      "out_lend_forbidden": "Qarz berish uchun menejer ruxsati kerak.",
+      "reason_required": "Sabab *",
+      "reason_required_out": "Chiqim sababi majburiy.",
+      "reason_label": "Sabab",
+      "reason_placeholder_out": "Nima uchun berildi (majburiy)...",
+      "note_optional": "Izoh (ixtiyoriy)",
+      "note_placeholder": "Qo‘shimcha ma’lumot...",
+      "preview_title": "Operatsiyadan oldin ko‘rish",
+      "preview_debt_closed": "Qarz yopiladi",
+      "preview_excess": "Ortiqcha (balans −)",
+      "preview_current": "Joriy balans",
+      "preview_amount": "Summa",
+      "preview_new": "Yangi balans",
+      "submit_in": "Qabul qilish",
+      "submit_out": "Berish",
+      "confirm_out_title": "Chiqimni tasdiqlang",
+      "confirm_lend_title": "Qarz berishni tasdiqlang",
+      "confirm_lend_warn": "Diqqat: kassadan pul chiqadi va mijoz balansi (+) oshadi.",
+      "toast_received": "Pul olindi",
+      "toast_given": "Pul berildi",
+      "toast_lent": "Qarz berildi",
+      "new_balance": "Yangi holat"
+    },
     "credit_orders_title": "Nasiya / Qarzlar",
     "credit_orders_empty": "Ochiq nasiya yo'q",
     "credit_orders_count": "{{count}} ta ochiq buyurtma",
@@ -794,7 +859,39 @@
     "row_actions": "Mijoz amallari",
     "payout_exceeds_advance": "Summa oldindan to'lovdan oshib ketdi",
     "duplicate_candidates": "O'xshash mijozlar topildi",
-    "export_admin_only": "Eksport faqat admin uchun"
+    "export_admin_only": "Eksport faqat admin uchun",
+    "detail": {
+      "account_status": "Hisob holati",
+      "account_action": "Hisob amali",
+      "receive_debt_payment": "Qarz to‘lovini qabul qilish",
+      "refund_overpayment": "Ortiqcha to‘lovni qaytarish",
+      "customer_balance": "Mijoz balansi",
+      "balance_owes": "Mijoz qarzdor",
+      "balance_credit": "Ortiqcha to‘lov",
+      "balance_zero": "Balans nol",
+      "open_credit_inside": "Ichida ochiq nasiya",
+      "lend_residual": "Pul berilgan",
+      "credit_limit": "Kredit limiti",
+      "limit_usage": "Foydalanish",
+      "total_sales": "Jami savdo",
+      "limit_unset_blocked": "Kredit limiti belgilanmagan — nasiya bloklangan",
+      "limit_over_by": "Kredit limtidan {{amount}} ortiq",
+      "ledger_sort_oldest": "Eng eski avval (qarz o‘sishi)",
+      "ledger_sort_newest": "Eng yangi avval",
+      "ledger_running_hint": "Qatorlar chronologik: oxirgi qator — joriy yakuniy holatga yaqin",
+      "ledger_col_time": "Sana/vaqt",
+      "ledger_col_op": "Operatsiya",
+      "ledger_col_amount": "Umumiy",
+      "ledger_col_method": "Usul",
+      "ledger_col_ref": "Buyurtma",
+      "ledger_col_debt": "Qarz",
+      "ledger_col_advance": "Avans",
+      "ledger_col_running": "Qoldi",
+      "ledger_col_staff": "Xodim",
+      "ledger_col_received": "Olindi",
+      "ledger_col_given": "Berildi",
+      "ledger_col_total": "Umumiy"
+    }
   },
   "orders": {
     "title": "Buyurtmalar",
@@ -1346,6 +1443,7 @@
       "cancelled": "Bekor qilingan"
     },
     "reason_breakdown_title": "Sabab bo‘yicha qaytarishlar",
+    "reason_column": "Sabab",
     "reason_count": "Soni",
     "no_returns_found": "Qaytarish topilmadi",
     "create": {
@@ -1425,7 +1523,9 @@
         "defective": "Nuqsonli",
         "dissatisfaction": "Mamnuniyatsizlik",
         "expired": "Muddati o'tgan",
-        "other": "Boshqa"
+        "other": "Boshqa",
+        "exchange": "Almashuv",
+        "unknown": "Noma'lum"
       },
       "refund_method": "Qaytarish usuli",
       "select_refund_method": "Qaytarish usulini tanlang",
@@ -1490,6 +1590,49 @@
         "load_failed": "Ombor darajalarini yuklab bo'lmadi"
       }
     },
+    "valuation": {
+      "methods": {
+        "weighted_average": "O‘rtacha og‘irlikli tannarx",
+        "weighted_average_short": "O‘rtacha tannarx",
+        "fifo": "FIFO (birinchi kirim — birinchi chiqim)",
+        "fifo_short": "FIFO partiya",
+        "compare": "Solishtirish"
+      },
+      "filters": {
+        "search_ph": "Nomi yoki artikul..."
+      },
+      "summary": {
+        "wavg": "O‘rtacha tannarx",
+        "fifo": "FIFO partiya",
+        "diff": "Farq (FIFO − o‘rtacha)"
+      },
+      "warnings": {
+        "mismatch": "FIFO − o‘rtacha farqi: {{diff}}. O‘rtacha: {{wavg}}, FIFO: {{fifo}}."
+      },
+      "table": {
+        "sku": "Artikul",
+        "wavg_cost": "O‘rt. tannarx",
+        "fifo_cost": "FIFO tannarx",
+        "wavg_value": "O‘rt. qiymat",
+        "fifo_value": "FIFO qiymat",
+        "series_wavg": "O‘rtacha",
+        "series_fifo": "FIFO"
+      },
+      "export": {
+        "excel": "Excel",
+        "pdf": "PDF",
+        "sku": "Artikul",
+        "wavg_cost": "O‘rtacha tannarx",
+        "fifo_cost": "FIFO tannarx",
+        "wavg_value": "O‘rtacha qiymat",
+        "fifo_value": "FIFO qiymat",
+        "total_wavg": "Jami o‘rtacha",
+        "total_fifo": "Jami FIFO",
+        "series_wavg": "O‘rtacha",
+        "series_fifo": "FIFO",
+        "pdf_totals": "O‘rtacha: {{wavg}}  FIFO: {{fifo}}  Farq: {{diff}}"
+      }
+    },
     "cash_flow": {
       "title": "Pul oqimi",
       "subtitle": "Kirim / chiqim va net pul oqimi (UZS ekvivalent)",
@@ -1518,10 +1661,14 @@
       },
       "sources": {
         "order_payments": "Sotuv to‘lovlari",
-        "customer_payments": "Mijoz to‘lovlari",
+        "customer_payments": "Mijozdan to‘lov",
+        "customer_advances": "Mijoz avansi",
+        "customer_loans": "Mijozga berilgan qarz",
         "expenses": "Tasdiqlangan xarajatlar",
-        "supplier_payments": "Yetkazib beruvchi to‘lovlari",
-        "refunds": "Qaytarishlar"
+        "supplier_payments": "Yetkazib beruvchiga to‘lov",
+        "supplier_refunds": "Yetkazib beruvchidan qaytgan mablag‘",
+        "refunds": "Qaytarishlar",
+        "cash_movements": "Kassa depoziti/yechimi"
       },
       "errors": {
         "load_failed": "Pul oqimini yuklab bo'lmadi"
@@ -2005,7 +2152,7 @@
     "cards": {
       "total_sales": {
         "title": "Jami savdo",
-        "subtitle": "Yalpi / Gross (qaytarishdan oldingi)",
+        "subtitle": "Yalpi / brutto (chegirma va qaytarishdan oldin)",
         "orders": "buyurtma"
       },
       "total_collected": {
@@ -2017,8 +2164,8 @@
         "subtitle": "Davrdagi qaytarishlar"
       },
       "net_sales": {
-        "title": "Sof savdo",
-        "subtitle": "Net tushum (yalpi − qaytarish)"
+        "title": "Sof tushum",
+        "subtitle": "Chegirma va qaytarishdan keyin"
       },
       "credit_issued": {
         "title": "Nasiya",

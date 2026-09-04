@@ -686,6 +686,16 @@ class SupplierReturnsService {
       ? String(payload.return_date).split('T')[0].split(' ')[0]
       : now.split(' ')[0];
 
+    const settlementModeRaw = String(payload.settlement_mode || payload.settlementMode || 'reduce_debt')
+      .trim()
+      .toLowerCase();
+    const settlementMode =
+      settlementModeRaw === 'create_advance' || settlementModeRaw === 'advance'
+        ? 'create_advance'
+        : settlementModeRaw === 'demand_refund' || settlementModeRaw === 'refund'
+          ? 'demand_refund'
+          : 'reduce_debt';
+
     const tx = this.db.transaction(() => {
       this.db
         .prepare(
@@ -848,6 +858,22 @@ class SupplierReturnsService {
         .run(totalAmount, now, returnId);
 
       if ((payload.status || 'completed') !== 'draft' && totalAmount > 0) {
+        const beforeSettlement = this.supplierService?.getSettlement
+          ? this.supplierService.getSettlement(supplierId)
+          : null;
+        if (settlementMode === 'reduce_debt' && beforeSettlement) {
+          const debt =
+            settlementCurrency === 'USD' ? Number(beforeSettlement.debt_usd || 0) : Number(beforeSettlement.debt_uzs || 0);
+          if (totalAmount > debt + 0.02) {
+            throw createError(
+              ERROR_CODES.VALIDATION_ERROR,
+              `Qarz yetarli emas (qarz: ${debt}, qaytarish: ${totalAmount}). Avans yoki refund tanlang.`,
+            );
+          }
+        }
+
+        let paymentId = null;
+        if (settlementMode === 'reduce_debt') {
         const cols = this.db.prepare(`PRAGMA table_info(supplier_payments)`).all().map((c) => c.name);
         const hasNotes = cols.includes('notes');
         const hasNote = cols.includes('note');
@@ -856,7 +882,7 @@ class SupplierReturnsService {
         const hasCurrency = cols.includes('currency');
         const hasAmountUsd = cols.includes('amount_usd');
 
-        const paymentId = randomUUID();
+        paymentId = randomUUID();
         const paymentNumber = `SCN-${Date.now()}`;
 
         // Ledger buckets must match supplier settlement (same as createPayment / PO total_usd).
@@ -964,6 +990,52 @@ class SupplierReturnsService {
           } catch {
             // ignore cache update failures
           }
+        }
+        } else if (this.supplierService?._createAdvanceRecord) {
+          this.supplierService._createAdvanceRecord({
+            supplierId,
+            amount: totalAmount,
+            currency: settlementCurrency,
+            fxRate: fxRate || null,
+            fxRateSource: fxRate ? 'return' : null,
+            basisPaymentId: null,
+            basisPurchaseOrderId: payload.purchase_order_id || null,
+            notes:
+              settlementMode === 'demand_refund'
+                ? `Qaytarish — naqd/bank refund kutilmoqda: ${returnNumber}`
+                : `Qaytarish — yetkazib beruvchi avansi: ${returnNumber}`,
+            createdBy: payload.created_by || null,
+            kind: settlementMode === 'demand_refund' ? 'pending_refund' : 'advance',
+          });
+        }
+
+        if (this.supplierService?._recordSettlementLedger) {
+          const afterSettlement = this.supplierService.getSettlement(supplierId);
+          const debtKey = settlementCurrency === 'USD' ? 'debt_usd' : 'debt_uzs';
+          const advKey = settlementCurrency === 'USD' ? 'advance_usd' : 'advance_uzs';
+          this.supplierService._recordSettlementLedger({
+            supplier_id: supplierId,
+            op_type:
+              settlementMode === 'create_advance'
+                ? 'debit_note_create_advance'
+                : settlementMode === 'demand_refund'
+                  ? 'debit_note_demand_refund'
+                  : 'debit_note_reduce_debt',
+            currency: settlementCurrency,
+            amount: totalAmount,
+            debt_before: beforeSettlement ? beforeSettlement[debtKey] : 0,
+            debt_after: afterSettlement[debtKey],
+            advance_before: beforeSettlement ? beforeSettlement[advKey] : 0,
+            advance_after: afterSettlement[advKey],
+            purchase_order_id: payload.purchase_order_id || null,
+            payment_id: paymentId,
+            return_id: returnId,
+            reason: payload.return_reason || payload.notes || `Supplier return ${returnNumber}`,
+            payment_method: settlementMode === 'reduce_debt' ? 'credit_note' : settlementMode,
+            cash_source: 'none',
+            created_by: payload.created_by || null,
+            created_at: now,
+          });
         }
       }
 

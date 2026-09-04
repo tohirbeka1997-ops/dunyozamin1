@@ -40,11 +40,11 @@ type Props = {
 
 const ROW_HEIGHT = 64;
 const OVERSCAN = 8;
-const TABLE_MIN_WIDTH = 1020;
+const TABLE_MIN_WIDTH = 1140;
 
-/** Name | SKU | Artikul | Brend | Category | Buy | Sell | Stock | Actions */
+/** Name | SKU | Barcode | Artikul | Brend | Category | Buy | Sell | Stock | Actions */
 const GRID_COLS =
-  'minmax(240px,2.6fr) minmax(112px,0.9fr) minmax(88px,0.7fr) minmax(88px,0.7fr) minmax(110px,0.9fr) minmax(108px,0.9fr) minmax(108px,0.9fr) minmax(92px,0.75fr) 112px';
+  'minmax(220px,2.4fr) minmax(100px,0.85fr) minmax(120px,1fr) minmax(88px,0.7fr) minmax(88px,0.7fr) minmax(110px,0.9fr) minmax(100px,0.85fr) minmax(100px,0.85fr) minmax(92px,0.75fr) 112px';
 
 function emptyCell(value: string) {
   const v = value.trim();
@@ -68,6 +68,19 @@ function productArticleOf(p: ProductWithCategory): string {
     vendor_code?: string | null;
   };
   return String(row.article ?? row.artikul ?? row.article_number ?? row.vendor_code ?? '').trim();
+}
+
+/** Primary barcode (`products.barcode`). Fallbacks only if list payload uses aliases. */
+function productBarcodeOf(p: ProductWithCategory): string {
+  const row = p as ProductWithCategory & {
+    barcode_value?: string | null;
+    barcodes?: Array<string | null> | null;
+    alt_barcodes?: Array<string | null> | null;
+  };
+  const primary = String(row.barcode ?? row.barcode_value ?? '').trim();
+  if (primary) return primary;
+  const extras = [row.barcodes, row.alt_barcodes].find((list) => Array.isArray(list) && list.length);
+  return extras ? String(extras[0] ?? '').trim() : '';
 }
 
 type RowProps = {
@@ -103,6 +116,7 @@ const ProductVirtualRow = memo(function ProductVirtualRow({
     : null;
 
   const article = productArticleOf(product);
+  const barcode = productBarcodeOf(product);
   const brand = String(product.brand ?? '').trim();
   const unitLabel = formatUnit(product.unit);
   const priceNotSet = isProductPriceNotSet(product);
@@ -158,6 +172,11 @@ const ProductVirtualRow = memo(function ProductVirtualRow({
       {/* SKU — only here, never under name */}
       <div className="min-w-0 truncate font-mono text-xs tabular-nums" title={product.sku || undefined}>
         {emptyCell(product.sku || '') ?? product.sku}
+      </div>
+
+      {/* Barcode */}
+      <div className="min-w-0 truncate font-mono text-xs tabular-nums" title={barcode || undefined}>
+        {emptyCell(barcode) ?? barcode}
       </div>
 
       {/* Artikul */}
@@ -441,6 +460,7 @@ export default function VirtualizedProductsTable({
         >
           <div className="min-w-0 truncate">{t('products.product_name')}</div>
           <div className="min-w-0 truncate">{t('products.sku')}</div>
+          <div className="min-w-0 truncate">{t('products.barcode')}</div>
           <div
             className="min-w-0 truncate"
             title="Mahsulot formasidagi Artikul maydoni (SKU emas). Bo‘sh bo‘lsa — ko‘rinadi."

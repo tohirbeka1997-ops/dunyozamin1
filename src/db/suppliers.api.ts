@@ -533,6 +533,78 @@ export const applySupplierAdvanceToPurchaseOrder = async (payload: {
   throw new Error('applyAdvance is only available in desktop app');
 };
 
+export type SupplierSettlement = {
+  supplier_id: string;
+  supplier_name?: string;
+  settlement_currency: 'UZS' | 'USD';
+  debt_uzs: number;
+  debt_usd: number;
+  advance_uzs: number;
+  advance_usd: number;
+  pending_refund_uzs: number;
+  pending_refund_usd: number;
+  unallocated_uzs: number;
+  unallocated_usd: number;
+  debt: number;
+  advance: number;
+  pending_refund: number;
+  unallocated: number;
+};
+
+export const getSupplierSettlement = async (supplierId: string): Promise<SupplierSettlement> => {
+  if (hasPosApi()) {
+    const api = requireElectron();
+    if (!api?.suppliers?.getSettlement) {
+      throw new Error('Ilovani qayta ishga tushiring (getSettlement handler yangilandi)');
+    }
+    return ipc<SupplierSettlement>(api.suppliers.getSettlement(supplierId));
+  }
+  await delay();
+  throw new Error('getSettlement is only available in desktop app');
+};
+
+export const previewSupplierSettlement = async (payload: {
+  supplier_id: string;
+  op_kind: 'pay' | 'advance_out' | 'receive' | string;
+  amount: number;
+  currency: 'UZS' | 'USD';
+  accept_as_advance?: boolean;
+}) => {
+  if (hasPosApi()) {
+    const api = requireElectron();
+    if (!api?.suppliers?.previewSettlement) {
+      throw new Error('Ilovani qayta ishga tushiring (previewSettlement handler yangilandi)');
+    }
+    return ipc(api.suppliers.previewSettlement(payload));
+  }
+  await delay();
+  throw new Error('previewSettlement is only available in desktop app');
+};
+
+export const settleSupplier = async (payload: {
+  supplier_id: string;
+  op_kind: 'pay' | 'advance_out' | 'receive';
+  amount: number;
+  currency: 'UZS' | 'USD';
+  payment_method?: string;
+  purchase_order_id?: string | null;
+  reason?: string | null;
+  accept_as_advance?: boolean;
+  created_by?: string | null;
+  idempotency_key?: string | null;
+  fx_rate?: number | null;
+}) => {
+  if (hasPosApi()) {
+    const api = requireElectron();
+    if (!api?.suppliers?.settle) {
+      throw new Error('Ilovani qayta ishga tushiring (settle handler yangilandi)');
+    }
+    return ipc(api.suppliers.settle(payload));
+  }
+  await delay();
+  throw new Error('settle is only available in desktop app');
+};
+
 /**
  * Get supplier ledger (transaction history)
  */
@@ -659,6 +731,7 @@ export const createSupplierReturn = async (payload: {
   return_date?: string;
   fx_rate?: number;
   cost_currency?: 'UZS' | 'USD';
+  settlement_mode?: 'reduce_debt' | 'create_advance' | 'demand_refund';
   items: {
     product_id: string;
     quantity: number;

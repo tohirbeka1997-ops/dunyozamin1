@@ -146,7 +146,9 @@
     "requireCustomerCreditDesc": "Credit sales must have a selected customer",
     "requireCustomerAlways": "Note: the system always requires a customer for credit sales — this toggle is informational.",
     "lowStock": "Low stock warning",
-    "lowStockDesc": "Show a toast when an added item drops to or below its min-stock threshold (or 10 units)"
+    "lowStockDesc": "Show a toast when an added item drops to or below its min-stock threshold (or 10 units)",
+    "autoApplyAdvance": "Auto-apply customer advance on credit sale",
+    "autoApplyAdvanceDesc": "When on, credit checkout consumes customer advance automatically. When off, the cashier taps Use advance."
   },
   "loyalty": {
     "cardTitle": "Master-tier loyalty",

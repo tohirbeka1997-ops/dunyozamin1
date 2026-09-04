@@ -23,6 +23,123 @@ export const MAX_POS_QUICK_PRODUCTS = 8;
 export const POS_REPLACES_ORDER_ID_KEY = 'pos_replaces_order_id';
 /** POS scan debounce — batch promo IPC during rapid barcode bursts */
 export const POS_PROMO_APPLY_DEBOUNCE_MS = 180;
+/** Barcode wedge / handleBarcodeSearch duplicate-scan window */
+export const POS_SCAN_DEDUPE_MS = 350;
+
+/** Clamp a list highlight index; empty list → -1 (no wrap). */
+export function clampListIndex(index: number, length: number): number {
+  const len = Math.max(0, Math.trunc(Number(length) || 0));
+  if (len <= 0) return -1;
+  const raw = Number(index);
+  const i = Number.isFinite(raw) ? Math.trunc(raw) : 0;
+  return Math.max(0, Math.min(len - 1, i));
+}
+
+/** Move highlight by delta and clamp at ends (no wrap). */
+export function stepListIndex(index: number, length: number, delta: number): number {
+  const len = Math.max(0, Math.trunc(Number(length) || 0));
+  if (len <= 0) return -1;
+  const from = index < 0 ? (Number(delta) > 0 ? -1 : 0) : index;
+  return clampListIndex(from + Number(delta || 0), len);
+}
+
+/** First highlight when jumping into the visible product list. */
+export function activateListIndex(length: number, previousIndex = 0): number {
+  if (previousIndex >= 0) return clampListIndex(previousIndex, length);
+  return clampListIndex(0, length);
+}
+
+export function isRecentScanDedupe(
+  lastAt: number,
+  now: number,
+  windowMs = POS_SCAN_DEDUPE_MS,
+): boolean {
+  return Number(now) - Number(lastAt) < Number(windowMs);
+}
+
+/** F4 anywhere; ArrowDown / Tab only from the search field (Shift+Tab stays native). */
+export function isProductListJumpKey(
+  key: string,
+  opts: { fromSearch: boolean; shiftKey?: boolean },
+): boolean {
+  if (key === 'F4') return true;
+  if (!opts.fromSearch) return false;
+  if (key === 'ArrowDown') return true;
+  if (key === 'Tab' && !opts.shiftKey) return true;
+  return false;
+}
+
+/** F5 anywhere when the cart has lines; Tab only from the product list. */
+export function isCartJumpKey(
+  key: string,
+  opts: { fromList: boolean; cartLength: number; shiftKey?: boolean },
+): boolean {
+  if (Math.max(0, Math.trunc(Number(opts.cartLength) || 0)) <= 0) return false;
+  if (key === 'F5') return true;
+  if (opts.fromList && key === 'Tab' && !opts.shiftKey) return true;
+  return false;
+}
+
+/** True when Left/Right/Up/Down must stay with the focused field (not list/cart nav). */
+export function isPosTypingTarget(opts: {
+  tagName?: string;
+  isContentEditable?: boolean;
+  role?: string | null;
+  insideCombobox?: boolean;
+}): boolean {
+  const tag = String(opts.tagName || '').toUpperCase();
+  if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return true;
+  if (opts.isContentEditable) return true;
+  if (opts.insideCombobox) return true;
+  const role = String(opts.role || '').toLowerCase();
+  if (role === 'combobox' || role === 'listbox' || role === 'spinbutton') return true;
+  return false;
+}
+
+/**
+ * Plan a ±1 sale-unit change on a cart line.
+ * Sale lines: −1 toward 0 and remove at ≤0. Return lines: +1 toward 0 (Right), −1 more negative (Left).
+ * Empty / zero qty + Left → noop (caller should not spam).
+ */
+export function planCartLineQtyStep(
+  qtySale: number,
+  direction: -1 | 1,
+): { action: 'noop' | 'update' | 'remove'; nextQty: number } {
+  const raw = Number(qtySale);
+  const current = Number.isFinite(raw) ? raw : 0;
+  if (direction > 0) {
+    const next = current + 1;
+    if (next === 0) return { action: 'remove', nextQty: 0 };
+    return { action: 'update', nextQty: next };
+  }
+  if (current === 0) return { action: 'noop', nextQty: 0 };
+  if (current > 0) {
+    const next = current - 1;
+    return next <= 0 ? { action: 'remove', nextQty: 0 } : { action: 'update', nextQty: next };
+  }
+  return { action: 'update', nextQty: current - 1 };
+}
+
+/** List-mode Left: selected cart line if any, else first visible line (index 0). Empty → -1. */
+export function resolveListLeftCartIndex(selectedCartIndex: number, cartLength: number): number {
+  const len = Math.max(0, Math.trunc(Number(cartLength) || 0));
+  if (len <= 0) return -1;
+  if (selectedCartIndex >= 0) return clampListIndex(selectedCartIndex, len);
+  return 0;
+}
+
+/** After a line update/remove: keep the same index (next row slides up), clamp to new length. */
+export function nextCartIndexAfterLineChange(
+  index: number,
+  cartLengthBefore: number,
+  removed: boolean,
+): number {
+  const before = Math.max(0, Math.trunc(Number(cartLengthBefore) || 0));
+  if (before <= 0) return -1;
+  const after = removed ? before - 1 : before;
+  if (after <= 0) return -1;
+  return clampListIndex(index, after);
+}
 
 export function readPosReplacesOrderId(): string | null {
   try {
@@ -563,6 +680,22 @@ export function getCartLineQuantitySign(exchangeReturnMode: boolean): 1 | -1 {
   return exchangeReturnMode ? -1 : 1;
 }
 
+/**
+ * F8 / return-mode button may toggle even when the cart is empty.
+ * Cashiers enter return mode first, then scan products as negative lines.
+ * Payment and waiting-order overlays still block the toggle.
+ * `cartLength` is accepted so callers do not reintroduce an empty-cart guard.
+ */
+export function canToggleExchangeReturnMode(opts: {
+  cartLength?: number;
+  paymentDialogOpen?: boolean;
+  waitingOrdersDialogOpen?: boolean;
+}): boolean {
+  void opts.cartLength;
+  if (opts.paymentDialogOpen || opts.waitingOrdersDialogOpen) return false;
+  return true;
+}
+
 export type CheckoutSignatureLine = {
   productId: string;
   qtyBase: number;
@@ -658,4 +791,50 @@ export function computeHeldOrderTotal(
   }
 
   return roundUZS(subtotal - lineDiscountsTotal - globalDiscountAmount);
+}
+
+export type MixedPaymentLine = { method: 'cash' | 'card' | 'qr'; amount: number };
+
+export function buildMixedPaymentLines(parts: {
+  cash?: number | null;
+  card?: number | null;
+  qr?: number | null;
+}): MixedPaymentLine[] {
+  const lines: MixedPaymentLine[] = [];
+  const cash = Number(parts.cash) || 0;
+  const card = Number(parts.card) || 0;
+  const qr = Number(parts.qr) || 0;
+  if (cash > 0.009) lines.push({ method: 'cash', amount: cash });
+  if (card > 0.009) lines.push({ method: 'card', amount: card });
+  if (qr > 0.009) lines.push({ method: 'qr', amount: qr });
+  return lines;
+}
+
+export function sumMixedPaymentLines(lines: MixedPaymentLine[]): number {
+  return roundUZS(lines.reduce((s, l) => s + (Number(l.amount) || 0), 0));
+}
+
+/** Mixed checkout: underpay blocked; overpay only with a registered customer (advance). */
+export function validateMixedCheckout(opts: {
+  requiredAmount: number;
+  lines: MixedPaymentLine[];
+  hasRegisteredCustomer: boolean;
+}): { ok: true; paid: number; remaining: number; overpay: number } | { ok: false; error: string } {
+  const required = roundUZS(Math.max(0, Number(opts.requiredAmount) || 0));
+  const paid = sumMixedPaymentLines(opts.lines);
+  if (!opts.lines.length) {
+    return { ok: false, error: 'Aralash to‘lov uchun kamida bitta to‘lov satri kerak.' };
+  }
+  const remaining = roundUZS(required - paid);
+  const overpay = roundUZS(paid - required);
+  if (remaining > 0.01) {
+    return { ok: false, error: `To‘lov yetarli emas. Qolgan: ${remaining}` };
+  }
+  if (overpay > 0.01 && !opts.hasRegisteredCustomer) {
+    return {
+      ok: false,
+      error: 'Ortiqcha to‘lov faqat mijoz tanlanganda avansga o‘tadi. Qaytim kiriting yoki mijoz tanlang.',
+    };
+  }
+  return { ok: true, paid, remaining: Math.max(0, remaining), overpay: Math.max(0, overpay) };
 }

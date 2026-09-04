@@ -192,7 +192,13 @@ export const getDashboardAnalytics = async (
   };
 };
 
-export const getInventoryValuationSummary = async (_opts?: { warehouse_id?: string; status?: 'active' | 'inactive' | 'all' }) => {
+export const getInventoryValuationSummary = async (_opts?: {
+  warehouse_id?: string;
+  status?: 'active' | 'inactive' | 'all';
+  cost_method?: 'weighted_average' | 'fifo' | 'compare';
+  as_of?: string;
+  search?: string;
+}) => {
   if (hasPosApi()) {
     const api = requireElectron();
     return ipc<any>(api.reports?.inventoryValuationSummary?.(_opts || {}));
@@ -220,13 +226,43 @@ export const getInventoryValuationSummary = async (_opts?: { warehouse_id?: stri
   };
 };
 
-export const getInventoryValuationReport = async (_opts?: { warehouse_id?: string; status?: 'active' | 'inactive' | 'all' }) => {
+export const getInventoryValuationReport = async (_opts?: {
+  warehouse_id?: string;
+  status?: 'active' | 'inactive' | 'all';
+  cost_method?: 'weighted_average' | 'fifo' | 'compare';
+  as_of?: string;
+  as_of_from?: string;
+  as_of_to?: string;
+  as_of_mode?: 'today' | 'date' | 'range';
+  search?: string;
+  category_id?: string;
+  stock_status?: string;
+  diffs_only?: number | boolean;
+  sort?: string;
+  sort_order?: string;
+  page?: number;
+  page_size?: number;
+}) => {
   if (hasPosApi()) {
     const api = requireElectron();
     return ipc<any>(api.reports?.inventoryValuation?.(_opts || {}));
   }
   await delay();
   return { rows: [], summary: { total_value: 0, total_quantity: 0, products_count: 0, out_of_stock_count: 0, low_stock_count: 0 } };
+};
+
+export const getFinancialActSverka = async (_opts?: {
+  date_from?: string;
+  date_to?: string;
+  warehouse_id?: string;
+  cost_method?: string;
+}) => {
+  if (hasPosApi()) {
+    const api = requireElectron();
+    return ipc<any>(api.reports?.financialActSverka?.(_opts || {}));
+  }
+  await delay();
+  return null;
 };
 
 export const getProfitAndLossSQL = async (_opts?: {

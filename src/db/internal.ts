@@ -215,6 +215,7 @@ export const generateUUID = () => {
 export const generateSKUHelper = (): string => {
   // Find the smallest missing numeric SKU: 1, 2, 3, ...
   const nums = mockDB.products
+    .filter((p) => p.is_active !== false && p.is_active !== 0)
     .map((p) => String(p.sku || '').trim())
     .filter((sku) => /^\d+$/.test(sku))
     .map((sku) => Number(sku))

@@ -13,6 +13,8 @@ const os = require('os');
 const path = require('path');
 const { formatYmdInTimeZone } = require('../lib/timezone.cjs');
 const { calculateNetProfit } = require('../lib/unifiedSalesSql.cjs');
+const { randomUUID } = require('crypto');
+const { setCurrentUserId } = require('../lib/currentUser.cjs');
 
 const WH = 'main-warehouse-001';
 const ADMIN = 'default-admin-001';
@@ -68,6 +70,20 @@ function seedMarketplaceCustomer(db) {
   try {
     open();
     const db = getDb();
+    setCurrentUserId(ADMIN);
+    try {
+      const role = db.prepare(`SELECT id FROM roles WHERE code = 'admin' LIMIT 1`).get();
+      if (role) {
+        const has = db.prepare(`SELECT 1 AS ok FROM user_roles WHERE user_id = ? AND role_id = ?`).get(ADMIN, role.id);
+        if (!has) {
+          db.prepare(
+            `INSERT INTO user_roles (id, user_id, role_id, assigned_at) VALUES (?, ?, ?, datetime('now'))`
+          ).run(randomUUID(), ADMIN, role.id);
+        }
+      }
+    } catch {
+      /* best-effort */
+    }
     const { products, inventory, sales, shifts, reports, dashboard, customers } = createServices(db);
     const webOrders = new WebOrdersService(db);
 
@@ -256,11 +272,15 @@ function seedMarketplaceCustomer(db) {
 
     runStep('P&L web promo uses net lines not gross', () => {
       const pl = reports.getProfitAndLossSQL({ ...filters, sales_channel: 'telegram' });
-      const revenue = Number(pl.summary?.revenue ?? pl.revenue ?? 0);
+      const gross = Number(pl.summary?.gross_revenue ?? pl.summary?.revenue ?? 0);
+      const net = Number(pl.summary?.net_revenue ?? pl.summary?.net_sales ?? 0);
+      const discounts = Number(pl.summary?.discounts ?? 0);
       const telegramNet = webTotal + discNet + legacyNet;
       const telegramGross = webTotal + discGross + legacyGross;
-      assert.ok(revenue >= telegramNet - 1, `telegram P&L missing net web (${revenue})`);
-      assert.ok(revenue < telegramGross - 100, `telegram P&L still using undiscounted lines (${revenue})`);
+      assert.ok(gross >= telegramGross - 1, `telegram brutto ${gross}`);
+      assert.ok(net >= telegramNet - 1, `telegram sof tushum ${net}`);
+      assert.ok(net < telegramGross - 100, `telegram sof still using undiscounted lines (${net})`);
+      assert.ok(discounts >= telegramGross - telegramNet - 1, `telegram chegirma ${discounts}`);
     });
 
     runStep('DailySales includes POS + web revenue', () => {

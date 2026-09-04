@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState, Fragment } from 'react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
@@ -17,19 +17,32 @@ import { useToast } from '@/hooks/use-toast';
 import { useNavigate } from 'react-router-dom';
 import { formatMoneyUZS, formatNumberUZ } from '@/lib/format';
 import { formatDateYMD, formatDateTime, todayYMD } from '@/lib/datetime';
+import { formatQuantity } from '@/utils/quantity';
 import { useReportAutoRefresh } from '@/hooks/useReportAutoRefresh';
+import { useReportFilters } from '@/hooks/useReportFilters';
 import { handleIpcResponse, isElectron, requireElectron } from '@/utils/electron';
 import { useTableSort } from '@/hooks/useTableSort';
 import { compareScalar } from '@/lib/tableSort';
 import SearchableCombobox from '@/components/common/SearchableCombobox';
 import { useTranslation } from 'react-i18next';
 import { SortableTableHead } from '@/components/reports/SortableTableHead';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
 
 interface ActRow {
   product_id: string;
   product_name: string;
   product_sku: string;
   category_name: string;
+  unit?: string;
+  opening_qty?: number;
+  opening_unit_cost?: number;
+  opening_value?: number;
   purchase_qty: number;
   purchase_amount: number;
   sold_qty: number;
@@ -38,11 +51,18 @@ interface ActRow {
   return_qty: number;
   return_amount: number;
   return_cogs: number;
+  outbound_qty?: number;
+  revision_qty?: number;
+  transfer_qty?: number;
+  closing_qty?: number;
+  closing_value?: number;
   net_sold_qty: number;
   net_revenue: number;
   net_cogs: number;
   net_profit: number;
+  gross_profit?: number;
   profit_margin_percent: number;
+  cost_method?: string;
 }
 
 interface ActPayload {
@@ -55,10 +75,24 @@ interface ActPayload {
     sold_revenue: number;
     return_qty: number;
     return_amount: number;
+    opening_qty?: number;
+    opening_value?: number;
+    closing_qty?: number;
+    closing_value?: number;
+    net_cogs?: number;
     net_revenue: number;
     net_profit: number;
     product_count: number;
     profit_margin_percent: number;
+    cost_method?: string;
+  };
+  meta?: {
+    computed_at?: string;
+    timezone?: string;
+    cost_method?: string;
+    data_source?: string;
+    opening_as_of?: string;
+    closing_as_of?: string;
   };
 }
 
@@ -97,18 +131,36 @@ export default function ProductActSverkaReport() {
   const [categories, setCategories] = useState<Category[]>([]);
   const [warehouses, setWarehouses] = useState<Warehouse[]>([]);
   const [productOptions, setProductOptions] = useState<Product[]>([]);
-  const [dateFrom, setDateFrom] = useState(() => {
+  const defaultFrom = useMemo(() => {
     const t = new Date();
     t.setTime(t.getTime() - 30 * 86400000);
     return formatDateYMD(t, { timeZone: 'Asia/Tashkent' });
+  }, []);
+  const { get, set } = useReportFilters({
+    storageKey: 'reports.product-act-sverka.filters',
+    trackedKeys: ['from', 'to', 'category', 'product', 'warehouse', 'method', 'search'],
+    defaults: {
+      from: defaultFrom,
+      to: todayYMD(),
+      category: 'all',
+      product: 'all',
+      warehouse: 'all',
+      method: 'weighted_average',
+      search: '',
+    },
   });
-  const [dateTo, setDateTo] = useState(todayYMD());
-  const [categoryFilter, setCategoryFilter] = useState<string>('all');
-  const [productId, setProductId] = useState<string>('all');
-  const [warehouseId, setWarehouseId] = useState<string>('all');
-  const [searchTerm, setSearchTerm] = useState('');
+  const dateFrom = get('from', defaultFrom) || defaultFrom;
+  const dateTo = get('to', todayYMD()) || todayYMD();
+  const categoryFilter = get('category', 'all') || 'all';
+  const productId = get('product', 'all') || 'all';
+  const warehouseId = get('warehouse', 'all') || 'all';
+  const costMethod = get('method', 'weighted_average') || 'weighted_average';
+  const searchTerm = get('search', '');
   const [historyRows, setHistoryRows] = useState<HistoryRow[]>([]);
   const [historyLoading, setHistoryLoading] = useState(false);
+  const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [expandedHistory, setExpandedHistory] = useState<HistoryRow[]>([]);
+  const [expandedLoading, setExpandedLoading] = useState(false);
 
   const warehouseOptions = useMemo(
     () => [
@@ -170,6 +222,8 @@ export default function ProductActSverkaReport() {
           category_id: categoryFilter === 'all' ? undefined : categoryFilter,
           product_id: productId === 'all' ? undefined : productId,
           warehouse_id: warehouseId === 'all' ? undefined : warehouseId,
+          cost_method: costMethod,
+          search: searchTerm.trim() || undefined,
         }) || Promise.resolve({ rows: [] })
       );
       const historyPromise =
@@ -201,7 +255,7 @@ export default function ProductActSverkaReport() {
       setLoading(false);
       setHistoryLoading(false);
     }
-  }, [dateFrom, dateTo, categoryFilter, productId, warehouseId, toast]);
+  }, [dateFrom, dateTo, categoryFilter, productId, warehouseId, costMethod, searchTerm, toast]);
 
   useEffect(() => {
     void loadData();
@@ -296,17 +350,19 @@ export default function ProductActSverkaReport() {
     const headers = [
       'product_name',
       'product_sku',
-      'category_name',
+      'opening_qty',
+      'opening_value',
       'purchase_qty',
       'purchase_amount',
       'sold_qty',
-      'sold_revenue',
       'return_qty',
-      'return_amount',
-      'net_sold_qty',
+      'net_cogs',
+      'closing_qty',
+      'closing_value',
       'net_revenue',
       'net_profit',
       'profit_margin_percent',
+      'cost_method',
     ];
     const escape = (v: any) => {
       const s = String(v ?? '');
@@ -322,6 +378,33 @@ export default function ProductActSverkaReport() {
       encoding: 'utf8',
     });
     toast({ title: 'CSV saqlandi' });
+  };
+
+  const toggleExpand = async (id: string) => {
+    if (expandedId === id) {
+      setExpandedId(null);
+      setExpandedHistory([]);
+      return;
+    }
+    if (!isElectron()) return;
+    setExpandedId(id);
+    setExpandedLoading(true);
+    try {
+      const api = requireElectron();
+      const hist = await handleIpcResponse<{ rows: HistoryRow[] }>(
+        api.reports?.productDocumentHistory?.({
+          product_id: id,
+          date_from: dateFrom,
+          date_to: dateTo,
+          warehouse_id: warehouseId === 'all' ? undefined : warehouseId,
+        }) || Promise.resolve({ rows: [] }),
+      );
+      setExpandedHistory(Array.isArray(hist?.rows) ? hist.rows : []);
+    } catch {
+      setExpandedHistory([]);
+    } finally {
+      setExpandedLoading(false);
+    }
   };
 
   const exportHistoryCsv = async () => {
@@ -423,17 +506,17 @@ export default function ProductActSverkaReport() {
           <div className="grid grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-2">
             <div>
               <label className="text-xs text-muted-foreground">Boshlanish</label>
-              <Input type="date" value={dateFrom} onChange={(e) => setDateFrom(e.target.value)} className="mt-1 h-8" />
+              <Input type="date" value={dateFrom} onChange={(e) => set({ from: e.target.value })} className="mt-1 h-8" />
             </div>
             <div>
               <label className="text-xs text-muted-foreground">Tugash</label>
-              <Input type="date" value={dateTo} onChange={(e) => setDateTo(e.target.value)} className="mt-1 h-8" />
+              <Input type="date" value={dateTo} onChange={(e) => set({ to: e.target.value })} className="mt-1 h-8" />
             </div>
             <div>
               <label className="text-xs text-muted-foreground">Ombor (ixtiyoriy)</label>
               <SearchableCombobox
                 value={warehouseId}
-                onValueChange={setWarehouseId}
+                onValueChange={(v) => set({ warehouse: v })}
                 options={warehouseOptions}
                 placeholder={t('combobox.all_warehouses', 'Barcha omborlar')}
                 searchPlaceholder={t('combobox.search_warehouse', "Ombor nomi bo'yicha qidirish...")}
@@ -445,7 +528,7 @@ export default function ProductActSverkaReport() {
               <label className="text-xs text-muted-foreground">Kategoriya</label>
               <SearchableCombobox
                 value={categoryFilter}
-                onValueChange={setCategoryFilter}
+                onValueChange={(v) => set({ category: v })}
                 options={categoryOptions}
                 placeholder={t('combobox.select_category', 'Kategoriyani tanlang...')}
                 searchPlaceholder={t('combobox.search_category', "Kategoriya nomi bo'yicha qidirish...")}
@@ -457,7 +540,7 @@ export default function ProductActSverkaReport() {
               <label className="text-xs text-muted-foreground">Mahsulot (ixtiyoriy)</label>
               <SearchableCombobox
                 value={productId}
-                onValueChange={setProductId}
+                onValueChange={(v) => set({ product: v })}
                 options={productPickerOptions}
                 placeholder={t('combobox.select_product', 'Mahsulotni tanlang...')}
                 searchPlaceholder={t('combobox.search_product', "Nom, SKU yoki shtrix-kod bo'yicha qidirish...")}
@@ -470,9 +553,22 @@ export default function ProductActSverkaReport() {
               <Input
                 className="mt-1 h-8"
                 value={searchTerm}
-                onChange={(e) => setSearchTerm(e.target.value)}
+                onChange={(e) => set({ search: e.target.value })}
                 placeholder="Jadval filtri..."
               />
+            </div>
+            <div>
+              <label className="text-xs text-muted-foreground">Tannarx metodi</label>
+              <Select value={costMethod} onValueChange={(v) => set({ method: v })}>
+                <SelectTrigger className="mt-1 h-8">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="weighted_average">Weighted average</SelectItem>
+                  <SelectItem value="fifo">FIFO</SelectItem>
+                  <SelectItem value="compare">Solishtirish (FIFO vs WAvg)</SelectItem>
+                </SelectContent>
+              </Select>
             </div>
           </div>
         </CardContent>
@@ -503,7 +599,9 @@ export default function ProductActSverkaReport() {
                 <p className={`text-sm font-semibold leading-5 ${totals.net_profit >= 0 ? 'text-emerald-600' : 'text-destructive'}`}>
                   {formatMoneyUZS(totals.net_profit)}
                 </p>
-                <p className="text-[11px] text-muted-foreground">Marja: {formatNumberUZ(totals.profit_margin_percent)}%</p>
+                <p className="text-[11px] text-muted-foreground">
+                  Marja: {formatNumberUZ(totals.profit_margin_percent)}% · COGS: {totals.cost_method || payload?.meta?.cost_method || 'weighted_average'}
+                </p>
               </div>
             </div>
           </CardContent>
@@ -540,6 +638,8 @@ export default function ProductActSverkaReport() {
                     >
                       Kategoriya
                     </SortableTableHead>
+                    <TableHead className="text-right">Bosh. qoldiq</TableHead>
+                    <TableHead className="text-right">Bosh. tannarx</TableHead>
                     <SortableTableHead<SortKey>
                       columnKey="purchase_qty"
                       sortKey={sortKey}
@@ -562,16 +662,12 @@ export default function ProductActSverkaReport() {
                     </SortableTableHead>
                     <TableHead className="text-right">Sot. miq.</TableHead>
                     <TableHead className="text-right">Qayt.</TableHead>
-                    <SortableTableHead<SortKey>
-                      columnKey="net_sold_qty"
-                      sortKey={sortKey}
-                      sortOrder={sortOrder}
-                      onSort={toggleSort}
-                      kind="number"
-                      align="right"
-                    >
-                      Sof sot. miq.
-                    </SortableTableHead>
+                    <TableHead className="text-right">Reviziya</TableHead>
+                    <TableHead className="text-right">O‘tkazma</TableHead>
+                    <TableHead className="text-right">Boshqa chiqim</TableHead>
+                    <TableHead className="text-right">COGS</TableHead>
+                    <TableHead className="text-right">Oxir. qoldiq</TableHead>
+                    <TableHead className="text-right">Oxir. qiymat</TableHead>
                     <SortableTableHead<SortKey>
                       columnKey="net_revenue"
                       sortKey={sortKey}
@@ -606,19 +702,42 @@ export default function ProductActSverkaReport() {
                 </TableHeader>
                 <TableBody>
                   {sortedForTable.map((r) => (
-                    <TableRow key={r.product_id}>
+                    <Fragment key={r.product_id}>
+                    <TableRow
+                      className="cursor-pointer"
+                      onClick={() => void toggleExpand(r.product_id)}
+                    >
                       <TableCell>
                         <div className="font-medium">{r.product_name}</div>
                         <div className="text-xs text-muted-foreground font-mono">{r.product_sku}</div>
                       </TableCell>
                       <TableCell className="text-sm">{r.category_name || '—'}</TableCell>
-                      <TableCell className="text-right font-mono">{formatNumberUZ(r.purchase_qty)}</TableCell>
-                      <TableCell className="text-right">{formatMoneyUZS(r.purchase_amount)}</TableCell>
-                      <TableCell className="text-right text-muted-foreground font-mono">{formatNumberUZ(r.sold_qty)}</TableCell>
-                      <TableCell className="text-right text-muted-foreground text-xs">
-                        {r.return_qty > 0 ? `−${formatNumberUZ(r.return_qty)}` : '—'}
+                      <TableCell className="text-right font-mono">
+                        {formatQuantity(Number(r.opening_qty || 0), r.unit)}
                       </TableCell>
-                      <TableCell className="text-right font-mono">{formatNumberUZ(r.net_sold_qty)}</TableCell>
+                      <TableCell className="text-right">{formatMoneyUZS(Number(r.opening_value || 0))}</TableCell>
+                      <TableCell className="text-right font-mono">{formatQuantity(r.purchase_qty, r.unit)}</TableCell>
+                      <TableCell className="text-right">{formatMoneyUZS(r.purchase_amount)}</TableCell>
+                      <TableCell className="text-right text-muted-foreground font-mono">
+                        {formatQuantity(r.sold_qty, r.unit)}
+                      </TableCell>
+                      <TableCell className="text-right text-muted-foreground text-xs">
+                        {r.return_qty > 0 ? `−${formatQuantity(r.return_qty, r.unit)}` : '—'}
+                      </TableCell>
+                      <TableCell className="text-right text-muted-foreground font-mono text-xs">
+                        {Number(r.revision_qty || 0) ? formatQuantity(Number(r.revision_qty || 0), r.unit) : '—'}
+                      </TableCell>
+                      <TableCell className="text-right text-muted-foreground font-mono text-xs">
+                        {Number(r.transfer_qty || 0) ? formatQuantity(Number(r.transfer_qty || 0), r.unit) : '—'}
+                      </TableCell>
+                      <TableCell className="text-right text-muted-foreground font-mono text-xs">
+                        {Number(r.outbound_qty || 0) ? formatQuantity(Number(r.outbound_qty || 0), r.unit) : '—'}
+                      </TableCell>
+                      <TableCell className="text-right">{formatMoneyUZS(Number(r.net_cogs || 0))}</TableCell>
+                      <TableCell className="text-right font-mono">
+                        {formatQuantity(Number(r.closing_qty || 0), r.unit)}
+                      </TableCell>
+                      <TableCell className="text-right">{formatMoneyUZS(Number(r.closing_value || 0))}</TableCell>
                       <TableCell className="text-right">{formatMoneyUZS(r.net_revenue)}</TableCell>
                       <TableCell
                         className={`text-right font-medium ${
@@ -629,6 +748,53 @@ export default function ProductActSverkaReport() {
                       </TableCell>
                       <TableCell className="text-right">{formatNumberUZ(r.profit_margin_percent)}%</TableCell>
                     </TableRow>
+                    {expandedId === r.product_id ? (
+                      <TableRow>
+                        <TableCell colSpan={17} className="bg-muted/30">
+                          {expandedLoading ? (
+                            <p className="text-sm text-muted-foreground py-2">Yuklanmoqda...</p>
+                          ) : expandedHistory.length === 0 ? (
+                            <p className="text-sm text-muted-foreground py-2">Harakatlar topilmadi.</p>
+                          ) : (
+                            <div className="max-h-64 overflow-auto">
+                              <Table>
+                                <TableHeader>
+                                  <TableRow>
+                                    <TableHead>Sana</TableHead>
+                                    <TableHead>Amal</TableHead>
+                                    <TableHead>Hujjat</TableHead>
+                                    <TableHead>Tomon</TableHead>
+                                    <TableHead className="text-right">Kirim</TableHead>
+                                    <TableHead className="text-right">Chiqim</TableHead>
+                                    <TableHead className="text-right">Qoldiq</TableHead>
+                                  </TableRow>
+                                </TableHeader>
+                                <TableBody>
+                                  {expandedHistory.map((h, i) => (
+                                    <TableRow key={`${h.line_id || i}-${h.event_at}`}>
+                                      <TableCell className="whitespace-nowrap text-xs">{formatDateTime(h.event_at)}</TableCell>
+                                      <TableCell className="text-xs">{h.event_label}</TableCell>
+                                      <TableCell className="text-xs">{h.doc_no || h.doc_type}</TableCell>
+                                      <TableCell className="text-xs">{h.counterparty || '—'}</TableCell>
+                                      <TableCell className="text-right font-mono text-xs">
+                                        {h.qty_in > 0 ? formatQuantity(h.qty_in, r.unit) : '—'}
+                                      </TableCell>
+                                      <TableCell className="text-right font-mono text-xs">
+                                        {h.qty_out > 0 ? formatQuantity(h.qty_out, r.unit) : '—'}
+                                      </TableCell>
+                                      <TableCell className="text-right font-mono text-xs">
+                                        {formatQuantity(h.running_qty, r.unit)}
+                                      </TableCell>
+                                    </TableRow>
+                                  ))}
+                                </TableBody>
+                              </Table>
+                            </div>
+                          )}
+                        </TableCell>
+                      </TableRow>
+                    ) : null}
+                    </Fragment>
                   ))}
                 </TableBody>
               </Table>
@@ -718,6 +884,12 @@ export default function ProductActSverkaReport() {
           </CardContent>
         </Card>
       )}
+      {payload?.meta ? (
+        <p className="text-xs text-muted-foreground">
+          Hisoblash vaqti: {payload.meta.computed_at || '—'} · Vaqt zonasi: {payload.meta.timezone || 'Asia/Tashkent'} ·
+          Tannarx metodi: {payload.meta.cost_method || costMethod} · Manba: {payload.meta.data_source || '—'}
+        </p>
+      ) : null}
     </div>
   );
 }

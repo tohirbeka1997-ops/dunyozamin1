@@ -926,17 +926,44 @@ class ProductsService {
     return n;
   }
 
+  _isLiveProductRow(row) {
+    if (!row) return false;
+    if (row.is_active === undefined || row.is_active === null) return true;
+    return row.is_active === 1 || row.is_active === true;
+  }
+
+  _vacateSkuForReuse(row) {
+    if (!row?.id) return;
+    const current = String(row.sku || '').trim();
+    if (!current) return;
+    if (current.includes('__inactive__')) return;
+    const vacated = `${current}__inactive__${row.id}`;
+    const now = new Date().toISOString();
+    this.db.prepare('UPDATE products SET sku = ?, updated_at = ? WHERE id = ?').run(vacated, now, row.id);
+    if (this.cacheService) this.cacheService.invalidateProduct(row.id);
+  }
+
+  /**
+   * SKU uniqueness is among *live* products only.
+   * Inactive/archived rows may still hold the text in `products.sku` (table UNIQUE),
+   * so we vacate that row when a live product claims the code.
+   * Barcode uniqueness is a separate store — SKU occupancy does not consult barcodes.
+   */
   _ensureSkuUnique(sku, excludeId = null) {
     const row = this.db
-      .prepare(`SELECT id, sku FROM products WHERE sku = ? ${excludeId ? 'AND id != ?' : ''} LIMIT 1`)
+      .prepare(
+        `SELECT id, sku, is_active FROM products WHERE sku = ? ${excludeId ? 'AND id != ?' : ''} LIMIT 1`,
+      )
       .get(...(excludeId ? [sku, excludeId] : [sku]));
-    if (row?.id) {
+    if (!row?.id) return;
+    if (this._isLiveProductRow(row)) {
       throw createError(ERROR_CODES.CONFLICT, `SKU already taken: ${row.sku || sku}`, {
         field: 'sku',
         sku: row.sku || sku,
         existing_id: row.id,
       });
     }
+    this._vacateSkuForReuse(row);
   }
 
   _ensureBarcodeUnique(barcode, excludeId = null) {
@@ -1643,11 +1670,41 @@ class ProductsService {
     }
   }
 
+  _skuLookupMatchesProduct(productSku, lookup) {
+    const s = String(productSku || '').trim();
+    const q = String(lookup || '').trim();
+    if (!s || !q) return false;
+    if (s === q) return true;
+    const norm = (value) => value.toLowerCase().replace(/[\s\-_]/g, '');
+    if (norm(s) === norm(q)) return true;
+    const stripZeros = (value) => value.replace(/^0+/, '') || '0';
+    if (/^\d+$/.test(s) && /^\d+$/.test(q) && stripZeros(s) === stripZeros(q)) return true;
+    return false;
+  }
+
+  _barcodeLookupMatchesProduct(product, lookup) {
+    const q = String(lookup || '').trim();
+    if (!q || !product) return false;
+    const matches = (code) => {
+      const b = String(code || '').trim();
+      if (!b) return false;
+      if (b === q) return true;
+      if (b.toUpperCase() === q.toUpperCase()) return true;
+      const digitsB = b.replace(/[^\d]/g, '');
+      const digitsQ = q.replace(/[^\d]/g, '');
+      return !!(digitsB && digitsB === digitsQ);
+    };
+    if (matches(product.barcode)) return true;
+    if (Array.isArray(product.alt_barcodes) && product.alt_barcodes.some(matches)) return true;
+    return false;
+  }
+
   getBySku(sku) {
     const s = this._requireNonEmptyString(sku, 'SKU');
     if (this.cacheService) {
       const cached = this.cacheService.getProductBySku(s);
-      if (cached) return cached;
+      if (cached && this._skuLookupMatchesProduct(cached.sku, s)) return cached;
+      if (cached) this.cacheService.invalidateProduct(cached.id);
     }
     const candidates = [s];
     const trimmedLeadingZeros = s.replace(/^0+/, '') || '0';
@@ -1723,7 +1780,10 @@ class ProductsService {
     if (this.cacheService) {
       for (const candidate of candidates) {
         const cached = this.cacheService.getProductByBarcode(candidate);
-        if (cached) return cached;
+        if (cached && this._barcodeLookupMatchesProduct(cached, candidate)) {
+          return cached;
+        }
+        if (cached) this.cacheService.invalidateProduct(cached.id);
       }
     }
 
@@ -1756,16 +1816,17 @@ class ProductsService {
   }
 
   /**
-   * Generate next SKU in 5-digit numeric format: `00001`, `00002`, ...
+   * Generate next unused numeric SKU (`1`, `2`, …).
    *
-   * IMPORTANT:
-   * - We intentionally reuse gaps (e.g. if 00003 is missing, return 00003).
-   * - We DO NOT use a recursive CTE because SQLite recursion depth may be limited (often 1000),
-   *   which breaks once SKUs exceed that range (e.g. 09001).
+   * Occupancy is live products only (`is_active = 1`). Released / regenerated /
+   * inactive SKUs must not consume the sequence. Gaps are reused.
+   *
+   * We DO NOT use a recursive CTE because SQLite recursion depth may be limited (often 1000),
+   * which breaks once SKUs exceed that range (e.g. 09001).
    */
   getNextSku() {
-    // Consider only purely numeric SKUs; ignore legacy/non-numeric formats.
-    // Fetch sorted numeric SKUs and find the smallest missing positive integer.
+    // Consider only purely numeric SKUs on live products; ignore legacy/non-numeric formats.
+    const activeClause = this._hasCol('is_active') ? 'AND COALESCE(is_active, 1) = 1' : '';
     const rows = this.db
       .prepare(
         `
@@ -1773,6 +1834,7 @@ class ProductsService {
         FROM products
         WHERE sku GLOB '[0-9]*'
           AND sku NOT GLOB '*[^0-9]*'
+          ${activeClause}
         ORDER BY n ASC
       `
       )

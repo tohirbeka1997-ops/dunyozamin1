@@ -169,13 +169,91 @@ export function formatOrderMoney(
 /** Format return/refund amount in the original order's sale currency. */
 export type CustomerBalances = { uzs: number; usd: number };
 
-export function getCustomerBalances(customer: {
+export type CustomerDebtAdvance = {
+  debt: number;
+  advance: number;
+  net: number;
+};
+
+type CustomerPositionLike = {
+  total_debt?: number | null;
+  advance?: number | null;
+  net?: number | null;
+};
+
+type CustomerWithOptionalPosition = {
   balance?: number | null;
   balance_usd?: number | null;
-}): CustomerBalances {
+  debt_uzs?: number | null;
+  advance_uzs?: number | null;
+  debt_usd?: number | null;
+  advance_usd?: number | null;
+  position?: CustomerPositionLike | null;
+  position_usd?: CustomerPositionLike | null;
+  total_debt?: number | null;
+};
+
+/** Prefer computeCustomerPosition overlay (list/card); else signed balance columns. */
+export function getCustomerBalances(
+  customer: CustomerWithOptionalPosition | null | undefined,
+): CustomerBalances {
+  const pos = customer?.position;
+  const posUsd = customer?.position_usd;
+  if (pos && (pos.net != null || pos.total_debt != null || pos.advance != null)) {
+    const uzs =
+      pos.net != null
+        ? Number(pos.net) || 0
+        : (Number(pos.advance) || 0) - (Number(pos.total_debt) || 0);
+    const usd =
+      posUsd && (posUsd.net != null || posUsd.total_debt != null)
+        ? posUsd.net != null
+          ? Number(posUsd.net) || 0
+          : (Number(posUsd.advance) || 0) - (Number(posUsd.total_debt) || 0)
+        : Number(customer?.balance_usd ?? 0) || 0;
+    return { uzs, usd };
+  }
   return {
     uzs: Number(customer?.balance ?? 0) || 0,
     usd: Number(customer?.balance_usd ?? 0) || 0,
+  };
+}
+
+/** Prefer position / dual-bucket; else derive from signed net. */
+export function getCustomerDebtAdvance(
+  customer: CustomerWithOptionalPosition | null | undefined,
+  currency: AppCurrency = 'UZS',
+): CustomerDebtAdvance {
+  const pos = currency === 'USD' ? customer?.position_usd : customer?.position;
+  if (pos && (pos.total_debt != null || pos.advance != null || pos.net != null)) {
+    const debt = Math.max(0, Number(pos.total_debt ?? customer?.total_debt ?? 0) || 0);
+    const advance = Math.max(0, Number(pos.advance ?? 0) || 0);
+    const net = pos.net != null ? Number(pos.net) || 0 : advance - debt;
+    return { debt, advance, net };
+  }
+  const hasDual =
+    customer?.debt_uzs != null ||
+    customer?.advance_uzs != null ||
+    customer?.debt_usd != null ||
+    customer?.advance_usd != null;
+  if (hasDual) {
+    const debt =
+      currency === 'USD'
+        ? Math.max(0, Number(customer?.debt_usd ?? 0) || 0)
+        : Math.max(0, Number(customer?.debt_uzs ?? 0) || 0);
+    const advance =
+      currency === 'USD'
+        ? Math.max(0, Number(customer?.advance_usd ?? 0) || 0)
+        : Math.max(0, Number(customer?.advance_uzs ?? 0) || 0);
+    return { debt, advance, net: advance - debt };
+  }
+  const net =
+    currency === 'USD'
+      ? Number(customer?.balance_usd ?? 0) || 0
+      : Number(customer?.balance ?? 0) || 0;
+  return {
+    debt: Math.max(0, -net),
+    advance: Math.max(0, net),
+    net,
   };
 }
 
@@ -183,11 +261,12 @@ export function formatCustomerBalanceLine(
   amount: number,
   currency: AppCurrency = 'UZS'
 ): string {
-  const n = Number(amount) || 0;
-  const abs = Math.abs(n);
+  const legacyNet = Number(amount) || 0;
+  const signed = Math.round((-legacyNet) * 100) / 100;
+  const abs = Math.abs(signed);
   const formatted = formatMoney(abs, currency);
-  if (n < -0.0001) return `Qarz: ${formatted}`;
-  if (n > 0.0001) return `Haq: ${formatted}`;
+  if (signed > 0.0001) return `+${formatted}`;
+  if (signed < -0.0001) return `−${formatted}`;
   return currency === 'USD' ? '0.00 USD' : "0 so'm";
 }
 

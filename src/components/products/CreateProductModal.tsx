@@ -288,7 +288,7 @@ export default function CreateProductModal({
         }
       }
       const existingSku = await getProductBySku(trimmedSku);
-      if (existingSku?.id) {
+      if (existingSku?.id && existingSku.is_active !== false && existingSku.is_active !== 0) {
         toast({
           title: t('common.error'),
           description: `Bu SKU allaqachon boshqa mahsulotda mavjud: ${existingSku.name || '-'} (SKU: ${existingSku.sku || '-'})`,

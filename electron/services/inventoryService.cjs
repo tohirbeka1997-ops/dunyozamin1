@@ -6,6 +6,7 @@ const {
   MANUAL_STOCK_ADJUSTMENT_TYPES,
 } = require('../lib/posHardening.cjs');
 const { formatYmdInTimeZone, UZBEKISTAN_TZ_SQLITE_OFFSET } = require('../lib/timezone.cjs');
+const { roundQuantity, unitEpsilon } = require('../lib/qty.cjs');
 
 /**
  * Inventory Service
@@ -89,6 +90,22 @@ class InventoryService {
 
   _batchRemainingValue(productId, warehouseId = null) {
     return this._batchRemainingSnapshot(productId, warehouseId).value;
+  }
+
+  /**
+   * FIFO tannarx faqat joriy zaxira doirasida.
+   * remaining_qty > stock bo‘lsa, partiya qiymati mutanosib kesiladi;
+   * stock = 0 bo‘lsa, ombor qiymati 0.
+   */
+  _fifoOnHandValue(stock, remQty, remVal, purchasePrice) {
+    const s = Number(stock || 0);
+    const rq = Number(remQty || 0);
+    const rv = Number(remVal || 0);
+    const pp = Number(purchasePrice || 0);
+    if (s <= 0) return 0;
+    if (rq <= 0) return s * pp;
+    if (rq <= s) return rv + (s - rq) * pp;
+    return rv * (s / rq);
   }
 
   _ymd(date) {
@@ -212,7 +229,7 @@ class InventoryService {
         im.notes,
         im.created_by,
         im.created_at,
-        json_object('id', p.id, 'name', p.name, 'sku', p.sku) as product,
+        json_object('id', p.id, 'name', p.name, 'sku', p.sku, 'unit', p.unit) as product,
         json_object('id', u.id, 'username', u.username, 'full_name', u.full_name) as user,
         w.name as warehouse_name
       FROM inventory_movements im
@@ -272,11 +289,18 @@ class InventoryService {
 
     const rows = this.db.prepare(query).all(params);
     // Parse JSON columns (product, user) from SQLite json_object
-    return rows.map(row => ({
-      ...row,
-      product: row.product ? JSON.parse(row.product) : null,
-      user: row.user ? JSON.parse(row.user) : null,
-    }));
+    return rows.map((row) => {
+      const product = row.product ? JSON.parse(row.product) : null;
+      const unit = product?.unit;
+      return {
+        ...row,
+        product,
+        user: row.user ? JSON.parse(row.user) : null,
+        quantity: roundQuantity(row.quantity, unit),
+        before_quantity: roundQuantity(row.before_quantity, unit),
+        after_quantity: roundQuantity(row.after_quantity, unit),
+      };
+    });
   }
 
   /**
@@ -441,20 +465,40 @@ class InventoryService {
               Math.abs(adjustmentQuantity)
             );
           } else {
-            const unitCost =
-              typeof this.batchService.defaultUnitCost === 'function'
-                ? this.batchService.defaultUnitCost(item.product_id)
-                : (() => {
-                    const productRow = this.db.prepare('SELECT purchase_price FROM products WHERE id = ?').get(item.product_id);
-                    return Number(productRow?.purchase_price || 0) || 0;
-                  })();
-            this.batchService.applyAdjustmentDelta(
-              item.product_id,
-              adjustmentData.warehouse_id,
-              adjustmentQuantity,
+            const explicitCost =
+              item.unit_cost != null
+                ? Number(item.unit_cost)
+                : item.cost_price != null
+                  ? Number(item.cost_price)
+                  : null;
+            let unitCost =
+              explicitCost != null && Number.isFinite(explicitCost)
+                ? explicitCost
+                : typeof this.batchService.defaultUnitCost === 'function'
+                  ? this.batchService.defaultUnitCost(item.product_id)
+                  : (() => {
+                      const productRow = this.db
+                        .prepare('SELECT purchase_price FROM products WHERE id = ?')
+                        .get(item.product_id);
+                      return Number(productRow?.purchase_price || 0) || 0;
+                    })();
+            // Business rule: surplus / correction_in must carry an explicit positive cost in batch mode.
+            if (!(Number(unitCost) > 0) && !(adjustmentData.allow_zero_cost === true || item.allow_zero_cost === true)) {
+              throw createError(
+                ERROR_CODES.VALIDATION_ERROR,
+                'Korreksiya (ortiqcha) uchun tannarx majburiy. unit_cost > 0 kiriting (FIFO / ombor qiymati buzilmasin).'
+              );
+            }
+            this.batchService.applyAdjustmentDelta({
+              productId: item.product_id,
+              warehouseId: adjustmentData.warehouse_id,
+              deltaQty: adjustmentQuantity,
               adjustmentId,
-              unitCost
-            );
+              unitCostForIn: unitCost,
+              allowZeroCost: adjustmentData.allow_zero_cost === true || item.allow_zero_cost === true,
+              batchNo: item.batch_no || null,
+              expiryDate: item.expiry_date || null,
+            });
           }
         }
 
@@ -560,8 +604,38 @@ class InventoryService {
 
     // SINGLE SOURCE OF TRUTH: inventory_movements
     // Compute stock from movements, not from stock_balances
-    const beforeQuantity = Number(this.getCurrentStock(productId, warehouseId)) || 0;
-    const afterQuantity = beforeQuantity + quantityChange;
+    let unit = '';
+    try {
+      const productUnitRow = this.db.prepare('SELECT unit FROM products WHERE id = ?').get(productId);
+      unit = productUnitRow?.unit || '';
+    } catch {
+      unit = '';
+    }
+    let beforeQuantity = roundQuantity(Number(this.getCurrentStock(productId, warehouseId)) || 0, unit);
+    let afterQuantity = roundQuantity(beforeQuantity + Number(quantityChange || 0), unit);
+    let storedChange = roundQuantity(afterQuantity - beforeQuantity, unit);
+
+    if (this._isTruthySetting('inventory.qty_epsilon_zero')) {
+      const eps = unitEpsilon(unit);
+      if (eps > 0 && Math.abs(afterQuantity) > 0 && Math.abs(afterQuantity) < eps) {
+        const rawAfter = afterQuantity;
+        afterQuantity = 0;
+        storedChange = roundQuantity(afterQuantity - beforeQuantity, unit);
+        try {
+          this.audit?.log?.({
+            action: 'inventory.qty_epsilon_zero',
+            entity_type: 'stock_balance',
+            entity_id: productId,
+            warehouse_id: warehouseId || null,
+            old_values: { after_quantity: rawAfter, unit },
+            new_values: { after_quantity: 0 },
+            reason: 'qty_epsilon_zero',
+          });
+        } catch (auditErr) {
+          console.warn('[inventory] qty epsilon audit failed:', auditErr?.message || auditErr);
+        }
+      }
+    }
 
     const canGoNegative = this.isNegativeStockAllowed();
 
@@ -622,7 +696,7 @@ class InventoryService {
         warehouseId || null,
         movementNumber,
         moveType,
-        quantityChange,
+        storedChange,
         beforeQuantity,
         afterQuantity,
         referenceType || null,
@@ -833,12 +907,11 @@ class InventoryService {
         // Use product.purchase_price as fallback
       }
       
-      // FIFO: remaining batches × unit_cost + leftover warehouse qty × purchase_price
+      // FIFO: tannarx faqat joriy zaxira doirasida (yopilmagan partiya qoldig‘i kiritilmaydi)
       const fifoOn = this._isFifoValuationEnabled();
       const batchSnap = fifoOn ? this._batchRemainingSnapshot(resolvedProductId) : { qty: 0, value: 0 };
-      const leftoverQty = Math.max(0, currentStock - Number(batchSnap.qty || 0));
       const stockValue = fifoOn
-        ? Number(batchSnap.value || 0) + leftoverQty * latestPurchasePrice
+        ? this._fifoOnHandValue(currentStock, batchSnap.qty, batchSnap.value, latestPurchasePrice)
         : currentStock * latestPurchasePrice;
 
       // Get category name
@@ -1510,6 +1583,23 @@ class InventoryService {
         ) || 0
       : 0;
 
+    const batchCols = this._hasTable('inventory_batches')
+      ? new Set((this.db.prepare(`PRAGMA table_info(inventory_batches)`).all() || []).map((c) => c.name))
+      : new Set();
+    const batchNoExpr = batchCols.has('batch_no') ? 'b.batch_no' : 'NULL';
+    const expiryExpr = batchCols.has('expiry_date') ? 'b.expiry_date' : 'NULL';
+    const costUzsExpr = batchCols.has('cost_price_uzs')
+      ? 'COALESCE(b.cost_price_uzs, b.unit_cost)'
+      : 'b.unit_cost';
+    const receiptIdCol = batchCols.has('receipt_id');
+
+    const returnsTable = this._hasTable('sale_returns')
+      ? 'sale_returns'
+      : this._hasTable('sales_returns')
+        ? 'sales_returns'
+        : null;
+    const returnItemsTable = returnsTable === 'sale_returns' ? 'sale_return_items' : 'return_items';
+
     const warehouseMap = new Map();
     if (this._hasTable('warehouses')) {
       for (const w of this.db.prepare(`SELECT id, name FROM warehouses`).all()) {
@@ -1610,11 +1700,19 @@ class InventoryService {
       const allocRows = this.db
         .prepare(
           `
-          SELECT reference_id, batch_id, quantity, unit_cost
-          FROM inventory_batch_allocations
-          WHERE reference_type = 'order_item'
-            AND reference_id IN (${orderItemIds.map(() => '?').join(',')})
-          ORDER BY created_at ASC
+          SELECT a.reference_id, a.batch_id, a.quantity, a.unit_cost,
+                 b.doc_no AS batch_doc_no,
+                 ${batchNoExpr} AS batch_no,
+                 b.remaining_qty AS batch_remaining_qty,
+                 b.initial_qty AS batch_initial_qty,
+                 ${receiptIdCol ? 'b.receipt_id' : 'NULL'} AS receipt_id,
+                 b.source_type AS batch_source_type,
+                 ${expiryExpr} AS expiry_date
+          FROM inventory_batch_allocations a
+          LEFT JOIN inventory_batches b ON b.id = a.batch_id
+          WHERE a.reference_type = 'order_item'
+            AND a.reference_id IN (${orderItemIds.map(() => '?').join(',')})
+          ORDER BY a.created_at ASC
         `
         )
         .all(...orderItemIds);
@@ -1623,11 +1721,181 @@ class InventoryService {
         const list = allocationsMap.get(ref) || [];
         list.push({
           batch_id: a.batch_id,
+          batch_no: a.batch_no || a.batch_doc_no || null,
           quantity: Number(a.quantity || 0) || 0,
           unit_cost: Number(a.unit_cost || 0) || 0,
           line_cost: (Number(a.quantity || 0) || 0) * (Number(a.unit_cost || 0) || 0),
+          remaining_qty: a.batch_remaining_qty != null ? Number(a.batch_remaining_qty) || 0 : null,
+          initial_qty: a.batch_initial_qty != null ? Number(a.batch_initial_qty) || 0 : null,
+          receipt_id: a.receipt_id || null,
+          source_type: a.batch_source_type || null,
+          expiry_date: a.expiry_date || null,
         });
         allocationsMap.set(ref, list);
+      }
+    }
+
+    // Return allocations (customer returns restoring FIFO layers)
+    const returnItemIds = [];
+    if (uniqReturnIds.length && returnsTable && this._hasTable(returnItemsTable)) {
+      try {
+        const riRows = this.db
+          .prepare(
+            `SELECT id, return_id FROM ${returnItemsTable}
+             WHERE product_id = ? AND return_id IN (${uniqReturnIds.map(() => '?').join(',')})`
+          )
+          .all(productId, ...uniqReturnIds);
+        for (const r of riRows) returnItemIds.push(r.id);
+      } catch {
+        /* ignore */
+      }
+    }
+    const returnAllocMap = new Map();
+    if (returnItemIds.length && this._hasTable('inventory_batch_allocations')) {
+      const rows = this.db
+        .prepare(
+          `
+          SELECT a.reference_id, a.batch_id, a.quantity, a.unit_cost,
+                 b.doc_no AS batch_doc_no, ${batchNoExpr} AS batch_no,
+                 b.remaining_qty AS batch_remaining_qty
+          FROM inventory_batch_allocations a
+          LEFT JOIN inventory_batches b ON b.id = a.batch_id
+          WHERE a.reference_type = 'return_item'
+            AND a.reference_id IN (${returnItemIds.map(() => '?').join(',')})
+          ORDER BY a.created_at ASC
+        `
+        )
+        .all(...returnItemIds);
+      const byReturn = new Map();
+      const itemToReturn = new Map();
+      if (uniqReturnIds.length && this._hasTable(returnItemsTable)) {
+        const mapRows = this.db
+          .prepare(
+            `SELECT id, return_id FROM ${returnItemsTable} WHERE id IN (${returnItemIds.map(() => '?').join(',')})`
+          )
+          .all(...returnItemIds);
+        for (const m of mapRows) itemToReturn.set(String(m.id), String(m.return_id));
+      }
+      for (const a of rows) {
+        const retId = itemToReturn.get(String(a.reference_id));
+        if (!retId) continue;
+        const list = byReturn.get(retId) || [];
+        list.push({
+          batch_id: a.batch_id,
+          batch_no: a.batch_no || a.batch_doc_no || null,
+          quantity: Number(a.quantity || 0) || 0,
+          unit_cost: Number(a.unit_cost || 0) || 0,
+          line_cost: (Number(a.quantity || 0) || 0) * (Number(a.unit_cost || 0) || 0),
+          remaining_qty: a.batch_remaining_qty != null ? Number(a.batch_remaining_qty) || 0 : null,
+        });
+        byReturn.set(retId, list);
+      }
+      for (const [k, v] of byReturn) returnAllocMap.set(k, v);
+    }
+
+    // Receipt → batch layers (inbound)
+    const receiptBatchMap = new Map();
+    if (uniqReceiptIds.length && this._hasTable('inventory_batches') && receiptIdCol) {
+        const rows = this.db
+          .prepare(
+            `
+            SELECT id, receipt_id, ${batchCols.has('batch_no') ? 'batch_no' : 'NULL AS batch_no'},
+                   doc_no, initial_qty, remaining_qty, unit_cost,
+                   ${batchCols.has('cost_price_uzs') ? 'COALESCE(cost_price_uzs, unit_cost)' : 'unit_cost'} AS cost_uzs,
+                   ${batchCols.has('expiry_date') ? 'expiry_date' : 'NULL AS expiry_date'},
+                   source_type, opened_at
+            FROM inventory_batches
+            WHERE product_id = ?
+              AND receipt_id IN (${uniqReceiptIds.map(() => '?').join(',')})
+            ORDER BY opened_at ASC, created_at ASC
+          `
+          )
+          .all(productId, ...uniqReceiptIds);
+        for (const b of rows) {
+          const rid = String(b.receipt_id);
+          const list = receiptBatchMap.get(rid) || [];
+          list.push({
+            batch_id: b.id,
+            batch_no: b.batch_no || b.doc_no || null,
+            quantity: Number(b.initial_qty || 0) || 0,
+            unit_cost: Number(b.cost_uzs || b.unit_cost || 0) || 0,
+            line_cost:
+              (Number(b.initial_qty || 0) || 0) * (Number(b.cost_uzs || b.unit_cost || 0) || 0),
+            remaining_qty: Number(b.remaining_qty || 0) || 0,
+            initial_qty: Number(b.initial_qty || 0) || 0,
+            receipt_id: b.receipt_id,
+            source_type: b.source_type,
+            expiry_date: b.expiry_date || null,
+            opened_at: b.opened_at || null,
+          });
+          receiptBatchMap.set(rid, list);
+        }
+    }
+
+    // Adjustment allocations / created batches
+    const adjustmentAllocMap = new Map();
+    const adjustmentBatchMap = new Map();
+    if (uniqAdjustmentIds.length && this._hasTable('inventory_batch_allocations')) {
+      const rows = this.db
+        .prepare(
+          `
+          SELECT a.reference_id, a.batch_id, a.quantity, a.unit_cost, a.direction,
+                 b.doc_no AS batch_doc_no, ${batchNoExpr} AS batch_no, b.remaining_qty AS batch_remaining_qty
+          FROM inventory_batch_allocations a
+          LEFT JOIN inventory_batches b ON b.id = a.batch_id
+          WHERE a.reference_type = 'adjustment'
+            AND a.reference_id IN (${uniqAdjustmentIds.map(() => '?').join(',')})
+          ORDER BY a.created_at ASC
+        `
+        )
+        .all(...uniqAdjustmentIds);
+      for (const a of rows) {
+        const ref = String(a.reference_id);
+        const list = adjustmentAllocMap.get(ref) || [];
+        list.push({
+          batch_id: a.batch_id,
+          batch_no: a.batch_no || a.batch_doc_no || null,
+          quantity: Number(a.quantity || 0) || 0,
+          unit_cost: Number(a.unit_cost || 0) || 0,
+          line_cost: (Number(a.quantity || 0) || 0) * (Number(a.unit_cost || 0) || 0),
+          remaining_qty: a.batch_remaining_qty != null ? Number(a.batch_remaining_qty) || 0 : null,
+          direction: a.direction,
+        });
+        adjustmentAllocMap.set(ref, list);
+      }
+    }
+    if (uniqAdjustmentIds.length && this._hasTable('inventory_batches')) {
+      const rows = this.db
+        .prepare(
+          `
+          SELECT id, source_id,
+                 ${batchCols.has('batch_no') ? 'batch_no' : 'NULL AS batch_no'},
+                 doc_no, initial_qty, remaining_qty, unit_cost,
+                 ${batchCols.has('cost_price_uzs') ? 'COALESCE(cost_price_uzs, unit_cost)' : 'unit_cost'} AS cost_uzs,
+                 ${batchCols.has('expiry_date') ? 'expiry_date' : 'NULL AS expiry_date'},
+                 source_type
+          FROM inventory_batches
+          WHERE product_id = ?
+            AND source_type = 'adjustment_in'
+            AND source_id IN (${uniqAdjustmentIds.map(() => '?').join(',')})
+        `
+        )
+        .all(productId, ...uniqAdjustmentIds);
+      for (const b of rows) {
+        const sid = String(b.source_id);
+        const list = adjustmentBatchMap.get(sid) || [];
+        list.push({
+          batch_id: b.id,
+          batch_no: b.batch_no || b.doc_no || null,
+          quantity: Number(b.initial_qty || 0) || 0,
+          unit_cost: Number(b.cost_uzs || b.unit_cost || 0) || 0,
+          line_cost:
+            (Number(b.initial_qty || 0) || 0) * (Number(b.cost_uzs || b.unit_cost || 0) || 0),
+          remaining_qty: Number(b.remaining_qty || 0) || 0,
+          source_type: b.source_type,
+          expiry_date: b.expiry_date || null,
+        });
+        adjustmentBatchMap.set(sid, list);
       }
     }
 
@@ -1674,13 +1942,6 @@ class InventoryService {
         });
       }
     }
-
-    const returnsTable = this._hasTable('sale_returns')
-      ? 'sale_returns'
-      : this._hasTable('sales_returns')
-        ? 'sales_returns'
-        : null;
-    const returnItemsTable = returnsTable === 'sale_returns' ? 'sale_return_items' : 'return_items';
 
     const returnMap = new Map();
     if (uniqReturnIds.length && returnsTable) {
@@ -1841,6 +2102,15 @@ class InventoryService {
         if (agg && agg.qty > 0) {
           costPrice = agg.cost_total / agg.qty;
         }
+        const layers = receiptBatchMap.get(refId);
+        if (layers && layers.length) {
+          allocations = layers;
+          if (costPrice == null) {
+            const qtySum = layers.reduce((s, a) => s + Number(a.quantity || 0), 0);
+            const costSum = layers.reduce((s, a) => s + Number(a.line_cost || 0), 0);
+            if (qtySum > 0) costPrice = costSum / qtySum;
+          }
+        }
       } else if (refType === 'return') {
         const ret = returnMap.get(refId);
         documentNo = ret?.return_number || null;
@@ -1854,6 +2124,15 @@ class InventoryService {
             costPrice = null;
           } else {
             costPrice = agg.cost_total / agg.qty;
+          }
+        }
+        const rAlloc = returnAllocMap.get(refId);
+        if (rAlloc && rAlloc.length) {
+          allocations = rAlloc;
+          if (costPrice == null) {
+            const qtySum = rAlloc.reduce((s, a) => s + Number(a.quantity || 0), 0);
+            const costSum = rAlloc.reduce((s, a) => s + Number(a.line_cost || 0), 0);
+            if (qtySum > 0) costPrice = costSum / qtySum;
           }
         }
       } else if (refType === 'supplier_return') {
@@ -1877,6 +2156,21 @@ class InventoryService {
           fromName = whName;
           toName = 'System';
         }
+        const adjAlloc = adjustmentAllocMap.get(refId);
+        const adjBatch = adjustmentBatchMap.get(refId);
+        if (adjAlloc && adjAlloc.length) {
+          allocations = adjAlloc;
+        } else if (adjBatch && adjBatch.length) {
+          allocations = adjBatch;
+        }
+        if (allocations.length) {
+          const qtySum = allocations.reduce((s, a) => s + Number(a.quantity || 0), 0);
+          const costSum = allocations.reduce((s, a) => s + Number(a.line_cost || 0), 0);
+          if (qtySum > 0) costPrice = costSum / qtySum;
+        }
+        if ((qtyIn > 0 || qtyOut > 0) && (!(Number(costPrice) > 0))) {
+          costPrice = costPrice == null ? null : Number(costPrice) || 0;
+        }
       } else {
         const whName = warehouseMap.get(String(m.warehouse_id || '')) || 'Warehouse';
         if (qtyIn > 0) {
@@ -1892,8 +2186,9 @@ class InventoryService {
       if (qtyOut > 0 && unitPrice != null && costPrice != null) {
         margin = (Number(unitPrice) - Number(costPrice)) * qtyOut;
       }
-      if (qtyOut > 0 && costPrice == null) {
-        missingCostCount += 1;
+      if ((qtyOut > 0 || (refType === 'adjustment' && qtyIn > 0)) && (costPrice == null || !(Number(costPrice) > 0))) {
+        if (qtyOut > 0 && costPrice == null) missingCostCount += 1;
+        if (refType === 'adjustment' && qtyIn > 0 && !(Number(costPrice) > 0)) missingCostCount += 1;
       }
       if (qtyOut > 0 && margin < 0) {
         negativeMarginCount += 1;

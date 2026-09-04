@@ -127,10 +127,11 @@ export function formatNumberUZ(
  * @param balance - Customer balance (number)
  * @returns Object with type, label, color, and badge variant
  * 
- * Balance logic:
- * - balance < 0: Debt (customer owes money) - RED
- * - balance > 0: Positive balance (prepaid/credit) - GREEN
- * - balance == 0: Zero balance - GRAY
+ * Cashier signed display from legacy customers.balance / position.net
+ * (advance − debt):
+ * - legacy < 0 → customer owes → label +N (red)
+ * - legacy > 0 → prepaid excess → label −N (green); never «Avans»
+ * - legacy == 0 → zero
  */
 export function formatCustomerBalance(
   balance: number | null | undefined,
@@ -141,23 +142,23 @@ export function formatCustomerBalance(
   color: string;
   variant: 'destructive' | 'default' | 'outline';
 } {
-  const balanceNum = Number(balance || 0);
+  const legacyNet = Number(balance || 0);
+  const signed = Math.round(-legacyNet * 100) / 100;
   const isUsd = currency === 'USD';
+  const absFmt = (abs: number) => (isUsd ? formatMoney(abs, 'USD') : formatMoneyUZS(abs));
 
-  if (balanceNum < -0.0001) {
+  if (signed > 0.0001) {
     return {
       type: 'debt',
-      label: isUsd
-        ? `Qarz: ${formatMoney(Math.abs(balanceNum), 'USD')}`
-        : `Qarz: ${formatMoneyUZS(Math.abs(balanceNum))}`,
+      label: `+${absFmt(signed)}`,
       color: 'text-destructive',
       variant: 'destructive',
     };
   }
-  if (balanceNum > 0.0001) {
+  if (signed < -0.0001) {
     return {
       type: 'balance',
-      label: isUsd ? `Haq: ${formatMoney(balanceNum, 'USD')}` : `Haq: ${formatMoneyUZS(balanceNum)}`,
+      label: `−${absFmt(Math.abs(signed))}`,
       color: 'text-success',
       variant: 'default',
     };

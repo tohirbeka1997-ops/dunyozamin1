@@ -322,6 +322,7 @@ const DEFAULT_INITIAL_BONUS_LIMIT = 10000;
 /**
  * Classify payment_out: payout from customer advance vs lend (create debt).
  * Signed balance: positive = advance, negative = debt.
+ * Used for auto-classify / payout path (nets against advance).
  *
  * @param {number} oldBalance
  * @param {number} amount positive amount to give
@@ -354,6 +355,44 @@ function classifyPaymentOut(oldBalance, amount) {
   };
 }
 
+/**
+ * Explicit "Pul berildi" / CUSTOMER_LOAN_ISSUED: debt += amount, advance unchanged.
+ * Dual-bucket aware via optional currentDebt / currentAdvance.
+ *
+ * @param {number} oldBalance net (advance - debt), informational
+ * @param {number} amount positive loan amount
+ * @param {{ currentDebt?: number, currentAdvance?: number }} [opts]
+ */
+function classifyExplicitLend(oldBalance, amount, opts = {}) {
+  const bal = Number(oldBalance) || 0;
+  const amt = Number(amount) || 0;
+  if (!(amt > 0) || !Number.isFinite(amt)) {
+    return { ok: false, error: 'Summa 0 dan katta bo‘lishi kerak.', code: 'INVALID_AMOUNT' };
+  }
+  const currentDebt =
+    opts.currentDebt != null && Number.isFinite(Number(opts.currentDebt))
+      ? Math.max(0, Number(opts.currentDebt))
+      : Math.max(0, -bal);
+  const currentAdvance =
+    opts.currentAdvance != null && Number.isFinite(Number(opts.currentAdvance))
+      ? Math.max(0, Number(opts.currentAdvance))
+      : Math.max(0, bal);
+  const new_debt = Math.round((currentDebt + amt) * 100) / 100;
+  const new_advance = Math.round(currentAdvance * 100) / 100;
+  const new_balance = Math.round((new_advance - new_debt) * 100) / 100;
+  return {
+    ok: true,
+    kind: 'lend',
+    advance: currentAdvance,
+    amount: amt,
+    debt_created: amt,
+    current_debt: currentDebt,
+    new_debt,
+    new_advance,
+    new_balance,
+  };
+}
+
 function _normalizeRoleSet(roles) {
   const set = new Set();
   for (const r of roles || []) {
@@ -366,9 +405,9 @@ function _normalizeRoleSet(roles) {
 }
 
 function roleCanPayoutWithinAdvance(roles) {
-  // TZ: avans qaytarish — menejer/admin (kassir emas)
+  // TZ §8: avans qaytarish — menejer/admin (kassir emas)
   const set = _normalizeRoleSet(roles);
-  return set.has('admin') || set.has('manager') || set.has('senior_cashier');
+  return set.has('admin') || set.has('manager');
 }
 
 function roleCanLendCreateDebt(roles, _lendAuthorizedIgnored) {
@@ -392,19 +431,104 @@ function roleCanChangeCreditDueDate(roles) {
   return set.has('admin') || set.has('manager');
 }
 
+function roleCanManualPaymentAllocation(roles) {
+  const set = _normalizeRoleSet(roles);
+  return set.has('admin') || set.has('manager');
+}
+
 /**
  * Enforce payout-within-advance vs authorized lend.
+ * Explicit lend never nets against advance (debt += amount, advance unchanged).
  * @returns {{ ok: true, kind: 'payout'|'lend', ... } | { ok: false, error: string, code: string }}
  */
 function assertPaymentOutAllowed(opts = {}) {
   const oldBalance = opts.oldBalance;
   const amount = opts.amount;
-  const classified = classifyPaymentOut(oldBalance, amount);
-  if (!classified.ok) return classified;
-
   const roles = opts.roles || [];
   const kindRequested = opts.kindRequested ? String(opts.kindRequested).toLowerCase() : null;
   const reasonText = String(opts.reason || '').trim();
+
+  // Explicit "Pul berildi" / lend: dual-bucket, no advance netting
+  if (kindRequested === 'lend') {
+    const lendClassified = classifyExplicitLend(oldBalance, amount, {
+      currentDebt: opts.currentDebt,
+      currentAdvance: opts.currentAdvance,
+    });
+    if (!lendClassified.ok) return lendClassified;
+    if (!roleCanLendCreateDebt(roles, opts.lendAuthorized)) {
+      return {
+        ok: false,
+        error: 'Bu operatsiya uchun menejer ruxsati kerak.',
+        code: 'LEND_FORBIDDEN',
+        advance: lendClassified.advance,
+        amount: lendClassified.amount,
+        debt_created: lendClassified.debt_created,
+        current_debt: lendClassified.current_debt,
+        new_debt: lendClassified.new_debt,
+        new_advance: lendClassified.new_advance,
+      };
+    }
+    if (!reasonText) {
+      return {
+        ok: false,
+        error: 'Qarz berish sababi majburiy.',
+        code: 'LEND_REASON_REQUIRED',
+        advance: lendClassified.advance,
+        amount: lendClassified.amount,
+        debt_created: lendClassified.debt_created,
+        current_debt: lendClassified.current_debt,
+        new_debt: lendClassified.new_debt,
+        new_advance: lendClassified.new_advance,
+      };
+    }
+    const rawLimit = opts.creditLimit;
+    const limit = Number(rawLimit);
+    const hasPositiveLimit = Number.isFinite(limit) && limit > 0;
+    if (!hasPositiveLimit) {
+      return {
+        ok: false,
+        error: 'Qarz berib bo‘lmaydi: mijoz kredit limiti belgilanmagan.',
+        code: 'CREDIT_LIMIT_NOT_SET',
+        advance: lendClassified.advance,
+        amount: lendClassified.amount,
+        debt_created: lendClassified.debt_created,
+        current_debt: lendClassified.current_debt,
+        new_debt: lendClassified.new_debt,
+        new_advance: lendClassified.new_advance,
+        credit_limit: Number.isFinite(limit) ? limit : 0,
+      };
+    }
+    if (lendClassified.new_debt > limit + 1e-6) {
+      return {
+        ok: false,
+        error: 'Qarz berib bo‘lmaydi: yangi qarz mijoz kredit limitidan oshadi.',
+        code: 'CREDIT_LIMIT_EXCEEDED',
+        advance: lendClassified.advance,
+        amount: lendClassified.amount,
+        debt_created: lendClassified.debt_created,
+        new_debt: lendClassified.new_debt,
+        new_advance: lendClassified.new_advance,
+        current_debt: lendClassified.current_debt,
+        credit_limit: limit,
+        over_by: Math.max(0, lendClassified.new_debt - limit),
+      };
+    }
+    return {
+      ok: true,
+      kind: 'lend',
+      advance: lendClassified.advance,
+      amount: lendClassified.amount,
+      debt_created: lendClassified.debt_created,
+      current_debt: lendClassified.current_debt,
+      new_debt: lendClassified.new_debt,
+      new_advance: lendClassified.new_advance,
+      new_balance: lendClassified.new_balance,
+      reason: reasonText,
+    };
+  }
+
+  const classified = classifyPaymentOut(oldBalance, amount);
+  if (!classified.ok) return classified;
 
   // Explicit payout request cannot exceed advance
   if (kindRequested === 'payout' && classified.kind === 'lend') {
@@ -418,8 +542,8 @@ function assertPaymentOutAllowed(opts = {}) {
     };
   }
 
-  // Auto / lend path when amount > advance
-  if (classified.kind === 'lend' || kindRequested === 'lend') {
+  // Auto path when amount > advance (no explicit kind) — treat as lend with netting
+  if (classified.kind === 'lend') {
     if (!roleCanLendCreateDebt(roles, opts.lendAuthorized)) {
       return {
         ok: false,
@@ -443,6 +567,15 @@ function assertPaymentOutAllowed(opts = {}) {
     const rawLimit = opts.creditLimit;
     const limit = Number(rawLimit);
     const hasPositiveLimit = Number.isFinite(limit) && limit > 0;
+    const currentDebt =
+      opts.currentDebt != null && Number.isFinite(Number(opts.currentDebt))
+        ? Math.max(0, Number(opts.currentDebt))
+        : Math.max(0, -Number(oldBalance) || 0);
+    // Prefer dual-bucket new debt when available
+    const newDebt =
+      opts.currentDebt != null
+        ? Math.round((currentDebt + classified.amount) * 100) / 100
+        : Math.max(0, -classified.new_balance);
     if (!hasPositiveLimit) {
       return {
         ok: false,
@@ -451,13 +584,11 @@ function assertPaymentOutAllowed(opts = {}) {
         advance: classified.advance,
         amount: classified.amount,
         debt_created: classified.debt_created,
-        new_debt: Math.max(0, -classified.new_balance),
+        new_debt: newDebt,
         credit_limit: Number.isFinite(limit) ? limit : 0,
       };
     }
-    const newDebt = Math.max(0, -classified.new_balance);
     if (newDebt > limit + 1e-6) {
-      const currentDebt = Math.max(0, -Number(oldBalance) || 0);
       return {
         ok: false,
         error: 'Qarz berib bo‘lmaydi: yangi qarz mijoz kredit limitidan oshadi.',
@@ -671,6 +802,11 @@ function assertOptionalEmail(raw) {
 function assertOptionalUzPhone(raw) {
   const s = raw == null ? '' : String(raw).trim();
   if (!s) return { ok: true, phone: null, normalized: null };
+  // Phone masks often inject "+998". Prefix-only (or "+") is empty, not invalid.
+  const compact = s.replace(/[\s().-]/g, '');
+  if (compact === '+' || /^\+?998$/.test(compact)) {
+    return { ok: true, phone: null, normalized: null };
+  }
   const digits = s.replace(/\D/g, '');
   let normalized = null;
   if (digits.startsWith('998') && digits.length >= 12) {
@@ -1074,12 +1210,14 @@ module.exports = {
   isBulkPercentDecreaseBlocked,
   allocatePaymentInToDebtAndAdvance,
   classifyPaymentOut,
+  classifyExplicitLend,
   assertPaymentOutAllowed,
   roleCanPayoutWithinAdvance,
   roleCanLendCreateDebt,
   roleCanExportCustomers,
   roleCanReissueLoyaltyQr,
   roleCanChangeCreditDueDate,
+  roleCanManualPaymentAllocation,
   parseBonusDeltaInteger,
   assertBonusCorrection,
   assertInitialBonusPoints,

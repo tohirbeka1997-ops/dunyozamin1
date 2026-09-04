@@ -16,7 +16,7 @@ import type { Warehouse } from '@/types/database';
 import { FileDown, ArrowLeft } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 import { useNavigate } from 'react-router-dom';
-import { formatMoneyUZS } from '@/lib/format';
+import { formatCustomerBalance, formatMoneyUZS } from '@/lib/format';
 import { todayYMD } from '@/lib/datetime';
 import { useReportAutoRefresh } from '@/hooks/useReportAutoRefresh';
 import { useTableSort } from '@/hooks/useTableSort';
@@ -33,9 +33,9 @@ interface CustomerSalesData {
   total_purchases: number;
   order_count: number;
   average_order_value: number;
-  /** Signed UZS: < 0 debt, > 0 prepaid (customers.balance) */
+  /** Legacy net UZS: < 0 debt, > 0 prepaid (customers.balance). UI shows cashier signed (+ owes). */
   balance: number;
-  /** Signed USD bucket (customers.balance_usd) */
+  /** Legacy net USD bucket (customers.balance_usd) */
   balance_usd: number;
 }
 
@@ -336,7 +336,7 @@ export default function CustomerSalesReport() {
           <p className="text-sm text-muted-foreground">
             {t(
               'reports.customer_sales_page.scope_hint',
-              "Hisob: yakunlangan sotuvlarning gross summasi (UZS ekv.), shu jumladan nasiya. POS savat qaytarishlari chiqarib tashlanadi. Qoldiq qarz — davrdagi faol mijozlarning joriy customers.balance (ledger), credit_amount yig'indisi emas."
+              "Hisob: yakunlangan sotuvlarning gross summasi (UZS ekv.), shu jumladan nasiya. POS savat qaytarishlari chiqarib tashlanadi. Qoldiq qarz — joriy ochiq buyurtma qarzi + qarz berish (computeCustomerPosition), xom customers.balance emas."
             )}
           </p>
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
@@ -518,22 +518,28 @@ export default function CustomerSalesReport() {
                       {formatMoneyUZS(customer.average_order_value)}
                     </TableCell>
                     <TableCell className="text-right">
-                      {customer.balance < 0 ? (
-                        <Badge className="bg-destructive text-white">
-                          {formatMoneyUZS(Math.abs(customer.balance))}
-                        </Badge>
-                      ) : customer.balance > 0 ? (
-                        <Badge className="bg-success text-white">
-                          {formatMoneyUZS(customer.balance)}
-                        </Badge>
-                      ) : customer.balance_usd < 0 ? (
-                        <Badge className="bg-destructive text-white">
-                          {Math.abs(customer.balance_usd).toFixed(2)} USD
-                        </Badge>
-                      ) : customer.balance_usd > 0 ? (
-                        <Badge className="bg-success text-white">
-                          {customer.balance_usd.toFixed(2)} USD
-                        </Badge>
+                      {customer.balance !== 0 || customer.balance_usd !== 0 ? (
+                        Math.abs(customer.balance) > 0.0001 ? (
+                          <Badge
+                            className={
+                              customer.balance < 0
+                                ? 'bg-destructive text-white'
+                                : 'bg-success text-white'
+                            }
+                          >
+                            {formatCustomerBalance(customer.balance, 'UZS').label}
+                          </Badge>
+                        ) : (
+                          <Badge
+                            className={
+                              customer.balance_usd < 0
+                                ? 'bg-destructive text-white'
+                                : 'bg-success text-white'
+                            }
+                          >
+                            {formatCustomerBalance(customer.balance_usd, 'USD').label}
+                          </Badge>
+                        )
                       ) : (
                         <span className="text-muted-foreground">{formatMoneyUZS(0)}</span>
                       )}

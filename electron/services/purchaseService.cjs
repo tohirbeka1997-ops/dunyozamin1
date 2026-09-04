@@ -2645,7 +2645,7 @@ class PurchaseService {
               supplierId: supplierId,
               supplierName: po?.supplier_name || supplier?.name || null,
               docNo: receiptNumber,
-              openedAt: now,
+              openedAt: data.received_at || now,
               currency,
               exchangeRate,
               usdPrice: currency === 'USD' ? Number(unitUsd || 0) : null,
@@ -3147,6 +3147,177 @@ class PurchaseService {
     });
 
     return this.get(purchaseOrderId);
+  }
+
+  bindReportsService(reportsService) {
+    this.reportsService = reportsService;
+  }
+
+  _planningFilters(payload) {
+    const src = payload?.planning_filters || payload?.filters || payload || {};
+    return {
+      analysis_days: src.analysis_days,
+      plan_days: src.plan_days,
+      safety_days: src.safety_days,
+      date_to: src.date_to,
+      category_id: src.category_id,
+      warehouse_id: src.warehouse_id,
+      search: '',
+      only_risk: false,
+    };
+  }
+
+  _openOrdersForProducts(productIds) {
+    if (!productIds?.length || !this._hasPOCol('status')) return [];
+    try {
+      const placeholders = productIds.map(() => '?').join(',');
+      return this.db
+        .prepare(
+          `
+          SELECT
+            po.id AS purchase_order_id,
+            po.po_number,
+            po.supplier_id,
+            po.status,
+            poi.product_id,
+            poi.product_name,
+            poi.ordered_qty,
+            COALESCE(poi.received_qty, 0) AS received_qty
+          FROM purchase_order_items poi
+          INNER JOIN purchase_orders po ON po.id = poi.purchase_order_id
+          WHERE poi.product_id IN (${placeholders})
+            AND LOWER(COALESCE(po.status, '')) NOT IN ('received', 'cancelled')
+          ORDER BY po.created_at DESC
+        `,
+        )
+        .all(...productIds);
+    } catch {
+      return [];
+    }
+  }
+
+  previewDraftFromPlanning(payload = {}) {
+    if (!this.reportsService?.getPurchasePlanning) {
+      throw createError(ERROR_CODES.INTERNAL_ERROR, 'Reports service is not bound');
+    }
+    const productIds = [...new Set((payload.product_ids || []).map(String).filter(Boolean))];
+    if (!productIds.length) {
+      throw createError(ERROR_CODES.VALIDATION_ERROR, 'Mahsulot tanlang');
+    }
+    const planning = this.reportsService.getPurchasePlanning(this._planningFilters(payload));
+    const idSet = new Set(productIds);
+    const selected = (planning.rows || []).filter((r) => idSet.has(String(r.product_id)));
+    if (!selected.length) {
+      throw createError(ERROR_CODES.VALIDATION_ERROR, 'Tanlangan mahsulotlar hisobotda topilmadi');
+    }
+
+    const groups = [];
+    const bySupplier = new Map();
+    for (const row of selected) {
+      const key = row.supplier_id || '__none__';
+      if (!bySupplier.has(key)) {
+        bySupplier.set(key, {
+          supplier_id: row.supplier_id || null,
+          supplier_name: row.supplier_name || null,
+          currency: row.currency || 'UZS',
+          items: [],
+          total_qty: 0,
+          total_value: 0,
+          can_create: Boolean(row.supplier_id),
+        });
+      }
+      const g = bySupplier.get(key);
+      const qty = Number(row.recommended_qty || 0) || 0;
+      if (qty <= 0) continue;
+      g.items.push({
+        product_id: row.product_id,
+        product_name: row.product_name,
+        product_sku: row.product_sku,
+        unit: row.unit,
+        ordered_qty: qty,
+        unit_cost: row.last_purchase_cost,
+        line_total: row.recommended_value,
+        currency: row.currency,
+      });
+      g.total_qty += qty;
+      g.total_value += Number(row.recommended_value || 0) || 0;
+      if (row.currency) g.currency = row.currency;
+    }
+    for (const g of bySupplier.values()) {
+      if (g.items.length) groups.push(g);
+    }
+
+    const openOrders = this._openOrdersForProducts(productIds);
+    const duplicateProductIds = [...new Set(openOrders.map((o) => o.product_id))];
+
+    return {
+      groups,
+      open_orders: openOrders,
+      duplicate_product_ids: duplicateProductIds,
+      formula: planning.meta?.formula,
+      meta: planning.meta,
+      totals: {
+        group_count: groups.length,
+        item_count: groups.reduce((n, g) => n + g.items.length, 0),
+      },
+    };
+  }
+
+  createDraftFromPlanning(payload = {}) {
+    if (!payload.confirm) {
+      throw createError(
+        ERROR_CODES.VALIDATION_ERROR,
+        'Draft xarid buyurtmasini yaratish uchun tasdiq (confirm) kerak',
+      );
+    }
+    const preview = this.previewDraftFromPlanning(payload);
+    const creatable = preview.groups.filter((g) => g.can_create && g.supplier_id && g.items.length);
+    if (!creatable.length) {
+      throw createError(ERROR_CODES.VALIDATION_ERROR, 'Yetkazib beruvchisi bor qatorlar yo‘q');
+    }
+
+    const created = [];
+    for (const g of creatable) {
+      const currency = String(g.currency || 'UZS').toUpperCase() === 'USD' ? 'USD' : 'UZS';
+      const items = g.items.map((it) => {
+        const qty = Number(it.ordered_qty);
+        const unitCost = Number(it.unit_cost || 0) || 0;
+        const line = {
+          product_id: it.product_id,
+          product_name: it.product_name,
+          product_sku: it.product_sku,
+          ordered_qty: qty,
+          unit_cost: currency === 'USD' ? undefined : unitCost,
+          line_total: currency === 'USD' ? undefined : qty * unitCost,
+        };
+        if (currency === 'USD') {
+          line.unit_cost_usd = unitCost;
+          line.line_total_usd = qty * unitCost;
+        }
+        return line;
+      });
+      const po = this.createOrder({
+        supplier_id: g.supplier_id,
+        supplier_name: g.supplier_name,
+        status: 'draft',
+        currency,
+        fx_rate: currency === 'USD' ? payload.fx_rate : undefined,
+        notes: 'Bozorga borish hisobotidan draft',
+        created_by: payload.created_by,
+        items,
+      });
+      created.push({
+        id: po.id,
+        po_number: po.po_number,
+        supplier_id: g.supplier_id,
+        supplier_name: g.supplier_name,
+        item_count: items.length,
+        total_amount: po.total_amount,
+        total_usd: po.total_usd,
+        currency,
+      });
+    }
+    return { created, skipped_without_supplier: preview.groups.filter((g) => !g.can_create) };
   }
 }
 

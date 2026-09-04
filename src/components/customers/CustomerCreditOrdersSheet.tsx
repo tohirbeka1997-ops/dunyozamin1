@@ -23,6 +23,7 @@ import {
   listOpenCreditOrders,
   updateOrderDueDate,
   sendCreditReminder,
+  applyCustomerAdvanceToOrder,
   type OpenCreditOrderRow,
 } from '@/db/customerCredit.api';
 import { assertDueDateNotBeforeToday } from '@/lib/posHardening';
@@ -34,8 +35,20 @@ type Props = {
   onOpenChange: (open: boolean) => void;
   customerId: string;
   customerName?: string;
+  advanceAvailable?: number;
   onUpdated?: () => void;
 };
+
+function daysOverdue(dueDate?: string | null) {
+  if (!dueDate) return 0;
+  const due = String(dueDate).slice(0, 10);
+  if (due.length !== 10) return 0;
+  const today = todayYMD();
+  if (due >= today) return 0;
+  const a = new Date(`${due}T00:00:00`);
+  const b = new Date(`${today}T00:00:00`);
+  return Math.max(0, Math.round((b.getTime() - a.getTime()) / 86400000));
+}
 
 function isCreditOrderOverdue(dueDate?: string | null) {
   if (!dueDate) return false;
@@ -48,6 +61,7 @@ export default function CustomerCreditOrdersSheet({
   onOpenChange,
   customerId,
   customerName,
+  advanceAvailable = 0,
   onUpdated,
 }: Props) {
   const { t } = useTranslation();
@@ -61,6 +75,7 @@ export default function CustomerCreditOrdersSheet({
   const [draftDue, setDraftDue] = useState<Record<string, string>>({});
   const [dueReason, setDueReason] = useState<Record<string, string>>({});
   const [confirmReminderOpen, setConfirmReminderOpen] = useState(false);
+  const [applyingAdvanceId, setApplyingAdvanceId] = useState<string | null>(null);
 
   const loadRows = useCallback(async () => {
     setLoading(true);
@@ -147,6 +162,41 @@ export default function CustomerCreditOrdersSheet({
     }
   };
 
+  const handleApplyAdvance = async (row: OpenCreditOrderRow) => {
+    const remaining = Number(row.credit_amount || 0) || 0;
+    const amt = Math.min(remaining, Number(advanceAvailable) || 0);
+    if (!(amt > 0)) {
+      toast({
+        title: t('common.error'),
+        description: 'Qo‘llash uchun avans yoki ochiq qarz yo‘q',
+        variant: 'destructive',
+      });
+      return;
+    }
+    setApplyingAdvanceId(row.id);
+    try {
+      const out = await applyCustomerAdvanceToOrder({
+        customerId,
+        orderId: row.id,
+        amount: amt,
+        receivedBy: profile?.id || null,
+        notes: `Avans ${row.order_number} ga qo‘llandi`,
+      });
+      if (!out.success) throw new Error(out.error || 'Avansni qo‘llab bo‘lmadi');
+      toast({ title: 'Avans qo‘llandi', description: formatMoneyUZS(out.applied_amount || amt) });
+      await loadRows();
+      onUpdated?.();
+    } catch (error) {
+      toast({
+        title: t('common.error'),
+        description: error instanceof Error ? error.message : 'Avansni qo‘llab bo‘lmadi',
+        variant: 'destructive',
+      });
+    } finally {
+      setApplyingAdvanceId(null);
+    }
+  };
+
   const handleSendCreditReminder = async () => {
     setSendingReminder(true);
     try {
@@ -224,6 +274,10 @@ export default function CustomerCreditOrdersSheet({
                   const savedDue = row.due_date ? String(row.due_date).slice(0, 10) : '';
                   const draft = draftDue[row.id] ?? savedDue;
                   const dirty = draft !== savedDue;
+                  const overdueDays = daysOverdue(row.due_date);
+                  const paid = Number(row.paid_amount || 0) || 0;
+                  const total = Number(row.total_amount || 0) || 0;
+                  const remaining = Number(row.credit_amount || 0) || 0;
                   return (
                     <div
                       key={row.id}
@@ -234,13 +288,21 @@ export default function CustomerCreditOrdersSheet({
                           <p className="font-medium">{row.order_number}</p>
                           <p className="text-xs text-muted-foreground">{formatDate(row.created_at)}</p>
                         </div>
-                        <div className="text-right">
+                        <div className="text-right space-y-0.5">
+                          <p className="text-xs text-muted-foreground">
+                            Jami {formatMoneyUZS(total)} · To‘langan {formatMoneyUZS(paid)}
+                          </p>
                           <p className="text-sm text-muted-foreground">{t('customers.credit_remaining')}</p>
                           <p className="font-semibold tabular-nums text-destructive">
-                            {formatMoneyUZS(Number(row.credit_amount || 0))}
+                            {formatMoneyUZS(remaining)}
                           </p>
                         </div>
                       </div>
+                      <p className="text-xs text-muted-foreground">
+                        Muddat:{' '}
+                        {savedDue ? savedDue : 'Muddat belgilanmagan'}
+                        {overdueDays > 0 ? ` · ${overdueDays} kun kechikkan` : ''}
+                      </p>
                       <div className="space-y-2">
                         <div className="flex flex-wrap items-end gap-2">
                           <div className="flex-1 min-w-[10rem] space-y-1">
@@ -294,6 +356,19 @@ export default function CustomerCreditOrdersSheet({
                       {row.credit_reminder_note ? (
                         <p className="text-xs text-muted-foreground">{row.credit_reminder_note}</p>
                       ) : null}
+                      {advanceAvailable > 0.009 && remaining > 0.009 && (
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          disabled={applyingAdvanceId === row.id}
+                          onClick={() => void handleApplyAdvance(row)}
+                        >
+                          {applyingAdvanceId === row.id ? (
+                            <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                          ) : null}
+                          Avansni shu buyurtmaga qo‘llash
+                        </Button>
+                      )}
                     </div>
                   );
                 })}

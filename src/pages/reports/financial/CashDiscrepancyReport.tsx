@@ -229,6 +229,58 @@ export default function CashDiscrepancyReport() {
           )}
         </CardContent>
       </Card>
+
+      {rows.some((r) => Array.isArray(r.shifts) && r.shifts.length > 0) ? (
+        <Card>
+          <CardContent className="pt-6 space-y-4">
+            <p className="text-sm font-medium">Farq manbalari (hujjat ID va foydalanuvchi)</p>
+            {rows.flatMap((r) =>
+              (r.shifts || []).map((s) => (
+                <div key={s.shift_id} className="rounded-md border p-3 text-sm space-y-2">
+                  <div className="flex flex-wrap justify-between gap-2">
+                    <span>
+                      Smena {s.shift_id.slice(0, 8)} · {r.cashier_name}
+                      {s.closed_by ? ` · yopgan: ${s.closed_by}` : ''}
+                    </span>
+                    <span className={Number(s.cash_difference || 0) === 0 ? 'text-success' : 'text-amber-600'}>
+                      Farq: {formatMoneyUZS(Number(s.cash_difference || 0))}
+                    </span>
+                  </div>
+                  {s.notes ? <p className="text-xs text-muted-foreground">Izoh: {s.notes}</p> : null}
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead>Manba</TableHead>
+                        <TableHead>Hujjat</TableHead>
+                        <TableHead>Foydalanuvchi</TableHead>
+                        <TableHead className="text-right">Summa</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {(s.documents || []).length === 0 ? (
+                        <TableRow>
+                          <TableCell colSpan={4} className="text-muted-foreground">
+                            Hujjat yo‘q
+                          </TableCell>
+                        </TableRow>
+                      ) : (
+                        (s.documents || []).map((d) => (
+                          <TableRow key={`${s.shift_id}-${d.document_id}-${d.source}`}>
+                            <TableCell>{d.source}</TableCell>
+                            <TableCell className="font-mono text-xs">{d.document_ref || d.document_id}</TableCell>
+                            <TableCell className="text-xs">{d.user_id || '—'}</TableCell>
+                            <TableCell className="text-right">{formatMoneyUZS(Number(d.amount || 0))}</TableCell>
+                          </TableRow>
+                        ))
+                      )}
+                    </TableBody>
+                  </Table>
+                </div>
+              ))
+            )}
+          </CardContent>
+        </Card>
+      ) : null}
     </div>
   );
 }

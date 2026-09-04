@@ -14,6 +14,7 @@ export type PosTerminalSettings = {
   /** Cosmetic: backend always requires a customer for credit. Kept for forward compat. */
   require_customer_for_credit: boolean;
   show_low_stock_warning: boolean;
+  auto_apply_advance_to_sale: boolean;
 };
 
 const DEFAULTS: PosTerminalSettings = {
@@ -24,6 +25,7 @@ const DEFAULTS: PosTerminalSettings = {
   enable_mixed_payment: true,
   require_customer_for_credit: true,
   show_low_stock_warning: true,
+  auto_apply_advance_to_sale: false,
 };
 
 const STORAGE_EVENT = 'pos:settings:changed';
@@ -55,6 +57,7 @@ const normalize = (raw: Record<string, unknown> | null | undefined): PosTerminal
     enable_mixed_payment: toBool(r.enable_mixed_payment, DEFAULTS.enable_mixed_payment),
     require_customer_for_credit: toBool(r.require_customer_for_credit, DEFAULTS.require_customer_for_credit),
     show_low_stock_warning: toBool(r.show_low_stock_warning, DEFAULTS.show_low_stock_warning),
+    auto_apply_advance_to_sale: toBool(r.auto_apply_advance_to_sale, DEFAULTS.auto_apply_advance_to_sale),
   };
 };
 

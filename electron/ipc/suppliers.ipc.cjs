@@ -94,6 +94,24 @@ function registerSuppliersHandlers(services) {
     return suppliers.applyAdvanceToPurchaseOrder(payload || {});
   }));
 
+  console.log('Registering pos:suppliers:getSettlement handler...');
+  ipcMain.removeHandler('pos:suppliers:getSettlement');
+  ipcMain.handle('pos:suppliers:getSettlement', wrapHandler(async (_event, supplierId) => {
+    return suppliers.getSettlement(supplierId);
+  }));
+
+  console.log('Registering pos:suppliers:previewSettlement handler...');
+  ipcMain.removeHandler('pos:suppliers:previewSettlement');
+  ipcMain.handle('pos:suppliers:previewSettlement', wrapHandler(async (_event, payload) => {
+    return suppliers.previewSettlement(payload || {});
+  }));
+
+  console.log('Registering pos:suppliers:settle handler...');
+  ipcMain.removeHandler('pos:suppliers:settle');
+  ipcMain.handle('pos:suppliers:settle', wrapHandler(async (_event, payload) => {
+    return suppliers.settleSupplier(payload || {});
+  }));
+
   console.log('Registering pos:suppliers:getPayments handler...');
   ipcMain.removeHandler('pos:suppliers:getPayments');
   ipcMain.handle('pos:suppliers:getPayments', wrapHandler(async (_event, supplierId) => {

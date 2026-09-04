@@ -245,6 +245,16 @@ test('assertPaymentOutAllowed: cashier blocked over advance; manager lend needs 
   });
   assert.equal(cashierPayoutBlocked.ok, false);
   assert.equal(cashierPayoutBlocked.code, 'PAYOUT_FORBIDDEN');
+
+  const seniorPayoutBlocked = assertPaymentOutAllowed({
+    oldBalance: 5000,
+    amount: 1000,
+    roles: ['senior_cashier'],
+    kindRequested: 'payout',
+    reason: 'refund',
+  });
+  assert.equal(seniorPayoutBlocked.ok, false);
+  assert.equal(seniorPayoutBlocked.code, 'PAYOUT_FORBIDDEN');
 });
 
 test('assertBonusCorrection requires integer reason and blocks empty', () => {
@@ -280,9 +290,26 @@ test('assertBonusCorrection requires integer reason and blocks empty', () => {
 });
 
 test('assertOptionalUzPhone and email', () => {
-  assert.equal(assertOptionalUzPhone('').ok, true);
+  const empty = assertOptionalUzPhone('');
+  assert.equal(empty.ok, true);
+  assert.equal(empty.ok ? empty.phone : 'fail', null);
+  assert.equal(empty.ok ? empty.normalized : 'fail', null);
+
+  const prefix = assertOptionalUzPhone('+998');
+  assert.equal(prefix.ok, true);
+  assert.equal(prefix.ok ? prefix.phone : 'fail', null);
+  assert.equal(prefix.ok ? prefix.normalized : 'fail', null);
+
+  const prefixSpaced = assertOptionalUzPhone('+998 ');
+  assert.equal(prefixSpaced.ok, true);
+  assert.equal(prefixSpaced.ok ? prefixSpaced.normalized : 'fail', null);
+
   assert.equal(assertOptionalUzPhone('bad').ok, false);
-  assert.equal(assertOptionalUzPhone('+998901234567').ok, true);
+
+  const valid = assertOptionalUzPhone('+998901234567');
+  assert.equal(valid.ok, true);
+  assert.equal(valid.ok ? valid.normalized : 'fail', '998901234567');
+
   assert.equal(assertOptionalUzPhone('8 88 111 22 33').ok, true);
   assert.equal(assertOptionalUzPhone('8 88 111 22 33').normalized, '998881112233');
   assert.equal(assertOptionalEmail('a@b.com').ok, true);

@@ -118,6 +118,16 @@ function registerPurchasesHandlers(services) {
     return purchases.exportList(filters || {}, opts || {});
   }));
 
+  ipcMain.removeHandler('pos:purchases:previewPlanningDraft');
+  ipcMain.handle('pos:purchases:previewPlanningDraft', wrapHandler(async (_event, payload) => {
+    return purchases.previewDraftFromPlanning(payload || {});
+  }));
+
+  ipcMain.removeHandler('pos:purchases:createPlanningDraft');
+  ipcMain.handle('pos:purchases:createPlanningDraft', wrapHandler(async (_event, payload) => {
+    return purchases.createDraftFromPlanning(payload || {});
+  }));
+
   console.log('All purchases handlers registered successfully');
 }
 

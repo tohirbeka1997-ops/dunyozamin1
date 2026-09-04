@@ -19,6 +19,8 @@ import {
   getSupplierPurchaseSummary,
   listSupplierReturns,
   getSupplierActSverka,
+  getSupplierSettlement,
+  type SupplierSettlement,
 } from '@/db/api';
 import type { SupplierPayment, SupplierWithPOs, SupplierLedgerEntry } from '@/types/database';
 import { ArrowLeft, Edit, Mail, Phone, MapPin, FileText, DollarSign, FileDown, RefreshCcw } from 'lucide-react';
@@ -31,8 +33,10 @@ import {
 } from '@/lib/currency';
 import { formatDate } from '@/lib/datetime';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import PaySupplierDialog from '@/components/suppliers/PaySupplierDialog';
 import SupplierReturnDialog from '@/components/suppliers/SupplierReturnDialog';
+import SupplierSettlementDialog, {
+  type SettlementIntent,
+} from '@/components/suppliers/SupplierSettlementDialog';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { isElectron, requireElectron } from '@/utils/electron';
@@ -75,8 +79,9 @@ export default function SupplierDetail() {
   const [returnsAll, setReturnsAll] = useState<SupplierReturnRow[]>([]);
   const [payments, setPayments] = useState<SupplierPayment[]>([]);
   const [paymentsLoading, setPaymentsLoading] = useState(false);
-  const [payDialogOpen, setPayDialogOpen] = useState(false);
   const [returnDialogOpen, setReturnDialogOpen] = useState(false);
+  const [settlementIntent, setSettlementIntent] = useState<SettlementIntent | null>(null);
+  const [settlement, setSettlement] = useState<SupplierSettlement | null>(null);
   const [productSearchTerm, setProductSearchTerm] = useState('');
   const activeTab = searchParams.get('tab') || 'info';
   const dateFrom = searchParams.get('dateFrom') || '';
@@ -145,6 +150,12 @@ export default function SupplierDetail() {
       // getSupplierById now returns supplier with calculated balance
       const data = await getSupplierById(id!);
       setSupplier(data);
+      try {
+        const s = await getSupplierSettlement(id!);
+        setSettlement(s);
+      } catch {
+        setSettlement((data as any)?.settlement || null);
+      }
     } catch (error) {
       toast({
         title: 'Xatolik',
@@ -420,11 +431,11 @@ export default function SupplierDetail() {
             <p className="text-muted-foreground">Supplier Details</p>
           </div>
         </div>
-        <div className="flex gap-2">
+        <div className="flex flex-wrap gap-2 justify-end">
           {supplier && (
-            <Button 
+            <Button
               variant="outline"
-              onClick={() => setPayDialogOpen(true)}
+              onClick={() => setSettlementIntent('pay')}
               className="border-primary text-primary-foreground"
             >
               <DollarSign className="h-4 w-4 mr-2" />
@@ -432,10 +443,31 @@ export default function SupplierDetail() {
             </Button>
           )}
           {supplier && (
-            <Button variant="outline" onClick={() => setReturnDialogOpen(true)}>
-              Postavshikka qaytarish
+            <Button variant="outline" onClick={() => setSettlementIntent('advance_out')}>
+              Avans berish
             </Button>
           )}
+          {supplier && (
+            <Button variant="outline" onClick={() => setSettlementIntent('receive')}>
+              Yetkazib beruvchidan pul qabul qilish
+            </Button>
+          )}
+          {supplier && (
+            <Button variant="outline" onClick={() => setReturnDialogOpen(true)}>
+              Qaytarish/debit note
+            </Button>
+          )}
+          <Button
+            variant="outline"
+            onClick={() => {
+              const next = new URLSearchParams(searchParams);
+              next.set('tab', 'act');
+              setSearchParams(next, { replace: true });
+            }}
+          >
+            <FileText className="h-4 w-4 mr-2" />
+            Akt-sverka
+          </Button>
           <Button
             onClick={() =>
               navigate(`/suppliers/${id}/edit`, {
@@ -575,10 +607,19 @@ export default function SupplierDetail() {
                           <TableCell>
                             <Badge className={
                               r.type === 'purchase' ? 'bg-primary text-primary-foreground' :
-                              r.type === 'credit_note' ? 'bg-warning text-warning-foreground' :
+                              r.type === 'credit_note' || String(r.type).startsWith('debit_note') ? 'bg-warning text-warning-foreground' :
+                              r.type === 'receive' ? 'bg-emerald-600 text-white' :
+                              r.type === 'advance_out' ? 'bg-sky-600 text-white' :
                               'bg-success text-white'
                             }>
-                              {r.type === 'purchase' ? 'Xarid' : r.type === 'credit_note' ? 'Credit note' : 'To‘lov'}
+                              {r.type === 'purchase' ? 'Xarid' :
+                               r.type === 'credit_note' ? 'Credit note' :
+                               r.type === 'receive' ? 'Pul kirimi' :
+                               r.type === 'advance_out' ? 'Avans' :
+                               r.type === 'debit_note_create_advance' ? 'Qaytarish→avans' :
+                               r.type === 'debit_note_demand_refund' ? 'Refund kutilmoqda' :
+                               r.type === 'debit_note_reduce_debt' ? 'Debit note' :
+                               'To‘lov'}
                             </Badge>
                           </TableCell>
                           <TableCell className="font-mono text-xs">{r.ref_no || '-'}</TableCell>
@@ -799,6 +840,56 @@ export default function SupplierDetail() {
         </TabsContent>
 
         <TabsContent value="ledger" className="space-y-6">
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            {(['UZS', 'USD'] as const).map((cur) => {
+              const debt = Number((settlement as any)?.[`debt_${cur.toLowerCase()}`] || 0) || 0;
+              const advance = Number((settlement as any)?.[`advance_${cur.toLowerCase()}`] || 0) || 0;
+              const unallocated = Number((settlement as any)?.[`unallocated_${cur.toLowerCase()}`] || 0) || 0;
+              const pending = Number((settlement as any)?.[`pending_refund_${cur.toLowerCase()}`] || 0) || 0;
+              return (
+                <Card key={cur}>
+                  <CardHeader className="pb-2">
+                    <CardTitle className="text-base">Hisob-kitob · {cur}</CardTitle>
+                  </CardHeader>
+                  <CardContent className="grid grid-cols-2 gap-3 text-sm">
+                    <div>
+                      <p className="text-xs text-muted-foreground">Qarz</p>
+                      <p className="font-semibold text-destructive">{formatLedgerMoney(debt, cur)}</p>
+                    </div>
+                    <div>
+                      <p className="text-xs text-muted-foreground">Avans</p>
+                      <p className="font-semibold text-emerald-700">{formatLedgerMoney(advance, cur)}</p>
+                    </div>
+                    <div>
+                      <p className="text-xs text-muted-foreground">Taqsimlanmagan to‘lov</p>
+                      <p className="font-medium">{formatLedgerMoney(unallocated, cur)}</p>
+                    </div>
+                    <div>
+                      <p className="text-xs text-muted-foreground">Refund kutilmoqda</p>
+                      <p className="font-medium">{formatLedgerMoney(pending, cur)}</p>
+                    </div>
+                  </CardContent>
+                </Card>
+              );
+            })}
+          </div>
+          <div className="flex flex-wrap gap-2">
+            <Button size="sm" onClick={() => setSettlementIntent('pay')}>To‘lov qilish</Button>
+            <Button size="sm" variant="outline" onClick={() => setSettlementIntent('advance_out')}>Avans berish</Button>
+            <Button size="sm" variant="outline" onClick={() => setSettlementIntent('receive')}>Pul qabul qilish</Button>
+            <Button size="sm" variant="outline" onClick={() => setReturnDialogOpen(true)}>Qaytarish/debit note</Button>
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => {
+                const next = new URLSearchParams(searchParams);
+                next.set('tab', 'act');
+                setSearchParams(next, { replace: true });
+              }}
+            >
+              Akt-sverka
+            </Button>
+          </div>
           <Card>
             <CardHeader>
               <div className="flex items-center justify-between">
@@ -1009,13 +1100,14 @@ export default function SupplierDetail() {
         </TabsContent>
       </Tabs>
 
-      {/* Pay Supplier Dialog */}
-      {supplier && (
-        <PaySupplierDialog
-          supplier={supplier}
-          purchaseOrder={null}
-          open={payDialogOpen}
-          onOpenChange={setPayDialogOpen}
+      {supplier && settlementIntent && (
+        <SupplierSettlementDialog
+          supplier={supplier as any}
+          intent={settlementIntent}
+          open={!!settlementIntent}
+          onOpenChange={(open) => {
+            if (!open) setSettlementIntent(null);
+          }}
           onSuccess={handlePaymentSuccess}
         />
       )}

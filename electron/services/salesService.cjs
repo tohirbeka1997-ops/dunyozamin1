@@ -14,7 +14,20 @@ const {
   computeSaleCreditAmount,
   assertCreditAmountAligned,
   paymentAmountInSaleCurrency,
+  writeDebtAdvanceNet,
+  readCustomerDebtAdvance,
 } = require('../lib/customerBalance.cjs');
+const {
+  computeCustomerPosition,
+  totalExposure,
+  assertCreditExposure,
+  allocateInboundToOpenOrders,
+  insertPaymentAllocation,
+  syncCustomerDebtFromPosition,
+  roundMoney: roundCustomerMoney,
+  OP: CUSTOMER_OP,
+  appendLedgerAuditCols,
+} = require('../lib/customerPosition.cjs');
 const { recordPaymentFee } = require('../lib/paymentFee.cjs');
 const { allocateOrderDiscountOntoItems } = require('../lib/allocateOrderDiscount.cjs');
 const {
@@ -152,6 +165,38 @@ class SalesService {
     }
   }
 
+  /**
+   * Accept UI aliases (`method`, `transactionReference`) and canonical
+   * `payment_method` / `reference_number` so mixed checkout never arrives empty.
+   */
+  _normalizePaymentLines(paymentsData) {
+    const list = Array.isArray(paymentsData) ? paymentsData : [];
+    return list.map((raw) => {
+      if (!raw || typeof raw !== 'object') return raw;
+      const method = String(raw.payment_method || raw.method || '')
+        .trim()
+        .toLowerCase();
+      const amount = Number(raw.amount);
+      if (Number.isFinite(amount) && amount < 0) {
+        throw createError(ERROR_CODES.VALIDATION_ERROR, 'Manfiy to‘lov qabul qilinmaydi.');
+      }
+      const ref =
+        raw.transactionReference ||
+        raw.transaction_reference ||
+        raw.reference_number ||
+        null;
+      return {
+        ...raw,
+        payment_method: method || raw.payment_method,
+        method: method || raw.method,
+        amount: Number.isFinite(amount) ? amount : raw.amount,
+        currency: raw.currency || null,
+        reference_number: raw.reference_number || ref,
+        transactionReference: ref,
+      };
+    });
+  }
+
   _hasTable(tableName) {
     try {
       return !!this.db
@@ -244,7 +289,7 @@ class SalesService {
    * - allow_debt / allow_credit: when sales.credit.require_allow_debt=true,
    *   at least one flag OR a positive credit_limit is required
    */
-  _assertCustomerCreditAllowed(customerId, creditAmount, saleCurrency) {
+  _assertCustomerCreditAllowed(customerId, creditAmount, saleCurrency, opts = {}) {
     const credit = Number(creditAmount) || 0;
     if (!(credit > 0.009)) return;
 
@@ -290,19 +335,29 @@ class SalesService {
     }
 
     const currency = normalizeCustomerCurrency(saleCurrency);
-    const bal = readBalanceInCurrency(this.db, customerId, currency);
-    const projected = bal - credit;
-    if (projected < -0.009 && Math.abs(projected) > limit + 0.02) {
+    const pos = computeCustomerPosition(this.db, customerId, currency, {
+      excludeOrderId: opts.excludeOrderId || null,
+    });
+    const exposure = totalExposure(pos, Number(opts.pendingUnpostedDebt) || 0);
+    const gate = assertCreditExposure({
+      totalExposure: exposure,
+      newDebtAmount: credit,
+      creditLimit: limit,
+      allowOverride: Boolean(opts.allowOverride),
+      overrideReason: opts.overrideReason,
+      overrideApproverId: opts.overrideApproverId,
+    });
+    if (!gate.ok) {
       const curLabel = currency === 'USD' ? 'USD' : "so'm";
-      throw createError(
-        ERROR_CODES.VALIDATION_ERROR,
-        `Qarz berib bo‘lmaydi: yangi qarz mijoz kredit limitidan oshadi. Limit: ${limit} ${curLabel}. Yangi qarz: ${Math.abs(projected).toFixed(2)} ${curLabel}.`,
-        {
-          code: 'CREDIT_LIMIT_EXCEEDED',
-          credit_limit: limit,
-          new_debt: Math.abs(projected),
-        }
-      );
+      throw createError(ERROR_CODES.VALIDATION_ERROR, gate.error, {
+        code: gate.code,
+        credit_limit: gate.credit_limit,
+        current_debt: gate.current_debt,
+        new_amount: gate.new_amount,
+        projected: gate.projected,
+        over_by: gate.over_by,
+        currency: curLabel,
+      });
     }
   }
 
@@ -366,7 +421,19 @@ class SalesService {
       }
       return check.due_date;
     }
-    const days = this._getCreditDueDefaultDays();
+    let days = this._getCreditDueDefaultDays();
+    try {
+      const cid = orderData?.customer_id;
+      if (cid && this._hasCustomersCol?.('credit_term_days') !== false) {
+        const crow = this.db
+          .prepare(`SELECT credit_term_days FROM customers WHERE id = ?`)
+          .get(cid);
+        const term = Number(crow?.credit_term_days);
+        if (Number.isFinite(term) && term > 0) days = Math.floor(term);
+      }
+    } catch {
+      /* column may be missing */
+    }
     const row = this.db
       .prepare(`SELECT date('now', 'localtime', '+' || ? || ' days') AS d`)
       .get(days);
@@ -1544,6 +1611,7 @@ class SalesService {
    * All operations (order creation, stock updates, payments) happen in single transaction.
    */
   completePOSOrder(orderData, itemsData, paymentsData) {
+    paymentsData = this._normalizePaymentLines(paymentsData);
     // Known default IDs from migrations (see 013_ensure_seed_data.sql)
     const KNOWN_DEFAULT_USER = 'default-admin-001';
     const MAIN_WAREHOUSE_ID = 'main-warehouse-001'; // SINGLE WAREHOUSE SYSTEM
@@ -1890,6 +1958,24 @@ class SalesService {
           ERROR_CODES.VALIDATION_ERROR,
           'Order must have at least one payment with amount > 0, or be a credit sale (creditAmount > 0)'
         );
+      }
+      const mixedIntakeCount = intakePayments.length;
+      // Mixed (2+ intake methods) must cover the ticket: underpay is not a silent nasiya.
+      if (mixedIntakeCount > 1 && totalPaidIntake + prepaidApplied + payEps < orderTotalSigned) {
+        throw createError(
+          ERROR_CODES.VALIDATION_ERROR,
+          'Aralash to‘lov yig‘indisi buyurtma jamiiga teng bo‘lishi kerak. Qolganini nasiya tabida yopping.'
+        );
+      }
+      if (mixedIntakeCount > 1 && totalPaidIntake > orderTotalSigned + payEps) {
+        const hasRegistered =
+          orderData.customer_id && orderData.customer_id !== KNOWN_DEFAULT_CUSTOMER;
+        if (!hasRegistered) {
+          throw createError(
+            ERROR_CODES.VALIDATION_ERROR,
+            'Ortiqcha aralash to‘lov faqat mijoz tanlanganda avansga o‘tadi.'
+          );
+        }
       }
     } else if (orderTotalSigned === 0) {
       if (payoutPayments.length > 0 || totalPayout > payEps) {
@@ -2712,11 +2798,12 @@ class SalesService {
         try {
           const balRow = this.db.prepare('SELECT balance FROM customers WHERE id = ?').get(orderData.customer_id);
           const bal0 = Number(balRow?.balance) || 0;
+          const mixedIntake = intakePayments.length > 1;
           if (bal0 < 0) {
             debtPaidFromOverpay = rawOverpay;
             changeAmount = 0;
-          } else if (applyOverpayAsPrepaid) {
-            // POS nasiya: savatdan oshiq to‘lovni naqd qaytim emas, mijoz oldindan to‘lovi (balance > 0)
+          } else if (applyOverpayAsPrepaid || mixedIntake) {
+            // POS: savatdan oshiq to‘lov naqd qaytim emas, mijoz avansi
             debtPaidFromOverpay = rawOverpay;
             changeAmount = 0;
           }
@@ -2882,6 +2969,7 @@ class SalesService {
           .get(orderId);
         const saleCurrency = normalizeCustomerCurrency(hasFinCurrency ? orderFin?.currency : 'UZS');
         const currentBalance = readBalanceInCurrency(this.db, orderData.customer_id, saleCurrency);
+        const bucketsBeforeSale = readCustomerDebtAdvance(this.db, orderData.customer_id, saleCurrency);
         const curLabel = saleCurrency === 'USD' ? 'USD' : "so'm";
         // Optional atomic prior-debt close folded into this sale TX (POS nasiya).
         let priorDebtPayment = 0;
@@ -2950,12 +3038,82 @@ class SalesService {
           )
           .run(salesStatUzs, now, now, orderData.customer_id);
 
-        applyCustomerBalanceDeltaOnce(
+        this._assertCustomerCreditAllowed(
+          orderData.customer_id,
+          finalCreditAmount,
+          saleCurrency,
+          { excludeOrderId: orderId }
+        );
+
+        const inboundCash = Number(debtPaidFromOverpay || 0) + Number(priorDebtPayment || 0);
+        if (prepaidConsumed > payEps) {
+          const b = readCustomerDebtAdvance(this.db, orderData.customer_id, saleCurrency);
+          writeDebtAdvanceNet(
+            this.db,
+            orderData.customer_id,
+            saleCurrency,
+            b.debt,
+            roundCustomerMoney(Math.max(0, b.advance - prepaidConsumed)),
+            now
+          );
+          insertPaymentAllocation(this.db, {
+            payment_id: orderId,
+            customer_id: orderData.customer_id,
+            order_id: orderId,
+            applied_amount: prepaidConsumed,
+            order_balance_before: roundCustomerMoney(finalCreditAmount + prepaidConsumed),
+            order_balance_after: finalCreditAmount,
+            remainder_to_advance: 0,
+            currency: saleCurrency,
+            created_at: now,
+            created_by: orderData.cashier_id || orderData.user_id || null,
+            payment_method: 'advance',
+            allocation_type: 'advance_used',
+          });
+        }
+        if (inboundCash > payEps) {
+          const inboundAlloc = allocateInboundToOpenOrders(this.db, {
+            customerId: orderData.customer_id,
+            paymentId: orderId,
+            amount: inboundCash,
+            currency: saleCurrency,
+            createdAt: now,
+            createdBy: orderData.cashier_id || orderData.user_id || null,
+            paymentMethod: 'cash',
+          });
+          if (inboundAlloc.remainder > payEps) {
+            const b = readCustomerDebtAdvance(this.db, orderData.customer_id, saleCurrency);
+            writeDebtAdvanceNet(
+              this.db,
+              orderData.customer_id,
+              saleCurrency,
+              b.debt,
+              roundCustomerMoney(b.advance + inboundAlloc.remainder),
+              now
+            );
+          }
+        }
+        if (refundMagForBalance > payEps) {
+          applyCustomerBalanceDeltaOnce(
+            this.db,
+            orderData.customer_id,
+            refundMagForBalance,
+            saleCurrency,
+            `${orderId}:refund`,
+            now
+          );
+        }
+        const posSale = computeCustomerPosition(this.db, orderData.customer_id, saleCurrency);
+        const bucketsSale = readCustomerDebtAdvance(this.db, orderData.customer_id, saleCurrency);
+        const loanNetSale = roundCustomerMoney(
+          Math.max(0, Number(posSale.loan_issued || 0) - Number(posSale.loan_repaid || 0))
+        );
+        writeDebtAdvanceNet(
           this.db,
           orderData.customer_id,
-          balanceDelta,
           saleCurrency,
-          orderId,
+          roundCustomerMoney(posSale.open_order_debt + loanNetSale),
+          bucketsSale.advance,
           now
         );
 
@@ -3007,6 +3165,13 @@ class SalesService {
                 cols.push('method');
                 values.push(entry.method || null);
               }
+              appendLedgerAuditCols(this.db, cols, values, {
+                op_code: entry.op_code || null,
+                debt_before: entry.debt_before,
+                debt_after: entry.debt_after,
+                advance_before: entry.advance_before,
+                advance_after: entry.advance_after,
+              });
               cols.push('created_at', 'created_by');
               values.push(ledgerEventAt, orderData.cashier_id || orderData.user_id || null);
               const placeholders = cols.map(() => '?').join(', ');
@@ -3021,25 +3186,41 @@ class SalesService {
                 ? -finalCreditAmount
                 : refundMagForBalance > 0
                   ? refundMagForBalance
-                  : 0;
+                  : Number(finalTotalPaid || order.total_amount || 0);
             const ledgerType =
               finalCreditAmount > 0 ? 'sale' : refundMagForBalance > 0 ? 'refund' : 'sale';
             const ledgerSurplus =
               refundMagForBalance > refundDebtReduction ? refundMagForBalance - refundDebtReduction : 0;
+            const methodLabels = { cash: 'Naqd', card: 'Karta', qr: 'QR' };
+            const payMethodsLabel = (intakePayments || [])
+              .map((p) => {
+                const slug = String(p.payment_method || '').toLowerCase();
+                const label = methodLabels[slug] || slug;
+                const amt = Math.round(amountInSaleCurrency(p));
+                return `${label} ${amt}`;
+              })
+              .filter((s) => s.trim())
+              .join(' + ');
+            const discAmt = Number(order.discount_amount || orderData.discount_amount || 0) || 0;
+            const saleTotal = Number(order.total_amount || orderData.total_amount || 0);
             const ledgerNote =
               finalCreditAmount > 0
-                ? `Sotuv: ${order.order_number} (Qarz: ${finalCreditAmount} ${curLabel})`
+                ? `Sotuv: ${order.order_number} (Jami ${saleTotal} ${curLabel}; to‘lov ${finalTotalPaid}; nasiya ${finalCreditAmount}; avans ${prepaidConsumed}; chegirma ${discAmt})`
                 : refundMagForBalance > 0
                   ? ledgerSurplus > 0 && refundDebtReduction > 0
                     ? `POS almashuv / qaytim: ${order.order_number} (jami ${refundMagForBalance} ${curLabel} — qarz ${refundDebtReduction}; haqdor ${ledgerSurplus})`
                     : `POS almashuv / qaytim: ${order.order_number} (${refundMagForBalance} ${curLabel})`
-                  : debtPaidFromOverpay > 0
-                    ? `Sotuv: ${order.order_number} (To'liq to'langan: ${order.total_amount} ${curLabel})`
-                    : `Sotuv: ${order.order_number} (To'liq to'langan: ${order.total_amount} ${curLabel})`;
+                  : `Sotuv: ${order.order_number} (Jami ${saleTotal} ${curLabel}; to‘lov ${finalTotalPaid}; usul: ${payMethodsLabel || '—'}; chegirma ${discAmt}; avans ${prepaidConsumed})`;
             const inboundPayTotal =
               Number(debtPaidFromOverpay || 0) + Number(priorDebtPayment || 0);
             const saleBalanceAfter =
               inboundPayTotal > 0 ? newBalance - inboundPayTotal : newBalance;
+            const saleOpCode =
+              finalCreditAmount > 0
+                ? CUSTOMER_OP.CREDIT_SALE
+                : refundMagForBalance > 0
+                  ? CUSTOMER_OP.SALE_RETURN
+                  : CUSTOMER_OP.SALE_PAYMENT;
 
             insertLedger({
               id: ledgerId,
@@ -3047,7 +3228,14 @@ class SalesService {
               amount: ledgerAmount,
               balance_after: saleBalanceAfter,
               note: ledgerNote,
-              method: hasRefundBalancePayout ? 'refund_balance' : null,
+              method: hasRefundBalancePayout
+                ? 'refund_balance'
+                : payMethodsLabel || null,
+              op_code: saleOpCode,
+              debt_before: bucketsBeforeSale.debt,
+              debt_after: posSale.total_debt,
+              advance_before: bucketsBeforeSale.advance,
+              advance_after: bucketsSale.advance,
             });
             console.log('✅ Ledger entry inserted for sale:', {
               customerId: orderData.customer_id,
@@ -3070,6 +3258,14 @@ class SalesService {
                 balance_after: balCursor,
                 note: `Oldingi qarz to'lovi (nasiya): ${order.order_number} (qarz: ${priorAlloc.debt_portion}; oldindan: ${priorAlloc.advance_portion} ${curLabel})`,
                 method: payMethod || 'cash',
+                op_code:
+                  priorAlloc.debt_portion > 0.009
+                    ? CUSTOMER_OP.DEBT_PAYMENT_RECEIVED
+                    : CUSTOMER_OP.ADVANCE_RECEIVED,
+                debt_before: bucketsBeforeSale.debt,
+                debt_after: Math.max(0, Number(bucketsBeforeSale.debt || 0) - Number(priorAlloc.debt_portion || 0)),
+                advance_before: bucketsBeforeSale.advance,
+                advance_after: Number(bucketsBeforeSale.advance || 0) + Number(priorAlloc.advance_portion || 0),
               });
             }
 
@@ -3083,6 +3279,14 @@ class SalesService {
                 balance_after: newBalance,
                 note: `To'lovdan hisobga: ${order.order_number} (qarz: ${overAlloc.debt_portion}; oldindan: ${overAlloc.advance_portion} ${curLabel})`,
                 method: payMethod,
+                op_code:
+                  overAlloc.debt_portion > 0.009
+                    ? CUSTOMER_OP.DEBT_PAYMENT_RECEIVED
+                    : CUSTOMER_OP.ADVANCE_RECEIVED,
+                debt_before: bucketsBeforeSale.debt,
+                debt_after: posSale.total_debt,
+                advance_before: bucketsBeforeSale.advance,
+                advance_after: bucketsSale.advance,
               });
               console.log('✅ Ledger entry inserted for prior debt / overpay:', {
                 customerId: orderData.customer_id,

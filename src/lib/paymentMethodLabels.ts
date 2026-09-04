@@ -70,17 +70,25 @@ export function getCashFlowSourceLabel(source: unknown, t?: TFunction): string {
   const map: Record<string, string> = {
     order_payments: 'reports.cash_flow.sources.order_payments',
     customer_payments: 'reports.cash_flow.sources.customer_payments',
+    customer_advances: 'reports.cash_flow.sources.customer_advances',
+    customer_loans: 'reports.cash_flow.sources.customer_loans',
     expenses: 'reports.cash_flow.sources.expenses',
     supplier_payments: 'reports.cash_flow.sources.supplier_payments',
+    supplier_refunds: 'reports.cash_flow.sources.supplier_refunds',
     refunds: 'reports.cash_flow.sources.refunds',
+    cash_movements: 'reports.cash_flow.sources.cash_movements',
   };
   const key = map[code];
   const fallbacks: Record<string, string> = {
     order_payments: 'Sotuv to‘lovlari',
-    customer_payments: 'Mijoz to‘lovlari',
+    customer_payments: 'Mijozdan to‘lov',
+    customer_advances: 'Mijoz avansi',
+    customer_loans: 'Mijozga berilgan qarz',
     expenses: 'Tasdiqlangan xarajatlar',
-    supplier_payments: 'Yetkazib beruvchi to‘lovlari',
+    supplier_payments: 'Yetkazib beruvchiga to‘lov',
+    supplier_refunds: 'Yetkazib beruvchidan qaytgan mablag‘',
     refunds: 'Qaytarishlar',
+    cash_movements: 'Kassa depoziti/yechimi',
   };
   if (t && key) return t(key, fallbacks[code] || code);
   return fallbacks[code] || String(source || '—');

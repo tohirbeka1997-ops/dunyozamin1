@@ -844,7 +844,12 @@ export default function ProductForm() {
         }
       }
       const existingSku = await getProductBySku(productData.sku);
-      if (existingSku?.id && (!isEditMode || existingSku.id !== id)) {
+      const skuTakenByOtherLive =
+        !!existingSku?.id &&
+        existingSku.is_active !== false &&
+        existingSku.is_active !== 0 &&
+        (!isEditMode || existingSku.id !== id);
+      if (skuTakenByOtherLive) {
         toast({
           title: t('common.error'),
           description: `Bu SKU allaqachon boshqa mahsulotda mavjud: ${existingSku.name || '-'} (SKU: ${existingSku.sku || '-'})`,

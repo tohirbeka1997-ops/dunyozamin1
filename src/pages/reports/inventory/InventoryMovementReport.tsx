@@ -24,6 +24,7 @@ import { FileDown, ArrowLeft, TrendingUp, TrendingDown } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 import { useNavigate } from 'react-router-dom';
 import { formatOrderDateTime, todayYMD, formatDateYMD } from '@/lib/datetime';
+import { formatQuantity } from '@/utils/quantity';
 import { useReportAutoRefresh } from '@/hooks/useReportAutoRefresh';
 
 export default function InventoryMovementReport() {
@@ -219,11 +220,16 @@ export default function InventoryMovementReport() {
                           ) : (
                             <TrendingDown className="h-4 w-4" />
                           )}
-                          {isIncrease ? '+' : ''}{Number(movement.quantity)}
+                          {isIncrease ? '+' : ''}
+                          {formatQuantity(Number(movement.quantity), movement.product?.unit)}
                         </div>
                       </TableCell>
-                      <TableCell className="text-right">{Number(movement.before_quantity)}</TableCell>
-                      <TableCell className="text-right">{Number(movement.after_quantity)}</TableCell>
+                      <TableCell className="text-right">
+                        {formatQuantity(Number(movement.before_quantity), movement.product?.unit)}
+                      </TableCell>
+                      <TableCell className="text-right">
+                        {formatQuantity(Number(movement.after_quantity), movement.product?.unit)}
+                      </TableCell>
                       <TableCell>
                         {movement.reference_type || '-'}
                       </TableCell>

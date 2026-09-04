@@ -19,8 +19,20 @@ export type CashFlowSourceRow = {
 export type CashFlowReconciliation = {
   opening_cash: number;
   closing_cash: number;
+  expected_closing_cash?: number;
+  actual_closing_cash?: number | null;
+  closing_is_provisional?: boolean;
   net_cash_movement: number;
-  delta: number;
+  delta: number | null;
+  shifts?: Array<{
+    shift_id: string;
+    user_id?: string;
+    status?: string;
+    opening_cash: number;
+    expected_cash: number | null;
+    actual_closing_cash: number | null;
+    cash_difference: number | null;
+  }>;
 };
 
 export type CashFlowReportPayload = {
@@ -56,6 +68,26 @@ export type CashDiscrepancyRow = {
   short_amount: number;
   avg_diff: number;
   last_closed_at: string | null;
+  shifts?: Array<{
+    shift_id: string;
+    user_id?: string;
+    closed_by?: string;
+    opened_at?: string;
+    closed_at?: string | null;
+    opening_cash: number;
+    expected_cash: number | null;
+    actual_closing_cash: number | null;
+    cash_difference: number;
+    notes?: string | null;
+    documents?: Array<{
+      source: string;
+      document_id: string;
+      document_ref?: string;
+      user_id?: string | null;
+      amount: number;
+      at?: string;
+    }>;
+  }>;
 };
 
 export type AgingBuckets = {

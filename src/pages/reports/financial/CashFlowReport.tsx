@@ -553,7 +553,18 @@ export default function CashFlowReport() {
             </div>
             <div>
               <p className="text-muted-foreground">{t('reports.cash_flow.closing', 'Yakuniy')}</p>
-              <p className="font-semibold">{formatMoneyUZS(reconciliation.closing_cash)}</p>
+              <p className="font-semibold">
+                {reconciliation.closing_is_provisional
+                  ? formatMoneyUZS(Number(reconciliation.expected_closing_cash ?? reconciliation.closing_cash || 0))
+                  : formatMoneyUZS(reconciliation.closing_cash)}
+              </p>
+              {reconciliation.closing_is_provisional ? (
+                <p className="text-xs text-amber-600">Smena ochiq — haqiqiy yopilish 0 emas</p>
+              ) : null}
+            </div>
+            <div>
+              <p className="text-muted-foreground">{t('reports.cash_flow.expected', 'Kutilayotgan')}</p>
+              <p className="font-semibold">{formatMoneyUZS(Number(reconciliation.expected_closing_cash ?? 0))}</p>
             </div>
             <div>
               <p className="text-muted-foreground">{t('reports.cash_flow.net_cash', 'Naqd harakat')}</p>
@@ -563,10 +574,12 @@ export default function CashFlowReport() {
               <p className="text-muted-foreground">{t('reports.cash_flow.delta', 'Farq')}</p>
               <p
                 className={`font-semibold ${
-                  Math.abs(reconciliation.delta) < 1 ? 'text-success' : 'text-amber-600'
+                  reconciliation.delta == null || Math.abs(Number(reconciliation.delta)) < 1
+                    ? 'text-success'
+                    : 'text-amber-600'
                 }`}
               >
-                {formatMoneyUZS(reconciliation.delta)}
+                {reconciliation.delta == null ? '—' : formatMoneyUZS(reconciliation.delta)}
               </p>
             </div>
           </CardContent>
