@@ -25,6 +25,7 @@ process.env.POS_VERBOSE_LOGS = '0';
 
 const { open, close, getDb } = require('../db/open.cjs');
 const { createServices } = require('./index.cjs');
+const { setCurrentUserId } = require('../lib/currentUser.cjs');
 
 function stockOf(inventory, productId) {
   return Number(inventory.getCurrentStock(productId, WH)) || 0;
@@ -67,6 +68,7 @@ try {
   console.log(`Temp DB: ${tmpDir}\n`);
 
   open();
+  setCurrentUserId(ADMIN);
   const db = getDb();
   const { products, inventory, sales, shifts, customers } = createServices(db);
 
@@ -301,9 +303,9 @@ try {
     allow_debt: 1,
     credit_limit: 50000000,
   });
-  db.prepare(`UPDATE customers SET balance = -5000, updated_at = datetime('now') WHERE id = ?`).run(
-    debtCustomer.id
-  );
+  db.prepare(
+    `UPDATE customers SET balance = -5000, debt_uzs = 5000, advance_uzs = 0, updated_at = datetime('now') WHERE id = ?`
+  ).run(debtCustomer.id);
   const balanceRefundItems = [cartLine(productA, { qtySale: -3 })];
   const balanceRefundTotal = orderTotalFromItems(balanceRefundItems); // -3000
   assert.strictEqual(balanceRefundTotal, -3000);
@@ -354,9 +356,9 @@ try {
   ok('validatsiya: refund_balance uchun mijoz majburiy');
 
   // --- 12) Katta qaytim → mijoz haqdor (musbat balans) ---
-  db.prepare(`UPDATE customers SET balance = -5000, updated_at = datetime('now') WHERE id = ?`).run(
-    debtCustomer.id
-  );
+  db.prepare(
+    `UPDATE customers SET balance = -5000, debt_uzs = 5000, advance_uzs = 0, updated_at = datetime('now') WHERE id = ?`
+  ).run(debtCustomer.id);
   const surplusRefundItems = [cartLine(productA, { qtySale: -10, unitPrice: 1000 })];
   const surplusRefundTotal = -10000;
   sales.completePOSOrder(
