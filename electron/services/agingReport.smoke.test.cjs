@@ -150,11 +150,12 @@ try {
       customer_id: customerId,
       shift_id: shift.id,
       user_id: ADMIN,
-      due_date: oldDue,
+      due_date: today,
     },
     [cartLine(product, 2, 5000)],
     [{ payment_method: 'credit', amount: 10000 }],
   );
+  db.prepare(`UPDATE orders SET due_date = ? WHERE id = ?`).run(oldDue, saleOld.order_id);
 
   const saleMid = sales.completePOSOrder(
     {
@@ -162,11 +163,12 @@ try {
       customer_id: customerId,
       shift_id: shift.id,
       user_id: ADMIN,
-      due_date: midDue,
+      due_date: today,
     },
     [cartLine(product, 3, 5000)],
     [{ payment_method: 'credit', amount: 15000 }],
   );
+  db.prepare(`UPDATE orders SET due_date = ? WHERE id = ?`).run(midDue, saleMid.order_id);
 
   assert.strictEqual(readBalanceInCurrency(db, customerId, 'UZS'), -25000);
   ok('ikki nasiya sotuv (25000 qarz)');
