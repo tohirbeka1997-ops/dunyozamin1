@@ -223,12 +223,15 @@ try {
   runStep('getAgingWarnings: telefon "-" ogohlantirish', () => {
     const bad = customers.create({
       name: 'Telefonsiz Qarzdor',
-      phone: '-',
+      phone: '',
       allow_credit: 1,
       allow_debt: 1,
+      credit_limit: 50000000,
     });
+    // Plant invalid placeholder phone the way legacy rows look in reports.
+    db.prepare(`UPDATE customers SET phone = '-', phone_normalized = NULL WHERE id = ?`).run(bad.id);
     sales.completePOSOrder(
-      { total_amount: 5000, customer_id: bad.id, shift_id: shift.id, user_id: ADMIN },
+      { total_amount: 5000, customer_id: bad.id, shift_id: shift.id, user_id: ADMIN, due_date: today },
       [cartLine(product, 1, 5000)],
       [{ payment_method: 'credit', amount: 5000 }],
     );
