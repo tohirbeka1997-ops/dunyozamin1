@@ -387,17 +387,26 @@ function ok(name) {
     );
     assert.ok(listRow, 'list finds split customer');
     assert.ok(
-      Math.abs(Number(listRow.position?.total_debt ?? listRow.total_debt) - 377000) < 0.05,
-      `list total_debt should be 377k, got ${listRow.position?.total_debt ?? listRow.total_debt}`
+      Math.abs(Number(listRow.position?.total_debt ?? 0) - 377000) < 0.05,
+      `list position.total_debt (diagnostic) should be 377k, got ${listRow.position?.total_debt}`
+    );
+    // Heal off: cashier-facing stored balance stays at last ledger (195k), not recomputed.
+    assert.ok(
+      Math.abs(Number(listRow.debt_uzs) - 195000) < 0.05,
+      `list debt_uzs must stay stored 195k, got ${listRow.debt_uzs}`
     );
     assert.ok(
-      Math.abs(Number(listRow.balance) + 377000) < 0.05,
-      `list balance net should be -377k, got ${listRow.balance}`
+      Math.abs(Number(listRow.balance) + 195000) < 0.05,
+      `list balance must stay stored -195k, got ${listRow.balance}`
     );
     const cardSplit = customers.getById(splitC.id);
     assert.ok(Math.abs(Number(cardSplit.position.total_debt) - 377000) < 0.05);
-    assert.ok(Math.abs(Number(cardSplit.balance) + 377000) < 0.05);
-    // Default: CUSTOMER_AR_HEAL off → display overlays computed AR, DB debt_uzs stays stale.
+    assert.ok(
+      Math.abs(Number(cardSplit.debt_uzs) - 195000) < 0.05,
+      `card debt_uzs must stay stored 195k, got ${cardSplit.debt_uzs}`
+    );
+    assert.ok(Math.abs(Number(cardSplit.balance) + 195000) < 0.05);
+    // Default: CUSTOMER_AR_HEAL off → DB debt_uzs stays stale; UI shows stored.
     const untouched = readCustomerDebtAdvance(db, splitC.id, 'UZS');
     assert.ok(
       Math.abs(untouched.debt - 195000) < 0.05,
@@ -417,7 +426,7 @@ function ok(name) {
       if (prevHeal == null) delete process.env.CUSTOMER_AR_HEAL;
       else process.env.CUSTOMER_AR_HEAL = prevHeal;
     }
-    ok('10b. list Balans === getById position (no DB heal by default; heal opt-in)');
+    ok('10b. stored Balans stays put by default; heal opt-in only');
 
     // --- TZ P0 mixed / allocation / lend vs advance ---
     const mixedC = customers.create({

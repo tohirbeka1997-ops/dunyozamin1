@@ -613,22 +613,22 @@ export default function CustomerDetail() {
   );
   const position = useMemo(() => {
     if (!customer) return { open: 0, loan: 0, debt: 0, advance: 0, net: 0, overdue: 0, usdDebt: 0 };
-    const fallback = getCustomerDebtAdvance(customer, "UZS");
-    const fallbackUsd = getCustomerDebtAdvance(customer, "USD");
+    // Primary cashier AR = stored buckets (legacy debts stay put).
+    const stored = getCustomerDebtAdvance(customer, "UZS");
+    const storedUsd = getCustomerDebtAdvance(customer, "USD");
     const pos = customer.position;
     const open = Number(pos?.open_order_debt ?? creditSummary.total) || 0;
-    const debt = Number(pos?.total_debt ?? fallback.debt) || 0;
-    const loan = Number(pos?.loan_debt ?? Math.max(0, debt - open)) || 0;
-    const advance = Number(pos?.advance ?? fallback.advance) || 0;
-    const totalDebt = pos ? debt : Math.max(debt, open + loan);
+    const debt = stored.debt;
+    const advance = stored.advance;
+    const loan = Math.max(0, Number(pos?.loan_debt ?? Math.max(0, debt - open)) || 0);
     return {
       open,
       loan,
-      debt: totalDebt,
+      debt,
       advance,
-      net: Number(pos?.net ?? advance - totalDebt) || 0,
+      net: stored.net,
       overdue: Number(pos?.overdue_amount ?? creditSummary.overdue) || 0,
-      usdDebt: Number(customer.position_usd?.total_debt ?? fallbackUsd.debt) || 0,
+      usdDebt: storedUsd.debt,
     };
   }, [creditSummary, customer]);
   const visibleOrders = useMemo(() => {

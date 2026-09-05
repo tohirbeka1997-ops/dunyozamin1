@@ -1532,23 +1532,26 @@ class CustomersService {
    * @returns {{ debt_uzs: number, debt_usd: number }}
    */
   getTotalDebt() {
+    // Stored columns only — do not recompute open-order AR (legacy debts stay put).
     const hasUsd = hasCustomerBalanceUsd(this.db);
-    const ids = this.db.prepare(`SELECT id FROM customers WHERE COALESCE(status, 'active') = 'active'`).all() || [];
-    let debt_uzs = 0;
-    let debt_usd = 0;
-    for (const row of ids) {
-      try {
-        debt_uzs += Number(computeCustomerPosition(this.db, row.id, 'UZS').total_debt || 0) || 0;
-        if (hasUsd) {
-          debt_usd += Number(computeCustomerPosition(this.db, row.id, 'USD').total_debt || 0) || 0;
-        }
-      } catch {
-        /* skip broken row */
-      }
-    }
+    const row = this.db
+      .prepare(
+        hasUsd
+          ? `SELECT
+               COALESCE(SUM(COALESCE(debt_uzs, CASE WHEN balance < 0 THEN -balance ELSE 0 END)), 0) AS debt_uzs,
+               COALESCE(SUM(COALESCE(debt_usd, CASE WHEN balance_usd < 0 THEN -balance_usd ELSE 0 END)), 0) AS debt_usd
+             FROM customers
+             WHERE COALESCE(status, 'active') = 'active'`
+          : `SELECT
+               COALESCE(SUM(COALESCE(debt_uzs, CASE WHEN balance < 0 THEN -balance ELSE 0 END)), 0) AS debt_uzs,
+               0 AS debt_usd
+             FROM customers
+             WHERE COALESCE(status, 'active') = 'active'`,
+      )
+      .get();
     return {
-      debt_uzs: Math.round(debt_uzs * 100) / 100,
-      debt_usd: Math.round(debt_usd * 100) / 100,
+      debt_uzs: Math.round((Number(row?.debt_uzs) || 0) * 100) / 100,
+      debt_usd: Math.round((Number(row?.debt_usd) || 0) * 100) / 100,
     };
   }
 

@@ -785,10 +785,12 @@ function backfillMissingOrderAllocations(db, customerId, currency = 'UZS') {
 }
 
 /**
- * Overlay computed AR onto the customer row so list/card/modals that still read
- * `balance` / `debt_*` see the same truth as Hisob holati (open orders + loans).
+ * Attach computed AR onto the customer row.
  * Persist/heal (UPDATE debt columns, credit_amount, allocations) only when opts.sync
  * AND CUSTOMER_AR_HEAL is explicitly enabled — default is display-only (no DB writes).
+ * When heal is off, stored balance / debt_uzs / advance_uzs are left unchanged so legacy
+ * debts stay put; `position` is still attached for open-order / diagnostic detail.
+ * New sales/payments update stored columns on the write path going forward.
  */
 function attachPosition(customer, db, currency = 'UZS', opts = {}) {
   if (!customer || !db) return customer;
@@ -864,16 +866,23 @@ function attachPosition(customer, db, currency = 'UZS', opts = {}) {
   customer.position_usd = posUsd;
   customer.open_order_debt = pos.open_order_debt;
   customer.loan_debt = pos.loan_debt;
-  customer.total_debt = pos.total_debt;
   customer.overdue_amount = pos.overdue_amount;
   customer.unapplied_advance = pos.unapplied_advance;
-  // Signed net + dual buckets (display/API cache — matches computeCustomerPosition)
-  customer.balance = pos.net;
-  customer.debt_uzs = pos.total_debt;
-  customer.advance_uzs = pos.advance;
-  customer.balance_usd = posUsd.net;
-  customer.debt_usd = posUsd.total_debt;
-  customer.advance_usd = posUsd.advance;
+  // When heal is off: keep stored balance/debt/advance as the cashier-facing AR
+  // (legacy debts stay put). position.* remains for diagnostics / open-order detail.
+  // When heal is on: overlay computed truth onto the row (and DB was already synced above).
+  if (sync) {
+    customer.total_debt = pos.total_debt;
+    customer.balance = pos.net;
+    customer.debt_uzs = pos.total_debt;
+    customer.advance_uzs = pos.advance;
+    customer.balance_usd = posUsd.net;
+    customer.debt_usd = posUsd.total_debt;
+    customer.advance_usd = posUsd.advance;
+  } else {
+    customer.total_debt =
+      customer.debt_uzs != null ? Number(customer.debt_uzs) || 0 : pos.total_debt;
+  }
   void currency;
   return customer;
 }

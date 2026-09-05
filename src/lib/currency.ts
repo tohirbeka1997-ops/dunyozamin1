@@ -194,9 +194,23 @@ type CustomerWithOptionalPosition = {
 };
 
 /** Prefer computeCustomerPosition overlay (list/card); else signed balance columns. */
+/**
+ * Cashier-facing balances: prefer **stored** ledger columns so legacy debts stay put.
+ * Computed `position` is only a fallback when stored fields are missing.
+ */
 export function getCustomerBalances(
   customer: CustomerWithOptionalPosition | null | undefined,
 ): CustomerBalances {
+  const hasStoredUzs =
+    customer?.balance != null || customer?.debt_uzs != null || customer?.advance_uzs != null;
+  const hasStoredUsd =
+    customer?.balance_usd != null || customer?.debt_usd != null || customer?.advance_usd != null;
+  if (hasStoredUzs || hasStoredUsd) {
+    return {
+      uzs: Number(customer?.balance ?? 0) || 0,
+      usd: Number(customer?.balance_usd ?? 0) || 0,
+    };
+  }
   const pos = customer?.position;
   const posUsd = customer?.position_usd;
   if (pos && (pos.net != null || pos.total_debt != null || pos.advance != null)) {
@@ -209,27 +223,17 @@ export function getCustomerBalances(
         ? posUsd.net != null
           ? Number(posUsd.net) || 0
           : (Number(posUsd.advance) || 0) - (Number(posUsd.total_debt) || 0)
-        : Number(customer?.balance_usd ?? 0) || 0;
+        : 0;
     return { uzs, usd };
   }
-  return {
-    uzs: Number(customer?.balance ?? 0) || 0,
-    usd: Number(customer?.balance_usd ?? 0) || 0,
-  };
+  return { uzs: 0, usd: 0 };
 }
 
-/** Prefer position / dual-bucket; else derive from signed net. */
+/** Prefer stored dual-bucket / signed net; computed position only if stored missing. */
 export function getCustomerDebtAdvance(
   customer: CustomerWithOptionalPosition | null | undefined,
   currency: AppCurrency = 'UZS',
 ): CustomerDebtAdvance {
-  const pos = currency === 'USD' ? customer?.position_usd : customer?.position;
-  if (pos && (pos.total_debt != null || pos.advance != null || pos.net != null)) {
-    const debt = Math.max(0, Number(pos.total_debt ?? customer?.total_debt ?? 0) || 0);
-    const advance = Math.max(0, Number(pos.advance ?? 0) || 0);
-    const net = pos.net != null ? Number(pos.net) || 0 : advance - debt;
-    return { debt, advance, net };
-  }
   const hasDual =
     customer?.debt_uzs != null ||
     customer?.advance_uzs != null ||
@@ -244,17 +248,33 @@ export function getCustomerDebtAdvance(
       currency === 'USD'
         ? Math.max(0, Number(customer?.advance_usd ?? 0) || 0)
         : Math.max(0, Number(customer?.advance_uzs ?? 0) || 0);
-    return { debt, advance, net: advance - debt };
+    const storedNet =
+      currency === 'USD' ? customer?.balance_usd : customer?.balance;
+    const net =
+      storedNet != null && Number.isFinite(Number(storedNet))
+        ? Number(storedNet) || 0
+        : advance - debt;
+    return { debt, advance, net };
   }
-  const net =
-    currency === 'USD'
-      ? Number(customer?.balance_usd ?? 0) || 0
-      : Number(customer?.balance ?? 0) || 0;
-  return {
-    debt: Math.max(0, -net),
-    advance: Math.max(0, net),
-    net,
-  };
+  if (customer?.balance != null || customer?.balance_usd != null) {
+    const net =
+      currency === 'USD'
+        ? Number(customer?.balance_usd ?? 0) || 0
+        : Number(customer?.balance ?? 0) || 0;
+    return {
+      debt: Math.max(0, -net),
+      advance: Math.max(0, net),
+      net,
+    };
+  }
+  const pos = currency === 'USD' ? customer?.position_usd : customer?.position;
+  if (pos && (pos.total_debt != null || pos.advance != null || pos.net != null)) {
+    const debt = Math.max(0, Number(pos.total_debt ?? customer?.total_debt ?? 0) || 0);
+    const advance = Math.max(0, Number(pos.advance ?? 0) || 0);
+    const net = pos.net != null ? Number(pos.net) || 0 : advance - debt;
+    return { debt, advance, net };
+  }
+  return { debt: 0, advance: 0, net: 0 };
 }
 
 export function formatCustomerBalanceLine(
