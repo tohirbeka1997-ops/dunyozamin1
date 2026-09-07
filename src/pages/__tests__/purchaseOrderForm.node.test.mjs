@@ -385,3 +385,73 @@ test('draft save path must not gate on receive qty validation flag', () => {
   assert.equal(shouldValidateForReceive(false), false);
   assert.equal(shouldValidateForReceive(true), false);
 });
+
+// --- optional prices: draft vs receive (purchaseOrderLinePricing.ts mirrors) ---
+
+function salePriceForPoLineSave(salePrice) {
+  const n = Number(salePrice ?? 0);
+  return Number.isFinite(n) && n > 0 ? n : null;
+}
+
+function getPoLineUnitCost(item, currency) {
+  if (currency === 'USD') {
+    return Number(item.base_unit_cost_usd ?? item.unit_cost_usd ?? 0) || 0;
+  }
+  return Number(item.base_unit_cost ?? item.unit_cost ?? 0) || 0;
+}
+
+function findZeroCostPoLineNames(items, currency) {
+  return items
+    .filter((item) => !(getPoLineUnitCost(item, currency) > 0))
+    .map((item) => String(item.product_name || 'Nomsiz mahsulot'));
+}
+
+test('line sale_price saves when set even if catalog-update toggle is off', () => {
+  const updateSalePriceOnReceive = false;
+  // Wrong legacy gate wiped line sale on draft save — must not depend on toggle.
+  const legacyBroken = (sale, toggle) => (toggle && Number(sale ?? 0) > 0 ? Number(sale) : null);
+  assert.equal(legacyBroken(12000, updateSalePriceOnReceive), null);
+  assert.equal(salePriceForPoLineSave(12000), 12000);
+  assert.equal(salePriceForPoLineSave(0), null);
+  assert.equal(salePriceForPoLineSave(null), null);
+});
+
+test('draft allows zero tannarx; receive requires positive cost', () => {
+  const items = [
+    { product_name: 'Yangi SKU', ordered_qty: 2, base_unit_cost: 0, sale_price: null },
+    { product_name: 'Kabel', ordered_qty: 1, base_unit_cost: 5000, sale_price: 8000 },
+  ];
+  const zeroNames = findZeroCostPoLineNames(items, 'UZS');
+  assert.deepEqual(zeroNames, ['Yangi SKU']);
+  // Draft save: zero cost OK (only check that finder reports; UI does not block).
+  assert.equal(zeroNames.length > 0, true);
+  // Receive: must block when any zero-cost line remains.
+  const canReceive = zeroNames.length === 0;
+  assert.equal(canReceive, false);
+});
+
+test('USD receive cost uses base_unit_cost_usd not UZS catalog', () => {
+  const items = [
+    {
+      product_name: 'Import',
+      base_unit_cost: 0,
+      base_unit_cost_usd: 2.5,
+      unit_cost: 0,
+    },
+  ];
+  assert.deepEqual(findZeroCostPoLineNames(items, 'USD'), []);
+  assert.deepEqual(findZeroCostPoLineNames(items, 'UZS'), ['Import']);
+});
+
+test('empty catalog prices do not force PO line sale or cost', () => {
+  const product = { purchase_price: 0, sale_price: 0 };
+  const line = {
+    product_name: 'From PO create',
+    base_unit_cost: Number(product.purchase_price) || 0,
+    sale_price: Number(product.sale_price) > 0 ? Number(product.sale_price) : null,
+  };
+  assert.equal(line.base_unit_cost, 0);
+  assert.equal(line.sale_price, null);
+  assert.equal(salePriceForPoLineSave(line.sale_price), null);
+  assert.deepEqual(findZeroCostPoLineNames([line], 'UZS'), ['From PO create']);
+});

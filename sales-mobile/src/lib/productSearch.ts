@@ -35,7 +35,8 @@ export async function lookupProductByCodeWithCache(code: string): Promise<PosPro
     const results = await searchProducts(trimmed, 10);
     void upsertCatalogProducts(results);
     const exact = results.find((p) => isExactCodeMatch(p, trimmed));
-    return exact ?? results[0] ?? null;
+    // Never fall back to fuzzy first hit — wrong product after scan is worse than "not found".
+    return exact ?? null;
   } catch (e) {
     if (!isNetworkError(e)) throw e;
     return lookupCachedProductByCode(trimmed);

@@ -29,6 +29,9 @@
       "scale_offline_hint": "Scale not connected. Enter weight manually.",
       "print_offline_before_receipt": "Print agent offline. Receipt may open in the browser."
     },
+    "close_shift": {
+      "expected_cash_formula": "Opening + Cash sales + Customer-balance cash + Manual in − Cash refunds − Cash expenses − Manual out"
+    },
     "search_placeholder": "Name, SKU, barcode… (F2 · ↓/F4 · Enter)",
     "brand_label": "Brand",
     "article_label": "Article",
@@ -110,6 +113,9 @@
     "rail_hint_f7": "F7 — discount",
     "rail_hint_f8": "F8 — return mode",
     "rail_hint_f9": "F9 — pay",
+    "rail_expense": "Expense",
+    "print_auto_failed_title": "Receipt did not print",
+    "print_auto_failed_desc": "{{msg}} Press F10 to retry.",
     "hotkey_cost_toggle": "Cost price (show/hide)",
     "hotkey_customer_focus": "Select customer",
     "hotkey_discount_focus": "Discount",
@@ -477,6 +483,29 @@
     "updated_at": "Updated",
     "language_changed": "The language has been changed"
   },
+  "quickActions": {
+    "aria_label": "Quick actions",
+    "new_customer": "New customer",
+    "receive_payment": "Receive payment",
+    "pick_customer_title": "Select customer",
+    "pick_customer_desc": "Select a customer to receive payment",
+    "continue": "Continue",
+    "new_expense": "New expense",
+    "new_po": "New purchase order",
+    "receive_goods": "Receive goods",
+    "po_due": "Due payments",
+    "new_product": "New product",
+    "bulk_price": "Bulk price",
+    "bulk_delete": "Bulk delete",
+    "bulk_delete_count": "Delete ({{count}})",
+    "show_selected": "Selected",
+    "show_selected_count": "Selected ({{count}})",
+    "new_return": "New return",
+    "open_pos": "POS",
+    "new_revision": "Stocktake",
+    "open_revision": "Open stocktake",
+    "low_stock": "Low stock"
+  },
   "navigation": {
     "dashboard": "Homepage",
     "smeta": "Estimate",
@@ -607,6 +636,16 @@
     "create_new_product": "Create a new product",
     "product_deleted": "The product has been successfully deleted",
     "archived": "The product has been archived",
+    "bulk_delete_title": "Bulk delete",
+    "bulk_delete_confirm": "{{count}} products will be deleted. Products with history are deactivated; others are removed permanently. Continue?",
+    "bulk_delete_done": "Deactivated: {{soft}}, deleted: {{hard}}, failed: {{failed}}",
+    "bulk_delete_need_selection": "Select products with the checkboxes first, then press delete.",
+    "show_selected_hint": "Show only selected products",
+    "show_all_products": "Show all products",
+    "showing_selected": "Showing only selected products ({{count}})",
+    "clear_selection": "Clear selection",
+    "select_all": "Select all",
+    "select_product": "Select",
     "restored": "The product has been returned",
     "restore": "Return",
     "active_section": "Products",
@@ -1564,6 +1603,48 @@
     "title": "Reports",
     "subtitle": "View various reports",
     "daily_sales": "Daily sale",
+    "debt_operations": "Debt payments and credit sales",
+    "daily_sales_page": {
+      "debt_ops_hint": "Customer debt payments appear here. Open the full period report for details.",
+      "open_debt_ops": "Full report"
+    },
+    "debt_operations_page": {
+      "title": "Debt payments and credit sales",
+      "subtitle": "Who paid their debt and who received credit in the selected period",
+      "empty": "No debt payments or credit sales in the selected period",
+      "filters": {
+        "from": "Start date",
+        "to": "End date",
+        "type": "Type",
+        "all_types": "All types",
+        "cashier": "Cashier"
+      },
+      "kinds": {
+        "debt_payment": "Debt payment",
+        "credit_sale": "Credit sale",
+        "loan_issued": "Loan issued",
+        "advance": "Advance"
+      },
+      "summary": {
+        "debt_collected": "Debt collected",
+        "credit_issued": "Credit issued",
+        "advance_received": "Advance",
+        "net": "Net (collected − credit)",
+        "count": "{{count}} operations"
+      },
+      "table": {
+        "datetime": "Date / time",
+        "customer": "Customer",
+        "type": "Type",
+        "amount": "Amount",
+        "method": "Method",
+        "cashier": "Cashier",
+        "ref": "Document"
+      },
+      "errors": {
+        "load_failed": "Could not load debt operations"
+      }
+    },
     "product_sales": "Product sales",
     "customer_sales": "Customer sales",
     "stock_levels": "Warehouse level",

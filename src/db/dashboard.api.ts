@@ -296,6 +296,39 @@ export const getDailySalesReportSQL = async (_opts?: {
   return null;
 };
 
+export const getCustomerDebtOperations = async (_opts?: {
+  date_from?: string;
+  date_to?: string;
+  warehouse_id?: string | null;
+  cashier_id?: string | null;
+  op_type?: string | null;
+}) => {
+  if (hasPosApi()) {
+    const api = requireElectron();
+    return ipc<any>(api.reports?.customerDebtOperations?.(_opts || {}));
+  }
+  await delay();
+  return {
+    filters: {
+      date_from: _opts?.date_from || null,
+      date_to: _opts?.date_to || null,
+      warehouse_id: _opts?.warehouse_id || 'ALL',
+      cashier_id: _opts?.cashier_id || null,
+      op_type: _opts?.op_type || 'all',
+    },
+    rows: [],
+    summary: {
+      debt_collected: 0,
+      debt_collected_count: 0,
+      credit_issued: 0,
+      credit_issued_count: 0,
+      advance_received: 0,
+      advance_received_count: 0,
+      net: 0,
+    },
+  };
+};
+
 export const getProductSalesReport = async (_params?: {
   date_from?: string;
   date_to?: string;

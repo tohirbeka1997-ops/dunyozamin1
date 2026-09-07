@@ -61,6 +61,16 @@ import {
 import { highlightMatch } from '@/utils/searchHighlight';
 import { useToast } from '@/hooks/use-toast';
 import ReceivePaymentModal from '@/components/customers/ReceivePaymentModal';
+import PageQuickActions from '@/components/common/PageQuickActions';
+import SearchableCustomerCombobox from '@/components/common/SearchableCustomerCombobox';
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog';
 import { formatMoneyUZS, formatCustomerBalance } from '@/lib/format';
 import { getCustomerBalances } from '@/lib/currency';
 import { useDebounce } from '@/hooks/use-debounce';
@@ -106,6 +116,9 @@ export default function Customers() {
   const pageSize = [25, 50, 100].includes(pageSizeRaw) ? pageSizeRaw : 50;
   const [paymentDialogOpen, setPaymentDialogOpen] = useState(false);
   const [selectedCustomerForPayment, setSelectedCustomerForPayment] = useState<Customer | null>(null);
+  const [pickCustomerOpen, setPickCustomerOpen] = useState(false);
+  const [pickCustomerId, setPickCustomerId] = useState('');
+  const [pickedCustomer, setPickedCustomer] = useState<Customer | null>(null);
   const [exporting, setExporting] = useState(false);
   const listAnchorRef = useRef<HTMLDivElement | null>(null);
   const prevFilterKeyRef = useRef<string | null>(null);
@@ -365,21 +378,42 @@ export default function Customers() {
 
   return (
     <div ref={listAnchorRef} className="w-full min-w-0 space-y-4">
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-        <div className="min-w-0 space-y-0.5">
-          <h1 className="page-heading">Mijozlar</h1>
-          <p className="page-heading-sub">Mijozlar bazasini boshqarish</p>
+      <div className="flex flex-wrap items-center gap-x-2 gap-y-2">
+        <div className="min-w-0 shrink-0">
+          <h1 className="page-heading text-lg leading-tight sm:text-xl">Mijozlar</h1>
+          <span className="sr-only">Mijozlar bazasini boshqarish</span>
         </div>
-        <div className="flex shrink-0 flex-wrap items-center gap-2">
-          <Button
-            variant="outline"
-            size="sm"
-            className="h-8 text-xs"
-            onClick={() => navigate('/pos')}
-          >
-            <ShoppingCart className="mr-2 h-3.5 w-3.5" />
-            {t('navigation.pos_terminal')}
-          </Button>
+        <div className="flex min-w-0 flex-1 flex-wrap items-center justify-end gap-1.5">
+          <PageQuickActions
+            compact
+            aria-label={t('quickActions.aria_label')}
+            actions={[
+              {
+                id: 'new-customer',
+                icon: <Plus />,
+                label: t('quickActions.new_customer'),
+                variant: 'default',
+                onClick: () =>
+                  navigate(withReturnToPath('/customers/new', buildCurrentPath(location))),
+              },
+              {
+                id: 'receive-payment',
+                icon: <DollarSign />,
+                label: t('quickActions.receive_payment'),
+                onClick: () => {
+                  setPickCustomerId('');
+                  setPickedCustomer(null);
+                  setPickCustomerOpen(true);
+                },
+              },
+              {
+                id: 'pos',
+                icon: <ShoppingCart />,
+                label: t('quickActions.open_pos'),
+                onClick: () => navigate('/pos'),
+              },
+            ]}
+          />
           <Button
             variant="outline"
             size="sm"
@@ -390,23 +424,15 @@ export default function Customers() {
           >
             {exporting ? (
               <>
-                <div className="mr-2 h-3.5 w-3.5 animate-spin rounded-full border-2 border-current border-t-transparent" />
+                <div className="mr-1.5 h-3.5 w-3.5 animate-spin rounded-full border-2 border-current border-t-transparent" />
                 Eksportlanmoqda...
               </>
             ) : (
               <>
-                <Download className="mr-2 h-3.5 w-3.5" />
+                <Download className="mr-1.5 h-3.5 w-3.5" />
                 Eksport qilish
               </>
             )}
-          </Button>
-          <Button
-            size="sm"
-            className="h-8 text-xs"
-            onClick={() => navigate(withReturnToPath('/customers/new', buildCurrentPath(location)))}
-          >
-            <Plus className="mr-2 h-3.5 w-3.5" />
-            Yangi mijoz qo'shish
           </Button>
         </div>
       </div>
@@ -829,6 +855,51 @@ export default function Customers() {
         source="customers"
         onSuccess={handlePaymentSuccess}
       />
+
+      <Dialog
+        open={pickCustomerOpen}
+        onOpenChange={(open) => {
+          setPickCustomerOpen(open);
+          if (!open) {
+            setPickCustomerId('');
+            setPickedCustomer(null);
+          }
+        }}
+      >
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>{t('quickActions.pick_customer_title')}</DialogTitle>
+            <DialogDescription>{t('quickActions.pick_customer_desc')}</DialogDescription>
+          </DialogHeader>
+          <SearchableCustomerCombobox
+            value={pickCustomerId}
+            onValueChange={setPickCustomerId}
+            knownCustomers={customers}
+            onCustomerPick={setPickedCustomer}
+            status="active"
+          />
+          <DialogFooter>
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => setPickCustomerOpen(false)}
+            >
+              {t('common.cancel')}
+            </Button>
+            <Button
+              type="button"
+              disabled={!pickedCustomer}
+              onClick={() => {
+                if (!pickedCustomer) return;
+                setPickCustomerOpen(false);
+                handleReceivePayment(pickedCustomer);
+              }}
+            >
+              {t('quickActions.continue')}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

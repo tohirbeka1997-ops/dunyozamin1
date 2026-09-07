@@ -288,6 +288,81 @@ function ledgerCashFlow(entry, orderAmountsById) {
   return { received: 0, given: 0, total, debtOnly: false };
 }
 
+function saleUnpaidRemainder(entry, flow, orderAmountsById) {
+  const signed = Number(entry.amount || 0) || 0;
+  const jamiMatch = String(entry.note || "").match(/Jami[:\s]*([\d\s.,]+)/i);
+  const jami = jamiMatch ? parseMoneyToken(jamiMatch[1]) : 0;
+  const orderTotal = Math.max(
+    0,
+    Number(entry.order_total_amount || 0) || 0,
+    entry.ref_id && orderAmountsById?.has(entry.ref_id)
+      ? Number(orderAmountsById.get(entry.ref_id)?.total || 0) || 0
+      : 0,
+  );
+  const received = Number(flow.received || 0) || 0;
+  const knownJami = Math.max(jami, orderTotal);
+  if (signed < -0.009) {
+    if (knownJami > 0.009) return roundMoney(Math.max(0, knownJami - received));
+    return roundMoney(-signed);
+  }
+  const saleTotal = Math.max(knownJami, flow.total);
+  return roundMoney(Math.max(0, saleTotal - received));
+}
+
+function ledgerCashierDelta(entry, orderAmountsById) {
+  const code = String(entry.op_code || "").toUpperCase();
+  const type = String(entry.type || "");
+  const signed = Number(entry.amount || 0) || 0;
+  const flow = ledgerCashFlow(entry, orderAmountsById);
+
+  if (code === "ADVANCE_APPLIED_TO_ORDER" || (type === "adjustment" && Math.abs(signed) < 0.009)) {
+    return 0;
+  }
+
+  const saleLike = type === "sale" || SALE_OP_CODES.has(code);
+  if (saleLike && code !== "SALE_RETURN") {
+    return saleUnpaidRemainder(entry, flow, orderAmountsById);
+  }
+
+  if (type === "refund" || code === "SALE_RETURN") {
+    const mag = flow.given > 0.009 ? flow.given : flow.total > 0.009 ? flow.total : Math.abs(signed);
+    return roundMoney(-mag);
+  }
+
+  if (MONEY_IN_OP_CODES.has(code) || type === "payment_in") {
+    const mag =
+      flow.received > 0.009 ? flow.received : flow.total > 0.009 ? flow.total : Math.abs(signed);
+    return roundMoney(-mag);
+  }
+
+  if (MONEY_OUT_OP_CODES.has(code) || type === "payment_out") {
+    const mag = flow.given > 0.009 ? flow.given : flow.total > 0.009 ? flow.total : Math.abs(signed);
+    return roundMoney(mag);
+  }
+
+  return roundMoney(-signed);
+}
+
+function walkLedgerRunningSigned(entries, orderAmountsById) {
+  const chrono = sortLedgerEntries(entries, "asc");
+  const out = new Map();
+  let signed = 0;
+  chrono.forEach((entry, index) => {
+    signed = roundMoney(signed + ledgerCashierDelta(entry, orderAmountsById));
+    out.set(String(entry.id || `idx:${index}`), signed);
+  });
+  return out;
+}
+
+function runningSignedMatchesPosition(runningSigned, position, eps = 0.02) {
+  if (runningSigned == null || !Number.isFinite(Number(runningSigned))) return true;
+  const posSigned =
+    position.debt != null || position.advance != null
+      ? cashierSignedFromBuckets(Number(position.debt) || 0, Number(position.advance) || 0)
+      : toCashierSigned(Number(position.net) || 0);
+  return Math.abs(Number(runningSigned) - posSigned) <= eps;
+}
+
 test("sale 500 → cashier signed +500", () => {
   const snap = ledgerSnapshotAfter({ debt_after: 500, advance_after: 0 });
   assert.equal(snap.signed, 500);
@@ -452,4 +527,120 @@ test("sale with paid 200 shows Kirim 200", () => {
   assert.equal(pureNasiya.received, 0);
   assert.equal(pureNasiya.debtOnly, true);
   assert.equal(pureNasiya.total, 3000);
+});
+
+test("Nasiya 950k Olindi 600k → Qoldi +350k (ignores debt_after 1248000)", () => {
+  // Screenshot 07.09.2026 11:21: stored debt_after mixed other open AR (898k + 350k).
+  const nasiya = {
+    id: "nasiya-1121",
+    type: "sale",
+    op_code: "CREDIT_SALE",
+    amount: -350000,
+    debt_after: 1248000,
+    advance_after: 0,
+    note: "Sotuv: ORD-1788702097836 (Jami 950000 so'm; to‘lov 600000; nasiya 350000; avans 0; chegirma 0)",
+    created_at: "2026-09-07 06:21:00",
+  };
+  assert.equal(ledgerCashierDelta(nasiya), 350000);
+  const running = walkLedgerRunningSigned([nasiya]);
+  assert.equal(running.get("nasiya-1121"), 350000);
+  assert.equal(formatLedgerQoldiPlain({ signed: running.get("nasiya-1121") }), "+350000");
+});
+
+test("after Nasiya +350k, To'lov 898k walks to −548k; Hozir +350k stays the live truth", () => {
+  // 898k closed a hidden open order that displayed Qoldi never showed (prev row was 0).
+  // Display walk: 350000 − 898000 = −548000 (ortiqcha). Live customers.debt_uzs stays +350000.
+  const rows = [
+    {
+      id: "nasiya-1121",
+      type: "sale",
+      op_code: "CREDIT_SALE",
+      amount: -350000,
+      debt_after: 1248000,
+      note: "Sotuv: ORD-1 (Jami 950000 so'm; to‘lov 600000; nasiya 350000; avans 0; chegirma 0)",
+      created_at: "2026-09-07 06:21:00",
+    },
+    {
+      id: "pay-1124",
+      type: "payment_in",
+      op_code: "DEBT_PAYMENT_RECEIVED",
+      amount: 898000,
+      debt_after: 350000,
+      note: "Pul qabul qilindi: cash",
+      created_at: "2026-09-07 06:24:00",
+    },
+  ];
+  const running = walkLedgerRunningSigned(rows);
+  assert.equal(running.get("nasiya-1121"), 350000);
+  assert.equal(running.get("pay-1124"), -548000);
+  assert.equal(
+    runningSignedMatchesPosition(running.get("pay-1124"), { debt: 350000, advance: 0, net: -350000 }),
+    false,
+  );
+  assert.equal(
+    runningSignedMatchesPosition(350000, { debt: 350000, advance: 0, net: -350000 }),
+    true,
+  );
+});
+
+test("fully paid Sotuv does not change Qoldi (prev + 0)", () => {
+  const rows = [
+    {
+      id: "prior",
+      type: "sale",
+      op_code: "CREDIT_SALE",
+      amount: -261998,
+      note: "Sotuv: ORD-0 (Jami 261998 so'm; to‘lov 0; nasiya 261998; avans 0; chegirma 0)",
+      created_at: "2026-09-06 10:00:00",
+    },
+    {
+      id: "paid-sale",
+      type: "sale",
+      op_code: "SALE_PAYMENT",
+      amount: 54500,
+      debt_after: 316498,
+      note: "Sotuv: ORD-8 (Jami 54500 so'm; to‘lov 54500; usul: Naqd 54500; chegirma 0; avans 0)",
+      created_at: "2026-09-06 16:43:00",
+    },
+  ];
+  const running = walkLedgerRunningSigned(rows);
+  assert.equal(ledgerCashierDelta(rows[1]), 0);
+  assert.equal(running.get("prior"), 261998);
+  assert.equal(running.get("paid-sale"), 261998);
+});
+
+test("fully paid Sotuv from 0 stays 0", () => {
+  const sale = {
+    id: "full",
+    type: "sale",
+    op_code: "SALE_PAYMENT",
+    amount: 942000,
+    debt_after: 942000,
+    note: "Sotuv: ORD-1 (Jami 942000 so'm; to‘lov 942000; usul: Naqd 942000; chegirma 0; avans 0)",
+    created_at: "2026-09-07 08:56:00",
+  };
+  assert.equal(ledgerCashierDelta(sale), 0);
+  assert.equal(walkLedgerRunningSigned([sale]).get("full"), 0);
+});
+
+test("lend Berildi increases Qoldi; payment reduces it", () => {
+  const rows = [
+    {
+      id: "lend",
+      type: "payment_out",
+      op_code: "CUSTOMER_LOAN_ISSUED",
+      amount: -5000,
+      created_at: "2026-09-07 09:00:00",
+    },
+    {
+      id: "pay",
+      type: "payment_in",
+      op_code: "DEBT_PAYMENT_RECEIVED",
+      amount: 2000,
+      created_at: "2026-09-07 09:05:00",
+    },
+  ];
+  const running = walkLedgerRunningSigned(rows);
+  assert.equal(running.get("lend"), 5000);
+  assert.equal(running.get("pay"), 3000);
 });

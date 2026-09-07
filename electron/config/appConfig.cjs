@@ -47,7 +47,7 @@ function defaultConfig() {
       usbProductId: null,
       spoolerName: 'XP-80C',
       preferSpooler: true,
-      feedLines: 3,
+      feedLines: 6,
       cut: true,
       retryCount: 2,
     },

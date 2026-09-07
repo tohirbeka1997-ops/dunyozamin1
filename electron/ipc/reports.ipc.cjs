@@ -115,6 +115,15 @@ function registerReportsHandlers(services) {
     })
   );
 
+  console.log('Registering pos:reports:customerDebtOperations handler...');
+  ipcMain.removeHandler('pos:reports:customerDebtOperations');
+  ipcMain.handle(
+    'pos:reports:customerDebtOperations',
+    wrapHandler(async (_event, filters) => {
+      return reports.getCustomerDebtOperations(filters || {});
+    })
+  );
+
   console.log('Registering pos:reports:inventoryValuation handler...');
   ipcMain.removeHandler('pos:reports:inventoryValuation');
   ipcMain.handle(

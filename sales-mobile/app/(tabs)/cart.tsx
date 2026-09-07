@@ -1,14 +1,19 @@
-import { memo, useCallback, useState } from 'react';
-import { Alert, AppState, ActivityIndicator } from 'react-native';
-import { useFocusEffect, useRouter } from 'expo-router';
+import { memo, useCallback, useEffect, useMemo, useState } from 'react';
 import {
+  ActivityIndicator,
+  Alert,
+  AppState,
   FlatList,
+  KeyboardAvoidingView,
+  Modal,
+  Platform,
   Pressable,
   StyleSheet,
   Text,
   TextInput,
   View,
 } from 'react-native';
+import { useFocusEffect, useRouter } from 'expo-router';
 import { completeSale, fetchCurrentShift, holdSale } from '@/api/client';
 import { loadUser } from '@/auth/session';
 import { CustomerPickerBanner } from '@/components/CustomerPicker';
@@ -27,7 +32,9 @@ import {
   clearCart,
   lineDiscount,
   lineNet,
+  removeLine,
   setLineDiscount,
+  setQty,
   useCart,
   useCartDiscountTotal,
   useCartSubtotal,
@@ -59,45 +66,132 @@ function mapCartItems(cart: CartLine[]): SaleItemInput[] {
   });
 }
 
+function isOwnOpenShift(data: Awaited<ReturnType<typeof fetchCurrentShift>>): boolean {
+  return !!(data?.shift && data.is_own_shift !== false);
+}
+
+function QtyEditModal({
+  line,
+  visible,
+  onClose,
+}: {
+  line: CartLine | null;
+  visible: boolean;
+  onClose: () => void;
+}) {
+  const [text, setText] = useState('1');
+  const stock = Number(line?.product.current_stock ?? 0);
+
+  useEffect(() => {
+    if (visible && line) setText(String(line.quantity));
+  }, [visible, line]);
+
+  if (!line) return null;
+
+  function handleSave() {
+    const raw = Math.floor(Number(String(text).replace(/\s/g, '')) || 0);
+    setQty(line!.product.id, raw);
+    onClose();
+  }
+
+  return (
+    <Modal visible={visible} animationType="fade" transparent onRequestClose={onClose}>
+      <View style={styles.modalBackdrop}>
+        <View style={styles.modalCard}>
+          <Text style={styles.modalTitle}>{t('editQuantity')}</Text>
+          <Text style={styles.modalMeta} numberOfLines={2}>
+            {line.product.name}
+          </Text>
+          <TextInput
+            style={styles.modalInput}
+            value={text}
+            onChangeText={(v) => setText(v.replace(/[^\d]/g, ''))}
+            keyboardType="number-pad"
+            selectTextOnFocus
+            autoFocus
+          />
+          {stock > 0 ? (
+            <Text style={styles.modalHint}>
+              {t('inStock')}: {stock}
+            </Text>
+          ) : null}
+          <View style={styles.modalActions}>
+            <Pressable style={styles.modalCancel} onPress={onClose}>
+              <Text style={styles.modalCancelText}>{t('cancel')}</Text>
+            </Pressable>
+            <Pressable style={styles.modalSave} onPress={handleSave}>
+              <Text style={styles.modalSaveText}>{t('save')}</Text>
+            </Pressable>
+          </View>
+          <Text style={styles.modalHintMuted}>0 = {t('removeLine')}</Text>
+        </View>
+      </View>
+    </Modal>
+  );
+}
+
 const CartLineRow = memo(function CartLineRow({
   line,
   onChangeQty,
   onEditDiscount,
+  onEditQty,
+  onRemove,
 }: {
   line: CartLine;
   onChangeQty: (productId: string, delta: number) => void;
   onEditDiscount: (line: CartLine) => void;
+  onEditQty: (line: CartLine) => void;
+  onRemove: (productId: string) => void;
 }) {
   const productId = line.product.id;
+  const unit = Number(line.product.sale_price || 0);
   const discount = lineDiscount(line);
   const net = lineNet(line);
+  const stock = Number(line.product.current_stock ?? 0);
+  const atStockCap = stock > 0 && line.quantity >= stock;
+
   return (
     <View style={styles.cartLine}>
       <View style={styles.cartLineMain}>
-        <Text style={styles.cartName} numberOfLines={2}>
-          {line.product.name}
-        </Text>
+        <View style={styles.cartLineInfo}>
+          <Text style={styles.cartName} numberOfLines={1}>
+            {line.product.name}
+          </Text>
+          <View style={styles.metaRow}>
+            <Text style={styles.unitPrice} numberOfLines={1}>
+              {formatMoney(unit)} × {line.quantity}
+              {discount > 0 ? ` · -${formatMoney(discount)}` : ''}
+            </Text>
+            <Pressable hitSlop={8} onPress={() => onEditDiscount(line)}>
+              <Text style={styles.discountLinkText}>
+                {discount > 0 ? t('discount') : `+${t('discount')}`}
+              </Text>
+            </Pressable>
+          </View>
+        </View>
         <View style={styles.qtyControls}>
-          <Pressable style={styles.qtyBtn} onPress={() => onChangeQty(productId, -1)}>
+          <Pressable style={styles.qtyBtn} onPress={() => onChangeQty(productId, -1)} hitSlop={4}>
             <Text style={styles.qtyBtnText}>−</Text>
           </Pressable>
-          <Text style={styles.qtyValue}>{line.quantity}</Text>
-          <Pressable style={styles.qtyBtn} onPress={() => onChangeQty(productId, 1)}>
+          <Pressable style={styles.qtyValueBtn} onPress={() => onEditQty(line)} hitSlop={4}>
+            <Text style={styles.qtyValue}>{line.quantity}</Text>
+          </Pressable>
+          <Pressable
+            style={[styles.qtyBtn, atStockCap && styles.qtyBtnDisabled]}
+            onPress={() => {
+              if (!atStockCap) onChangeQty(productId, 1);
+            }}
+            disabled={atStockCap}
+            hitSlop={4}
+          >
             <Text style={styles.qtyBtnText}>+</Text>
           </Pressable>
         </View>
-        <View style={styles.lineTotals}>
-          <Text style={styles.cartLineTotal}>{formatMoney(net)}</Text>
-          {discount > 0 ? (
-            <Text style={styles.discountBadge}>-{formatMoney(discount)}</Text>
-          ) : null}
-        </View>
+        <Text style={styles.cartLineTotal}>{formatMoney(net)}</Text>
+        <Pressable style={styles.removeBtn} onPress={() => onRemove(productId)} hitSlop={8}>
+          <Text style={styles.removeBtnText}>×</Text>
+        </Pressable>
       </View>
-      <Pressable style={styles.discountLink} onPress={() => onEditDiscount(line)}>
-        <Text style={styles.discountLinkText}>
-          {discount > 0 ? t('lineDiscount') : `+ ${t('discount')}`}
-        </Text>
-      </Pressable>
     </View>
   );
 });
@@ -116,10 +210,30 @@ export default function CartScreen() {
   const [submitting, setSubmitting] = useState(false);
   const [holding, setHolding] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [hasShift, setHasShift] = useState<boolean | null>(null);
+  const [info, setInfo] = useState<string | null>(null);
+  const [hasOwnShift, setHasOwnShift] = useState<boolean | null>(null);
+  const [shiftOwnedByOther, setShiftOwnedByOther] = useState(false);
   const [pendingSync, setPendingSync] = useState(0);
   const [discountLine, setDiscountLine] = useState<CartLine | null>(null);
+  const [qtyLine, setQtyLine] = useState<CartLine | null>(null);
   const offlineSyncing = useOfflineSyncing();
+
+  const tenderedNum = useMemo(() => {
+    const n = Number(String(amountTendered).replace(/\s/g, ''));
+    return Number.isFinite(n) && n >= 0 ? n : null;
+  }, [amountTendered]);
+
+  const changeDue = useMemo(() => {
+    if (paymentMethod !== 'cash' || tenderedNum == null) return null;
+    if (tenderedNum <= total) return null;
+    return tenderedNum - total;
+  }, [paymentMethod, tenderedNum, total]);
+
+  const remainderDue = useMemo(() => {
+    if (!selectedCustomer || paymentMethod === 'credit' || tenderedNum == null) return null;
+    if (tenderedNum >= total) return null;
+    return total - tenderedNum;
+  }, [selectedCustomer, paymentMethod, tenderedNum, total]);
 
   const refreshPending = useCallback(() => {
     void getOfflineQueueCount().then(setPendingSync);
@@ -128,8 +242,14 @@ export default function CartScreen() {
   useFocusEffect(
     useCallback(() => {
       void fetchCurrentShift()
-        .then((s) => setHasShift(!!s))
-        .catch(() => setHasShift(false));
+        .then((s) => {
+          setHasOwnShift(isOwnOpenShift(s));
+          setShiftOwnedByOther(!!(s?.shift && s.is_own_shift === false));
+        })
+        .catch(() => {
+          setHasOwnShift(false);
+          setShiftOwnedByOther(false);
+        });
       refreshPending();
       void syncWithFeedback({ router }).then(() => refreshPending());
     }, [refreshPending, router]),
@@ -146,8 +266,37 @@ export default function CartScreen() {
     }, [refreshPending, router]),
   );
 
+  useEffect(() => {
+    if (!selectedCustomer && paymentMethod === 'credit') {
+      setPaymentMethod('cash');
+    }
+  }, [selectedCustomer, paymentMethod]);
+
   const handleChangeQty = useCallback((productId: string, delta: number) => {
     changeQty(productId, delta);
+  }, []);
+
+  const handleRemove = useCallback((productId: string) => {
+    removeLine(productId);
+  }, []);
+
+  const handleClearCart = useCallback(() => {
+    Alert.alert(t('clearCart'), t('clearCartConfirm'), [
+      { text: t('cancel'), style: 'cancel' },
+      {
+        text: t('clearCart'),
+        style: 'destructive',
+        onPress: () => {
+          clearCart();
+          setAmountTendered('');
+          setCustomerNote('');
+          setDueDate('');
+          setPaymentMethod('cash');
+          setError(null);
+          setInfo(null);
+        },
+      },
+    ]);
   }, []);
 
   const renderCartLine = useCallback(
@@ -156,21 +305,30 @@ export default function CartScreen() {
         line={item}
         onChangeQty={handleChangeQty}
         onEditDiscount={setDiscountLine}
+        onEditQty={setQtyLine}
+        onRemove={handleRemove}
       />
     ),
-    [handleChangeQty],
+    [handleChangeQty, handleRemove],
   );
 
   function resetForm() {
     setCustomerNote('');
     setAmountTendered('');
     setDueDate('');
+    setPaymentMethod('cash');
+    setInfo(null);
   }
 
   async function handleCheckout() {
     if (submitting || cart.length === 0) return;
-    if (hasShift === false) {
-      setError(t('openShiftFirst'));
+    if (hasOwnShift === false) {
+      setError(shiftOwnedByOther ? t('shiftOwnedByOther') : t('openShiftFirst'));
+      return;
+    }
+    if (paymentMethod === 'credit' && !selectedCustomer) {
+      setError(t('creditNeedsCustomer'));
+      setPaymentMethod('cash');
       return;
     }
     if (total <= 0) {
@@ -179,6 +337,7 @@ export default function CartScreen() {
     }
     setSubmitting(true);
     setError(null);
+    setInfo(null);
     const payload: Parameters<typeof completeSale>[0] = {
       items: mapCartItems(cart),
       payment_method: paymentMethod,
@@ -204,7 +363,7 @@ export default function CartScreen() {
         clearCart();
         resetForm();
         refreshPending();
-        setError(t('offlineSaved'));
+        setInfo(t('offlineSaved'));
       } else {
         setError(e instanceof Error ? e.message : t('saleFailed'));
       }
@@ -215,14 +374,23 @@ export default function CartScreen() {
 
   async function handleSendToCashier() {
     if (holding || submitting || cart.length === 0) return;
-    if (hasShift === false) {
-      setError(t('openShiftFirst'));
+    if (hasOwnShift === false) {
+      setError(shiftOwnedByOther ? t('shiftOwnedByOther') : t('openShiftFirst'));
       return;
     }
     setHolding(true);
     setError(null);
+    setInfo(null);
     try {
       const shift = await fetchCurrentShift();
+      if (!isOwnOpenShift(shift)) {
+        setError(
+          shift?.shift && shift.is_own_shift === false
+            ? t('shiftOwnedByOther')
+            : t('openShiftFirst'),
+        );
+        return;
+      }
       const user = await loadUser();
       const deviceId = await getOrCreateDeviceId();
       const sellerName = user?.full_name || user?.username || user?.id || '';
@@ -247,8 +415,9 @@ export default function CartScreen() {
         t('holdOrderNumber').replace('{n}', String(orderNo)),
       );
     } catch (e) {
-      // Hold targets live cashier queue — requires network (unlike completeSale offline queue).
-      setError(isNetworkError(e) ? t('holdNeedsOnline') : e instanceof Error ? e.message : t('holdFailed'));
+      setError(
+        isNetworkError(e) ? t('holdNeedsOnline') : e instanceof Error ? e.message : t('holdFailed'),
+      );
     } finally {
       setHolding(false);
     }
@@ -258,6 +427,7 @@ export default function CartScreen() {
     return (
       <View style={styles.emptyRoot}>
         <Text style={styles.emptyTitle}>{t('emptyCart')}</Text>
+        {info ? <Text style={styles.infoEmpty}>{info}</Text> : null}
         <Pressable style={styles.emptyBtn} onPress={() => router.push('/(tabs)/sell')}>
           <Text style={styles.emptyBtnText}>{t('sell')}</Text>
         </Pressable>
@@ -266,10 +436,16 @@ export default function CartScreen() {
   }
 
   return (
-    <View style={styles.root}>
-      {hasShift === false ? (
+    <KeyboardAvoidingView
+      style={styles.root}
+      behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+      keyboardVerticalOffset={Platform.OS === 'ios' ? 88 : 0}
+    >
+      {hasOwnShift === false ? (
         <Pressable style={styles.shiftBanner} onPress={() => router.push('/(tabs)/shift')}>
-          <Text style={styles.shiftBannerText}>{t('openShiftFirst')}</Text>
+          <Text style={styles.shiftBannerText}>
+            {shiftOwnedByOther ? t('shiftOwnedByOther') : t('openShiftFirst')}
+          </Text>
         </Pressable>
       ) : null}
 
@@ -302,10 +478,16 @@ export default function CartScreen() {
         keyboardShouldPersistTaps="handled"
         style={styles.cartList}
         contentContainerStyle={styles.cartListContent}
+        ListHeaderComponent={
+          <Pressable style={styles.clearCartBtn} onPress={handleClearCart}>
+            <Text style={styles.clearCartText}>{t('clearCart')}</Text>
+          </Pressable>
+        }
       />
 
       <View style={styles.footer}>
         {error ? <Text style={styles.error}>{error}</Text> : null}
+        {info ? <Text style={styles.info}>{info}</Text> : null}
         <CustomerPickerBanner />
         <TextInput
           style={styles.note}
@@ -343,54 +525,77 @@ export default function CartScreen() {
             keyboardType="numbers-and-punctuation"
           />
         ) : null}
-        {selectedCustomer && paymentMethod !== 'credit' ? (
+        {paymentMethod !== 'credit' ? (
           <>
-            {Number(selectedCustomer.balance_uzs ?? selectedCustomer.balance ?? 0) > 0 ? (
-              <Text style={styles.prepaidHint}>{t('prepaidAutoApply')}</Text>
+            {selectedCustomer &&
+            Number(selectedCustomer.balance_uzs ?? selectedCustomer.balance ?? 0) > 0 ? (
+              <Text style={styles.prepaidHint} numberOfLines={1}>
+                {t('prepaidAutoApply')}
+              </Text>
             ) : null}
             <TextInput
               style={styles.note}
-              placeholder={`${t('partialPayment')} (${t('amountTendered')})`}
+              placeholder={
+                paymentMethod === 'cash'
+                  ? t('amountTendered')
+                  : `${t('partialPayment')} (${t('amountTendered')})`
+              }
               value={amountTendered}
               onChangeText={setAmountTendered}
               keyboardType="numeric"
             />
+            {changeDue != null ? (
+              <View style={styles.changeRow}>
+                <Text style={styles.changeLabel}>{t('change')}</Text>
+                <Text style={styles.changeValue}>{formatMoney(changeDue)}</Text>
+              </View>
+            ) : null}
+            {remainderDue != null ? (
+              <View style={styles.remainderRow}>
+                <Text style={styles.remainderLabel}>{t('partialPayment')}</Text>
+                <Text style={styles.remainderValue}>{formatMoney(remainderDue)}</Text>
+              </View>
+            ) : null}
           </>
         ) : null}
         <View style={styles.totalsBlock}>
-          <View style={styles.totalRow}>
-            <Text style={styles.totalLabel}>{t('subtotal')}</Text>
-            <Text style={styles.metaValue}>{formatMoney(subtotal)}</Text>
-          </View>
           {discountTotal > 0 ? (
-            <View style={styles.totalRow}>
-              <Text style={styles.totalLabel}>{t('discount')}</Text>
-              <Text style={styles.discountValue}>-{formatMoney(discountTotal)}</Text>
-            </View>
+            <>
+              <View style={styles.totalRow}>
+                <Text style={styles.totalLabel}>{t('subtotal')}</Text>
+                <Text style={styles.metaValue}>{formatMoney(subtotal)}</Text>
+              </View>
+              <View style={styles.totalRow}>
+                <Text style={styles.totalLabel}>{t('discount')}</Text>
+                <Text style={styles.discountValue}>-{formatMoney(discountTotal)}</Text>
+              </View>
+            </>
           ) : null}
           <View style={styles.totalRow}>
             <Text style={styles.totalLabelBold}>{t('total')}</Text>
             <Text style={styles.totalValue}>{formatMoney(total)}</Text>
           </View>
         </View>
-        <Pressable
-          style={[styles.holdBtn, (holding || submitting) && styles.checkoutDisabled]}
-          onPress={handleSendToCashier}
-          disabled={holding || submitting}
-        >
-          <Text style={styles.holdBtnText}>
-            {holding ? t('processing') : t('sendToCashier')}
-          </Text>
-        </Pressable>
-        <Pressable
-          style={[styles.checkout, submitting && styles.checkoutDisabled]}
-          onPress={handleCheckout}
-          disabled={submitting || holding}
-        >
-          <Text style={styles.checkoutText}>
-            {submitting ? t('processing') : t('completeSale')}
-          </Text>
-        </Pressable>
+        <View style={styles.actionRow}>
+          <Pressable
+            style={[styles.holdBtn, (holding || submitting) && styles.checkoutDisabled]}
+            onPress={handleSendToCashier}
+            disabled={holding || submitting}
+          >
+            <Text style={styles.holdBtnText}>
+              {holding ? t('processing') : t('sendToCashier')}
+            </Text>
+          </Pressable>
+          <Pressable
+            style={[styles.checkout, submitting && styles.checkoutDisabled]}
+            onPress={handleCheckout}
+            disabled={submitting || holding}
+          >
+            <Text style={styles.checkoutText}>
+              {submitting ? t('processing') : t('completeSale')}
+            </Text>
+          </Pressable>
+        </View>
       </View>
 
       <LineDiscountModal
@@ -401,7 +606,8 @@ export default function CartScreen() {
           if (discountLine) setLineDiscount(discountLine.product.id, amount);
         }}
       />
-    </View>
+      <QtyEditModal line={qtyLine} visible={!!qtyLine} onClose={() => setQtyLine(null)} />
+    </KeyboardAvoidingView>
   );
 }
 
@@ -414,127 +620,245 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     padding: 24,
   },
-  emptyTitle: { fontSize: 16, color: '#94a3b8', marginBottom: 16 },
+  emptyTitle: { fontSize: 15, color: '#94a3b8', marginBottom: 12 },
+  infoEmpty: {
+    color: '#166534',
+    fontWeight: '600',
+    fontSize: 13,
+    textAlign: 'center',
+    marginBottom: 12,
+    paddingHorizontal: 12,
+  },
   emptyBtn: {
     backgroundColor: '#166534',
-    borderRadius: 10,
-    paddingVertical: 12,
-    paddingHorizontal: 24,
+    borderRadius: 8,
+    paddingVertical: 10,
+    paddingHorizontal: 20,
   },
-  emptyBtnText: { color: '#fff', fontWeight: '700', fontSize: 15 },
+  emptyBtnText: { color: '#fff', fontWeight: '700', fontSize: 14 },
   shiftBanner: {
     backgroundColor: '#fef3c7',
-    borderRadius: 8,
-    padding: 12,
-    marginHorizontal: 12,
-    marginTop: 12,
+    borderRadius: 6,
+    paddingVertical: 8,
+    paddingHorizontal: 10,
+    marginHorizontal: 8,
+    marginTop: 8,
     borderWidth: 1,
     borderColor: '#fcd34d',
   },
-  shiftBannerText: { color: '#92400e', fontWeight: '600', textAlign: 'center' },
+  shiftBannerText: { color: '#92400e', fontWeight: '600', textAlign: 'center', fontSize: 12 },
   syncBanner: {
     backgroundColor: '#dbeafe',
-    borderRadius: 8,
-    padding: 12,
-    marginHorizontal: 12,
-    marginTop: 8,
+    borderRadius: 6,
+    paddingVertical: 8,
+    paddingHorizontal: 10,
+    marginHorizontal: 8,
+    marginTop: 6,
     borderWidth: 1,
     borderColor: '#93c5fd',
   },
-  syncBannerText: { color: '#1e40af', fontWeight: '600', textAlign: 'center', fontSize: 13 },
+  syncBannerText: { color: '#1e40af', fontWeight: '600', textAlign: 'center', fontSize: 12 },
   syncSpinnerRow: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    gap: 8,
+    gap: 6,
     backgroundColor: '#eff6ff',
-    borderRadius: 8,
-    padding: 10,
-    marginHorizontal: 12,
-    marginTop: 8,
+    borderRadius: 6,
+    paddingVertical: 6,
+    marginHorizontal: 8,
+    marginTop: 6,
     borderWidth: 1,
     borderColor: '#93c5fd',
   },
-  syncSpinnerText: { color: '#1e40af', fontWeight: '600', fontSize: 13 },
+  syncSpinnerText: { color: '#1e40af', fontWeight: '600', fontSize: 12 },
   cartList: { flex: 1 },
-  cartListContent: { paddingHorizontal: 14, paddingVertical: 8, paddingBottom: 16 },
+  cartListContent: { paddingHorizontal: 8, paddingTop: 4, paddingBottom: 8 },
+  clearCartBtn: {
+    alignSelf: 'flex-end',
+    paddingVertical: 4,
+    paddingHorizontal: 2,
+    marginBottom: 2,
+  },
+  clearCartText: { color: '#dc2626', fontWeight: '600', fontSize: 11 },
   cartLine: {
     backgroundColor: '#fff',
-    marginBottom: 8,
-    padding: 12,
-    borderRadius: 10,
-    borderWidth: 1,
+    marginBottom: 4,
+    paddingVertical: 6,
+    paddingHorizontal: 8,
+    borderRadius: 6,
+    borderWidth: StyleSheet.hairlineWidth,
     borderColor: '#e2e8f0',
   },
-  cartLineMain: { flexDirection: 'row', alignItems: 'center' },
-  cartName: { flex: 1, fontSize: 14, color: '#0f172a', marginRight: 8 },
-  qtyControls: { flexDirection: 'row', alignItems: 'center', marginHorizontal: 4 },
+  cartLineMain: { flexDirection: 'row', alignItems: 'center', gap: 4 },
+  cartLineInfo: { flex: 1, minWidth: 0, marginRight: 2 },
+  cartName: { fontSize: 13, color: '#0f172a', fontWeight: '600' },
+  metaRow: { flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 1 },
+  unitPrice: { fontSize: 11, color: '#64748b', flexShrink: 1 },
+  qtyControls: { flexDirection: 'row', alignItems: 'center' },
   qtyBtn: {
-    width: 30,
-    height: 30,
-    borderRadius: 6,
+    width: 26,
+    height: 26,
+    borderRadius: 5,
     backgroundColor: '#f1f5f9',
     alignItems: 'center',
     justifyContent: 'center',
   },
-  qtyBtnText: { fontSize: 18, color: '#166534', fontWeight: '700' },
-  qtyValue: { minWidth: 28, textAlign: 'center', fontSize: 15, fontWeight: '600' },
-  lineTotals: { minWidth: 84, alignItems: 'flex-end' },
-  cartLineTotal: { fontSize: 14, color: '#166534', fontWeight: '600' },
-  discountBadge: { fontSize: 11, color: '#b45309', fontWeight: '600', marginTop: 2 },
-  discountLink: { marginTop: 8, alignSelf: 'flex-start' },
-  discountLinkText: { fontSize: 12, color: '#166534', fontWeight: '600' },
+  qtyBtnDisabled: { opacity: 0.35 },
+  qtyBtnText: { fontSize: 15, fontWeight: '700', color: '#166534', lineHeight: 16 },
+  qtyValueBtn: {
+    minWidth: 28,
+    paddingHorizontal: 2,
+    paddingVertical: 2,
+    alignItems: 'center',
+  },
+  qtyValue: {
+    minWidth: 20,
+    textAlign: 'center',
+    fontWeight: '700',
+    fontSize: 13,
+    color: '#0f172a',
+    textDecorationLine: 'underline',
+  },
+  cartLineTotal: {
+    fontWeight: '700',
+    color: '#0f172a',
+    fontSize: 12,
+    minWidth: 64,
+    textAlign: 'right',
+  },
+  discountLinkText: { fontSize: 11, color: '#166534', fontWeight: '600' },
+  removeBtn: {
+    width: 22,
+    height: 22,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginLeft: 2,
+  },
+  removeBtnText: { fontSize: 18, color: '#dc2626', fontWeight: '600', lineHeight: 20 },
   footer: {
     backgroundColor: '#fff',
-    borderTopWidth: 1,
+    borderTopWidth: StyleSheet.hairlineWidth,
     borderTopColor: '#e2e8f0',
-    padding: 14,
+    paddingHorizontal: 10,
+    paddingTop: 8,
+    paddingBottom: 8,
   },
+  error: { color: '#dc2626', marginBottom: 4, fontSize: 12 },
+  info: { color: '#166534', marginBottom: 4, fontSize: 12, fontWeight: '600' },
   note: {
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: '#e2e8f0',
+    borderRadius: 6,
+    paddingHorizontal: 10,
+    paddingVertical: 7,
+    marginTop: 6,
     backgroundColor: '#f8fafc',
+    fontSize: 13,
+  },
+  payRow: { flexDirection: 'row', gap: 6, marginTop: 6 },
+  payBtn: {
+    flex: 1,
+    paddingVertical: 7,
+    borderRadius: 6,
+    backgroundColor: '#f1f5f9',
+    alignItems: 'center',
+  },
+  payBtnActive: { backgroundColor: '#166534' },
+  payBtnDisabled: { opacity: 0.4 },
+  payText: { fontWeight: '600', color: '#475569', fontSize: 12 },
+  payTextActive: { color: '#fff' },
+  prepaidHint: { fontSize: 11, color: '#64748b', marginTop: 4 },
+  changeRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    marginTop: 4,
+    backgroundColor: '#ecfdf5',
+    borderRadius: 6,
+    paddingHorizontal: 8,
+    paddingVertical: 5,
+  },
+  changeLabel: { color: '#166534', fontWeight: '600', fontSize: 12 },
+  changeValue: { color: '#166534', fontWeight: '800', fontSize: 13 },
+  remainderRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    marginTop: 4,
+    backgroundColor: '#fff7ed',
+    borderRadius: 6,
+    paddingHorizontal: 8,
+    paddingVertical: 5,
+  },
+  remainderLabel: { color: '#9a3412', fontWeight: '600', fontSize: 12 },
+  remainderValue: { color: '#9a3412', fontWeight: '700', fontSize: 12 },
+  totalsBlock: { marginTop: 6, gap: 2 },
+  totalRow: { flexDirection: 'row', justifyContent: 'space-between' },
+  totalLabel: { color: '#64748b', fontSize: 12 },
+  totalLabelBold: { color: '#0f172a', fontWeight: '700', fontSize: 14 },
+  metaValue: { color: '#334155', fontSize: 12 },
+  discountValue: { color: '#b45309', fontSize: 12 },
+  totalValue: { color: '#166534', fontWeight: '800', fontSize: 15 },
+  actionRow: { flexDirection: 'row', gap: 6, marginTop: 8 },
+  holdBtn: {
+    flex: 1,
+    backgroundColor: '#f1f5f9',
+    borderRadius: 8,
+    paddingVertical: 10,
+    alignItems: 'center',
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: '#cbd5e1',
+  },
+  holdBtnText: { color: '#334155', fontWeight: '700', fontSize: 12, textAlign: 'center' },
+  checkout: {
+    flex: 1.2,
+    backgroundColor: '#166534',
+    borderRadius: 8,
+    paddingVertical: 10,
+    alignItems: 'center',
+  },
+  checkoutDisabled: { opacity: 0.6 },
+  checkoutText: { color: '#fff', fontWeight: '700', fontSize: 13, textAlign: 'center' },
+  modalBackdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.45)',
+    justifyContent: 'center',
+    padding: 24,
+  },
+  modalCard: {
+    backgroundColor: '#fff',
+    borderRadius: 12,
+    padding: 16,
+  },
+  modalTitle: { fontSize: 16, fontWeight: '700', color: '#0f172a' },
+  modalMeta: { fontSize: 12, color: '#64748b', marginTop: 4, marginBottom: 10 },
+  modalInput: {
     borderWidth: 1,
     borderColor: '#e2e8f0',
     borderRadius: 8,
     paddingHorizontal: 12,
-    paddingVertical: 8,
-    fontSize: 14,
+    paddingVertical: 10,
+    fontSize: 20,
+    fontWeight: '700',
+    textAlign: 'center',
+    backgroundColor: '#f8fafc',
   },
-  payRow: { flexDirection: 'row', gap: 10, marginTop: 10 },
-  payBtn: {
+  modalHint: { fontSize: 11, color: '#64748b', textAlign: 'center', marginTop: 6 },
+  modalHintMuted: { fontSize: 10, color: '#94a3b8', textAlign: 'center', marginTop: 8 },
+  modalActions: { flexDirection: 'row', gap: 8, marginTop: 12 },
+  modalCancel: {
     flex: 1,
     paddingVertical: 10,
     borderRadius: 8,
     backgroundColor: '#f1f5f9',
     alignItems: 'center',
   },
-  payBtnActive: { backgroundColor: '#166534' },
-  payBtnDisabled: { opacity: 0.4 },
-  payText: { fontWeight: '600', color: '#334155', fontSize: 12 },
-  payTextActive: { color: '#fff' },
-  totalsBlock: { marginTop: 12, gap: 4 },
-  totalRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
-  totalLabel: { fontSize: 14, color: '#64748b' },
-  totalLabelBold: { fontSize: 16, color: '#475569', fontWeight: '600' },
-  metaValue: { fontSize: 14, color: '#334155' },
-  discountValue: { fontSize: 14, color: '#b45309', fontWeight: '600' },
-  totalValue: { fontSize: 20, fontWeight: '700', color: '#0f172a' },
-  holdBtn: {
-    backgroundColor: '#ca8a04',
-    borderRadius: 10,
-    paddingVertical: 14,
-    alignItems: 'center',
-    marginTop: 12,
-  },
-  holdBtnText: { color: '#fff', fontWeight: '700', fontSize: 16 },
-  checkout: {
+  modalCancelText: { fontWeight: '600', color: '#64748b', fontSize: 13 },
+  modalSave: {
+    flex: 1,
+    paddingVertical: 10,
+    borderRadius: 8,
     backgroundColor: '#166534',
-    borderRadius: 10,
-    paddingVertical: 14,
     alignItems: 'center',
-    marginTop: 12,
   },
-  checkoutDisabled: { opacity: 0.6 },
-  checkoutText: { color: '#fff', fontWeight: '700', fontSize: 16 },
-  error: { color: '#dc2626', marginBottom: 8, textAlign: 'center' },
-  prepaidHint: { fontSize: 12, color: '#166534', marginBottom: 6, fontWeight: '600' },
+  modalSaveText: { fontWeight: '700', color: '#fff', fontSize: 13 },
 });

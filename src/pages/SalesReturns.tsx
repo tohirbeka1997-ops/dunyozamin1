@@ -28,8 +28,9 @@ import {
 } from '@/components/ui/table';
 import { getSalesReturns, getCustomers, getSalesReturnById, getSettingsByCategory, getSalesReturnReasonBreakdown } from '@/db/api';
 import type { CompanySettings, Customer, SalesReturnWithDetails } from '@/types/database';
-import { ChevronDown, Plus, Search, Eye, Printer, RotateCcw, Edit, RefreshCw } from 'lucide-react';
+import { ChevronDown, Plus, Search, Eye, Printer, RotateCcw, Edit, RefreshCw, ShoppingCart } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
+import PageQuickActions from '@/components/common/PageQuickActions';
 import { formatReturnMoney, aggregateReturnAmounts, formatMoneyUZS } from '@/lib/format';
 import { DualCurrencyAmount } from '@/components/common/DualCurrencyAmount';
 import { formatOrderDateTime } from '@/lib/datetime';
@@ -350,15 +351,27 @@ export default function SalesReturns() {
           <h1 className="page-heading">Sotuv qaytarishlari</h1>
           <p className="page-heading-sub">Qaytarish va pulni qaytarishni boshqarish</p>
         </div>
-        <Button
-          size="sm"
-          className="h-8 shrink-0 text-xs"
-          onClick={() => navigate(withReturnToPath('/returns/create', buildCurrentPath(location)))}
-        >
-          <Plus className="mr-2 h-3.5 w-3.5" />
-          Yangi qaytarish
-        </Button>
       </div>
+
+      <PageQuickActions
+        aria-label={t('quickActions.aria_label')}
+        actions={[
+          {
+            id: 'new-return',
+            icon: <Plus />,
+            label: t('quickActions.new_return'),
+            variant: 'default',
+            onClick: () =>
+              navigate(withReturnToPath('/returns/create', buildCurrentPath(location))),
+          },
+          {
+            id: 'pos',
+            icon: <ShoppingCart />,
+            label: t('quickActions.open_pos'),
+            onClick: () => navigate('/pos'),
+          },
+        ]}
+      />
 
       <Card className="gap-0 py-0 shadow-sm">
         <CardContent className="px-3 py-3 sm:px-4">

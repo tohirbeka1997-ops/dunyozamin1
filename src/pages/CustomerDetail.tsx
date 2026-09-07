@@ -84,12 +84,13 @@ import {
   formatCashierSigned,
   formatLedgerQoldiPlain,
   ledgerCashFlow,
-  ledgerLastMatchesPosition,
-  ledgerRunningPosition,
+  ledgerQoldiViewFromSigned,
   resolveLedgerEventTimes,
+  runningSignedMatchesPosition,
   signedBalanceClassName,
   sortLedgerEntries,
   toCashierSigned,
+  walkLedgerRunningSigned,
 } from "@/lib/customerLedgerDisplay";
 import { createBackNavigationState, navigateBackTo, resolveBackTarget } from "@/lib/pageState";
 import type {
@@ -658,15 +659,6 @@ export default function CustomerDetail() {
     const sorted = sortLedgerEntries(ledger, "asc");
     return sorted[sorted.length - 1] || null;
   }, [ledger]);
-  const ledgerMatchesHisobHolati = useMemo(
-    () =>
-      ledgerLastMatchesPosition(chronologicallyLastLedger, {
-        net: position.net,
-        debt: position.debt,
-        advance: position.advance,
-      }),
-    [chronologicallyLastLedger, position.advance, position.debt, position.net],
-  );
   const orderAmountsById = useMemo(() => {
     const map = new Map<string, { total: number; paid: number }>();
     for (const order of orders) {
@@ -678,6 +670,25 @@ export default function CustomerDetail() {
     }
     return map;
   }, [orders]);
+  const ledgerRunningById = useMemo(
+    () => walkLedgerRunningSigned(ledger, orderAmountsById),
+    [ledger, orderAmountsById],
+  );
+  const lastRunningSigned = useMemo(() => {
+    if (!chronologicallyLastLedger) return null;
+    const key = String(chronologicallyLastLedger.id || "");
+    const v = ledgerRunningById.get(key);
+    return v == null ? null : v;
+  }, [chronologicallyLastLedger, ledgerRunningById]);
+  const ledgerMatchesHisobHolati = useMemo(
+    () =>
+      runningSignedMatchesPosition(lastRunningSigned, {
+        net: position.net,
+        debt: position.debt,
+        advance: position.advance,
+      }),
+    [lastRunningSigned, position.advance, position.debt, position.net],
+  );
   const openOrder = (orderId: string) =>
     navigate(`/orders/${orderId}`, { state: createBackNavigationState(location) });
   const openPayment = (kind?: "payment_in" | "advance_out") => {
@@ -701,8 +712,8 @@ export default function CustomerDetail() {
     ];
     const rows = visibleLedger.map((entry) => {
       const flow = ledgerCashFlow(entry, orderAmountsById);
-      const running = ledgerRunningPosition(entry);
-      const qoldi = formatLedgerQoldiPlain(running);
+      const runningSigned = ledgerRunningById.get(String(entry.id || "")) ?? 0;
+      const qoldi = formatLedgerQoldiPlain(ledgerQoldiViewFromSigned(runningSigned));
       const timeMs = ledgerTimeMsById.get(String(entry.id || "")) ?? entry.created_at;
       return [
         formatDateTime(timeMs),
@@ -725,7 +736,7 @@ export default function CustomerDetail() {
       rows.map((row) => row.map(String)),
       `mijoz-tarix-${safeName}-${todayYMD()}.csv`,
     );
-  }, [canExport, customer?.name, ledgerTimeMsById, orderAmountsById, visibleLedger]);
+  }, [canExport, customer?.name, ledgerRunningById, ledgerTimeMsById, orderAmountsById, visibleLedger]);
 
   const adjustBonus = async () => {
     if (
@@ -1484,8 +1495,9 @@ export default function CustomerDetail() {
                                 </span>
                               </TooltipTrigger>
                               <TooltipContent className="max-w-xs text-xs">
-                                Shu amaldan keyingi bitta mijoz balansi. Oxirgi qator («Hozir») —
-                                joriy balans; yuqoridagi «Mijoz balansi» bilan bir xil.
+                                Shu qatorning yuruvchi Qoldisi: oldingi Qoldi + shu savdo qoldig‘i
+                                (Jami − Olindi) yoki −Olindi / +Berildi. «Hozir» — joriy saqlangan
+                                mijoz balansi (o‘zgarmaydi).
                               </TooltipContent>
                             </Tooltip>
                           </TableHead>
@@ -1506,7 +1518,8 @@ export default function CustomerDetail() {
                               : null);
                           const currency = normalizeCurrency(entry.currency, "UZS");
                           const flow = ledgerCashFlow(entry, orderAmountsById);
-                          const running = ledgerRunningPosition(entry);
+                          const runningSigned = ledgerRunningById.get(String(entry.id || "")) ?? 0;
+                          const running = ledgerQoldiViewFromSigned(runningSigned);
                           const isLast =
                             ledgerOrder === "oldest" && index === visibleLedger.length - 1;
                           const staffName = entry.created_by_name || entry.created_by || "—";
@@ -1629,15 +1642,15 @@ export default function CustomerDetail() {
                     </Table>
                   </div>
                   <p className="mt-2 text-[11px] leading-snug text-muted-foreground">
-                    «Qoldi» — har amaldan keyingi yuruvchi balans (+ qarz, − ortiqcha to‘lov).
-                    Oxirgi qator / «Hozir» = «Mijoz balansi» va ro‘yxatdagi Balans.
+                    «Qoldi» — shu tarix qatorlaridan yuruvchi balans (+ qarz, − ortiqcha to‘lov).
+                    «Hozir» = joriy saqlangan «Mijoz balansi» (Qoldi ustunidan hisoblanmaydi).
                   </p>
                   {!ledgerMatchesHisobHolati && chronologicallyLastLedger && (
                     <p className="mt-1 flex gap-1.5 text-[11px] leading-snug text-amber-800 dark:text-amber-200">
                       <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
                       <span>
-                        Oxirgi tarixiy Qoldi joriy balans bilan mos emas (eski yozuvlarda snapshot
-                        to‘liq emas bo‘lishi mumkin). Kassir uchun to‘g‘ri raqam —{" "}
+                        Oxirgi tarixiy Qoldi joriy balans bilan mos emas (tarixda ko‘rinmagan ochiq
+                        qarz yoki eski yozuvlar). Kassir uchun to‘g‘ri joriy raqam —{" "}
                         <b>Mijoz balansi / Hozir</b>.
                       </span>
                     </p>

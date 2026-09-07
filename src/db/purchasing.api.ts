@@ -336,7 +336,8 @@ export const receiveGoods = async (
     notes?: string;
     product_id?: string; // Optional: if provided, use it directly
   }>,
-  receivedDate?: string
+  receivedDate?: string,
+  options?: { update_product_sale_prices?: boolean },
 ) => {
   if (hasPosApi()) {
     const api = requireElectron();
@@ -345,6 +346,7 @@ export const receiveGoods = async (
       api.purchases.receiveGoods(poId, {
         items,
         received_at: receivedDate || null,
+        update_product_sale_prices: options?.update_product_sale_prices,
         // received_by can be set by backend/UI; optional here
       })
     );
@@ -526,6 +528,8 @@ export const createPurchaseReceipt = async (payload: {
   receive_type?: string | null;
   zero_cost_reason?: string | null;
   zero_cost_approved_by?: string | null;
+  /** When false, do not push PO line sale_price into product catalog on receive. Default true. */
+  update_product_sale_prices?: boolean;
   idempotency_key?: string | null;
   items: Array<{
     purchase_order_item_id?: string | null;

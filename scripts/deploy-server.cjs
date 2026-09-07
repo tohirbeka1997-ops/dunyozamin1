@@ -105,6 +105,7 @@ function buildRemoteScript({
   installPublicApi,
   rebuildRootNative,
   rebuildPublicApiNative,
+  skipDockerBuild,
   restartServices,
   healthUrl,
   rpcHealthUrl,
@@ -132,6 +133,7 @@ function buildRemoteScript({
     `INSTALL_PUBLIC_API=${installPublicApi ? '1' : '0'}`,
     `REBUILD_ROOT_NATIVE=${rebuildRootNative ? '1' : '0'}`,
     `REBUILD_PUBLIC_API_NATIVE=${rebuildPublicApiNative ? '1' : '0'}`,
+    `SKIP_DOCKER_BUILD=${skipDockerBuild ? '1' : '0'}`,
     `HEALTH_URL=${JSON.stringify(healthUrl)}`,
     `RPC_HEALTH_URL=${JSON.stringify(rpcHealthUrl || '')}`,
     '',
@@ -172,17 +174,31 @@ function buildRemoteScript({
     '  npm rebuild better-sqlite3 --prefix public-api --build-from-source || npm install better-sqlite3 --prefix public-api --build-from-source --no-audit --no-fund',
     'fi',
     '',
+    'if [ "$REBUILD_ROOT_NATIVE" = "1" ]; then',
     ...rootChecks,
-    "node -e \"const B=require('./public-api/node_modules/better-sqlite3'); new B(':memory:').close(); console.log('[remote] public-api better-sqlite3 OK')\"",
+    'else',
+    '  echo "[remote] root better-sqlite3 check skipped (REBUILD_ROOT_NATIVE=0)"',
+    'fi',
+    '',
+    'if [ "$REBUILD_PUBLIC_API_NATIVE" = "1" ]; then',
+    "  node -e \"const B=require('./public-api/node_modules/better-sqlite3'); new B(':memory:').close(); console.log('[remote] public-api better-sqlite3 OK')\"",
+    'else',
+    '  echo "[remote] public-api better-sqlite3 check skipped (REBUILD_PUBLIC_API_NATIVE=0)"',
+    'fi',
     '',
     // Live RPC on Hetzner is usually Docker `pos-server` (:3333). Syncing
     // /opt/pos alone does not update the baked image — rebuild when present.
     'if command -v docker >/dev/null 2>&1 && docker ps --format "{{.Names}}" 2>/dev/null | grep -qx pos-server; then',
-    '  echo "[remote] Docker pos-server detected — rebuild + recreate from synced sources"',
     '  COMPOSE_FILES="-f docker-compose.yaml"',
     '  if [ -f docker-compose.prod.yaml ]; then COMPOSE_FILES="$COMPOSE_FILES -f docker-compose.prod.yaml"; fi',
-    '  docker compose $COMPOSE_FILES build pos-server',
-    '  docker compose $COMPOSE_FILES up -d --force-recreate pos-server',
+    '  if [ "$SKIP_DOCKER_BUILD" = "1" ]; then',
+    '    echo "[remote] Docker pos-server — SKIP build (DEPLOY_SKIP_DOCKER_BUILD=1), recreate only"',
+    '    docker compose $COMPOSE_FILES up -d --force-recreate pos-server',
+    '  else',
+    '    echo "[remote] Docker pos-server detected — rebuild + recreate from synced sources"',
+    '    docker compose $COMPOSE_FILES build pos-server',
+    '    docker compose $COMPOSE_FILES up -d --force-recreate pos-server',
+    '  fi',
     '  if command -v systemctl >/dev/null 2>&1; then',
     '    systemctl disable --now pos-rpc.service 2>/dev/null || true',
     '    systemctl restart public-api.service 2>/dev/null || true',
@@ -260,6 +276,8 @@ function main() {
   const installPublicApi = boolEnv(env.DEPLOY_INSTALL_PUBLIC_API, true);
   const rebuildRootNative = boolEnv(env.DEPLOY_REBUILD_ROOT_NATIVE, true);
   const rebuildPublicApiNative = boolEnv(env.DEPLOY_REBUILD_PUBLIC_API_NATIVE, true);
+  // Skip image bake; rely on docker-compose.prod.yaml bind-mounts for host /opt/pos code.
+  const skipDockerBuild = boolEnv(env.DEPLOY_SKIP_DOCKER_BUILD, false);
   // RPC :3333 — systemd `pos-rpc.service` (electron/server.cjs). Docker compose ham 3333 bersa, bittasini o‘chiring (EADDRINUSE).
   const restartServices = String(
     env.DEPLOY_RESTART_SERVICES ||
@@ -293,6 +311,7 @@ function main() {
   console.log('[deploy:server] appPath =', appPath);
   console.log('[deploy:server] health =', healthUrl);
   console.log('[deploy:server] restart =', restartServices.join(' '));
+  console.log('[deploy:server] skipDockerBuild =', skipDockerBuild ? '1' : '0');
   if (rpcHealthUrl) {
     console.log('[deploy:server] rpcHealth =', rpcHealthUrl);
   } else {
@@ -412,6 +431,7 @@ function main() {
     installPublicApi,
     rebuildRootNative,
     rebuildPublicApiNative,
+    skipDockerBuild,
     restartServices,
     healthUrl,
     rpcHealthUrl,

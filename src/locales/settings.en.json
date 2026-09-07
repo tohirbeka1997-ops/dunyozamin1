@@ -238,7 +238,7 @@
   },
   "telegramReports": {
     "title": "Telegram business reports",
-    "description": "Send credit sales, shift close, and daily operations digest to a Telegram channel/group",
+    "description": "Send credit sales, debt repayments, shift close, and daily operations digest to a Telegram channel/group",
     "enabled": "Enable reports",
     "enabledHint": "When off, no business reports are sent (test message still works).",
     "chatId": "Channel / group chat ID",
@@ -246,6 +246,8 @@
     "eventsTitle": "Events",
     "creditSale": "Credit sale (real-time)",
     "creditSaleHint": "Short message after each nasiya sale.",
+    "debtPayment": "Debt payment (real-time)",
+    "debtPaymentHint": "Short message when a customer pays their debt (same channel as credit sales).",
     "shiftClosed": "Shift closed",
     "shiftClosedHint": "Cashier, totals, cash difference.",
     "dailyDigest": "Daily digest (operations)",

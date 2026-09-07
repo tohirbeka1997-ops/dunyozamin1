@@ -201,6 +201,7 @@ module.exports = {
     // Reports
     'pos:reports:dailySales',
     'pos:reports:dailySalesSQL',
+    'pos:reports:customerDebtOperations',
     'pos:reports:topProducts',
     'pos:reports:productSales',
     'pos:reports:promotionUsage',

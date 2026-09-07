@@ -718,8 +718,16 @@ export default function PurchaseOrderFormView(props: Props) {
                       <th className="p-2 text-center font-semibold w-[84px]">Birlik</th>
                       <th className="p-2 text-right font-semibold w-[104px]">
                         Tannarx {currency === 'USD' ? '(USD)' : '(UZS)'}
+                        <span className="block font-normal text-[10px] text-muted-foreground">
+                          qoralamada ixtiyoriy
+                        </span>
                       </th>
-                      <th className="p-2 text-right font-semibold w-[110px]">Sotuv (UZS)</th>
+                      <th className="p-2 text-right font-semibold w-[110px]">
+                        Sotuv (UZS)
+                        <span className="block font-normal text-[10px] text-muted-foreground">
+                          ixtiyoriy
+                        </span>
+                      </th>
                       <th className="p-2 text-right font-semibold w-[72px]">Marja</th>
                       <th className="p-2 text-right font-semibold w-[100px]">Jami</th>
                       {!isReadOnly && <th className="w-9" />}
@@ -823,8 +831,8 @@ export default function PurchaseOrderFormView(props: Props) {
                               <div className="ml-auto text-right min-w-[92px]">
                                 <MoneyInput
                                   value={
-                                    typeof item.base_unit_cost_usd === 'number'
-                                      ? item.base_unit_cost_usd
+                                    Number(item.base_unit_cost_usd ?? 0) > 0
+                                      ? Number(item.base_unit_cost_usd)
                                       : null
                                   }
                                   onValueChange={(v) => onUpdateCost(index, Number(v ?? 0))}
@@ -834,6 +842,7 @@ export default function PurchaseOrderFormView(props: Props) {
                                   disabled={isReadOnly}
                                   containerClassName="space-y-0"
                                   className="h-8 w-[92px] ml-auto text-right text-xs"
+                                  placeholder="—"
                                 />
                                 {(() => {
                                   const rate = Number(fxRate ?? 0);
@@ -857,11 +866,16 @@ export default function PurchaseOrderFormView(props: Props) {
                               </div>
                             ) : (
                               <MoneyInput
-                                value={typeof item.base_unit_cost === 'number' ? item.base_unit_cost : null}
+                                value={
+                                  Number(item.base_unit_cost ?? 0) > 0
+                                    ? Number(item.base_unit_cost)
+                                    : null
+                                }
                                 onValueChange={(v) => onUpdateCost(index, Number(v ?? 0))}
                                 allowZero
                                 containerClassName="space-y-0"
                                 className="h-8 w-[92px] ml-auto text-right text-xs"
+                                placeholder="—"
                               />
                             )}
                           </td>
@@ -875,6 +889,7 @@ export default function PurchaseOrderFormView(props: Props) {
                                 allowZero
                                 containerClassName="space-y-0"
                                 className="h-8 w-[92px] ml-auto text-right text-xs"
+                                placeholder="—"
                               />
                             )}
                           </td>
@@ -1367,6 +1382,7 @@ export default function PurchaseOrderFormView(props: Props) {
 
           <p className="text-[11px] text-muted-foreground leading-relaxed pt-2">
             Qabul qilinganda ombor qoldig‘i va partiya (FIFO tannarx) darhol yangilanadi. Qoralama omborga ta’sir qilmaydi.
+            Tannarx va sotuv narxi qoralamada ixtiyoriy; qabuldan oldin tannarxni to‘ldiring.
           </p>
         </div>
       </div>

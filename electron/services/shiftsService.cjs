@@ -96,6 +96,14 @@ class ShiftsService {
         FROM cash_movements
         WHERE shift_id = ?
           AND LOWER(TRIM(COALESCE(movement_type, ''))) = 'refund'
+          AND NOT (
+            LOWER(TRIM(COALESCE(reference_type, ''))) = 'return'
+            AND EXISTS (
+              SELECT 1 FROM sales_returns sr
+              WHERE sr.id = cash_movements.reference_id
+                AND sr.status = 'completed'
+            )
+          )
       `
         )
         .get(sid);
@@ -289,6 +297,7 @@ class ShiftsService {
             CASE
               WHEN LOWER(TRIM(COALESCE(payment_method, ''))) NOT IN ('cash', 'naqd') THEN 0
               WHEN ${opExpr} = 'payment_out' THEN 0
+              WHEN ${opExpr} != 'payment_in' THEN 0
               ELSE COALESCE(amount, 0)
             END
           ), 0) AS payments_in,
@@ -324,7 +333,7 @@ class ShiftsService {
         SELECT COALESCE(SUM(COALESCE(amount, 0)), 0) AS s
         FROM customer_payments
         WHERE shift_id = ?
-          AND ${opExpr} != 'payment_out'
+          AND ${opExpr} = 'payment_in'
           AND COALESCE(old_balance, 0) < -0.009
       `
         )
@@ -335,7 +344,7 @@ class ShiftsService {
         SELECT COALESCE(SUM(COALESCE(amount, 0)), 0) AS s
         FROM customer_payments
         WHERE shift_id = ?
-          AND ${opExpr} != 'payment_out'
+          AND ${opExpr} = 'payment_in'
           AND COALESCE(old_balance, 0) < -0.009
           AND LOWER(TRIM(COALESCE(payment_method, ''))) IN ('cash', 'naqd')
       `
@@ -355,6 +364,10 @@ class ShiftsService {
     }
   }
 
+  /**
+   * Store-wide supplier cash in the shift time window (hisobotlar uchun).
+   * Kassir kassasi kutilayotgan naqdga QO‘SHILMAYDI — shift_id yo‘q, boshqa kassa.
+   */
   _getSupplierCashShiftRollup(shift) {
     const empty = { supplierPaymentsCash: 0, supplierRefundsCash: 0 };
     if (!shift?.id) return empty;
@@ -614,9 +627,7 @@ class ShiftsService {
         openingCash: shift.opening_cash || 0,
         cashSales: cashTotal,
         customerPaymentsCash: custRoll.customerPaymentsCash,
-        otherCashIn: supplierCash.supplierRefundsCash,
         cashRefunds: cashRefundsOut,
-        supplierPaymentsCash: supplierCash.supplierPaymentsCash,
         customerLoanIssuedCash: custRoll.customerLoanIssuedCash,
         cashExpenses: cashOutflow.cashExpenses,
         cashWithdrawals: cashOutflow.cashWithdrawals,
@@ -1132,9 +1143,7 @@ class ShiftsService {
       openingCash,
       cashSales,
       customerPaymentsCash: custRoll.customerPaymentsCash,
-      otherCashIn: supplierCash.supplierRefundsCash,
       cashRefunds: cashRefundsOut,
-      supplierPaymentsCash: supplierCash.supplierPaymentsCash,
       customerLoanIssuedCash: custRoll.customerLoanIssuedCash,
       cashExpenses: cashOutflow.cashExpenses,
       cashWithdrawals: cashOutflow.cashWithdrawals,

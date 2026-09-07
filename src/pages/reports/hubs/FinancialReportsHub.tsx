@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { useAuth } from '@/contexts/AuthContext';
-import { ArrowLeft, ChevronDown, ChevronUp, DollarSign, FileDown, AlertTriangle, Clock, TrendingDown, Scale } from 'lucide-react';
+import { ArrowLeft, ChevronDown, ChevronUp, DollarSign, FileDown, AlertTriangle, Clock, TrendingDown, Scale, Wallet } from 'lucide-react';
 
 type ReportLink = { title: string; description: string; path: string; icon: React.ReactNode };
 
@@ -55,6 +55,12 @@ export default function FinancialReportsHub() {
         description: 'Mijoz va yetkazib beruvchi qarzdorligi',
         path: '/reports/financial/aging',
         icon: <Clock className="h-4 w-4 opacity-90" />,
+      },
+      {
+        title: 'Qarz to‘lovlari va nasiya',
+        description: 'Davr bo‘yicha kim qarzini to‘ladi va nasiya berildi',
+        path: '/reports/sales/debt-operations',
+        icon: <Wallet className="h-4 w-4 opacity-90" />,
       },
       {
         title: 'Kassa tafovuti',

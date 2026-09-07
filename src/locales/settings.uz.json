@@ -238,7 +238,7 @@
   },
   "telegramReports": {
     "title": "Telegram biznes hisobotlari",
-    "description": "Nasiya sotuv, smena yopilishi va kunlik operatsiyalar hisobotini Telegram kanal/guruhga yuborish",
+    "description": "Nasiya sotuv, qarz to'lovi, smena yopilishi va kunlik operatsiyalar hisobotini Telegram kanal/guruhga yuborish",
     "enabled": "Hisobotlarni yoqish",
     "enabledHint": "O'chirilganda hech qanday biznes hisobot yuborilmaydi (test xabar ishlaydi).",
     "chatId": "Hisobot chat ID (kanal/guruh)",
@@ -246,6 +246,8 @@
     "eventsTitle": "Xabar turlari",
     "creditSale": "Nasiya sotuv (real-time)",
     "creditSaleHint": "Har bir nasiya sotuvidan keyin qisqa xabar.",
+    "debtPayment": "Qarz to'lovi (real-time)",
+    "debtPaymentHint": "Mijoz qarzini to'laganda qisqa xabar (nasiya sotuv bilan bir xil kanal).",
     "shiftClosed": "Smena yopilishi",
     "shiftClosedHint": "Kassir, tushum, naqd farqi.",
     "dailyDigest": "Kunlik hisobot (operatsiyalar)",

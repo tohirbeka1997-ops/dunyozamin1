@@ -16,6 +16,7 @@ const EVENT_CREDIT_SALE = 'credit_sale';
 const EVENT_SHIFT_CLOSED = 'shift_closed';
 const EVENT_DAILY_DIGEST = 'daily_digest';
 const EVENT_BALANCE_CHANGE = 'balance_change';
+const EVENT_DEBT_PAYMENT = 'debt_payment';
 const EVENT_TEST = 'test';
 
 function readSetting(db, key, fallback = null) {
@@ -58,6 +59,55 @@ function normalizeScheduleTime(raw) {
 
 function formatSumma(amount) {
   return Math.round(Number(amount) || 0).toLocaleString('uz-UZ');
+}
+
+function paymentMethodLabelUz(raw) {
+  const t = String(raw || '')
+    .toLowerCase()
+    .trim();
+  if (!t) return '';
+  if (t === 'cash' || t === 'naqd' || t === 'наличные') return 'naqd';
+  if (
+    t === 'card' ||
+    t === 'karta' ||
+    t === 'terminal' ||
+    t === 'uzcard' ||
+    t === 'humo'
+  ) {
+    return 'karta';
+  }
+  if (t === 'qr' || t === 'click' || t === 'payme' || t === 'paynet') return 'QR';
+  if (t === 'transfer' || t === 'bank' || t === 'p2p') return 'o‘tkazma';
+  return t;
+}
+
+function formatLocalDateTime(input) {
+  if (!input) return '';
+  try {
+    const {
+      UZBEKISTAN_TIMEZONE,
+      parseDbTimestamp,
+    } = require('../../electron/lib/timezone.cjs');
+    const ms = parseDbTimestamp(input) || Date.parse(String(input));
+    if (!Number.isFinite(ms) || ms <= 0) return String(input).slice(0, 16);
+    const parts = new Intl.DateTimeFormat('en-GB', {
+      timeZone: UZBEKISTAN_TIMEZONE,
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: false,
+    }).formatToParts(new Date(ms));
+    const map = {};
+    for (const p of parts) {
+      if (p.type !== 'literal') map[p.type] = p.value;
+    }
+    if (!map.year || !map.month || !map.day) return String(input).slice(0, 16);
+    return `${map.year}-${map.month}-${map.day} ${map.hour || '00'}:${map.minute || '00'}`;
+  } catch {
+    return String(input).replace('T', ' ').slice(0, 16);
+  }
 }
 
 const DIGEST_LIST_CAP = 5;
@@ -117,6 +167,7 @@ function getReportTelegramSettings(db) {
     shiftClosed: toBool(readSetting(db, 'reports.telegram.shift_closed', true), true),
     dailyDigest: toBool(readSetting(db, 'reports.telegram.daily_digest', true), true),
     balanceChange: toBool(readSetting(db, 'reports.telegram.balance_change', true), true),
+    debtPayment: toBool(readSetting(db, 'reports.telegram.debt_payment', true), true),
     scheduleTime: normalizeScheduleTime(readSetting(db, 'reports.telegram.schedule_time', '21:00')),
     lastRunDate: String(readSetting(db, 'reports.telegram.last_run_date', '') || '').slice(0, 10),
     storeName: String(
@@ -218,6 +269,7 @@ function isEventEnabled(settings, eventKey) {
   if (eventKey === EVENT_SHIFT_CLOSED) return settings.shiftClosed;
   if (eventKey === EVENT_DAILY_DIGEST) return settings.dailyDigest;
   if (eventKey === EVENT_BALANCE_CHANGE) return settings.balanceChange;
+  if (eventKey === EVENT_DEBT_PAYMENT) return settings.debtPayment;
   if (eventKey === EVENT_TEST) return true;
   return false;
 }
@@ -294,6 +346,36 @@ function buildCreditSaleText(payload = {}, storeName = "Do'kon") {
   return lines.join('\n');
 }
 
+function buildDebtPaymentText(payload = {}, storeName = "Do'kon") {
+  const amount = payload.amount != null ? payload.amount : payload.appliedAmount;
+  const method = paymentMethodLabelUz(payload.paymentMethod || payload.payment_method);
+  const remaining =
+    payload.remainingDebt != null
+      ? payload.remainingDebt
+      : payload.new_debt != null
+        ? payload.new_debt
+        : null;
+  const paidAt = payload.paidAt || payload.paid_at || payload.created_at || null;
+  const lines = [
+    '💵 Qarz to‘lovi',
+    storeName ? `Do'kon: ${storeName}` : null,
+    payload.customerName || payload.customer_name
+      ? `Mijoz: ${payload.customerName || payload.customer_name}`
+      : null,
+    `Summa: ${formatSumma(amount)} so'm`,
+    method ? `To‘lov: ${method}` : null,
+    remaining != null ? `Qolgan qarz: ${formatSumma(remaining)} so'm` : null,
+    payload.paymentNumber || payload.payment_number
+      ? `Hujjat: ${payload.paymentNumber || payload.payment_number}`
+      : null,
+    payload.cashierName || payload.cashier_name
+      ? `Kassir: ${payload.cashierName || payload.cashier_name}`
+      : null,
+    paidAt ? `Vaqt: ${formatLocalDateTime(paidAt)}` : null,
+  ].filter(Boolean);
+  return lines.join('\n');
+}
+
 function buildShiftClosedText(payload = {}, storeName = "Do'kon") {
   const diff = Number(payload.cashDifference || 0) || 0;
   const diffLabel = diff === 0 ? '0' : `${diff > 0 ? '+' : ''}${formatSumma(diff)}`;
@@ -341,6 +423,13 @@ function buildDailyDigestText(summary = {}, storeName = "Do'kon") {
     summary.netProfit != null ? `Foyda (taxmin): ${formatSumma(summary.netProfit)} so'm` : null,
     `Xarajat: ${formatSumma(summary.expensesTotal)} so'm`,
     `Mijoz qarzi (jami): ${formatSumma(summary.customerDebtTotal)} so'm`,
+    `Qarz yig‘ildi: ${formatSumma(
+      summary.debtCollected != null
+        ? summary.debtCollected
+        : (summary.operations && summary.operations.debtPayments
+            ? summary.operations.debtPayments.total
+            : 0),
+    )} so'm`,
   ].filter(Boolean);
 
   lines.push('');
@@ -366,6 +455,16 @@ function buildDailyDigestText(summary = {}, storeName = "Do'kon") {
     credit.more,
   );
 
+  const debtPay = ops.debtPayments || {};
+  pushSection(
+    lines,
+    '💵 Qarz to‘lovlari',
+    `Jami: ${formatSumma(debtPay.total)} so'm (${debtPay.count || 0} ta)`,
+    debtPay.lines || [],
+    (debtPay.count || 0) === 0 ? '• Yo‘q' : null,
+    debtPay.more,
+  );
+
   const purchases = ops.purchases || {};
   pushSection(
     lines,
@@ -384,16 +483,6 @@ function buildDailyDigestText(summary = {}, storeName = "Do'kon") {
     stock.lines || [],
     (stock.count || 0) === 0 ? '• Yo‘q' : null,
     stock.more,
-  );
-
-  const debtPay = ops.debtPayments || {};
-  pushSection(
-    lines,
-    '💰 Qarzdorlik to‘lovlari',
-    `Jami: ${formatSumma(debtPay.total)} so'm (${debtPay.count || 0} ta)`,
-    debtPay.lines || [],
-    (debtPay.count || 0) === 0 ? '• Yo‘q' : null,
-    debtPay.more,
   );
 
   const returns = ops.returns || {};
@@ -469,6 +558,111 @@ async function notifyCreditSale(db, payloadOrOrderId, options = {}) {
   const out = await sendToReportChats(db, text, options);
   if ((out.ok || out.sent > 0) && refId) {
     claimNotifyDedup(db, EVENT_CREDIT_SALE, refId);
+  }
+  return out;
+}
+
+function loadDebtPaymentPayload(db, paymentId) {
+  const id = String(paymentId || '').trim();
+  if (!id || !hasTable(db, 'customer_payments')) return null;
+  try {
+    const row = db
+      .prepare(
+        `
+        SELECT cp.id, cp.payment_number, cp.amount, cp.payment_method,
+               cp.paid_at, cp.created_at, cp.customer_id,
+               c.name AS customer_name,
+               u.full_name AS cashier_name, u.username AS cashier_username
+        FROM customer_payments cp
+        LEFT JOIN customers c ON c.id = cp.customer_id
+        LEFT JOIN users u ON u.id = cp.received_by
+        WHERE cp.id = ?
+      `,
+      )
+      .get(id);
+    if (!row) return null;
+    const amount = Number(row.amount || 0) || 0;
+    if (amount <= 0) return null;
+    let remainingDebt = null;
+    if (row.customer_id && hasTable(db, 'customers')) {
+      try {
+        const bal = db
+          .prepare(`SELECT balance FROM customers WHERE id = ?`)
+          .get(row.customer_id);
+        const b = Number(bal?.balance || 0) || 0;
+        remainingDebt = b < 0 ? -b : 0;
+      } catch {
+        remainingDebt = null;
+      }
+    }
+    return {
+      paymentId: row.id,
+      paymentNumber: row.payment_number,
+      amount,
+      paymentMethod: row.payment_method,
+      paidAt: row.paid_at || row.created_at,
+      customerId: row.customer_id,
+      customerName: row.customer_name || null,
+      cashierName: row.cashier_name || row.cashier_username || null,
+      remainingDebt,
+    };
+  } catch {
+    return null;
+  }
+}
+
+async function notifyDebtPayment(db, payloadOrPaymentId, options = {}) {
+  const settings = getReportTelegramSettings(db);
+  if (!isEventEnabled(settings, EVENT_DEBT_PAYMENT)) {
+    return { ok: false, skipped: true, reason: 'disabled' };
+  }
+  const payload =
+    typeof payloadOrPaymentId === 'string' || typeof payloadOrPaymentId === 'number'
+      ? loadDebtPaymentPayload(db, payloadOrPaymentId)
+      : payloadOrPaymentId;
+  if (!payload || !(Number(payload.amount || payload.appliedAmount || 0) > 0)) {
+    return { ok: false, skipped: true, reason: 'not_debt_payment' };
+  }
+  const refId = String(
+    payload.paymentId || payload.payment_id || payload.paymentNumber || payload.payment_number || '',
+  ).trim();
+  if (refId && !options.force && hasTable(db, 'report_notify_log')) {
+    try {
+      const existing = db
+        .prepare(`SELECT 1 AS x FROM report_notify_log WHERE event_key = ? AND ref_id = ?`)
+        .get(EVENT_DEBT_PAYMENT, refId);
+      if (existing) return { ok: false, skipped: true, reason: 'already_sent' };
+    } catch {
+      // ignore
+    }
+  }
+
+  let enriched = { ...payload };
+  if (!enriched.customerName && enriched.customerId && hasTable(db, 'customers')) {
+    try {
+      const row = db
+        .prepare(`SELECT name FROM customers WHERE id = ?`)
+        .get(enriched.customerId);
+      if (row?.name) enriched.customerName = row.name;
+    } catch {
+      // ignore
+    }
+  }
+  if (!enriched.cashierName && (enriched.cashierId || enriched.received_by) && hasTable(db, 'users')) {
+    try {
+      const row = db
+        .prepare(`SELECT full_name, username FROM users WHERE id = ?`)
+        .get(enriched.cashierId || enriched.received_by);
+      if (row) enriched.cashierName = row.full_name || row.username || null;
+    } catch {
+      // ignore
+    }
+  }
+
+  const text = buildDebtPaymentText(enriched, settings.storeName);
+  const out = await sendToReportChats(db, text, options);
+  if ((out.ok || out.sent > 0) && refId) {
+    claimNotifyDedup(db, EVENT_DEBT_PAYMENT, refId);
   }
   return out;
 }
@@ -834,43 +1028,50 @@ function loadTodayStockChanges(db, ymd) {
   }
 }
 
-function loadTodayDebtPayments(db, ymd) {
-  if (!hasTable(db, 'customer_payments')) return emptyOpSection();
+function formatDebtPaymentLine(r) {
+  const who = clipLabel(r.customer_name || 'Mijoz');
+  const methodRaw = paymentMethodLabelUz(r.payment_method);
+  const method = methodRaw ? ` (${clipLabel(methodRaw, 12)})` : '';
+  const num = r.payment_number ? ` #${clipLabel(r.payment_number, 16)}` : '';
+  return `${who}${method}${num}: ${formatSumma(r.amount)}`;
+}
+
+function loadTodayDebtPaymentsFromLedger(db, ymd) {
+  if (!hasTable(db, 'customer_ledger')) return emptyOpSection();
   try {
-    const dateExpr = tzDateExpr('cp.paid_at');
-    let opFilter = '';
-    if (hasColumn(db, 'customer_payments', 'operation')) {
-      opFilter = `AND COALESCE(LOWER(cp.operation), 'payment_in') = 'payment_in'`;
-    }
-    const methodFilter = `AND COALESCE(LOWER(cp.payment_method), '') NOT IN ('refund_cash','refund_balance')`;
+    const dateExpr = tzDateExpr('cl.created_at');
+    const opFilter = hasColumn(db, 'customer_ledger', 'op_code')
+      ? `AND UPPER(TRIM(COALESCE(cl.op_code, ''))) IN ('DEBT_PAYMENT_RECEIVED', 'CUSTOMER_LOAN_REPAID', 'CUSTOMER_PAYMENT')`
+      : `AND LOWER(TRIM(COALESCE(cl.type, ''))) = 'payment_in'`;
+    const methodSelect = hasColumn(db, 'customer_ledger', 'method')
+      ? `cl.method`
+      : `NULL`;
+    const refSelect = hasColumn(db, 'customer_ledger', 'ref_no')
+      ? `cl.ref_no`
+      : `NULL`;
     const agg = db
       .prepare(
-        `SELECT COUNT(*) AS cnt, COALESCE(SUM(cp.amount), 0) AS total
-         FROM customer_payments cp
+        `SELECT COUNT(*) AS cnt, COALESCE(SUM(ABS(cl.amount)), 0) AS total
+         FROM customer_ledger cl
          WHERE ${dateExpr} = date(?)
-           AND COALESCE(cp.amount, 0) > 0
-           ${opFilter}
-           ${methodFilter}`,
+           AND ABS(COALESCE(cl.amount, 0)) > 0
+           ${opFilter}`,
       )
       .get(ymd);
     const rows = db
       .prepare(
-        `SELECT cp.amount, cp.payment_method, c.name AS customer_name
-         FROM customer_payments cp
-         LEFT JOIN customers c ON c.id = cp.customer_id
+        `SELECT ABS(cl.amount) AS amount, ${methodSelect} AS payment_method,
+                ${refSelect} AS payment_number, c.name AS customer_name
+         FROM customer_ledger cl
+         LEFT JOIN customers c ON c.id = cl.customer_id
          WHERE ${dateExpr} = date(?)
-           AND COALESCE(cp.amount, 0) > 0
+           AND ABS(COALESCE(cl.amount, 0)) > 0
            ${opFilter}
-           ${methodFilter}
-         ORDER BY cp.amount DESC
+         ORDER BY ABS(cl.amount) DESC
          LIMIT 20`,
       )
       .all(ymd);
-    const capped = capLines(rows, (r) => {
-      const who = clipLabel(r.customer_name || 'Mijoz');
-      const method = r.payment_method ? ` (${clipLabel(r.payment_method, 12)})` : '';
-      return `${who}${method}: ${formatSumma(r.amount)}`;
-    });
+    const capped = capLines(rows, formatDebtPaymentLine);
     return {
       count: Number(agg?.cnt || 0) || 0,
       total: Number(agg?.total || 0) || 0,
@@ -880,6 +1081,66 @@ function loadTodayDebtPayments(db, ymd) {
   } catch {
     return emptyOpSection();
   }
+}
+
+function loadTodayDebtPayments(db, ymd) {
+  if (hasTable(db, 'customer_payments')) {
+    try {
+      const paidCol = hasColumn(db, 'customer_payments', 'paid_at') ? 'cp.paid_at' : null;
+      const createdCol = hasColumn(db, 'customer_payments', 'created_at')
+        ? 'cp.created_at'
+        : null;
+      const dateSource = paidCol && createdCol
+        ? `COALESCE(${paidCol}, ${createdCol})`
+        : paidCol || createdCol || 'cp.paid_at';
+      const dateExpr = tzDateExpr(dateSource);
+      let opFilter = '';
+      if (hasColumn(db, 'customer_payments', 'operation')) {
+        opFilter = `AND COALESCE(LOWER(cp.operation), 'payment_in') = 'payment_in'`;
+      }
+      const methodFilter = `AND COALESCE(LOWER(cp.payment_method), '') NOT IN ('refund_cash','refund_balance')`;
+      const numSelect = hasColumn(db, 'customer_payments', 'payment_number')
+        ? 'cp.payment_number'
+        : 'NULL';
+      const agg = db
+        .prepare(
+          `SELECT COUNT(*) AS cnt, COALESCE(SUM(cp.amount), 0) AS total
+           FROM customer_payments cp
+           WHERE ${dateExpr} = date(?)
+             AND COALESCE(cp.amount, 0) > 0
+             ${opFilter}
+             ${methodFilter}`,
+        )
+        .get(ymd);
+      const rows = db
+        .prepare(
+          `SELECT cp.amount, cp.payment_method, ${numSelect} AS payment_number,
+                  c.name AS customer_name
+           FROM customer_payments cp
+           LEFT JOIN customers c ON c.id = cp.customer_id
+           WHERE ${dateExpr} = date(?)
+             AND COALESCE(cp.amount, 0) > 0
+             ${opFilter}
+             ${methodFilter}
+           ORDER BY cp.amount DESC
+           LIMIT 20`,
+        )
+        .all(ymd);
+      const count = Number(agg?.cnt || 0) || 0;
+      if (count > 0) {
+        const capped = capLines(rows, formatDebtPaymentLine);
+        return {
+          count,
+          total: Number(agg?.total || 0) || 0,
+          lines: capped.lines,
+          more: Math.max(0, count - capped.lines.length),
+        };
+      }
+    } catch {
+      // fall through to ledger
+    }
+  }
+  return loadTodayDebtPaymentsFromLedger(db, ymd);
 }
 
 function loadTodayReturns(db, ymd) {
@@ -992,6 +1253,7 @@ function buildDailyDigestSummary(db, ymd) {
     netProfit: daily.net_profit != null ? Number(daily.net_profit) || 0 : null,
     expensesTotal: expenses.total,
     customerDebtTotal: sumCustomerDebt(db),
+    debtCollected: debtPayments.total,
     operations: {
       expenses,
       creditSales,
@@ -1113,6 +1375,7 @@ module.exports = {
   EVENT_SHIFT_CLOSED,
   EVENT_DAILY_DIGEST,
   EVENT_BALANCE_CHANGE,
+  EVENT_DEBT_PAYMENT,
   EVENT_TEST,
   LOCK_NAME,
   getReportTelegramSettings,
@@ -1122,10 +1385,12 @@ module.exports = {
   NO_CHAT_ID_HINT,
   isEventEnabled,
   buildCreditSaleText,
+  buildDebtPaymentText,
   buildShiftClosedText,
   buildDailyDigestText,
   buildDailyDigestSummary,
   notifyCreditSale,
+  notifyDebtPayment,
   notifyShiftClosed,
   runDailyDigestTick,
   sendTestReport,

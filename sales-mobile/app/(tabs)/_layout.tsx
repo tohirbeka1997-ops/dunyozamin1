@@ -42,12 +42,22 @@ export default function TabsLayout() {
   return (
     <Tabs
       screenOptions={{
-        headerStyle: { backgroundColor: ACTIVE },
-        headerTintColor: '#fff',
+        headerShown: false,
         tabBarActiveTintColor: ACTIVE,
         tabBarInactiveTintColor: INACTIVE,
+        tabBarLabelStyle: { fontSize: 10 },
       }}
     >
+      <Tabs.Screen
+        name="dashboard"
+        options={{
+          title: t('dashboard'),
+          tabBarLabel: t('dashboard'),
+          tabBarIcon: ({ color, size }) => (
+            <TabIcon name="stats-chart-outline" color={color} size={size} />
+          ),
+        }}
+      />
       <Tabs.Screen
         name="sell"
         options={{
@@ -96,7 +106,7 @@ export default function TabsLayout() {
           title: t('more'),
           tabBarLabel: t('more'),
           tabBarIcon: ({ color, size }) => (
-            <TabIcon name="grid-outline" color={color} size={size} />
+            <TabIcon name="menu-outline" color={color} size={size} />
           ),
         }}
       />

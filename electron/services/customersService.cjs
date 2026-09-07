@@ -2376,6 +2376,13 @@ class CustomersService {
       });
     }
 
+    if (result && !result.duplicate && result.operation === 'payment_in') {
+      this._notifyDebtPaymentReport(result, {
+        paymentMethod,
+        receivedBy: resolvedReceivedBy,
+      });
+    }
+
     if (result && !result.duplicate) {
       if (result.operation === 'payment_out') {
         this._safeAuditLog({
@@ -2445,6 +2452,38 @@ class CustomersService {
       fireCustomerOpsNotify(this.db, payload);
     } catch (e) {
       console.warn('[customers] customer ops notify unavailable:', e?.message || e);
+    }
+  }
+
+  /**
+   * Fire-and-forget staff Telegram report when a customer pays debt.
+   * Same channel / helper as nasiya sotuv. Never throws into receivePayment.
+   */
+  _notifyDebtPaymentReport(result, extras = {}) {
+    try {
+      if (!result || result.duplicate) return;
+      if (String(result.operation || '') !== 'payment_in') return;
+      const amount = Number(result.applied_amount || result.requested_amount || 0);
+      if (!(amount > 0)) return;
+      const oldDebt = Number(result.old_debt || 0);
+      const debtPortion = Number(result.debt_portion || 0);
+      if (!(oldDebt > 0.009) && !(debtPortion > 0.009)) return;
+
+      const { notifyDebtPayment } = require('../../public-api/lib/reportNotify.cjs');
+      void notifyDebtPayment(this.db, {
+        paymentId: result.payment_id,
+        paymentNumber: result.payment_number,
+        amount,
+        paymentMethod: extras.paymentMethod || extras.payment_method || null,
+        customerId: result.customer_id,
+        remainingDebt: result.new_debt,
+        paidAt: result.created_at,
+        cashierId: extras.receivedBy || extras.received_by || null,
+      }).catch((e) => {
+        console.warn('[customers] debt_payment telegram notify failed:', e?.message || e);
+      });
+    } catch (e) {
+      console.warn('[customers] debt_payment telegram notify unavailable:', e?.message || e);
     }
   }
 

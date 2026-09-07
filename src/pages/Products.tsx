@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -29,7 +29,7 @@ import {
 import { createProduct, deleteProduct, getProducts, updateProduct, productUpdateEmitter } from '@/db/api';
 import { useProducts } from '@/hooks/useProducts';
 import type { ProductWithCategory } from '@/types/database';
-import { Plus, Search, Package, FileDown, ChevronDown, Percent, X } from 'lucide-react';
+import { Plus, Search, Package, FileDown, ChevronDown, Percent, X, Trash2, ListChecks } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 import { useNavigate, useSearchParams, useLocation } from 'react-router-dom';
 import { formatMoneyUZS } from '@/lib/format';
@@ -38,6 +38,7 @@ import { formatUnit } from '@/utils/formatters';
 import { productShowInMarketplace } from '@/lib/productMarketplace';
 import { handleIpcResponse, isElectron, requireElectron } from '@/utils/electron';
 import VirtualizedProductsTable from '@/components/products/VirtualizedProductsTable';
+import PageQuickActions from '@/components/common/PageQuickActions';
 import { useConfirmDialog } from '@/contexts/ConfirmDialogContext';
 import { useProductsListStore } from '@/store/productsListStore';
 import { ProductDetailContent } from '@/pages/ProductDetail';
@@ -108,6 +109,37 @@ export default function Products() {
   const sortBy = (searchParams.get('sortBy') || 'name') as 'name' | 'sku' | 'created_at' | 'current_stock' | 'sale_price';
   const sortOrder = (searchParams.get('sortOrder') || 'asc') as 'asc' | 'desc';
 
+  const [exporting, setExporting] = useState(false);
+  const [importing, setImporting] = useState(false);
+  const [bulkPriceOpen, setBulkPriceOpen] = useState(false);
+  const [selectedById, setSelectedById] = useState<Map<string, ProductWithCategory>>(
+    () => new Map(),
+  );
+  const [bulkDeleting, setBulkDeleting] = useState(false);
+  const [showSelectedOnly, setShowSelectedOnly] = useState(false);
+  const selectedIds = useMemo(() => new Set(selectedById.keys()), [selectedById]);
+  const selectedCount = selectedById.size;
+  const selectedProductsList = useMemo(
+    () => Array.from(selectedById.values()),
+    [selectedById],
+  );
+
+  const clearSelection = useCallback(() => {
+    setSelectedById(new Map());
+    setShowSelectedOnly(false);
+  }, []);
+
+  // Faqat Faol/Nofaol tab almashtirilganda tanlovni tozalash — qidiruvda checkbox saqlanadi.
+  useEffect(() => {
+    clearSelection();
+  }, [statusFilter, clearSelection]);
+
+  useEffect(() => {
+    if (selectedCount === 0 && showSelectedOnly) {
+      setShowSelectedOnly(false);
+    }
+  }, [selectedCount, showSelectedOnly]);
+
   useEffect(() => {
     setSearchInput(searchTerm);
   }, [searchTerm]);
@@ -136,9 +168,6 @@ export default function Products() {
     setStoredPageSize(PAGE_SIZE);
   }, [setStoredPageSize]);
 
-  const [exporting, setExporting] = useState(false);
-  const [importing, setImporting] = useState(false);
-  const [bulkPriceOpen, setBulkPriceOpen] = useState(false);
   const reviewResolveRef = useRef<((result: ImportReviewResult) => void) | null>(null);
   const [reviewItems, setReviewItems] = useState<ImportReviewItem[] | null>(null);
   const [reviewError, setReviewError] = useState<string | null>(null);
@@ -327,6 +356,12 @@ export default function Products() {
     if (!ok) return;
     try {
       const res = await deleteProduct(id);
+      setSelectedById((prev) => {
+        if (!prev.has(id)) return prev;
+        const next = new Map(prev);
+        next.delete(id);
+        return next;
+      });
       toast({
         title: t('common.success'),
         description: (res as { softDeleted?: boolean })?.softDeleted
@@ -340,6 +375,65 @@ export default function Products() {
         description: error instanceof Error ? error.message : t('products.failed_to_delete'),
         variant: 'destructive',
       });
+    }
+  };
+
+  const handleBulkDelete = async () => {
+    const ids = Array.from(selectedById.keys());
+    if (bulkDeleting) return;
+    if (ids.length === 0) {
+      toast({
+        title: t('products.bulk_delete_title', { defaultValue: 'Ommaviy o‘chirish' }),
+        description: t('products.bulk_delete_need_selection', {
+          defaultValue: 'Avval checkbox bilan mahsulotlarni tanlang, keyin o‘chirishni bosing.',
+        }),
+        variant: 'destructive',
+      });
+      return;
+    }
+    const ok = await confirmDialog({
+      title: t('products.bulk_delete_title', {
+        defaultValue: 'Ommaviy o‘chirish',
+      }),
+      description: t('products.bulk_delete_confirm', {
+        count: ids.length,
+        defaultValue:
+          '{{count}} ta mahsulot o‘chiriladi. Tarixli mahsulotlar nofaol qilinadi, tarixsizlari butunlay o‘chiriladi. Davom etasizmi?',
+      }),
+      confirmText: t('common.delete'),
+      cancelText: t('common.cancel'),
+      variant: 'destructive',
+    });
+    if (!ok) return;
+
+    setBulkDeleting(true);
+    let softCount = 0;
+    let hardCount = 0;
+    let failedCount = 0;
+    try {
+      for (const id of ids) {
+        try {
+          const res = await deleteProduct(id);
+          if ((res as { softDeleted?: boolean })?.softDeleted) softCount += 1;
+          else hardCount += 1;
+        } catch {
+          failedCount += 1;
+        }
+      }
+      clearSelection();
+      await refetch();
+      toast({
+        title: failedCount > 0 ? t('common.warning') : t('common.success'),
+        description: t('products.bulk_delete_done', {
+          soft: softCount,
+          hard: hardCount,
+          failed: failedCount,
+          defaultValue: 'Nofaol: {{soft}}, o‘chirilgan: {{hard}}, xato: {{failed}}',
+        }),
+        variant: failedCount > 0 ? 'destructive' : undefined,
+      });
+    } finally {
+      setBulkDeleting(false);
     }
   };
 
@@ -1063,9 +1157,12 @@ export default function Products() {
   };
 
   // Always virtualize — non-virtual path re-rendered hundreds of rows on every scroll store write.
-  const filteredProducts = searchInput.trim()
-    ? filterProductsBySearchTerm(products, searchInput)
-    : products;
+  // Tanlanganlarni ko‘rsatish: joriy `products` sahifasiga bog‘lanmasdan snapshot Map dan.
+  const filteredProducts = showSelectedOnly
+    ? selectedProductsList
+    : searchInput.trim()
+      ? filterProductsBySearchTerm(products, searchInput)
+      : products;
   const detailOpen = Boolean(detailId);
 
   const openDetail = (id: string) => {
@@ -1112,13 +1209,12 @@ export default function Products() {
   };
 
   return (
-    <div className="space-y-4">
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-        <div className="min-w-0 space-y-0.5">
-          <h1 className="page-heading">{t('products.title')}</h1>
-          <p className="page-heading-sub">{t('products.subtitle')}</p>
+    <div className="space-y-3">
+      <div className="flex flex-wrap items-center gap-x-2 gap-y-2">
+        <div className="min-w-0 shrink-0">
+          <h1 className="page-heading leading-tight">{t('products.title')}</h1>
         </div>
-        <div className="flex shrink-0 flex-col gap-2 sm:flex-row sm:items-center sm:gap-3">
+        <div className="flex min-w-0 flex-1 flex-wrap items-center justify-end gap-1.5">
           <Tabs value={statusFilter} onValueChange={(v) => updateFilter('status', v)}>
             <TabsList className="h-8 p-0.5">
               <TabsTrigger value="active" className="h-7 px-2.5 text-xs">
@@ -1129,13 +1225,12 @@ export default function Products() {
               </TabsTrigger>
             </TabsList>
           </Tabs>
-          <div className="flex flex-wrap items-center gap-2">
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
               <Button variant="outline" size="sm" className="h-8 text-xs" disabled={exporting || importing}>
-                <FileDown className="mr-2 h-3.5 w-3.5" />
+                <FileDown className="mr-1.5 h-3.5 w-3.5" />
                 Export / Import
-                <ChevronDown className="ml-2 h-3.5 w-3.5 opacity-70" />
+                <ChevronDown className="ml-1.5 h-3.5 w-3.5 opacity-70" />
               </Button>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end" className="min-w-[220px]">
@@ -1156,26 +1251,111 @@ export default function Products() {
               </DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
-          {statusFilter === 'active' && (
-            <Button
-              variant="outline"
-              size="sm"
-              className="h-8 text-xs"
-              onClick={() => setBulkPriceOpen(true)}
-            >
-              <Percent className="mr-2 h-3.5 w-3.5" />
-              Ommaviy narx yangilash
-            </Button>
+          {(statusFilter === 'active' || statusFilter === 'inactive') && (
+            <PageQuickActions
+              compact
+              aria-label={t('quickActions.aria_label')}
+              actions={[
+                ...(statusFilter === 'active'
+                  ? [
+                      {
+                        id: 'new-product',
+                        icon: <Plus />,
+                        label: t('quickActions.new_product'),
+                        variant: 'default' as const,
+                        onClick: handleNewProduct,
+                      },
+                      {
+                        id: 'bulk-price',
+                        icon: <Percent />,
+                        label: t('quickActions.bulk_price'),
+                        onClick: () => setBulkPriceOpen(true),
+                      },
+                    ]
+                  : []),
+                {
+                  id: 'show-selected',
+                  icon: <ListChecks />,
+                  label:
+                    selectedCount > 0
+                      ? t('quickActions.show_selected_count', {
+                          count: selectedCount,
+                          defaultValue: 'Tanlanganlar ({{count}})',
+                        })
+                      : t('quickActions.show_selected', { defaultValue: 'Tanlanganlar' }),
+                  variant: showSelectedOnly ? ('default' as const) : ('outline' as const),
+                  disabled: selectedCount === 0,
+                  badge: selectedCount > 0 ? selectedCount : undefined,
+                  title: showSelectedOnly
+                    ? t('products.show_all_products', {
+                        defaultValue: 'Barcha mahsulotlarni ko‘rsatish',
+                      })
+                    : t('products.show_selected_hint', {
+                        defaultValue: 'Faqat belgilangan mahsulotlarni ko‘rsatish',
+                      }),
+                  onClick: () => {
+                    if (selectedCount === 0) {
+                      toast({
+                        title: t('quickActions.show_selected', { defaultValue: 'Tanlanganlar' }),
+                        description: t('products.bulk_delete_need_selection', {
+                          defaultValue: 'Avval checkbox bilan mahsulotlarni tanlang.',
+                        }),
+                      });
+                      return;
+                    }
+                    setShowSelectedOnly((v) => !v);
+                  },
+                },
+                {
+                  id: 'bulk-delete',
+                  icon: <Trash2 />,
+                  label:
+                    selectedCount > 0
+                      ? t('quickActions.bulk_delete_count', {
+                          count: selectedCount,
+                          defaultValue: 'O‘chirish ({{count}})',
+                        })
+                      : t('quickActions.bulk_delete', { defaultValue: 'Ommaviy o‘chirish' }),
+                  variant: 'destructive' as const,
+                  disabled: bulkDeleting,
+                  badge: selectedCount > 0 ? selectedCount : undefined,
+                  onClick: () => void handleBulkDelete(),
+                },
+                ...(selectedCount > 0
+                  ? [
+                      {
+                        id: 'clear-selection',
+                        icon: <X />,
+                        label: t('products.clear_selection', { defaultValue: 'Tanlovni tozalash' }),
+                        onClick: clearSelection,
+                      },
+                    ]
+                  : []),
+              ]}
+            />
           )}
-          {statusFilter === 'active' && (
-            <Button size="sm" className="h-8 text-xs" onClick={handleNewProduct}>
-              <Plus className="mr-2 h-3.5 w-3.5" />
-              {t('products.add_product')}
-            </Button>
-          )}
-          </div>
         </div>
       </div>
+
+      {showSelectedOnly && selectedCount > 0 ? (
+        <div className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-primary/30 bg-primary/5 px-3 py-1.5 text-xs sm:text-sm">
+          <span>
+            {t('products.showing_selected', {
+              count: selectedCount,
+              defaultValue: 'Faqat belgilangan mahsulotlar ko‘rsatilmoqda ({{count}})',
+            })}
+          </span>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            className="h-7 text-xs"
+            onClick={() => setShowSelectedOnly(false)}
+          >
+            {t('products.show_all_products', { defaultValue: 'Barchasini ko‘rsatish' })}
+          </Button>
+        </div>
+      ) : null}
 
       <Card className="gap-0 py-0 shadow-sm">
         <CardContent className="px-3 py-2 sm:px-3">
@@ -1348,8 +1528,8 @@ export default function Products() {
                 products={filteredProducts}
                 t={t}
                 statusFilter={statusFilter}
-                hasMore={hasMore}
-                loadingMore={loadingMore}
+                hasMore={showSelectedOnly ? false : hasMore}
+                loadingMore={showSelectedOnly ? false : loadingMore}
                 loadMore={loadMore}
                 onView={handleView}
                 onEdit={handleEdit}
@@ -1364,6 +1544,33 @@ export default function Products() {
                 showRestore={statusFilter === 'inactive'}
                 initialScrollTop={restoreDone ? restoreScrollTop : undefined}
                 onScrollTopChange={setStoredScrollTop}
+                selectedIds={selectedIds}
+                onToggleSelect={(id, selected) => {
+                  setSelectedById((prev) => {
+                    const next = new Map(prev);
+                    if (selected) {
+                      const product =
+                        filteredProducts.find((p) => p.id === id) ||
+                        products.find((p) => p.id === id) ||
+                        prev.get(id);
+                      if (product) next.set(id, product);
+                    } else {
+                      next.delete(id);
+                    }
+                    return next;
+                  });
+                }}
+                onToggleSelectAll={(selected) => {
+                  setSelectedById((prev) => {
+                    const next = new Map(prev);
+                    if (selected) {
+                      for (const p of filteredProducts) next.set(p.id, p);
+                    } else {
+                      for (const p of filteredProducts) next.delete(p.id);
+                    }
+                    return next;
+                  });
+                }}
               />
             </div>
           )}

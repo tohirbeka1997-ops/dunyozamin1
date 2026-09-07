@@ -223,11 +223,16 @@ export async function fetchQueueCounts(): Promise<QueueCounts> {
   return body.data;
 }
 
-export async function fetchOrders(queue: WebOrderQueueId, page = 1): Promise<{
+export async function fetchOrders(
+  queue: WebOrderQueueId,
+  page = 1,
+  search = '',
+): Promise<{
   data: WebOrderSummary[];
   meta: { page: number; total: number; total_pages: number };
 }> {
   const qs = new URLSearchParams({ queue, page: String(page) });
+  if (search.trim().length >= 2) qs.set('q', search.trim());
   const res = await staffFetch(`/v1/staff/orders?${qs}`);
   return parseJson(res);
 }

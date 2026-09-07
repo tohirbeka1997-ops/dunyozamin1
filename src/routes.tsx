@@ -57,6 +57,7 @@ const StoresAdmin = lazy(() => import('./pages/admin/Stores'));
 
 // Reports — by far the largest and least-used chunk in the app.
 const DailySalesReport = lazy(() => import('./pages/reports/sales/DailySalesReport'));
+const CustomerDebtOperationsReport = lazy(() => import('./pages/reports/sales/CustomerDebtOperationsReport'));
 const ProductSalesReport = lazy(() => import('./pages/reports/sales/ProductSalesReport'));
 const CustomerSalesReport = lazy(() => import('./pages/reports/sales/CustomerSalesReport'));
 const PromotionReport = lazy(() => import('./pages/reports/sales/PromotionReport'));
@@ -697,6 +698,14 @@ const routes: RouteConfig[] = [
     name: 'Kunlik savdo',
     path: '/reports/sales/daily',
     element: lazyElement(DailySalesReport),
+    visible: false,
+    requireAuth: true,
+    allowedRoles: ['admin', 'manager'],
+  },
+  {
+    name: 'Qarz to‘lovlari va nasiya',
+    path: '/reports/sales/debt-operations',
+    element: lazyElement(CustomerDebtOperationsReport),
     visible: false,
     requireAuth: true,
     allowedRoles: ['admin', 'manager'],

@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -23,9 +23,11 @@ import { getProducts, getCategories, getOpenInventoryRevision } from '@/db/api';
 import type { ProductWithCategory, Category } from '@/types/database';
 import { useToast } from '@/hooks/use-toast';
 import PageBreadcrumb from '@/components/common/PageBreadcrumb';
-import { Search, Package, AlertTriangle } from 'lucide-react';
+import { Search, Package, AlertTriangle, ClipboardList, Plus, Filter } from 'lucide-react';
 import { highlightMatch } from '@/utils/searchHighlight';
 import StockAdjustmentDialog from '@/components/inventory/StockAdjustmentDialog';
+import CreateInventoryRevisionDialog from '@/components/inventory/CreateInventoryRevisionDialog';
+import PageQuickActions from '@/components/common/PageQuickActions';
 import { formatUnit } from '@/utils/formatters';
 import { formatQuantity } from '@/utils/quantity';
 import { useSessionSearchParams } from '@/hooks/useSessionSearchParams';
@@ -78,6 +80,7 @@ export default function Inventory() {
     id: string;
     revision_number: string;
   } | null>(null);
+  const [createRevisionOpen, setCreateRevisionOpen] = useState(false);
 
   useEffect(() => {
     if (storedQueryKey !== listQueryKey) {
@@ -275,6 +278,43 @@ export default function Inventory() {
     handleAdjustStock(product);
   };
 
+  const quickActions = useMemo(
+    () => [
+      {
+        id: 'revision',
+        icon: <ClipboardList />,
+        label: openRevision
+          ? t('quickActions.open_revision')
+          : t('quickActions.new_revision'),
+        variant: openRevision ? ('outline' as const) : ('default' as const),
+        onClick: () => {
+          if (openRevision) {
+            navigate(`/inventory/revisions/${openRevision.id}`);
+            return;
+          }
+          setCreateRevisionOpen(true);
+        },
+      },
+      {
+        id: 'new-po',
+        icon: <Plus />,
+        label: t('quickActions.new_po'),
+        onClick: () =>
+          navigate(withReturnToPath('/purchase-orders/new', buildCurrentPath(location))),
+      },
+      {
+        id: 'low-stock',
+        icon: <Filter />,
+        label: t('quickActions.low_stock'),
+        variant: stockFilter === 'low' ? ('default' as const) : ('outline' as const),
+        badge: lowStockCount > 0 ? lowStockCount : undefined,
+        onClick: () =>
+          updateParams({ stock: stockFilter === 'low' ? 'all' : 'low' }),
+      },
+    ],
+    [openRevision, navigate, location, t, stockFilter, lowStockCount, updateParams],
+  );
+
   return (
     <div className="w-full min-w-0 space-y-4" ref={listAnchorRef}>
       <PageBreadcrumb
@@ -290,6 +330,11 @@ export default function Inventory() {
           <p className="page-heading-sub">Mahsulot qoldiqlari va harakatlarini boshqarish</p>
         </div>
       </div>
+
+      <PageQuickActions
+        aria-label={t('quickActions.aria_label')}
+        actions={quickActions}
+      />
 
       {openRevision && (
         <Card className="border-amber-200 bg-amber-50 py-0 shadow-sm dark:border-amber-800 dark:bg-amber-950">
@@ -681,6 +726,16 @@ export default function Inventory() {
           onSuccess={handleAdjustmentSuccess}
         />
       )}
+
+      <CreateInventoryRevisionDialog
+        open={createRevisionOpen}
+        onOpenChange={setCreateRevisionOpen}
+        createdBy={user?.id}
+        onCreated={(revision) => {
+          setCreateRevisionOpen(false);
+          navigate(`/inventory/revisions/${revision.id}`);
+        }}
+      />
     </div>
   );
 }

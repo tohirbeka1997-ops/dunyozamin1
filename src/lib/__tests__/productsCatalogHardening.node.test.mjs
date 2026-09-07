@@ -223,8 +223,12 @@ test('Products UI source guards: zero-price + bulk Confirm + exact search', () =
     path.join(root, 'src/components/products/CreateProductModal.tsx'),
     'utf8',
   );
-  assert.match(createModal, /!\(Number\(sale\) > 0\)/);
-  assert.match(createModal, /allowZero=\{false\}/);
+  // PO quick-create: purchase/sale prices optional; zero sale uses free_sale_allowed.
+  assert.match(createModal, /free_sale_allowed/);
+  assert.match(createModal, /ixtiyoriy/);
+  assert.match(createModal, /freeSaleAllowed/);
+  assert.doesNotMatch(createModal, /sale_price_required/);
+  assert.doesNotMatch(createModal, /allowZero=\{false\}/);
 
   const bulk = readFileSync(
     path.join(root, 'src/components/products/BulkPriceUpdateDialog.tsx'),

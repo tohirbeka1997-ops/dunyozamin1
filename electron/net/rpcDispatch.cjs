@@ -1741,6 +1741,8 @@ function createRpcDispatcher({ services, db, sessions }) {
       // ======================================================================
       case 'pos:reports:dailySalesSQL':
         return services.reports.getDailySalesReportSQL(a[0] || {});
+      case 'pos:reports:customerDebtOperations':
+        return services.reports.getCustomerDebtOperations(a[0] || {});
       case 'pos:reports:profitAndLossSQL':
         return services.reports.getProfitAndLossSQL(a[0] || {});
       case 'pos:reports:financialActSverka':

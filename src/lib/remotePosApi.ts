@@ -1067,6 +1067,7 @@ export function createRemotePosApi(baseUrl: string, secret: string) {
     reports: {
       dailySales: inv('pos:reports:dailySales'),
       dailySalesSQL: inv('pos:reports:dailySalesSQL'),
+      customerDebtOperations: inv('pos:reports:customerDebtOperations'),
       topProducts: inv('pos:reports:topProducts'),
       productSales: inv('pos:reports:productSales'),
       promotionUsage: inv('pos:reports:promotionUsage'),

@@ -24,6 +24,7 @@ import { getOrdersPage, getProfiles, getCustomers, getWarehouses } from '@/db/ap
 import type { OrderWithDetails, Profile, Customer } from '@/types/database';
 import { Search, Eye, Printer, RotateCcw, DollarSign, ShoppingCart, TrendingUp, Pencil } from 'lucide-react';
 import { highlightMatch } from '@/utils/searchHighlight';
+import PageQuickActions from '@/components/common/PageQuickActions';
 import {
   AlertDialog,
   AlertDialogAction,
@@ -624,6 +625,26 @@ export default function Orders() {
           </p>
         </div>
       </div>
+
+      <PageQuickActions
+        aria-label={t('quickActions.aria_label')}
+        actions={[
+          {
+            id: 'pos',
+            icon: <ShoppingCart />,
+            label: t('quickActions.open_pos'),
+            variant: 'default',
+            onClick: () => navigate('/pos'),
+          },
+          {
+            id: 'new-return',
+            icon: <RotateCcw />,
+            label: t('quickActions.new_return'),
+            onClick: () =>
+              navigate(withReturnToPath('/returns/create', buildCurrentPath(location))),
+          },
+        ]}
+      />
 
       {/* Kompakt qisqa statistik — bitta qator, vertikal joy tejalmaydi */}
       <Card className="gap-0 py-0 shadow-sm">

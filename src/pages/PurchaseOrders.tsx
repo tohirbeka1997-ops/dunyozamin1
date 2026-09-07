@@ -22,6 +22,7 @@ import {
   SelectValue,
 } from '@/components/ui/select';
 import SearchableSupplierCombobox from '@/components/common/SearchableSupplierCombobox';
+import PageQuickActions from '@/components/common/PageQuickActions';
 import {
   Table,
   TableBody,
@@ -405,38 +406,34 @@ export default function PurchaseOrders() {
           <h1 className="page-heading">Xarid buyurtmalari</h1>
           <p className="page-heading-sub">Xarid buyurtmalarini boshqarish va tovar qabul qilish</p>
         </div>
-        <div className="flex shrink-0 flex-wrap items-center gap-2">
-          <Button
-            variant="outline"
-            size="sm"
-            className="h-8 text-xs"
-            aria-label="To'lanishi kerak hisobotiga o'tish"
-            onClick={() => navigate('/purchase-orders/due', { state: createBackNavigationState(location) })}
-          >
-            <CalendarClock className="mr-2 h-3.5 w-3.5" />
-            To&apos;lanishi kerak
-          </Button>
-          <Button
-            variant="outline"
-            size="sm"
-            className="h-8 text-xs"
-            aria-label="Tovar qabul qilish"
-            onClick={() => navigate('/purchase-receipts/new', { state: createBackNavigationState(location) })}
-          >
-            <Package className="mr-2 h-3.5 w-3.5" />
-            Qabul qilish
-          </Button>
-          <Button
-            size="sm"
-            className="h-8 text-xs"
-            aria-label="Yangi xarid buyurtmasi"
-            onClick={() => navigateWithReturnTo('/purchase-orders/new')}
-          >
-            <Plus className="mr-2 h-3.5 w-3.5" />
-            Yangi xarid buyurtmasi
-          </Button>
-        </div>
       </div>
+
+      <PageQuickActions
+        aria-label={t('quickActions.aria_label')}
+        actions={[
+          {
+            id: 'new-po',
+            icon: <Plus />,
+            label: t('quickActions.new_po'),
+            variant: 'default',
+            onClick: () => navigateWithReturnTo('/purchase-orders/new'),
+          },
+          {
+            id: 'receive',
+            icon: <Package />,
+            label: t('quickActions.receive_goods'),
+            onClick: () =>
+              navigate('/purchase-receipts/new', { state: createBackNavigationState(location) }),
+          },
+          {
+            id: 'due',
+            icon: <CalendarClock />,
+            label: t('quickActions.po_due'),
+            onClick: () =>
+              navigate('/purchase-orders/due', { state: createBackNavigationState(location) }),
+          },
+        ]}
+      />
 
       <Card className="gap-0 py-0 shadow-sm">
         <CardContent className="px-3 py-2 sm:px-3">

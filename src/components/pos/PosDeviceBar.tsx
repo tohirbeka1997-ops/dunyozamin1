@@ -13,6 +13,7 @@ import {
 } from '@/components/ui/tooltip';
 import { useScale } from '@/hooks/useScale';
 import { getPrintAgentHealth, type PrintAgentHealth } from '@/lib/receipts/printAgent';
+import { invalidatePrintAgentCache } from '@/lib/receipts/escposPrint';
 import { useToast } from '@/hooks/use-toast';
 import { useTranslation } from 'react-i18next';
 
@@ -43,6 +44,7 @@ export function PosDeviceBar({
   const mountedRef = useRef(true);
 
   const refreshHealth = useCallback(async () => {
+    invalidatePrintAgentCache();
     const h = await getPrintAgentHealth(1500);
     if (!mountedRef.current) return;
     setHealth(h);

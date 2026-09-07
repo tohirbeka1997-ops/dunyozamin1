@@ -107,6 +107,10 @@ import {
   findPoOrderQtyViolations,
   violationsToMap,
 } from '@/lib/purchase/purchaseOrderQtyValidation';
+import {
+  findZeroCostPoLineNames,
+  salePriceForPoLineSave,
+} from '@/lib/purchase/purchaseOrderLinePricing';
 import { isElectron } from '@/utils/electron';
 
 interface OrderItem {
@@ -1276,6 +1280,20 @@ export default function PurchaseOrderForm() {
     return false;
   };
 
+  /** Receive/confirm requires positive line tannarx; draft save allows 0/empty. */
+  const validateReceiveLineCosts = (): boolean => {
+    const zeroNames = findZeroCostPoLineNames(items, poCurrency);
+    if (zeroNames.length === 0) return true;
+    const shown = zeroNames.slice(0, 5).join(', ');
+    const more = zeroNames.length > 5 ? ` (+${zeroNames.length - 5})` : '';
+    toast({
+      title: 'Validatsiya xatosi',
+      description: `Qabul qilish uchun tannarx kerak: ${shown}${more}. Qoralama saqlashda tannarx bo‘sh qolishi mumkin.`,
+      variant: 'destructive',
+    });
+    return false;
+  };
+
   const canEditExpenses = !isReadOnly;
 
   const handleAddExpense = async () => {
@@ -1606,6 +1624,7 @@ export default function PurchaseOrderForm() {
     if (existingPO.status === 'received') return;
     if (!validateForm()) return;
     if (!validateForReceive()) return;
+    if (!validateReceiveLineCosts()) return;
 
     const totalReceived = (existingPO.items || []).reduce(
       (s, it: any) => s + Number(it.received_qty || 0),
@@ -1714,7 +1733,9 @@ export default function PurchaseOrderForm() {
         .filter((it: any) => Number(it.received_qty) > 0);
 
       if (receiveItems.length > 0) {
-        await receiveGoods(id, receiveItems);
+        await receiveGoods(id, receiveItems, undefined, {
+          update_product_sale_prices: updateSalePriceOnReceive,
+        });
         productUpdateEmitter.emit();
       }
 
@@ -1773,8 +1794,8 @@ export default function PurchaseOrderForm() {
             : null,
         discount_amount: Number(item.discount_amount || 0) || 0,
         discount_percent: Number(item.discount_percent || 0) || 0,
-        sale_price:
-          updateSalePriceOnReceive && Number(item.sale_price ?? 0) > 0 ? Number(item.sale_price) : null,
+        // Line sotuv narxi always persisted when set; catalog sync is gated on receive.
+        sale_price: salePriceForPoLineSave(item.sale_price),
       };
     });
   };
@@ -1792,7 +1813,9 @@ export default function PurchaseOrderForm() {
 
   const handleSave = async (markAsReceived = false): Promise<void> => {
     if (!validateForm()) return;
-    // Draft save and "Saqlash va qabul" never block on ordered < received — only confirm/receive does.
+    // Draft save never blocks on ordered < received — only confirm/receive does.
+    // Receive requires positive tannarx (catalog sale/purchase prices stay optional).
+    if (markAsReceived && !validateReceiveLineCosts()) return;
 
     try {
       setLoading(true);
@@ -1942,7 +1965,7 @@ export default function PurchaseOrderForm() {
               : null,
           discount_amount: Number(item.discount_amount || 0) || 0,
           discount_percent: Number(item.discount_percent || 0) || 0,
-          sale_price: salePriceForSave(item),
+          sale_price: salePriceForPoLineSave(item.sale_price),
         }));
 
         const newPO = await createPurchaseOrder(
@@ -2047,6 +2070,7 @@ export default function PurchaseOrderForm() {
             received_at: orderDate,
             invoice_number: invoiceNumber.trim() || null,
             created_by: user?.id || null,
+            update_product_sale_prices: updateSalePriceOnReceive,
             items: receiptItems,
           });
 
@@ -2347,9 +2371,6 @@ export default function PurchaseOrderForm() {
     }
     return map;
   }, [existingPO?.items]);
-
-  const salePriceForSave = (item: OrderItem) =>
-    updateSalePriceOnReceive && Number(item.sale_price ?? 0) > 0 ? Number(item.sale_price) : null;
 
   if (loading && !suppliers.length) {
     return (

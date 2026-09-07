@@ -25,7 +25,7 @@ type ReportCategory = {
 const CATEGORIES: ReportCategory[] = [
   {
     title: 'Sotuv',
-    description: 'Kunlik savdo, mahsulotlar bo‘yicha, mijozlar bo‘yicha',
+    description: 'Kunlik savdo, qarz to‘lovlari, mahsulotlar va mijozlar bo‘yicha',
     icon: TrendingUp,
     color: 'text-primary',
     bgColor: 'bg-primary/10',
@@ -34,7 +34,7 @@ const CATEGORIES: ReportCategory[] = [
   },
   {
     title: 'Moliyaviy',
-    description: 'Akt sverka, P&L, pul oqimi, to‘lov usullari, aging, kassa tafovuti',
+    description: 'Akt sverka, P&L, pul oqimi, qarz to‘lovlari, aging, kassa tafovuti',
     icon: DollarSign,
     color: 'text-accent',
     bgColor: 'bg-accent/10',

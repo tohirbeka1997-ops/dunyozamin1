@@ -14,6 +14,7 @@ type TelegramReportsForm = {
   enabled: boolean;
   chatId: string;
   creditSale: boolean;
+  debtPayment: boolean;
   shiftClosed: boolean;
   dailyDigest: boolean;
   balanceChange: boolean;
@@ -35,6 +36,7 @@ const DEFAULTS: TelegramReportsForm = {
   enabled: false,
   chatId: '',
   creditSale: true,
+  debtPayment: true,
   shiftClosed: true,
   dailyDigest: true,
   balanceChange: true,
@@ -184,6 +186,7 @@ export function TelegramReportsSettings() {
         enabled: toBool(reports['telegram.enabled'], DEFAULTS.enabled),
         chatId: String(reports['telegram.chat_id'] || ''),
         creditSale: toBool(reports['telegram.credit_sale'], DEFAULTS.creditSale),
+        debtPayment: toBool(reports['telegram.debt_payment'], DEFAULTS.debtPayment),
         shiftClosed: toBool(reports['telegram.shift_closed'], DEFAULTS.shiftClosed),
         dailyDigest: toBool(reports['telegram.daily_digest'], DEFAULTS.dailyDigest),
         balanceChange: toBool(reports['telegram.balance_change'], DEFAULTS.balanceChange),
@@ -266,6 +269,7 @@ export function TelegramReportsSettings() {
           'reports.telegram.enabled': form.enabled,
           'reports.telegram.chat_id': String(form.chatId || '').trim(),
           'reports.telegram.credit_sale': form.creditSale,
+          'reports.telegram.debt_payment': form.debtPayment,
           'reports.telegram.shift_closed': form.shiftClosed,
           'reports.telegram.daily_digest': form.dailyDigest,
           'reports.telegram.balance_change': form.balanceChange,
@@ -465,6 +469,13 @@ export function TelegramReportsSettings() {
               <p className="text-xs text-muted-foreground">{t('settings.telegramReports.creditSaleHint')}</p>
             </div>
             <Switch checked={form.creditSale} onCheckedChange={(v) => patch({ creditSale: v })} />
+          </div>
+          <div className="flex items-center justify-between gap-4">
+            <div className="space-y-1">
+              <Label>{t('settings.telegramReports.debtPayment')}</Label>
+              <p className="text-xs text-muted-foreground">{t('settings.telegramReports.debtPaymentHint')}</p>
+            </div>
+            <Switch checked={form.debtPayment} onCheckedChange={(v) => patch({ debtPayment: v })} />
           </div>
           <div className="flex items-center justify-between gap-4">
             <div className="space-y-1">

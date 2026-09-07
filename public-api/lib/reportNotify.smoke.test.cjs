@@ -15,9 +15,12 @@ const {
   resolveReportChatIds,
   resolveReportDestination,
   buildCreditSaleText,
+  buildDebtPaymentText,
   buildShiftClosedText,
   buildDailyDigestText,
+  buildDailyDigestSummary,
   notifyCreditSale,
+  notifyDebtPayment,
   notifyShiftClosed,
   runDailyDigestTick,
   sendTestReport,
@@ -104,10 +107,32 @@ function openTempDb() {
       amount REAL,
       expense_date TEXT
     );
+    CREATE TABLE customer_payments (
+      id TEXT PRIMARY KEY,
+      payment_number TEXT,
+      customer_id TEXT,
+      amount REAL,
+      payment_method TEXT,
+      operation TEXT DEFAULT 'payment_in',
+      paid_at TEXT,
+      created_at TEXT,
+      received_by TEXT
+    );
+    CREATE TABLE customer_ledger (
+      id TEXT PRIMARY KEY,
+      customer_id TEXT,
+      amount REAL,
+      type TEXT,
+      op_code TEXT,
+      method TEXT,
+      ref_no TEXT,
+      created_at TEXT
+    );
     INSERT INTO settings (id, key, value, type, category, is_public) VALUES
       ('1', 'reports.telegram.enabled', '1', 'boolean', 'reports', 1),
       ('2', 'reports.telegram.chat_id', '', 'string', 'reports', 1),
       ('3', 'reports.telegram.credit_sale', '1', 'boolean', 'reports', 1),
+      ('3b', 'reports.telegram.debt_payment', '1', 'boolean', 'reports', 1),
       ('4', 'reports.telegram.shift_closed', '1', 'boolean', 'reports', 1),
       ('5', 'reports.telegram.daily_digest', '1', 'boolean', 'reports', 1),
       ('6', 'reports.telegram.schedule_time', '00:00', 'string', 'reports', 1),
@@ -127,6 +152,25 @@ async function main() {
   );
   assert.match(textCredit, /Nasiya sotuv/);
   assert.match(textCredit, /150/);
+
+  const textDebt = buildDebtPaymentText(
+    {
+      customerName: 'Vali',
+      amount: 25000,
+      paymentMethod: 'cash',
+      remainingDebt: 10000,
+      paymentNumber: 'PAY-1',
+      cashierName: 'Admin',
+      paidAt: '2026-09-05 10:15:00',
+    },
+    'Shop',
+  );
+  assert.match(textDebt, /Qarz to/);
+  assert.match(textDebt, /Vali/);
+  assert.match(textDebt, /25/);
+  assert.match(textDebt, /naqd/);
+  assert.match(textDebt, /Qolgan qarz/);
+  assert.match(textDebt, /PAY-1/);
 
   const textShift = buildShiftClosedText(
     { cashierName: 'Vali', totalPayments: 1e6, cashPayments: 4e5, expectedCash: 5e5, closingCash: 5e5, cashDifference: 0 },
@@ -180,7 +224,9 @@ async function main() {
   assert.match(textDigest, /Xarajatlar/);
   assert.match(textDigest, /Nasiya sotuvlar/);
   assert.match(textDigest, /Ombor/);
-  assert.match(textDigest, /Qarzdorlik to/);
+  assert.match(textDigest, /Qarz to/);
+  assert.match(textDigest, /Qarz yig/);
+  assert.ok(textDigest.indexOf('Nasiya sotuvlar') < textDigest.indexOf('Qarz to'));
 
   const { db, dir } = openTempDb();
   try {
@@ -256,6 +302,19 @@ async function main() {
       },
     );
 
+    db.prepare(
+      `INSERT INTO customers (id, name, balance) VALUES ('c1', 'Vali', -10000)`,
+    ).run();
+    db.prepare(
+      `INSERT INTO customer_payments (id, payment_number, customer_id, amount, payment_method, operation, paid_at, created_at)
+       VALUES ('p1', 'PAY-TEST-1', 'c1', 25000, 'cash', 'payment_in', '2026-09-05 10:00:00', '2026-09-05 10:00:00')`,
+    ).run();
+    const digestSummary = buildDailyDigestSummary(db, '2026-09-05');
+    assert.ok(Number(digestSummary.debtCollected) >= 25000 - 1, 'debtCollected from customer_payments');
+    assert.ok(Number(digestSummary.operations.debtPayments.count) >= 1);
+    assert.match(digestSummary.operations.debtPayments.lines.join('\n'), /Vali/);
+    assert.match(digestSummary.operations.debtPayments.lines.join('\n'), /naqd/);
+
     db.prepare(`UPDATE settings SET value = ? WHERE key = 'reports.telegram.chat_id'`).run('-100999');
     withEnv({ TELEGRAM_REPORTS_CHAT_ID: '-100123', TELEGRAM_ADMIN_IDS: '111' }, () => {
       const ids = resolveReportChatIds(db);
@@ -293,6 +352,29 @@ async function main() {
     );
     assert.equal(noTokenSale.ok, false);
     assert.equal(noTokenSale.reason, 'no_bot_token');
+
+    db.prepare(`UPDATE settings SET value = '0' WHERE key = 'reports.telegram.debt_payment'`).run();
+    const debtDisabled = await notifyDebtPayment(db, {
+      paymentId: 'p1',
+      amount: 25000,
+      customerName: 'Vali',
+    });
+    assert.equal(debtDisabled.skipped, true);
+    assert.equal(debtDisabled.reason, 'disabled');
+
+    db.prepare(`UPDATE settings SET value = '1' WHERE key = 'reports.telegram.debt_payment'`).run();
+    const noTokenDebt = await withEnv({ TELEGRAM_BOT_TOKEN: '', TELEGRAM_ADMIN_IDS: '42' }, () =>
+      notifyDebtPayment(db, 'p1'),
+    );
+    assert.equal(noTokenDebt.ok, false);
+    assert.equal(noTokenDebt.reason, 'no_bot_token');
+
+    db.prepare(`INSERT INTO report_notify_log (event_key, ref_id) VALUES ('debt_payment', 'p1')`).run();
+    const debtDedup = await withEnv({ TELEGRAM_BOT_TOKEN: 'x'.repeat(40), TELEGRAM_ADMIN_IDS: '42' }, () =>
+      notifyDebtPayment(db, 'p1'),
+    );
+    assert.equal(debtDedup.skipped, true);
+    assert.equal(debtDedup.reason, 'already_sent');
 
     // Dedup: second claim after first insert should skip (simulate successful claim then skip)
     db.prepare(`INSERT INTO report_notify_log (event_key, ref_id) VALUES ('credit_sale', 'o1')`).run();

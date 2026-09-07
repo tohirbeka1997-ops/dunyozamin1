@@ -1,7 +1,5 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
-import { Label } from '@/components/ui/label';
 import {
   Dialog,
   DialogContent,
@@ -9,20 +7,20 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog';
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@/components/ui/select';
 import { useToast } from '@/hooks/use-toast';
-import { createCustomer, findCustomerByPhone } from '@/db/api';
+import { getCustomerById } from '@/db/api';
 import type { Customer } from '@/types/database';
-import { Plus } from 'lucide-react';
+import { Plus, Save } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { DUPLICATE_PHONE_MESSAGE_UZ, formatUserFacingError } from '@/utils/electron';
-import { assertOptionalUzPhone } from '@/lib/posHardening';
+import { useAuth } from '@/contexts/AuthContext';
+import CustomerFormFields, { CustomerDuplicateCandidates } from '@/components/customers/CustomerFormFields';
+import {
+  createCustomerFromForm,
+  emptyCustomerFormValues,
+  type CustomerDupCandidate,
+  type CustomerFormValues,
+} from '@/components/customers/customerFormShared';
 
 interface QuickCustomerCreateProps {
   onCreated?: (customer: Customer) => void;
@@ -33,105 +31,102 @@ interface QuickCustomerCreateProps {
 export default function QuickCustomerCreate({ onCreated, showLabel = false, className = '' }: QuickCustomerCreateProps) {
   const { toast } = useToast();
   const navigate = useNavigate();
+  const { profile } = useAuth();
+  const isAdmin = profile?.role === 'admin';
   const [open, setOpen] = useState(false);
   const [saving, setSaving] = useState(false);
-  const [name, setName] = useState('');
-  const [phone, setPhone] = useState('+998');
-  const [pricingTier, setPricingTier] = useState<'retail' | 'master'>('retail');
+  const [formData, setFormData] = useState<CustomerFormValues>(emptyCustomerFormValues);
+  const [dupCandidates, setDupCandidates] = useState<CustomerDupCandidate[]>([]);
+  const nameInputRef = useRef<HTMLInputElement>(null);
 
   const reset = () => {
-    setName('');
-    setPhone('+998');
-    setPricingTier('retail');
+    setFormData(emptyCustomerFormValues());
+    setDupCandidates([]);
   };
 
-  const handleSave = async () => {
-    const cleanName = name.trim();
-    if (!cleanName) {
-      toast({
-        title: 'Validatsiya',
-        description: "Mijoz ismini kiriting",
-        variant: 'destructive',
-      });
-      return;
-    }
+  useEffect(() => {
+    if (!open) return;
+    const timer = window.setTimeout(() => nameInputRef.current?.focus(), 50);
+    return () => window.clearTimeout(timer);
+  }, [open]);
 
-    const phoneGate = assertOptionalUzPhone(phone);
-    if (!phoneGate.ok) {
-      toast({
-        title: 'Validatsiya xatosi',
-        description: "Telefon raqami noto'g'ri formatda. Masalan: +998 90 123 45 67",
-        variant: 'destructive',
-      });
-      return;
+  const selectExistingAndClose = async (existingId: string, existing?: Customer) => {
+    let customer = existing;
+    if (!customer) {
+      try {
+        customer = (await getCustomerById(existingId)) ?? undefined;
+      } catch {
+        customer = undefined;
+      }
     }
-    const resolvedPhone = phoneGate.phone;
+    if (customer) {
+      onCreated?.(customer);
+      setOpen(false);
+      reset();
+      return true;
+    }
+    return false;
+  };
 
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
     if (saving) return;
 
     try {
       setSaving(true);
-      if (phoneGate.normalized && resolvedPhone) {
-        const existingByPhone = await findCustomerByPhone(resolvedPhone);
-        if (existingByPhone) {
-          toast({
-            title: 'Xatolik',
-            description: DUPLICATE_PHONE_MESSAGE_UZ,
-            variant: 'destructive',
-          });
-          onCreated?.(existingByPhone);
-          setOpen(false);
-          reset();
-          return;
-        }
+      const result = await createCustomerFromForm(formData, { isAdmin });
+      if (result.status !== 'validation') {
+        setDupCandidates(result.duplicates);
       }
 
-      const created = await createCustomer({
-        name: cleanName,
-        phone: resolvedPhone,
-        email: null,
-        address: null,
-        type: 'individual',
-        status: 'active',
-        pricing_tier: pricingTier,
-        company_name: null,
-        tax_number: null,
-        notes: null,
-        bonus_points: 0,
-        credit_limit: 0,
-        // Server nasiya gate: allow_debt/allow_credit OR credit_limit>0
-        allow_debt: true,
-      });
-      toast({
-        title: 'Muvaffaqiyatli',
-        description: "Mijoz POS oynasidan yaratildi",
-      });
-      onCreated?.(created);
-      setOpen(false);
-      reset();
-    } catch (error) {
-      const errObj = error && typeof error === 'object' ? (error as { code?: string; details?: { existing_id?: string } }) : null;
-      const code = errObj?.code;
-      const existingId = errObj?.details?.existing_id;
-      if (code === 'DUPLICATE_PHONE' && existingId) {
+      if (result.status === 'validation') {
+        toast({
+          title: result.title,
+          description: result.description,
+          variant: 'destructive',
+        });
+        return;
+      }
+
+      if (result.status === 'duplicate_phone') {
         toast({
           title: 'Xatolik',
           description: DUPLICATE_PHONE_MESSAGE_UZ,
           variant: 'destructive',
         });
-        navigate(`/customers/${existingId}`);
-        setOpen(false);
-        reset();
+        const selected = await selectExistingAndClose(result.existingId, result.existing);
+        if (!selected) {
+          navigate(`/customers/${result.existingId}`);
+          setOpen(false);
+          reset();
+        }
         return;
       }
+
+      if (result.status === 'error') {
+        toast({
+          title: 'Xatolik',
+          description: formatUserFacingError(result.error, "Mijozni saqlab bo'lmadi"),
+          variant: 'destructive',
+        });
+        return;
+      }
+
       toast({
-        title: 'Xatolik',
-        description: formatUserFacingError(error, "Mijozni yaratib bo'lmadi"),
-        variant: 'destructive',
+        title: 'Muvaffaqiyatli',
+        description: 'Mijoz muvaffaqiyatli yaratildi',
       });
+      onCreated?.(result.customer);
+      setOpen(false);
+      reset();
     } finally {
       setSaving(false);
     }
+  };
+
+  const handleOpenChange = (nextOpen: boolean) => {
+    setOpen(nextOpen);
+    if (!nextOpen) reset();
   };
 
   return (
@@ -146,61 +141,47 @@ export default function QuickCustomerCreate({ onCreated, showLabel = false, clas
         <Plus className="h-4 w-4" />
         {showLabel && <span className="ml-1">Yangi mijoz</span>}
       </Button>
-      <Dialog open={open} onOpenChange={setOpen}>
-        <DialogContent className="sm:max-w-[28rem]">
-          <DialogHeader>
-            <DialogTitle>Yangi mijoz</DialogTitle>
+      <Dialog open={open} onOpenChange={handleOpenChange}>
+        <DialogContent className="flex max-h-[min(100dvh,44rem)] min-h-0 w-[min(96vw,42rem)] max-w-[min(96vw,42rem)] flex-col gap-0 overflow-hidden p-0 sm:max-w-[min(96vw,42rem)]">
+          <DialogHeader className="shrink-0 border-b px-6 pb-3 pr-14 pt-6">
+            <DialogTitle>Yangi mijoz qo'shish</DialogTitle>
             <DialogDescription>POSdan chiqmasdan mijoz qo'shing.</DialogDescription>
           </DialogHeader>
-          <div className="space-y-3">
-            <div className="space-y-1.5">
-              <Label htmlFor="quick-customer-name">Ism</Label>
-              <Input
-                id="quick-customer-name"
-                value={name}
-                onChange={(e) => setName(e.target.value)}
-                placeholder="Mijoz ismi"
-                autoFocus
-              />
+          <form onSubmit={handleSubmit} className="flex min-h-0 flex-1 flex-col">
+            <div className="min-h-0 flex-1 overflow-y-auto px-6 py-4">
+              <div className="grid gap-5">
+                <CustomerDuplicateCandidates
+                  candidates={dupCandidates}
+                  onSelect={(customerId) => {
+                    void selectExistingAndClose(customerId);
+                  }}
+                />
+                <CustomerFormFields
+                  values={formData}
+                  onChange={(patch) => setFormData((prev) => ({ ...prev, ...patch }))}
+                  isAdmin={isAdmin}
+                  layout="dialog"
+                  idPrefix="pos-customer-"
+                  autoFocusName
+                  nameInputRef={nameInputRef}
+                />
+              </div>
             </div>
-            <div className="space-y-1.5">
-              <Label htmlFor="quick-customer-phone">Telefon</Label>
-              <Input
-                id="quick-customer-phone"
-                value={phone}
-                onChange={(e) => setPhone(e.target.value)}
-                placeholder="90 123 45 67"
-              />
-            </div>
-            <div className="space-y-1.5">
-              <Label>Narx turi</Label>
-              <Select value={pricingTier} onValueChange={(v) => setPricingTier(v as 'retail' | 'master')}>
-                <SelectTrigger>
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="retail">Retail</SelectItem>
-                  <SelectItem value="master">Master/Usta</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
-            <div className="flex justify-end gap-2 pt-2">
+            <div className="flex shrink-0 items-center justify-end gap-2 border-t px-6 py-4">
               <Button
                 type="button"
                 variant="outline"
-                onClick={() => {
-                  setOpen(false);
-                  reset();
-                }}
+                onClick={() => handleOpenChange(false)}
                 disabled={saving}
               >
                 Bekor qilish
               </Button>
-              <Button type="button" onClick={handleSave} disabled={saving || !name.trim()}>
+              <Button type="submit" disabled={saving}>
+                <Save className="h-4 w-4 mr-2" />
                 {saving ? 'Saqlanmoqda...' : 'Saqlash'}
               </Button>
             </div>
-          </div>
+          </form>
         </DialogContent>
       </Dialog>
     </>

@@ -28,12 +28,9 @@ services:
       - ${POS_HOST_DATA_DIR:-/var/lib/pos}:/var/lib/pos
       # loadRootEnv() reads /app/.env on Yangilash without container restart
       - ./.env:/app/.env:ro
-      # Customer ops notify: GHCR image may lag host /opt/pos — bind host copies until image rebuild
-      - ./public-api/lib/customerOpsNotify.cjs:/app/public-api/lib/customerOpsNotify.cjs:ro
-      - ./electron/lib/posHardening.cjs:/app/electron/lib/posHardening.cjs:ro
-      - ./electron/services/salesService.cjs:/app/electron/services/salesService.cjs:ro
-      - ./electron/services/customersService.cjs:/app/electron/services/customersService.cjs:ro
-      - ./electron/services/returnsService.cjs:/app/electron/services/returnsService.cjs:ro
+      # Host /opt/pos code after deploy:server sync — recreate without image rebuild
+      - ./electron:/app/electron:ro
+      - ./public-api/lib:/app/public-api/lib:ro
 
     # Optional GHCR image override — set POS_IMAGE in .env for CI/CD pulls.
     # When unset, the base docker-compose.yaml `pos-server:latest` build tag is used.

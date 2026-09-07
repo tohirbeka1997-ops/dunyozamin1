@@ -2,6 +2,7 @@ import { useCallback, useState } from 'react';
 import { useFocusEffect, useRouter } from 'expo-router';
 import {
   ActivityIndicator,
+  Alert,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -16,6 +17,41 @@ import type { CurrentShiftResponse, DailyReport } from '@/types/sales';
 function formatMoney(n?: number | null): string {
   if (n == null) return '—';
   return `${Math.round(n).toLocaleString('uz-UZ')} so'm`;
+}
+
+function parseCashInput(raw: string): number | null {
+  const trimmed = String(raw || '').trim().replace(/\s/g, '');
+  if (trimmed === '') return null;
+  const n = Number(trimmed);
+  if (!Number.isFinite(n) || n < 0) return null;
+  return n;
+}
+
+function Row({
+  label,
+  value,
+  bold,
+  danger,
+}: {
+  label: string;
+  value: string;
+  bold?: boolean;
+  danger?: boolean;
+}) {
+  return (
+    <View style={styles.row}>
+      <Text style={styles.rowLabel}>{label}</Text>
+      <Text
+        style={[
+          styles.rowValue,
+          bold && styles.rowValueBold,
+          danger && styles.rowValueDanger,
+        ]}
+      >
+        {value}
+      </Text>
+    </View>
+  );
 }
 
 export default function ShiftScreen() {
@@ -51,11 +87,12 @@ export default function ShiftScreen() {
 
   async function handleOpen() {
     if (acting) return;
+    const cash = parseCashInput(cashInput) ?? 0;
     setActing(true);
     setError(null);
     setInfo(null);
     try {
-      await openShift(Number(cashInput) || 0);
+      await openShift(cash);
       setCashInput('');
       await load();
     } catch (e) {
@@ -65,16 +102,43 @@ export default function ShiftScreen() {
     }
   }
 
-  async function handleClose() {
+  function requestClose() {
+    if (acting) return;
+    const cash = parseCashInput(cashInput);
+    if (cash == null) {
+      setError(t('closingCashRequired'));
+      return;
+    }
+    const expected = Number(current?.summary?.expectedCash);
+    const diff = Number.isFinite(expected) ? cash - expected : null;
+    const lines = [
+      `${t('closingCash')}: ${formatMoney(cash)}`,
+      Number.isFinite(expected) ? `${t('expectedCash')}: ${formatMoney(expected)}` : null,
+      diff != null ? `${t('cashDifference')}: ${formatMoney(diff)}` : null,
+    ]
+      .filter(Boolean)
+      .join('\n');
+
+    Alert.alert(t('closeShift'), lines, [
+      { text: t('cancel'), style: 'cancel' },
+      {
+        text: t('closeShift'),
+        style: 'destructive',
+        onPress: () => void runClose(cash),
+      },
+    ]);
+  }
+
+  async function runClose(cash: number) {
     if (acting) return;
     setActing(true);
     setError(null);
     setInfo(null);
     try {
-      const result = await closeShift(Number(cashInput) || 0);
+      const result = await closeShift(cash);
       setCashInput('');
       setInfo(
-        `${t('shiftClosed')} · ${t('expectedCash')}: ${formatMoney(result.expectedCash)}`,
+        `${t('shiftClosed')} · ${t('expectedCash')}: ${formatMoney(result.expectedCash)} · ${t('cashDifference')}: ${formatMoney(result.cashDifference)}`,
       );
       await load();
     } catch (e) {
@@ -95,6 +159,12 @@ export default function ShiftScreen() {
   const shift = current?.shift || null;
   const summary = current?.summary || null;
   const isOwnShift = current?.is_own_shift !== false;
+  const closingPreview = parseCashInput(cashInput);
+  const expectedPreview = Number(summary?.expectedCash);
+  const diffPreview =
+    closingPreview != null && Number.isFinite(expectedPreview)
+      ? closingPreview - expectedPreview
+      : null;
 
   return (
     <ScrollView style={styles.root} contentContainerStyle={styles.content}>
@@ -121,14 +191,31 @@ export default function ShiftScreen() {
         <View style={styles.card}>
           <Text style={styles.cardTitle}>{shift.shift_number}</Text>
           {!isOwnShift ? <Text style={styles.hint}>{t('shiftOwnedByOther')}</Text> : null}
-          <Row label={t('shiftOpenSince')} value={String(shift.opened_at || '').slice(0, 16).replace('T', ' ')} />
+          <Row
+            label={t('shiftOpenSince')}
+            value={String(shift.opened_at || '').slice(0, 16).replace('T', ' ')}
+          />
           <Row label={t('openingCash')} value={formatMoney(shift.opening_cash)} />
           {summary ? (
             <>
               <Row label={t('salesTotal')} value={formatMoney(summary.totalSales)} />
               <Row label={t('cashSales')} value={formatMoney(summary.cashSales)} />
               <Row label={t('ordersCount')} value={String(summary.orders)} />
-              <Row label={t('expectedCash')} value={formatMoney(summary.expectedCash)} bold />
+              <Row
+                label={t('expectedCash')}
+                value={formatMoney(summary.expectedCash)}
+                bold
+                danger={Number(summary.expectedCash) < 0}
+              />
+              {Number(summary.cashExpenses) > 0 ? (
+                <Row label={t('expenses')} value={`−${formatMoney(summary.cashExpenses)}`} />
+              ) : null}
+              {Number(summary.cashRefundsOut ?? summary.totalRefunds) > 0 ? (
+                <Row
+                  label={t('refunds')}
+                  value={`−${formatMoney(summary.cashRefundsOut ?? summary.totalRefunds)}`}
+                />
+              ) : null}
             </>
           ) : null}
 
@@ -140,9 +227,21 @@ export default function ShiftScreen() {
                 keyboardType="numeric"
                 value={cashInput}
                 onChangeText={setCashInput}
-                placeholder="0"
+                placeholder={t('closingCashHint')}
               />
-              <Pressable style={[styles.btn, styles.btnDanger, acting && styles.btnDisabled]} onPress={handleClose} disabled={acting}>
+              {diffPreview != null ? (
+                <Row
+                  label={t('cashDifference')}
+                  value={formatMoney(diffPreview)}
+                  bold
+                  danger={diffPreview !== 0}
+                />
+              ) : null}
+              <Pressable
+                style={[styles.btn, styles.btnDanger, acting && styles.btnDisabled]}
+                onPress={requestClose}
+                disabled={acting}
+              >
                 <Text style={styles.btnText}>{acting ? t('processing') : t('closeShift')}</Text>
               </Pressable>
             </>
@@ -159,21 +258,16 @@ export default function ShiftScreen() {
             onChangeText={setCashInput}
             placeholder="0"
           />
-          <Pressable style={[styles.btn, acting && styles.btnDisabled]} onPress={handleOpen} disabled={acting}>
+          <Pressable
+            style={[styles.btn, acting && styles.btnDisabled]}
+            onPress={handleOpen}
+            disabled={acting}
+          >
             <Text style={styles.btnText}>{acting ? t('processing') : t('openShift')}</Text>
           </Pressable>
         </View>
       )}
     </ScrollView>
-  );
-}
-
-function Row({ label, value, bold }: { label: string; value: string; bold?: boolean }) {
-  return (
-    <View style={styles.row}>
-      <Text style={styles.rowLabel}>{label}</Text>
-      <Text style={[styles.rowValue, bold && styles.rowValueBold]}>{value}</Text>
-    </View>
   );
 }
 
@@ -207,6 +301,7 @@ const styles = StyleSheet.create({
   rowLabel: { fontSize: 14, color: '#64748b' },
   rowValue: { fontSize: 14, color: '#0f172a', fontWeight: '500' },
   rowValueBold: { fontWeight: '700', color: '#166534' },
+  rowValueDanger: { fontWeight: '700', color: '#dc2626' },
   inputLabel: { fontSize: 13, color: '#475569', marginTop: 14, marginBottom: 6 },
   input: {
     backgroundColor: '#f8fafc',

@@ -2,7 +2,7 @@ import { useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import { ArrowLeft, BarChart3, Package, Users, Tag, Globe } from 'lucide-react';
+import { ArrowLeft, BarChart3, Package, Users, Tag, Globe, Wallet } from 'lucide-react';
 
 type ReportLink = { title: string; description: string; path: string; icon: React.ReactNode };
 
@@ -32,6 +32,12 @@ export default function SalesReportsHub() {
         description: 'Kun bo‘yicha tushum va buyurtmalar',
         path: '/reports/sales/daily',
         icon: <BarChart3 className="h-4 w-4 opacity-90" />,
+      },
+      {
+        title: 'Qarz to‘lovlari va nasiya',
+        description: 'Bugun kim qarzini to‘ladi, kimga nasiya berildi',
+        path: '/reports/sales/debt-operations',
+        icon: <Wallet className="h-4 w-4 opacity-90" />,
       },
       {
         title: 'Mahsulotlar bo‘yicha savdo',

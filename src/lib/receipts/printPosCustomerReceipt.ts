@@ -28,7 +28,7 @@ export async function printPosCustomerReceiptEscpos(
   const lines = buildReceiptLines(receiptInput, { charsPerLine });
   await printEscposReceipt(lines, {
     charsPerLine,
-    feedLines: 3,
+    feedLines: 6,
     cut: true,
   });
   return { transport: 'escpos' };

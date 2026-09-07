@@ -29,6 +29,9 @@
       "scale_offline_hint": "Tarozi ulanmagan. Og‘irlikni qo‘lda kiriting.",
       "print_offline_before_receipt": "Chop etish agenti ulanmagan. Chek brauzer orqali ochilishi mumkin."
     },
+    "close_shift": {
+      "expected_cash_formula": "Ochilish + Naqd savdo + Mijoz balansiga naqd + Qo'lda kirim − Naqd qaytarishlar − Naqd xarajatlar − Qo'lda chiqim"
+    },
     "search_placeholder": "Nom, SKU, shtrix-kod… (F2 · ↓/F4 · Enter)",
     "brand_label": "Brend",
     "article_label": "Artikul",
@@ -114,6 +117,9 @@
     "rail_hint_f7": "F7 — chegirma",
     "rail_hint_f8": "F8 — qaytarish",
     "rail_hint_f9": "F9 — to‘lash",
+    "rail_expense": "Xarajat",
+    "print_auto_failed_title": "Chek chiqmadi",
+    "print_auto_failed_desc": "{{msg}} F10 bilan qayta urinib ko‘ring.",
     "hotkey_cost_toggle": "Tannarx (ko'rsatish/yashirish)",
     "hotkey_customer_focus": "Mijoz tanlash",
     "hotkey_discount_focus": "Chegirma",
@@ -482,6 +488,29 @@
     "updated_at": "Yangilangan",
     "language_changed": "Til o'zgartirildi"
   },
+  "quickActions": {
+    "aria_label": "Tezkor amallar",
+    "new_customer": "Yangi mijoz",
+    "receive_payment": "To'lov olish",
+    "pick_customer_title": "Mijozni tanlang",
+    "pick_customer_desc": "To'lov olish uchun mijozni tanlang",
+    "continue": "Davom etish",
+    "new_expense": "Yangi xarajat",
+    "new_po": "Yangi xarid",
+    "receive_goods": "Qabul qilish",
+    "po_due": "To'lanishi kerak",
+    "new_product": "Yangi mahsulot",
+    "bulk_price": "Ommaviy narx",
+    "bulk_delete": "Ommaviy o‘chirish",
+    "bulk_delete_count": "O‘chirish ({{count}})",
+    "show_selected": "Tanlanganlar",
+    "show_selected_count": "Tanlanganlar ({{count}})",
+    "new_return": "Yangi qaytarish",
+    "open_pos": "POS",
+    "new_revision": "Inventarizatsiya",
+    "open_revision": "Ochiq inventarizatsiya",
+    "low_stock": "Kam qoldiq"
+  },
   "navigation": {
     "dashboard": "Bosh sahifa",
     "smeta": "Smeta",
@@ -612,6 +641,16 @@
     "create_new_product": "Yangi mahsulot yaratish",
     "product_deleted": "Mahsulot muvaffaqiyatli o'chirildi",
     "archived": "Mahsulot arxivga o'tkazildi",
+    "bulk_delete_title": "Ommaviy o‘chirish",
+    "bulk_delete_confirm": "{{count}} ta mahsulot o‘chiriladi. Tarixli mahsulotlar nofaol qilinadi, tarixsizlari butunlay o‘chiriladi. Davom etasizmi?",
+    "bulk_delete_done": "Nofaol: {{soft}}, o‘chirilgan: {{hard}}, xato: {{failed}}",
+    "bulk_delete_need_selection": "Avval checkbox bilan mahsulotlarni tanlang, keyin o‘chirishni bosing.",
+    "show_selected_hint": "Faqat belgilangan mahsulotlarni ko‘rsatish",
+    "show_all_products": "Barchasini ko‘rsatish",
+    "showing_selected": "Faqat belgilangan mahsulotlar ko‘rsatilmoqda ({{count}})",
+    "clear_selection": "Tanlovni tozalash",
+    "select_all": "Barchasini tanlash",
+    "select_product": "Tanlash",
     "restored": "Mahsulot qaytarildi",
     "restore": "Qaytarish",
     "active_section": "Mahsulotlar",
@@ -1565,6 +1604,48 @@
     "title": "Hisobotlar",
     "subtitle": "Turlicha hisobotlarni ko'ring",
     "daily_sales": "Kunlik sotuv",
+    "debt_operations": "Qarz to‘lovlari va nasiya",
+    "daily_sales_page": {
+      "debt_ops_hint": "Mijoz qarzini shu yerda ko‘ring. To‘liq davr hisoboti — alohida sahifa.",
+      "open_debt_ops": "To‘liq hisobot"
+    },
+    "debt_operations_page": {
+      "title": "Qarz to‘lovlari va nasiya",
+      "subtitle": "Bugun yoki tanlangan davrda kim qarzini to‘ladi va kimga nasiya berildi",
+      "empty": "Tanlangan davrda qarz to‘lovi yoki nasiya amaliyoti topilmadi",
+      "filters": {
+        "from": "Boshlanish sanasi",
+        "to": "Tugash sanasi",
+        "type": "Turi",
+        "all_types": "Barcha turlar",
+        "cashier": "Kassir"
+      },
+      "kinds": {
+        "debt_payment": "Qarz to‘lovi",
+        "credit_sale": "Nasiya savdo",
+        "loan_issued": "Qarz berildi",
+        "advance": "Avans"
+      },
+      "summary": {
+        "debt_collected": "Qarz yig‘ildi",
+        "credit_issued": "Nasiya berildi",
+        "advance_received": "Avans",
+        "net": "Net (yig‘ilgan − nasiya)",
+        "count": "{{count}} ta amaliyot"
+      },
+      "table": {
+        "datetime": "Sana / vaqt",
+        "customer": "Mijoz",
+        "type": "Turi",
+        "amount": "Summa",
+        "method": "Usul",
+        "cashier": "Kassir",
+        "ref": "Hujjat"
+      },
+      "errors": {
+        "load_failed": "Qarz amaliyotlarini yuklab bo‘lmadi"
+      }
+    },
     "product_sales": "Mahsulot sotuvi",
     "customer_sales": "Mijoz sotuvi",
     "stock_levels": "Ombor darajasi",

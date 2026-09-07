@@ -44,6 +44,8 @@ import ExpenseFormDialog from '@/components/expenses/ExpenseFormDialog';
 import { ErrorBoundary } from '@/components/common/ErrorBoundary';
 import { invalidateDashboardQueries } from '@/utils/dashboard';
 import { formatDate, todayYMD } from '@/lib/datetime';
+import { useTranslation } from 'react-i18next';
+import PageQuickActions from '@/components/common/PageQuickActions';
 
 const EXPENSE_CATEGORIES: ExpenseCategory[] = [
   'Ijara',
@@ -63,6 +65,7 @@ const PAYMENT_METHODS: { value: ExpensePaymentMethod; label: string }[] = [
 ];
 
 export default function Expenses() {
+  const { t } = useTranslation();
   const { toast } = useToast();
   const { profile } = useAuth();
   const queryClient = useQueryClient();
@@ -348,12 +351,21 @@ export default function Expenses() {
                 Eksport (CSV)
               </Button>
             )}
-            <Button size="sm" className="h-8 text-xs" onClick={handleCreate}>
-              <Plus className="mr-2 h-3.5 w-3.5" />
-              Yangi xarajat
-            </Button>
           </div>
         </div>
+
+        <PageQuickActions
+          aria-label={t('quickActions.aria_label')}
+          actions={[
+            {
+              id: 'new-expense',
+              icon: <Plus />,
+              label: t('quickActions.new_expense'),
+              variant: 'default',
+              onClick: handleCreate,
+            },
+          ]}
+        />
 
         <Card className="gap-0 py-0 shadow-sm">
           <CardContent className="px-3 py-3 sm:px-4">

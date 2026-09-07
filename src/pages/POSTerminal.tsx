@@ -164,6 +164,7 @@ import {
   Star,
   Users,
   CalendarClock,
+  Wallet,
 } from 'lucide-react';
 import WaitingOrdersDialog from '@/components/pos/WaitingOrdersDialog';
 import Numpad from '@/components/pos/Numpad';
@@ -172,6 +173,7 @@ import PosProductGrid from '@/components/pos/PosProductGrid';
 import PosCustomerReferrerPanel from '@/components/pos/PosCustomerReferrerPanel';
 import ReceivePaymentModal from '@/components/customers/ReceivePaymentModal';
 import CreditDebtsSheet from '@/components/pos/CreditDebtsSheet';
+import ExpenseFormDialog from '@/components/expenses/ExpenseFormDialog';
 import Receipt from '@/components/Receipt';
 import ReceiptPrintView from '@/components/print/ReceiptPrintView';
 import MoneyInput from '@/components/common/MoneyInput';
@@ -437,6 +439,7 @@ export default function POSTerminal() {
   // Held orders state
   const [heldOrders, setHeldOrders] = useState<HeldOrder[]>([]);
   const [waitingOrdersDialogOpen, setWaitingOrdersDialogOpen] = useState(false);
+  const [expenseDialogOpen, setExpenseDialogOpen] = useState(false);
   const [restoreConfirmOpen, setRestoreConfirmOpen] = useState(false);
   const [orderToRestore, setOrderToRestore] = useState<HeldOrder | null>(null);
   const [importWebOrderDialogOpen, setImportWebOrderDialogOpen] = useState(false);
@@ -749,7 +752,13 @@ export default function POSTerminal() {
   }, [posUiMode]);
 
   useEffect(() => {
-    if (!paymentDialogOpen && !customerPaymentOpen && !cartReviewOpen && !waitingOrdersDialogOpen) {
+    if (
+      !paymentDialogOpen &&
+      !customerPaymentOpen &&
+      !cartReviewOpen &&
+      !waitingOrdersDialogOpen &&
+      !expenseDialogOpen
+    ) {
       const id = window.setTimeout(() => {
         const input = searchInputRef.current;
         if (!input) return;
@@ -761,7 +770,13 @@ export default function POSTerminal() {
       }, 0);
       return () => window.clearTimeout(id);
     }
-  }, [paymentDialogOpen, customerPaymentOpen, cartReviewOpen, waitingOrdersDialogOpen]);
+  }, [
+    paymentDialogOpen,
+    customerPaymentOpen,
+    cartReviewOpen,
+    waitingOrdersDialogOpen,
+    expenseDialogOpen,
+  ]);
 
   useEffect(() => {
     try {
@@ -934,15 +949,18 @@ export default function POSTerminal() {
       if (isPrintingReceipt) return;
       setIsPrintingReceipt(true);
       try {
-        const agentHealth = await getPrintAgentHealth(1500);
-        if (!agentHealth && !opts?.silent) {
-          toast({
-            variant: 'destructive',
-            title: t('pos.device_bar.print_agent_down', { defaultValue: 'Printer offline' }),
-            description: t('pos.device_status.print_offline_before_receipt', {
-              defaultValue: 'Chop etish agenti ulanmagan. Chek brauzer orqali ochilishi mumkin.',
-            }),
-          });
+        // Manual print only: warn if agent looks down (silent auto-print reports after ESC/POS fail).
+        if (!opts?.silent) {
+          const agentHealth = await getPrintAgentHealth(1500);
+          if (!agentHealth) {
+            toast({
+              variant: 'destructive',
+              title: t('pos.device_bar.print_agent_down', { defaultValue: 'Printer offline' }),
+              description: t('pos.device_status.print_offline_before_receipt', {
+                defaultValue: 'Chop etish agenti ulanmagan. Chek brauzer orqali ochilishi mumkin.',
+              }),
+            });
+          }
         }
         try {
           await printPosCustomerReceiptEscpos(data, companySettings, receiptSettings);
@@ -954,7 +972,24 @@ export default function POSTerminal() {
           }
           return;
         } catch (escposError) {
-          console.warn('[Print] ESC/POS failed, falling back to HTML print', escposError);
+          const errMsg =
+            escposError instanceof Error
+              ? escposError.message
+              : String(escposError || 'Printer unavailable');
+          console.warn('[Print] ESC/POS failed', escposError);
+          // Auto-print must stay silent: no browser print dialog (feels like receipt is discarded).
+          if (opts?.silent) {
+            toast({
+              variant: 'destructive',
+              title: t('pos.print_auto_failed_title', { defaultValue: 'Chek chiqmadi' }),
+              description: t('pos.print_auto_failed_desc', {
+                defaultValue: '{{msg}} F10 bilan qayta urinib ko‘ring.',
+                msg: errMsg,
+              }),
+            });
+            return;
+          }
+          console.warn('[Print] falling back to HTML print', escposError);
         }
 
         // Build a lightweight order object compatible with ReceiptPrintView (same as Orders printing flow)
@@ -1026,12 +1061,10 @@ export default function POSTerminal() {
 
         const htmlContent = el.innerHTML;
         openPrintWindow(htmlContent, receiptSettings?.paper_size || '78mm');
-        if (!opts?.silent) {
-          toast({
-            title: 'Chek',
-            description: 'Chek chop etish oynasi ochildi (printer ulanmagan bo‘lishi mumkin)',
-          });
-        }
+        toast({
+          title: 'Chek',
+          description: 'Chek chop etish oynasi ochildi (printer ulanmagan bo‘lishi mumkin)',
+        });
       } catch (e: any) {
         toast({
           title: 'Print xatoligi',
@@ -5344,6 +5377,55 @@ export default function POSTerminal() {
       clearCartAndNavDraft();
 
       if (created?.offline_queued) {
+        const paymentMethodLabel =
+          paymentMethod === 'cash'
+            ? t('pos.cash')
+            : paymentMethod === 'card'
+              ? t('pos.card')
+              : paymentMethod === 'qr'
+                ? t('pos.qr_pay')
+                : paymentMethod === 'mixed'
+                  ? t('pos.mixed')
+                  : paymentMethod === POS_EXCHANGE_PAYOUT_METHOD
+                    ? t('pos.exchange.receipt_payment_refund')
+                    : paymentMethod === POS_EXCHANGE_BALANCE_METHOD
+                      ? t('pos.exchange.receipt_payment_refund_balance')
+                      : paymentMethod === 'zero_settle'
+                        ? t('pos.exchange.receipt_payment_zero')
+                        : paymentMethod === 'credit'
+                          ? t('pos.credit')
+                          : '—';
+        const loyaltyReceiptMeta = await buildLoyaltyReceiptMeta(selectedCustomer);
+        const nextReceipt = {
+          orderNumber,
+          items: checkoutCart,
+          customer: selectedCustomer,
+          subtotal,
+          discountAmount,
+          total,
+          paidAmount,
+          changeAmount,
+          paymentMethod: paymentMethodLabel,
+          priceTierCode: currentTierCode,
+          dateTime: formatOrderDateTime(new Date()),
+          cashierName: profile?.full_name || profile?.username,
+          customerTotalDebt: selectedCustomer
+            ? Math.max(
+                0,
+                -(getActiveBucketBalance(selectedCustomer, saleCurrency) - creditAmountValue)
+              )
+            : 0,
+          loyaltyCardCode: loyaltyReceiptMeta.loyaltyCardCode,
+          loyaltyQrDataUrl: loyaltyReceiptMeta.loyaltyQrDataUrl,
+          loyaltyQrPayload: loyaltyReceiptMeta.loyaltyQrPayload,
+          currency: saleCurrency,
+        };
+        setLastReceiptData(nextReceipt);
+        if (shouldAutoPrintReceipt(receiptSettings)) {
+          setTimeout(() => {
+            void printReceipt(nextReceipt as NonNullable<typeof receiptData>, { silent: true });
+          }, 80);
+        }
         toast({
           title: 'Offline saqlandi',
           description: `${orderNumber} — internet qaytganida serverga yuboriladi.`,
@@ -6076,6 +6158,7 @@ export default function POSTerminal() {
       numpadOpen ||
       paymentDialogOpen ||
       waitingOrdersDialogOpen ||
+      expenseDialogOpen ||
       hotkeyGuideOpen ||
       categorySheetOpen ||
       customerPaymentOpen ||
@@ -6148,7 +6231,7 @@ export default function POSTerminal() {
 
       if (e.key === 'F1') {
         e.preventDefault();
-        if (paymentDialogOpen || customerPaymentOpen || numpadOpen || waitingOrdersDialogOpen) {
+        if (paymentDialogOpen || customerPaymentOpen || numpadOpen || waitingOrdersDialogOpen || expenseDialogOpen) {
           return;
         }
         openCustomerSelect();
@@ -6422,6 +6505,7 @@ export default function POSTerminal() {
     searchTerm,
     paymentDialogOpen,
     waitingOrdersDialogOpen,
+    expenseDialogOpen,
     selectedCartIndex,
     quickProducts,
     isProcessingPayment,
@@ -7712,6 +7796,17 @@ export default function POSTerminal() {
               variant="outline"
               size="icon"
               className="h-12 w-12 shrink-0"
+              title={t('pos.rail_expense', { defaultValue: 'Xarajat' })}
+              aria-label={t('pos.rail_expense', { defaultValue: 'Xarajat' })}
+              onClick={() => setExpenseDialogOpen(true)}
+            >
+              <Wallet className="h-5 w-5" />
+            </Button>
+            <Button
+              type="button"
+              variant="outline"
+              size="icon"
+              className="h-12 w-12 shrink-0"
               disabled={!lastReceiptData || isPrintingReceipt}
               title="Chek (F10) — mijoz cheki"
               aria-label="Chekni chop etish"
@@ -8815,98 +8910,158 @@ export default function POSTerminal() {
       <Sheet open={categorySheetOpen} onOpenChange={setCategorySheetOpen}>
         <SheetContent
           side="right"
-          className="flex h-dvh w-[min(100vw,28rem)] max-w-[min(100vw,28rem)] flex-col gap-0 overflow-hidden p-0 sm:max-w-[28rem]"
+          className={cn(
+            'flex h-dvh flex-col gap-0 overflow-hidden p-0',
+            categorySheetMode === 'quick'
+              ? 'w-[min(100vw,25rem)] max-w-[min(100vw,25rem)] sm:max-w-[25rem]'
+              : 'w-[min(100vw,28rem)] max-w-[min(100vw,28rem)] sm:max-w-[28rem]',
+          )}
         >
-          <SheetHeader className="shrink-0 border-b px-5 pb-4 pr-12 pt-5">
-            <SheetTitle>{categorySheetMode === 'quick' ? 'Tezkor mahsulotlar' : 'Kategoriyalar'}</SheetTitle>
-            <SheetDescription>
-              {categorySheetMode === 'quick'
-                ? "Yuqorida chiqadigan tezkor mahsulotlarni belgilang."
-                : 'Mahsulot ro\'yxatini kategoriya bo\'yicha saralang.'}
-            </SheetDescription>
+          <SheetHeader
+            className={cn(
+              'shrink-0 space-y-1 border-b pr-12',
+              categorySheetMode === 'quick' ? 'px-4 py-3' : 'px-5 pb-4 pt-5',
+            )}
+          >
+            {categorySheetMode === 'quick' ? (
+              <>
+                <div className="flex items-center gap-2">
+                  <SheetTitle className="text-base">Tezkor mahsulotlar</SheetTitle>
+                  <Badge
+                    variant="outline"
+                    className="h-5 px-1.5 text-[10px] font-medium tabular-nums"
+                  >
+                    {quickProducts.length}/{MAX_POS_QUICK_PRODUCTS}
+                  </Badge>
+                </div>
+                <SheetDescription className="text-xs">
+                  Tanlangan mahsulotga bosing — savatga qo&apos;shiladi. + bilan tezkor
+                  ro&apos;yxatga qo&apos;shing; yuqoridagi chip yoki × bilan olib tashlang.
+                </SheetDescription>
+              </>
+            ) : (
+              <>
+                <SheetTitle>Kategoriyalar</SheetTitle>
+                <SheetDescription>
+                  Mahsulot ro'yxatini kategoriya bo'yicha saralang.
+                </SheetDescription>
+              </>
+            )}
           </SheetHeader>
-          <div className="min-h-0 flex-1 overflow-y-auto px-5 py-4">
-            <div className="h-full min-h-0 space-y-6">
-              {categorySheetMode === 'quick' && (
-              <section className="flex h-full min-h-0 flex-col space-y-2">
-                <div className="flex items-center gap-2 text-sm font-semibold">
-                  <Star className="h-4 w-4 text-amber-500" />
-                  Tezkor mahsulotlar
+          {categorySheetMode === 'quick' ? (
+            <section className="flex min-h-0 flex-1 flex-col gap-2.5 px-4 py-3">
+              <div className="relative shrink-0">
+                <Search className="absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
+                <Input
+                  value={quickProductSearch}
+                  onChange={(event) => setQuickProductSearch(event.target.value)}
+                  placeholder="Mahsulot nomi, SKU yoki shtrix-kod..."
+                  className="h-9 pl-8"
+                />
+              </div>
+              {quickProducts.length > 0 && (
+                <div className="flex shrink-0 flex-wrap gap-1">
+                  {quickProducts.map((product, index) => (
+                    <button
+                      key={product.id}
+                      type="button"
+                      className="inline-flex h-6 max-w-[calc((100%-0.5rem)/3)] items-center gap-1 rounded-md border border-primary/25 bg-primary/10 px-1.5 text-[11px] leading-none text-foreground hover:bg-primary/15"
+                      onClick={() => toggleQuickProduct(product.id)}
+                      title="Tezkor ro'yxatdan olib tashlash"
+                    >
+                      <span className="tabular-nums text-muted-foreground">{index + 1}</span>
+                      <span className="min-w-0 truncate">{product.name}</span>
+                      <X className="h-3 w-3 shrink-0 opacity-60" />
+                    </button>
+                  ))}
                 </div>
-                <p className="text-xs text-muted-foreground">
-                  Belgilangan mahsulotlar yuqorida button bo'lib chiqadi. Maksimum {MAX_POS_QUICK_PRODUCTS} ta.
-                </p>
-                <div className="relative">
-                  <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-                  <Input
-                    value={quickProductSearch}
-                    onChange={(event) => setQuickProductSearch(event.target.value)}
-                    placeholder="Mahsulot nomi, SKU yoki shtrix-kod..."
-                    className="h-10 pl-9"
-                  />
-                </div>
-                {quickProducts.length > 0 && (
-                  <div className="flex flex-wrap gap-2 rounded-lg border bg-muted/30 p-2">
-                    {quickProducts.map((product) => (
-                      <Button
-                        key={product.id}
-                        type="button"
-                        variant="secondary"
-                        size="sm"
-                        className="h-8 max-w-full gap-1"
-                        onClick={() => toggleQuickProduct(product.id)}
-                        title="Tezkor ro'yxatdan olib tashlash"
-                      >
-                        <span className="truncate">{product.name}</span>
-                        <X className="h-3.5 w-3.5" />
-                      </Button>
-                    ))}
-                  </div>
-                )}
-                {quickProductCandidates.length === 0 ? (
-                  <div className="rounded-lg border border-dashed p-4 text-sm text-muted-foreground">
-                    Mahsulot topilmadi.
-                  </div>
-                ) : (
-                  <div className="grid min-h-0 flex-1 grid-cols-1 gap-2 overflow-y-auto pb-4 pr-1">
-                    {quickProductCandidates.map((product, index) => {
-                      const codeMeta = formatPosProductCodeMeta(product);
-                      return (
-                      <button
-                        key={product.id}
-                        type="button"
-                        className={cn(
-                          'rounded-lg border bg-background p-3 text-left transition-colors hover:bg-muted',
-                          quickProductIds.includes(product.id) && 'border-primary bg-primary/5'
-                        )}
-                        onClick={() => toggleQuickProduct(product.id)}
-                      >
-                        <div className="flex items-start justify-between gap-3">
-                          <div className="min-w-0">
-                            <p className="truncate text-sm font-medium">{product.name}</p>
-                            <p className="mt-1 truncate text-xs text-muted-foreground" title={codeMeta || undefined}>
-                              {codeMeta || '—'}
-                              {index < 8 ? ` · Alt+${index + 1}` : ''}
-                            </p>
-                          </div>
-                          <div className="shrink-0 text-right">
-                            <span className="block text-sm font-semibold text-primary">
-                              {formatMoneyUZS(Number(product.sale_price || 0))}
-                            </span>
-                            <Badge variant={quickProductIds.includes(product.id) ? 'default' : 'outline'} className="mt-1">
-                              {quickProductIds.includes(product.id) ? 'Tanlangan' : 'Belgilash'}
-                            </Badge>
-                          </div>
-                        </div>
-                      </button>
-                      );
-                    })}
-                  </div>
-                )}
-              </section>
               )}
-
-              {categorySheetMode === 'categories' && (
+              {quickProductCandidates.length === 0 ? (
+                <div className="rounded-md border border-dashed px-3 py-6 text-center text-sm text-muted-foreground">
+                  Mahsulot topilmadi.
+                </div>
+              ) : (
+                <div className="min-h-0 flex-1 space-y-0.5 overflow-y-auto pr-0.5">
+                  {quickProductCandidates.map((product) => {
+                    const codeMeta = formatPosProductCodeMeta(product);
+                    const selectedIndex = quickProductIds.indexOf(product.id);
+                    const isSelected = selectedIndex >= 0;
+                    return (
+                      <div
+                        key={product.id}
+                        className={cn(
+                          'flex w-full items-center gap-1 rounded-md border px-1 py-1 transition-colors',
+                          isSelected
+                            ? 'border-primary/40 bg-primary/10'
+                            : 'border-transparent bg-transparent hover:bg-muted',
+                        )}
+                      >
+                        <button
+                          type="button"
+                          aria-pressed={isSelected}
+                          className="flex min-w-0 flex-1 items-center gap-2 rounded-md px-1 py-0.5 text-left"
+                          title={
+                            isSelected
+                              ? 'Savatga qo‘shish'
+                              : 'Tezkor ro‘yxatga qo‘shish'
+                          }
+                          onClick={() => {
+                            if (isSelected) {
+                              void requestAddToCart(product);
+                              return;
+                            }
+                            toggleQuickProduct(product.id);
+                          }}
+                        >
+                          <div className="min-w-0 flex-1">
+                            <div className="flex items-baseline justify-between gap-2">
+                              <p className="truncate text-sm font-medium leading-tight">{product.name}</p>
+                              <span className="shrink-0 text-xs font-semibold tabular-nums text-primary">
+                                {formatMoneyUZS(Number(product.sale_price || 0))}
+                              </span>
+                            </div>
+                            <div className="mt-0.5 flex min-w-0 items-center gap-1.5 text-[11px] leading-tight text-muted-foreground">
+                              <span className="truncate" title={codeMeta || undefined}>
+                                {codeMeta || '—'}
+                              </span>
+                              {isSelected && selectedIndex < MAX_POS_QUICK_PRODUCTS && (
+                                <kbd className="shrink-0 rounded border bg-muted px-1 py-px font-mono text-[10px] leading-4">
+                                  Alt+{selectedIndex + 1}
+                                </kbd>
+                              )}
+                            </div>
+                          </div>
+                          <span
+                            className={cn(
+                              'flex h-6 w-6 shrink-0 items-center justify-center rounded-md border',
+                              isSelected
+                                ? 'border-primary bg-primary text-primary-foreground'
+                                : 'border-border text-muted-foreground',
+                            )}
+                            aria-hidden
+                          >
+                            {isSelected ? <Check className="h-3.5 w-3.5" /> : <Plus className="h-3.5 w-3.5" />}
+                          </span>
+                        </button>
+                        {isSelected && (
+                          <button
+                            type="button"
+                            className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground"
+                            title="Tezkor ro‘yxatdan olib tashlash"
+                            aria-label={`${product.name} — tezkor ro‘yxatdan olib tashlash`}
+                            onClick={() => toggleQuickProduct(product.id)}
+                          >
+                            <X className="h-3.5 w-3.5" />
+                          </button>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </section>
+          ) : (
+            <div className="min-h-0 flex-1 overflow-y-auto px-5 py-4">
               <section className="space-y-2">
                 <div className="flex items-center gap-2 text-sm font-semibold">
                   <FolderTree className="h-4 w-4 text-primary" />
@@ -8940,10 +9095,8 @@ export default function POSTerminal() {
                   ))}
                 </div>
               </section>
-              )}
-
             </div>
-          </div>
+          )}
         </SheetContent>
       </Sheet>
 
@@ -8960,6 +9113,15 @@ export default function POSTerminal() {
         onRestore={handleRestoreOrder}
         onCancel={handleCancelHeldOrder}
         onRename={handleRenameHeldOrder}
+      />
+
+      <ExpenseFormDialog
+        open={expenseDialogOpen}
+        onOpenChange={setExpenseDialogOpen}
+        expense={null}
+        onSuccess={() => {
+          setExpenseDialogOpen(false);
+        }}
       />
 
       <Numpad

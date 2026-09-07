@@ -1758,6 +1758,7 @@ class ReportsService {
           o.warehouse_id,
           NULL AS price_tier_id,
           COALESCE(u.full_name, u.username, p.full_name, p.username, o.cashier_id) AS cashier_name,
+          ${this._hasTable('customers') ? `COALESCE(cust.name, '')` : `''`} AS customer_name,
           ${paymentExpr} AS payment_method,
           o.sales_channel,
           o.sale_source AS order_source,
@@ -1773,6 +1774,7 @@ class ReportsService {
         LEFT JOIN pay_methods pm ON pm.order_id = o.source_id AND o.sale_source = 'pos'
         LEFT JOIN users u ON u.id = COALESCE(o.user_id, o.cashier_id)
         LEFT JOIN profiles p ON p.id = COALESCE(o.user_id, o.cashier_id)
+        ${this._hasTable('customers') ? 'LEFT JOIN customers cust ON cust.id = o.customer_id' : ''}
         ${where}
         ORDER BY o.created_at DESC
       `
@@ -1780,8 +1782,13 @@ class ReportsService {
       .all(params)
       .filter((row) => {
         if (!paymentMethod || paymentMethod === 'all') return true;
-        if (paymentMethod === 'mixed') return String(row.payment_method || '').toLowerCase() === 'mixed';
-        return String(row.payment_method || '').toLowerCase() === String(paymentMethod).toLowerCase();
+        const method = String(row.payment_method || '').toLowerCase();
+        if (paymentMethod === 'mixed') return method === 'mixed';
+        const wanted = String(paymentMethod).toLowerCase();
+        if (wanted === 'credit' || wanted === 'nasiya' || wanted === 'on_credit' || wanted === 'debt' || wanted === 'qarz') {
+          return /(credit|debt|nasiya|qarz|loan|on_credit|balance)/i.test(method);
+        }
+        return method === wanted;
       });
 
     const completed = orders.filter((o) =>
@@ -2074,6 +2081,275 @@ class ReportsService {
   getDailySalesSummary(filters = {}) {
     const report = this.getDailySalesReportSQL(filters);
     return { filters: report.filters, summary: report.summary };
+  }
+
+  /**
+   * Period list of customer AR operations from customer_ledger:
+   * debt collections (receivePayment / DEBT_PAYMENT_RECEIVED), credit/nasiya
+   * sales, optional advances, and cash loans issued.
+   *
+   * filters: { date_from?, date_to?, warehouse_id?, cashier_id?, op_type? }
+   * op_type: all | debt_payment | credit_sale | advance | loan_issued
+   */
+  getCustomerDebtOperations(filters = {}) {
+    const dateFrom = filters.date_from ? this._ymd(filters.date_from) : this._ymd(new Date());
+    const dateTo = filters.date_to ? this._ymd(filters.date_to) : dateFrom;
+    const cashierId = filters.cashier_id || null;
+    const opType = String(filters.op_type || filters.type || 'all').toLowerCase().trim();
+    const isAllWarehouses = String(filters.warehouse_id || '').toUpperCase() === 'ALL' || !filters.warehouse_id;
+    const warehouseId = isAllWarehouses ? null : filters.warehouse_id || null;
+
+    const empty = {
+      filters: {
+        date_from: dateFrom,
+        date_to: dateTo,
+        warehouse_id: warehouseId || 'ALL',
+        cashier_id: cashierId,
+        op_type: opType || 'all',
+      },
+      rows: [],
+      summary: {
+        debt_collected: 0,
+        debt_collected_count: 0,
+        credit_issued: 0,
+        credit_issued_count: 0,
+        advance_received: 0,
+        advance_received_count: 0,
+        net: 0,
+      },
+    };
+
+    if (!this._hasTable('customer_ledger')) {
+      return empty;
+    }
+
+    const ledgerCols = new Set(
+      (this.db.prepare(`PRAGMA table_info(customer_ledger)`).all() || []).map((c) => c.name)
+    );
+    const hasOpCode = ledgerCols.has('op_code');
+    const hasMethod = ledgerCols.has('method');
+    const hasCurrency = ledgerCols.has('currency');
+    const hasDebtAudit = ledgerCols.has('debt_before');
+    const hasCustomers = this._hasTable('customers');
+    const hasUsers = this._hasTable('users');
+    const hasProfiles = this._hasTable('profiles');
+    const hasOrders = this._hasTable('orders');
+    const hasCp = this._hasTable('customer_payments');
+
+    const cpCols = hasCp
+      ? new Set((this.db.prepare(`PRAGMA table_info(customer_payments)`).all() || []).map((c) => c.name))
+      : new Set();
+    const hasCpFx = cpCols.has('fx_rate');
+    const hasCpUuid = cpCols.has('payment_uuid');
+    const hasOrderFx =
+      hasOrders &&
+      !!(this.db.prepare(`SELECT 1 AS ok FROM pragma_table_info('orders') WHERE name = 'fx_rate' LIMIT 1`).get()?.ok);
+
+    const opCodeExpr = hasOpCode ? `UPPER(TRIM(COALESCE(cl.op_code, '')))` : `''`;
+    const kindExpr = `
+      CASE
+        WHEN ${opCodeExpr} IN ('DEBT_PAYMENT_RECEIVED', 'CUSTOMER_LOAN_REPAID', 'CUSTOMER_PAYMENT') THEN 'debt_payment'
+        WHEN ${opCodeExpr} IN ('CREDIT_SALE', 'SALE_ON_CREDIT') THEN 'credit_sale'
+        WHEN ${opCodeExpr} IN ('CUSTOMER_LOAN_ISSUED') THEN 'loan_issued'
+        WHEN ${opCodeExpr} IN ('ADVANCE_RECEIVED') THEN 'advance'
+        WHEN LOWER(TRIM(COALESCE(cl.type, ''))) = 'payment_in' THEN 'debt_payment'
+        WHEN LOWER(TRIM(COALESCE(cl.type, ''))) = 'payment_out' THEN 'loan_issued'
+        WHEN LOWER(TRIM(COALESCE(cl.type, ''))) = 'sale' AND COALESCE(cl.amount, 0) < -0.009 THEN 'credit_sale'
+        ELSE NULL
+      END
+    `;
+
+    const currencyExpr = hasCurrency ? `UPPER(TRIM(COALESCE(cl.currency, 'UZS')))` : `'UZS'`;
+    const fxExpr = `COALESCE(${hasCpFx ? 'cp.fx_rate' : 'NULL'}, ${hasOrderFx ? 'o.fx_rate' : 'NULL'}, ${
+      hasOrderFx && hasCp ? 'o2.fx_rate' : 'NULL'
+    }, 0)`;
+    const amountUzsExpr = `
+      CASE
+        WHEN ${currencyExpr} = 'USD' THEN ABS(COALESCE(cl.amount, 0)) * ${fxExpr}
+        ELSE ABS(COALESCE(cl.amount, 0))
+      END
+    `;
+
+    const methodExpr = hasMethod
+      ? `COALESCE(NULLIF(TRIM(cl.method), ''), ${hasCp ? 'NULLIF(TRIM(cp.payment_method), \'\')' : 'NULL'}, 'n/a')`
+      : hasCp
+        ? `COALESCE(NULLIF(TRIM(cp.payment_method), ''), 'n/a')`
+        : `'n/a'`;
+
+    const customerNameExpr = hasCustomers ? `COALESCE(cust.name, cl.customer_id)` : `cl.customer_id`;
+    const cashierNameExpr =
+      hasUsers || hasProfiles
+        ? `COALESCE(${hasUsers ? 'u.full_name, u.username,' : ''} ${
+            hasProfiles ? 'pr.full_name, pr.username,' : ''
+          } cl.created_by)`
+        : `cl.created_by`;
+
+    const orderNumberExpr = hasOrders
+      ? `COALESCE(o.order_number, ${hasCp ? 'o2.order_number' : 'NULL'}, cl.ref_no)`
+      : `cl.ref_no`;
+
+    const params = [];
+    const dateExpr = this._tzDateExpr('cl.created_at');
+    let where = `WHERE ${kindExpr} IS NOT NULL`;
+    where += ` AND ${dateExpr} >= date(?)`;
+    params.push(dateFrom);
+    where += ` AND ${dateExpr} <= date(?)`;
+    params.push(dateTo);
+
+    if (cashierId) {
+      where += ` AND cl.created_by = ?`;
+      params.push(cashierId);
+    }
+
+    if (warehouseId && hasOrders) {
+      where += ` AND (
+        COALESCE(o.warehouse_id, ${hasCp ? 'o2.warehouse_id' : 'NULL'}) = ?
+        OR (o.id IS NULL${hasCp ? ' AND o2.id IS NULL' : ''})
+      )`;
+      params.push(warehouseId);
+    }
+
+    const cpJoin = hasCp
+      ? `LEFT JOIN customer_payments cp ON (
+          cp.id = cl.ref_id
+          ${hasCpUuid ? `OR cl.ref_id = ('pay-' || cp.payment_uuid)` : ''}
+          OR (cl.ref_no IS NOT NULL AND cp.payment_number = cl.ref_no)
+        )`
+      : '';
+
+    const orderJoin = hasOrders ? `LEFT JOIN orders o ON o.id = cl.ref_id` : '';
+    const orderFromPayJoin =
+      hasOrders && hasCp ? `LEFT JOIN orders o2 ON o2.id = cp.order_id` : '';
+    const customerJoin = hasCustomers ? `LEFT JOIN customers cust ON cust.id = cl.customer_id` : '';
+    const userJoin = hasUsers ? `LEFT JOIN users u ON u.id = cl.created_by` : '';
+    const profileJoin = hasProfiles ? `LEFT JOIN profiles pr ON pr.id = cl.created_by` : '';
+
+    const sql = `
+      SELECT
+        cl.id,
+        cl.created_at,
+        cl.customer_id,
+        ${customerNameExpr} AS customer_name,
+        cl.type AS ledger_type,
+        ${hasOpCode ? 'cl.op_code' : 'NULL'} AS op_code,
+        (${kindExpr}) AS kind,
+        COALESCE(cl.amount, 0) AS amount,
+        (${amountUzsExpr}) AS amount_uzs,
+        ${hasCurrency ? 'cl.currency' : `'UZS'`} AS currency,
+        ${methodExpr} AS payment_method,
+        cl.created_by AS cashier_id,
+        ${cashierNameExpr} AS cashier_name,
+        cl.ref_id,
+        cl.ref_no,
+        ${orderNumberExpr} AS order_number,
+        ${hasOrders ? 'COALESCE(o.id, ' + (hasCp ? 'o2.id' : 'NULL') + ')' : 'NULL'} AS order_id,
+        cl.note,
+        ${hasDebtAudit ? 'cl.debt_before, cl.debt_after, cl.advance_before, cl.advance_after' : 'NULL AS debt_before, NULL AS debt_after, NULL AS advance_before, NULL AS advance_after'}
+      FROM customer_ledger cl
+      ${customerJoin}
+      ${userJoin}
+      ${profileJoin}
+      ${orderJoin}
+      ${cpJoin}
+      ${orderFromPayJoin}
+      ${where}
+      ORDER BY cl.created_at DESC, cl.id DESC
+    `;
+
+    let raw = [];
+    try {
+      raw = this.db.prepare(sql).all(...params) || [];
+    } catch (err) {
+      console.warn('[reports] getCustomerDebtOperations query failed:', err?.message || err);
+      return empty;
+    }
+
+    const rows = [];
+    const summary = {
+      debt_collected: 0,
+      debt_collected_count: 0,
+      credit_issued: 0,
+      credit_issued_count: 0,
+      advance_received: 0,
+      advance_received_count: 0,
+      net: 0,
+    };
+
+    for (const row of raw) {
+      const kind = String(row.kind || '');
+      if (opType && opType !== 'all' && kind !== opType) continue;
+
+      const amountUzs = Number(row.amount_uzs || 0) || 0;
+      const currency = String(row.currency || 'UZS').toUpperCase();
+      const nativeAmt = Math.abs(Number(row.amount || 0) || 0);
+      const fx = currency === 'USD' && nativeAmt > 0.009 ? amountUzs / nativeAmt : 1;
+
+      let collectedPortion = 0;
+      let advancePortion = 0;
+      let issuedPortion = 0;
+      if (row.debt_before != null && row.debt_after != null) {
+        const debtBefore = Number(row.debt_before || 0) || 0;
+        const debtAfter = Number(row.debt_after || 0) || 0;
+        const advBefore = Number(row.advance_before || 0) || 0;
+        const advAfter = Number(row.advance_after || 0) || 0;
+        collectedPortion = Math.max(0, debtBefore - debtAfter) * fx;
+        advancePortion = Math.max(0, advAfter - advBefore) * fx;
+        issuedPortion = Math.max(0, debtAfter - debtBefore) * fx;
+      }
+
+      if (kind === 'debt_payment') {
+        const collected = collectedPortion > 0.009 ? collectedPortion : amountUzs;
+        summary.debt_collected += collected;
+        summary.debt_collected_count += 1;
+        if (advancePortion > 0.009) {
+          summary.advance_received += advancePortion;
+        }
+      } else if (kind === 'advance') {
+        summary.advance_received += amountUzs;
+        summary.advance_received_count += 1;
+      } else if (kind === 'credit_sale' || kind === 'loan_issued') {
+        const issued = issuedPortion > 0.009 ? issuedPortion : amountUzs;
+        summary.credit_issued += issued;
+        summary.credit_issued_count += 1;
+      }
+
+      rows.push({
+        id: row.id,
+        occurred_at: row.created_at,
+        customer_id: row.customer_id,
+        customer_name: row.customer_name || row.customer_id,
+        kind,
+        op_code: row.op_code || null,
+        ledger_type: row.ledger_type || null,
+        amount: nativeAmt,
+        amount_uzs: amountUzs,
+        currency,
+        payment_method: row.payment_method || 'n/a',
+        cashier_id: row.cashier_id || null,
+        cashier_name: row.cashier_name || row.cashier_id || '',
+        ref_id: row.ref_id || null,
+        ref_no: row.ref_no || null,
+        order_id: row.order_id || null,
+        order_number: row.order_number || row.ref_no || null,
+        note: row.note || null,
+      });
+    }
+
+    summary.debt_collected = Math.round(summary.debt_collected * 100) / 100;
+    summary.credit_issued = Math.round(summary.credit_issued * 100) / 100;
+    summary.advance_received = Math.round(summary.advance_received * 100) / 100;
+    summary.net = Math.round((summary.debt_collected - summary.credit_issued) * 100) / 100;
+
+    return {
+      filters: empty.filters,
+      rows,
+      summary,
+    };
+  }
+
+  /** Preload/RPC alias. */
+  customerDebtOperations(filters = {}) {
+    return this.getCustomerDebtOperations(filters);
   }
 
   /**

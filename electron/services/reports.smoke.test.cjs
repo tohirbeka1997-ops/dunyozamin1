@@ -156,6 +156,46 @@ async function runAsync(name, fn, validate) {
     );
     ok(`seed: savdo ${saleTotal} (${today})`);
 
+    const creditCustomer = customers.create({
+      name: 'Debt Ops Smoke Customer',
+      phone: `+99890${String(Date.now()).slice(-7)}`,
+      type: 'individual',
+      allow_credit: 1,
+      allow_debt: 1,
+      credit_limit: 50000000,
+    });
+    const creditAmt = 1000;
+    sales.completePOSOrder(
+      {
+        total_amount: creditAmt,
+        shift_id: shift.id,
+        user_id: ADMIN,
+        customer_id: creditCustomer.id,
+      },
+      [
+        {
+          product_id: product.id,
+          product_name: product.name,
+          quantity: 1,
+          qty_sale: 1,
+          qty_base: 1,
+          unit_price: creditAmt,
+          line_total: creditAmt,
+        },
+      ],
+      [{ payment_method: 'credit', amount: creditAmt }],
+    );
+    const debtPayAmt = 600;
+    customers.receivePayment({
+      customer_id: creditCustomer.id,
+      amount: debtPayAmt,
+      payment_method: 'cash',
+      received_by: ADMIN,
+      operation: 'payment_in',
+      source: 'test',
+    });
+    ok(`seed: nasiya ${creditAmt} + qarz to‘lovi ${debtPayAmt}`);
+
     // --- Savdo ---
     runSync('dailySales', () => reports.getDailySales(today, WH), (r) => {
       assertObject(r, 'dailySales');
@@ -165,6 +205,18 @@ async function runAsync(name, fn, validate) {
     });
     runSync('dailySalesSQL', () => reports.getDailySalesReportSQL(filtersToday));
     runSync('dailySalesSummary', () => reports.getDailySalesSummary(filters), assertObject);
+    runSync('customerDebtOperations', () => reports.getCustomerDebtOperations(filtersToday), (r) => {
+      assertObject(r, 'customerDebtOperations');
+      assertArray(r.rows, 'customerDebtOperations.rows');
+      assertObject(r.summary, 'customerDebtOperations.summary');
+      assert.ok(Number(r.summary.credit_issued) >= creditAmt - 1, 'credit_issued includes nasiya');
+      assert.ok(Number(r.summary.debt_collected) >= debtPayAmt - 1, 'debt_collected includes receivePayment');
+      const creditRow = r.rows.find((x) => String(x.kind) === 'credit_sale');
+      const payRow = r.rows.find((x) => String(x.kind) === 'debt_payment');
+      assert.ok(creditRow, 'nasiya savdo qatori');
+      assert.ok(payRow, 'qarz to‘lovi qatori');
+      assert.ok(String(payRow.customer_name || '').includes('Debt Ops'), 'customer name on payment');
+    });
     runSync('topProducts', () => reports.getTopProducts({ ...filters, limit: 5 }), assertArray);
     runSync('productSales', () => reports.getProductSalesReport(filters), assertArray);
     runSync('customerSalesReport', () => reports.getCustomerSalesReport(filters), assertArray);

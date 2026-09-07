@@ -332,6 +332,7 @@ contextBridge.exposeInMainWorld('posApi', {
     // Existing reports
     dailySales: (date, warehouseId) => invoke('pos:reports:dailySales', date, warehouseId),
     dailySalesSQL: (filters) => invoke('pos:reports:dailySalesSQL', filters),
+    customerDebtOperations: (filters) => invoke('pos:reports:customerDebtOperations', filters),
     topProducts: (filters) => invoke('pos:reports:topProducts', filters),
     productSales: (filters) => invoke('pos:reports:productSales', filters),
     promotionUsage: (filters) => invoke('pos:reports:promotionUsage', filters),

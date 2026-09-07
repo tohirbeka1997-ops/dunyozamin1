@@ -29,6 +29,9 @@
       "scale_offline_hint": "Весы не подключены. Введите вес вручную.",
       "print_offline_before_receipt": "Агент печати offline. Чек может открыться в браузере."
     },
+    "close_shift": {
+      "expected_cash_formula": "Открытие + Наличные продажи + Нал. на баланс клиента + Ручной приход − Наличные возвраты − Наличные расходы − Ручной расход"
+    },
     "search_placeholder": "Название, SKU, штрих-код… (F2 · ↓/F4 · Enter)",
     "brand_label": "Бренд",
     "article_label": "Артикул",
@@ -101,6 +104,9 @@
     "rail_hint_f7": "F7 — скидка",
     "rail_hint_f8": "F8 — возврат",
     "rail_hint_f9": "F9 — оплата",
+    "rail_expense": "Расход",
+    "print_auto_failed_title": "Чек не напечатан",
+    "print_auto_failed_desc": "{{msg}} Нажмите F10, чтобы повторить.",
     "hotkey_cost_toggle": "Себестоимость (показать/скрыть)",
     "hotkey_customer_focus": "Выбор клиента",
     "hotkey_discount_focus": "Скидка",
@@ -454,6 +460,29 @@
     "updated_at": "Обновлено",
     "language_changed": "Язык был изменен"
   },
+  "quickActions": {
+    "aria_label": "Быстрые действия",
+    "new_customer": "Новый клиент",
+    "receive_payment": "Принять оплату",
+    "pick_customer_title": "Выберите клиента",
+    "pick_customer_desc": "Выберите клиента для приёма оплаты",
+    "continue": "Продолжить",
+    "new_expense": "Новый расход",
+    "new_po": "Новая закупка",
+    "receive_goods": "Приёмка",
+    "po_due": "К оплате",
+    "new_product": "Новый товар",
+    "bulk_price": "Массовая цена",
+    "bulk_delete": "Массовое удаление",
+    "bulk_delete_count": "Удалить ({{count}})",
+    "show_selected": "Выбранные",
+    "show_selected_count": "Выбранные ({{count}})",
+    "new_return": "Новый возврат",
+    "open_pos": "POS",
+    "new_revision": "Инвентаризация",
+    "open_revision": "Открытая инвентаризация",
+    "low_stock": "Мало на складе"
+  },
   "navigation": {
     "dashboard": "Домашняя страница",
     "smeta": "Оценивать",
@@ -583,6 +612,16 @@
     "create_new_product": "Создать новый продукт",
     "product_deleted": "Товар успешно удален",
     "archived": "Товар заархивирован",
+    "bulk_delete_title": "Массовое удаление",
+    "bulk_delete_confirm": "Будет удалено {{count}} товаров. С историей — деактивация, без истории — полное удаление. Продолжить?",
+    "bulk_delete_done": "Деактивировано: {{soft}}, удалено: {{hard}}, ошибок: {{failed}}",
+    "bulk_delete_need_selection": "Сначала отметьте товары галочками, затем нажмите удалить.",
+    "show_selected_hint": "Показать только выбранные товары",
+    "show_all_products": "Показать все",
+    "showing_selected": "Показаны только выбранные товары ({{count}})",
+    "clear_selection": "Сбросить выбор",
+    "select_all": "Выбрать все",
+    "select_product": "Выбрать",
     "restored": "Товар был возвращен",
     "restore": "Возвращаться",
     "active_section": "Продукты",
@@ -1520,6 +1559,48 @@
     "title": "Отчеты",
     "subtitle": "Просмотр различных отчетов",
     "daily_sales": "Ежедневная распродажа",
+    "debt_operations": "Оплаты долга и насия",
+    "daily_sales_page": {
+      "debt_ops_hint": "Оплаты долга клиентов видны здесь. Полный отчёт за период — на отдельной странице.",
+      "open_debt_ops": "Полный отчёт"
+    },
+    "debt_operations_page": {
+      "title": "Оплаты долга и насия",
+      "subtitle": "Кто погасил долг и кому дали в долг за выбранный период",
+      "empty": "За выбранный период оплат долга или продаж в долг нет",
+      "filters": {
+        "from": "Дата начала",
+        "to": "Дата окончания",
+        "type": "Тип",
+        "all_types": "Все типы",
+        "cashier": "Кассир"
+      },
+      "kinds": {
+        "debt_payment": "Оплата долга",
+        "credit_sale": "Продажа в долг",
+        "loan_issued": "Займ выдан",
+        "advance": "Аванс"
+      },
+      "summary": {
+        "debt_collected": "Долг собран",
+        "credit_issued": "Насия выдана",
+        "advance_received": "Аванс",
+        "net": "Нетто (собрано − насия)",
+        "count": "{{count}} операций"
+      },
+      "table": {
+        "datetime": "Дата / время",
+        "customer": "Клиент",
+        "type": "Тип",
+        "amount": "Сумма",
+        "method": "Способ",
+        "cashier": "Кассир",
+        "ref": "Документ"
+      },
+      "errors": {
+        "load_failed": "Не удалось загрузить операции по долгу"
+      }
+    },
     "product_sales": "Продажи продукции",
     "customer_sales": "Продажи клиентам",
     "stock_levels": "Уровень склада",

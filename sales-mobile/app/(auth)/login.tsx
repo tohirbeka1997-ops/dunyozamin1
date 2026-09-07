@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import {
   ActivityIndicator,
   KeyboardAvoidingView,
@@ -13,17 +13,62 @@ import { useRouter } from 'expo-router';
 import { APP_VERSION_LABEL, BOOT_BANNER } from '@/lib/bootBanner';
 import { t } from '@/i18n';
 
+const REMEMBER_KEYS = {
+  enabled: 'dz_staff_remember_login',
+  username: 'dz_staff_saved_username',
+  password: 'dz_staff_saved_password',
+} as const;
+
+const DEFAULT_TENANT = process.env.EXPO_PUBLIC_DEFAULT_TENANT || 'default';
+
 export default function LoginScreen() {
   const router = useRouter();
-  const [tenant, setTenant] = useState(process.env.EXPO_PUBLIC_DEFAULT_TENANT || 'default');
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
+  const [rememberLogin, setRememberLogin] = useState(true);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const { getItem } = await import('@/lib/secureStorage');
+        const [enabled, savedUser, savedPass] = await Promise.all([
+          getItem(REMEMBER_KEYS.enabled),
+          getItem(REMEMBER_KEYS.username),
+          getItem(REMEMBER_KEYS.password),
+        ]);
+        if (cancelled) return;
+        const on = enabled !== '0';
+        setRememberLogin(on);
+        if (on && savedUser) setUsername(savedUser);
+        if (on && savedPass) setPassword(savedPass);
+      } catch {
+        // ignore — empty form is fine
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  async function persistRememberedCredentials() {
+    const { setItem, deleteItem } = await import('@/lib/secureStorage');
+    if (rememberLogin) {
+      await setItem(REMEMBER_KEYS.enabled, '1');
+      await setItem(REMEMBER_KEYS.username, username.trim());
+      await setItem(REMEMBER_KEYS.password, password);
+    } else {
+      await setItem(REMEMBER_KEYS.enabled, '0');
+      await deleteItem(REMEMBER_KEYS.username);
+      await deleteItem(REMEMBER_KEYS.password);
+    }
+  }
+
   async function handleLogin() {
     setError(null);
-    if (!tenant.trim() || !username.trim() || !password) {
+    if (!username.trim() || !password) {
       setError(t('credentialsRequired'));
       return;
     }
@@ -39,13 +84,14 @@ export default function LoginScreen() {
         ]);
       const deviceId = await getOrCreateDeviceId();
       const result = await staffLogin({
-        tenant: tenant.trim(),
+        tenant: DEFAULT_TENANT,
         username: username.trim(),
         password,
         device_id: deviceId,
         platform: Platform.OS,
       });
       await saveSession(result, result.user);
+      await persistRememberedCredentials();
       schedulePushRegistration();
       router.replace('/(tabs)/sell');
     } catch (e) {
@@ -73,16 +119,6 @@ export default function LoginScreen() {
         <Text style={styles.title}>{t('appName')}</Text>
         <Text style={styles.subtitle}>Onlayn buyurtmalar</Text>
 
-        <Text style={styles.label}>{t('tenant')}</Text>
-        <TextInput
-          style={styles.input}
-          value={tenant}
-          onChangeText={setTenant}
-          autoCapitalize="none"
-          autoCorrect={false}
-          placeholder="default"
-        />
-
         <Text style={styles.label}>{t('username')}</Text>
         <TextInput
           style={styles.input}
@@ -90,6 +126,8 @@ export default function LoginScreen() {
           onChangeText={setUsername}
           autoCapitalize="none"
           keyboardType="email-address"
+          autoComplete="username"
+          textContentType="username"
           placeholder="email yoki username"
         />
 
@@ -99,8 +137,22 @@ export default function LoginScreen() {
           value={password}
           onChangeText={setPassword}
           secureTextEntry
+          autoComplete="password"
+          textContentType="password"
           placeholder="••••••••"
         />
+
+        <Pressable
+          style={styles.rememberRow}
+          onPress={() => setRememberLogin((v) => !v)}
+          accessibilityRole="checkbox"
+          accessibilityState={{ checked: rememberLogin }}
+        >
+          <View style={[styles.checkbox, rememberLogin && styles.checkboxOn]}>
+            {rememberLogin ? <Text style={styles.checkboxMark}>✓</Text> : null}
+          </View>
+          <Text style={styles.rememberLabel}>{t('rememberLogin')}</Text>
+        </Pressable>
 
         {error ? <Text style={styles.error}>{error}</Text> : null}
 
@@ -165,6 +217,37 @@ const styles = StyleSheet.create({
     paddingVertical: 12,
     fontSize: 16,
     backgroundColor: '#f8fafc',
+  },
+  rememberRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    marginTop: 16,
+  },
+  checkbox: {
+    width: 22,
+    height: 22,
+    borderRadius: 6,
+    borderWidth: 1.5,
+    borderColor: '#94a3b8',
+    backgroundColor: '#fff',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  checkboxOn: {
+    backgroundColor: '#166534',
+    borderColor: '#166534',
+  },
+  checkboxMark: {
+    color: '#fff',
+    fontSize: 13,
+    fontWeight: '700',
+    lineHeight: 16,
+  },
+  rememberLabel: {
+    fontSize: 14,
+    color: '#334155',
+    fontWeight: '500',
   },
   button: {
     marginTop: 24,

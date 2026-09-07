@@ -126,14 +126,49 @@ export function changeQty(productId: string, delta: number): void {
   cart = cart
     .map((l) => {
       if (l.product.id !== productId) return l;
-      const next = { ...l, quantity: l.quantity + delta };
-      if (next.quantity <= 0) return null;
+      const stock = Number(l.product.current_stock ?? 0);
+      let nextQty = l.quantity + delta;
+      if (nextQty <= 0) return null;
+      // Match addToCart: never exceed known stock (stock<=0 means unknown/unlimited).
+      if (stock > 0) nextQty = Math.min(nextQty, stock);
+      if (nextQty === l.quantity) return l;
+      const next = { ...l, quantity: nextQty };
       const d = lineDiscount(next);
       return d > 0
         ? { product: next.product, quantity: next.quantity, discount_amount: d }
         : { product: next.product, quantity: next.quantity };
     })
     .filter((l): l is CartLine => l != null);
+  emitAndPersist();
+}
+
+/** Set absolute quantity (0 or less removes the line). Capped by stock when known. */
+export function setQty(productId: string, quantity: number): void {
+  const raw = Math.floor(Number(quantity) || 0);
+  if (raw <= 0) {
+    removeLine(productId);
+    return;
+  }
+  cart = cart
+    .map((l) => {
+      if (l.product.id !== productId) return l;
+      const stock = Number(l.product.current_stock ?? 0);
+      const nextQty = stock > 0 ? Math.min(raw, stock) : raw;
+      if (nextQty === l.quantity) return l;
+      const next = { ...l, quantity: nextQty };
+      const d = lineDiscount(next);
+      return d > 0
+        ? { product: next.product, quantity: next.quantity, discount_amount: d }
+        : { product: next.product, quantity: next.quantity };
+    })
+    .filter((l): l is CartLine => l != null);
+  emitAndPersist();
+}
+
+export function removeLine(productId: string): void {
+  const next = cart.filter((l) => l.product.id !== productId);
+  if (next.length === cart.length) return;
+  cart = next;
   emitAndPersist();
 }
 
@@ -177,6 +212,15 @@ export function useCart(): CartLine[] {
 export function useCartItemCount(): number {
   const lines = useCart();
   return lines.reduce((sum, l) => sum + l.quantity, 0);
+}
+
+/** Live quantity for one product id (0 if not in cart). */
+export function useCartQuantity(productId: string): number {
+  return useSyncExternalStore(
+    subscribe,
+    () => getCartQuantity(productId),
+    () => getCartQuantity(productId),
+  );
 }
 
 export function useCartSubtotal(): number {

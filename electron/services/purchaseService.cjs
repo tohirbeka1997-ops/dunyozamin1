@@ -458,7 +458,7 @@ class PurchaseService {
         }
       }
       const landedUnit = (Number(it.unit_cost || 0) || 0) + (orderedQty > 0 ? allocated / orderedQty : 0);
-      if (!Number.isFinite(landedUnit) || landedUnit < 0) continue;
+      if (!Number.isFinite(landedUnit) || landedUnit <= 0) continue;
       this.db.prepare(`UPDATE products SET purchase_price = ?, updated_at = ? WHERE id = ?`).run(landedUnit, now, it.product_id);
       if (this.cacheService?.invalidateProduct) this.cacheService.invalidateProduct(it.product_id);
       if (this.cacheService?.invalidatePricesForProduct) this.cacheService.invalidatePricesForProduct(it.product_id);
@@ -1474,12 +1474,15 @@ class PurchaseService {
     }
     for (const [pid, row] of picked) {
       const uc = Number(row.unit_cost || 0);
-      try {
-        this.db.prepare(`UPDATE products SET purchase_price = ?, updated_at = ? WHERE id = ?`).run(uc, now, pid);
-        if (this.cacheService?.invalidateProduct) this.cacheService.invalidateProduct(pid);
-        if (this.cacheService?.invalidatePricesForProduct) this.cacheService.invalidatePricesForProduct(pid);
-      } catch (e) {
-        console.warn('[PurchaseService] sync purchase_price from PO lines:', e?.message);
+      // Do not wipe catalog purchase_price with empty/zero line cost.
+      if (Number.isFinite(uc) && uc > 0) {
+        try {
+          this.db.prepare(`UPDATE products SET purchase_price = ?, updated_at = ? WHERE id = ?`).run(uc, now, pid);
+          if (this.cacheService?.invalidateProduct) this.cacheService.invalidateProduct(pid);
+          if (this.cacheService?.invalidatePricesForProduct) this.cacheService.invalidatePricesForProduct(pid);
+        } catch (e) {
+          console.warn('[PurchaseService] sync purchase_price from PO lines:', e?.message);
+        }
       }
       const sp = Number(row.sale_price ?? 0);
       if (!Number.isFinite(sp) || sp <= 0) continue;
@@ -2563,25 +2566,31 @@ class PurchaseService {
               .run(qty, item.purchase_order_item_id, purchaseOrderId);
           }
 
-          // Update product cost price to latest receipt cost
+          // Update product cost price to latest receipt cost (skip zero — keep catalog empty/prior)
           try {
-            this.db.prepare(
+            if (Number.isFinite(unitCost) && unitCost > 0) {
+              this.db.prepare(
+                `
+                UPDATE products
+                SET purchase_price = ?, updated_at = ?
+                WHERE id = ?
               `
-              UPDATE products
-              SET purchase_price = ?, updated_at = ?
-              WHERE id = ?
-            `
-            ).run(unitCost, now, item.product_id);
-            // Invalidate product cache so UI shows updated purchase_price
-            if (this.cacheService?.invalidateProduct) {
-              this.cacheService.invalidateProduct(item.product_id);
+              ).run(unitCost, now, item.product_id);
+              // Invalidate product cache so UI shows updated purchase_price
+              if (this.cacheService?.invalidateProduct) {
+                this.cacheService.invalidateProduct(item.product_id);
+              }
             }
           } catch (error) {
             console.warn('[PurchaseService.createReceipt] Failed to update product purchase_price:', error.message);
           }
 
           // Update product sale_price from PO item if set (sotish narxi)
-          if (purchaseOrderId && item.purchase_order_item_id) {
+          const shouldUpdateSale =
+            data.update_product_sale_prices !== false &&
+            purchaseOrderId &&
+            item.purchase_order_item_id;
+          if (shouldUpdateSale) {
             try {
               const poi = this.db.prepare(
                 'SELECT sale_price FROM purchase_order_items WHERE id = ? AND purchase_order_id = ?'
@@ -3144,6 +3153,7 @@ class PurchaseService {
       items: receiptItems,
       received_at: receiptData.received_at || null,
       created_by: receiptData.received_by || null,
+      update_product_sale_prices: receiptData.update_product_sale_prices,
     });
 
     return this.get(purchaseOrderId);

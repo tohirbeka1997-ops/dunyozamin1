@@ -149,6 +149,8 @@
         "test:phase2": "electron electron/services/phase2Finance.smoke.test.cjs",
         "test:phase3": "electron electron/services/phase3Finance.smoke.test.cjs",
         "test:prior-debt-drawer-smoke": "electron electron/services/priorDebtShiftDrawer.smoke.test.cjs",
+        "test:expected-cash": "node --test electron/lib/expectedClosingCash.test.cjs",
+        "test:shift-expected-cash-smoke": "electron electron/services/shiftExpectedCash.smoke.test.cjs",
         "test:payment-fee": "node electron/lib/paymentFee.test.cjs",
         "test:allocate-discount": "node electron/lib/allocateOrderDiscount.test.cjs",
         "test:marketplace-content-smoke": "electron electron/services/marketplaceContent.smoke.test.cjs",

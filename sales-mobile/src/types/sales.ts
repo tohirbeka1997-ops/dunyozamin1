@@ -165,6 +165,12 @@ export interface ShiftSummary {
   orders: number;
   expectedCash: number;
   openingCash: number;
+  cashExpenses?: number;
+  cashRefundsOut?: number;
+  totalRefunds?: number;
+  cashWithdrawals?: number;
+  debtRepaidCash?: number;
+  creditDebtIssued?: number;
 }
 
 export interface CurrentShiftResponse {

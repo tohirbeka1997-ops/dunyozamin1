@@ -114,8 +114,9 @@ export async function printEscposReceipt(
   if (lastError) {
     throw lastError instanceof Error ? lastError : new Error(String(lastError));
   }
+  const { baseUrl } = getPrintAgentConfig();
   throw new Error(
-    'Print agent is not running and Electron print API is not available. ' +
+    `Print agent unavailable at ${baseUrl} and Electron print API is not available. ` +
       'Install and start pos-print-agent on this PC (see print-agent/README.md) ' +
       'or run the desktop build.'
   );

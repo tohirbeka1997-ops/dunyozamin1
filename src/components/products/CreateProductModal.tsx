@@ -78,8 +78,8 @@ export default function CreateProductModal({
   const [sku, setSku] = useState('');
   const [barcode, setBarcode] = useState('');
   const [unit, setUnit] = useState('pcs');
-  const [purchasePrice, setPurchasePrice] = useState<number | null>(0);
-  const [salePrice, setSalePrice] = useState<number | null>(0);
+  const [purchasePrice, setPurchasePrice] = useState<number | null>(null);
+  const [salePrice, setSalePrice] = useState<number | null>(null);
   const [masterPrice, setMasterPrice] = useState<number | null>(null);
   const [masterMinQty, setMasterMinQty] = useState('');
   const [categoryId, setCategoryId] = useState<string>('none');
@@ -108,8 +108,8 @@ export default function CreateProductModal({
       setSku('');
       setBarcode('');
       setUnit('pcs');
-      setPurchasePrice(0);
-      setSalePrice(0);
+      setPurchasePrice(null);
+      setSalePrice(null);
       setMasterPrice(null);
       setMasterMinQty('');
       setCategoryId('none');
@@ -130,8 +130,8 @@ export default function CreateProductModal({
     setSku('');
     setBarcode('');
     setUnit('pcs');
-    setPurchasePrice(0);
-    setSalePrice(0);
+    setPurchasePrice(null);
+    setSalePrice(null);
     setMasterPrice(null);
     setMasterMinQty('');
     setCategoryId('none');
@@ -248,22 +248,16 @@ export default function CreateProductModal({
       return;
     }
 
-    const costEntered = purchasePrice ?? 0;
+    // Prices are optional in PO quick-create — fill later on the order line / product card.
+    const costEntered = Number(purchasePrice ?? 0) || 0;
     const rate = Number(fxRate || 0);
     const purchase =
-      purchaseCostCurrency === 'USD' && Number.isFinite(rate) && rate > 0
+      purchaseCostCurrency === 'USD' && Number.isFinite(rate) && rate > 0 && costEntered > 0
         ? Math.round(costEntered * rate)
         : costEntered;
-    const sale = salePrice ?? purchase;
-    if (!(Number(sale) > 0)) {
-      toast({
-        title: t('productForm.validation_error'),
-        description: t('productForm.sale_price_required'),
-        variant: 'destructive',
-      });
-      return;
-    }
-    if (sale < purchase) {
+    const saleEntered = salePrice != null && Number.isFinite(Number(salePrice)) ? Number(salePrice) : null;
+    const sale = saleEntered != null && saleEntered > 0 ? saleEntered : 0;
+    if (purchase > 0 && sale > 0 && sale < purchase) {
       const ok = await confirmDialog({
         title: 'Ogohlantirish',
         description: t('productForm.sale_price_warning'),
@@ -272,6 +266,7 @@ export default function CreateProductModal({
       });
       if (!ok) return;
     }
+    const freeSaleAllowed = !(sale > 0);
 
     try {
       setLoading(true);
@@ -308,6 +303,10 @@ export default function CreateProductModal({
         product_units: [{ unit, ratio_to_base: 1, sale_price: sale, is_default: true }],
         purchase_price: purchase,
         sale_price: sale,
+        free_sale_allowed: freeSaleAllowed,
+        free_sale_reason: freeSaleAllowed
+          ? 'Xarid buyurtmasidan yaratildi — sotish narxi keyinroq'
+          : null,
         master_price: masterPrice,
         master_min_qty: masterMinQty.trim() ? Number(masterMinQty) : null,
         min_stock_level: Number(minStockLevel) || 0,
@@ -470,14 +469,14 @@ export default function CreateProductModal({
             <div className="space-y-2">
               <Label>
                 {purchaseCostCurrency === 'USD'
-                  ? `${t('productForm.purchase_price_label')} (USD)`
-                  : t('productForm.purchase_price_label')}
+                  ? `Sotib olish narxi (USD, ixtiyoriy)`
+                  : `Sotib olish narxi (ixtiyoriy)`}
               </Label>
               {purchaseCostCurrency === 'USD' ? (
                 <MoneyInput
                   value={purchasePrice}
                   onValueChange={setPurchasePrice}
-                  placeholder="0"
+                  placeholder="Bo‘sh qoldirish mumkin"
                   allowZero
                   allowDecimals
                   min={0}
@@ -487,7 +486,7 @@ export default function CreateProductModal({
                 <MoneyInput
                   value={purchasePrice}
                   onValueChange={setPurchasePrice}
-                  placeholder="0"
+                  placeholder="Bo‘sh qoldirish mumkin"
                   allowZero
                   allowDecimals
                   min={0}
@@ -528,17 +527,20 @@ export default function CreateProductModal({
           <div className="space-y-2">
             <Label>
               {purchaseCostCurrency === 'USD'
-                ? `${t('productForm.sale_price_label')} (UZS)`
-                : t('productForm.sale_price_label')}
+                ? `Sotish narxi (UZS, ixtiyoriy)`
+                : `Sotish narxi (ixtiyoriy)`}
             </Label>
             <MoneyInput
               value={salePrice}
               onValueChange={setSalePrice}
-              placeholder="0"
-              allowZero={false}
+              placeholder="Bo‘sh qoldirish mumkin"
+              allowZero
               allowDecimals
               min={0}
             />
+            <p className="text-xs text-muted-foreground">
+              Narxlarni shu yerda yoki keyin xarid qatorida / mahsulot kartasida to‘ldirish mumkin.
+            </p>
           </div>
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <div className="space-y-2">

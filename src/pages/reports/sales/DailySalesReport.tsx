@@ -18,7 +18,7 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table';
-import { getDailySalesReportSQL, getPriceTiers, getProfiles, getSetting, updateSetting, getWarehouses } from '@/db/api';
+import { getCustomerDebtOperations, getDailySalesReportSQL, getPriceTiers, getProfiles, getSetting, updateSetting, getWarehouses } from '@/db/api';
 import type { OrderWithDetails, Profile, SalesReturnWithDetails } from '@/types/database';
 type PriceTier = { id: number; name: string; code?: string };
 type Warehouse = { id: string; name: string; is_default?: number | boolean; is_active?: number | boolean };
@@ -35,6 +35,13 @@ import { useReportAutoRefresh } from '@/hooks/useReportAutoRefresh';
 import { useSessionSearchParams } from '@/hooks/useSessionSearchParams';
 import SearchableCombobox from '@/components/common/SearchableCombobox';
 import { useTranslation } from 'react-i18next';
+import { getPaymentMethodLabel } from '@/lib/paymentMethodLabels';
+import {
+  getDebtOpKindLabel,
+  isCreditPaymentMethod,
+  type CustomerDebtOperationRow,
+  type CustomerDebtOperationsSummary,
+} from '@/lib/customerDebtOperations';
 
 export default function DailySalesReport() {
   const navigate = useNavigate();
@@ -62,6 +69,16 @@ export default function DailySalesReport() {
   const [warnings, setWarnings] = useState<any>(null);
   const [warehouses, setWarehouses] = useState<Warehouse[]>([]);
   const [warehouseSelection, setWarehouseSelection] = useState<string>('AUTO');
+  const [debtOps, setDebtOps] = useState<CustomerDebtOperationRow[]>([]);
+  const [debtSummary, setDebtSummary] = useState<CustomerDebtOperationsSummary>({
+    debt_collected: 0,
+    debt_collected_count: 0,
+    credit_issued: 0,
+    credit_issued_count: 0,
+    advance_received: 0,
+    advance_received_count: 0,
+    net: 0,
+  });
 
   const warehouseOptions = useMemo(
     () => [
@@ -107,7 +124,7 @@ export default function DailySalesReport() {
           : warehouseSelection === 'AUTO'
             ? undefined
             : warehouseSelection;
-      const [report, profilesData, tiers] = await Promise.all([
+      const [report, profilesData, tiers, debtReport] = await Promise.all([
         getDailySalesReportSQL({
           date_from: dateFrom,
           date_to: dateTo,
@@ -119,6 +136,12 @@ export default function DailySalesReport() {
         }),
         getProfiles(),
         getPriceTiers(),
+        getCustomerDebtOperations({
+          date_from: dateFrom,
+          date_to: dateTo,
+          cashier_id: cashierFilter !== 'all' ? cashierFilter : null,
+          warehouse_id: 'ALL',
+        }),
       ]);
 
       setOrders((report?.orders || []) as any);
@@ -134,6 +157,16 @@ export default function DailySalesReport() {
       setCashiers(profilesData);
       setPriceTiers(tiers || []);
       setWarnings(report?.warnings || null);
+      setDebtOps((debtReport?.rows || []) as CustomerDebtOperationRow[]);
+      setDebtSummary({
+        debt_collected: Number(debtReport?.summary?.debt_collected || 0) || 0,
+        debt_collected_count: Number(debtReport?.summary?.debt_collected_count || 0) || 0,
+        credit_issued: Number(debtReport?.summary?.credit_issued || 0) || 0,
+        credit_issued_count: Number(debtReport?.summary?.credit_issued_count || 0) || 0,
+        advance_received: Number(debtReport?.summary?.advance_received || 0) || 0,
+        advance_received_count: Number(debtReport?.summary?.advance_received_count || 0) || 0,
+        net: Number(debtReport?.summary?.net || 0) || 0,
+      });
     } catch (error) {
       toast({
         title: 'Xatolik',
@@ -189,13 +222,13 @@ export default function DailySalesReport() {
     const explicit = (order as any).payment_method;
     if (explicit) {
       const val = String(explicit);
-      if (val.toLowerCase() === 'mixed') return 'Mixed';
-      return val.charAt(0).toUpperCase() + val.slice(1);
+      if (val.toLowerCase() === 'mixed') return t('reports.payment_methods_page.methods.mixed', 'Aralash');
+      return getPaymentMethodLabel(val, t);
     }
     const payments = order.payments || [];
     if (payments.length === 0) return 'N/A';
-    if (payments.length > 1) return 'Mixed';
-    return payments[0].payment_method.charAt(0).toUpperCase() + payments[0].payment_method.slice(1);
+    if (payments.length > 1) return t('reports.payment_methods_page.methods.mixed', 'Aralash');
+    return getPaymentMethodLabel(payments[0].payment_method, t);
   };
 
   const getCashierNameById = (id?: string | null) => {
@@ -317,7 +350,7 @@ export default function DailySalesReport() {
   }
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-3">
       {warnings?.warehouse_not_set && warehouseSelection === 'AUTO' ? (
         <div className="rounded-md border border-destructive/40 bg-destructive/10 px-4 py-2 text-sm text-destructive">
           Default ombor belgilanmagan. Hisobot barcha omborlar bo‘yicha ko‘rsatilmoqda.
@@ -342,19 +375,20 @@ export default function DailySalesReport() {
           </p>
         </div>
       ) : null}
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-4">
-          <Button variant="ghost" size="icon" onClick={() => navigate('/reports/sales')}>
+      <div className="flex items-center justify-between gap-3">
+        <div className="flex items-center gap-2">
+          <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => navigate('/reports/sales')}>
             <ArrowLeft className="h-4 w-4" />
           </Button>
           <div>
             <h1 className="page-heading">Kunlik sotuv hisobotlari</h1>
-            <p className="text-muted-foreground">Kunlik sotuvlar samaradorligi va foydasini kuzatish</p>
+            <p className="page-heading-sub">Kunlik sotuvlar samaradorligi va foydasini kuzatish</p>
           </div>
         </div>
         <div className="flex gap-2">
-          <Button 
-            variant="outline" 
+          <Button
+            variant="outline"
+            size="sm"
             onClick={() => handleExport('excel')}
             disabled={isExporting}
           >
@@ -370,8 +404,9 @@ export default function DailySalesReport() {
               </>
             )}
           </Button>
-          <Button 
-            variant="outline" 
+          <Button
+            variant="outline"
+            size="sm"
             onClick={() => handleExport('pdf')}
             disabled={isExporting}
           >
@@ -390,90 +425,104 @@ export default function DailySalesReport() {
         </div>
       </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-5 gap-4">
-        <Card>
-          <CardHeader className="pb-3">
-            <CardTitle className="text-sm font-medium text-muted-foreground">
-              Jami savdo (Gross)
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="text-2xl font-bold">
-              <DualCurrencyAmount uzs={salesAgg.totalUzs} usd={salesAgg.totalUsd} />
-            </div>
-            <p className="mt-1 text-xs text-muted-foreground">Qaytarishdan oldingi</p>
+      <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 xl:grid-cols-7">
+        <Card className="gap-0 py-2">
+          <CardContent className="px-3 py-0">
+            <p className="text-xs leading-tight text-muted-foreground">Jami savdo (Gross)</p>
+            <DualCurrencyAmount
+              uzs={salesAgg.totalUzs}
+              usd={salesAgg.totalUsd}
+              className="text-sm font-bold leading-tight items-start"
+            />
+            <p className="text-[11px] leading-tight text-muted-foreground">Qaytarishdan oldingi</p>
           </CardContent>
         </Card>
-        <Card>
-          <CardHeader className="pb-3">
-            <CardTitle className="text-sm font-medium text-muted-foreground">
-              Qaytarilgan summa
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="text-2xl font-bold text-destructive">{formatMoneyUZS(totalReturns)}</div>
+        <Card className="gap-0 py-2">
+          <CardContent className="px-3 py-0">
+            <p className="text-xs leading-tight text-muted-foreground">Qaytarilgan summa</p>
+            <div className="text-sm font-bold leading-tight text-destructive">{formatMoneyUZS(totalReturns)}</div>
           </CardContent>
         </Card>
-        <Card>
-          <CardHeader className="pb-3">
-            <CardTitle className="text-sm font-medium text-muted-foreground">
-              Sof savdo
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="text-2xl font-bold">
+        <Card className="gap-0 py-2">
+          <CardContent className="px-3 py-0">
+            <p className="text-xs leading-tight text-muted-foreground">Sof savdo</p>
+            <div className="text-sm font-bold leading-tight">
               {formatMoneyUZS(Math.max(0, salesAgg.totalUzs - totalReturns))}
             </div>
-            <p className="mt-1 text-xs text-muted-foreground">Net tushum (yalpi − qaytarish)</p>
+            <p className="text-[11px] leading-tight text-muted-foreground">Net tushum (yalpi − qaytarish)</p>
           </CardContent>
         </Card>
-        <Card>
-          <CardHeader className="pb-3">
-            <CardTitle className="text-sm font-medium text-muted-foreground">
-              Sof foyda
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className={`text-2xl font-bold ${netProfitUzs >= 0 ? 'text-success' : 'text-destructive'}`}>
-              <DualCurrencyAmount uzs={netProfitUzs} usd={netProfitUsd} />
-            </div>
+        <Card className="gap-0 py-2">
+          <CardContent className="px-3 py-0">
+            <p className="text-xs leading-tight text-muted-foreground">Sof foyda</p>
+            <DualCurrencyAmount
+              uzs={netProfitUzs}
+              usd={netProfitUsd}
+              className={`text-sm font-bold leading-tight items-start ${netProfitUzs >= 0 ? 'text-success' : 'text-destructive'}`}
+            />
           </CardContent>
         </Card>
-        <Card>
-          <CardHeader className="pb-3">
-            <CardTitle className="text-sm font-medium text-muted-foreground">
-              O'rtacha buyurtma qiymati
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="text-2xl font-bold">
-              <DualCurrencyAmount uzs={avgUzs} usd={avgUsd} />
-            </div>
+        <Card className="gap-0 py-2">
+          <CardContent className="px-3 py-0">
+            <p className="text-xs leading-tight text-muted-foreground">O'rtacha buyurtma qiymati</p>
+            <DualCurrencyAmount
+              uzs={avgUzs}
+              usd={avgUsd}
+              className="text-sm font-bold leading-tight items-start"
+            />
+          </CardContent>
+        </Card>
+        <Card className="gap-0 py-2">
+          <CardContent className="px-3 py-0">
+            <p className="text-xs leading-tight text-muted-foreground">
+              {t('reports.debt_operations_page.summary.credit_issued', 'Nasiya berildi')}
+            </p>
+            <div className="text-sm font-bold leading-tight text-amber-600">{formatMoneyUZS(debtSummary.credit_issued)}</div>
+            <p className="text-[11px] leading-tight text-muted-foreground">
+              {t('reports.debt_operations_page.summary.count', '{{count}} ta amaliyot', {
+                count: debtSummary.credit_issued_count,
+              })}
+            </p>
+          </CardContent>
+        </Card>
+        <Card className="gap-0 py-2">
+          <CardContent className="px-3 py-0">
+            <p className="text-xs leading-tight text-muted-foreground">
+              {t('reports.debt_operations_page.summary.debt_collected', 'Qarz yig‘ildi')}
+            </p>
+            <div className="text-sm font-bold leading-tight text-success">{formatMoneyUZS(debtSummary.debt_collected)}</div>
+            <p className="text-[11px] leading-tight text-muted-foreground">
+              {t('reports.debt_operations_page.summary.count', '{{count}} ta amaliyot', {
+                count: debtSummary.debt_collected_count,
+              })}
+            </p>
           </CardContent>
         </Card>
       </div>
 
-      <Card>
-        <CardContent className="pt-6">
-          <div className="grid grid-cols-1 md:grid-cols-6 gap-4">
-            <div>
-              <label className="text-sm text-muted-foreground">Boshlanish sanasi</label>
+      <Card className="gap-0 py-3">
+        <CardContent className="px-3 py-0">
+          <div className="flex flex-wrap items-end gap-x-2 gap-y-2">
+            <div className="min-w-[8.75rem] flex-1 basis-[8.75rem]">
+              <label className="text-xs text-muted-foreground">Boshlanish sanasi</label>
               <Input
                 type="date"
+                className="h-8"
                 value={dateFrom}
                 onChange={(e) => updateParams({ dateFrom: e.target.value })}
               />
             </div>
-            <div>
-              <label className="text-sm text-muted-foreground">Tugash sanasi</label>
+            <div className="min-w-[8.75rem] flex-1 basis-[8.75rem]">
+              <label className="text-xs text-muted-foreground">Tugash sanasi</label>
               <Input
                 type="date"
+                className="h-8"
                 value={dateTo}
                 onChange={(e) => updateParams({ dateTo: e.target.value })}
               />
             </div>
-            <div>
-              <label className="text-sm text-muted-foreground">Ombor</label>
+            <div className="min-w-[8.75rem] flex-1 basis-[8.75rem]">
+              <label className="text-xs text-muted-foreground">Ombor</label>
               <SearchableCombobox
                 value={warehouseSelection}
                 onValueChange={handleWarehouseChange}
@@ -481,10 +530,11 @@ export default function DailySalesReport() {
                 placeholder="Auto (Default ombor)"
                 searchPlaceholder={t('combobox.search_warehouse', "Ombor nomi bo'yicha qidirish...")}
                 emptyMessage={t('combobox.no_warehouse', 'Ombor topilmadi')}
+                className="h-8"
               />
             </div>
-            <div>
-              <label className="text-sm text-muted-foreground">Kassir</label>
+            <div className="min-w-[8.75rem] flex-1 basis-[8.75rem]">
+              <label className="text-xs text-muted-foreground">Kassir</label>
               <SearchableCombobox
                 value={cashierFilter}
                 onValueChange={(value) => updateParams({ cashier: value })}
@@ -492,28 +542,30 @@ export default function DailySalesReport() {
                 placeholder={t('combobox.all_cashiers', 'Barcha kassirlar')}
                 searchPlaceholder={t('combobox.search_employee', "Nom yoki email bo'yicha qidirish...")}
                 emptyMessage={t('combobox.no_employee', 'Xodim topilmadi')}
+                className="h-8"
               />
             </div>
-            <div>
-              <label className="text-sm text-muted-foreground">To'lov turi</label>
+            <div className="min-w-[8.75rem] flex-1 basis-[8.75rem]">
+              <label className="text-xs text-muted-foreground">To'lov turi</label>
               <Select value={paymentFilter} onValueChange={(value) => updateParams({ payment: value })}>
-                <SelectTrigger>
+                <SelectTrigger className="h-8">
                   <SelectValue placeholder="Barcha turlar" />
                 </SelectTrigger>
                 <SelectContent>
                   <SelectItem value="all">Barcha turlar</SelectItem>
-                  <SelectItem value="cash">Cash</SelectItem>
-                  <SelectItem value="card">Card</SelectItem>
+                  <SelectItem value="cash">Naqd</SelectItem>
+                  <SelectItem value="card">Karta</SelectItem>
                   <SelectItem value="terminal">Terminal</SelectItem>
                   <SelectItem value="qr">QR</SelectItem>
-                  <SelectItem value="mixed">Mixed</SelectItem>
+                  <SelectItem value="credit">Nasiya</SelectItem>
+                  <SelectItem value="mixed">Aralash</SelectItem>
                 </SelectContent>
               </Select>
             </div>
-            <div>
-              <label className="text-sm text-muted-foreground">Narx turi</label>
+            <div className="min-w-[8.75rem] flex-1 basis-[8.75rem]">
+              <label className="text-xs text-muted-foreground">Narx turi</label>
               <Select value={tierFilter} onValueChange={(value) => updateParams({ tier: value })}>
-                <SelectTrigger>
+                <SelectTrigger className="h-8">
                   <SelectValue placeholder="Barcha tierlar" />
                 </SelectTrigger>
                 <SelectContent>
@@ -526,10 +578,10 @@ export default function DailySalesReport() {
                 </SelectContent>
               </Select>
             </div>
-            <div>
-              <label className="text-sm text-muted-foreground">Holati</label>
+            <div className="min-w-[8.75rem] flex-1 basis-[8.75rem]">
+              <label className="text-xs text-muted-foreground">Holati</label>
               <Select value={statusFilter} onValueChange={(value) => updateParams({ status: value })}>
-                <SelectTrigger>
+                <SelectTrigger className="h-8">
                   <SelectValue placeholder="Barcha holatlar" />
                 </SelectTrigger>
                 <SelectContent>
@@ -556,6 +608,7 @@ export default function DailySalesReport() {
                 <TableRow>
                   <TableHead>Hisob-faktura raqami</TableHead>
                   <TableHead>Sana / Vaqt</TableHead>
+                  <TableHead>{t('reports.debt_operations_page.table.customer', 'Mijoz')}</TableHead>
                   <TableHead>Kassir</TableHead>
                   <TableHead>To'lov turi</TableHead>
                   <TableHead className="text-right">Jami sotuv</TableHead>
@@ -584,10 +637,17 @@ export default function DailySalesReport() {
                         {formatOrderDateTime(order.created_at)}
                       </TableCell>
                       <TableCell>
+                        {(order as any).customer_name || '—'}
+                      </TableCell>
+                      <TableCell>
                         {(order as any).cashier_name ||
                           getCashierNameById(order.cashier_id || (order as any).user_id)}
                       </TableCell>
-                      <TableCell>{getPaymentType(order)}</TableCell>
+                      <TableCell>
+                        {isCreditPaymentMethod((order as any).payment_method)
+                          ? t('reports.payment_method_labels.credit', 'Nasiya')
+                          : getPaymentType(order)}
+                      </TableCell>
                       <TableCell className="text-right">
                         {formatOrderMoney(order, order.total_amount)}
                       </TableCell>
@@ -599,6 +659,80 @@ export default function DailySalesReport() {
                     </TableRow>
                   );
                 })}
+              </TableBody>
+            </Table>
+          )}
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader className="flex flex-row items-center justify-between space-y-0">
+          <div>
+            <CardTitle>
+              {t('reports.debt_operations_page.title', 'Qarz to‘lovlari va nasiya')}
+            </CardTitle>
+            <p className="mt-1 text-sm text-muted-foreground">
+              {t(
+                'reports.daily_sales_page.debt_ops_hint',
+                'Mijoz qarzini shu yerda ko‘ring. To‘liq davr hisoboti — alohida sahifa.'
+              )}
+            </p>
+          </div>
+          <Button variant="outline" size="sm" onClick={() => navigate(`/reports/sales/debt-operations?dateFrom=${dateFrom}&dateTo=${dateTo}`)}>
+            {t('reports.daily_sales_page.open_debt_ops', 'To‘liq hisobot')}
+          </Button>
+        </CardHeader>
+        <CardContent className="p-0">
+          {debtOps.length === 0 ? (
+            <div className="text-center py-12">
+              <p className="text-muted-foreground">
+                {t(
+                  'reports.debt_operations_page.empty',
+                  'Tanlangan davrda qarz to‘lovi yoki nasiya amaliyoti topilmadi'
+                )}
+              </p>
+            </div>
+          ) : (
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>{t('reports.debt_operations_page.table.datetime', 'Sana / vaqt')}</TableHead>
+                  <TableHead>{t('reports.debt_operations_page.table.customer', 'Mijoz')}</TableHead>
+                  <TableHead>{t('reports.debt_operations_page.table.type', 'Turi')}</TableHead>
+                  <TableHead className="text-right">{t('reports.debt_operations_page.table.amount', 'Summa')}</TableHead>
+                  <TableHead>{t('reports.debt_operations_page.table.method', 'Usul')}</TableHead>
+                  <TableHead>{t('reports.debt_operations_page.table.cashier', 'Kassir')}</TableHead>
+                  <TableHead>{t('reports.debt_operations_page.table.ref', 'Hujjat')}</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {debtOps.map((row) => (
+                  <TableRow key={row.id}>
+                    <TableCell>{formatOrderDateTime(row.occurred_at)}</TableCell>
+                    <TableCell className="font-medium">{row.customer_name || row.customer_id}</TableCell>
+                    <TableCell>
+                      <Badge
+                        className={
+                          row.kind === 'debt_payment'
+                            ? 'bg-success text-white'
+                            : row.kind === 'credit_sale'
+                              ? 'bg-amber-500 text-white'
+                              : row.kind === 'loan_issued'
+                                ? 'bg-orange-500 text-white'
+                                : row.kind === 'advance'
+                                  ? 'bg-sky-600 text-white'
+                                  : ''
+                        }
+                      >
+                        {getDebtOpKindLabel(row.kind, t)}
+                      </Badge>
+                    </TableCell>
+                    <TableCell className="text-right font-medium">{formatMoneyUZS(row.amount_uzs)}</TableCell>
+                    <TableCell>{getPaymentMethodLabel(row.payment_method, t)}</TableCell>
+                    <TableCell>{row.cashier_name || '—'}</TableCell>
+                    <TableCell className="font-mono text-sm">{row.order_number || row.ref_no || '—'}</TableCell>
+                  </TableRow>
+                ))}
               </TableBody>
             </Table>
           )}

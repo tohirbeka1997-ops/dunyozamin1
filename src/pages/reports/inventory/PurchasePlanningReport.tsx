@@ -28,7 +28,8 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog';
-import { ArrowLeft, FileDown, Printer, ShoppingCart } from 'lucide-react';
+import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
+import { ArrowLeft, FileDown, HelpCircle, Printer, ShoppingCart } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 import { handleIpcResponse, isElectron, requireElectron } from '@/utils/electron';
 import { getCategories } from '@/db/api';
@@ -256,7 +257,7 @@ export default function PurchasePlanningReport() {
 
   const handlePrint = () => window.print();
 
-  const formulaLines = (meta?.formula || '').split('\n').filter(Boolean);
+  const formulaText = (meta?.formula || '').trim();
 
   const buildExportMatrix = () => {
     const headers = [
@@ -469,7 +470,30 @@ export default function PurchasePlanningReport() {
             <ArrowLeft className="h-4 w-4" />
           </Button>
           <div>
-            <h1 className="page-heading">Bozorga borish hisoboti</h1>
+            <div className="flex items-center gap-2">
+              <h1 className="page-heading">Bozorga borish hisoboti</h1>
+              {formulaText ? (
+                <Popover>
+                  <PopoverTrigger asChild>
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      className="h-7 px-2 text-muted-foreground"
+                      aria-label="Qanday hisoblanadi"
+                    >
+                      <HelpCircle className="h-4 w-4" />
+                      <span className="text-xs font-normal">Qanday hisoblanadi</span>
+                    </Button>
+                  </PopoverTrigger>
+                  <PopoverContent align="start" className="w-[min(92vw,28rem)]">
+                    <pre className="text-xs bg-muted/50 rounded-md p-3 overflow-x-auto whitespace-pre-wrap">
+                      {formulaText}
+                    </pre>
+                  </PopoverContent>
+                </Popover>
+              ) : null}
+            </div>
             <p className="text-muted-foreground text-sm">
               Tahlil {analysisDays} kun · reja {planDays} kun · zaxira {meta?.safety_days ?? 2} kun
               {meta ? ` · ${meta.timezone} · ${meta.calc_ms} ms · ${meta.as_of}` : ''}
@@ -574,10 +598,6 @@ export default function PurchasePlanningReport() {
               </Button>
             </div>
           </div>
-
-          {formulaLines.length > 0 && (
-            <pre className="text-xs bg-muted/50 rounded-md p-3 overflow-x-auto whitespace-pre-wrap">{meta?.formula}</pre>
-          )}
 
           <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
             <div className="rounded-md border p-3">

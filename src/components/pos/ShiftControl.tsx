@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, useMemo } from 'react';
+import { useTranslation } from 'react-i18next';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import {
@@ -42,6 +43,7 @@ type ShiftControlProps = {
 };
 
 export default function ShiftControl({ compact = false }: ShiftControlProps) {
+  const { t } = useTranslation();
   const { user } = useAuth();
   const { toast } = useToast();
   const { currentShift, openShift, closeShift, addSale, addRefund, sales, refunds, setCurrentShift, syncFromDatabase } =
@@ -985,8 +987,10 @@ export default function ShiftControl({ compact = false }: ShiftControlProps) {
                           </span>
                         </div>
                         <p className="text-[11px] text-muted-foreground mt-1 leading-snug">
-                          Ochilish + Naqd savdo + Mijoz balansiga naqd + Qo'lda kirim
-                          − Naqd qaytarishlar − Naqd xarajatlar − Qo'lda chiqim
+                          {t('pos.close_shift.expected_cash_formula', {
+                            defaultValue:
+                              "Ochilish + Naqd savdo + Mijoz balansiga naqd + Qo'lda kirim − Naqd qaytarishlar − Naqd xarajatlar − Qo'lda chiqim",
+                          })}
                         </p>
                       </div>
                     </div>

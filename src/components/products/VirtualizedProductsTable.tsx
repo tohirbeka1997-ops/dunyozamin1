@@ -2,6 +2,7 @@ import { memo, useCallback, useEffect, useRef } from 'react';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
+import { Checkbox } from '@/components/ui/checkbox';
 import {
   Tooltip,
   TooltipContent,
@@ -29,22 +30,25 @@ type Props = {
   showRestore?: boolean;
   /** When active/inactive tab is selected, hide redundant Faol/Nofaol badges. */
   statusFilter?: StatusFilter;
-  t: (key: string) => string;
+  t: (key: string, options?: Record<string, unknown>) => string;
   hasMore: boolean;
   loadingMore: boolean;
   loadMore: () => void;
   /** Applied once when ready — omit/undefined until parent finished paging restore. */
   initialScrollTop?: number;
   onScrollTopChange?: (scrollTop: number) => void;
+  selectedIds?: Set<string>;
+  onToggleSelect?: (id: string, selected: boolean) => void;
+  onToggleSelectAll?: (selected: boolean) => void;
 };
 
 const ROW_HEIGHT = 64;
 const OVERSCAN = 8;
-const TABLE_MIN_WIDTH = 1140;
+const TABLE_MIN_WIDTH = 1180;
 
-/** Name | SKU | Barcode | Artikul | Brend | Category | Buy | Sell | Stock | Actions */
+/** Select | Name | SKU | Barcode | Artikul | Brend | Category | Buy | Sell | Stock | Actions */
 const GRID_COLS =
-  'minmax(220px,2.4fr) minmax(100px,0.85fr) minmax(120px,1fr) minmax(88px,0.7fr) minmax(88px,0.7fr) minmax(110px,0.9fr) minmax(100px,0.85fr) minmax(100px,0.85fr) minmax(92px,0.75fr) 112px';
+  '36px minmax(220px,2.4fr) minmax(100px,0.85fr) minmax(120px,1fr) minmax(88px,0.7fr) minmax(88px,0.7fr) minmax(110px,0.9fr) minmax(100px,0.85fr) minmax(100px,0.85fr) minmax(92px,0.75fr) 112px';
 
 function emptyCell(value: string) {
   const v = value.trim();
@@ -85,7 +89,7 @@ function productBarcodeOf(p: ProductWithCategory): string {
 
 type RowProps = {
   product: ProductWithCategory;
-  t: (key: string) => string;
+  t: (key: string, options?: Record<string, unknown>) => string;
   showRestore?: boolean;
   statusFilter?: StatusFilter;
   onView: (id: string) => void;
@@ -93,6 +97,8 @@ type RowProps = {
   onDelete: (id: string, name: string) => void;
   onRestore?: (id: string) => void;
   onHistory?: (id: string) => void;
+  selected?: boolean;
+  onToggleSelect?: (id: string, selected: boolean) => void;
 };
 
 const ProductVirtualRow = memo(function ProductVirtualRow({
@@ -105,6 +111,8 @@ const ProductVirtualRow = memo(function ProductVirtualRow({
   onDelete,
   onRestore,
   onHistory,
+  selected = false,
+  onToggleSelect,
 }: RowProps) {
   const tone = stockTone(product);
   const active = product.is_active;
@@ -130,6 +138,20 @@ const ProductVirtualRow = memo(function ProductVirtualRow({
       className="grid h-full items-center gap-x-3 border-b border-border/70 px-3"
       style={{ gridTemplateColumns: GRID_COLS, minWidth: TABLE_MIN_WIDTH }}
     >
+      {/* Select */}
+      <div className="flex items-center justify-center" onClick={(e) => e.stopPropagation()}>
+        {onToggleSelect ? (
+          <Checkbox
+            checked={selected}
+            onCheckedChange={(v) => onToggleSelect(product.id, v === true)}
+            aria-label={t('products.select_product', {
+              defaultValue: 'Tanlash',
+              name: product.name,
+            })}
+          />
+        ) : null}
+      </div>
+
       {/* Name */}
       <div className="min-w-0">
         <div className="flex min-w-0 items-center gap-2.5">
@@ -384,6 +406,9 @@ export default function VirtualizedProductsTable({
   loadMore,
   initialScrollTop,
   onScrollTopChange,
+  selectedIds,
+  onToggleSelect,
+  onToggleSelectAll,
 }: Props) {
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const restoredRef = useRef(false);
@@ -446,6 +471,15 @@ export default function VirtualizedProductsTable({
     }
   }, [persistScrollTop]);
 
+  const allSelected =
+    products.length > 0 &&
+    Boolean(selectedIds) &&
+    products.every((p) => selectedIds!.has(p.id));
+  const someSelected =
+    Boolean(selectedIds) &&
+    products.some((p) => selectedIds!.has(p.id)) &&
+    !allSelected;
+
   return (
     <div className="space-y-3">
       <div
@@ -458,6 +492,15 @@ export default function VirtualizedProductsTable({
           className="sticky top-0 z-10 grid items-center gap-x-3 border-b bg-background px-3 py-2 text-xs font-semibold text-muted-foreground"
           style={{ gridTemplateColumns: GRID_COLS, minWidth: TABLE_MIN_WIDTH }}
         >
+          <div className="flex items-center justify-center">
+            {onToggleSelectAll ? (
+              <Checkbox
+                checked={allSelected ? true : someSelected ? 'indeterminate' : false}
+                onCheckedChange={(v) => onToggleSelectAll(v === true)}
+                aria-label={t('products.select_all', { defaultValue: 'Barchasini tanlash' })}
+              />
+            ) : null}
+          </div>
           <div className="min-w-0 truncate">{t('products.product_name')}</div>
           <div className="min-w-0 truncate">{t('products.sku')}</div>
           <div className="min-w-0 truncate">{t('products.barcode')}</div>
@@ -506,6 +549,8 @@ export default function VirtualizedProductsTable({
                   onDelete={onDelete}
                   onRestore={onRestore}
                   onHistory={onHistory}
+                  selected={selectedIds?.has(product.id) ?? false}
+                  onToggleSelect={onToggleSelect}
                 />
               </div>
             );
@@ -516,6 +561,12 @@ export default function VirtualizedProductsTable({
       <div className="flex items-center justify-between gap-3 pt-1">
         <p className="text-xs text-muted-foreground">
           Yuklangan: <span className="font-medium">{products.length}</span>
+          {selectedIds && selectedIds.size > 0 ? (
+            <>
+              {' · '}
+              Tanlangan: <span className="font-medium">{selectedIds.size}</span>
+            </>
+          ) : null}
         </p>
         {hasMore ? (
           <Button variant="outline" onClick={() => loadMore()} disabled={loadingMore}>

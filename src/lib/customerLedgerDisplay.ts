@@ -8,7 +8,7 @@
  *    0  → clear
  */
 
-export type LedgerSnapshotSource = "audit" | "balance_after";
+export type LedgerSnapshotSource = "audit" | "balance_after" | "running";
 
 export type LedgerPositionSnapshot = {
   debt: number;
@@ -597,4 +597,139 @@ export function ledgerCashFlow(
     };
   }
   return { received: 0, given: 0, total, debtOnly: false };
+}
+
+/**
+ * Cashier-signed delta of this ledger row (+ customer owes more, − debt paid / prepaid).
+ * Uses this row's own Jami / Olindi / Berildi / amount — never debt_after (which may be
+ * shop-wide AR / other open orders).
+ */
+export function ledgerCashierDelta(
+  entry: {
+    type?: string | null;
+    op_code?: string | null;
+    amount?: number | null;
+    note?: string | null;
+    ref_id?: string | null;
+    debt_before?: number | null;
+    debt_after?: number | null;
+    advance_before?: number | null;
+    advance_after?: number | null;
+    order_paid_amount?: number | null;
+    order_total_amount?: number | null;
+  },
+  orderAmountsById?: Map<string, LedgerOrderAmounts>,
+): number {
+  const code = String(entry.op_code || "").toUpperCase();
+  const type = String(entry.type || "");
+  const signed = Number(entry.amount || 0) || 0;
+  const flow = ledgerCashFlow(entry, orderAmountsById);
+
+  if (code === "ADVANCE_APPLIED_TO_ORDER" || (type === "adjustment" && Math.abs(signed) < 0.009)) {
+    return 0;
+  }
+
+  const saleLike = type === "sale" || SALE_OP_CODES.has(code);
+  if (saleLike && code !== "SALE_RETURN") {
+    return saleUnpaidRemainder(entry, flow, orderAmountsById);
+  }
+
+  if (type === "refund" || code === "SALE_RETURN") {
+    const mag = flow.given > 0.009 ? flow.given : flow.total > 0.009 ? flow.total : Math.abs(signed);
+    return roundMoney(-mag);
+  }
+
+  if (MONEY_IN_OP_CODES.has(code) || type === "payment_in") {
+    const mag =
+      flow.received > 0.009 ? flow.received : flow.total > 0.009 ? flow.total : Math.abs(signed);
+    return roundMoney(-mag);
+  }
+
+  if (MONEY_OUT_OP_CODES.has(code) || type === "payment_out") {
+    const mag = flow.given > 0.009 ? flow.given : flow.total > 0.009 ? flow.total : Math.abs(signed);
+    return roundMoney(mag);
+  }
+
+  // Legacy amount: positive increases customers.balance (less debt).
+  return roundMoney(-signed);
+}
+
+function saleUnpaidRemainder(
+  entry: {
+    amount?: number | null;
+    note?: string | null;
+    ref_id?: string | null;
+    order_total_amount?: number | null;
+  },
+  flow: LedgerCashFlow,
+  orderAmountsById?: Map<string, LedgerOrderAmounts>,
+): number {
+  const signed = Number(entry.amount || 0) || 0;
+  const jamiMatch = String(entry.note || "").match(/Jami[:\s]*([\d\s.,]+)/i);
+  const jami = jamiMatch ? parseMoneyToken(jamiMatch[1]) : 0;
+  const orderTotal = Math.max(
+    0,
+    Number(entry.order_total_amount || 0) || 0,
+    entry.ref_id && orderAmountsById?.has(entry.ref_id)
+      ? Number(orderAmountsById.get(entry.ref_id)?.total || 0) || 0
+      : 0,
+  );
+  const received = Number(flow.received || 0) || 0;
+  const knownJami = Math.max(jami, orderTotal);
+
+  // CREDIT_SALE stores amount = −nasiya remainder. Prefer Jami − Olindi when Jami is known.
+  if (signed < -0.009) {
+    if (knownJami > 0.009) return roundMoney(Math.max(0, knownJami - received));
+    return roundMoney(-signed);
+  }
+
+  const saleTotal = Math.max(knownJami, flow.total);
+  return roundMoney(Math.max(0, saleTotal - received));
+}
+
+export function ledgerQoldiViewFromSigned(signed: number): LedgerQoldiView {
+  const s = roundMoney(signed);
+  return {
+    debt: s > 0.001 ? s : 0,
+    advance: s < -0.001 ? -s : 0,
+    net: roundMoney(-s),
+    signed: s,
+    source: "running",
+    amount: Math.abs(s),
+    className: signedBalanceClassName(s),
+    kind: signedBalanceKind(s),
+  };
+}
+
+/**
+ * Chronological running Qoldi from row deltas, starting at 0.
+ * Ignores stored debt_after / balance_after (those mix other open orders).
+ */
+export function walkLedgerRunningSigned(
+  entries: Array<LedgerTimeEntry & Parameters<typeof ledgerCashierDelta>[0]>,
+  orderAmountsById?: Map<string, LedgerOrderAmounts>,
+): Map<string, number> {
+  const chrono = sortLedgerEntries(entries, "asc");
+  const out = new Map<string, number>();
+  let signed = 0;
+  chrono.forEach((entry, index) => {
+    signed = roundMoney(signed + ledgerCashierDelta(entry, orderAmountsById));
+    const key = String(entry.id || `idx:${index}`);
+    out.set(key, signed);
+  });
+  return out;
+}
+
+/** True when last displayed running Qoldi matches Hisob holati / Hozir. */
+export function runningSignedMatchesPosition(
+  runningSigned: number | null | undefined,
+  position: { net?: number | null; debt?: number | null; advance?: number | null },
+  eps = 0.02,
+): boolean {
+  if (runningSigned == null || !Number.isFinite(Number(runningSigned))) return true;
+  const posSigned =
+    position.debt != null || position.advance != null
+      ? cashierSignedFromBuckets(Number(position.debt) || 0, Number(position.advance) || 0)
+      : toCashierSigned(Number(position.net) || 0);
+  return Math.abs(Number(runningSigned) - posSigned) <= eps;
 }

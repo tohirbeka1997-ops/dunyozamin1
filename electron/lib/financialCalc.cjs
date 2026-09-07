@@ -192,18 +192,25 @@ function grossLineRevenueUzsSql(db, salesAlias = 'o', itemAlias = 'oi') {
   return unifiedFieldUzsSql(db, salesAlias, itemAlias, grossLineRevenueSql(itemAlias));
 }
 
+/**
+ * Kassir kassasi (till) kutilayotgan naqd.
+ *
+ * Ochilish + naqd savdo + mijoz balansiga naqd (kirim − chiqim) + qo‘lda kirim
+ * − naqd qaytarishlar − naqd xarajatlar − qo‘lda chiqim.
+ *
+ * Store-wide yetkazib beruvchi to‘lovlari (`supplierPaymentsCash` / `otherCashIn`)
+ * bu kassaga tegishli emas — ularni qo‘shmang. Aylanma (credit/card) ham yo‘q.
+ */
 function expectedClosingCash(parts = {}) {
   return roundUzs(
     money(parts.openingCash) +
       money(parts.cashSales) +
       money(parts.customerPaymentsCash) +
-      money(parts.otherCashIn) -
+      money(parts.cashDeposits) -
       money(parts.cashRefunds) -
-      money(parts.supplierPaymentsCash) -
       money(parts.customerLoanIssuedCash) -
       money(parts.cashExpenses) -
-      money(parts.cashWithdrawals) +
-      money(parts.cashDeposits)
+      money(parts.cashWithdrawals)
   );
 }
 
