@@ -46,13 +46,13 @@ test('turnover / card / credit are not till terms', () => {
   );
 });
 
-test('debt cash is added once (not added and subtracted)', () => {
-  const once = expectedClosingCash(SCREENSHOT);
-  const doubled = expectedClosingCash({
-    ...SCREENSHOT,
-    customerPaymentsCash: 184_000,
-    customerLoanIssuedCash: 184_000,
-  });
-  assert.equal(once, SANE_TILL);
-  assert.equal(doubled, SANE_TILL - 184_000);
+test('cash change (over-tender) leaves the till', () => {
+  assert.equal(
+    expectedClosingCash({
+      openingCash: 100_000,
+      cashSales: 150_000, // tendered
+      cashChangeGiven: 50_000, // change given back
+    }),
+    200_000
+  );
 });

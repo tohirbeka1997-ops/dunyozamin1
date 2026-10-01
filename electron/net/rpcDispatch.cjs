@@ -55,6 +55,7 @@ function createRpcDispatcher({ services, db, sessions }) {
       ch === 'pos:health' ||
       ch === 'pos:appConfig:get' ||
       ch === 'pos:auth:login' ||
+      ch === 'pos:auth:loginWithGoogle' ||
       ch === 'pos:auth:logout' ||
       ch === 'pos:auth:me' ||
       ch === 'pos:auth:setSessionUser' ||
@@ -85,6 +86,7 @@ function createRpcDispatcher({ services, db, sessions }) {
       ch === 'pos:health' ||
       ch === 'pos:appConfig:get' ||
       ch === 'pos:auth:login' ||
+      ch === 'pos:auth:loginWithGoogle' ||
       ch === 'pos:auth:logout' ||
       ch === 'pos:auth:me' ||
       ch === 'pos:auth:setSessionUser' ||
@@ -152,6 +154,8 @@ function createRpcDispatcher({ services, db, sessions }) {
     // Public channels are always allowed (login, health, appConfig:get, reset).
     const PUBLIC = (
       channel === 'pos:auth:login' ||
+      channel === 'pos:auth:loginWithGoogle' ||
+      channel === 'pos:auth:googleConfig' ||
       channel === 'pos:auth:requestPasswordReset' ||
       channel === 'pos:auth:confirmPasswordReset' ||
       channel === 'pos:health' ||
@@ -517,6 +521,14 @@ function createRpcDispatcher({ services, db, sessions }) {
           a[0]?.deltaPoints,
           a[0]?.note
         );
+      case 'pos:customers:reissueLoyaltyCard':
+        return services.customers.reissueLoyaltyCard(
+          a[0]?.customerId,
+          a[0]?.actorUserId,
+          a[0]?.reason,
+        );
+      case 'pos:customers:findDuplicates':
+        return services.customers.findDuplicateCandidates(a[0] || {});
       case 'pos:creditReminders:list': {
         const { listCreditReminders } = require('../../public-api/lib/creditReminder.cjs');
         return listCreditReminders(services.customers.db, a[0] || {});
@@ -735,6 +747,18 @@ function createRpcDispatcher({ services, db, sessions }) {
         return services.purchases.previewDraftFromPlanning(a[0] || {});
       case 'pos:purchases:createPlanningDraft':
         return services.purchases.createDraftFromPlanning(a[0] || {});
+      case 'pos:purchases:extractInvoiceDraft':
+        return services.purchases.extractInvoiceDraft(a[0] || {});
+      case 'pos:purchases:confirmInvoicePurchase':
+        return services.purchases.confirmInvoicePurchase(a[0] || {});
+      case 'pos:purchases:createCostCorrection':
+        return services.purchases.createCostCorrection(a[0] || {});
+      case 'pos:purchases:approveCostCorrection':
+        return services.purchases.approveCostCorrection(a[0], a[1] || {});
+      case 'pos:purchases:listCostCorrections':
+        return services.purchases.listCostCorrections(a[0]);
+      case 'pos:purchases:exportList':
+        return services.purchases.exportList(a[0] || {}, a[1] || {});
 
       // Expenses
       case 'pos:expenses:listCategories':
@@ -886,6 +910,8 @@ function createRpcDispatcher({ services, db, sessions }) {
         return services.reports.getCashDiscrepancies(a[0] || {});
       case 'pos:reports:aging':
         return services.reports.getAging(a[0] || {});
+      case 'pos:reports:agingWarnings':
+        return services.reports.getAgingWarnings();
       case 'pos:reports:paymentMethodsSummary':
         return services.reports.getPaymentMethodsSummary(a[0] || {});
       case 'pos:reports:bankCashReconciliation':
@@ -1034,6 +1060,69 @@ function createRpcDispatcher({ services, db, sessions }) {
         }
         return result;
       }
+      case 'pos:auth:loginWithGoogle': {
+        try {
+          require('../config/loadRootEnv.cjs').loadRootEnv();
+        } catch { /* ignore */ }
+        const { verifyGoogleIdToken, googleAuthConfigured } = require('../lib/googleAuth.cjs');
+        if (!googleAuthConfigured()) {
+          return {
+            success: false,
+            error: 'Google kirish sozlanmagan (GOOGLE_CLIENT_ID)',
+          };
+        }
+        const idToken =
+          typeof a[0] === 'string'
+            ? a[0]
+            : a[0] && typeof a[0] === 'object'
+              ? a[0].id_token || a[0].credential || a[0].idToken
+              : null;
+        let profile;
+        try {
+          profile = await verifyGoogleIdToken(idToken);
+        } catch (e) {
+          return {
+            success: false,
+            error: e?.message || 'Google token tekshiruvi muvaffaqiyatsiz',
+          };
+        }
+        const result = services.auth.loginWithGoogleEmail(profile.email);
+        if (!result?.success || !result.user) {
+          return result;
+        }
+        try {
+          db.prepare(`UPDATE users SET last_login = datetime('now') WHERE id = ?`).run(result.user.id);
+        } catch { /* non-fatal */ }
+        if (sessions && typeof sessions.create === 'function') {
+          try {
+            const s = sessions.create({
+              user: result.user,
+              ip: requestIp,
+              userAgent: requestUserAgent,
+            });
+            return {
+              ...result,
+              token: s.token,
+              expiresAt: s.expiresAt,
+              userId: s.userId,
+              role: s.role,
+            };
+          } catch (e) {
+            return { ...result, sessionError: String(e?.message || e) };
+          }
+        }
+        return result;
+      }
+      case 'pos:auth:googleConfig': {
+        try {
+          require('../config/loadRootEnv.cjs').loadRootEnv();
+        } catch { /* ignore */ }
+        const { getGoogleClientId, googleAuthConfigured } = require('../lib/googleAuth.cjs');
+        return {
+          enabled: googleAuthConfigured(),
+          client_id: googleAuthConfigured() ? getGoogleClientId() : null,
+        };
+      }
       case 'pos:auth:logout': {
         // Called with the bearer token that was used to authenticate this
         // request. Frontend should then discard its local copy.
@@ -1110,10 +1199,49 @@ function createRpcDispatcher({ services, db, sessions }) {
         const hasPermission = roles.includes('admin') || roles.includes(permission);
         return { hasPermission, roles };
       }
-      case 'pos:auth:requestPasswordReset':
-        // Web admin shows the code on-screen (no email/SMS). Return it over RPC
-        // so api.dunyozamin.com/forgot-password can display it to the operator.
-        return services.auth.requestPasswordReset(a[0]);
+      case 'pos:auth:requestPasswordReset': {
+        try {
+          require('../config/loadRootEnv.cjs').loadRootEnv();
+        } catch { /* ignore */ }
+        const { smtpConfigured, sendMail, maskEmail } = require('../lib/mail.cjs');
+        const identifier = a[0];
+        const withCode = services.auth.requestPasswordReset(identifier, { includeCode: true });
+        const payload = withCode?.data || withCode;
+        const code = payload?.code;
+        const mailTo = payload?.user_email;
+        let emailSent = false;
+        let emailHint = null;
+        if (smtpConfigured() && mailTo && code) {
+          try {
+            await sendMail({
+              to: mailTo,
+              subject: 'POS — parol tiklash kodi',
+              text:
+                `Parolni tiklash kodi: ${code}\n` +
+                `Amal qilish muddati: 10 daqiqa.\n` +
+                `Agar so‘ramagan bo‘lsangiz, bu xabarni e'tiborsiz qoldiring.`,
+              html:
+                `<p>Parolni tiklash kodi: <b style="font-size:18px">${code}</b></p>` +
+                `<p>Amal qilish muddati: 10 daqiqa.</p>` +
+                `<p style="color:#666">Agar so‘ramagan bo‘lsangiz, bu xabarni e'tiborsiz qoldiring.</p>`,
+            });
+            emailSent = true;
+            emailHint = maskEmail(mailTo);
+          } catch (mailErr) {
+            console.error('[auth] password reset email failed:', mailErr?.message || mailErr);
+          }
+        }
+        return {
+          ok: true,
+          data: {
+            token_id: payload.token_id,
+            expires_at: payload.expires_at,
+            ...(emailSent
+              ? { email_sent: true, email_hint: emailHint, code_delivered: false }
+              : { code: payload.code, code_delivered: true, email_sent: false }),
+          },
+        };
+      }
       case 'pos:auth:confirmPasswordReset':
         return services.auth.confirmPasswordReset(a[0] || {});
 

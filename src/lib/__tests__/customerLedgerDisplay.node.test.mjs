@@ -348,7 +348,14 @@ function walkLedgerRunningSigned(entries, orderAmountsById) {
   const out = new Map();
   let signed = 0;
   chrono.forEach((entry, index) => {
-    signed = roundMoney(signed + ledgerCashierDelta(entry, orderAmountsById));
+    const balRaw = entry.balance_after;
+    const hasBalanceAfter =
+      balRaw != null && balRaw !== "" && Number.isFinite(Number(balRaw));
+    if (hasBalanceAfter) {
+      signed = roundMoney(toCashierSigned(Number(balRaw)));
+    } else {
+      signed = roundMoney(signed + ledgerCashierDelta(entry, orderAmountsById));
+    }
     out.set(String(entry.id || `idx:${index}`), signed);
   });
   return out;
@@ -545,6 +552,36 @@ test("Nasiya 950k Olindi 600k → Qoldi +350k (ignores debt_after 1248000)", () 
   const running = walkLedgerRunningSigned([nasiya]);
   assert.equal(running.get("nasiya-1121"), 350000);
   assert.equal(formatLedgerQoldiPlain({ signed: running.get("nasiya-1121") }), "+350000");
+});
+
+test("payment with balance_after snaps Qoldi to Hozir (Halim aka case)", () => {
+  // Before pay 1_325_000; pay 200_000 → stored/Hozir 1_125_000. Walk must not show 925_000.
+  const rows = [
+    {
+      id: "prior",
+      type: "payment_in",
+      amount: 100000,
+      balance_after: -1325000,
+      created_at: "2026-08-27 15:12:58",
+    },
+    {
+      id: "pay-200",
+      type: "payment_in",
+      op_code: "DEBT_PAYMENT_RECEIVED",
+      amount: 200000,
+      balance_after: -1125000,
+      debt_after: 1125000,
+      advance_after: 0,
+      created_at: "2026-09-14 09:55:28",
+    },
+  ];
+  const running = walkLedgerRunningSigned(rows);
+  assert.equal(running.get("prior"), 1325000);
+  assert.equal(running.get("pay-200"), 1125000);
+  assert.equal(
+    runningSignedMatchesPosition(running.get("pay-200"), { debt: 1125000, advance: 0, net: -1125000 }),
+    true,
+  );
 });
 
 test("after Nasiya +350k, To'lov 898k walks to −548k; Hozir +350k stays the live truth", () => {

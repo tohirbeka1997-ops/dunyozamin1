@@ -84,6 +84,8 @@ interface AuthState {
 
   init: () => Promise<void>;
   signIn: (email: string, password: string, tenant?: string | null) => Promise<void>;
+  /** Google ID token → same session shape as password login. */
+  signInWithGoogle: (idToken: string, tenant?: string | null) => Promise<void>;
   /** Super-admin login (multi-tenant only). Sets scope='master'. */
   masterSignIn: (username: string, password: string) => Promise<void>;
   signUp: (email: string, password: string, profileFields?: { fullName?: string; username?: string }) => Promise<void>;
@@ -456,6 +458,87 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       set({ loading: false });
       console.error('[useAuth] Login error:', error);
       // Re-throw error so UI can show error message
+      throw error;
+    }
+  },
+
+  signInWithGoogle: async (idToken: string, tenant?: string | null) => {
+    set({ loading: true });
+    try {
+      if (typeof window === 'undefined' || !(window as any).posApi?.auth?.loginWithGoogle) {
+        throw new Error('Google kirish API mavjud emas');
+      }
+      const trimmedTenant = typeof tenant === 'string' ? tenant.trim().toLowerCase() : '';
+      if (trimmedTenant) {
+        try {
+          const { setTenantSlug } = await import('@/lib/remotePosApi');
+          setTenantSlug(trimmedTenant);
+        } catch { /* ignore */ }
+      }
+      const response = await handleIpcResponse<any>(
+        (window as any).posApi.auth.loginWithGoogle(idToken),
+      );
+      if (!response || typeof response !== 'object') {
+        throw new Error('Invalid IPC response format');
+      }
+      if (!response.success) {
+        throw new Error(response.error || 'Google login failed');
+      }
+      const dbUser = response.user;
+      if (!dbUser?.id) {
+        throw new Error('Invalid user data: missing ID');
+      }
+      const realUserId = dbUser.id;
+      const backendRole = dbUser.role;
+      const mappedUser = {
+        id: dbUser.id,
+        username: dbUser.username,
+        name: dbUser.full_name,
+        role: backendRole || 'cashier',
+      };
+      const user: User = { id: mappedUser.id, email: mappedUser.username };
+      const profile: Profile = {
+        id: mappedUser.id,
+        email: mappedUser.username,
+        full_name: mappedUser.name,
+        role: mappedUser.role,
+      };
+      let tenantSlug: string | null = null;
+      try {
+        const api = (window as any).posApi;
+        if (api?._session?.getTenantSlug) tenantSlug = api._session.getTenantSlug() ?? null;
+      } catch { /* ignore */ }
+      let role: UserRole;
+      try {
+        role = deriveRole(profile);
+      } catch (err) {
+        console.error('[useAuth] Google login unknown role:', err);
+        set({ loading: false });
+        throw new Error("Akkauntning roli noma'lum. Iltimos, administratoringizga murojaat qiling.");
+      }
+      set({
+        session: { user },
+        user,
+        profile,
+        role,
+        scope: 'tenant',
+        tenantSlug,
+        loading: false,
+      });
+      writeSessionValue('auth_user', JSON.stringify(profile));
+      void syncPosMainSessionUser(String(realUserId), mappedUser.role);
+      try {
+        const { useShiftStore } = await import('@/store/shiftStore');
+        const shiftStore = useShiftStore.getState();
+        if (shiftStore.syncFromDatabase && realUserId) {
+          await shiftStore.syncFromDatabase(realUserId);
+        }
+      } catch (error) {
+        console.warn('[useAuth] Could not sync shift after Google login:', error);
+      }
+    } catch (error) {
+      set({ loading: false });
+      console.error('[useAuth] Google login error:', error);
       throw error;
     }
   },

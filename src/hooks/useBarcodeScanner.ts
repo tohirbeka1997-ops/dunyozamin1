@@ -57,6 +57,35 @@ export type UseBarcodeScannerOptions = {
 
 const DEFAULT_ALLOWED = (key: string) => key.length === 1 && /[\x20-\x7E]/.test(key);
 
+/**
+ * While a text field is focused, only a real scanner (about 5–15 ms/char)
+ * may steal the keys. 20 ms still catches wedge scanners and leaves fast
+ * human typing (product name + Enter) in the field.
+ */
+export const FOCUSED_SCAN_MAX_INTERVAL_MS = 20;
+
+export function isScannerSpeedBurst(length: number, durationMs: number, maxAvgMs: number): boolean {
+  if (length < 2) return false;
+  if (!Number.isFinite(durationMs) || durationMs < 0) return false;
+  const avg = durationMs / (length - 1);
+  return avg <= maxAvgMs;
+}
+
+/** Whether a burst typed into an input/textarea should be taken away from that field. */
+export function shouldStealFromEditable(opts: {
+  mode: 'hijack' | 'ignore' | 'auto';
+  length: number;
+  minLength: number;
+  durationMs: number;
+  maxIntervalMs: number;
+}): boolean {
+  if (opts.mode === 'ignore') return false;
+  if (opts.length < opts.minLength) return false;
+  if (opts.mode === 'hijack') return true;
+  const limit = Math.min(opts.maxIntervalMs, FOCUSED_SCAN_MAX_INTERVAL_MS);
+  return isScannerSpeedBurst(opts.length, opts.durationMs, limit);
+}
+
 function isEditableTarget(target: EventTarget | null): boolean {
   if (!(target instanceof HTMLElement)) return false;
   const tag = target.tagName;
@@ -91,6 +120,14 @@ export function useBarcodeScanner(opts: UseBarcodeScannerOptions) {
     let firstAt = 0;
     let lastAt = 0;
     let idleTimer: number | null = null;
+    let bufferTypedInField = false;
+
+    const resetBuffer = () => {
+      buffer = '';
+      firstAt = 0;
+      lastAt = 0;
+      bufferTypedInField = false;
+    };
 
     const flush = (reason: 'enter' | 'tab' | 'idle') => {
       if (idleTimer !== null) {
@@ -100,9 +137,8 @@ export function useBarcodeScanner(opts: UseBarcodeScannerOptions) {
       const code = buffer;
       const startedAt = firstAt;
       const endedAt = lastAt;
-      buffer = '';
-      firstAt = 0;
-      lastAt = 0;
+      const typedInField = bufferTypedInField;
+      resetBuffer();
       if (code.length < cfgRef.current.minLength) return;
       // Ensure it's clearly a burst and not slow typing.
       // durationMs is total time from first to last char.
@@ -110,6 +146,20 @@ export function useBarcodeScanner(opts: UseBarcodeScannerOptions) {
       // Average per-char interval heuristic:
       const avg = code.length > 1 ? durationMs / (code.length - 1) : 0;
       if (reason === 'idle' && avg > cfgRef.current.maxIntervalMs) return; // looked like slow typing
+      // Text fields keep what the cashier typed. Idle/Enter only steal a
+      // scanner-speed burst; otherwise the search box looks "blocked".
+      if (
+        typedInField &&
+        !shouldStealFromEditable({
+          mode: cfgRef.current.whenInputFocused,
+          length: code.length,
+          minLength: cfgRef.current.minLength,
+          durationMs,
+          maxIntervalMs: cfgRef.current.maxIntervalMs,
+        })
+      ) {
+        return;
+      }
       try {
         onScanRef.current(code, { durationMs, terminator: reason });
       } catch (err) {
@@ -129,13 +179,16 @@ export function useBarcodeScanner(opts: UseBarcodeScannerOptions) {
         if (buffer.length >= cfgRef.current.minLength) {
           const focused = isEditableTarget(e.target);
           const mode = cfgRef.current.whenInputFocused;
-          const looksLikeBurst =
-            buffer.length >= cfgRef.current.minLength &&
-            (lastAt - firstAt) < (buffer.length * 25); // < 25ms avg = clearly machine
-          const shouldHijack =
-            mode === 'hijack' ||
-            (mode === 'auto' && (!focused || looksLikeBurst)) ||
-            (mode === 'ignore' && !focused);
+          const durationMs = lastAt - firstAt;
+          const shouldHijack = focused
+            ? shouldStealFromEditable({
+                mode,
+                length: buffer.length,
+                minLength: cfgRef.current.minLength,
+                durationMs,
+                maxIntervalMs: cfgRef.current.maxIntervalMs,
+              })
+            : mode === 'hijack' || mode === 'auto' || mode === 'ignore';
           if (shouldHijack) {
             e.preventDefault();
             e.stopPropagation();
@@ -144,9 +197,7 @@ export function useBarcodeScanner(opts: UseBarcodeScannerOptions) {
           }
           // Not our burst — let the focused input handle Enter/Tab normally,
           // but drop the accumulated buffer because it never made it to the UI.
-          buffer = '';
-          firstAt = 0;
-          lastAt = 0;
+          resetBuffer();
         }
         return;
       }
@@ -165,10 +216,11 @@ export function useBarcodeScanner(opts: UseBarcodeScannerOptions) {
         const gap = now - lastAt;
         if (gap > cfgRef.current.maxIntervalMs) {
           // Too slow — restart the burst from this character.
-          buffer = '';
+          resetBuffer();
           firstAt = now;
         }
       }
+      if (isEditableTarget(e.target)) bufferTypedInField = true;
       buffer += e.key;
       lastAt = now;
 

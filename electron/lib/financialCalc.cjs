@@ -151,8 +151,9 @@ function allocCogsSql(db, itemAlias = 'oi', options = {}) {
 }
 
 /**
- * Closed-sale COGS: FIFO allocations, else frozen cost_price, else optional catalog fallback.
- * Live catalog price is never used unless accounting.cogs_legacy_fallback is on.
+ * Closed-sale COGS: FIFO allocations, else frozen cost_price, else catalog purchase_price.
+ * Catalog is only used when FIFO and frozen cost are both missing (historical_fallback).
+ * Lines that already have FIFO or frozen cost are not rewritten by a later catalog edit.
  */
 function actualCogsLineSql(db, itemAlias = 'oi', qtyExpr = null, options = {}) {
   const qty = qtyExpr || `COALESCE(${itemAlias}.qty_base, ${itemAlias}.quantity, 0)`;
@@ -196,7 +197,10 @@ function grossLineRevenueUzsSql(db, salesAlias = 'o', itemAlias = 'oi') {
  * Kassir kassasi (till) kutilayotgan naqd.
  *
  * Ochilish + naqd savdo + mijoz balansiga naqd (kirim − chiqim) + qo‘lda kirim
- * − naqd qaytarishlar − naqd xarajatlar − qo‘lda chiqim.
+ * − qaytim (over-tender) − naqd qaytarishlar − naqd xarajatlar − qo‘lda chiqim.
+ *
+ * `cashSales` — payments jadvalidagi naqd tender (qaytim oldin).
+ * `cashChangeGiven` — orders.change_amount (kassadan chiqqan qaytim).
  *
  * Store-wide yetkazib beruvchi to‘lovlari (`supplierPaymentsCash` / `otherCashIn`)
  * bu kassaga tegishli emas — ularni qo‘shmang. Aylanma (credit/card) ham yo‘q.
@@ -207,6 +211,7 @@ function expectedClosingCash(parts = {}) {
       money(parts.cashSales) +
       money(parts.customerPaymentsCash) +
       money(parts.cashDeposits) -
+      money(parts.cashChangeGiven) -
       money(parts.cashRefunds) -
       money(parts.customerLoanIssuedCash) -
       money(parts.cashExpenses) -
@@ -292,7 +297,8 @@ function computeReturns(host, filters) {
   const dateFrom = filters.date_from ? ymdOf(host, filters.date_from) : null;
   const dateTo = filters.date_to ? ymdOf(host, filters.date_to) : null;
   const warehouseId = filters.warehouse_id || null;
-  const useFallback = legacyCogsFallbackEnabled(host);
+  // Same last-resort catalog cost as sold COGS when FIFO/frozen cost are missing.
+  const useFallback = true;
 
   const returnsTable = hostHasTable(host, 'sales_returns')
     ? 'sales_returns'
@@ -403,8 +409,12 @@ function computeReturns(host, filters) {
       }
       posWhere += salesChannelWhere('o', filters.sales_channel, posParams);
       const posAmtUzs = unifiedAmountUzsSql(db, 'o');
-      const posCogsExpr = actualCogsLineSql(db, 'oi', null, {
-        usePurchaseFallback: useFallback,
+      // Return lines often have cost_price=0 (legacy cart returns). Always allow
+      // catalog purchase_price fallback here, and only sum negative qty lines with
+      // ABS(qty) so mixed exchange tickets do not fold sale COGS into returns_cogs.
+      const posReturnQty = `ABS(COALESCE(oi.qty_base, oi.quantity, 0))`;
+      const posCogsExpr = actualCogsLineSql(db, 'oi', posReturnQty, {
+        usePurchaseFallback: true,
         fromUnified: false,
       });
       const posRow = db
@@ -418,6 +428,7 @@ function computeReturns(host, filters) {
           LEFT JOIN (
             SELECT oi.order_id, SUM(${posCogsExpr}) AS cogs
             FROM order_items oi
+            WHERE COALESCE(oi.qty_base, oi.quantity, 0) < -0.0000001
             GROUP BY oi.order_id
           ) item_cogs ON item_cogs.order_id = o.id
           ${posWhere}
@@ -491,7 +502,8 @@ function computePnL(host, filters = {}) {
   const dateTo = filters.date_to ? ymdOf(host, filters.date_to) : null;
   const warehouseId = filters.warehouse_id || null;
   const priceTierId = filters.price_tier_id ?? null;
-  const useFallback = legacyCogsFallbackEnabled(host);
+  // FIFO + frozen cost first; catalog purchase_price only fills truly missing COGS.
+  const useFallback = true;
   const hasPriceTierId = !unified && hasColumn(db, 'orders', 'price_tier_id');
 
   const params = [];
@@ -641,9 +653,48 @@ function computePnL(host, filters = {}) {
     };
   });
 
+  let insufficientSamples = [];
+  const insufficientLines = Number(itemsRow?.insufficient_lines || 0) || 0;
+  if (insufficientLines > 0) {
+    try {
+      const hasProducts = hasTable(db, 'products');
+      const productJoin = hasProducts ? 'LEFT JOIN products p ON p.id = oi.product_id' : '';
+      const productNameExpr = hasProducts ? `COALESCE(p.name, oi.product_id)` : `oi.product_id`;
+      const productSkuExpr = hasProducts ? `p.sku` : `NULL`;
+      insufficientSamples =
+        db
+          .prepare(
+            `
+            SELECT
+              oi.product_id,
+              ${productNameExpr} AS product_name,
+              ${productSkuExpr} AS product_sku,
+              COUNT(*) AS line_count
+            FROM ${itemsTable} oi
+            INNER JOIN ${salesTable} o ON o.${salesJoinCol} = oi.${orderJoinCol}
+            ${productJoin}
+            ${where}
+              AND ${sourceExpr} = 'insufficient'
+            GROUP BY oi.product_id
+            ORDER BY line_count DESC
+            LIMIT 20
+          `
+          )
+          .all(...params) || [];
+    } catch {
+      insufficientSamples = [];
+    }
+  }
+
   const meta = reportMeta(host, filters, {
     cogs_method: cogsSource,
-    insufficient_cogs_lines: Number(itemsRow?.insufficient_lines || 0) || 0,
+    insufficient_cogs_lines: insufficientLines,
+    insufficient_cogs_samples: (insufficientSamples || []).map((r) => ({
+      product_id: r.product_id,
+      product_name: r.product_name,
+      product_sku: r.product_sku,
+      line_count: Number(r.line_count || 0) || 0,
+    })),
   });
 
   return {

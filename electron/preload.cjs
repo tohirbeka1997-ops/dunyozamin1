@@ -72,6 +72,7 @@ contextBridge.exposeInMainWorld('posApi', {
     get: () => invoke('pos:appConfig:get'),
     set: (patch) => invoke('pos:appConfig:set', patch),
     reset: () => invoke('pos:appConfig:reset'),
+    testConnection: (input) => invoke('pos:appConfig:testConnection', input),
   },
 
   // Products
@@ -282,6 +283,8 @@ contextBridge.exposeInMainWorld('posApi', {
     deleteExpense: (purchaseOrderId, expenseId) => invoke('pos:purchases:deleteExpense', purchaseOrderId, expenseId),
     previewPlanningDraft: (payload) => invoke('pos:purchases:previewPlanningDraft', payload),
     createPlanningDraft: (payload) => invoke('pos:purchases:createPlanningDraft', payload),
+    extractInvoiceDraft: (payload) => invoke('pos:purchases:extractInvoiceDraft', payload),
+    confirmInvoicePurchase: (payload) => invoke('pos:purchases:confirmInvoicePurchase', payload),
     createCostCorrection: (payload) => invoke('pos:purchases:createCostCorrection', payload),
     approveCostCorrection: (correctionId, opts) => invoke('pos:purchases:approveCostCorrection', correctionId, opts),
     listCostCorrections: (purchaseOrderId) => invoke('pos:purchases:listCostCorrections', purchaseOrderId),
@@ -444,6 +447,8 @@ contextBridge.exposeInMainWorld('posApi', {
   // Auth
   auth: {
     login: (username, password) => invoke('pos:auth:login', username, password),
+    loginWithGoogle: (idToken) => invoke('pos:auth:loginWithGoogle', idToken),
+    googleConfig: () => invoke('pos:auth:googleConfig'),
     logout: () => invoke('pos:auth:logout'),
     me: () => invoke('pos:auth:me'),
     setSessionUser: (userId, role) => invoke('pos:auth:setSessionUser', userId, role),

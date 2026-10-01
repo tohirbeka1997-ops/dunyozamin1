@@ -7,14 +7,14 @@ const {
   normalizeCustomerCurrency,
   readCustomerBalances,
   readBalanceInCurrency,
-  applyCustomerBalanceDeltaOnce,
+  applyCustomerBalanceDelta,
   writeDebtAdvanceNet,
   readCustomerDebtAdvance,
 } = require('../lib/customerBalance.cjs');
 const {
-  applyReturnToOrderRemaining,
+  allocateInboundToOpenOrders,
   settleAdvanceAgainstOpenDebt,
-  computeCustomerPosition,
+  reverseInboundAllocations,
   roundMoney: roundCustomerMoney,
 } = require('../lib/customerPosition.cjs');
 const { availableToReturnQty, assertReturnQtyAllowed, RETURN_LIMIT_EXCEEDED_CODE, RETURN_LIMIT_EXCEEDED_MESSAGE, isSalesReturnFullyExhausted } = require('../lib/posHardening.cjs');
@@ -207,6 +207,38 @@ class ReturnsService {
 
   _isCustomerAccountRefund(method) {
     return method === 'credit' || method === 'customer_account';
+  }
+
+  /**
+   * Qaytarish summasini AR (qarz) va naqd/karta qismiga bo‘lish.
+   * Avval to‘lanmagan (nasiya) qism — faqat hisob; qolgani — kassa/karta.
+   * Shunda to‘liq nasiya + «naqd» tanlanganda ikkala foyda bo‘lmaydi.
+   */
+  _splitReturnRefund(order, refundAmount, refundMethod) {
+    const amount = roundCustomerMoney(Math.max(0, Number(refundAmount || 0)));
+    const method = this._normalizeRefundMethod(refundMethod);
+    if (!(amount > 0.009)) {
+      return { arPortion: 0, cashPortion: 0, method };
+    }
+    if (this._isCustomerAccountRefund(method)) {
+      return { arPortion: amount, cashPortion: 0, method };
+    }
+    const creditOnOrder = Number(order?.credit_amount || 0);
+    const paidOnOrder = Number(order?.paid_amount || 0);
+    const totalOnOrder = Number(order?.total_amount || 0);
+    const outstanding = roundCustomerMoney(
+      Math.max(creditOnOrder, Math.max(0, totalOnOrder - paidOnOrder))
+    );
+    const arPortion = roundCustomerMoney(Math.min(amount, outstanding));
+    const payout = roundCustomerMoney(Math.max(0, amount - arPortion));
+    const isCash = method === 'cash' || method === 'naqd';
+    return {
+      arPortion,
+      cashPortion: isCash ? payout : 0,
+      method,
+      outstanding,
+      payoutPortion: payout,
+    };
   }
 
   _getUserRoleCodes(userId) {
@@ -510,11 +542,16 @@ class ReturnsService {
     let cashShiftId = null;
     const refundNorm = normalizePayMethod(refundMethod);
     if (!asHold && refundNorm === 'cash' && amount > 0) {
-      cashShiftId = this._findOpenShiftId(data.shift_id || null, actorId);
-      if (!cashShiftId) {
-        throw createError(ERROR_CODES.VALIDATION_ERROR, 'Cash refund requires an open shift');
+      const cashNeed = order
+        ? Number(this._splitReturnRefund(order, amount, refundMethod).cashPortion || 0)
+        : amount;
+      if (cashNeed > 0.009) {
+        cashShiftId = this._findOpenShiftId(data.shift_id || null, actorId);
+        if (!cashShiftId) {
+          throw createError(ERROR_CODES.VALIDATION_ERROR, 'Cash refund requires an open shift');
+        }
+        this._assertCashDrawerSufficient(cashShiftId, cashNeed);
       }
-      this._assertCashDrawerSufficient(cashShiftId, amount);
     }
 
     return {
@@ -785,6 +822,19 @@ class ReturnsService {
     }
 
     if ((refundMethod === 'cash' || refundMethod === 'naqd') && refundAmount > 0) {
+      let cashAmount = refundAmount;
+      if (opts.cashPortion != null && Number.isFinite(Number(opts.cashPortion))) {
+        cashAmount = Number(opts.cashPortion);
+      } else if (opts.order || sr.order_id) {
+        const orderRow =
+          opts.order ||
+          this.db.prepare('SELECT * FROM orders WHERE id = ?').get(sr.order_id);
+        const split = this._splitReturnRefund(orderRow, refundAmount, refundMethod);
+        cashAmount = split.cashPortion;
+      }
+      if (!(cashAmount > 0.009)) {
+        return;
+      }
       const shiftId =
         this._findOpenShiftId(opts.shiftHint || sr.shift_id || null, userId) ||
         sr.shift_id ||
@@ -792,12 +842,12 @@ class ReturnsService {
       if (!shiftId) {
         throw createError(ERROR_CODES.VALIDATION_ERROR, 'Cash refund requires an open shift');
       }
-      this._assertCashDrawerSufficient(shiftId, refundAmount);
+      this._assertCashDrawerSufficient(shiftId, cashAmount);
       this._recordCashRefundMovement({
         returnId: sr.id,
         returnNumber: sr.return_number || null,
         shiftId,
-        amount: refundAmount,
+        amount: cashAmount,
         userId,
         now,
       });
@@ -833,41 +883,47 @@ class ReturnsService {
       }
     }
 
-    if (meta.orderId) {
-      applyReturnToOrderRemaining(this.db, meta.orderId, amount, now);
-    }
-
-    const { applied, balances: balancesAfter } = applyCustomerBalanceDeltaOnce(
+    // POS cart refund_balance bilan bir xil: to‘liq applyCustomerBalanceDelta
+    // loan/qarzni birga yeb qo‘ymasin; avval ochiq buyurtmaga allocate, keyin bucket.
+    // applyReturnToOrderRemaining + allocate birga bo‘lsa credit ikki marta kamayardi.
+    const bucketsBefore = readCustomerDebtAdvance(this.db, customerId, cur);
+    const refundPaymentId = `${ledgerRefId || randomUUID()}:refund`;
+    const refundAlloc = allocateInboundToOpenOrders(this.db, {
+      customerId,
+      paymentId: refundPaymentId,
+      amount,
+      currency: cur,
+      createdAt: now,
+      createdBy: meta.createdBy || null,
+      paymentMethod: meta.method || 'customer_account',
+      preferredOrderId: meta.orderId || null,
+      allocation_type: 'sale_return_credit',
+    });
+    const appliedToOrders = roundCustomerMoney(Number(refundAlloc.applied_to_orders || 0) || 0);
+    const refundRemainder = roundCustomerMoney(Number(refundAlloc.remainder || 0) || 0);
+    writeDebtAdvanceNet(
       this.db,
       customerId,
-      amount,
       cur,
-      ledgerRefId,
+      roundCustomerMoney(Math.max(0, Number(bucketsBefore.debt || 0) - appliedToOrders)),
+      roundCustomerMoney(Number(bucketsBefore.advance || 0) + refundRemainder),
       now
     );
+    const applied = true;
     try {
-      // Apply refund credit to still-open nasiya/loans before parking remainder as ortiqcha.
-      // Without this, delta nets stored debt into advance, then open_order_debt is restored
-      // and the card shows large −ortiqcha with open orders still listed underneath.
       settleAdvanceAgainstOpenDebt(this.db, customerId, cur, {
         createdAt: now,
         createdBy: meta.createdBy || null,
-        refNo: meta.returnNumber || meta.returnId || null,
+        paymentId: ledgerRefId ? `${ledgerRefId}:settle` : undefined,
+        refNo: ledgerRefId || meta.returnNumber || null,
         includeLoans: true,
+        preferredOrderId: meta.orderId || null,
         note: `Qaytarish — ortiqcha ochiq qarzga qo‘llandi: ${meta.returnNumber || meta.returnId || ''}`,
       });
-      const pos = computeCustomerPosition(this.db, customerId, cur);
-      writeDebtAdvanceNet(
-        this.db,
-        customerId,
-        cur,
-        roundCustomerMoney(pos.total_debt),
-        roundCustomerMoney(pos.advance),
-        now
-      );
     } catch (syncErr) {
       console.warn('[RETURNS] position sync skipped:', syncErr?.message || syncErr);
     }
+    const balancesAfter = readCustomerBalances(this.db, customerId);
     const newBalance = readBalanceInCurrency(this.db, customerId, cur);
 
     if (applied) {
@@ -967,12 +1023,13 @@ class ReturnsService {
     }
   }
 
-  _revertCustomerRefund(customerId, returnId, fallbackAmount = 0) {
+  _revertCustomerRefund(customerId, returnId, fallbackAmount = 0, meta = {}) {
     if (!customerId) return 0;
     const customer = this.db.prepare('SELECT * FROM customers WHERE id = ?').get(customerId);
     if (!customer) return 0;
 
     let reverseAmount = 0;
+    let refundCur = normalizeCustomerCurrency(meta.currency || 'UZS');
     let usedLedger = false;
     try {
       const tableExists = this.db.prepare(`
@@ -986,11 +1043,18 @@ class ReturnsService {
           WHERE ref_id = ? AND type = 'refund'
         `).get(returnId);
         reverseAmount = Number(row?.total || 0);
-        usedLedger = true;
-        this.db.prepare(`DELETE FROM customer_ledger WHERE ref_id = ? AND type = 'refund'`).run(returnId);
+        usedLedger = reverseAmount > 0;
+        if (hasCustomerLedgerCurrency(this.db)) {
+          const curRow = this.db
+            .prepare(
+              `SELECT currency FROM customer_ledger WHERE ref_id = ? AND type = 'refund' LIMIT 1`
+            )
+            .get(returnId);
+          if (curRow?.currency) refundCur = normalizeCustomerCurrency(curRow.currency);
+        }
       }
     } catch (ledgerError) {
-      console.warn('⚠️ Failed to inspect/delete customer_ledger for return rollback:', ledgerError.message);
+      console.warn('⚠️ Failed to inspect customer_ledger for return rollback:', ledgerError.message);
     }
 
     if (!usedLedger) {
@@ -998,38 +1062,61 @@ class ReturnsService {
     }
     if (!(reverseAmount > 0)) return 0;
 
-    let refundCur = 'UZS';
+    const cur = refundCur;
+    const now = new Date().toISOString().replace('T', ' ').substring(0, 19);
+    const returnNumber = meta.returnNumber != null ? String(meta.returnNumber) : null;
+
+    // 1) Buyurtma credit_amount va settle/loan allocationlarni qaytarish
+    let allocResult = { deleted_rows: 0 };
     try {
-      const tableExists = this.db.prepare(`
-        SELECT name FROM sqlite_master WHERE type='table' AND name='customer_ledger'
-      `).get();
-      if (tableExists && hasCustomerLedgerCurrency(this.db)) {
-        const row = this.db
-          .prepare(
-            `SELECT currency FROM customer_ledger WHERE ref_id = ? AND type = 'refund' LIMIT 1`
-          )
-          .get(returnId);
-        if (row?.currency) refundCur = normalizeCustomerCurrency(row.currency);
-      }
-    } catch {
-      /* keep UZS */
+      allocResult = reverseInboundAllocations(this.db, {
+        customerId,
+        paymentIds: [`${returnId}:refund`, `${returnId}:settle`],
+        cashDocIds: [returnId, returnNumber].filter(Boolean),
+        now,
+      });
+    } catch (allocErr) {
+      console.warn('[RETURNS] reverseInboundAllocations skipped:', allocErr?.message || allocErr);
     }
 
-    const cur = normalizeCustomerCurrency(refundCur);
-    const now = new Date().toISOString().replace('T', ' ').substring(0, 19);
-    if (hasCustomerBalanceUsd(this.db)) {
-      const uzsRev = cur === 'UZS' ? reverseAmount : 0;
-      const usdRev = cur === 'USD' ? reverseAmount : 0;
-      this.db
-        .prepare(
-          `UPDATE customers SET balance = balance - ?, balance_usd = balance_usd - ?, updated_at = ? WHERE id = ?`
-        )
-        .run(uzsRev, usdRev, now, customerId);
-    } else {
-      this.db
-        .prepare(`UPDATE customers SET balance = balance - ?, updated_at = ? WHERE id = ?`)
-        .run(reverseAmount, now, customerId);
+    // Sof naqd/karta qaytarish (AR yozilmagan) — mijoz bucketiga tegilmasin
+    if (!usedLedger && !(Number(allocResult.deleted_rows || 0) > 0)) {
+      return 0;
     }
+
+    // 2) Dual bucket: refund +amount edi → cancel −amount (advance ↓ / debt ↑)
+    try {
+      applyCustomerBalanceDelta(this.db, customerId, -reverseAmount, cur, now);
+    } catch (bucketErr) {
+      console.warn('[RETURNS] bucket revert failed, falling back to signed balance:', bucketErr?.message || bucketErr);
+      if (hasCustomerBalanceUsd(this.db)) {
+        const uzsRev = cur === 'UZS' ? reverseAmount : 0;
+        const usdRev = cur === 'USD' ? reverseAmount : 0;
+        this.db
+          .prepare(
+            `UPDATE customers SET balance = balance - ?, balance_usd = balance_usd - ?, updated_at = ? WHERE id = ?`
+          )
+          .run(uzsRev, usdRev, now, customerId);
+      } else {
+        this.db
+          .prepare(`UPDATE customers SET balance = balance - ?, updated_at = ? WHERE id = ?`)
+          .run(reverseAmount, now, customerId);
+      }
+    }
+
+    // 3) Ledger refund qatorlarini o‘chirish (currency allaqachon o‘qilgan)
+    try {
+      const tableExists = this.db.prepare(`
+        SELECT name FROM sqlite_master
+        WHERE type='table' AND name='customer_ledger'
+      `).get();
+      if (tableExists) {
+        this.db.prepare(`DELETE FROM customer_ledger WHERE ref_id = ? AND type = 'refund'`).run(returnId);
+      }
+    } catch (ledgerDelErr) {
+      console.warn('⚠️ Failed to delete customer_ledger for return rollback:', ledgerDelErr.message);
+    }
+
     return reverseAmount;
   }
 
@@ -1673,45 +1760,36 @@ class ReturnsService {
           throw updateError;
         }
 
-        // Customer balance (system convention: negative = debt, see salesService.finalizeOrder).
-        // - Refund to customer_account/credit: adjust balance (existing behaviour).
-        // - Refund cash/card on an order that had unpaid credit (credit sale): must also reduce debt;
-        //   otherwise qarz ayrilmaydi (bug) when user picks naqd/karta in the return form.
-        const creditOnOrder = Number(order.credit_amount || 0);
-        const paidOnOrder = Number(order.paid_amount || 0);
+        // Customer balance / kassa split:
+        // - customer_account: to‘liq summa hisobga
+        // - cash/card: avval nasiya (AR), faqat to‘langan qismi kassaga
         const totalOnOrder = Number(order.total_amount || 0);
-        const ps = String(order.payment_status || '').toLowerCase();
-        // Buyurtmada hali to‘lanmagan summa (nasiya / qisman to‘lov). Ba’zi bazalarda credit_amount 0
-        // qolib ketishi mumkin — shunda cash qaytarish balansga umuman yozilmasdi (haqdor yo‘qolardi).
-        const outstandingOnOrder = Math.max(0, totalOnOrder - paidOnOrder);
-        const orderHadUnpaidCredit =
-          creditOnOrder > 0.009 ||
-          ps === 'on_credit' ||
-          outstandingOnOrder > 0.02;
+        const refundSplit = this._splitReturnRefund(order, refundAmount, data.refund_method);
         const shouldAdjustBalance =
           customerId &&
           String(customerId) !== 'default-customer-001' &&
-          refundAmount > 0 &&
-          (this._isCustomerAccountRefund(data.refund_method) || orderHadUnpaidCredit);
+          refundSplit.arPortion > 0.009;
 
         if (!asHold && shouldAdjustBalance) {
           try {
-            const balanceResult = this._applyCustomerRefund(customerId, refundAmount, {
+            const balanceResult = this._applyCustomerRefund(customerId, refundSplit.arPortion, {
               returnId,
               returnNumber,
               orderId: data.order_id || order?.id,
               currency: order.currency,
-              method: data.refund_method || 'customer_account',
+              method: this._isCustomerAccountRefund(refundSplit.method)
+                ? data.refund_method || 'customer_account'
+                : 'customer_account',
               createdAt: now,
               createdBy: cashierId || userId || null,
               note:
-                orderHadUnpaidCredit && !this._isCustomerAccountRefund(data.refund_method)
-                  ? `Qaytarish — qarz kamaytirildi: ${returnNumber} (${refundAmount}, ${data.refund_method || 'cash'})`
+                !this._isCustomerAccountRefund(refundSplit.method) && refundSplit.arPortion > 0.009
+                  ? `Qaytarish — qarz kamaytirildi: ${returnNumber} (AR ${refundSplit.arPortion}, usul=${data.refund_method || 'cash'})`
                   : undefined,
             });
             if (balanceResult) {
               console.log(
-                `👥 Updated customer balance: ${balanceResult.customer.name} - ${balanceResult.oldBalance} -> ${balanceResult.newBalance} (refund: ${refundAmount}, method=${data.refund_method}, hadCreditOrder=${orderHadUnpaidCredit})`
+                `👥 Updated customer balance: ${balanceResult.customer.name} - ${balanceResult.oldBalance} -> ${balanceResult.newBalance} (AR=${refundSplit.arPortion}, cash=${refundSplit.cashPortion}, method=${data.refund_method})`
               );
             }
           } catch (customerError) {
@@ -1733,12 +1811,15 @@ class ReturnsService {
           });
 
           const refundMethodNorm = String(data.refund_method || 'cash').toLowerCase();
-          if ((refundMethodNorm === 'cash' || refundMethodNorm === 'naqd') && refundAmount > 0) {
+          if (
+            (refundMethodNorm === 'cash' || refundMethodNorm === 'naqd') &&
+            refundSplit.cashPortion > 0.009
+          ) {
             this._recordCashRefundMovement({
               returnId,
               returnNumber,
               shiftId,
-              amount: refundAmount,
+              amount: refundSplit.cashPortion,
               userId: cashierId || userId,
               now,
             });
@@ -2415,32 +2496,28 @@ class ReturnsService {
           }
         }
 
-        const creditOnOrder = Number(order.credit_amount || 0);
-        const paidOnOrder = Number(order.paid_amount || 0);
         const totalOnOrder = Number(order.total_amount || 0);
-        const ps = String(order.payment_status || '').toLowerCase();
-        const outstandingOnOrder = Math.max(0, totalOnOrder - paidOnOrder);
-        const orderHadUnpaidCredit =
-          creditOnOrder > 0.009 || ps === 'on_credit' || outstandingOnOrder > 0.02;
+        const refundSplit = this._splitReturnRefund(order, refundAmount, refundMethod);
         const shouldAdjustBalance =
           customerId &&
           String(customerId) !== 'default-customer-001' &&
-          refundAmount > 0 &&
-          (this._isCustomerAccountRefund(refundMethod) || orderHadUnpaidCredit);
+          refundSplit.arPortion > 0.009;
 
         if (shouldAdjustBalance) {
           try {
-            this._applyCustomerRefund(customerId, refundAmount, {
+            this._applyCustomerRefund(customerId, refundSplit.arPortion, {
               returnId,
               returnNumber: sr.return_number || null,
               orderId: sr.order_id || order?.id,
               currency: order.currency,
-              method: refundMethod || 'customer_account',
+              method: this._isCustomerAccountRefund(refundSplit.method)
+                ? refundMethod || 'customer_account'
+                : 'customer_account',
               createdAt: now,
               createdBy: userId || null,
               note:
-                orderHadUnpaidCredit && !this._isCustomerAccountRefund(refundMethod)
-                  ? `Qaytarish — qarz kamaytirildi: ${sr.return_number || ''} (${refundAmount}, ${refundMethod || 'cash'})`
+                !this._isCustomerAccountRefund(refundSplit.method) && refundSplit.arPortion > 0.009
+                  ? `Qaytarish — qarz kamaytirildi: ${sr.return_number || ''} (AR ${refundSplit.arPortion}, usul=${refundMethod || 'cash'})`
                   : undefined,
             });
           } catch (customerError) {
@@ -2454,6 +2531,8 @@ class ReturnsService {
         this._applyCashAndLoyaltyOnComplete(sr, {
           refundAmount,
           refundMethod,
+          cashPortion: refundSplit.cashPortion,
+          order,
           userId: actorId || userId,
           now,
           shiftHint: data?.shift_id || order.shift_id || null,
@@ -3514,7 +3593,15 @@ class ReturnsService {
         }
       }
 
-      this._revertCustomerRefund(returnRecord.customer_id, returnId, Number(returnRecord.refund_amount || 0));
+      this._revertCustomerRefund(
+        returnRecord.customer_id,
+        returnId,
+        Number(returnRecord.refund_amount || 0),
+        {
+          returnNumber: returnRecord.return_number || null,
+          currency: returnRecord.currency || null,
+        }
+      );
       this._revertCashRefundMovement(returnId);
 
       const setCols = ['status = ?'];

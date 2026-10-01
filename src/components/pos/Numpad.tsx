@@ -18,6 +18,24 @@ interface NumpadProps {
   description?: string;
   /** Rendered below the header (e.g. mode toggles). */
   headerExtra?: ReactNode;
+  /**
+   * Optional qty ↔ so'm (or similar) mode switch hotkeys while the dialog is open.
+   * Tab toggles; ← selects left; → selects right.
+   */
+  modeSwitch?: {
+    onSelectLeft: () => void;
+    onSelectRight: () => void;
+    /** Current side — used so Tab toggles correctly. */
+    active: 'left' | 'right';
+  };
+  /**
+   * Product sale-unit hotkeys: Alt+1…Alt+9 selects unit by index.
+   * (Digits without Alt still type into the quantity field.)
+   */
+  unitSwitch?: {
+    count: number;
+    onSelectIndex: (index: number) => void;
+  };
   initialValue?: number;
   onApply: (value: number) => void;
   max?: number;
@@ -37,6 +55,8 @@ export default function Numpad({
   title,
   description,
   headerExtra,
+  modeSwitch,
+  unitSwitch,
   initialValue = 0,
   onApply,
   max,
@@ -65,6 +85,14 @@ export default function Numpad({
       setValueRaw(initial);
     }
     setIsPristine(true);
+    const t = window.setTimeout(() => {
+      inputRef.current?.focus();
+      const len = inputRef.current?.value?.length ?? 0;
+      if (inputRef.current && typeof inputRef.current.setSelectionRange === 'function') {
+        inputRef.current.setSelectionRange(len, len);
+      }
+    }, 0);
+    return () => window.clearTimeout(t);
   }, [open, initialValue, isPayment, max, min, allowDecimal]);
 
   useEffect(() => {
@@ -77,7 +105,7 @@ export default function Numpad({
       }
     }, 0);
     return () => window.clearTimeout(t);
-  }, [open]);
+  }, [open, modeSwitch?.active]);
 
   // Keypad Logic: Ensure state updates instantly and synchronously
   const updateValueImmediately = (newRaw: string) => {
@@ -181,25 +209,75 @@ export default function Numpad({
     onOpenChange(false);
   };
 
+  const applyModeSwitchKey = (e: {
+    key: string;
+    code?: string;
+    altKey?: boolean;
+    preventDefault: () => void;
+    stopPropagation?: () => void;
+  }) => {
+    // Alt+1…9 → product units (takes priority over qty/so'm shortcuts)
+    if (unitSwitch && e.altKey && unitSwitch.count > 0) {
+      const digit = (() => {
+        if (/^[1-9]$/.test(e.key)) return Number(e.key);
+        const m = /^Digit([1-9])$/.exec(e.code || '');
+        return m ? Number(m[1]) : 0;
+      })();
+      if (digit >= 1 && digit <= unitSwitch.count && digit <= 9) {
+        e.preventDefault();
+        e.stopPropagation?.();
+        unitSwitch.onSelectIndex(digit - 1);
+        return true;
+      }
+    }
+    if (!modeSwitch) return false;
+    if (e.key === 'Tab') {
+      e.preventDefault();
+      e.stopPropagation?.();
+      if (modeSwitch.active === 'left') modeSwitch.onSelectRight();
+      else modeSwitch.onSelectLeft();
+      return true;
+    }
+    if (e.key === 'ArrowLeft') {
+      e.preventDefault();
+      e.stopPropagation?.();
+      modeSwitch.onSelectLeft();
+      return true;
+    }
+    if (e.key === 'ArrowRight') {
+      e.preventDefault();
+      e.stopPropagation?.();
+      modeSwitch.onSelectRight();
+      return true;
+    }
+    return false;
+  };
+
   const handleInputKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (applyModeSwitchKey(e)) return;
     if (e.key === 'Enter') {
       e.preventDefault();
+      e.stopPropagation();
       handleApply();
     } else if (e.key === 'Escape') {
       e.preventDefault();
+      e.stopPropagation();
       onOpenChange(false);
     }
     // Let the input handle number keys, decimal, backspace, delete naturally
   };
 
   const handleDialogKeyDown = (e: React.KeyboardEvent) => {
+    if (applyModeSwitchKey(e)) return;
     // Only handle Enter and Escape when focus is on dialog (not input)
     if (e.target === e.currentTarget || (e.target as HTMLElement).tagName !== 'INPUT') {
       if (e.key === 'Enter') {
         e.preventDefault();
+        e.stopPropagation();
         handleApply();
       } else if (e.key === 'Escape') {
         e.preventDefault();
+        e.stopPropagation();
         onOpenChange(false);
       }
     }

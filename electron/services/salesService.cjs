@@ -10,6 +10,7 @@ const {
   readCustomerBalances,
   readBalanceInCurrency,
   applyCustomerBalanceDeltaOnce,
+  applyCustomerBalanceDelta,
   orderSalesStatUzs,
   computeSaleCreditAmount,
   assertCreditAmountAligned,
@@ -1499,35 +1500,59 @@ class SalesService {
             AND direction = 'out'
           LIMIT 1
         `);
+        const hasReturnAllocStmt = this.db.prepare(`
+          SELECT 1
+          FROM inventory_batch_allocations
+          WHERE direction = 'in'
+            AND reference_type = 'return_item'
+            AND reference_id = ?
+          LIMIT 1
+        `);
 
         for (const item of items) {
           const product = this.db.prepare('SELECT track_stock FROM products WHERE id = ?').get(item.product_id);
-          if (product && product.track_stock) {
+          if (!(product && product.track_stock)) continue;
+          const qty = Number(item.qty_base ?? item.quantity ?? 0) || 0;
+          if (qty > 0) {
             const exists = hasAllocStmt.get(item.id);
             if (!exists) {
               this.batchService.allocateFIFOWithFallback({
                 orderItemId: item.id,
                 productId: item.product_id,
                 warehouseId: order.warehouse_id,
-                quantity: item.qty_base ?? item.quantity,
+                quantity: qty,
+              });
+            }
+          } else if (qty < 0) {
+            // Cart return on finalize: put back to batches (idempotent if already allocated).
+            const cartReturnRef = `cart_return:${item.id}`;
+            if (!hasReturnAllocStmt.get(cartReturnRef)) {
+              this.batchService.allocateReturnForCartOrderItem({
+                orderItemId: item.id,
+                productId: item.product_id,
+                warehouseId: order.warehouse_id,
+                quantity: Math.abs(qty),
               });
             }
           }
         }
       }
 
-      // Update stock balances (OUT movements)
+      // Update stock balances (OUT movements for sales; IN for cart-return lines)
       for (const item of items) {
         const product = this.db.prepare('SELECT * FROM products WHERE id = ?').get(item.product_id);
         if (product && product.track_stock) {
+          const qty = Number(item.qty_base ?? item.quantity ?? 0) || 0;
           this.inventoryService._updateBalance(
             item.product_id,
             order.warehouse_id,
-            -(item.qty_base ?? item.quantity),
-            'sale',
+            -qty,
+            qty < 0 ? 'return' : 'sale',
             'order',
             orderId,
-            `Sale via order ${order.order_number}`,
+            qty < 0
+              ? `Exchange return via order ${order.order_number}`
+              : `Sale via order ${order.order_number}`,
             order.user_id
           );
         }
@@ -1815,24 +1840,15 @@ class SalesService {
     const canOverrideTier = roleCodes.some((r) => r === 'admin' || r === 'manager');
     const canManualOverride = roleCodes.some((r) => r === 'admin' || r === 'manager');
 
-    let customerTier = null;
-    if (orderData.customer_id) {
-      try {
-        const row = this.db.prepare('SELECT pricing_tier FROM customers WHERE id = ?').get(orderData.customer_id);
-        if (row?.pricing_tier) customerTier = String(row.pricing_tier);
-      } catch {
-        // ignore
-      }
-    }
-
+    // Pricing tier: operator-selected price_tier_code wins.
+    // customer.pricing_tier is an identity/loyalty flag (usta badge), not forced sale price.
+    // Oddiy (retail) and Usta (master) are always allowed; other tiers need admin/manager.
     const requestedTier = orderData.price_tier_code || orderData.price_tier || null;
-    let tierCode = customerTier || requestedTier || 'retail';
+    let tierCode = requestedTier || 'retail';
+    const isOperatorFreeTier = tierCode === 'retail' || tierCode === 'master' || tierCode === 'usta';
+    if (tierCode === 'usta') tierCode = 'master';
 
-    if (customerTier && requestedTier && requestedTier !== customerTier && !canOverrideTier) {
-      throw createError(ERROR_CODES.FORBIDDEN, 'Tier override is not allowed for this role');
-    }
-
-    if (!customerTier && tierCode !== 'retail' && !canOverrideTier) {
+    if (!isOperatorFreeTier && !canOverrideTier) {
       throw createError(ERROR_CODES.FORBIDDEN, 'Tier change is not allowed for this role');
     }
 
@@ -2441,13 +2457,15 @@ class SalesService {
         const hasPromotionId = this._hasOrderItemCol('promotion_id');
 
         // Batch mode: allocate FIFO batches BEFORE insert so cost_price can be frozen correctly.
+        // Return lines (qtyBase < 0) do not consume FIFO — they put stock back after insert.
         if (batchActive && this.batchService && product.track_stock && qtyBase > 0) {
           this.batchService.allocateFIFOWithFallback(itemId, product.id, warehouseId, qtyBase);
         }
 
+        const costQty = Math.abs(Number(qtyBase || qtySale || 0));
         const unitCost =
-          hasCostPrice && this.costService && qtyBase > 0
-            ? this.costService.resolveCostForSale(product.id, qtyBase, warehouseId, itemId)
+          hasCostPrice && this.costService && costQty > 0
+            ? this.costService.resolveCostForSale(product.id, costQty, warehouseId, itemId)
             : 0;
         const signedQty = Number(qtyBase || qtySale || 0);
         const lineProfit = lineTotal - (Number(unitCost) || 0) * signedQty;
@@ -2516,6 +2534,25 @@ class SalesService {
           quantity: qtySale,
           insertChanges: insertResult.changes,
         });
+
+        // Cart / exchange return: restore batch remaining alongside stock increase.
+        // Without this, stock_balances rises while inventory_batches.remaining_qty does not
+        // (stock > batch drift). Prefer original sale line when POS sends source_order_item_id.
+        if (batchActive && this.batchService && product.track_stock && qtyBase < 0) {
+          const sourceOrderItemId =
+            itemData.source_order_item_id ||
+            itemData.sourceOrderItemId ||
+            itemData.return_order_item_id ||
+            itemData.original_order_item_id ||
+            null;
+          this.batchService.allocateReturnForCartOrderItem({
+            orderItemId: itemId,
+            productId: product.id,
+            warehouseId,
+            quantity: Math.abs(qtyBase),
+            sourceOrderItemId,
+          });
+        }
 
         if (hasCostPrice && !(Number(unitCost) >= 0)) {
           console.warn('[SALE] cost_price resolved to invalid value, defaulting to 0:', {
@@ -3073,6 +3110,14 @@ class SalesService {
           });
         }
         if (inboundCash > payEps) {
+          // Mirror refund_balance / payment_in: FIFO to open orders, then write buckets.
+          // Old bug: only remainder→advance was written; applied_to_orders left debt_uzs
+          // unchanged → ghost «Pul berilgan» (open↓ but debt_uzs stale).
+          const bucketsBeforeInbound = readCustomerDebtAdvance(
+            this.db,
+            orderData.customer_id,
+            saleCurrency
+          );
           const inboundAlloc = allocateInboundToOpenOrders(this.db, {
             customerId: orderData.customer_id,
             paymentId: orderId,
@@ -3082,25 +3127,56 @@ class SalesService {
             createdBy: orderData.cashier_id || orderData.user_id || null,
             paymentMethod: 'cash',
           });
-          if (inboundAlloc.remainder > payEps) {
-            const b = readCustomerDebtAdvance(this.db, orderData.customer_id, saleCurrency);
-            writeDebtAdvanceNet(
-              this.db,
-              orderData.customer_id,
-              saleCurrency,
-              b.debt,
-              roundCustomerMoney(b.advance + inboundAlloc.remainder),
-              now
-            );
-          }
-        }
-        if (refundMagForBalance > payEps) {
-          applyCustomerBalanceDeltaOnce(
+          const appliedToOrders = roundCustomerMoney(
+            Number(inboundAlloc.applied_to_orders || 0) || 0
+          );
+          const inboundRemainder = roundCustomerMoney(Number(inboundAlloc.remainder || 0) || 0);
+          writeDebtAdvanceNet(
             this.db,
             orderData.customer_id,
-            refundMagForBalance,
             saleCurrency,
-            `${orderId}:refund`,
+            roundCustomerMoney(Math.max(0, bucketsBeforeInbound.debt - appliedToOrders)),
+            roundCustomerMoney(bucketsBeforeInbound.advance + inboundRemainder),
+            now
+          );
+        }
+        if (refundMagForBalance > payEps) {
+          // Mirror customersService payment_in / returnsService: reduce open nasiya
+          // credit first, then apply balance delta. Without FIFO allocation,
+          // computeCustomerPosition restores open_order_debt and wipes the refund.
+          //
+          // Muhim: applyCustomerBalanceDelta(full refund) avval butun debt_uzs ni
+          // (jumladan naqd «qarz berildi» loan) yeb, keyin position loan ni yana
+          // qayta qo‘shardi → ortiqcha kam, qarz ortiqcha qolardi. Faqat ochiq
+          // buyurtma qismiga debt kamaytiriladi; qolgani advance; loan settle
+          // keyinroq (settleAdvanceAgainstOpenDebt).
+          const bucketsBeforeRefund = readCustomerDebtAdvance(
+            this.db,
+            orderData.customer_id,
+            saleCurrency
+          );
+          const refundAlloc = allocateInboundToOpenOrders(this.db, {
+            customerId: orderData.customer_id,
+            paymentId: `${orderId}:refund`,
+            amount: refundMagForBalance,
+            currency: saleCurrency,
+            createdAt: now,
+            createdBy: orderData.cashier_id || orderData.user_id || null,
+            paymentMethod: 'refund_balance',
+            shiftId: orderData.shift_id || null,
+            allocation_type: 'sale_return_credit',
+          });
+          const appliedToOrders = roundCustomerMoney(
+            Number(refundAlloc.applied_to_orders || 0) || 0
+          );
+          const refundRemainder = roundCustomerMoney(Number(refundAlloc.remainder || 0) || 0);
+          refundDebtReduction = appliedToOrders;
+          writeDebtAdvanceNet(
+            this.db,
+            orderData.customer_id,
+            saleCurrency,
+            roundCustomerMoney(Math.max(0, bucketsBeforeRefund.debt - appliedToOrders)),
+            roundCustomerMoney(bucketsBeforeRefund.advance + refundRemainder),
             now
           );
         }
@@ -3118,39 +3194,41 @@ class SalesService {
             now
           );
         }
-        const posSale = computeCustomerPosition(this.db, orderData.customer_id, saleCurrency);
-        writeDebtAdvanceNet(
+        // Muhim: pos.total_debt ni customers.debt_uzs ga yozmang.
+        // Eski buyurtmalarda credit_amount to‘lovlardan keyin ham qolib ketgan bo‘lsa
+        // (allocation yo‘q), open_order_debt sun’iy katta chiqadi va 100k+10k o‘rniga
+        // millionlab qarz yoziladi. Hisob holati (bucket) — SoT; settle o‘zi yozadi.
+        let posSale = computeCustomerPosition(this.db, orderData.customer_id, saleCurrency);
+        let posAfterSale = posSale;
+        const loanNetOutstanding = Math.max(
+          0,
+          Number(posSale.loan_issued || 0) - Number(posSale.loan_repaid || 0)
+        );
+        const bucketsForSettle = readCustomerDebtAdvance(
           this.db,
           orderData.customer_id,
-          saleCurrency,
-          posSale.total_debt,
-          posSale.advance,
-          now
+          saleCurrency
         );
-        // Sale TX (not list/getById): if ortiqcha fully covers new open nasiya, apply it now.
-        let posAfterSale = posSale;
         if (
-          Number(posSale.advance || 0) > 0.009 &&
-          Number(posSale.open_order_debt || 0) > 0.009 &&
-          Number(posSale.advance || 0) + 0.01 >= Number(posSale.open_order_debt || 0)
+          Number(bucketsForSettle.advance || 0) > 0.009 &&
+          (Number(posSale.open_order_debt || 0) > 0.009 || loanNetOutstanding > 0.009)
         ) {
           try {
             const settled = settleAdvanceAgainstOpenDebt(this.db, orderData.customer_id, saleCurrency, {
               createdAt: now,
               createdBy: orderData.cashier_id || orderData.user_id || null,
               refNo: order.order_number || orderId,
-              note: `Sotuv — ortiqcha ochiq nasiyaga qo‘llandi: ${order.order_number || orderId}`,
+              includeLoans: true,
+              note:
+                refundMagForBalance > payEps
+                  ? `POS qaytim — ortiqcha ochiq qarzga qo‘llandi: ${order.order_number || orderId}`
+                  : `Sotuv — ortiqcha ochiq nasiyaga qo‘llandi: ${order.order_number || orderId}`,
             });
-            if ((settled.applied_to_orders || 0) > 0.009) {
+            if (
+              (settled.applied_to_orders || 0) > 0.009 ||
+              (settled.applied_to_loans || 0) > 0.009
+            ) {
               posAfterSale = computeCustomerPosition(this.db, orderData.customer_id, saleCurrency);
-              writeDebtAdvanceNet(
-                this.db,
-                orderData.customer_id,
-                saleCurrency,
-                posAfterSale.total_debt,
-                posAfterSale.advance,
-                now
-              );
             }
           } catch (settleSaleErr) {
             console.warn(
@@ -3159,6 +3237,7 @@ class SalesService {
             );
           }
         }
+        posSale = posAfterSale;
         const bucketsSale = readCustomerDebtAdvance(this.db, orderData.customer_id, saleCurrency);
         void posAfterSale;
 
@@ -3234,8 +3313,13 @@ class SalesService {
                   : Number(finalTotalPaid || order.total_amount || 0);
             const ledgerType =
               finalCreditAmount > 0 ? 'sale' : refundMagForBalance > 0 ? 'refund' : 'sale';
-            const ledgerSurplus =
-              refundMagForBalance > refundDebtReduction ? refundMagForBalance - refundDebtReduction : 0;
+            const ledgerSurplus = roundCustomerMoney(Number(bucketsSale.advance || 0) || 0);
+            const ledgerDebtCleared = roundCustomerMoney(
+              Math.max(
+                0,
+                Number(bucketsBeforeSale.debt || 0) - Number(bucketsSale.debt || 0)
+              )
+            );
             const methodLabels = { cash: 'Naqd', card: 'Karta', qr: 'QR' };
             const payMethodsLabel = (intakePayments || [])
               .map((p) => {
@@ -3252,8 +3336,8 @@ class SalesService {
               finalCreditAmount > 0
                 ? `Sotuv: ${order.order_number} (Jami ${saleTotal} ${curLabel}; to‘lov ${finalTotalPaid}; nasiya ${finalCreditAmount}; avans ${prepaidConsumed}; chegirma ${discAmt})`
                 : refundMagForBalance > 0
-                  ? ledgerSurplus > 0 && refundDebtReduction > 0
-                    ? `POS almashuv / qaytim: ${order.order_number} (jami ${refundMagForBalance} ${curLabel} — qarz ${refundDebtReduction}; haqdor ${ledgerSurplus})`
+                  ? ledgerDebtCleared > 0.009 || ledgerSurplus > 0.009
+                    ? `POS almashuv / qaytim: ${order.order_number} (jami ${refundMagForBalance} ${curLabel} — qarz yopildi ${ledgerDebtCleared}; haqdor ${ledgerSurplus})`
                     : `POS almashuv / qaytim: ${order.order_number} (${refundMagForBalance} ${curLabel})`
                   : `Sotuv: ${order.order_number} (Jami ${saleTotal} ${curLabel}; to‘lov ${finalTotalPaid}; usul: ${payMethodsLabel || '—'}; chegirma ${discAmt}; avans ${prepaidConsumed})`;
             const inboundPayTotal =
@@ -3278,7 +3362,7 @@ class SalesService {
                 : payMethodsLabel || null,
               op_code: saleOpCode,
               debt_before: bucketsBeforeSale.debt,
-              debt_after: posSale.total_debt,
+              debt_after: bucketsSale.debt,
               advance_before: bucketsBeforeSale.advance,
               advance_after: bucketsSale.advance,
             });
@@ -3329,7 +3413,7 @@ class SalesService {
                     ? CUSTOMER_OP.DEBT_PAYMENT_RECEIVED
                     : CUSTOMER_OP.ADVANCE_RECEIVED,
                 debt_before: bucketsBeforeSale.debt,
-                debt_after: posSale.total_debt,
+                debt_after: bucketsSale.debt,
                 advance_before: bucketsBeforeSale.advance,
                 advance_after: bucketsSale.advance,
               });
@@ -3622,13 +3706,15 @@ class SalesService {
       orderHadUnpaidCredit &&
       paidOnOrder > 0.02
     ) {
-      // createReturn(customer_account) credits full merchandise; naqd/qisman qismi allaqachon
-      // kassada — balansga qayta yozilmasligi kerak (aks holda tahrirda qarz past bo‘lib qoladi).
-      this.db
-        .prepare(
-          `UPDATE customers SET balance = balance - ?, updated_at = ? WHERE id = ?`,
-        )
-        .run(paidOnOrder, now, order.customer_id);
+      // createReturn(customer_account) to‘liq tovar summasini hisobga yozadi.
+      // To‘langan (naqd) qismini dual-bucket orqali qayta yechamiz — raw balance emas.
+      applyCustomerBalanceDelta(
+        this.db,
+        order.customer_id,
+        -paidOnOrder,
+        normalizeCustomerCurrency(order.currency),
+        now
+      );
     }
 
     if (
@@ -3904,7 +3990,14 @@ class SalesService {
         COALESCE((
           SELECT SUM(
             CASE
+              -- POS savat / almashuv qaytarish (manfiy miqdor)
+              WHEN COALESCE(oi.quantity, 0) < -1e-9 THEN ABS(COALESCE(
+                oi.final_total,
+                oi.line_total,
+                (COALESCE(oi.unit_price, 0) * ABS(oi.quantity))
+              ))
               WHEN ABS(COALESCE(oi.quantity, 0)) < 1e-9 THEN 0
+              -- Klassik qaytarish: returned_quantity / sotilgan
               ELSE ABS(COALESCE(
                 oi.final_total,
                 oi.line_total,
@@ -3915,14 +4008,34 @@ class SalesService {
           FROM order_items oi WHERE oi.order_id = o.id
         ), 0) AS returned_total,
         COALESCE((
+          SELECT SUM(
+            CASE
+              WHEN COALESCE(oi.quantity, 0) > 1e-9 THEN ABS(COALESCE(
+                oi.final_total,
+                oi.line_total,
+                (COALESCE(oi.unit_price, 0) * ABS(oi.quantity))
+              ))
+              ELSE 0
+            END
+          )
+          FROM order_items oi WHERE oi.order_id = o.id
+        ), 0) AS sold_lines_total,
+        COALESCE((
           SELECT CASE
-            WHEN SUM(CASE WHEN ABS(COALESCE(oi.quantity, 0)) > 0 THEN 1 ELSE 0 END) = 0
+            WHEN SUM(CASE WHEN COALESCE(oi.quantity, 0) > 1e-9 THEN 1 ELSE 0 END) = 0
+              AND SUM(CASE WHEN COALESCE(oi.quantity, 0) < -1e-9 THEN 1 ELSE 0 END) > 0
+              THEN 'fully_returned'
+            WHEN SUM(CASE WHEN COALESCE(oi.quantity, 0) > 1e-9 THEN 1 ELSE 0 END) = 0
               THEN 'not_returned'
-            WHEN SUM(CASE WHEN COALESCE(oi.returned_quantity, 0) > 0 THEN 1 ELSE 0 END) = 0
+            WHEN SUM(CASE
+              WHEN COALESCE(oi.quantity, 0) > 1e-9 AND COALESCE(oi.returned_quantity, 0) > 0 THEN 1
+              WHEN COALESCE(oi.quantity, 0) < -1e-9 THEN 1
+              ELSE 0
+            END) = 0
               THEN 'not_returned'
             WHEN SUM(
               CASE
-                WHEN ABS(COALESCE(oi.quantity, 0)) > 0
+                WHEN COALESCE(oi.quantity, 0) > 1e-9
                   AND COALESCE(oi.returned_quantity, 0) + 1e-9 < ABS(oi.quantity)
                 THEN 1 ELSE 0
               END
@@ -4034,14 +4147,23 @@ class SalesService {
 
     const rows = this.db.prepare(query).all(params);
     return rows.map((row) => {
-      const gross = Math.max(0, Number(row.total_amount) || 0);
       const returned = Math.max(0, Number(row.returned_total) || 0);
+      const soldLines = Math.max(0, Number(row.sold_lines_total) || 0);
+      const gross =
+        soldLines > 0.009 ? soldLines : Math.max(0, Number(row.total_amount) || 0);
+      let returnStatus = row.return_status || 'not_returned';
+      if (returnStatus === 'not_returned' && returned > 0.009) {
+        returnStatus =
+          gross <= 0.009 || returned >= gross - 0.009
+            ? 'fully_returned'
+            : 'partially_returned';
+      }
       return {
         ...row,
-        gross_total: gross,
+        gross_total: Math.round(gross * 100) / 100,
         returned_total: Math.round(returned * 100) / 100,
         net_total: Math.round(Math.max(0, gross - returned) * 100) / 100,
-        return_status: row.return_status || 'not_returned',
+        return_status: returnStatus,
       };
     });
   }

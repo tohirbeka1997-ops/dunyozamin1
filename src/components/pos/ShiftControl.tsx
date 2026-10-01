@@ -73,6 +73,10 @@ export default function ShiftControl({ compact = false }: ShiftControlProps) {
     /** Tovar summasi (jami sotuv, nasiya bilan) */
     salesGross?: number;
     cashSales: number;
+    /** Kassadan berilgan qaytim (over-tender) */
+    cashChangeGiven?: number;
+    /** Till uchun naqd savdo net = cashSales − qaytim */
+    cashSalesNet?: number;
     /** To‘lov usullari bo‘yicha taqsimot */
     paymentsByMethod?: {
       cash: number;
@@ -197,6 +201,12 @@ export default function ShiftControl({ compact = false }: ShiftControlProps) {
         const opening =
           Number(data.openingCash ?? data.opening_cash ?? storeShift?.opening_cash ?? 0) || 0;
         const cashS = Number(data.cashSales ?? data.cash_payments ?? 0) || 0;
+        const cashChangeGiven =
+          Number(data.cashChangeGiven ?? data.cash_change_given ?? 0) || 0;
+        const cashSalesNet =
+          data.cashSalesNet != null || data.cash_sales_net != null
+            ? Number(data.cashSalesNet ?? data.cash_sales_net ?? 0) || 0
+            : Math.max(0, cashS - cashChangeGiven);
         const refundsOut =
           Number(
             data.cashRefundsOut ??
@@ -251,6 +261,8 @@ export default function ShiftControl({ compact = false }: ShiftControlProps) {
               ? Number(data.salesGross ?? data.sales_gross ?? 0) || 0
               : undefined,
           cashSales: cashS,
+          cashChangeGiven,
+          cashSalesNet,
           paymentsByMethod,
           creditDebtIssued: creditDebt,
           debtRepaidTotal,
@@ -286,7 +298,7 @@ export default function ShiftControl({ compact = false }: ShiftControlProps) {
           expectedCash:
             data.expectedCash != null || data.expected_cash != null
               ? Number(data.expectedCash ?? data.expected_cash ?? 0) || 0
-              : opening + cashS + customerDrawerCashNet - refundsOut,
+              : opening + cashSalesNet + customerDrawerCashNet - refundsOut,
         };
 
         console.log('[UI] shift summary (normalized):', normalized);
@@ -524,6 +536,12 @@ export default function ShiftControl({ compact = false }: ShiftControlProps) {
             const opening =
               Number(data.openingCash ?? data.opening_cash ?? currentShift.opening_cash ?? 0) || 0;
             const cashS = Number(data.cashSales ?? data.cash_payments ?? 0) || 0;
+            const cashChangeGiven =
+              Number(data.cashChangeGiven ?? data.cash_change_given ?? 0) || 0;
+            const cashSalesNet =
+              data.cashSalesNet != null || data.cash_sales_net != null
+                ? Number(data.cashSalesNet ?? data.cash_sales_net ?? 0) || 0
+                : Math.max(0, cashS - cashChangeGiven);
             const refundsOut =
               Number(
                 data.cashRefundsOut ??
@@ -538,6 +556,9 @@ export default function ShiftControl({ compact = false }: ShiftControlProps) {
               prev
                 ? {
                     ...prev,
+                    cashSales: cashS,
+                    cashChangeGiven,
+                    cashSalesNet,
                     cashDeposits:
                       data.cashDeposits != null || data.cash_deposits != null
                         ? Number(data.cashDeposits ?? data.cash_deposits ?? 0) || 0
@@ -549,7 +570,7 @@ export default function ShiftControl({ compact = false }: ShiftControlProps) {
                     expectedCash:
                       data.expectedCash != null || data.expected_cash != null
                         ? Number(data.expectedCash ?? data.expected_cash ?? 0) || 0
-                        : opening + cashS + customerDrawerCashNet - refundsOut,
+                        : opening + cashSalesNet + customerDrawerCashNet - refundsOut,
                   }
                 : prev
             );
@@ -861,6 +882,30 @@ export default function ShiftControl({ compact = false }: ShiftControlProps) {
                         Mijoz to&apos;lagan barcha pul (UZS ekvivalent): naqd + karta + QR + ... <strong>nasiyasiz</strong>
                       </p>
 
+                      <div className="flex items-center justify-between text-sm mb-1 rounded-md bg-emerald-500/10 px-2 py-1">
+                        <span className="text-muted-foreground">Naqd savdo (kassaga):</span>
+                        <span className="font-semibold tabular-nums text-emerald-900 dark:text-emerald-100">
+                          {formatMoneyUZS(
+                            shiftSummary.cashSalesNet ??
+                              Math.max(
+                                0,
+                                (shiftSummary.cashSales ?? 0) - (shiftSummary.cashChangeGiven ?? 0)
+                              )
+                          )}
+                        </span>
+                      </div>
+                      <p className="text-[11px] text-muted-foreground mb-2 leading-snug">
+                        Naqd tender minus qaytim — kutilayotgan naqd formulasi shu summani ishlatadi
+                      </p>
+                      {(shiftSummary.cashChangeGiven ?? 0) > 0.5 && (
+                        <div className="flex items-center justify-between text-xs mb-2 pl-2 text-muted-foreground">
+                          <span>Qaytim berildi:</span>
+                          <span className="font-medium tabular-nums">
+                            −{formatMoneyUZS(shiftSummary.cashChangeGiven ?? 0)}
+                          </span>
+                        </div>
+                      )}
+
                       {/* To'lov usullari taqsimoti */}
                       {shiftSummary.paymentsByMethod && (
                         <div className="rounded-md bg-muted/40 px-2 py-1.5 mb-2 space-y-0.5">
@@ -989,7 +1034,7 @@ export default function ShiftControl({ compact = false }: ShiftControlProps) {
                         <p className="text-[11px] text-muted-foreground mt-1 leading-snug">
                           {t('pos.close_shift.expected_cash_formula', {
                             defaultValue:
-                              "Ochilish + Naqd savdo + Mijoz balansiga naqd + Qo'lda kirim − Naqd qaytarishlar − Naqd xarajatlar − Qo'lda chiqim",
+                              "Ochilish + Naqd savdo + Mijoz balansiga naqd + Qo'lda kirim − Qaytim − Naqd qaytarishlar − Naqd xarajatlar − Qo'lda chiqim",
                           })}
                         </p>
                       </div>

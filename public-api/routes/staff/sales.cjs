@@ -19,19 +19,9 @@ function mapServiceError(e, res) {
   mapStaffServiceError(e, res, { logTag: '[staff/sales]' });
 }
 
-function resolveCustomerTier(db, customerId) {
-  if (!customerId) return 'retail';
-  try {
-    const row = db.prepare('SELECT pricing_tier FROM customers WHERE id = ?').get(customerId);
-    return row?.pricing_tier ? String(row.pricing_tier) : 'retail';
-  } catch {
-    return 'retail';
-  }
-}
-
 /**
  * Resolve unit price using the SAME rules as SalesService.completePOSOrder
- * (customer pricing tier + product_prices), so payment totals match order_items.
+ * (selected pricing tier + product_prices), so payment totals match order_items.
  */
 function resolveUnitPrice(bundle, product, tierCode = 'retail') {
   if (bundle.sales && typeof bundle.sales._resolveCatalogUnitPrice === 'function') {
@@ -208,9 +198,17 @@ function mountStaffSalesRoutes() {
         }
       }
 
-      const tierCode = resolveCustomerTier(db, customerId);
+      const requestedTierRaw =
+        body.price_tier_code != null && String(body.price_tier_code).trim()
+          ? String(body.price_tier_code).trim().toLowerCase()
+          : body.price_tier != null && String(body.price_tier).trim()
+            ? String(body.price_tier).trim().toLowerCase()
+            : '';
+      let tierCode = requestedTierRaw || 'retail';
+      if (tierCode === 'usta') tierCode = 'master';
+      // Operator selection wins; do not force customer.pricing_tier onto the sale.
 
-      // Build items + compute authoritative total (server-side pricing, customer tier).
+      // Build items + compute authoritative total (server-side pricing from selected tier).
       const itemsData = [];
       let total = 0;
       for (const raw of rawItems) {

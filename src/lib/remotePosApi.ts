@@ -294,6 +294,8 @@ const STORAGE_SCOPE_KEY  = 'pos_auth_scope';
 
 const PUBLIC_CHANNELS = new Set<string>([
   'pos:auth:login',
+  'pos:auth:loginWithGoogle',
+  'pos:auth:googleConfig',
   'pos:auth:requestPasswordReset',
   'pos:auth:confirmPasswordReset',
   'pos:health',
@@ -560,6 +562,11 @@ async function remoteInvoke(
   const maxAttempts =
     channel === 'pos:auth:login' || channel === 'pos:health' ? 1 : 4;
   const quietChannel = channel === 'pos:health';
+  // POS search/pricing bursts: soft-empty on exhausted 429 (no red toast spam).
+  const softEmptyOnRateLimit =
+    channel === 'pos:products:searchScreen' ||
+    channel === 'pos:pricing:getPrice' ||
+    channel === 'pos:pricing:getTiers';
 
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
     const controller = new AbortController();
@@ -593,7 +600,7 @@ async function remoteInvoke(
 
         // Auto-retry with backoff (0.5s, 1s, 2s ...) honoring Retry-After.
         if (canRetry) {
-          if (!quietChannel) {
+          if (!quietChannel && !softEmptyOnRateLimit) {
             notifyRpc({
               code: 'RATE_LIMITED',
               level: 'info',
@@ -611,6 +618,13 @@ async function remoteInvoke(
           channel === 'pos:auth:login'
             ? `Juda ko'p kirish urinishi. Biroz kutib, qayta urinib ko'ring.${waitHint}`
             : `Server band (429). Biroz kutib, qayta urinib ko'ring.${waitHint}`;
+        if (softEmptyOnRateLimit) {
+          // Prefer empty local results over blocking the cashier with toasts.
+          return {
+            success: true,
+            data: channel === 'pos:products:searchScreen' ? [] : null,
+          };
+        }
         // Login surfaces its own toast; health is polled by NetworkBadge —
         // for everything else the retries are exhausted — make visible.
         if (channel !== 'pos:auth:login' && !quietChannel) {
@@ -701,7 +715,7 @@ async function remoteInvoke(
         // Transparently capture the session token + tenant + scope from the
         // login flows so the rest of the app (stores, router guards) can
         // observe them via localStorage without manually threading them.
-        if (channel === 'pos:auth:login') {
+        if (channel === 'pos:auth:login' || channel === 'pos:auth:loginWithGoogle') {
           const data = json.data as
             | {
                 success?: boolean;
@@ -1028,6 +1042,8 @@ export function createRemotePosApi(baseUrl: string, secret: string) {
       deleteExpense: inv('pos:purchases:deleteExpense'),
       previewPlanningDraft: inv('pos:purchases:previewPlanningDraft'),
       createPlanningDraft: inv('pos:purchases:createPlanningDraft'),
+      extractInvoiceDraft: inv('pos:purchases:extractInvoiceDraft'),
+      confirmInvoicePurchase: inv('pos:purchases:confirmInvoicePurchase'),
     },
     expenses: {
       listCategories: inv('pos:expenses:listCategories'),
@@ -1157,6 +1173,8 @@ export function createRemotePosApi(baseUrl: string, secret: string) {
     },
     auth: {
       login: inv('pos:auth:login'),
+      loginWithGoogle: inv('pos:auth:loginWithGoogle'),
+      googleConfig: inv('pos:auth:googleConfig'),
       logout: inv('pos:auth:logout'),
       me: inv('pos:auth:me'),
       setSessionUser: inv('pos:auth:setSessionUser'),

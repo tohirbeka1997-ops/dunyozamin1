@@ -191,13 +191,34 @@ describe('order return status / net totals', () => {
     assert.equal(partial.returned_total, 1000);
     assert.equal(partial.net_total, 1000);
     assert.equal(partial.return_status, 'partially_returned');
+
+    const cartReturn = computeOrderReturnMoney({
+      grossTotal: -34000,
+      items: [{ quantity: -1, returned_quantity: 0, line_total: -34000, unit_price: 34000 }],
+    });
+    assert.equal(cartReturn.returned_total, 34000);
+    assert.equal(cartReturn.gross_total, 0);
+    assert.equal(cartReturn.net_total, 0);
+    assert.equal(cartReturn.return_status, 'fully_returned');
+
+    const mixed = computeOrderReturnMoney({
+      grossTotal: 70000,
+      items: [
+        { quantity: 1, returned_quantity: 0, line_total: 100000, unit_price: 100000 },
+        { quantity: -1, returned_quantity: 0, line_total: -30000, unit_price: 30000 },
+      ],
+    });
+    assert.equal(mixed.gross_total, 100000);
+    assert.equal(mixed.returned_total, 30000);
+    assert.equal(mixed.net_total, 70000);
+    assert.equal(mixed.return_status, 'partially_returned');
   });
 
   it('blocks re-return when availableToReturn is 0', () => {
     assert.equal(availableToReturnQty(3, 3), 0);
     const blocked = assertReturnQtyAllowed(3, 3, 1);
     assert.equal(blocked.ok, false);
-    assert.equal(blocked.code, 'CONFLICT');
+    assert.equal(blocked.code, 'RETURN_LIMIT_EXCEEDED');
   });
 
   it('blocks over-limit stock adjustment for cashier', () => {

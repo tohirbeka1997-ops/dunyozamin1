@@ -98,15 +98,32 @@ export function isPosTypingTarget(opts: {
 
 /**
  * Plan a ±1 sale-unit change on a cart line.
- * Sale lines: −1 toward 0 and remove at ≤0. Return lines: +1 toward 0 (Right), −1 more negative (Left).
- * Empty / zero qty + Left → noop (caller should not spam).
+ * Intent is UX-facing: `add` = more units on the line, `remove` = fewer (toward 0 / delete).
+ * For return lines (qty &lt; 0) that means Left/remove moves toward 0, Right/add goes more negative.
+ * Empty / zero qty + remove → noop.
  */
+export type CartLineQtyIntent = 'add' | 'remove';
+
+/** Map UX intent to a signed delta for qty_sale (return lines flip add/remove). */
+export function resolveCartLineStepDirection(
+  qtySale: number,
+  intent: CartLineQtyIntent,
+): -1 | 1 {
+  const isReturn = Number(qtySale) < 0;
+  if (intent === 'add') return isReturn ? -1 : 1;
+  return isReturn ? 1 : -1;
+}
+
 export function planCartLineQtyStep(
   qtySale: number,
-  direction: -1 | 1,
+  intentOrDirection: CartLineQtyIntent | -1 | 1,
 ): { action: 'noop' | 'update' | 'remove'; nextQty: number } {
   const raw = Number(qtySale);
   const current = Number.isFinite(raw) ? raw : 0;
+  const direction: -1 | 1 =
+    intentOrDirection === 'add' || intentOrDirection === 'remove'
+      ? resolveCartLineStepDirection(current, intentOrDirection)
+      : intentOrDirection;
   if (direction > 0) {
     const next = current + 1;
     if (next === 0) return { action: 'remove', nextQty: 0 };
@@ -392,6 +409,16 @@ export const classifyQuery = (value: string) => {
     isSkuLike,
   };
 };
+
+/** True when the search text is a scanner payload (EAN/UPC, numeric SKU, loyalty card), not a product name. */
+export function isPosScannerQuery(value: string): boolean {
+  const q = classifyQuery(value);
+  if (!q.raw) return false;
+  if (q.isBarcodeLike) return true;
+  if (q.numericOnly && q.raw.length >= 4) return true;
+  const upper = q.raw.toUpperCase();
+  return upper.startsWith('LOYALTY:') || upper.startsWith('LC-');
+}
 
 // ----- Sotuv birligi (unit) hisob-kitoblari -----
 

@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import {
   Dialog,
@@ -35,6 +35,7 @@ import { formatDistanceToNow, differenceInMinutes } from 'date-fns';
 import { uz } from 'date-fns/locale';
 import { formatMoneyUZS } from '@/lib/format';
 import { computeHeldOrderTotal } from '@/pages/posTerminalHelpers';
+import { cn } from '@/lib/utils';
 
 interface WaitingOrdersDialogProps {
   open: boolean;
@@ -43,6 +44,8 @@ interface WaitingOrdersDialogProps {
   onRestore: (order: HeldOrder) => void;
   onCancel: (orderId: string) => void;
   onRename?: (orderId: string, newName: string) => void;
+  /** Parent confirm (e.g. replace cart) — pause ↑↓/Enter so overlay gets keys. */
+  suspendHotkeys?: boolean;
 }
 
 export default function WaitingOrdersDialog({
@@ -52,11 +55,37 @@ export default function WaitingOrdersDialog({
   onRestore,
   onCancel,
   onRename,
+  suspendHotkeys = false,
 }: WaitingOrdersDialogProps) {
   const { t } = useTranslation();
   const [cancelOrderId, setCancelOrderId] = useState<string | null>(null);
   const [renameOrderId, setRenameOrderId] = useState<string | null>(null);
   const [renameName, setRenameName] = useState('');
+  const [selectedIndex, setSelectedIndex] = useState(0);
+  const cardRefs = useRef<Array<HTMLDivElement | null>>([]);
+  const listFocusRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    setSelectedIndex(0);
+    cardRefs.current = [];
+    const tId = window.setTimeout(() => {
+      listFocusRef.current?.focus({ preventScroll: true });
+    }, 50);
+    return () => window.clearTimeout(tId);
+  }, [open, heldOrders.length]);
+
+  useEffect(() => {
+    if (selectedIndex >= heldOrders.length) {
+      setSelectedIndex(Math.max(0, heldOrders.length - 1));
+    }
+  }, [heldOrders.length, selectedIndex]);
+
+  useEffect(() => {
+    if (!open || heldOrders.length === 0) return;
+    const el = cardRefs.current[selectedIndex];
+    el?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+  }, [selectedIndex, open, heldOrders.length]);
 
   const getOrderPriority = (order: HeldOrder) => {
     const minutesAgo = differenceInMinutes(new Date(), new Date(order.created_at));
@@ -96,12 +125,123 @@ export default function WaitingOrdersDialog({
     setRenameName(order.customer_name || '');
   };
 
+  const restoreSelected = useCallback(() => {
+    const order = heldOrders[selectedIndex];
+    if (order) onRestore(order);
+  }, [heldOrders, onRestore, selectedIndex]);
+
+  const handleListKeyDown = (e: React.KeyboardEvent) => {
+    if (suspendHotkeys || cancelOrderId || renameOrderId) return;
+    if (heldOrders.length === 0) {
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        onOpenChange(false);
+      }
+      return;
+    }
+
+    if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      e.stopPropagation();
+      setSelectedIndex((i) => Math.min(heldOrders.length - 1, i + 1));
+      return;
+    }
+    if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      e.stopPropagation();
+      setSelectedIndex((i) => Math.max(0, i - 1));
+      return;
+    }
+    if (e.key === 'Home') {
+      e.preventDefault();
+      e.stopPropagation();
+      setSelectedIndex(0);
+      return;
+    }
+    if (e.key === 'End') {
+      e.preventDefault();
+      e.stopPropagation();
+      setSelectedIndex(heldOrders.length - 1);
+      return;
+    }
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      e.stopPropagation();
+      restoreSelected();
+      return;
+    }
+    if (e.key === 'Delete' || e.key === 'Backspace') {
+      const order = heldOrders[selectedIndex];
+      if (!order) return;
+      e.preventDefault();
+      e.stopPropagation();
+      setCancelOrderId(order.id);
+      return;
+    }
+    if (e.key === 'F2' && onRename) {
+      const order = heldOrders[selectedIndex];
+      if (!order) return;
+      e.preventDefault();
+      e.stopPropagation();
+      openRenameDialog(order);
+      return;
+    }
+  };
+
+  // Capture arrows even if focus drifts inside the sheet
+  useEffect(() => {
+    if (!open || suspendHotkeys) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (cancelOrderId || renameOrderId) return;
+      const tag = (e.target as HTMLElement)?.tagName;
+      if (tag === 'INPUT' || tag === 'TEXTAREA') return;
+
+      if (
+        e.key === 'ArrowDown' ||
+        e.key === 'ArrowUp' ||
+        e.key === 'Enter' ||
+        e.key === 'Home' ||
+        e.key === 'End'
+      ) {
+        if (heldOrders.length === 0 && e.key !== 'Enter') return;
+        e.preventDefault();
+        e.stopPropagation();
+        if (e.key === 'ArrowDown') {
+          setSelectedIndex((i) => Math.min(heldOrders.length - 1, i + 1));
+        } else if (e.key === 'ArrowUp') {
+          setSelectedIndex((i) => Math.max(0, i - 1));
+        } else if (e.key === 'Home') {
+          setSelectedIndex(0);
+        } else if (e.key === 'End') {
+          setSelectedIndex(Math.max(0, heldOrders.length - 1));
+        } else if (e.key === 'Enter') {
+          const order = heldOrders[selectedIndex];
+          if (order) onRestore(order);
+        }
+      }
+    };
+    window.addEventListener('keydown', onKey, true);
+    return () => window.removeEventListener('keydown', onKey, true);
+  }, [
+    open,
+    suspendHotkeys,
+    heldOrders,
+    selectedIndex,
+    cancelOrderId,
+    renameOrderId,
+    onRestore,
+  ]);
+
   return (
     <>
       <Sheet open={open} onOpenChange={onOpenChange}>
         <SheetContent
           side="right"
           className="flex h-dvh w-[min(100vw,34rem)] max-w-[min(100vw,34rem)] flex-col gap-0 overflow-hidden p-0 sm:max-w-[34rem]"
+          onOpenAutoFocus={(e) => {
+            e.preventDefault();
+            listFocusRef.current?.focus({ preventScroll: true });
+          }}
         >
           <SheetHeader className="shrink-0 border-b px-5 pb-4 pr-12 pt-5">
             <SheetTitle>{t('pos.waitingOrders.title')}</SheetTitle>
@@ -110,114 +250,151 @@ export default function WaitingOrdersDialog({
                 ? t('pos.waitingOrders.empty')
                 : t('pos.waitingOrders.counter', { count: heldOrders.length })}
             </SheetDescription>
+            {heldOrders.length > 0 && (
+              <p className="pt-1 text-[11px] text-muted-foreground">
+                {t('pos.waitingOrders.hotkey_hint', {
+                  defaultValue: '↑↓ tanlash · Enter qayta ochish · Del o‘chirish · Esc yopish',
+                })}
+              </p>
+            )}
           </SheetHeader>
           <ScrollArea className="min-h-0 flex-1 px-5 py-4">
-            {heldOrders.length === 0 ? (
-              <div className="flex min-h-[60vh] flex-col items-center justify-center py-12 text-center">
-                <Clock className="h-12 w-12 text-muted-foreground mb-4" />
-                <p className="text-muted-foreground">{t('pos.waitingOrders.empty')}</p>
-                <p className="text-sm text-muted-foreground mt-2">
-                  {t('pos.waitingOrders.emptyDescription')}
-                </p>
-              </div>
-            ) : (
-              <div className="space-y-3">
-                {heldOrders.map((order) => {
-                  const priority = getOrderPriority(order);
-                  const priorityStyles = getPriorityStyles(priority);
-                  
-                  return (
-                    <div
-                      key={order.id}
-                      className={`border-2 rounded-lg p-4 space-y-3 hover:bg-muted/50 transition-colors ${priorityStyles}`}
-                    >
-                      <div className="flex items-start justify-between">
-                        <div className="space-y-1">
-                          <div className="flex items-center gap-2">
-                            <Badge variant="secondary">{order.held_number}</Badge>
-                            {priority !== 'normal' && (
-                              <Badge variant={priority === 'critical' ? 'destructive' : 'default'} className="gap-1">
-                                <AlertTriangle className="h-3 w-3" />
-                                {priority === 'critical' ? '30+ min' : '15+ min'}
-                              </Badge>
-                            )}
-                            {order.customer_name && (
-                              <div className="flex items-center gap-1 text-sm text-muted-foreground">
-                                <User className="h-3 w-3" />
-                                <span>{order.customer_name}</span>
-                              </div>
-                            )}
-                          </div>
-                          <div className="flex items-center gap-1 text-xs text-muted-foreground">
-                            <Clock className="h-3 w-3" />
-                            <span>
-                              {formatDistanceToNow(new Date(order.created_at), {
-                                addSuffix: true,
-                                locale: uz,
-                              })}
-                            </span>
-                          </div>
-                        </div>
-                        <div className="text-right">
-                          <p className="text-lg font-bold">
-                            {formatMoneyUZS(
-                              computeHeldOrderTotal(
-                                order.items,
-                                order.discount,
-                                order.total_amount,
-                              ),
-                            )}
-                          </p>
-                          <p className="text-xs text-muted-foreground">
-                            {t('pos.waitingOrders.items', { count: order.items.length })}
-                          </p>
-                        </div>
-                      </div>
+            <div
+              ref={listFocusRef}
+              tabIndex={0}
+              role="listbox"
+              aria-label={t('pos.waitingOrders.title')}
+              aria-activedescendant={
+                heldOrders[selectedIndex] ? `held-order-${heldOrders[selectedIndex].id}` : undefined
+              }
+              className="outline-none"
+              onKeyDown={handleListKeyDown}
+            >
+              {heldOrders.length === 0 ? (
+                <div className="flex min-h-[60vh] flex-col items-center justify-center py-12 text-center">
+                  <Clock className="mb-4 h-12 w-12 text-muted-foreground" />
+                  <p className="text-muted-foreground">{t('pos.waitingOrders.empty')}</p>
+                  <p className="mt-2 text-sm text-muted-foreground">
+                    {t('pos.waitingOrders.emptyDescription')}
+                  </p>
+                </div>
+              ) : (
+                <div className="space-y-3">
+                  {heldOrders.map((order, index) => {
+                    const priority = getOrderPriority(order);
+                    const priorityStyles = getPriorityStyles(priority);
+                    const selected = index === selectedIndex;
 
-                      {order.note && (
-                        <div className="flex items-start gap-2 text-sm bg-muted/50 p-2 rounded">
-                          <FileText className="h-4 w-4 text-muted-foreground mt-0.5" />
-                          <p className="text-muted-foreground">{order.note}</p>
+                    return (
+                      <div
+                        key={order.id}
+                        id={`held-order-${order.id}`}
+                        ref={(el) => {
+                          cardRefs.current[index] = el;
+                        }}
+                        role="option"
+                        aria-selected={selected}
+                        onClick={() => setSelectedIndex(index)}
+                        onDoubleClick={() => onRestore(order)}
+                        className={cn(
+                          'space-y-3 rounded-lg border-2 p-4 transition-colors',
+                          priorityStyles,
+                          selected
+                            ? 'border-primary bg-primary/10 ring-2 ring-primary/40'
+                            : 'hover:bg-muted/50',
+                        )}
+                      >
+                        <div className="flex items-start justify-between">
+                          <div className="space-y-1">
+                            <div className="flex items-center gap-2">
+                              <Badge variant="secondary">{order.held_number}</Badge>
+                              {priority !== 'normal' && (
+                                <Badge
+                                  variant={priority === 'critical' ? 'destructive' : 'default'}
+                                  className="gap-1"
+                                >
+                                  <AlertTriangle className="h-3 w-3" />
+                                  {priority === 'critical' ? '30+ min' : '15+ min'}
+                                </Badge>
+                              )}
+                              {order.customer_name && (
+                                <div className="flex items-center gap-1 text-sm text-muted-foreground">
+                                  <User className="h-3 w-3" />
+                                  <span>{order.customer_name}</span>
+                                </div>
+                              )}
+                            </div>
+                            <div className="flex items-center gap-1 text-xs text-muted-foreground">
+                              <Clock className="h-3 w-3" />
+                              <span>
+                                {formatDistanceToNow(new Date(order.created_at), {
+                                  addSuffix: true,
+                                  locale: uz,
+                                })}
+                              </span>
+                            </div>
+                          </div>
+                          <div className="text-right">
+                            <p className="text-lg font-bold">
+                              {formatMoneyUZS(
+                                computeHeldOrderTotal(
+                                  order.items,
+                                  order.discount,
+                                  order.total_amount,
+                                ),
+                              )}
+                            </p>
+                            <p className="text-xs text-muted-foreground">
+                              {t('pos.waitingOrders.items', { count: order.items.length })}
+                            </p>
+                          </div>
                         </div>
-                      )}
 
-                      <div className="flex items-center gap-2 pt-2 border-t">
-                        <Button
-                          variant="default"
-                          size="sm"
-                          className="flex-1"
-                          onClick={() => onRestore(order)}
-                          title={t('pos.waitingOrders.restore')}
-                        >
-                          <RotateCcw className="h-4 w-4 mr-2" />
-                          {t('pos.waitingOrders.restore')}
-                        </Button>
-                        {onRename && (
+                        {order.note && (
+                          <div className="flex items-start gap-2 rounded bg-muted/50 p-2 text-sm">
+                            <FileText className="mt-0.5 h-4 w-4 text-muted-foreground" />
+                            <p className="text-muted-foreground">{order.note}</p>
+                          </div>
+                        )}
+
+                        <div className="flex items-center gap-2 border-t pt-2">
+                          <Button
+                            variant={selected ? 'default' : 'secondary'}
+                            size="sm"
+                            className="flex-1"
+                            onClick={() => onRestore(order)}
+                            title={t('pos.waitingOrders.restore')}
+                          >
+                            <RotateCcw className="mr-2 h-4 w-4" />
+                            {t('pos.waitingOrders.restore')}
+                          </Button>
+                          {onRename && (
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              onClick={() => openRenameDialog(order)}
+                              title={t('pos.waitingOrders.edit')}
+                              aria-label={t('pos.waitingOrders.edit')}
+                            >
+                              <Edit2 className="h-4 w-4" />
+                            </Button>
+                          )}
                           <Button
                             variant="outline"
                             size="sm"
-                            onClick={() => openRenameDialog(order)}
-                            title={t('pos.waitingOrders.edit')}
-                            aria-label={t('pos.waitingOrders.edit')}
+                            onClick={() => setCancelOrderId(order.id)}
+                            title={t('pos.waitingOrders.delete')}
+                            aria-label={t('pos.waitingOrders.delete')}
                           >
-                            <Edit2 className="h-4 w-4" />
+                            <Trash2 className="h-4 w-4" />
                           </Button>
-                        )}
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          onClick={() => setCancelOrderId(order.id)}
-                          title={t('pos.waitingOrders.delete')}
-                          aria-label={t('pos.waitingOrders.delete')}
-                        >
-                          <Trash2 className="h-4 w-4" />
-                        </Button>
+                        </div>
                       </div>
-                    </div>
-                  );
-                })}
-              </div>
-            )}
+                    );
+                  })}
+                </div>
+              )}
+            </div>
           </ScrollArea>
         </SheetContent>
       </Sheet>

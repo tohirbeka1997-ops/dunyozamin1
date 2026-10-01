@@ -108,9 +108,26 @@ class AuthService {
 
     // Get role from user_roles table (many-to-many relationship)
     // CRITICAL: Admin users MUST get 'admin' role, not default to 'cashier'
-    let role = null; // No default - must be fetched from database
+    const role = this._resolveUserRole(user);
+
+    const userData = {
+      id: user.id,
+      username: user.username,
+      full_name: user.full_name,
+      email: user.email || user.username,
+      role,
+    };
+
+    return {
+      success: true,
+      user: userData,
+      message: 'Welcome'
+    };
+  }
+
+  _resolveUserRole(user) {
+    let role = null;
     try {
-      // Try to get role from user_roles -> roles join
       const roleResult = this.db.prepare(`
         SELECT r.code 
         FROM user_roles ur
@@ -131,19 +148,13 @@ class AuthService {
       console.error('[auth] Could not fetch role from user_roles:', error.message);
     }
 
-    // Safety fallback: If no role found, check if this is admin@pos.com and assign admin role
     if (!role && user.username === 'admin@pos.com') {
       role = 'admin';
-      
-      // Try to fix the database by ensuring role is linked
       try {
-        // Ensure admin role exists
         this.db.prepare(`
           INSERT OR IGNORE INTO roles (id, code, name, description, is_active, created_at)
           VALUES ('role-admin-001', 'admin', 'Administrator', 'Full system access', 1, datetime('now'))
         `).run();
-        
-        // Link user to admin role
         this.db.prepare(`
           INSERT OR REPLACE INTO user_roles (id, user_id, role_id, assigned_at)
           VALUES ('ur-admin-001', ?, 'role-admin-001', datetime('now'))
@@ -153,22 +164,64 @@ class AuthService {
       }
     }
 
-    if (!role) {
-      role = 'cashier';
+    return role || 'cashier';
+  }
+
+  /**
+   * Login via verified Google account email (no password).
+   * User must already exist with matching email/username.
+   */
+  loginWithGoogleEmail(email) {
+    const trimmed = String(email || '').trim().toLowerCase();
+    if (!trimmed || !trimmed.includes('@')) {
+      return { success: false, error: 'Google email required' };
     }
 
-    const userData = {
-      id: user.id,
-      username: user.username,
-      full_name: user.full_name,
-      email: user.email || user.username,
-      role,
-    };
+    const user = this.db
+      .prepare(
+        `
+        SELECT * FROM users
+        WHERE LOWER(COALESCE(email, '')) = ? OR LOWER(username) = ?
+        LIMIT 1
+      `,
+      )
+      .get(trimmed, trimmed);
 
+    if (!user) {
+      return {
+        success: false,
+        error:
+          'Bu Gmail tizimda topilmadi. Avval xodimlar bo‘limida shu email bilan foydalanuvchi yarating.',
+      };
+    }
+    if (!user.is_active) {
+      return { success: false, error: 'User account is inactive' };
+    }
+
+    const passwordExpiredFlag =
+      user.password_expired === 1 ||
+      user.password_expired === true ||
+      String(user.password_expired || '') === '1';
+    if (passwordExpiredFlag) {
+      return {
+        success: false,
+        error: 'Password reset required for security. Please use the password reset flow.',
+        password_expired: true,
+      };
+    }
+
+    const role = this._resolveUserRole(user);
     return {
       success: true,
-      user: userData,
-      message: 'Welcome'
+      user: {
+        id: user.id,
+        username: user.username,
+        full_name: user.full_name,
+        email: user.email || user.username,
+        role,
+      },
+      message: 'Welcome',
+      auth_provider: 'google',
     };
   }
 
@@ -193,7 +246,7 @@ class AuthService {
 
     // Match login lookup: username, email, or phone (case-insensitive for username/email).
     const user = this.db.prepare(`
-      SELECT id, username, phone, is_active 
+      SELECT id, username, email, phone, is_active 
       FROM users 
       WHERE LOWER(username) = ? OR LOWER(COALESCE(email, '')) = ? OR phone = ?
       LIMIT 1
@@ -232,6 +285,9 @@ class AuthService {
       ) VALUES (?, ?, ?, ?, ?, ?)
     `).run(tokenId, user.id, tokenHash, salt, expiresAt, now);
 
+    const userEmail = String(user.email || '').trim();
+    const emailLooksValid = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(userEmail);
+
     // Return token_id and expires_at. The code is included ONLY for trusted
     // local transports; over the network it is withheld so the reset cannot be
     // completed by whoever merely requested it.
@@ -242,6 +298,7 @@ class AuthService {
         ...(includeCode ? { code } : {}),
         expires_at: expiresAt,
         code_delivered: includeCode,
+        user_email: emailLooksValid ? userEmail : null,
       },
     };
   }

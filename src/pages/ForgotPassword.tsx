@@ -8,8 +8,17 @@ import { Alert, AlertDescription } from '@/components/ui/alert';
 import { useToast } from '@/hooks/use-toast';
 import { useTranslation } from 'react-i18next';
 import { useAuth } from '@/contexts/AuthContext';
-import { Store, ArrowLeft, CheckCircle2, Copy, MailX } from 'lucide-react';
+import { Store, ArrowLeft, CheckCircle2, Copy, Mail, MailX } from 'lucide-react';
 import { requestPasswordReset } from '@/db/api';
+
+type ResetResult = {
+  token_id: string;
+  code?: string;
+  expires_at: string;
+  email_sent?: boolean;
+  email_hint?: string | null;
+  code_delivered?: boolean;
+};
 
 function readInitialTenant(): string {
   try {
@@ -28,7 +37,7 @@ export default function ForgotPassword() {
   const [loading, setLoading] = useState(false);
   const [tenant, setTenant] = useState(readInitialTenant);
   const [identifier, setIdentifier] = useState('');
-  const [resetData, setResetData] = useState<{ token_id: string; code: string; expires_at: string } | null>(null);
+  const [resetData, setResetData] = useState<ResetResult | null>(null);
 
   useEffect(() => {
     if (multiTenantMode === true && !tenant) {
@@ -72,13 +81,20 @@ export default function ForgotPassword() {
     setLoading(true);
     try {
       const result = await requestPasswordReset(identifier.trim(), trimmedTenant || null);
-      if (!result?.code || !String(result.code).trim()) {
+      if (!result?.token_id) {
+        throw new Error('Tiklash tokeni qaytarilmadi. Server yangilanganmi?');
+      }
+      const emailSent = result.email_sent === true;
+      const hasCode = Boolean(result.code && String(result.code).trim());
+      if (!emailSent && !hasCode) {
         throw new Error('Tiklash kodi qaytarilmadi. Server yangilanganmi? pos-rpc xizmatini qayta ishga tushiring.');
       }
       setResetData(result);
       toast({
-        title: 'Kod yaratildi',
-        description: 'Kod ekranda ko\'rsatiladi — email yuborilmaydi',
+        title: emailSent ? 'Email yuborildi' : 'Kod yaratildi',
+        description: emailSent
+          ? `Kod ${result.email_hint || 'email'} manziliga yuborildi`
+          : 'Kod ekranda ko\'rsatiladi',
       });
     } catch (error: any) {
       toast({
@@ -112,6 +128,8 @@ export default function ForgotPassword() {
   if (resetData) {
     const expiresAt = new Date(resetData.expires_at);
     const minutesRemaining = Math.max(0, Math.ceil((expiresAt.getTime() - Date.now()) / 60000));
+    const emailSent = resetData.email_sent === true;
+    const showCode = Boolean(resetData.code && String(resetData.code).trim());
 
     return (
       <div className="min-h-screen flex items-center justify-center bg-muted/30 p-4">
@@ -122,51 +140,74 @@ export default function ForgotPassword() {
                 <CheckCircle2 className="h-8 w-8 text-green-600 dark:text-green-400" />
               </div>
             </div>
-            <CardTitle className="text-2xl font-bold">Tiklash kodi yaratildi</CardTitle>
-            <CardDescription>Quyidagi kodni nusxalab, yangi parol o&apos;rnating</CardDescription>
+            <CardTitle className="text-2xl font-bold">
+              {emailSent ? 'Email yuborildi' : 'Tiklash kodi yaratildi'}
+            </CardTitle>
+            <CardDescription>
+              {emailSent
+                ? 'Emailingizdagi kodni oling va yangi parol o\'rnating'
+                : 'Quyidagi kodni nusxalab, yangi parol o\'rnating'}
+            </CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
-            <Alert>
-              <MailX className="h-4 w-4" />
-              <AlertDescription>
-                Email yoki SMS yuborilmaydi — kod faqat shu ekranda ko&apos;rsatiladi.
-                Google/Gmail orqali kirish hozircha qo&apos;llab-quvvatlanmaydi.
-              </AlertDescription>
-            </Alert>
+            {emailSent ? (
+              <Alert>
+                <Mail className="h-4 w-4" />
+                <AlertDescription>
+                  Tiklash kodi {resetData.email_hint || 'email'} manziliga yuborildi.
+                  Spam papkasini ham tekshiring.
+                </AlertDescription>
+              </Alert>
+            ) : (
+              <Alert>
+                <MailX className="h-4 w-4" />
+                <AlertDescription>
+                  SMTP sozlanmagan yoki email yuborilmadi — kod faqat shu ekranda ko&apos;rsatiladi.
+                </AlertDescription>
+              </Alert>
+            )}
             <Alert>
               <AlertDescription>
                 Tiklash kodi {minutesRemaining} daqiqadan so&apos;ng eskiradi
               </AlertDescription>
             </Alert>
-            <div className="space-y-2">
-              <Label>Tiklash kodi</Label>
-              <div className="flex items-center gap-2">
-                <Input
-                  value={resetData.code}
-                  readOnly
-                  className="text-2xl font-mono text-center tracking-widest"
-                />
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="icon"
-                  onClick={handleCopyCode}
-                  title="Kodni nusxalash"
-                >
-                  <Copy className="h-4 w-4" />
-                </Button>
+            {showCode && (
+              <div className="space-y-2">
+                <Label>Tiklash kodi</Label>
+                <div className="flex items-center gap-2">
+                  <Input
+                    value={resetData.code}
+                    readOnly
+                    className="text-2xl font-mono text-center tracking-widest"
+                  />
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="icon"
+                    onClick={handleCopyCode}
+                    title="Kodni nusxalash"
+                  >
+                    <Copy className="h-4 w-4" />
+                  </Button>
+                </div>
               </div>
-            </div>
+            )}
             <div className="text-sm text-muted-foreground space-y-2">
-              <p>1. Yuqoridagi tiklash kodini nusxalang</p>
-              <p>2. &quot;Parolni tiklashga o&apos;tish&quot; tugmasini bosing</p>
-              <p>3. Kodni va yangi parolni kiriting</p>
+              {emailSent ? (
+                <>
+                  <p>1. Emailingizdagi 6 xonali kodni oling</p>
+                  <p>2. &quot;Parolni tiklashga o&apos;tish&quot; tugmasini bosing</p>
+                  <p>3. Kodni va yangi parolni kiriting</p>
+                </>
+              ) : (
+                <>
+                  <p>1. Yuqoridagi tiklash kodini nusxalang</p>
+                  <p>2. &quot;Parolni tiklashga o&apos;tish&quot; tugmasini bosing</p>
+                  <p>3. Kodni va yangi parolni kiriting</p>
+                </>
+              )}
             </div>
-            <Button
-              type="button"
-              className="w-full"
-              onClick={handleContinueToReset}
-            >
+            <Button type="button" className="w-full" onClick={handleContinueToReset}>
               Parolni tiklashga o&apos;tish
             </Button>
             <Button
@@ -206,7 +247,8 @@ export default function ForgotPassword() {
           </div>
           <CardTitle className="text-2xl font-bold">{t('auth.forgot_password_dialog.title')}</CardTitle>
           <CardDescription>
-            Login, email yoki telefon raqamingizni kiriting. Kod ekranda ko&apos;rsatiladi (email yuborilmaydi).
+            Login, email yoki telefon raqamingizni kiriting. SMTP sozlangan bo&apos;lsa kod emailga
+            yuboriladi; aks holda ekranda ko&apos;rsatiladi.
           </CardDescription>
         </CardHeader>
         <CardContent>
@@ -241,7 +283,7 @@ export default function ForgotPassword() {
               />
             </div>
             <Button type="submit" className="w-full" disabled={loading}>
-              {loading ? 'Kod yaratilmoqda...' : 'Tiklash kodini yaratish'}
+              {loading ? 'Kod yaratilmoqda...' : 'Tiklash kodini so\'rash'}
             </Button>
             <Button
               type="button"

@@ -30,7 +30,7 @@
       "print_offline_before_receipt": "Агент печати offline. Чек может открыться в браузере."
     },
     "close_shift": {
-      "expected_cash_formula": "Открытие + Наличные продажи + Нал. на баланс клиента + Ручной приход − Наличные возвраты − Наличные расходы − Ручной расход"
+      "expected_cash_formula": "Открытие + Наличные продажи + Нал. на баланс клиента + Ручной приход − Сдача − Наличные возвраты − Наличные расходы − Ручной расход"
     },
     "search_placeholder": "Название, SKU, штрих-код… (F2 · ↓/F4 · Enter)",
     "brand_label": "Бренд",
@@ -73,6 +73,7 @@
       "emptyDescription": "Здесь видны сохраненные заказы.",
       "counter_one": "1 заказ находится на рассмотрении",
       "counter_other": "{{count}} заказов находятся на рассмотрении",
+      "hotkey_hint": "↑↓ выбор · Enter открыть · Del удалить · Esc закрыть",
       "items_one": "1 продукт",
       "items_other": "{{count}} продуктов",
       "restore": "Открыть заново",
@@ -97,7 +98,7 @@
     "rail_hints_title": "Клавиши",
     "rail_hint_f1": "F1 — клиент",
     "rail_hint_f2": "F2 — поиск",
-    "rail_hint_f3": "F3 — отложить",
+    "rail_hint_f3": "F3 — очередь · Shift+F3 — отложить",
     "rail_hint_f4": "F4 — список товаров",
     "rail_hint_f5": "F5 — корзина",
     "rail_hint_f6": "F6 — себестоимость",
@@ -110,6 +111,15 @@
     "hotkey_cost_toggle": "Себестоимость (показать/скрыть)",
     "hotkey_customer_focus": "Выбор клиента",
     "hotkey_discount_focus": "Скидка",
+    "hotkey_waiting_orders": "Ожидающие заказы",
+    "hotkey_guide": "Справка по клавишам",
+    "hotkey_undo": "Отмена (Undo)",
+    "hotkey_clear_cart": "Очистить корзину",
+    "hotkey_cart_delete": "Удалить строку",
+    "hotkey_pay_methods": "Способ оплаты (в окне)",
+    "cart_cleared_title": "Корзина очищена",
+    "cart_cleared_desc": "Все товары удалены. Ctrl+Z — вернуть.",
+    "cart_cleared_undo": "Корзина очищена",
     "show_cost_price": "Показать себестоимость",
     "hide_cost_price": "Скрыть себестоимость",
     "hotkey_list_section": "Список товаров",
@@ -2048,7 +2058,9 @@
       },
       "warnings": {
         "missing_cogs_title": "Предупреждение",
-        "missing_cogs": "У некоторых позиций отсутствует себестоимость ({{count}}). Прибыль может быть занижена."
+        "missing_cogs": "У некоторых позиций отсутствует себестоимость ({{count}}). Прибыль может быть завышена.",
+        "profit_incomplete": "Прибыль неполная — строки без себестоимости",
+        "lines": "строк"
       },
       "trend": {
         "title": "Тренд (Продажи/Стоимость/Прибыль)",

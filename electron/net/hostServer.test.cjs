@@ -166,6 +166,7 @@ async function main() {
   // The internal Map was already seeded when makeMockDb was built — good.
 
   const secret = 'TEST-BOOTSTRAP-SECRET';
+  const clientBootstrapSecret = 'TEST-CLIENT-BOOTSTRAP-SECRET';
   // Fixed port to avoid depending on server.address().port wiring.
   // If a collision occurs, bump here.
   const port = 39333;
@@ -175,6 +176,7 @@ async function main() {
     bind: '127.0.0.1',
     port,
     secret,
+    clientBootstrapSecret,
     corsOrigins: ['*'],
   });
 
@@ -197,6 +199,15 @@ async function main() {
     r = await rpcCall(base, secret, 'pos:health', []);
     assert.strictEqual(r.status, 200);
     assert.strictEqual(r.json.ok, true);
+
+    // --- 3b. Client bootstrap can log in/health, but cannot bypass RBAC ---
+    r = await rpcCall(base, clientBootstrapSecret, 'pos:health', []);
+    assert.strictEqual(r.status, 200);
+    assert.strictEqual(r.json.ok, true);
+    r = await rpcCall(base, clientBootstrapSecret, 'pos:users:list', []);
+    assert.strictEqual(r.status, 200);
+    assert.strictEqual(r.json.ok, false);
+    assert.strictEqual(r.json.error.code, 'PERMISSION_DENIED');
 
     // --- 4. Login with shared secret returns session token ---
     r = await rpcCall(base, secret, 'pos:auth:login', ['cash', 'pw']);

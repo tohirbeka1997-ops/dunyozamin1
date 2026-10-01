@@ -167,10 +167,68 @@ function registerAuthHandlers(services, db) {
     }
   }));
 
-  // Password reset: Request reset code
+  // Password reset: Request reset code (email via SMTP when configured)
   ipcMain.removeHandler('pos:auth:requestPasswordReset');
   ipcMain.handle('pos:auth:requestPasswordReset', wrapHandler(async (_event, identifier) => {
-    return auth.requestPasswordReset(identifier);
+    const { smtpConfigured, sendMail, maskEmail } = require('../lib/mail.cjs');
+    const withCode = auth.requestPasswordReset(identifier, { includeCode: true });
+    const payload = withCode?.data || withCode;
+    const code = payload?.code;
+    const mailTo = payload?.user_email;
+    let emailSent = false;
+    let emailHint = null;
+    if (smtpConfigured() && mailTo && code) {
+      try {
+        await sendMail({
+          to: mailTo,
+          subject: 'POS — parol tiklash kodi',
+          text:
+            `Parolni tiklash kodi: ${code}\n` +
+            `Amal qilish muddati: 10 daqiqa.\n` +
+            `Agar so‘ramagan bo‘lsangiz, bu xabarni e'tiborsiz qoldiring.`,
+          html:
+            `<p>Parolni tiklash kodi: <b style="font-size:18px">${code}</b></p>` +
+            `<p>Amal qilish muddati: 10 daqiqa.</p>`,
+        });
+        emailSent = true;
+        emailHint = maskEmail(mailTo);
+      } catch (mailErr) {
+        console.error('[auth] password reset email failed:', mailErr?.message || mailErr);
+      }
+    }
+    return {
+      ok: true,
+      data: {
+        token_id: payload.token_id,
+        expires_at: payload.expires_at,
+        ...(emailSent
+          ? { email_sent: true, email_hint: emailHint, code_delivered: false }
+          : { code: payload.code, code_delivered: true, email_sent: false }),
+      },
+    };
+  }));
+
+  ipcMain.removeHandler('pos:auth:loginWithGoogle');
+  ipcMain.handle('pos:auth:loginWithGoogle', wrapHandler(async (_event, idTokenOrObj) => {
+    const { verifyGoogleIdToken, googleAuthConfigured } = require('../lib/googleAuth.cjs');
+    if (!googleAuthConfigured()) {
+      return { success: false, error: 'Google kirish sozlanmagan (GOOGLE_CLIENT_ID)' };
+    }
+    const idToken =
+      typeof idTokenOrObj === 'string'
+        ? idTokenOrObj
+        : idTokenOrObj?.id_token || idTokenOrObj?.credential || idTokenOrObj?.idToken;
+    const profile = await verifyGoogleIdToken(idToken);
+    return auth.loginWithGoogleEmail(profile.email);
+  }));
+
+  ipcMain.removeHandler('pos:auth:googleConfig');
+  ipcMain.handle('pos:auth:googleConfig', wrapHandler(async () => {
+    const { getGoogleClientId, googleAuthConfigured } = require('../lib/googleAuth.cjs');
+    return {
+      enabled: googleAuthConfigured(),
+      client_id: googleAuthConfigured() ? getGoogleClientId() : null,
+    };
   }));
 
   // Password reset: Confirm reset with code and new password

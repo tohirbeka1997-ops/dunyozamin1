@@ -373,7 +373,9 @@ class DashboardService {
         posParams.push(warehouseId);
       }
       const posChannelClause = salesChannelWhere('o', filters.sales_channel, posParams);
-      const posCogsExpr = cogsLineSql('oi');
+      // Only negative lines; ABS qty; purchase fallback when cost_price is 0.
+      const posReturnQty = `ABS(COALESCE(oi.qty_base, oi.quantity, 0))`;
+      const posCogsExpr = cogsLineSql('oi', posReturnQty, { usePurchaseFallback: true });
       const posAmtUzs = orderAmountUzsSql(this.db, 'o');
       try {
         const posRow = this.db
@@ -387,6 +389,7 @@ class DashboardService {
             LEFT JOIN (
               SELECT oi.order_id, SUM(${posCogsExpr}) AS cogs
               FROM order_items oi
+              WHERE COALESCE(oi.qty_base, oi.quantity, 0) < -0.0000001
               GROUP BY oi.order_id
             ) item_cogs ON item_cogs.order_id = o.id
             ${posWhere}

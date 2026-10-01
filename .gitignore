@@ -85,6 +85,7 @@ __deltest__/
 /*.tar.gz
 deploy/_eb-*.json
 deploy/database-upload-deploy.tar
+electron/config/client.defaults.json
 AUDIT_*.md
 FIXES_APPLIED*.md
 LIVE_TEST_*.md

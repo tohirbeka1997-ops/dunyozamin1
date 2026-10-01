@@ -36,6 +36,7 @@ const InventoryRevisions = lazy(() => import('./pages/InventoryRevisions'));
 const InventoryRevisionDetail = lazy(() => import('./pages/InventoryRevisionDetail'));
 const PurchaseOrders = lazy(() => import('./pages/PurchaseOrders'));
 const PurchaseOrderForm = lazy(() => import('./pages/PurchaseOrderForm'));
+const PurchaseFromInvoice = lazy(() => import('./pages/PurchaseFromInvoice'));
 const PurchaseOrderDetail = lazy(() => import('./pages/PurchaseOrderDetail'));
 const PurchaseReceiptForm = lazy(() => import('./pages/PurchaseReceiptForm'));
 const Suppliers = lazy(() => import('./pages/Suppliers'));
@@ -548,6 +549,14 @@ const routes: RouteConfig[] = [
     visible: false,
     requireAuth: true,
     allowedRoles: ['admin', 'manager', 'purchaser'],
+  },
+  {
+    name: 'Nakladnoydan xarid',
+    path: '/purchase-orders/from-invoice',
+    element: lazyElement(PurchaseFromInvoice),
+    visible: false,
+    requireAuth: true,
+    allowedRoles: [...PURCHASE_RECEIVE_ROLES],
   },
   {
     name: 'Edit Purchase Order',

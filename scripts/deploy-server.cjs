@@ -364,42 +364,72 @@ function main() {
         timeoutMs: stepTimeoutMs,
       });
 
-      const excludes = [
-        '--exclude=.git',
-        '--exclude=node_modules',
-        '--exclude=**/node_modules',
-        '--exclude=public-api/node_modules',
-        '--exclude=sales-mobile',
-        '--exclude=mini-app',
-        '--exclude=admin-panel',
-        '--exclude=dist',
-        '--exclude=.pos-data-dev',
-        '--exclude=release',
-        '--exclude=release2',
-        '--exclude=release_build',
-        '--exclude=release_build2',
-        '--exclude=release_build3',
-        '--exclude=release_final',
-        '--exclude=release-livefixes',
-        '--exclude=release-build',
-        '--exclude=.expo',
-        '--exclude=sales-mobile/.expo',
-        '--exclude=agent-transcripts',
-        '--exclude=.agents',
-        '--exclude=backups',
-        '--exclude=*.sqlite',
-        '--exclude=*.sqlite.gz',
-        '--exclude=*.db',
-        '--exclude=tmp-*',
-        '--exclude=.env',
-        '--exclude=.env.*',
-        '--exclude=deploy/deploy.env',
+      // Windows bsdtar: `--exclude=PAT` often ignored; use `--exclude PAT`.
+      // Also exclude fat local artifacts that must never ship to VPS.
+      const excludePatterns = [
+        '.git',
+        'node_modules',
+        '**/node_modules',
+        'public-api/node_modules',
+        'sales-mobile',
+        'mini-app',
+        'admin-panel',
+        'dist',
+        '.pos-data-dev',
+        'release',
+        'release2',
+        'release_build',
+        'release_build2',
+        'release_build3',
+        'release_final',
+        'release-livefixes',
+        'release-build',
+        'release-client',
+        'release-client-0.0.6',
+        'release-client-0.0.7',
+        'release-client-final',
+        'release-print-agent',
+        '.expo',
+        'sales-mobile/.expo',
+        'agent-transcripts',
+        '.agents',
+        'backups',
+        '*.sqlite',
+        '*.sqlite.gz',
+        '*.db',
+        '*.db-wal',
+        '*.db-shm',
+        'tmp-*',
+        '.env',
+        '.env.*',
+        'deploy/deploy.env',
+        '*.log',
+        'deploy-full*.log',
       ];
-      execSync(`tar ${excludes.join(' ')} -cf "${tmpTar}" -C "${ROOT}" .`, {
+      const excludeArgs = excludePatterns.flatMap((p) => ['--exclude', p]);
+      // Quote paths for Windows shells (spaces in user profile / temp).
+      const tarCmd = [
+        'tar',
+        ...excludeArgs,
+        '-cf',
+        `"${tmpTar}"`,
+        '-C',
+        `"${ROOT}"`,
+        '.',
+      ].join(' ');
+      console.log('[deploy:server] packing source tar (Windows-safe excludes)...');
+      execSync(tarCmd, {
         stdio: 'inherit',
         cwd: ROOT,
         shell: true,
       });
+      const tarMb = Math.round((fs.statSync(tmpTar).size / (1024 * 1024)) * 10) / 10;
+      console.log(`[deploy:server] tar size: ${tarMb} MB → ${tmpTar}`);
+      if (tarMb > 200) {
+        throw new Error(
+          `Deploy tar too large (${tarMb} MB). Excludes failed — refuse upload. Fix tar excludes.`
+        );
+      }
 
       runStep('sync-scp', 'scp', [...sshArgsNonInteractive, tmpTar, `${server}:${appPath}/__src.tar`], {
         cwd: ROOT,

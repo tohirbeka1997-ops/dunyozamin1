@@ -413,8 +413,10 @@ try {
   runStep('tuzatishdan keyin 2 ta buyurtma', () => {
     const orders = sales.getByCustomer(fixId);
     assert.strictEqual(orders.length, 2);
-    const creditOrders = orders.filter((o) => Number(o.credit_amount) > 0);
-    assert.strictEqual(creditOrders.length, 2);
+    const creditOrders = orders.filter((o) => Number(o.credit_amount) > 0.02);
+    // To‘liq qaytarilgan noto‘g‘ri buyurtmada credit_amount=0 bo‘lishi kerak
+    assert.strictEqual(creditOrders.length, 1, 'faqat yangi nasiya ochiq qarzda');
+    assert.strictEqual(String(creditOrders[0].id), String(fixedSale.order_id));
   });
 
   runStep('buyurtmaga bog‘langan to‘lov (order_id)', () => {
@@ -544,6 +546,7 @@ try {
       phone: '+998901234504',
       allow_credit: 1,
       allow_debt: 1,
+      credit_limit: 50000000,
     });
     const orphanId = orphanCust.id;
     const sale = sales.completePOSOrder(
@@ -669,13 +672,13 @@ try {
     const rollbackReturnCustomerId = rollbackReturnCustomer.id;
     const baseSale = sales.completePOSOrder(
       {
-        total_amount: 9000,
+        total_amount: 5000,
         customer_id: rollbackReturnCustomerId,
         shift_id: shift.id,
         user_id: ADMIN,
       },
-      [cartLine(product, 1, 9000)],
-      [{ payment_method: 'credit', amount: 9000 }],
+      [cartLine(product, 1, 5000)],
+      [{ payment_method: 'credit', amount: 5000 }],
     );
     const baseSaleOrderId = baseSale.order_id;
     const orderItem = db

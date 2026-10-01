@@ -549,3 +549,35 @@ export const createPurchaseReceipt = async (payload: {
   await delay();
   throw new Error('Purchase receipts faqat desktop ilovada mavjud');
 };
+
+export const extractInvoiceDraft = async (payload: {
+  supplier_id: string;
+  image_url?: string | null;
+  image_base64?: string | null;
+  mime_type?: string | null;
+  invoice_number?: string | null;
+}) => {
+  if (hasPosApi()) {
+    const api = requireElectron();
+    return ipc<any>(api.purchases.extractInvoiceDraft(payload));
+  }
+  await delay();
+  throw new Error('Nakladnoydan xarid faqat serverga ulangan holda ishlaydi');
+};
+
+export const confirmInvoicePurchase = async (payload: {
+  supplier_id: string;
+  invoice_number?: string | null;
+  fx_rate?: number | null;
+  image_url?: string | null;
+  raw_ai?: unknown;
+  created_by?: string | null;
+  lines: Array<Record<string, unknown>>;
+}) => {
+  if (hasPosApi()) {
+    const api = requireElectron();
+    return ipc<any>(api.purchases.confirmInvoicePurchase(payload));
+  }
+  await delay();
+  throw new Error('Nakladnoydan xarid faqat serverga ulangan holda ishlaydi');
+};

@@ -34,6 +34,9 @@ services:
       POS_HOST_BIND: 0.0.0.0
       POS_HOST_PORT: ${POS_HOST_PORT:-3333}
       POS_HOST_SECRET: ${POS_HOST_SECRET:?POS_HOST_SECRET is required}
+      # Desktop installer transport secret. Public channels only (login, health).
+      # Must be injected here: /app/.env is root-only and the pos user cannot read it.
+      POS_CLIENT_BOOTSTRAP_SECRET: ${POS_CLIENT_BOOTSTRAP_SECRET:-}
       POS_CORS_ORIGINS: ${POS_CORS_ORIGINS:-}
       POS_TRUST_PROXY: ${POS_TRUST_PROXY:-1}
       POS_RATE_LIMIT_RPC_MAX: ${POS_RATE_LIMIT_RPC_MAX:-1200}
@@ -57,10 +60,19 @@ services:
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       OPENAI_MODEL: ${OPENAI_MODEL:-}
       OPENAI_BASE_URL: ${OPENAI_BASE_URL:-}
+      OPENAI_IMAGE_MODEL: ${OPENAI_IMAGE_MODEL:-}
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
       GEMINI_TEXT_MODEL: ${GEMINI_TEXT_MODEL:-}
       GEMINI_IMAGE_MODEL: ${GEMINI_IMAGE_MODEL:-}
       DAILY_POSTER_TIME: ${DAILY_POSTER_TIME:-}
+      # Google Sign-In + SMTP password-reset (also readable via /app/.env mount)
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
+      SMTP_HOST: ${SMTP_HOST:-}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_FROM: ${SMTP_FROM:-}
+      SMTP_USERNAME: ${SMTP_USERNAME:-}
+      SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+      SMTP_HELLO: ${SMTP_HELLO:-}
       TZ: ${TZ:-Asia/Tashkent}
 
     # ---------------------------------------------------------------------

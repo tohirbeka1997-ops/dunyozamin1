@@ -275,6 +275,12 @@ export default function ShiftClosingsReport() {
                 {filteredRows.map(({ shift, cashierName, summary }) => {
                   const openingCash = Number(shift.opening_cash || 0);
                   const cashSales = Number(summary?.cashSales || 0);
+                  const cashChangeGiven =
+                    Number(summary?.cashChangeGiven ?? summary?.cash_change_given ?? 0) || 0;
+                  const cashSalesNet =
+                    summary?.cashSalesNet != null || summary?.cash_sales_net != null
+                      ? Number(summary?.cashSalesNet ?? summary?.cash_sales_net ?? 0) || 0
+                      : Math.max(0, cashSales - cashChangeGiven);
                   const drawerNet = Number(
                     summary?.customerDrawerCashNet ?? summary?.customer_drawer_cash_net ?? 0
                   ) || 0;
@@ -285,7 +291,7 @@ export default function ShiftClosingsReport() {
                     ? Number(shift.expected_cash)
                     : Number.isFinite(expectedFromSummary)
                       ? expectedFromSummary
-                      : openingCash + cashSales + drawerNet - refundsOut;
+                      : openingCash + cashSalesNet + drawerNet - refundsOut;
                   const closingCash = shift.closing_cash == null ? null : Number(shift.closing_cash);
                   const diff = shift.cash_difference == null ? null : Number(shift.cash_difference);
                   const creditDebt = Number(

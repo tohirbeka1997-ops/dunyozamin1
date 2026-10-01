@@ -443,12 +443,14 @@ export default function PosCustomerReferrerPanel({
 
       {selectedCustomer && !isWalkInCustomer(selectedCustomer) && (
         <div className="flex items-center gap-1.5 overflow-x-auto px-0.5 text-[10px] text-muted-foreground [scrollbar-width:thin]">
-          <span className="shrink-0 font-medium text-foreground">
-            {String((selectedCustomer as { pricing_tier?: string })?.pricing_tier || currentTierCode || 'retail')}
-          </span>
-          {String((selectedCustomer as { pricing_tier?: string })?.pricing_tier || currentTierCode || 'retail') ===
-            'master' && (
-            <span className="shrink-0">{Number(selectedCustomer.bonus_points ?? 0)} ball</span>
+          {String((selectedCustomer as { pricing_tier?: string })?.pricing_tier || '') === 'master' && (
+            <>
+              <span className="shrink-0 font-medium text-foreground">master</span>
+              <span className="shrink-0">{Number(selectedCustomer.bonus_points ?? 0)} ball</span>
+            </>
+          )}
+          {currentTierCode && currentTierCode !== 'retail' && (
+            <span className="shrink-0 font-medium text-foreground">narx: {currentTierCode}</span>
           )}
           <span
             className={cn(

@@ -303,6 +303,36 @@ function cartLine(product, qty, unitPrice) {
       assert.strictEqual(net, gross - impact - expenses, 'net_profit = total_profit - returns_profit_impact - expenses');
     });
 
+    runStep('zero cost_price cart return still credits returns_cogs via purchase_price', () => {
+      const zeroCostReturn = sales.completePOSOrder(
+        { total_amount: -10000, shift_id: shift.id, user_id: ADMIN, sales_channel: 'pos' },
+        [
+          {
+            product_id: product.id,
+            product_name: product.name,
+            quantity: -1,
+            qty_sale: -1,
+            qty_base: -1,
+            unit_price: 10000,
+            line_total: -10000,
+            cost_price: 0,
+          },
+        ],
+        [{ payment_method: 'refund_cash', amount: 10000 }],
+      );
+      assert.ok(zeroCostReturn?.order_id, 'zero-cost cart return created');
+      db.prepare(`UPDATE order_items SET cost_price = 0 WHERE order_id = ?`).run(zeroCostReturn.order_id);
+
+      const report = reports.getDailySalesReportSQL(filters);
+      const returnsCogs = Number(report?.summary?.returns_cogs || 0) || 0;
+      assert.ok(
+        returnsCogs >= 4000 - 1,
+        `returns_cogs ${returnsCogs} should include purchase_price fallback (~4000+) for zero cost_price return`,
+      );
+      const net = Number(report?.summary?.net_profit ?? 0) || 0;
+      assert.ok(net > 0, `net_profit ${net} should stay positive when return COGS is credited`);
+    });
+
     close();
   } catch (e) {
     console.error(e);

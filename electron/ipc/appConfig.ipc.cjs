@@ -43,12 +43,16 @@ function registerAppConfigHandlers(app) {
       // printer configuration, etc.). Sensitive keys (host.secret, host.bind,
       // ...) require an authenticated admin — anything less would let a
       // manager-level account rotate the master adminBypass key.
+      const existing = readConfig(app);
       let db;
-      try { db = getDb(); } catch { db = null; }
+      if (existing.mode !== 'client') {
+        try { db = getDb(); } catch { db = null; }
+      } else {
+        db = null;
+      }
       assertAppConfigPatchAllowed(patch || {}, resolveActorRole(db));
 
       const next = { ...(patch || {}) };
-      const existing = readConfig(app);
       const nextMode = String(next.mode ?? existing.mode ?? 'host').toLowerCase();
       if (nextMode === 'client') {
         const hostUrl = String(next.client?.hostUrl ?? existing.client?.hostUrl ?? '')
@@ -71,14 +75,47 @@ function registerAppConfigHandlers(app) {
   ipcMain.handle(
     'pos:appConfig:reset',
     wrapHandler(async () => {
-      try {
+      const existing = readConfig(app);
+      if (existing.mode !== 'client') {
         requireAdmin(getDb());
-      } catch (err) {
-        // Fail closed only when DB is reachable. In CLIENT mode (no DB),
-        // resetConfig is the only escape hatch — keep the legacy behaviour.
-        try { getDb(); throw err; } catch { /* no DB → allow */ }
       }
+      // CLIENT has no local DB. Reset is its recovery escape hatch and must
+      // never create/open a local pos.db merely to authorize this operation.
       return resetConfig(app);
+    })
+  );
+
+  ipcMain.removeHandler('pos:appConfig:testConnection');
+  ipcMain.handle(
+    'pos:appConfig:testConnection',
+    wrapHandler(async (_event, input) => {
+      const hostUrl = String(input?.hostUrl || '').trim().replace(/\/+$/, '');
+      const secret = String(input?.secret || '').trim();
+      if (!/^https?:\/\//i.test(hostUrl) || !secret) {
+        const { createError, ERROR_CODES } = require('../lib/errors.cjs');
+        throw createError(ERROR_CODES.VALIDATION_ERROR, 'HOST URL and secret are required');
+      }
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 15_000);
+      try {
+        const response = await fetch(`${hostUrl}/rpc`, {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${secret}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({ channel: 'pos:health', args: [] }),
+          signal: controller.signal,
+        });
+        const body = await response.json().catch(() => null);
+        return {
+          ok: response.ok && body?.ok === true && body?.data?.success === true,
+          status: response.status,
+          message: body?.error?.message || null,
+        };
+      } finally {
+        clearTimeout(timeout);
+      }
     })
   );
 }

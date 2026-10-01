@@ -131,12 +131,50 @@ async function main() {
   const tipCaption = buildTemplateCaption({
     storeName: 'Test Market',
     contentType: tipType,
-    topic: 'PPR quvur ulashda o‘lchamni tekshiring',
+    topic: 'LED lenta yoki lampani almashtirishda xavfsizlik',
   });
   assert.ok(/maslahat|Maslahat/i.test(tipCaption) || tipCaption.includes('💡'));
   assert.ok(/#Dunyozamin/.test(tipCaption) && /#News/.test(tipCaption));
+  assert.ok(tipCaption.includes('•'));
+  assert.ok(tipCaption.length <= poster.CAPTION_SOFT_MAX);
+  assert.ok(tipCaption.length >= poster.CAPTION_MIN);
   assert.equal(/sifatli\s+tanlov/i.test(tipCaption), false);
+  assert.equal(/santexnika/i.test(tipCaption), false); // no cross-sell to plumbing on LED tip
   assert.equal(qualityCheckCaption(tipCaption, null, { contentType: tipType }).ok, true);
+
+  // Soft promo only when product domain matches topic
+  const ledProduct = {
+    name: 'LED lenta 5m',
+    sale_price: 45000,
+    category_name: 'Yoritish',
+  };
+  const plumbingProduct = {
+    name: 'Atvod 32 PPR',
+    sale_price: 15000,
+    category_name: 'Santexnika · Fiting',
+  };
+  assert.equal(
+    poster.productMatchesTopic(ledProduct, 'LED lenta yoki lampani almashtirishda xavfsizlik'),
+    true,
+  );
+  assert.equal(
+    poster.productMatchesTopic(plumbingProduct, 'LED lenta yoki lampani almashtirishda xavfsizlik'),
+    false,
+  );
+  const tipWithMatch = buildTemplateCaption({
+    storeName: 'Test Market',
+    contentType: tipType,
+    topic: 'LED lenta yoki lampani almashtirishda xavfsizlik',
+    product: ledProduct,
+  });
+  assert.ok(/LED lenta/i.test(tipWithMatch));
+  const tipNoCross = buildTemplateCaption({
+    storeName: 'Test Market',
+    contentType: tipType,
+    topic: 'LED lenta yoki lampani almashtirishda xavfsizlik',
+    product: plumbingProduct,
+  });
+  assert.equal(/Atvod/i.test(tipNoCross), false);
 
   const rubric = RUBRICS[4]; // Payshanba
   const product = {
@@ -156,11 +194,50 @@ async function main() {
   assert.ok(/News/i.test(caption));
   assert.ok(caption.includes('Birga oling'));
   assert.ok(caption.length >= poster.CAPTION_MIN);
+  assert.ok(caption.length <= poster.CAPTION_SOFT_MAX);
   assert.ok(/Santexnika|quvur|ulanish|sizib/i.test(caption));
   assert.equal(/sifatli\s+tanlov/i.test(caption), false);
   assert.ok(rubric.openingHint);
   const qc = qualityCheckCaption(caption, product);
   assert.equal(qc.ok, true);
+
+  // Image orchestrator: Gemini 429 → OpenAI b64 success
+  {
+    const fakeBuf = Buffer.alloc(600, 7);
+    let openaiCalled = false;
+    const imgOut = await poster.generatePosterImage(
+      {
+        storeName: 'Test Market',
+        contentType: tipType,
+        topic: 'LED xavfsizlik',
+        rubric: RUBRICS[2],
+      },
+      {
+        skipEnvLoad: true,
+        geminiApiKey: 'g-test',
+        apiKey: 'sk-test',
+        openaiImageModel: 'dall-e-3',
+        fetchFn: async (url) => {
+          const u = String(url);
+          if (u.includes('generativelanguage.googleapis.com')) {
+            return { ok: false, status: 429, text: async () => 'quota' };
+          }
+          if (u.includes('/images/generations')) {
+            openaiCalled = true;
+            return {
+              ok: true,
+              json: async () => ({ data: [{ b64_json: fakeBuf.toString('base64') }] }),
+            };
+          }
+          return { ok: false, status: 404, text: async () => 'no' };
+        },
+      },
+    );
+    assert.equal(imgOut.ok, true);
+    assert.equal(imgOut.source, 'openai');
+    assert.equal(openaiCalled, true);
+    assert.ok(imgOut.buffer && imgOut.buffer.length > 50);
+  }
 
   assert.equal(qualityCheckCaption('', product).ok, false);
   assert.equal(

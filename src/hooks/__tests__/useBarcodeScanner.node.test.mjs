@@ -129,5 +129,59 @@ t('minLength=8 filters out 7-digit burst', () => {
   assert.equal(r, null);
 });
 
+const FOCUSED_SCAN_MAX_INTERVAL_MS = 20;
+function isScannerSpeedBurst(length, durationMs, maxAvgMs) {
+  if (length < 2) return false;
+  if (!Number.isFinite(durationMs) || durationMs < 0) return false;
+  return durationMs / (length - 1) <= maxAvgMs;
+}
+function shouldStealFromEditable(opts) {
+  if (opts.mode === 'ignore') return false;
+  if (opts.length < opts.minLength) return false;
+  if (opts.mode === 'hijack') return true;
+  const limit = Math.min(opts.maxIntervalMs, FOCUSED_SCAN_MAX_INTERVAL_MS);
+  return isScannerSpeedBurst(opts.length, opts.durationMs, limit);
+}
+
+t('fast typing in a field is not stolen', () => {
+  // 4 chars, 30ms apart — faster than the old 40ms cutoff, still a person
+  assert.equal(
+    shouldStealFromEditable({
+      mode: 'auto',
+      length: 4,
+      minLength: 4,
+      durationMs: 90,
+      maxIntervalMs: 40,
+    }),
+    false,
+  );
+});
+
+t('scanner burst in a field is stolen', () => {
+  assert.equal(
+    shouldStealFromEditable({
+      mode: 'auto',
+      length: 13,
+      minLength: 4,
+      durationMs: 12 * 8,
+      maxIntervalMs: 40,
+    }),
+    true,
+  );
+});
+
+t('ignore mode never steals from a field', () => {
+  assert.equal(
+    shouldStealFromEditable({
+      mode: 'ignore',
+      length: 13,
+      minLength: 4,
+      durationMs: 12 * 8,
+      maxIntervalMs: 40,
+    }),
+    false,
+  );
+});
+
 console.log(`\nResult: ${passed} passed, ${failed} failed.`);
 process.exit(failed === 0 ? 0 : 1);

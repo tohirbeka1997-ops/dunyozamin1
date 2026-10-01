@@ -3151,6 +3151,8 @@ class PurchaseService {
       currency,
       exchange_rate: exchangeRate,
       items: receiptItems,
+      invoice_number: receiptData.invoice_number || po.invoice_number || null,
+      notes: receiptData.notes || null,
       received_at: receiptData.received_at || null,
       created_by: receiptData.received_by || null,
       update_product_sale_prices: receiptData.update_product_sale_prices,
@@ -3328,6 +3330,23 @@ class PurchaseService {
       });
     }
     return { created, skipped_without_supplier: preview.groups.filter((g) => !g.can_create) };
+  }
+
+  /**
+   * Read one invoice photo into a draft. Does not change stock.
+   */
+  extractInvoiceDraft(payload) {
+    const { extractInvoiceDraft } = require('../lib/invoicePurchaseFlow.cjs');
+    return extractInvoiceDraft(this, payload || {});
+  }
+
+  /**
+   * Create a purchase order from a reviewed invoice draft and receive it
+   * through receiveGoods → createReceipt (FIFO / supplier debt).
+   */
+  confirmInvoicePurchase(payload) {
+    const { confirmInvoicePurchase } = require('../lib/invoicePurchaseFlow.cjs');
+    return confirmInvoicePurchase(this, payload || {});
   }
 }
 

@@ -29,10 +29,11 @@ function throwRemoteError(errLike, fallbackMessage = 'Remote error') {
   throw new Error(typeof errLike === 'string' ? errLike : fallbackMessage);
 }
 
-/** Read-only pricing lookups: on 429 return null instead of throwing (POS scan bursts). */
+/** Read-only lookups: on 429 return null instead of throwing (POS scan/search bursts). */
 const SOFT_RATE_LIMIT_CHANNELS = new Set([
   'pos:pricing:getPrice',
   'pos:pricing:getTiers',
+  'pos:products:searchScreen',
 ]);
 
 function isRateLimited(status, json) {
@@ -102,7 +103,14 @@ function registerClientForwarders({ hostUrl, secret }) {
 
   async function callRpc(channel, args = []) {
     const isBootstrap = BOOTSTRAP_CHANNELS.has(channel);
-    const bearer = isBootstrap ? secret : (sessionToken || secret);
+    if (!isBootstrap && !sessionToken) {
+      throwRemoteError({
+        code: ERROR_CODES.AUTH_ERROR,
+        message: 'Login required',
+        details: null,
+      });
+    }
+    const bearer = isBootstrap ? secret : sessionToken;
 
     const { status, json } = await postJson(rpcUrl, { channel, args }, {
       bearer,

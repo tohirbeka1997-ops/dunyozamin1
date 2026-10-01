@@ -22,6 +22,7 @@ interface AuthContextType {
   multiTenantMode: boolean | null;
   loading: boolean;
   signIn: (email: string, password: string, tenant?: string | null) => Promise<void>;
+  signInWithGoogle: (idToken: string, tenant?: string | null) => Promise<void>;
   masterSignIn: (username: string, password: string) => Promise<void>;
   signUp: (email: string, password: string, profileFields?: { fullName?: string; username?: string }) => Promise<void>;
   signOut: () => Promise<void>;
@@ -114,6 +115,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     multiTenantMode: authStore.multiTenantMode,
     loading: authStore.loading,
     signIn: authStore.signIn,
+    signInWithGoogle: authStore.signInWithGoogle,
     masterSignIn: authStore.masterSignIn,
     signUp: authStore.signUp,
     signOut: authStore.signOut,

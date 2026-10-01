@@ -60,16 +60,20 @@ async function main() {
       sendDailyPosterNow,
       resolveMarketingCredentials,
       resolveGeminiConfig,
+      resolveOpenAiImageConfig,
       CONTENT_TYPES,
     } = require('../public-api/lib/dailyStorePoster.cjs');
     const creds = resolveMarketingCredentials({ skipEnvLoad: true });
     const gemini = resolveGeminiConfig({ skipEnvLoad: true });
+    const openaiImg = resolveOpenAiImageConfig({ skipEnvLoad: true });
     console.log(
       JSON.stringify({
         db_ok: true,
         has_marketing_token: Boolean(creds.botToken),
         has_channel: Boolean(creds.channelId),
         has_gemini: Boolean(gemini.hasApiKey),
+        has_openai_image: Boolean(openaiImg.hasApiKey),
+        openai_image_model: openaiImg.model || null,
         content_types: CONTENT_TYPES.map((c) => c.id),
         requested_type: args.contentTypeId || null,
         sample_only: args.sampleOnly,

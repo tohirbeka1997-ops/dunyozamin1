@@ -89,6 +89,62 @@ export function normalizeSearchValue(value?: string | number | null): string {
     .toLocaleLowerCase('uz-UZ');
 }
 
+/**
+ * Cable/spec style queries: digits separated by punctuation (`2*4`, `2*2.5`).
+ * Stripped matching alone (`24` ⊂ `24w`) is too noisy for these.
+ */
+export function isPunctuatedSpecQuery(raw: unknown): boolean {
+  const s = String(raw ?? '').trim();
+  if (s.length < 3) return false;
+  return /\d[^\p{L}\p{N}\s]+\d/u.test(s);
+}
+
+/** Literal / near-literal forms of a punctuated spec (`2*4` → `2x4`, `2-4`, …). */
+export function expandPunctuatedSpecForms(raw: unknown): string[] {
+  const lower = String(raw ?? '')
+    .trim()
+    .toLowerCase();
+  if (!lower) return [];
+  const forms = new Set<string>([lower]);
+  for (const sep of ['*', 'x', '×', 'х', '-', '/', ' ']) {
+    forms.add(lower.replace(/[*x×х\-/.\s]+/gi, sep));
+  }
+  // Keep decimal digits: 2*2.5 → 2x2.5 (do not strip the `.` between 2 and 5)
+  forms.add(lower.replace(/\*/g, 'x'));
+  forms.add(lower.replace(/\*/g, '×'));
+  forms.add(lower.replace(/\*/g, '-'));
+  forms.add(lower.replace(/\*/g, '/'));
+  forms.add(lower.replace(/\*/g, ' '));
+  return [...forms].filter((f) => f.length >= 2);
+}
+
+/** True if any name/sku/… field contains a literal (or near-literal) spec form. */
+export function productHasLiteralSpecMatch(
+  product: ProductSearchFields,
+  rawQuery: unknown,
+): boolean {
+  const forms = expandPunctuatedSpecForms(rawQuery);
+  if (!forms.length) return false;
+  const fields = [
+    product.name,
+    product.product_name,
+    product.sku,
+    product.product_sku,
+    product.barcode,
+    product.product_barcode,
+    product.article,
+    product.brand,
+  ];
+  for (const field of fields) {
+    const text = String(field ?? '').toLowerCase();
+    if (!text) continue;
+    for (const form of forms) {
+      if (text.includes(form)) return true;
+    }
+  }
+  return false;
+}
+
 export function productHasExactCodeMatch(
   product: ProductSearchFields,
   rawTerm: string | null | undefined,
@@ -130,6 +186,10 @@ export function productMatchesSearchTerm(
   const term = String(rawTerm || '').trim();
   if (!term) return true;
   if (productHasExactCodeMatch(product, term)) return true;
+  // `2*4` must not keep every product that merely contains digits "24".
+  if (isPunctuatedSpecQuery(term)) {
+    return productHasLiteralSpecMatch(product, term);
+  }
   return productMatchesSearchTermFuzzy(product, term);
 }
 
@@ -142,5 +202,10 @@ export function filterProductsBySearchTerm<T extends ProductSearchFields>(
   if (!term) return products;
   const exact = products.filter((p) => productHasExactCodeMatch(p, term));
   if (exact.length > 0) return exact;
+  if (isPunctuatedSpecQuery(term)) {
+    const literal = products.filter((p) => productHasLiteralSpecMatch(p, term));
+    if (literal.length > 0) return literal;
+    // No literal cable/spec hit — fall back to fuzzy so typos still work.
+  }
   return products.filter((p) => productMatchesSearchTermFuzzy(p, term));
 }

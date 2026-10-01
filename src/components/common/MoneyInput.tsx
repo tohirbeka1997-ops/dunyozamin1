@@ -283,14 +283,17 @@ export default function MoneyInput({
       return;
     }
 
-    // Allow: Ctrl+A, Ctrl+C, Ctrl+V, Ctrl+X
+    // Allow: Ctrl+A, Ctrl+C, Ctrl+V, Ctrl+X — and let Ctrl+1..9 bubble to POS payment shortcuts
     if (e.ctrlKey || e.metaKey) {
       if (['a', 'c', 'v', 'x'].includes(e.key.toLowerCase())) {
         return;
       }
+      if (/^\d$/.test(e.key)) {
+        return;
+      }
     }
 
-    // Allow digits
+    // Allow digits (plain typing only; modifiers handled above)
     if (/^\d$/.test(e.key)) {
       return;
     }

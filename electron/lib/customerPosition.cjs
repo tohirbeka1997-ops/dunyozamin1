@@ -309,7 +309,14 @@ function computeCustomerPosition(db, customerId, currency = 'UZS', opts = {}) {
 }
 
 function totalExposure(position, pendingUnpostedDebt = 0) {
-  return roundMoney((position?.total_debt || 0) + (Number(pendingUnpostedDebt) || 0));
+  // Hisob holati (stored debt/advance) — kassa SoT. Ochiq buyurtma credit_amount
+  // allocation qilinmagan bo‘lsa open_order_debt sun’iy katta chiqadi; limit/yangi
+  // nasiya shu ghost summani qo‘shmasligi kerak.
+  const storedNetDebt = Math.max(
+    0,
+    (Number(position?.stored_debt) || 0) - (Number(position?.stored_advance) || 0)
+  );
+  return roundMoney(storedNetDebt + (Number(pendingUnpostedDebt) || 0));
 }
 
 function syncCustomerDebtFromPosition(db, customerId, currency, updatedAt) {
@@ -317,6 +324,8 @@ function syncCustomerDebtFromPosition(db, customerId, currency, updatedAt) {
   const at = updatedAt || new Date().toISOString();
   const pos = computeCustomerPosition(db, customerId, cur);
   const buckets = readCustomerDebtAdvance(db, customerId, cur);
+  // Faqat CUSTOMER_AR_HEAL / attachPosition sync yo‘li chaqiradi.
+  // Oddiy sotuv/qaytarish bu funksiyani chaqirmasligi kerak (ghost open-order).
   writeDebtAdvanceNet(db, customerId, cur, pos.total_debt, buckets.advance, at);
   return computeCustomerPosition(db, customerId, cur);
 }
@@ -527,6 +536,93 @@ function applyReturnToOrderRemaining(db, orderId, refundAmount, now) {
 }
 
 /**
+ * Undo FIFO / return allocations: restore orders.credit_amount and delete rows.
+ * paymentIds: exact payment_id values (e.g. `${returnId}:refund`, `${returnId}:settle`).
+ * cashDocIds: optional cash_doc_id matches (return number / id).
+ */
+function reverseInboundAllocations(db, { customerId, paymentIds = [], cashDocIds = [], now } = {}) {
+  if (!customerId || !_hasTable(db, 'customer_payment_allocations')) {
+    return { reversed_orders: 0, deleted_rows: 0, restored_credit: 0 };
+  }
+  const at = now || new Date().toISOString().replace('T', ' ').slice(0, 19);
+  const ids = [...new Set((paymentIds || []).map((x) => String(x || '').trim()).filter(Boolean))];
+  const docs = [...new Set((cashDocIds || []).map((x) => String(x || '').trim()).filter(Boolean))];
+  if (!ids.length && !docs.length) {
+    return { reversed_orders: 0, deleted_rows: 0, restored_credit: 0 };
+  }
+
+  const clauses = [];
+  const params = [customerId];
+  if (ids.length) {
+    clauses.push(`payment_id IN (${ids.map(() => '?').join(',')})`);
+    params.push(...ids);
+  }
+  if (docs.length) {
+    clauses.push(`cash_doc_id IN (${docs.map(() => '?').join(',')})`);
+    params.push(...docs);
+  }
+  const rows = db
+    .prepare(
+      `
+      SELECT id, order_id,
+             COALESCE(applied_amount, allocated_amount, 0) AS applied_amount,
+             COALESCE(remainder_to_advance, 0) AS remainder_to_advance
+      FROM customer_payment_allocations
+      WHERE customer_id = ?
+        AND (${clauses.join(' OR ')})
+      ORDER BY rowid DESC
+    `
+    )
+    .all(...params);
+
+  let restored = 0;
+  let orderTouches = 0;
+  for (const row of rows) {
+    const applied = roundMoney(Number(row.applied_amount || 0));
+    const remAdv = roundMoney(Number(row.remainder_to_advance || 0));
+    // Remainder-only rows (advance park) have no order credit to restore.
+    if (row.order_id && applied > 0.009 && remAdv <= 0.009) {
+      const order = db.prepare(`SELECT * FROM orders WHERE id = ?`).get(row.order_id);
+      if (order) {
+        const newPaid = roundMoney(Math.max(0, Number(order.paid_amount || 0) - applied));
+        const newCredit = roundMoney(Number(order.credit_amount || 0) + applied);
+        let paymentStatus = 'paid';
+        if (newCredit > 0.02) {
+          paymentStatus = newPaid > 0.02 ? 'partially_paid' : 'on_credit';
+        }
+        db.prepare(
+          `UPDATE orders SET paid_amount = ?, credit_amount = ?, payment_status = ?, updated_at = ? WHERE id = ?`
+        ).run(newPaid, newCredit, paymentStatus, at, order.id);
+        restored = roundMoney(restored + applied);
+        orderTouches += 1;
+      }
+    }
+  }
+
+  if (rows.length) {
+    const delIds = rows.map((r) => r.id);
+    db.prepare(
+      `DELETE FROM customer_payment_allocations WHERE id IN (${delIds.map(() => '?').join(',')})`
+    ).run(...delIds);
+  }
+
+  // Deterministic loan-repay rows created by settleAdvanceAgainstOpenDebt.
+  if (_hasTable(db, 'customer_payments') && ids.length) {
+    const loanIds = ids.map((id) => `${id}:loan`);
+    const allPayIds = [...ids, ...loanIds];
+    db.prepare(
+      `DELETE FROM customer_payments WHERE id IN (${allPayIds.map(() => '?').join(',')})`
+    ).run(...allPayIds);
+  }
+
+  return {
+    reversed_orders: orderTouches,
+    deleted_rows: rows.length,
+    restored_credit: restored,
+  };
+}
+
+/**
  * When unapplied advance coexists with open credit / loans, apply advance first
  * (FIFO onto orders, then loan repay). Fixes return-path split-brain: balance
  * delta nets stored debt into advance, then open_order_debt was re-synced without
@@ -544,6 +640,10 @@ function settleAdvanceAgainstOpenDebt(db, customerId, currency = 'UZS', opts = {
   if (!(advance > 0.009)) {
     return { applied_to_orders: 0, applied_to_loans: 0, advance_after: advance };
   }
+
+  // Debt that is neither open-order credit nor CUSTOMER_LOAN_* — keep after settle
+  // by not rewriting debt from open_order_debt (see debtAfter below).
+  const startDebt = roundMoney(buckets.debt);
 
   let appliedToOrders = 0;
   const open = listOpenCreditOrders(db, customerId, cur);
@@ -575,7 +675,7 @@ function settleAdvanceAgainstOpenDebt(db, customerId, currency = 'UZS', opts = {
     );
     if (loanNet > 0.009 && advance > 0.009 && _hasTable(db, 'customer_payments')) {
       const repay = roundMoney(Math.min(advance, loanNet));
-      const repayId = randomUUID();
+      const repayId = opts.paymentId ? `${String(opts.paymentId)}:loan` : randomUUID();
       const repayNumber = `LR-${Date.now()}-${String(repayId).slice(0, 8).toUpperCase()}`;
       const payCols = _cols(db, 'customer_payments');
       const cols = [
@@ -625,18 +725,24 @@ function settleAdvanceAgainstOpenDebt(db, customerId, currency = 'UZS', opts = {
     }
   }
 
+  // Muhim: debt ni open_order_debt dan qayta yozmang — ghost credit_amount
+  // (to‘lov allocation qilinmagan eski buyurtmalar) qarzni sun’iy oshiradi.
+  // Faqat settle qilingan summani stored debt dan ayiramiz.
+  const debtAfter = roundMoney(
+    Math.max(0, startDebt - appliedToOrders - appliedToLoans)
+  );
+  writeDebtAdvanceNet(db, customerId, cur, debtAfter, advance, now);
   const pos = computeCustomerPosition(db, customerId, cur);
   const loanAfter = roundMoney(
     Math.max(0, Number(pos.loan_issued || 0) - Number(pos.loan_repaid || 0))
   );
-  const debtFloor = roundMoney(pos.open_order_debt + loanAfter);
-  writeDebtAdvanceNet(db, customerId, cur, debtFloor, advance, now);
   return {
     applied_to_orders: appliedToOrders,
     applied_to_loans: appliedToLoans,
     advance_after: advance,
     open_order_debt_after: pos.open_order_debt,
     loan_debt_after: loanAfter,
+    debt_after: debtAfter,
   };
 }
 
@@ -953,6 +1059,7 @@ module.exports = {
   syncCustomerDebtFromPosition,
   allocateInboundToOpenOrders,
   applyReturnToOrderRemaining,
+  reverseInboundAllocations,
   settleAdvanceAgainstOpenDebt,
   applyAmountToOrderRow,
   backfillMissingOrderAllocations,

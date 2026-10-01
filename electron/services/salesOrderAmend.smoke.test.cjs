@@ -217,6 +217,22 @@ try {
       ],
     );
     assert.strictEqual(bal(db, amendCust.id), -12000);
+    const buckets = db
+      .prepare('SELECT debt_uzs, advance_uzs, balance FROM customers WHERE id = ?')
+      .get(amendCust.id);
+    assert.ok(
+      Math.abs(Number(buckets.debt_uzs) - 12000) < 0.02,
+      `amend keyin debt_uzs=12000, actual=${buckets.debt_uzs}`,
+    );
+    assert.ok(
+      Math.abs(Number(buckets.advance_uzs || 0)) < 0.02,
+      `amend keyin advance=0, actual=${buckets.advance_uzs}`,
+    );
+    assert.ok(
+      Math.abs(Number(buckets.balance) + Number(buckets.debt_uzs) - Number(buckets.advance_uzs || 0)) <
+        0.02,
+      `balance ↔ buckets sync, bal=${buckets.balance} debt=${buckets.debt_uzs} adv=${buckets.advance_uzs}`,
+    );
   });
 
   close();

@@ -42,7 +42,7 @@ import {
   receiveGoods,
 } from '@/db/api';
 import type { PurchaseOrderWithDetails, SupplierWithBalance } from '@/types/database';
-import { Plus, Search, FileDown, Eye, Edit, Package, X, DollarSign, CheckCircle, Trash2, CalendarClock, ChevronLeft, ChevronRight } from 'lucide-react';
+import { Plus, Search, FileDown, Eye, Edit, Package, X, DollarSign, CheckCircle, Trash2, CalendarClock, ChevronLeft, ChevronRight, FileImage } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { useToast } from '@/hooks/use-toast';
 import { formatMoneyUZS } from '@/lib/format';
@@ -103,6 +103,9 @@ export default function PurchaseOrders() {
   const [deleting, setDeleting] = useState(false);
   const isAdmin = role === 'admin' || profile?.role === 'admin';
   const canExport = canExportPurchaseOrders(profile?.role || role);
+  const canInvoicePurchase = ['admin', 'manager', 'receiver', 'warehouse', 'purchaser'].includes(
+    String(profile?.role || role || ''),
+  );
 
   useEffect(() => {
     if (storedQueryKey !== listQueryKey) {
@@ -418,6 +421,16 @@ export default function PurchaseOrders() {
             variant: 'default',
             onClick: () => navigateWithReturnTo('/purchase-orders/new'),
           },
+          ...(canInvoicePurchase
+            ? [
+                {
+                  id: 'from-invoice',
+                  icon: <FileImage />,
+                  label: 'Nakladnoydan xarid',
+                  onClick: () => navigateWithReturnTo('/purchase-orders/from-invoice'),
+                },
+              ]
+            : []),
           {
             id: 'receive',
             icon: <Package />,

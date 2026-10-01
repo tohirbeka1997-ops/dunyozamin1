@@ -1015,7 +1015,7 @@ export default function Orders() {
                           <TableCell className="text-right align-top">
                             {Number(order.returned_total || 0) > 0 ? (
                               <span className="tabular-nums text-destructive">
-                                {formatOrderMoney(order, order.returned_total)}
+                                −{formatOrderMoney(order, order.returned_total)}
                               </span>
                             ) : (
                               <span className="text-muted-foreground text-sm">—</span>

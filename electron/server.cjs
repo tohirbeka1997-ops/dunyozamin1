@@ -246,7 +246,9 @@ async function main() {
   const port = parseIntEnv('POS_HOST_PORT', 3333);
   const bind = process.env.POS_HOST_BIND || '0.0.0.0';
   const secret = requireSecret();
+  const clientBootstrapSecret = String(process.env.POS_CLIENT_BOOTSTRAP_SECRET || '').trim();
   const corsOrigins = parseCsvEnv('POS_CORS_ORIGINS');
+  console.log(`[server] clientBootstrap=${clientBootstrapSecret ? 'set' : 'unset'}`);
   const backupEnabled = parseBoolEnv('POS_BACKUP_ENABLED', true);
   const backupIntervalMin = parseIntEnv('POS_BACKUP_INTERVAL_MIN', 30);
   const backupMax = parseIntEnv('POS_BACKUP_MAX', 30);
@@ -326,6 +328,7 @@ async function main() {
     bind,
     port,
     secret,
+    clientBootstrapSecret,
     metricsSecret,
     corsOrigins,
     trustProxy,

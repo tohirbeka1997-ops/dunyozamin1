@@ -667,17 +667,17 @@ export default function Settings() {
         return;
       }
 
-      const res = await fetch(`${hostUrl}/health`, {
-        method: 'GET',
-        headers: { Authorization: `Bearer ${secret}` },
-      });
-      const json = await res.json().catch(() => null);
-      if (res.ok && json?.ok) {
+      const api = (window as any)?.posApi?.appConfig;
+      if (!api?.testConnection) throw new Error('Connection test is unavailable');
+      const result = await api.testConnection({ hostUrl, secret });
+      if (result?.success && result?.data?.ok) {
         setPosNetTestResult({ ok: true, message: t('settings.network.testOkDetail') });
       } else {
         setPosNetTestResult({
           ok: false,
-          message: `${t('settings.network.connFail')}: ${json?.error?.message || res.statusText}`,
+          message: `${t('settings.network.connFail')}: ${
+            result?.data?.message || result?.error?.message || result?.data?.status || ''
+          }`,
         });
       }
     } catch (e) {

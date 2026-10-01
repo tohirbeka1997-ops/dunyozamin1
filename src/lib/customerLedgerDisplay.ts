@@ -702,18 +702,31 @@ export function ledgerQoldiViewFromSigned(signed: number): LedgerQoldiView {
 }
 
 /**
- * Chronological running Qoldi from row deltas, starting at 0.
- * Ignores stored debt_after / balance_after (those mix other open orders).
+ * Chronological running Qoldi.
+ * When `balance_after` exists, use it (matches stored AR / «Hozir»).
+ * Do NOT prefer `debt_after` alone — on CREDIT_SALE it often embeds other open AR.
+ * Legacy rows without balance_after keep cash-flow delta reconstruction.
  */
 export function walkLedgerRunningSigned(
-  entries: Array<LedgerTimeEntry & Parameters<typeof ledgerCashierDelta>[0]>,
+  entries: Array<LedgerTimeEntry & Parameters<typeof ledgerCashierDelta>[0] & {
+    balance_after?: number | null;
+    debt_after?: number | null;
+    advance_after?: number | null;
+  }>,
   orderAmountsById?: Map<string, LedgerOrderAmounts>,
 ): Map<string, number> {
   const chrono = sortLedgerEntries(entries, "asc");
   const out = new Map<string, number>();
   let signed = 0;
   chrono.forEach((entry, index) => {
-    signed = roundMoney(signed + ledgerCashierDelta(entry, orderAmountsById));
+    const balRaw = entry.balance_after;
+    const hasBalanceAfter =
+      balRaw != null && balRaw !== "" && Number.isFinite(Number(balRaw));
+    if (hasBalanceAfter) {
+      signed = roundMoney(toCashierSigned(Number(balRaw)));
+    } else {
+      signed = roundMoney(signed + ledgerCashierDelta(entry, orderAmountsById));
+    }
     const key = String(entry.id || `idx:${index}`);
     out.set(key, signed);
   });

@@ -714,22 +714,14 @@ class CustomersService {
         cashDocId: paymentNumber,
         allocation_type: 'advance_used',
       });
+      // Faqat stored bucket: advance ↓, debt ↓ (applied qismi). open_order_debt dan
+      // qayta yozilmasin — ghost credit_amount Hisobni shishirmasin.
       writeDebtAdvanceNet(
         this.db,
         normalizedCustomerId,
         payCurrency,
-        readCustomerDebtAdvance(this.db, normalizedCustomerId, payCurrency).debt,
-        roundCustomerMoney(buckets.advance - applied),
-        now
-      );
-      const pos = computeCustomerPosition(this.db, normalizedCustomerId, payCurrency);
-      writeDebtAdvanceNet(
-        this.db,
-        normalizedCustomerId,
-        payCurrency,
-        pos.open_order_debt +
-          roundCustomerMoney(Math.max(0, pos.loan_issued - pos.loan_repaid)),
-        roundCustomerMoney(buckets.advance - applied),
+        roundCustomerMoney(Math.max(0, Number(buckets.debt || 0) - applied)),
+        roundCustomerMoney(Number(buckets.advance || 0) - applied),
         now
       );
 
@@ -1898,8 +1890,9 @@ class CustomersService {
           reason: notes,
           creditLimit: customer?.credit_limit,
           lendAuthorized: lendAuthorized === true,
-          currentDebt: posBefore.total_debt,
-          currentAdvance: posBefore.advance,
+          // Stored buckets — open_order_debt (ghost) kredit limit / new_balance ni shishirmasin
+          currentDebt: bucketsBefore.debt,
+          currentAdvance: bucketsBefore.advance,
         });
         if (!outGate.ok) {
           throw createError(
@@ -1989,10 +1982,10 @@ class CustomersService {
       }
       if (isExplicitLend) {
         const expectedNet =
-          Math.round((bucketsBefore.advance - (posBefore.total_debt + requestedAmount)) * 100) / 100;
+          Math.round((bucketsBefore.advance - (bucketsBefore.debt + requestedAmount)) * 100) / 100;
         if (Math.abs(Number(paymentOutMeta.new_balance) - expectedNet) > 1e-6) {
           throw new Error(
-            `CRITICAL: lend new_balance (${paymentOutMeta.new_balance}) must equal advance - (exposure + amount) (${expectedNet})`
+            `CRITICAL: lend new_balance (${paymentOutMeta.new_balance}) must equal advance - (stored_debt + amount) (${expectedNet})`
           );
         }
       }
@@ -2290,17 +2283,8 @@ class CustomersService {
         }
       }
 
-      if (isExplicitLend) {
-        const posLend = computeCustomerPosition(this.db, normalizedCustomerId, payCurrency);
-        const loanNet = roundCustomerMoney(
-          Math.max(0, Number(posLend.loan_issued || 0) - Number(posLend.loan_repaid || 0))
-        );
-        const floor = roundCustomerMoney(posLend.open_order_debt + loanNet);
-        const b = readCustomerDebtAdvance(this.db, normalizedCustomerId, payCurrency);
-        if (floor > b.debt + 0.02) {
-          writeDebtAdvanceNet(this.db, normalizedCustomerId, payCurrency, floor, b.advance, now);
-        }
-      }
+      // Lend: applyCustomerLendDeltaOnce allaqachon debt += amount qiladi.
+      // open_order_debt floor olib tashlandi — ghost credit_amount debt ni oshirmasin.
 
       if (operation === 'payment_in') {
         try {

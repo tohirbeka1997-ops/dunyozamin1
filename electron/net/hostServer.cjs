@@ -139,6 +139,8 @@ function corsHeadersForRequest(req, corsOrigins) {
  */
 const PUBLIC_CHANNELS = new Set([
   'pos:auth:login',
+  'pos:auth:loginWithGoogle',
+  'pos:auth:googleConfig',
   'pos:auth:requestPasswordReset',
   'pos:auth:confirmPasswordReset',
   'pos:health',
@@ -218,6 +220,7 @@ function startHostServer({
   bind = '0.0.0.0',
   port = 3333,
   secret,
+  clientBootstrapSecret,
   corsOrigins,
   metricsSecret, // optional; falls back to `secret` for backward-compat
   trustProxy = false,      // set true when behind nginx/cloudflare
@@ -439,10 +442,13 @@ function startHostServer({
         // instead of sharing the tight anonymous per-IP bucket (critical when
         // POS_TRUST_PROXY is off and every caller appears as 127.0.0.1).
         let adminBypass = false;
+        let clientBootstrap = false;
         let authContext = null;
         if (token) {
           if (token === secret) {
             adminBypass = true;
+          } else if (clientBootstrapSecret && token === clientBootstrapSecret) {
+            clientBootstrap = true;
           } else {
             authContext = sessions.verify(token);
           }
@@ -464,6 +470,22 @@ function startHostServer({
             res,
             400,
             { ok: false, error: { code: 'VALIDATION_ERROR', message: 'channel is required' } },
+            c,
+          );
+        }
+
+        if (clientBootstrap && !PUBLIC_CHANNELS.has(channel)) {
+          audit.denied({
+            channel,
+            ip,
+            auth: 'client_bootstrap',
+            role: null,
+            reason: 'bootstrap_channel_denied',
+          });
+          return json(
+            res,
+            200,
+            { ok: false, error: { code: 'PERMISSION_DENIED', message: 'Login required' } },
             c,
           );
         }
@@ -497,7 +519,7 @@ function startHostServer({
           return json(res, 401, { ok: false, error: { code: 'AUTH_ERROR', message: 'Unauthorized' } }, c);
         }
 
-        if (!adminBypass && !authContext) {
+        if (!adminBypass && !clientBootstrap && !authContext) {
           return json(
             res,
             401,

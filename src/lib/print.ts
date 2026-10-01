@@ -5,8 +5,13 @@
 /**
  * Generic function to print HTML content
  */
-export function printHtml(title: string, htmlContent: string, pageSize: '58mm' | '78mm' | '80mm' | 'A4' = '78mm'): void {
-  const printWindow = window.open('', '_blank', 'width=800,height=600');
+export function printHtml(
+  title: string,
+  htmlContent: string,
+  pageSize: '58mm' | '78mm' | '80mm' | 'A4' = '78mm',
+  existingWindow?: Window | null,
+): void {
+  const printWindow = existingWindow || window.open('', '_blank', 'width=800,height=600');
   
   if (!printWindow) {
     throw new Error('Pop-up blocked. Please allow pop-ups for this site.');
@@ -589,8 +594,12 @@ export function openPrintWindowLabelSheet(
 /**
  * Opens a print window with the given HTML content (thermal)
  */
-export function openPrintWindow(htmlContent: string, paperSize: '58mm' | '78mm' | '80mm' = '78mm'): void {
-  printHtml('Chek', htmlContent, paperSize);
+export function openPrintWindow(
+  htmlContent: string,
+  paperSize: '58mm' | '78mm' | '80mm' = '78mm',
+  existingWindow?: Window | null,
+): void {
+  printHtml('Chek', htmlContent, paperSize, existingWindow);
 }
 
 /**

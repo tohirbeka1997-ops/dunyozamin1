@@ -217,6 +217,32 @@ class ShiftsService {
   }
 
   /**
+   * Kassadan berilgan qaytim (over-tender). payments.cash tender to‘liq yoziladi;
+   * till uchun net = cashSales − change.
+   */
+  _getCashChangeGivenTotal(shiftId) {
+    if (!shiftId) return 0;
+    const sid = String(shiftId).trim();
+    if (!sid) return 0;
+    try {
+      const changeUzs = orderFieldUzsSql(this.db, 'o', 'change_amount');
+      const row = this.db
+        .prepare(
+          `
+        SELECT COALESCE(SUM(${changeUzs}), 0) AS s
+        FROM orders o
+        WHERE o.shift_id = ? AND ${WHERE_ORDER_DONE_ALIAS_O}
+      `
+        )
+        .get(sid);
+      return Math.max(0, Number(row?.s || 0) || 0);
+    } catch (e) {
+      console.warn('[SHIFT] _getCashChangeGivenTotal:', e.message);
+      return 0;
+    }
+  }
+
+  /**
    * To‘lovlar usullari bo‘yicha taqsimot (kassir terminal/karta ko‘chirmasi bilan
    * solishtirishi uchun). `refund_cash` qatorlarini chiqarib tashlaymiz — ular
    * sotuv emas, kassadan qaytarish.
@@ -608,6 +634,7 @@ class ShiftsService {
       const custRoll = this._getCustomerPaymentsShiftRollup(shiftId);
       const cashOutflow = this._getCashOutflowBreakdown(shiftId);
       const cashDeposits = this._getCashDepositsTotal(shiftId);
+      const cashChangeGiven = this._getCashChangeGivenTotal(shiftId);
       const supplierCash = this._getSupplierCashShiftRollup(shift);
 
       let creditDebtIssuedClose = 0;
@@ -632,6 +659,7 @@ class ShiftsService {
         cashExpenses: cashOutflow.cashExpenses,
         cashWithdrawals: cashOutflow.cashWithdrawals,
         cashDeposits,
+        cashChangeGiven,
       });
 
       // Calculate difference = closing_cash - expected_cash
@@ -657,6 +685,7 @@ class ShiftsService {
         cash_expenses: cashOutflow.cashExpenses,
         cash_withdrawals: cashOutflow.cashWithdrawals,
         cash_deposits: cashDeposits,
+        cash_change_given: cashChangeGiven,
         credit_debt_issued: creditDebtIssuedClose,
         order_count: ordersData.order_count || 0,
         order_total: ordersData.order_total || 0,
@@ -1138,6 +1167,8 @@ class ShiftsService {
     const paymentsByMethod = this._getPaymentsByMethod(bindId);
     const cashOutflow = this._getCashOutflowBreakdown(bindId);
     const cashDeposits = this._getCashDepositsTotal(bindId);
+    const cashChangeGiven = this._getCashChangeGivenTotal(bindId);
+    const cashSalesNet = Math.max(0, cashSales - cashChangeGiven);
     const supplierCash = this._getSupplierCashShiftRollup(shift);
     const expectedCash = expectedClosingCash({
       openingCash,
@@ -1148,6 +1179,7 @@ class ShiftsService {
       cashExpenses: cashOutflow.cashExpenses,
       cashWithdrawals: cashOutflow.cashWithdrawals,
       cashDeposits,
+      cashChangeGiven,
     });
 
     // CRITICAL: Return camelCase keys (not snake_case)
@@ -1173,6 +1205,10 @@ class ShiftsService {
       salesGrossUzs: Number(salesSplitRow?.sales_gross_uzs || 0) || 0,
       salesGrossUsd: Number(salesSplitRow?.sales_gross_usd || 0) || 0,
       cashSales: cashSales ?? 0,
+      /** Kassadan berilgan qaytim (over-tender) — kutilayotgan naqddan ayiriladi */
+      cashChangeGiven: cashChangeGiven ?? 0,
+      /** Till uchun naqd savdo net = cashSales − qaytim */
+      cashSalesNet: cashSalesNet ?? 0,
       /**
        * To‘lov usullari bo‘yicha taqsimot (karta/QR ko‘chirmasi bilan solishtirish uchun)
        */

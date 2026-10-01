@@ -1016,12 +1016,17 @@ export function isZeroTotalSaleAllowed(opts: {
 
 export type OrderReturnStatus = 'not_returned' | 'partially_returned' | 'fully_returned';
 
-/** Derive order-level return status from line sold vs returned quantities. */
+/** Derive order-level return status from line sold vs returned quantities.
+ * Negative-qty cart return lines count as returned merchandise. */
 export function deriveOrderReturnStatus(
   items: Array<{
     quantity?: number | null;
     qty_sale?: number | null;
     returned_quantity?: number | null;
+    final_total?: number | null;
+    line_total?: number | null;
+    total?: number | null;
+    unit_price?: number | null;
   }> | null | undefined,
 ): OrderReturnStatus {
   const lines = Array.isArray(items) ? items : [];
@@ -1029,19 +1034,38 @@ export function deriveOrderReturnStatus(
   let anyReturned = false;
   let allFully = true;
   let anyPositiveQty = false;
+  let negReturnAmount = 0;
   for (const line of lines) {
-    const qty = Math.abs(Number(line.quantity ?? line.qty_sale ?? 0) || 0);
+    const qtyRaw = Number(line.quantity ?? line.qty_sale ?? 0) || 0;
+    if (qtyRaw < -1e-9) {
+      anyReturned = true;
+      negReturnAmount += Math.abs(
+        Number(
+          line.final_total ??
+            line.line_total ??
+            line.total ??
+            (Number(line.unit_price) || 0) * Math.abs(qtyRaw),
+        ) || 0,
+      );
+      continue;
+    }
+    const qty = Math.abs(qtyRaw);
     if (!(qty > 0)) continue;
     anyPositiveQty = true;
     const returned = Math.max(0, Number(line.returned_quantity) || 0);
     if (returned > 0) anyReturned = true;
     if (returned + 1e-9 < qty) allFully = false;
   }
+  if (!anyPositiveQty && negReturnAmount > 0.009) return 'fully_returned';
   if (!anyPositiveQty || !anyReturned) return 'not_returned';
   return allFully ? 'fully_returned' : 'partially_returned';
 }
 
-/** Gross / returned / net money for an order (line pro-rata from returned qty). */
+/**
+ * Gross / returned / net money for an order.
+ * - Classic returns: pro-rata from returned_quantity on sold (qty>0) lines.
+ * - POS cart / exchange returns: negative-qty lines count as returned amount.
+ */
 export function computeOrderReturnMoney(opts: {
   grossTotal?: number;
   items?: Array<{
@@ -1059,30 +1083,48 @@ export function computeOrderReturnMoney(opts: {
   net_total: number;
   return_status: OrderReturnStatus;
 } {
-  const gross = Math.max(0, Number(opts.grossTotal) || 0);
   const lines = Array.isArray(opts.items) ? opts.items : [];
+  let soldFromLines = 0;
   let returnedFromLines = 0;
   for (const line of lines) {
-    const qty = Math.abs(Number(line.quantity ?? line.qty_sale ?? 0) || 0);
-    const returned = Math.max(0, Number(line.returned_quantity) || 0);
-    if (!(qty > 0) || !(returned > 0)) continue;
+    const qtyRaw = Number(line.quantity ?? line.qty_sale ?? 0) || 0;
+    const qtyAbs = Math.abs(qtyRaw);
     const lineTotal = Math.abs(
       Number(
         line.final_total ??
           line.line_total ??
           line.total ??
-          (Number(line.unit_price) || 0) * qty,
+          (Number(line.unit_price) || 0) * qtyAbs,
       ) || 0,
     );
-    returnedFromLines += lineTotal * Math.min(1, returned / qty);
+    if (qtyRaw < -1e-9) {
+      returnedFromLines += lineTotal;
+      continue;
+    }
+    if (!(qtyAbs > 0)) continue;
+    soldFromLines += lineTotal;
+    const returned = Math.max(0, Number(line.returned_quantity) || 0);
+    if (returned > 0) {
+      returnedFromLines += lineTotal * Math.min(1, returned / qtyAbs);
+    }
   }
   const returned_total = Math.round(returnedFromLines * 100) / 100;
-  const net_total = Math.round(Math.max(0, gross - returned_total) * 100) / 100;
+  const grossFromArg = Math.max(0, Number(opts.grossTotal) || 0);
+  const gross_total =
+    Math.round((soldFromLines > 0.009 ? soldFromLines : grossFromArg) * 100) / 100;
+  const net_total = Math.round(Math.max(0, gross_total - returned_total) * 100) / 100;
+  let return_status = deriveOrderReturnStatus(lines);
+  if (return_status === 'not_returned' && returned_total > 0.009) {
+    return_status =
+      gross_total <= 0.009 || returned_total >= gross_total - 0.009
+        ? 'fully_returned'
+        : 'partially_returned';
+  }
   return {
-    gross_total: gross,
+    gross_total,
     returned_total,
     net_total,
-    return_status: deriveOrderReturnStatus(lines),
+    return_status,
   };
 }
 

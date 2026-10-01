@@ -59,7 +59,14 @@ export const signOut = async () => {
 export const requestPasswordReset = async (
   identifier: string,
   tenant?: string | null,
-): Promise<{ token_id: string; code: string; expires_at: string }> => {
+): Promise<{
+  token_id: string;
+  code?: string;
+  expires_at: string;
+  email_sent?: boolean;
+  email_hint?: string | null;
+  code_delivered?: boolean;
+}> => {
   if (hasPosApi()) {
     const api = requireElectron();
     if (tenant) {
@@ -71,7 +78,14 @@ export const requestPasswordReset = async (
       }
     }
     const raw = await ipc<unknown>(api.auth.requestPasswordReset(identifier.trim()));
-    return unwrapServiceData<{ token_id: string; code: string; expires_at: string }>(raw);
+    return unwrapServiceData<{
+      token_id: string;
+      code?: string;
+      expires_at: string;
+      email_sent?: boolean;
+      email_hint?: string | null;
+      code_delivered?: boolean;
+    }>(raw);
   }
   if (!ALLOW_MOCK_API) {
     throw new Error('Parolni tiklash faqat POS ilovasi yoki api.dunyozamin.com orqali ishlaydi.');
@@ -85,7 +99,7 @@ export const requestPasswordReset = async (
   } catch {
     // ignore storage errors in mock mode
   }
-  return { token_id, code, expires_at };
+  return { token_id, code, expires_at, code_delivered: true, email_sent: false };
 };
 
 export const confirmPasswordReset = async (

@@ -32,15 +32,26 @@ const {
 const LOCK_NAME = 'telegram_daily_poster';
 const EVENT_DAILY_POSTER = 'daily_poster';
 const DEFAULT_POSTER_TIME = '10:00';
-const CAPTION_MAX = 1020;
-/** Soft floor — AI captions should be richer; templates must still clear this. */
-const CAPTION_MIN = 110;
-const CAPTION_AI_TARGET_MIN = 220;
+/** Telegram hard cap is 1024; keep headroom for HTML entities. */
+const CAPTION_MAX = 900;
+/** Social-media target: short, scannable posts (not essays). */
+const CAPTION_SOFT_MAX = 700;
+const CAPTION_MIN = 90;
+const CAPTION_AI_TARGET_MIN = 180;
+const CAPTION_AI_TARGET_MAX = 650;
+const EMOJI_MAX = 6;
 const RECENT_PRODUCTS_KEY = 'reports.telegram.daily_poster_recent_products';
 const RECENT_PRODUCT_LIMIT = 14;
 const RECENT_CONTENT_TYPES_KEY = 'reports.telegram.daily_poster_recent_content_types';
 const RECENT_CONTENT_TYPE_LIMIT = 10;
 const DEFAULT_GEMINI_IMAGE_MODEL = 'gemini-2.5-flash-image';
+/** OpenAI Images API fallback when Gemini image hits 429 / fails. */
+const DEFAULT_OPENAI_IMAGE_MODEL = 'gpt-image-1';
+const GEMINI_IMAGE_MODEL_FALLBACKS = Object.freeze([
+  'gemini-2.5-flash-image',
+  'gemini-2.0-flash-preview-image-generation',
+  'imagen-3.0-generate-002',
+]);
 
 /**
  * Marketing content formats — not only product sales.
@@ -54,8 +65,8 @@ const CONTENT_TYPES = Object.freeze([
     emoji: '🛍',
     hashtagExtra: '#tavsiya',
     vibe:
-      'Mahsulotni aniq va ishonchli taqdim et: nomi, qo‘llanish joyi, 2–4 jumlalik pitch, aniq narx. ' +
-      'Reklama shovqinisiz, usta/uy egasi uchun foydali.',
+      'QISQA social post: hook + 1–2 foyda + aniq narx + yumshoq CTA. ' +
+      'Essay/ma’ruza YO‘Q. Professional emoji (3–6). Reklama shovqinisiz.',
     openingHint: 'Mahsulot nomi yoki aniq ishlatish joyidan boshla.',
     imageStyle:
       'photoreal product showcase on clean surface, hardware retail mood, no text overlays',
@@ -67,9 +78,10 @@ const CONTENT_TYPES = Object.freeze([
     emoji: '💡',
     hashtagExtra: '#maslahat',
     vibe:
-      'Qurilish/santexnika/yoritish bo‘yicha 1 ta amaliy maslahat. Qadam-baqadam yoki «nima qilish kerak». ' +
-      'Hard sell YO‘Q. Ixtiyoriy: oxirida yumshoq mahsulot eslatmasi (narxsiz ham bo‘lishi mumkin).',
-    openingHint: '«Maslahat:» yoki to‘g‘ridan-to‘g‘ri foydali gap bilan boshla.',
+      'QISQA tip post: hook + 3–4 bullet + (ixtiyoriy) 1 qator yumshoq CTA. ' +
+      'Uzun ma’ruza YO‘Q. Soft sell faqat mavzuga mos bo‘lsa (LED→yoritish, quvur→santexnika); ' +
+      'mos kelmasa — promo yo‘q. Hard sell YO‘Q.',
+    openingHint: 'Qisqa hook + emoji; keyin bulletlar.',
     imageStyle:
       'clean illustrated how-to scene for home plumbing or lighting tip, educational, no readable text, no logos',
     topicHints: [
@@ -78,6 +90,9 @@ const CONTENT_TYPES = Object.freeze([
       'Kran/smesitel o‘rnatishda lenta va germetik',
       'Rozetka/patron montajida simni to‘g‘ri mahkamlash',
       'Devorga dublon/vint tanlash',
+      'Bosimli suvda klapan joylashishini rejalashtirish',
+      'Hammomda yoritishni qatlamlab (asosiy + aksent) tanlash',
+      'Quvur izolyatsiyasini qachon qo‘yish kerak',
     ],
   },
   {
@@ -87,9 +102,8 @@ const CONTENT_TYPES = Object.freeze([
     emoji: '⚡',
     hashtagExtra: '#lifehack',
     vibe:
-      'Qisqa, amaliy «hayot hack»: uy/usta uchun 1 ta oddiy hiyla (vaqt/tejam/xavfsizlik). ' +
-      'Yumor yumshoq bo‘lishi mumkin, lekin jiddiy foyda bo‘lsin. Hard sell yo‘q.',
-    openingHint: '«Life hack:» yoki «Tez yechim:» bilan boshla.',
+      'Qisqa life hack: 1 hiyla + 2–3 bullet. Yumor yumshoq. Essay YO‘Q. Soft sell faqat mavzuga mos.',
+    openingHint: '«Life hack:» yoki «Tez yechim:» + qisqa hook.',
     imageStyle:
       'clever practical DIY life-hack visual for home repair, bright simple composition, no text',
     topicHints: [
@@ -98,6 +112,9 @@ const CONTENT_TYPES = Object.freeze([
       'Qorong‘i shkafda LED bilan yoritishni soddalashtirish',
       'Tomchilab turgan joyda vaqtinchalik hermetik',
       'Kalit/instrumentni yo‘qotmaslik uchun joylash',
+      'Sim uchlarini chalkashtirmaslik uchun rang belgilash',
+      'Devorga burg‘ulashdan oldin kabel/quvur izini tekshirish',
+      'Kichik qismlarni banka/magnit bilan yo‘qotmaslik',
     ],
   },
   {
@@ -107,9 +124,8 @@ const CONTENT_TYPES = Object.freeze([
     emoji: '❓',
     hashtagExtra: '#savol',
     vibe:
-      '1 ta keng tarqalgan noto‘g‘ri fikr YOKI mijoz savoli + aniq, qisqa haqiqiy javob. ' +
-      'Suhbat ohangi. Mahsulot faqat yumshoq eslatma sifatida.',
-    openingHint: '«Afsona:» / «Ko‘p so‘raladi:» yoki savol belgisidan boshla.',
+      '1 afsona/savol + 2–3 qisqa haqiqat bullet. Suhbat ohangi, essay YO‘Q. Soft sell faqat mavzuga mos.',
+    openingHint: '«Afsona:» / «Ko‘p so‘raladi:» bilan qisqa hook.',
     imageStyle:
       'friendly FAQ / myth-vs-fact educational visual for home improvement, minimal, no text',
     topicHints: [
@@ -117,6 +133,9 @@ const CONTENT_TYPES = Object.freeze([
       'LED lampalar elektr tejaydimi?',
       'Lenta o‘rniga faqat germetik yetadimi?',
       'Katta o‘lchamli quvur har doim yaxshiroqmi?',
+      'Issiq suv uchun oddiy PVC yetadimi?',
+      'Yorqinroq lampa = yaxshiroq yoritishmi?',
+      '«Bir marta mahkamlab qo‘ysa — umrbod» — rostmi?',
     ],
   },
   {
@@ -126,9 +145,8 @@ const CONTENT_TYPES = Object.freeze([
     emoji: '🌿',
     hashtagExtra: '#parvarish',
     vibe:
-      'Mavsumga mos uy/santexnika/yoritish parvarishi yoki oldini olish maslahati. ' +
-      'Sotuv urg‘usiz, g‘amxo‘rlik ohangi.',
-    openingHint: 'Mavsum yoki «uyingizni tayyorlang» uslubida boshla.',
+      'Mavsumiy 3–4 bullet maslahat. G‘amxo‘rlik ohangi, qisqa. Soft sell faqat mavzuga mos.',
+    openingHint: 'Mavsum + qisqa hook.',
     imageStyle:
       'seasonal home care mood for plumbing or lighting maintenance, calm photoreal, no text',
     topicHints: [
@@ -136,6 +154,8 @@ const CONTENT_TYPES = Object.freeze([
       'Yozda yoritishni tejash',
       'Nam faslda rozetka/elektr xavfsizligi',
       'Changli mavsumda ventilyatsiya/filtr eslatmasi',
+      'Bahorda tashqi yoritish va kabelni tekshirish',
+      'Kuzda tomchi/sizib chiqishni oldindan topish',
     ],
   },
   {
@@ -145,9 +165,8 @@ const CONTENT_TYPES = Object.freeze([
     emoji: '✅',
     hashtagExtra: '#sifat',
     vibe:
-      'Do‘kon ortidagi sifat / tanlash checklisti: mijoz nimalarga e’tibor bersin. ' +
-      'Hard sell yo‘q — ishonch va professionalizm.',
-    openingHint: '«Sifat checklist:» yoki «Tanlashda 3 narsa:» bilan boshla.',
+      '3–4 punktli checklist. Professional, qisqa. Soft sell faqat mavzuga mos. Hard sell YO‘Q.',
+    openingHint: '«Tanlashda 3 narsa:» yoki checklist hook.',
     imageStyle:
       'organized hardware shop quality checklist mood, tidy shelves tools fittings, no text logos',
     topicHints: [
@@ -155,6 +174,8 @@ const CONTENT_TYPES = Object.freeze([
       'Yoritish mahsulotida etiketi o‘qish',
       'Kafolat va brendni tekshirish',
       'O‘lcham/standart mosligi',
+      'Ip/rezba va qalinlikni ko‘zdan kechirish',
+      'Paket ichida to‘liq komplekt borligini tekshirish',
     ],
   },
   {
@@ -164,7 +185,7 @@ const CONTENT_TYPES = Object.freeze([
     emoji: '🧩',
     hashtagExtra: '#birga',
     vibe:
-      'Asosiy mahsulot + 1–2 mos qo‘shimcha g‘oya (mufta, lenta, sim…). Yolg‘on chegirma yo‘q. Aniq narx.',
+      'Qisqa: asosiy + 1–2 mos qo‘shimcha + narx. Yolg‘on chegirma yo‘q. Essay YO‘Q.',
     openingHint: '«Birga oling» + qo‘shimcha nomlari bilan boshla.',
     imageStyle:
       'product bundle flat-lay: main item plus matching accessories, photoreal, no text',
@@ -191,10 +212,8 @@ const RUBRICS = Object.freeze([
     title: 'Sifat va ishonch',
     emoji: '🛡',
     vibe:
-      'Sifat, kafolat hissi, brend ishonchi. Qurilish/santexnika/yorug‘lik do‘koni ohangi. ' +
-      'Mahsulotning mustahkamligi yoki uzoq muddatli foydasini ta’kidla. Premium, sokin, ishonchli.',
-    templatePitch:
-      'Mustahkam material va barqaror o‘tirish — uy yoki ofisda uzoq muddat xotirjam ishlash uchun.',
+      'Qisqa: mustahkamlik/ishonch + 1–2 foyda + narx. Premium, sokin. Essay YO‘Q.',
+    templatePitch: 'Mustahkam o‘tirish — uzoq muddat xotirjam ishlash uchun.',
     openingHint: 'Ishonch / kafolat ohangi bilan boshla (lekin «sifatli tanlov» dema).',
     prefer: 'stock_image',
   },
@@ -204,11 +223,8 @@ const RUBRICS = Object.freeze([
     weekdayName: 'Dushanba',
     title: 'Yangi kelganlar',
     emoji: '✨',
-    vibe:
-      'Yangi kelgan / vitrinada bor. Yangilik hissi, lekin ombor sonini yozma. ' +
-      'Mahsulot nima ekanini aniq ayt, yangi yetkazilgan kayfiyat + aniq ishlatish joyi.',
-    templatePitch:
-      'Yangi partiya vitrinada: kerakli o‘lcham va turdagi detalni hozir tanlab, ishni kechiktirmasdan boshlash mumkin.',
+    vibe: 'Qisqa: yangi vitrina kayfiyati + nima ekanligi + narx. Ombor soni YO‘Q.',
+    templatePitch: 'Yangi partiya vitrinada — o‘lchamni tanlab, ishni kechiktirmang.',
     openingHint: '«Vitrinaga keldi / yangi partiyadan» uslubida boshla.',
     prefer: 'stock_image',
   },
@@ -218,11 +234,8 @@ const RUBRICS = Object.freeze([
     weekdayName: 'Seshanba',
     title: 'Usta uchun maslahat',
     emoji: '🔧',
-    vibe:
-      'Usta / montajchi uchun: qayerda ishlatiladi, qanday vazifaga mos, 1 ta amaliy maslahat. ' +
-      'Santexnika/yoritish kontekstida aniq yoz. Reklama shovqinisiz.',
-    templatePitch:
-      'Usta uchun maslahat: o‘lchovni oldindan tekshiring — to‘g‘ri fiting/armatura tanlansa, qayta ish va sizib chiqish kamayadi.',
+    vibe: 'Qisqa tip ohangi: qayerda ishlatiladi + 1 amaliy maslahat. Essay YO‘Q.',
+    templatePitch: 'Avval o‘lchov — to‘g‘ri fiting tanlansa, qayta ish kamayadi.',
     openingHint: 'To‘g‘ridan-to‘g‘ri maslahat yoki «Usta uchun:» bilan boshla.',
     prefer: 'category',
   },
@@ -232,12 +245,9 @@ const RUBRICS = Object.freeze([
     weekdayName: 'Chorshanba',
     title: 'Narx–sifat tanlov',
     emoji: '⚖️',
-    vibe:
-      'Narx-sifat muvozanati, tejamkor aqlli tanlov. Narxni aniq yoz, ' +
-      'lekin “eng arzon” deb maqtama — qiymat, chidamlilik va ish natijasi muhim.',
-    templatePitch:
-      'Byudjetni saqlab, ish sifatini boy bermaslik: narx aniq, natija esa montajda va kundalik ishonchda seziladi.',
-    openingHint: 'Narx–qiymat muvozanati yoki «aqlli tanlov» (lekin taqiqlangan sloganlarsiz) bilan boshla.',
+    vibe: 'Qisqa: narx–qiymat + aniq narx. «Eng arzon» dema. Essay YO‘Q.',
+    templatePitch: 'Byudjetni saqlab, montaj sifatini boy bermang — narx aniq.',
+    openingHint: 'Narx–qiymat muvozanati (taqiqlangan sloganlarsiz) bilan boshla.',
     prefer: 'mid_price',
   },
   {
@@ -246,11 +256,8 @@ const RUBRICS = Object.freeze([
     weekdayName: 'Payshanba',
     title: 'Birga oling',
     emoji: '🧩',
-    vibe:
-      'To‘plam / birga olish g‘oyasi: bu mahsulot bilan qanday qo‘shimcha (mufta, lenta, sim, patron, kalit…) ' +
-      'olinsa ish to‘liq bo‘ladi. Yolg‘on “komplekt chegirmasi” uydirma. Aniq 1–2 qo‘shimcha taklif.',
-    templatePitch:
-      'Birga oling: asosiy detal + mufta/lenta yoki mos o‘tkazgich — bir safar bilan montajni to‘liqroq yopasiz.',
+    vibe: 'Qisqa: asosiy + 1–2 mos qo‘shimcha. Yolg‘on chegirma YO‘Q.',
+    templatePitch: 'Asosiy detal + mufta/lenta — bir safarda montajni yoping.',
     openingHint: '«Birga oling» + aniq qo‘shimcha nomlari bilan boshla.',
     prefer: 'category',
   },
@@ -260,12 +267,9 @@ const RUBRICS = Object.freeze([
     weekdayName: 'Juma',
     title: 'Hafta yakuni urg‘usi',
     emoji: '🏁',
-    vibe:
-      'Hafta yakuni urg‘usi. Agar real chegirma yo‘q bo‘lsa — yumshoq CTA: ' +
-      'bugun tanlang, dam olishdan oldin ish rejasini yoping. Foizli yolg‘on chegirma TAQIQLANGAN.',
-    templatePitch:
-      'Hafta yakuniga qadar tanlovni kechiktirmang: kerakli detal qo‘lingizda bo‘lsa, dam oldan oldin ishni yopish osonroq.',
-    openingHint: 'Vaqt urg‘usi / «bugun tanlang» uslubida boshla (foizsiz).',
+    vibe: 'Qisqa yumshoq urg‘u: bugun tanlang. Foizli yolg‘on chegirma TAQIQLANGAN.',
+    templatePitch: 'Kerakli detal qo‘lingizda — dam oldan oldin ishni yopish osonroq.',
+    openingHint: 'Vaqt urg‘usi / «bugun tanlang» (foizsiz).',
     prefer: 'fast',
   },
   {
@@ -274,11 +278,8 @@ const RUBRICS = Object.freeze([
     weekdayName: 'Shanba',
     title: 'Mijoz savoli',
     emoji: '❓',
-    vibe:
-      'FAQ uslubi: 1 ta mijoz savoli + aniq, mahsulotga xos javob (qayerda/qanday ishlatiladi). ' +
-      'Suhbat ohangi, sodda, foydali. Umumiy reklama sloganlarisiz.',
-    templatePitch:
-      'Savol: bu detal qayerda kerak? Javob: quvur burilishi, ulanish yoki yoritish nuqtasida — o‘lchamga qarab tanlanadi.',
+    vibe: 'Qisqa FAQ: 1 savol + 2–3 qator javob. Essay YO‘Q.',
+    templatePitch: 'Qayerda kerak? Quvur ulanish yoki yoritish nuqtasida — o‘lchamga qarab.',
     openingHint: 'Savol belgisidan yoki «Ko‘p so‘raladi:» dan boshla.',
     prefer: 'mid_price',
   },
@@ -438,18 +439,117 @@ function pickEduTopic(contentType, options = {}) {
 function inferUseCaseHint(product) {
   const blob = `${product?.name || ''} ${product?.category_name || ''} ${product?.description || ''}`.toLowerCase();
   if (/atvod|отвод|poliatvod|полиотвод|fiting|фитинг|mufta|муфт|quill|truba|труба|santex|сантех|quvur|koleno|угол/.test(blob)) {
-    return 'Santexnika: quvur burilishi/ulanish, sizib chiqishni kamaytirish, o‘lcham mosligi.';
+    return 'Santexnika: quvur ulanish, o‘lcham mosligi.';
   }
   if (/lamp|led|svetil|ёorit|yorug|патрон|patron|sim|кабел|kabel|lyustra|люстр|rozetka|розет/.test(blob)) {
-    return 'Yoritish/elektr: xona yoki koridorda montaj, xavfsiz ulanish, qulay almashtirish.';
+    return 'Yoritish/elektr: xavfsiz montaj, qulay almashtirish.';
   }
   if (/kran|кран|smesitel|смесит|ventil|вентил|klapan|клапан/.test(blob)) {
-    return 'Suv armatura: oshxona/hammomda oqim boshqaruvi, tomchilamas ulanish.';
+    return 'Suv armatura: tomchilamas ulanish.';
   }
   if (/bolt|гайка|gayka|vint|шуруп|dubl|дюбел|instrument|инструмент/.test(blob)) {
-    return 'Montaj/mahkamlash: devor yoki konstruktsiyada mustahkam o‘rnatish.';
+    return 'Montaj: mustahkam o‘rnatish.';
   }
-  return 'Qurilish/ta’mir: usta yoki uy egasi uchun aniq vazifa va o‘rnatish joyini ayt.';
+  return 'Qurilish/ta’mir uchun aniq vazifa.';
+}
+
+/** Domain tags for topic↔product soft-sell matching. */
+function inferTopicDomain(text) {
+  const blob = String(text || '').toLowerCase();
+  if (/led|lamp|yorit|ёorit|svetil|sim|kabel|кабел|rozetka|розет|patron|патрон|elektr|ток|avtomat/.test(blob)) {
+    return 'lighting';
+  }
+  if (
+    /quvur|truba|труба|fiting|фитинг|santex|сантех|kran|кран|smesitel|klapan|клапан|ppr|mufta|муфт|atvod|poliatvod|germetik|lenta|sizib|tomchi/.test(
+      blob,
+    )
+  ) {
+    return 'plumbing';
+  }
+  if (/dubl|дюбел|vint|шуруп|bolt|гайка|burg|инструмент|instrument|devor/.test(blob)) {
+    return 'fastener';
+  }
+  return 'general';
+}
+
+function productMatchesTopic(product, topic) {
+  if (!product || !isPublishableProductName(product.name)) return false;
+  const topicDom = inferTopicDomain(topic);
+  const prodDom = inferTopicDomain(
+    `${product.name || ''} ${product.category_name || ''} ${product.description || ''}`,
+  );
+  if (topicDom === 'general' || prodDom === 'general') return false;
+  return topicDom === prodDom;
+}
+
+function softPromoLine(product, topic) {
+  if (!productMatchesTopic(product, topic)) return '';
+  const name = String(product.name || '').trim();
+  if (!name) return '';
+  const dom = inferTopicDomain(topic);
+  if (dom === 'lighting') {
+    return `🛒 Kerak bo‘lsa — yoritish/sim detalini do‘kondan tanlang («${escapeHtml(name)}»).`;
+  }
+  if (dom === 'plumbing') {
+    return `🛒 Kerak bo‘lsa — santexnika detalini do‘kondan tanlang («${escapeHtml(name)}»).`;
+  }
+  return `🛒 Kerak bo‘lsa — «${escapeHtml(name)}» ni do‘kondan ko‘ring.`;
+}
+
+/** Short bullet lines for template edu captions (topic-aware, not essays). */
+function buildEduTipBullets(topic, contentTypeId) {
+  const t = String(topic || '').toLowerCase();
+  const id = String(contentTypeId || '');
+
+  if (/led|lamp|yorit|elektr|sim|rozetka|patron|avtomat/.test(t)) {
+    return [
+      '• Avtomatni o‘chirib ishlang 🔌',
+      '• Indikator bilan tokni tekshiring',
+      '• Izolyatsiyalangan asbob + lenta',
+    ];
+  }
+  if (/quvur|ppr|fiting|santex|kran|smesitel|klapan|germetik|lenta|o‘lcham|olcham/.test(t)) {
+    return [
+      '• Avval o‘lchamni ikki marta o‘lchang 📏',
+      '• Mos fiting/lenta tayyorlab qo‘ying',
+      '• Germetikni quritib, keyin oching',
+    ];
+  }
+  if (/dubl|vint|devor|burg/.test(t)) {
+    return [
+      '• Devor turini aniqlang (beton/gips)',
+      '• To‘g‘ri dublon/vint tanlang',
+      '• Burg‘ulashdan oldin kabel izini tekshiring',
+    ];
+  }
+  if (id === 'myth_fact') {
+    return [
+      '• Arzon ≠ bir xil sifat',
+      '• O‘lcham/standartni tekshiring',
+      '• Ishonchli brend + kafolat muhim',
+    ];
+  }
+  if (id === 'behind_shop') {
+    return [
+      '• O‘lcham va standart mosligi',
+      '• Material/qalinlikni ko‘ring',
+      '• Paket to‘liqligini tekshiring',
+    ];
+  }
+  return [
+    '• Vaziyatni aniqlang ✅',
+    '• O‘lcham va moslikni tekshiring',
+    '• Asbobni oldindan tayyorlang',
+  ];
+}
+
+function eduEngagementQuestion(contentTypeId) {
+  const id = String(contentTypeId || '');
+  if (id === 'life_hack') return 'Sizda qanday tez yechim bor? 👇';
+  if (id === 'myth_fact') return 'Bu haqda nima deb o‘ylagansiz? 👇';
+  if (id === 'seasonal_care') return 'Uyingizda nima birinchi tekshiriladi? 👇';
+  if (id === 'behind_shop') return 'Tanlashda nima muhimroq? 👇';
+  return 'Siz birinchi navbatda nimaga e’tibor berasiz? 👇';
 }
 
 function hasTable(db, name) {
@@ -578,6 +678,20 @@ function resolveGeminiConfig(options = {}) {
     stripEnvQuotes(options.geminiImageModel || process.env.GEMINI_IMAGE_MODEL || '') ||
     DEFAULT_GEMINI_IMAGE_MODEL;
   return { apiKey, model, hasApiKey: apiKey.length > 0 };
+}
+
+function resolveOpenAiImageConfig(options = {}) {
+  ensureOpenAiEnvLoaded(options);
+  const cfg = resolveOpenAiConfig(options);
+  const model =
+    stripEnvQuotes(options.openaiImageModel || process.env.OPENAI_IMAGE_MODEL || '') ||
+    DEFAULT_OPENAI_IMAGE_MODEL;
+  return {
+    apiKey: cfg.apiKey,
+    baseUrl: cfg.baseUrl,
+    model,
+    hasApiKey: Boolean(cfg.apiKey),
+  };
 }
 
 function normalizeWeekday(raw) {
@@ -819,29 +933,25 @@ function buildTemplateCaption({ storeName, product, rubric, contentType, topic }
     const tip =
       String(topic || '').trim() ||
       pickEduTopic(ct, {}) ||
-      'O‘lcham va moslikni oldindan tekshiring — qayta ish kamayadi.';
-    const soft =
-      product && isPublishableProductName(product.name)
-        ? `\nKerak bo‘lsa, do‘konda «${escapeHtml(String(product.name).trim())}» turini ko‘rib chiqish mumkin.`
-        : '';
-    const body =
-      escapeHtml(tip) +
-      '\n\n' +
-      'Amaliy eslatma: ishni boshlashdan oldin o‘lcham, moslik va xavfsizlikni birga tekshiring — ' +
-      'qayta montaj va ortiqcha xarajat kamayadi.';
+      'O‘lcham va moslikni oldindan tekshiring';
+    const bullets = buildEduTipBullets(tip, ct.id).join('\n');
+    const soft = softPromoLine(product, tip);
     return [
       `${ct.emoji} <b>${escapeHtml(title)}</b>`,
       '',
-      body,
-      soft,
+      escapeHtml(tip),
       '',
-      'Savol bo‘lsa — yozing, birga aniqlaymiz.',
+      bullets,
+      soft ? '' : null,
+      soft || null,
+      '',
+      eduEngagementQuestion(ct.id),
       `📍 ${escapeHtml(store)}`,
       tags,
     ]
       .filter((x) => x != null && x !== '')
       .join('\n')
-      .slice(0, CAPTION_MAX);
+      .slice(0, CAPTION_SOFT_MAX);
   }
 
   const name = String(product?.name || '').trim();
@@ -861,15 +971,15 @@ function buildTemplateCaption({ storeName, product, rubric, contentType, topic }
     `<b>${escapeHtml(name)}</b>`,
     metaBits.length ? escapeHtml(metaBits.join(' · ')) : null,
     '',
-    escapeHtml(pitch),
-    escapeHtml(useCase),
+    `✅ ${escapeHtml(pitch)}`,
+    `🔧 ${escapeHtml(useCase)}`,
     `💰 <b>${escapeHtml(price)} so'm</b>`,
     '',
-    'Do‘konga keling yoki bog‘laning — o‘lcham va mosligini birga aniqlaymiz.',
+    'Kelib ko‘ring yoki yozing — o‘lchamni birga aniqlaymiz 👇',
     `📍 ${escapeHtml(store)}`,
     tags,
   ].filter((x) => x != null);
-  return lines.join('\n').slice(0, CAPTION_MAX);
+  return lines.join('\n').slice(0, CAPTION_SOFT_MAX);
 }
 
 function captionSystemPrompt(rubric, contentType) {
@@ -878,19 +988,29 @@ function captionSystemPrompt(rubric, contentType) {
   const weekday = rubric?.weekdayName || '';
   const extraTag = ct.hashtagExtra || '#tavsiya';
 
+  const styleRules =
+    "Professional social media agent ohangi: qisqa, aniq, ijodiy. " +
+    "UZUN ESSAY / MA’RUZA / «devor matn» TAQIQLANGAN. " +
+    "4–8 qisqa qator. Har qator yangi qatordan. Bulletlar «• » bilan. " +
+    `Emoji ${3}–${EMOJI_MAX} ta, mavzuga mos, spam emas. ` +
+    "Faqat o‘zbek tili. HTML: faqat <b>. " +
+    "Taqiqlangan: qarz, nasiya, ombor qoldig‘i, foyda/zarar, kassir, smena, dead stock, " +
+    "«Sifatli tanlov — kunni chiroyliroq qiladi», hard sell, yolg‘on chegirma.";
+
   if (isEdu) {
     return (
       "Sen «Dunyo Zamin» (Dunyozamin_News) — qurilish, santexnika, yoritish do‘koni " +
-      "Telegram News kanali copywriterisan. Auditoriyasi: ustalar, uy egalari. " +
-      `Bugungi KONTENT TURI majburiy: «${ct.title}» (${ct.id}). Bu MAHSULOT REKLAMASI EMAS — ta’limiy/foydali post. ` +
-      `Ohang: ${ct.vibe || ''} Ochilish: ${ct.openingHint || 'Turli ochilish.'} ` +
-      "HAR SAFAR YANGI matn. «Sifatli tanlov — kunni chiroyliroq qiladi» va shunga o‘xshash eski sloganlar TAQIQLANGAN. " +
-      "Hard sell / «hozir sotib oling» / yolg‘on chegirma YO‘Q. " +
-      "Agar mahsulot berilgan bo‘lsa — faqat yumshoq eslatma (ixtiyoriy); narx majburiy EMAS. Mahsulot mos kelmasa — sof maslahat yoz. " +
-      "Taqiqlangan: qarz, nasiya, ombor qoldig‘i, foyda/zarar, kassir, smena, dead stock. " +
-      "Faqat o‘zbek tili. HTML: faqat <b>. Emoji 1–3 ta. " +
-      `Tuzilma: «${ct.title}» sarlavha + 3–6 foydali jumla + yumshoq CTA (savol/yordam) + #Dunyozamin #News ${extraTag}. ` +
-      `Maqsad uzunlik ${CAPTION_AI_TARGET_MIN}-${CAPTION_MAX} belgi (kamida ${CAPTION_MIN}). Faqat caption matnini qaytar.`
+      "Telegram News kanali professional SMM copywriterisan. Auditoriyasi: ustalar, uy egalari. " +
+      `Bugungi KONTENT TURI majburiy: «${ct.title}» (${ct.id}). Bu MAHSULOT REKLAMASI EMAS. ` +
+      `Ohang: ${ct.vibe || ''} Ochilish: ${ct.openingHint || 'Qisqa hook.'} ` +
+      `${styleRules} ` +
+      "Tuzilma MAJBURIY: (1) emoji + sarlavha hook, (2) 3–4 qisqa bullet tip, " +
+      "(3) ixtiyoriy 1 qator yumshoq CTA FAQAT mavzu do‘kon assortimentiga MOS bo‘lsa " +
+      "(LED tip → yoritish/sim; quvur tip → santexnika). Mavzu–mahsulot mos kelmasa — promo YO‘Q, " +
+      "elektrdan santexnikaga «sakrash» TAQIQLANGAN. (4) 1 qator engagement savol, " +
+      `(5) #Dunyozamin #News ${extraTag}. ` +
+      `Uzunlik: ${CAPTION_AI_TARGET_MIN}–${CAPTION_AI_TARGET_MAX} belgi (yumshoq max ${CAPTION_SOFT_MAX}, hard ${CAPTION_MAX}). ` +
+      "Faqat caption matnini qaytar."
     );
   }
 
@@ -899,22 +1019,17 @@ function captionSystemPrompt(rubric, contentType) {
     ct.openingHint || rubric?.openingHint || 'Har safar boshqa ochilish uslubidan foydalan.';
   const vibe = ct.vibe || rubric?.vibe || '';
   return (
-    "Sen «Dunyo Zamin» (Dunyozamin_News) — qurilish, santexnika, yoritish va uy-ro‘zg‘or jihozlari do‘koni " +
-    "uchun Telegram News kanali copywriterisan. Auditoriyasi: ustalar, uy egalari, ta’mir qiluvchilar. " +
-    "Maqsad: ijodiy, ishonchli, MAHSULOTGA XOS post — ICHKI hisobot EMAS. " +
-    `Kontent turi: «${ct.title}». Rubrika/ohang: «${title}» (${weekday}). ${vibe} ` +
+    "Sen «Dunyo Zamin» (Dunyozamin_News) — qurilish, santexnika, yoritish do‘koni " +
+    "Telegram News kanali professional SMM copywriterisan. Auditoriyasi: ustalar, uy egalari. " +
+    `Kontent turi: «${ct.title}». Rubrika: «${title}» (${weekday}). ${vibe} ` +
     `Ochilish: ${opening} ` +
-    "HAR SAFAR YANGI matn: bir xil slogan, bir xil jumla yoki «Sifatli tanlov — kunni chiroyliroq qiladi» TAQIQLANGAN. " +
-    "Qisqa umumiy gaplar («ishonchli detal», «sifatli tanlov», «eng yaxshi narx») O‘RNIGA: " +
-    "mahsulot nomi + aniq qo‘llanish joyi (santexnika/yoritish/montaj) + 2–4 jumlalik pitch yoz. " +
-    "Atvod/poliatvod/fiting bo‘lsa: o‘lcham, burilish/ulanish, sizib chiqishni kamaytirish haqida yoz. " +
-    "LED/lampa/sim bo‘lsa: xona, montaj, xavfsizlik haqida yoz. " +
-    "Mahsulotning haqiqiy nomi, kategoriyasi, brendi (bo‘lsa) va narxidan foydalan. " +
-    "SKU/artikulni faqat mijozga foydali bo‘lsa qisqa eslat, «SKU:» deb yozma. " +
-    "Taqiqlangan so‘z/mavzu: qarz, nasiya, ombor qoldig‘i soni, foyda (buxgalteriya), zarar, kassir, smena, dead stock, uydirma chegirma foizi. " +
-    "Faqat o‘zbek tili. HTML: faqat <b>. Emoji KO‘P BO‘LMASIN: jami 1–3 ta (sarlavha uchun 1 ta yetarli). " +
-    `Tuzilma: sarlavha + mahsulot nomi + 2–4 mahsulotga xos jumla + aniq narx + yumshoq CTA + #Dunyozamin #News ${extraTag}. ` +
-    `Maqsad uzunlik ${CAPTION_AI_TARGET_MIN}-${CAPTION_MAX} belgi (kamida ${CAPTION_MIN}). Faqat caption matnini qaytar.`
+    `${styleRules} ` +
+    "Tuzilma: emoji sarlavha + mahsulot nomi + 2–3 qisqa foyda qatori + aniq narx + yumshoq CTA + " +
+    `#Dunyozamin #News ${extraTag}. ` +
+    "Mahsulot nomi, kategoriya/brend (bo‘lsa) va narxdan foydalan. " +
+    "Atvod/fiting: o‘lcham/ulanish. LED/lampa: xona/xavfsizlik. " +
+    `Uzunlik: ${CAPTION_AI_TARGET_MIN}–${CAPTION_AI_TARGET_MAX} belgi (yumshoq max ${CAPTION_SOFT_MAX}, hard ${CAPTION_MAX}). ` +
+    "Faqat caption matnini qaytar."
   );
 }
 
@@ -928,6 +1043,8 @@ function captionUserPayload({ storeName, product, rubric, contentType, topic }) 
         .trim()
         .slice(0, 220)
     : null;
+  const topicHint = topic || pickEduTopic(ct, {});
+  const softOk = productMatchesTopic(product, topicHint);
 
   if (isEdu) {
     return {
@@ -943,27 +1060,37 @@ function captionUserPayload({ storeName, product, rubric, contentType, topic }) 
         vibe: ct.vibe || '',
         opening_hint: ct.openingHint || '',
       },
-      topic_hint: topic || pickEduTopic(ct, {}),
-      optional_soft_product: product
-        ? {
-            name: product.name,
-            category: product.category_name || null,
-            brand: product.brand || null,
-            price_formatted: `${formatSumma(product.sale_price)} so'm`,
-            note: 'Faqat yumshoq eslatma; narx majburiy emas. Mos kelmasa — mahsulotsiz yoz.',
-          }
-        : null,
+      topic_hint: topicHint,
+      optional_soft_product:
+        softOk && product
+          ? {
+              name: product.name,
+              category: product.category_name || null,
+              brand: product.brand || null,
+              note:
+                'Faqat 1 qator yumshoq eslatma; narx majburiy emas. Mavzu mos — OK. Mos kelmasa — yozma.',
+            }
+          : null,
+      soft_promo_allowed: softOk,
       writing_rules: {
         min_chars: CAPTION_AI_TARGET_MIN,
-        max_chars: CAPTION_MAX,
-        emoji_max: 3,
+        max_chars: CAPTION_AI_TARGET_MAX,
+        soft_max_chars: CAPTION_SOFT_MAX,
+        style: 'short_social_media',
+        lines: '4-8',
+        bullets: '3-4',
+        emoji_min: 3,
+        emoji_max: EMOJI_MAX,
         vary_opening: true,
         educational: true,
         no_hard_sell: true,
+        no_essay: true,
         no_generic_slogans: true,
+        match_promo_to_topic: true,
       },
       must_include: {
-        soft_cta: true,
+        soft_cta: softOk,
+        engagement_question: true,
         hashtags: ['#Dunyozamin', '#News', extraTag],
       },
       avoid: [
@@ -972,6 +1099,9 @@ function captionUserPayload({ storeName, product, rubric, contentType, topic }) 
         'hozir sotib oling',
         'yolg‘on chegirma foizi',
         'emoji spam',
+        'uzun ma’ruza / essay',
+        'devor matn (wall of text)',
+        'elektr tipidan santexnika soft-sellga sakrash',
         'ombor qoldig‘i',
         'foyda / zarar / smena',
       ],
@@ -1009,12 +1139,17 @@ function captionUserPayload({ storeName, product, rubric, contentType, topic }) 
     },
     writing_rules: {
       min_chars: CAPTION_AI_TARGET_MIN,
-      max_chars: CAPTION_MAX,
-      sentences_in_pitch: '2-4',
-      emoji_max: 3,
+      max_chars: CAPTION_AI_TARGET_MAX,
+      soft_max_chars: CAPTION_SOFT_MAX,
+      style: 'short_social_media',
+      lines: '4-8',
+      pitch_lines: '2-3',
+      emoji_min: 3,
+      emoji_max: EMOJI_MAX,
       vary_opening: true,
       must_mention_real_use_case: true,
       no_generic_slogans: true,
+      no_essay: true,
     },
     must_include: {
       product_name: true,
@@ -1028,6 +1163,7 @@ function captionUserPayload({ storeName, product, rubric, contentType, topic }) 
       'bir xil umumiy sloganlar',
       'yolg‘on chegirma foizi',
       'emoji spam',
+      'uzun essay',
       'faqat 1 qisqa umumiy jumla',
       'ombor qoldig‘i',
       'foyda / zarar / smena',
@@ -1045,18 +1181,21 @@ function countEmojis(text) {
 function qualityCheckCaption(caption, product, options = {}) {
   const text = String(caption || '').trim();
   const minLen = Number(options.minLength) > 0 ? Number(options.minLength) : CAPTION_MIN;
+  const softMax =
+    Number(options.softMaxLength) > 0 ? Number(options.softMaxLength) : CAPTION_SOFT_MAX;
   const contentType = options.contentType || null;
   const isEdu = contentTypeKind(contentType) === 'edu';
   if (!text) return { ok: false, reason: 'empty_caption' };
   if (text.length < minLen) return { ok: false, reason: 'too_short' };
   if (text.length > CAPTION_MAX) return { ok: false, reason: 'too_long' };
+  if (text.length > softMax) return { ok: false, reason: 'too_long_soft' };
   if (FORBIDDEN_RE.test(text) || INTERNAL_CAPTION_RE.test(text)) {
     return { ok: false, reason: 'forbidden_content' };
   }
   if (BANNED_SLOGAN_RE.test(text)) {
     return { ok: false, reason: 'banned_slogan' };
   }
-  if (countEmojis(text) > 5) {
+  if (countEmojis(text) > EMOJI_MAX) {
     return { ok: false, reason: 'emoji_spam' };
   }
   if (!/#Dunyozamin/i.test(text) || !/#News\b/i.test(text)) {
@@ -1209,6 +1348,44 @@ async function generateCaption(ctx, options = {}) {
   return { ok: false, reason: geminiText.reason || 'no_caption_llm' };
 }
 
+function buildImagePrompt({ storeName, product, rubric, contentType, topic }) {
+  const ct = contentType || getContentTypeById('product_showcase');
+  const isEdu = contentTypeKind(ct) === 'edu';
+  const style = ct.imageStyle || 'clean retail photography, no text';
+  const moodBits = [
+    'eye-catching but professional',
+    'warm daylight + soft fill',
+    'hardware retail aesthetic',
+    'single clear focal subject',
+  ];
+
+  if (isEdu) {
+    return (
+      `Create one striking educational visual for a Central Asian hardware / plumbing / lighting ` +
+      `Telegram News channel (Dunyo Zamin / Dunyozamin_News). ${style}. ` +
+      `Content type: ${ct.title}. Topic mood: ${topic || ct.title}. ` +
+      `Scene should feel useful and human — tools, fittings, or lighting in a real home/workshop context. ` +
+      `${moodBits.join(', ')}. ` +
+      `No readable text, no watermarks, no logos, no price tags, no collages, no UI mockups, no flags. ` +
+      `Store aesthetic: ${storeName}. Square 1:1, magazine quality.`
+    );
+  }
+
+  return (
+    `Professional commercial product photograph for a hardware, plumbing fittings, ` +
+    `lighting and home-improvement retail Telegram News channel (Dunyo Zamin / Dunyozamin_News). ` +
+    `No text, no watermarks, no logos, no price tags, no collages. ` +
+    `Subject: ${product?.name || 'hardware product'}. Category mood: ${product?.category_name || 'building materials / fittings'}. ` +
+    `Story: ${ct.title} — ${rubric?.title || ''} — ${style}. ` +
+    `${moodBits.join(', ')}. Store aesthetic: ${storeName}. ` +
+    `Photoreal, shallow depth of field, square 1:1, magazine quality.`
+  );
+}
+
+function sleepMs(ms) {
+  return new Promise((resolve) => setTimeout(resolve, Math.max(0, Number(ms) || 0)));
+}
+
 async function generatePosterImageGemini(
   { storeName, product, rubric, contentType, topic },
   options = {},
@@ -1218,64 +1395,194 @@ async function generatePosterImageGemini(
   const fetchFn = fetchImpl(options);
   if (typeof fetchFn !== 'function') return { ok: false, reason: 'no_fetch' };
 
-  const ct = contentType || getContentTypeById('product_showcase');
-  const isEdu = contentTypeKind(ct) === 'edu';
-  const style = ct.imageStyle || 'clean retail photography, no text';
+  const prompt = buildImagePrompt({ storeName, product, rubric, contentType, topic });
+  const models = [cfg.model, ...GEMINI_IMAGE_MODEL_FALLBACKS]
+    .map((m) => String(m || '').trim())
+    .filter((m, i, arr) => m && arr.indexOf(m) === i);
 
-  let prompt;
-  if (isEdu) {
-    prompt =
-      `Educational visual for a hardware, plumbing fittings, lighting Telegram News channel ` +
-      `(Dunyo Zamin / Dunyozamin_News). ${style}. ` +
-      `Content type: ${ct.title}. Topic mood: ${topic || ct.title}. ` +
-      `No readable text, no watermarks, no logos, no price tags, no collages, no UI mockups. ` +
-      `Store aesthetic: ${storeName}. Square 1:1, magazine quality, useful and friendly.`;
-  } else {
-    prompt =
-      `Professional commercial product photograph for a hardware, plumbing fittings, ` +
-      `lighting and home-improvement retail Telegram News channel (Dunyo Zamin). ` +
-      `No text, no watermarks, no logos, no price tags, no collages. ` +
-      `Subject: ${product?.name || 'hardware product'}. Category mood: ${product?.category_name || 'building materials / fittings'}. ` +
-      `Story: ${ct.title} — ${rubric?.title || ''} — ${style}. ` +
-      `Store aesthetic: ${storeName}. ` +
-      `Photoreal, soft studio light, shallow depth of field, square 1:1, magazine quality.`;
+  let lastReason = 'gemini_no_image';
+  let lastDetail = '';
+  for (const model of models) {
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`;
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      try {
+        const res = await fetchFn(url, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'x-goog-api-key': cfg.apiKey,
+          },
+          body: JSON.stringify({
+            contents: [{ role: 'user', parts: [{ text: prompt }] }],
+            generationConfig: { responseModalities: ['TEXT', 'IMAGE'] },
+          }),
+          signal: AbortSignal.timeout(options.timeoutMs || 90_000),
+        });
+        if (!res.ok) {
+          const t = await res.text().catch(() => '');
+          lastReason = `gemini_http_${res.status}`;
+          lastDetail = t.slice(0, 120);
+          if (res.status === 429 || res.status === 503) {
+            await sleepMs(1200 * (attempt + 1));
+            continue;
+          }
+          // Model missing / bad request → try next model
+          if (res.status === 404 || res.status === 400) break;
+          return { ok: false, reason: lastReason, detail: lastDetail, model };
+        }
+        const data = await res.json();
+        const parts = data?.candidates?.[0]?.content?.parts || [];
+        for (const part of parts) {
+          const inline = part.inlineData || part.inline_data;
+          if (inline?.data) {
+            const buf = Buffer.from(String(inline.data), 'base64');
+            if (buf.length > 500) {
+              const mime = String(inline.mimeType || inline.mime_type || 'image/jpeg');
+              const ext = mime.includes('png') ? 'png' : 'jpg';
+              return {
+                ok: true,
+                buffer: buf,
+                filename: `poster.${ext}`,
+                mime,
+                provider: 'gemini',
+                model,
+              };
+            }
+          }
+        }
+        lastReason = 'gemini_no_image';
+        break;
+      } catch (e) {
+        lastReason = 'gemini_error';
+        lastDetail = String(e?.message || e).slice(0, 80);
+        if (
+          String(e?.name || '').includes('Timeout') ||
+          /aborted|timeout/i.test(String(e?.message || ''))
+        ) {
+          continue;
+        }
+        return { ok: false, reason: lastReason, detail: lastDetail, model };
+      }
+    }
   }
+  return { ok: false, reason: lastReason, detail: lastDetail };
+}
 
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(cfg.model)}:generateContent`;
+async function generatePosterImageOpenAi(
+  { storeName, product, rubric, contentType, topic },
+  options = {},
+) {
+  const cfg = resolveOpenAiImageConfig(options);
+  if (!cfg.apiKey) return { ok: false, reason: 'no_openai_key' };
+  const fetchFn = fetchImpl(options);
+  if (typeof fetchFn !== 'function') return { ok: false, reason: 'no_fetch' };
+
+  const prompt = buildImagePrompt({ storeName, product, rubric, contentType, topic });
+  const model = cfg.model || DEFAULT_OPENAI_IMAGE_MODEL;
+  const isDalle3 = /^dall-e-3$/i.test(model);
+
+  const body = isDalle3
+    ? {
+        model: 'dall-e-3',
+        prompt: prompt.slice(0, 3900),
+        n: 1,
+        size: '1024x1024',
+        quality: 'standard',
+        response_format: 'b64_json',
+      }
+    : {
+        model,
+        prompt: prompt.slice(0, 3900),
+        n: 1,
+        size: '1024x1024',
+      };
+
   try {
-    const res = await fetchFn(url, {
+    const res = await fetchFn(`${cfg.baseUrl}/images/generations`, {
       method: 'POST',
       headers: {
+        Authorization: `Bearer ${cfg.apiKey}`,
         'Content-Type': 'application/json',
-        'x-goog-api-key': cfg.apiKey,
       },
-      body: JSON.stringify({
-        contents: [{ role: 'user', parts: [{ text: prompt }] }],
-        generationConfig: { responseModalities: ['TEXT', 'IMAGE'] },
-      }),
-      signal: AbortSignal.timeout(options.timeoutMs || 90_000),
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(options.timeoutMs || 120_000),
     });
     if (!res.ok) {
       const t = await res.text().catch(() => '');
-      return { ok: false, reason: `gemini_http_${res.status}`, detail: t.slice(0, 120) };
+      // Retry once with dall-e-3 if gpt-image model unavailable
+      if (!isDalle3 && (res.status === 404 || res.status === 400)) {
+        return generatePosterImageOpenAi(
+          { storeName, product, rubric, contentType, topic },
+          { ...options, openaiImageModel: 'dall-e-3' },
+        );
+      }
+      return { ok: false, reason: `openai_http_${res.status}`, detail: t.slice(0, 120), model };
     }
     const data = await res.json();
-    const parts = data?.candidates?.[0]?.content?.parts || [];
-    for (const part of parts) {
-      const inline = part.inlineData || part.inline_data;
-      if (inline?.data) {
-        const buf = Buffer.from(String(inline.data), 'base64');
-        if (buf.length > 500) {
-          const mime = String(inline.mimeType || inline.mime_type || 'image/jpeg');
-          const ext = mime.includes('png') ? 'png' : 'jpg';
-          return { ok: true, buffer: buf, filename: `poster.${ext}`, mime };
-        }
+    const item = Array.isArray(data?.data) ? data.data[0] : null;
+    if (item?.b64_json) {
+      const buf = Buffer.from(String(item.b64_json), 'base64');
+      if (buf.length > 500) {
+        return {
+          ok: true,
+          buffer: buf,
+          filename: 'poster.png',
+          mime: 'image/png',
+          provider: 'openai',
+          model,
+        };
       }
     }
-    return { ok: false, reason: 'gemini_no_image' };
+    if (item?.url && /^https?:\/\//i.test(String(item.url))) {
+      const imgRes = await fetchFn(String(item.url), {
+        method: 'GET',
+        signal: AbortSignal.timeout(options.timeoutMs || 60_000),
+      });
+      if (!imgRes.ok) {
+        return { ok: false, reason: `openai_image_fetch_${imgRes.status}`, model };
+      }
+      const ab = await imgRes.arrayBuffer();
+      const buf = Buffer.from(ab);
+      if (buf.length > 500) {
+        return {
+          ok: true,
+          buffer: buf,
+          filename: 'poster.jpg',
+          mime: 'image/jpeg',
+          provider: 'openai',
+          model,
+        };
+      }
+    }
+    return { ok: false, reason: 'openai_no_image', model };
   } catch (e) {
-    return { ok: false, reason: 'gemini_error', detail: String(e?.message || e).slice(0, 80) };
+    return {
+      ok: false,
+      reason: 'openai_error',
+      detail: String(e?.message || e).slice(0, 80),
+      model,
+    };
   }
+}
+
+/**
+ * Prefer Gemini image → OpenAI Images → (caller) product photo / text-only.
+ */
+async function generatePosterImage(ctx, options = {}) {
+  const gemini = await generatePosterImageGemini(ctx, options);
+  if (gemini.ok && gemini.buffer) {
+    return { ...gemini, source: 'gemini' };
+  }
+  const openai = await generatePosterImageOpenAi(ctx, options);
+  if (openai.ok && openai.buffer) {
+    return { ...openai, source: 'openai', fallbackFrom: gemini.reason };
+  }
+  return {
+    ok: false,
+    reason: openai.reason || gemini.reason || 'no_image',
+    geminiReason: gemini.reason || null,
+    openaiReason: openai.reason || null,
+  };
 }
 
 function resolveProductPhoto(product) {
@@ -1379,24 +1686,37 @@ async function composePoster(db, options = {}) {
 
   let qc = qualityCheckCaption(caption, product, {
     minLength: captionSource === 'template' ? CAPTION_MIN : CAPTION_AI_TARGET_MIN,
+    softMaxLength: CAPTION_SOFT_MAX,
     contentType,
   });
   if (!qc.ok) {
     if (captionSource !== 'template') {
-      qc = qualityCheckCaption(caption, product, { minLength: CAPTION_MIN, contentType });
+      qc = qualityCheckCaption(caption, product, {
+        minLength: CAPTION_MIN,
+        softMaxLength: CAPTION_SOFT_MAX,
+        contentType,
+      });
       if (!qc.ok) {
         const again = await generateCaption(captionCtx, { ...options, temperatureBoost: true });
         if (again.ok) {
           caption = again.text;
           captionSource = again.provider || 'llm';
-          qc = qualityCheckCaption(caption, product, { minLength: CAPTION_MIN, contentType });
+          qc = qualityCheckCaption(caption, product, {
+            minLength: CAPTION_MIN,
+            softMaxLength: CAPTION_SOFT_MAX,
+            contentType,
+          });
         }
       }
     }
     if (!qc.ok) {
       caption = buildTemplateCaption(captionCtx);
       captionSource = 'template';
-      qc = qualityCheckCaption(caption, product, { minLength: CAPTION_MIN, contentType });
+      qc = qualityCheckCaption(caption, product, {
+        minLength: CAPTION_MIN,
+        softMaxLength: CAPTION_SOFT_MAX,
+        contentType,
+      });
     }
   }
 
@@ -1415,20 +1735,34 @@ async function composePoster(db, options = {}) {
   const skipImage = options.skipImage === true;
   let image = { ok: false, reason: 'skipped' };
   if (!skipImage) {
-    const gemini = await generatePosterImageGemini(captionCtx, options);
-    if (gemini.ok && gemini.buffer) {
+    const generated = await generatePosterImage(captionCtx, options);
+    if (generated.ok && generated.buffer) {
       image = {
         ok: true,
-        photoBuffer: gemini.buffer,
-        filename: gemini.filename || 'poster.jpg',
-        source: 'gemini',
+        photoBuffer: generated.buffer,
+        filename: generated.filename || 'poster.jpg',
+        source: generated.source || generated.provider || 'ai',
+        model: generated.model || null,
+        fallbackFrom: generated.fallbackFrom || null,
       };
     } else if (!isEdu && product) {
       const fallback = resolveProductPhoto(product);
-      image = { ...fallback, fallbackFrom: gemini.reason, source: fallback.ok ? 'product' : 'none' };
+      image = {
+        ...fallback,
+        fallbackFrom: generated.reason,
+        geminiReason: generated.geminiReason || null,
+        openaiReason: generated.openaiReason || null,
+        source: fallback.ok ? 'product' : 'none',
+      };
     } else {
-      // Edu without Gemini image → text-only is OK (working solution).
-      image = { ok: false, reason: gemini.reason || 'edu_text_only', source: 'none' };
+      // Edu without AI image → text-only last resort.
+      image = {
+        ok: false,
+        reason: generated.reason || 'edu_text_only',
+        geminiReason: generated.geminiReason || null,
+        openaiReason: generated.openaiReason || null,
+        source: 'none',
+      };
     }
   }
 
@@ -1592,15 +1926,20 @@ module.exports = {
   EVENT_DAILY_POSTER,
   DEFAULT_POSTER_TIME,
   DEFAULT_GEMINI_IMAGE_MODEL,
+  DEFAULT_OPENAI_IMAGE_MODEL,
   RUBRICS,
   CONTENT_TYPES,
   WEEKDAY_CONTENT_TYPE_IDS,
   CAPTION_MIN,
+  CAPTION_SOFT_MAX,
   CAPTION_AI_TARGET_MIN,
+  CAPTION_AI_TARGET_MAX,
+  EMOJI_MAX,
   formatSumma,
   isPublishableProductName,
   resolveMarketingCredentials,
   resolveGeminiConfig,
+  resolveOpenAiImageConfig,
   getDailyPosterSettings,
   pickRubric,
   pickContentType,
@@ -1616,12 +1955,18 @@ module.exports = {
   readRecentContentTypeIds,
   pushRecentContentTypeId,
   inferUseCaseHint,
+  productMatchesTopic,
+  softPromoLine,
+  buildEduTipBullets,
   buildTemplateCaption,
+  buildImagePrompt,
   qualityCheckCaption,
   generateCaptionWithOpenAi,
   generateCaptionWithGemini,
   generateCaption,
   generatePosterImageGemini,
+  generatePosterImageOpenAi,
+  generatePosterImage,
   resolveProductPhoto,
   composePoster,
   postComposedPoster,

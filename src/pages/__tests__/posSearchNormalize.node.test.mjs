@@ -70,4 +70,30 @@ test('posTerminalHelpers exports normalizeArticle and normalizeSearch', () => {
   assert.match(src, /export const normalizeArticle/);
   assert.match(src, /export const normalizeSearch/);
   assert.match(src, /toLocaleLowerCase\('uz-UZ'\)/);
+  assert.match(src, /export function isPosScannerQuery/);
+});
+
+function isPosScannerQuery(value) {
+  const trimmed = String(value ?? '').trim();
+  if (!trimmed) return false;
+  const numericOnly = /^[0-9]+$/.test(trimmed);
+  const isBarcodeLike = numericOnly && [8, 12, 13, 14].includes(trimmed.length);
+  if (isBarcodeLike) return true;
+  if (numericOnly && trimmed.length >= 4) return true;
+  const upper = trimmed.toUpperCase();
+  return upper.startsWith('LOYALTY:') || upper.startsWith('LC-');
+}
+
+test('scanner payload is cleared from search, product names are not', () => {
+  assert.equal(isPosScannerQuery('4607034456789'), true);
+  assert.equal(isPosScannerQuery('00412'), true);
+  assert.equal(isPosScannerQuery('LC-100'), true);
+  assert.equal(isPosScannerQuery('plafon'), false);
+  assert.equal(isPosScannerQuery(''), false);
+});
+
+test('POS search Enter clears a scanner code', () => {
+  const src = readFileSync(path.join(root, 'pages/POSTerminal.tsx'), 'utf8');
+  assert.match(src, /isPosScannerQuery\(raw\)/);
+  assert.match(src, /Scanner codes must leave the search box/);
 });

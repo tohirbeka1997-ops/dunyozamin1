@@ -58,6 +58,8 @@ import {
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { useToast } from '@/hooks/use-toast';
 import { useAuth } from '@/contexts/AuthContext';
+import { useConfirmDialog } from '@/contexts/ConfirmDialogContext';
+import { scheduleRestoreTypingAfterDialog } from '@/lib/releaseStuckPointerEvents';
 import { cn } from '@/lib/utils';
 import { useTranslation } from 'react-i18next';
 import { useShiftStore } from '@/store/shiftStore';
@@ -184,7 +186,6 @@ import { getActiveReceiptTemplate, resolveReceiptTemplateStore } from '@/lib/rec
 import { formatOrderDateTime } from '@/lib/datetime';
 import { shouldAutoPrintReceipt } from '@/lib/receipts/normalizeReceiptSettings';
 import { printPosCustomerReceiptEscpos } from '@/lib/receipts/printPosCustomerReceipt';
-import { getPrintAgentHealth } from '@/lib/receipts/printAgent';
 import { isElectron, getElectronAPI, handleIpcResponse } from '@/utils/electron';
 import { getProductImageDisplayUrl } from '@/lib/productImageUrl';
 import { useNavigate, useLocation } from 'react-router-dom';
@@ -204,6 +205,12 @@ import {
   isProductSalePriceSellable,
 } from '@/lib/posHardening';
 import { posSearchCache } from '@/lib/posSearchCache';
+import {
+  normalizeProductSearchValue,
+  revisionSearchTokens,
+  isPunctuatedSpecQuery,
+  productHasLiteralSpecMatch,
+} from '@/lib/productSearchMatch';
 
 import {
   POS_QUICK_PRODUCT_IDS_KEY,
@@ -215,15 +222,18 @@ import {
   normalizeArticle,
   normalizeSearch,
   classifyQuery,
+  isPosScannerQuery,
   filterPosProductsBySearchTerm,
   formatPosProductCodeMeta,
   getSaleUnitConfig,
+  getProductUnits,
   getBaseUnit,
   toBaseQty,
   getMaxSaleQty,
   getMaxSaleQtyForCartLine,
   getProbeSaleQtyForUnitPrice,
   recalcCartLineForSaleUnitChange,
+  canonicalUnitCode,
   readPosReplacesOrderId,
   persistPosReplacesOrderId,
   resolveReplacesOrderIdForCheckout,
@@ -268,6 +278,7 @@ import {
 
 export default function POSTerminal() {
   const { t } = useTranslation();
+  const confirmDialog = useConfirmDialog();
   const { toast } = useToast();
   const navigate = useNavigate();
   const location = useLocation();
@@ -297,6 +308,8 @@ export default function POSTerminal() {
   const quickAddOneToCartRef = useRef<
     (product: Product, opts?: { keepListFocus?: boolean; openNumpadIfNeeded?: boolean }) => void
   >(() => {});
+  /** Numpad Enter yopilgach keydown takror / fokus qaytganda yana ochilmasin */
+  const suppressPosEnterUntilRef = useRef(0);
   /** F3 shortcut — `handleHoldOrder` keyinroq e'lon qilinadi */
   const handleHoldOrderShortcutRef = useRef<() => Promise<void>>(async () => {});
   
@@ -421,20 +434,15 @@ export default function POSTerminal() {
   }, []);
 
   const resetCustomerSelection = useCallback(() => {
-    const selectedTier = (selectedCustomer as any)?.pricing_tier;
-
     setSelectedCustomer(null);
     setSelectedBonusReferrer(null);
     setCustomerSearchTerm('');
     setBonusReferrerSearchTerm('');
     setCustomerComboboxOpen(false);
     setBonusReferrerComboboxOpen(false);
-
-    // Prevent a customer-specific pricing tier from leaking into the next walk-in sale.
-    if (selectedTier && currentTierCode === selectedTier) {
-      setCurrentTierCode('retail');
-    }
-  }, [currentTierCode, selectedCustomer]);
+    // Price mode is operator-controlled; reset to Oddiy when clearing the customer.
+    setCurrentTierCode('retail');
+  }, []);
   
   // Held orders state
   const [heldOrders, setHeldOrders] = useState<HeldOrder[]>([]);
@@ -527,30 +535,6 @@ export default function POSTerminal() {
   const [weightedCartAddMode, setWeightedCartAddMode] = useState<'sale_qty' | 'amount_uzs'>('sale_qty');
   const [exchangeReturnMode, setExchangeReturnMode] = useState(false);
   // Empty cart must not turn this off — cashiers press F8 first, then scan return lines.
-
-  const toggleExchangeReturnMode = useCallback(() => {
-    if (
-      !canToggleExchangeReturnMode({
-        cartLength: cart.length,
-        paymentDialogOpen,
-        waitingOrdersDialogOpen,
-      })
-    ) {
-      return;
-    }
-    setExchangeReturnMode((v) => {
-      if (!v) {
-        const ok = window.confirm(
-          t('pos.exchange.return_mode_confirm', {
-            defaultValue:
-              'Qaytarish rejimiga o‘tasizmi? Keyingi mahsulotlar manfiy (qaytarish) qator sifatida qo‘shiladi.',
-          }),
-        );
-        if (!ok) return v;
-      }
-      return !v;
-    });
-  }, [cart.length, paymentDialogOpen, waitingOrdersDialogOpen, t]);
   const [selectedCartIndex, setSelectedCartIndex] = useState<number>(-1);
   const [selectedProductIndex, setSelectedProductIndex] = useState(-1);
   const [productListNavActive, setProductListNavActive] = useState(false);
@@ -834,6 +818,48 @@ export default function POSTerminal() {
     }
   }, []);
 
+  const restorePosTypingAfterDialog = useCallback(() => {
+    scheduleRestoreTypingAfterDialog(document, focusSearchInput);
+  }, [focusSearchInput]);
+
+  const toggleExchangeReturnMode = useCallback(async () => {
+    if (
+      !canToggleExchangeReturnMode({
+        cartLength: cart.length,
+        paymentDialogOpen,
+        waitingOrdersDialogOpen,
+      })
+    ) {
+      return;
+    }
+    if (!exchangeReturnMode) {
+      // In-app AlertDialog — native window.confirm steals Electron keyboard/focus.
+      const ok = await confirmDialog({
+        title: t('pos.exchange.return_mode', { defaultValue: 'Qaytarish rejimi' }),
+        description: t('pos.exchange.return_mode_confirm', {
+          defaultValue:
+            'Qaytarish rejimiga o‘tasizmi? Keyingi mahsulotlar manfiy (qaytarish) qator sifatida qo‘shiladi.',
+        }),
+        confirmText: t('common.yes', { defaultValue: 'Ha' }),
+        cancelText: t('common.cancel'),
+      });
+      restorePosTypingAfterDialog();
+      if (!ok) return;
+      setExchangeReturnMode(true);
+      return;
+    }
+    setExchangeReturnMode(false);
+    restorePosTypingAfterDialog();
+  }, [
+    cart.length,
+    paymentDialogOpen,
+    waitingOrdersDialogOpen,
+    exchangeReturnMode,
+    confirmDialog,
+    t,
+    restorePosTypingAfterDialog,
+  ]);
+
   const focusOrderDiscountInput = useCallback(() => {
     const discountInput =
       (document.getElementById('pos-order-discount-amount') as HTMLInputElement | null) ||
@@ -909,6 +935,47 @@ export default function POSTerminal() {
     focusSearchInput();
   }, [undoCartSnapshot, focusSearchInput]);
 
+  /** Savatni tozalash + 5 soniyalik Undo (Ctrl+Z). */
+  const clearCartWithUndo = useCallback(() => {
+    if (cart.length === 0) {
+      toast({
+        title: t('pos.cart_empty'),
+        variant: 'destructive',
+      });
+      return;
+    }
+    queueCartUndo(cart, t('pos.cart_cleared_undo', { defaultValue: 'Savat tozalandi' }));
+    clearCartAndNavDraft();
+    clearPosSaleImportContext();
+    setExchangeReturnMode(false);
+    setDiscount({ type: 'amount', value: '' });
+    setPromoCodeInput('');
+    resetCustomerSelection();
+    toast({
+      title: t('pos.cart_cleared_title', { defaultValue: 'Savat tozalandi' }),
+      description: t('pos.cart_cleared_desc', {
+        defaultValue: 'Barcha mahsulotlar olib tashlandi. Ctrl+Z — qaytarish.',
+      }),
+    });
+    focusSearchInput();
+  }, [
+    cart,
+    clearCartAndNavDraft,
+    clearPosSaleImportContext,
+    focusSearchInput,
+    queueCartUndo,
+    resetCustomerSelection,
+    t,
+    toast,
+  ]);
+
+  const undoCartSnapshotRef = useRef(undoCartSnapshot);
+  undoCartSnapshotRef.current = undoCartSnapshot;
+  const restoreUndoCartRef = useRef(restoreUndoCart);
+  restoreUndoCartRef.current = restoreUndoCart;
+  const clearCartWithUndoRef = useRef(clearCartWithUndo);
+  clearCartWithUndoRef.current = clearCartWithUndo;
+
   const rememberRecentCustomer = useCallback((customerId: string) => {
     if (!customerId || customerId === 'none' || customerId === 'default-customer-001') return;
     setRecentCustomerIds((prev) => {
@@ -927,6 +994,9 @@ export default function POSTerminal() {
       setSelectedCustomer(customer);
       setCustomerComboboxOpen(false);
       setCustomerSearchTerm('');
+      // Always default to Oddiy (retail). Usta price applies only when the operator
+      // manually switches Narxi / currentTierCode — never from customer.pricing_tier.
+      setCurrentTierCode('retail');
       if (customer?.id) {
         rememberRecentCustomer(customer.id);
       }
@@ -948,22 +1018,22 @@ export default function POSTerminal() {
     async (data: NonNullable<typeof receiptData>, opts?: { silent?: boolean }) => {
       if (isPrintingReceipt) return;
       setIsPrintingReceipt(true);
+      const isNativeDesktop =
+        typeof navigator !== 'undefined' && /\bElectron\//i.test(navigator.userAgent);
+      let browserFallbackWindow: Window | null = null;
+      let browserFallbackUsed = false;
+
+      // Browsers only allow window.open directly inside the user's click.
+      // Reserve the receipt window before the first await so HTML fallback
+      // still works when the local print agent is unavailable.
+      if (!opts?.silent && !isNativeDesktop) {
+        browserFallbackWindow = window.open('', '_blank', 'width=800,height=600');
+      }
       try {
-        // Manual print only: warn if agent looks down (silent auto-print reports after ESC/POS fail).
-        if (!opts?.silent) {
-          const agentHealth = await getPrintAgentHealth(1500);
-          if (!agentHealth) {
-            toast({
-              variant: 'destructive',
-              title: t('pos.device_bar.print_agent_down', { defaultValue: 'Printer offline' }),
-              description: t('pos.device_status.print_offline_before_receipt', {
-                defaultValue: 'Chop etish agenti ulanmagan. Chek brauzer orqali ochilishi mumkin.',
-              }),
-            });
-          }
-        }
         try {
           await printPosCustomerReceiptEscpos(data, companySettings, receiptSettings);
+          browserFallbackWindow?.close();
+          browserFallbackWindow = null;
           if (!opts?.silent) {
             toast({
               title: 'Chek',
@@ -1041,7 +1111,12 @@ export default function POSTerminal() {
           const htmlContent = renderReceiptTemplate(mergedTemplate, order as any, companySettings || undefined, undefined, {
             middleText: receiptSettings?.middle_text?.trim() || undefined,
           });
-          openPrintWindow(htmlContent, `${mergedTemplate.paperWidth}mm` as '58mm' | '78mm' | '80mm');
+          openPrintWindow(
+            htmlContent,
+            `${mergedTemplate.paperWidth}mm` as '58mm' | '78mm' | '80mm',
+            browserFallbackWindow,
+          );
+          browserFallbackUsed = true;
           return;
         }
 
@@ -1060,18 +1135,25 @@ export default function POSTerminal() {
         }
 
         const htmlContent = el.innerHTML;
-        openPrintWindow(htmlContent, receiptSettings?.paper_size || '78mm');
+        openPrintWindow(
+          htmlContent,
+          receiptSettings?.paper_size || '78mm',
+          browserFallbackWindow,
+        );
+        browserFallbackUsed = true;
         toast({
           title: 'Chek',
           description: 'Chek chop etish oynasi ochildi (printer ulanmagan bo‘lishi mumkin)',
         });
       } catch (e: any) {
+        if (!browserFallbackUsed) browserFallbackWindow?.close();
         toast({
           title: 'Print xatoligi',
           description: e?.message || 'Chekni chop etib bo‘lmadi',
           variant: 'destructive',
         });
       } finally {
+        if (!browserFallbackUsed) browserFallbackWindow?.close();
         setIsPrintingReceipt(false);
       }
     },
@@ -1252,13 +1334,6 @@ export default function POSTerminal() {
         return a.name.localeCompare(b.name);
       });
   }, [customers, selectedCustomer?.id, bonusReferrerSearchTerm, isWalkInCustomer]);
-
-  useEffect(() => {
-    const tier = (selectedCustomer as any)?.pricing_tier;
-    if (tier && tier !== currentTierCode) {
-      setCurrentTierCode(tier);
-    }
-  }, [selectedCustomer, currentTierCode]);
 
   const refreshCustomersAfterCustomerPayment = useCallback(async () => {
     try {
@@ -1719,15 +1794,42 @@ export default function POSTerminal() {
   const getRankedSearchResults = (term: string, categoryId: string | null) => {
     const query = classifyQuery(term);
     if (!query.raw) return [];
-    const tokens = query.lower.split(/\s+/).filter(Boolean);
+    const tokens = revisionSearchTokens(query.raw);
+    const normTerm = normalizeProductSearchValue(query.raw);
+    const punctSpec = isPunctuatedSpecQuery(query.raw);
 
     const scored = searchIndex
       .filter((e) => productMatchesCategoryFilter(e.product.category_id, categoryId, categories))
       .map(({ product, skuNormalized, barcode, nameLower, normArticle, brandLower }) => {
-        const normTerm = query.lower.replace(/[\s\-_]/g, '');
+        const hay = normalizeProductSearchValue(
+          [
+            product.name,
+            product.sku,
+            (product as { barcode?: string | number | null }).barcode,
+            (product as { article?: string | number | null }).article,
+            (product as { brand?: string | number | null }).brand,
+          ]
+            .filter((v) => v != null && String(v).trim() !== '')
+            .join(' '),
+        );
 
         let score = 0;
         let matched = false;
+        const literalSpec = punctSpec && productHasLiteralSpecMatch(product, query.raw);
+
+        // Cable/spec (`2*4`, `2*2.5`): literal beat stripped-digit false positives (`24w`).
+        if (literalSpec) {
+          score += 1200;
+          matched = true;
+        }
+
+        // Multi-token AND on punctuation-insensitive haystack ("p oq" → P oq 1004, not every "P…")
+        if (tokens.length > 0 && tokens.every((t) => hay.includes(t))) {
+          matched = true;
+          score += tokens.length > 1 ? 320 : 200;
+          if (normTerm && hay.startsWith(normTerm)) score += 120;
+          if (punctSpec && !literalSpec) score -= 700;
+        }
 
         // Exact barcode match (case-insensitive)
         if (barcode && barcode.toLocaleLowerCase('uz-UZ') === query.raw.toLocaleLowerCase('uz-UZ')) {
@@ -1762,24 +1864,27 @@ export default function POSTerminal() {
         }
 
         if (brandLower) {
-          if (brandLower === query.lower) {
+          const brandHay = normalizeProductSearchValue(brandLower);
+          if (tokens.length > 0 && tokens.every((t) => brandHay.includes(t))) {
+            score += brandHay === normTerm ? 600 : 350;
+            matched = true;
+          } else if (brandLower === query.lower) {
             score += 600;
             matched = true;
           } else if (brandLower.startsWith(query.lower)) {
             score += 350;
             matched = true;
-          } else if (brandLower.includes(query.lower) || tokens.some((token) => brandLower.includes(token))) {
-            score += 180;
-            matched = true;
           }
         }
 
         if (nameLower) {
-          if (nameLower.startsWith(query.lower)) {
-            score += 400;
+          const nameHay = normalizeProductSearchValue(nameLower);
+          if (tokens.length > 0 && tokens.every((t) => nameHay.includes(t))) {
+            if (nameHay.startsWith(normTerm)) score += 400;
+            else score += 250;
             matched = true;
-          } else if (tokens.some((token) => nameLower.includes(token))) {
-            score += 250;
+          } else if (nameLower.startsWith(query.lower)) {
+            score += 400;
             matched = true;
           } else if (nameLower.includes(query.lower)) {
             score += 150;
@@ -1787,21 +1892,35 @@ export default function POSTerminal() {
           }
         }
 
+        // Plain substring of raw query (keeps `2*4` above `24w` even without punctSpec path)
+        if (!punctSpec && query.lower.length >= 2 && nameLower.includes(query.lower)) {
+          score += 500;
+          matched = true;
+        }
+
         if (!matched) return null;
 
         if (product.current_stock > 0) score += 50;
         if (product.current_stock === 0) score -= 100;
 
-        return { product, score };
+        return { product, score, literalSpec: Boolean(literalSpec) };
       })
-      .filter((entry): entry is { product: Product; score: number } => Boolean(entry));
+      .filter(
+        (
+          entry,
+        ): entry is { product: Product; score: number; literalSpec: boolean } => Boolean(entry),
+      );
 
-    scored.sort((a, b) => {
+    // If any literal cable/spec hits exist, drop stripped-digit-only noise entirely.
+    const literalOnly = punctSpec ? scored.filter((e) => e.literalSpec) : scored;
+    const rankedPool = literalOnly.length > 0 ? literalOnly : scored;
+
+    rankedPool.sort((a, b) => {
       if (b.score !== a.score) return b.score - a.score;
       return String(a.product.name || '').localeCompare(String(b.product.name || ''));
     });
 
-    const directResults = scored.slice(0, 20).map((entry) => entry.product);
+    const directResults = rankedPool.slice(0, 20).map((entry) => entry.product);
 
     // Exact SKU / barcode / article: do not mix in fuzzy/partial noise
     const exactHits = directResults.filter((p) => {
@@ -1827,7 +1946,8 @@ export default function POSTerminal() {
 
     // Fuzzy fallback via keshlangan Fuse.js (xato yozuvlarni ushlaydi).
     // Indeks bir marta qurilgan; kategoriya filtri natijaga qo'llanadi.
-    if (directResults.length < 3 && query.lower.length >= 2) {
+    // Punctuated specs: do not dilute literal cable hits with Fuse noise.
+    if (!punctSpec && directResults.length < 3 && query.lower.length >= 2) {
       const fuzzyHits = productsFuse.search(query.lower, { limit: 40 });
       const directIds = new Set(directResults.map((p) => p.id));
       const fuzzyExtra = fuzzyHits
@@ -1856,12 +1976,24 @@ export default function POSTerminal() {
     try {
       const normalizedQuery = normalizeSearchTerm(term);
       let results = getRankedSearchResults(normalizedQuery, categoryId);
-      if (results.length === 0 && term.trim().length >= 2) {
-        const fallback = await searchProductsScreen(term, { warehouse_id: posWarehouseId });
-        if (searchSeqRef.current !== currentSeq) return;
-        results = categoryId
-          ? fallback.filter((p) => productMatchesCategoryFilter(p.category_id, categoryId, categories))
-          : fallback;
+      // Catalog warm → local ranking is authoritative (avoids /rpc storm on every miss).
+      // Server fallback only while catalog still empty (first load / failure).
+      const catalogWarm = allProducts.length > 0;
+      if (results.length === 0 && term.trim().length >= 2 && !catalogWarm) {
+        try {
+          const fallback =
+            (await searchProductsScreen(term, { warehouse_id: posWarehouseId })) || [];
+          if (searchSeqRef.current !== currentSeq) return;
+          results = categoryId
+            ? fallback.filter((p) =>
+                productMatchesCategoryFilter(p.category_id, categoryId, categories),
+              )
+            : fallback;
+        } catch {
+          // Soft: keep empty local results; rate-limit toasts handled by RPC layer.
+          if (searchSeqRef.current !== currentSeq) return;
+          results = [];
+        }
       }
       // Exact SKU/barcode wins over fuzzy/contains noise from any source
       results = filterPosProductsBySearchTerm(results, term);
@@ -1900,7 +2032,7 @@ export default function POSTerminal() {
 
   const handleSearch = (term: string) => {
     const MIN_SEARCH_LENGTH = 2;
-    const SEARCH_DEBOUNCE_MS = 300;
+    const SEARCH_DEBOUNCE_MS = 350;
     setSearchTerm(term);
     if (searchDebounceRef.current) {
       window.clearTimeout(searchDebounceRef.current);
@@ -2020,9 +2152,13 @@ export default function POSTerminal() {
     const clearSearch = opts?.clearSearch ?? true;
     const resetSearch = () => {
       if (!clearSearch) return;
+      // Drop in-flight name search so it cannot put the barcode back.
+      searchSeqRef.current += 1;
       setSearchTerm('');
       setSearchResults([]);
     };
+    // Scanner digits land in the focused search box before lookup finishes.
+    resetSearch();
 
     try {
       perfStart = perfEnabled ? performance.now() : 0;
@@ -2205,8 +2341,8 @@ export default function POSTerminal() {
   // Scanners typed in keyboard-wedge mode hit the `onKeyDown` on the search
   // input when it's focused, but cashiers often focus other fields (qty,
   // customer picker, etc.). This hook catches the scan globally and routes
-  // it to the same `handleBarcodeSearch` handler. Slow human typing is
-  // never hijacked (see `whenInputFocused: 'auto'`).
+  // it to the same `handleBarcodeSearch` handler. Typing in a field is kept
+  // unless the burst is scanner-speed (see `whenInputFocused: 'auto'`).
   // ---------------------------------------------------------------------
   useBarcodeScanner({
     enabled: true,
@@ -2230,11 +2366,9 @@ export default function POSTerminal() {
       unitCode?: string
     ) => {
       const retailPrice = Number(unitSalePrice ?? (product as any)?.sale_price ?? 0) || 0;
-      const customerTier = (customer as any)?.pricing_tier || null;
-      const effectiveTier =
-        (customerTier as any) ||
-        currentTierCode ||
-        'retail';
+      // Operator-selected tier only — customer.pricing_tier is identity/loyalty, not auto-price.
+      void customer;
+      const effectiveTier = currentTierCode || 'retail';
 
       if (effectiveTier !== 'master' && effectiveTier !== 'wholesale' && effectiveTier !== 'marketplace') {
         return { unitPrice: retailPrice, priceTier: 'retail' as const };
@@ -2350,9 +2484,7 @@ export default function POSTerminal() {
           const qtyBase = Number(item.qty_base ?? 0) || 0;
           const ratioToBase = Number(item.ratio_to_base ?? 1) || 1;
           const saleUnit = item.sale_unit || item.product.unit;
-          const effectiveTier = String(
-            (selectedCustomer as any)?.pricing_tier || currentTierCode || 'retail'
-          );
+          const effectiveTier = String(currentTierCode || 'retail');
           if (item.is_price_overridden || item.price_source === 'manual') {
             const unitPrice = Number(item.unit_price || 0) || 0;
             const subtotal = unitPrice * qtySale;
@@ -2732,7 +2864,7 @@ export default function POSTerminal() {
     }
     const qtyBase = toBaseQty(validQuantity, ratio_to_base);
     let unitSalePrice = sale_price;
-    const effectiveTier = ((selectedCustomer as any)?.pricing_tier || currentTierCode || 'retail') as string;
+    const effectiveTier = (currentTierCode || 'retail') as string;
     if (effectiveTier !== 'retail' && effectiveTier !== 'master' && saleCurrency !== 'USD') {
       const tierKey = `${product.id}::${effectiveTier}::${resolvedUnit}::${saleCurrency}`;
       const tierCached = priceCacheRef.current.get(tierKey);
@@ -3752,6 +3884,39 @@ export default function POSTerminal() {
     [cart.length, restoreRemoteHeldOrder, restoreLocalHeldOrder],
   );
 
+  const confirmRestoreHeldOrder = useCallback(() => {
+    if (!orderToRestore) return;
+    if (isRemoteImportHeldOrder(orderToRestore)) {
+      void restoreRemoteHeldOrder(orderToRestore);
+    } else {
+      void restoreLocalHeldOrder(orderToRestore);
+    }
+  }, [orderToRestore, restoreRemoteHeldOrder, restoreLocalHeldOrder]);
+
+  const cancelRestoreHeldOrder = useCallback(() => {
+    setRestoreConfirmOpen(false);
+    setOrderToRestore(null);
+  }, []);
+
+  useEffect(() => {
+    if (!restoreConfirmOpen) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        e.stopPropagation();
+        confirmRestoreHeldOrder();
+        return;
+      }
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        e.stopPropagation();
+        cancelRestoreHeldOrder();
+      }
+    };
+    window.addEventListener('keydown', onKey, true);
+    return () => window.removeEventListener('keydown', onKey, true);
+  }, [restoreConfirmOpen, confirmRestoreHeldOrder, cancelRestoreHeldOrder]);
+
   useLayoutEffect(() => {
     const customerId = (location.state as { customerId?: string } | null)?.customerId;
     if (!customerId || customers.length === 0) return;
@@ -4186,6 +4351,26 @@ export default function POSTerminal() {
             cartItem?.amend_original_qty_sale,
           )
         : undefined;
+    let refUnitPrice: number | undefined;
+    if (unit && isFractionalUnit(unit) && cartItem) {
+      const fromLine = Number(cartItem.unit_price) || 0;
+      if (fromLine > 0) {
+        refUnitPrice = fromLine;
+      } else if (cartItem.product) {
+        const probeSale = getProbeSaleQtyForUnitPrice(cartItem.product, unit, ratioToBase);
+        const qtyBaseProbe = toBaseQty(probeSale, ratioToBase);
+        const { unitPrice } = getLinePricing(
+          cartItem.product,
+          qtyBaseProbe,
+          selectedCustomer,
+          undefined,
+          ratioToBase,
+          unit,
+        );
+        if (Number.isFinite(unitPrice) && unitPrice > 0) refUnitPrice = unitPrice;
+      }
+    }
+    setWeightedCartAddMode('sale_qty');
     setNumpadConfig({
       type: 'quantity',
       productId,
@@ -4194,10 +4379,83 @@ export default function POSTerminal() {
       unit,
       sale_unit: unit,
       ratio_to_base: ratioToBase,
+      refUnitPrice,
     });
     setNumpadOpen(true);
   };
   openQuantityNumpadRef.current = openQuantityNumpad;
+
+  /** Miqdor numpadida mahsulot birligini almashtirish (max / narx qayta hisoblanadi). */
+  const selectNumpadSaleUnit = useCallback(
+    (nextUnitRaw: string) => {
+      if (!numpadConfig) return;
+      if (numpadConfig.type !== 'add_quantity' && numpadConfig.type !== 'quantity') return;
+      const product =
+        numpadConfig.product ||
+        (numpadConfig.productId
+          ? cart.find((c) => c.product.id === numpadConfig.productId)?.product
+          : undefined);
+      if (!product) return;
+      const nextConfig = getSaleUnitConfig(product, nextUnitRaw);
+      const nextUnit = nextConfig.saleUnit;
+      if (canonicalUnitCode(nextUnit) === canonicalUnitCode(numpadConfig.unit)) return;
+
+      const prevRatio = Number(numpadConfig.ratio_to_base ?? 1) || 1;
+      const prevQty = Number(numpadConfig.initialValue) || 0;
+      const prevQtyBase = toBaseQty(prevQty, prevRatio);
+      const nextRatio = Number(nextConfig.ratio_to_base ?? 1) || 1;
+      let nextInitial =
+        nextRatio > 0 && prevQty !== 0 ? prevQtyBase / nextRatio : prevQty;
+      nextInitial = clampSignedQuantityForUnit(nextInitial, nextUnit);
+
+      let maxAllowed: number | undefined;
+      if (numpadConfig.type === 'add_quantity') {
+        const m = getMaxSaleQty(product, nextRatio, nextUnit);
+        maxAllowed = m > 0 ? m : undefined;
+      } else if (numpadConfig.productId) {
+        const cartItem = cart.find((c) => c.product.id === numpadConfig.productId);
+        maxAllowed = getMaxSaleQtyForCartLine(
+          product,
+          nextRatio,
+          nextUnit,
+          cartItem?.amend_original_qty_sale,
+        );
+      }
+
+      let refUnitPrice: number | undefined;
+      if (isFractionalUnit(nextUnit)) {
+        const probeSale = getProbeSaleQtyForUnitPrice(product, nextUnit, nextRatio);
+        const qtyBaseProbe = toBaseQty(probeSale, nextRatio);
+        const { unitPrice } = getLinePricing(
+          product,
+          qtyBaseProbe,
+          selectedCustomer,
+          nextConfig.sale_price,
+          nextRatio,
+          nextUnit,
+        );
+        if (Number.isFinite(unitPrice) && unitPrice > 0) refUnitPrice = unitPrice;
+      }
+
+      setWeightedCartAddMode('sale_qty');
+      setNumpadConfig((prev) =>
+        prev
+          ? {
+              ...prev,
+              unit: nextUnit,
+              sale_unit: nextUnit,
+              ratio_to_base: nextRatio,
+              max: maxAllowed,
+              refUnitPrice,
+              initialValue:
+                numpadConfig.type === 'quantity' ? nextInitial : prev?.initialValue,
+              product: prev.product || product,
+            }
+          : prev,
+      );
+    },
+    [numpadConfig, cart, selectedCustomer, getLinePricing],
+  );
 
   const openDiscountNumpad = (productId: string, currentDiscount: number, maxDiscount: number) => {
     setNumpadConfig({
@@ -4228,16 +4486,72 @@ export default function POSTerminal() {
     
     if (numpadConfig.type === 'quantity' && numpadConfig.productId) {
       const unit = numpadConfig.unit;
-      const min = getQuantityMin(unit);
-      const validQuantity = clampSignedQuantityForUnit(numValue, unit);
+      const refP = Number(numpadConfig.refUnitPrice) || 0;
+      const byAmount =
+        weightedCartAddMode === 'amount_uzs' && unit && isFractionalUnit(unit) && refP > 0;
 
-      if (validQuantity > 0 && validQuantity !== numValue && numValue < min) {
-        toast({
-          title: 'Miqdor tuzatildi',
-          description: `Miqdor kamida ${formatQuantity(min, unit)} bo'lishi kerak. ${formatQuantity(validQuantity, unit)} ga o'rnatildi`,
-        });
+      const applyQty = (validQuantity: number) => {
+        const productId = numpadConfig.productId!;
+        const cartItem = cart.find((c) => c.product.id === productId);
+        const cartUnit = cartItem?.sale_unit || cartItem?.product.unit;
+        const unitChanged =
+          unit &&
+          cartUnit &&
+          canonicalUnitCode(unit) !== canonicalUnitCode(cartUnit);
+        if (unitChanged) {
+          void updateSaleUnit(productId, unit).then(() => {
+            updateQuantity(productId, validQuantity);
+          });
+        } else {
+          updateQuantity(productId, validQuantity);
+        }
+      };
+
+      if (byAmount) {
+        const uzs = Math.floor(numValue);
+        if (!Number.isFinite(uzs) || uzs <= 0) {
+          toast({
+            title: 'Noto‘g‘ri summa',
+            description: '0 dan katta butun so‘m kiriting',
+            variant: 'destructive',
+          });
+          setNumpadConfig(null);
+          return;
+        }
+        const rawQty = uzs / refP;
+        let validQuantity = clampSignedQuantityForUnit(rawQty, unit);
+        if (numpadConfig.max !== undefined && Math.abs(validQuantity) > numpadConfig.max) {
+          validQuantity =
+            validQuantity < 0 ? -Math.abs(numpadConfig.max) : Math.abs(numpadConfig.max);
+          toast({
+            title: 'Ombor',
+            description: `Maksimal ${formatQuantity(numpadConfig.max, unit)} ${unit}`,
+            variant: 'destructive',
+          });
+        }
+        const qMin = getQuantityMin(unit);
+        if (Math.abs(validQuantity) > 0 && Math.abs(validQuantity) < qMin) {
+          toast({
+            title: 'Juda kichik summa',
+            description: `Kamida ~${formatMoneyUZS(Math.ceil(qMin * refP))} so‘m kerak`,
+            variant: 'destructive',
+          });
+          setNumpadConfig(null);
+          return;
+        }
+        applyQty(validQuantity);
+      } else {
+        const min = getQuantityMin(unit);
+        const validQuantity = clampSignedQuantityForUnit(numValue, unit);
+
+        if (validQuantity > 0 && validQuantity !== numValue && numValue < min) {
+          toast({
+            title: 'Miqdor tuzatildi',
+            description: `Miqdor kamida ${formatQuantity(min, unit)} bo'lishi kerak. ${formatQuantity(validQuantity, unit)} ga o'rnatildi`,
+          });
+        }
+        applyQty(validQuantity);
       }
-      updateQuantity(numpadConfig.productId, validQuantity);
     } else if (numpadConfig.type === 'add_quantity' && numpadConfig.product) {
       const unit = numpadConfig.unit;
       const ratio = Number(numpadConfig.ratio_to_base ?? 1) || 1;
@@ -4352,7 +4666,7 @@ export default function POSTerminal() {
     const prevQtySale = Number(cartItem.qty_sale ?? cartItem.quantity ?? 0) || 0;
     const prevRatio = Number(cartItem.ratio_to_base ?? 1) || 1;
     const prevQtyBaseRaw = Number(cartItem.qty_base);
-    const effectiveTier = ((selectedCustomer as any)?.pricing_tier || currentTierCode || 'retail') as string;
+    const effectiveTier = (currentTierCode || 'retail') as string;
     if (effectiveTier !== 'retail' && effectiveTier !== 'master' && saleCurrency !== 'USD') {
       const fetched = await fetchTierPrice(cartItem.product, effectiveTier, nextUnit);
       if (fetched == null) {
@@ -4449,7 +4763,7 @@ export default function POSTerminal() {
     const qtyBase = Number(cartItem.qty_base ?? 0) || toBaseQty(qtySale, ratioToBase);
     const saleUnit = cartItem.sale_unit || cartItem.product.unit;
     const { sale_price } = getSaleUnitConfig(cartItem.product, saleUnit);
-    const effectiveTier = ((selectedCustomer as any)?.pricing_tier || currentTierCode || 'retail') as string;
+    const effectiveTier = (currentTierCode || 'retail') as string;
     if (effectiveTier !== 'retail' && effectiveTier !== 'master' && saleCurrency !== 'USD') {
       const fetched = await fetchTierPrice(cartItem.product, effectiveTier, saleUnit);
       if (fetched == null) {
@@ -6163,7 +6477,8 @@ export default function POSTerminal() {
       categorySheetOpen ||
       customerPaymentOpen ||
       cartReviewOpen ||
-      customerComboboxOpen;
+      customerComboboxOpen ||
+      Boolean(manualPricePopoverProductId);
 
     const targetIsSearch = (el: EventTarget | null) => el === searchInputRef.current;
 
@@ -6200,12 +6515,12 @@ export default function POSTerminal() {
       return true;
     };
 
-    const applyCartLineStep = (index: number, direction: -1 | 1) => {
+    const applyCartLineStep = (index: number, intent: 'add' | 'remove') => {
       const items = cartRef.current;
       const item = items[index];
       if (!item) return;
       const qty = Number(item.qty_sale ?? item.quantity ?? 0) || 0;
-      const plan = planCartLineQtyStep(qty, direction);
+      const plan = planCartLineQtyStep(qty, intent);
       if (plan.action === 'noop') return;
       const removed = plan.action === 'remove';
       updateQuantityRef.current(item.product.id, removed ? 0 : plan.nextQty);
@@ -6216,6 +6531,8 @@ export default function POSTerminal() {
         if (!jumpToProductList()) focusSearchInput();
       }
     };
+
+    const isEnterSuppressed = () => Date.now() < suppressPosEnterUntilRef.current;
 
     const handleKeyDown = (e: KeyboardEvent) => {
       const target = e.target as HTMLElement;
@@ -6228,6 +6545,11 @@ export default function POSTerminal() {
           customerComboboxOpen || target.closest?.('[role="combobox"]'),
         ),
       });
+
+      if (e.key === 'Enter' && isEnterSuppressed()) {
+        e.preventDefault();
+        return;
+      }
 
       if (e.key === 'F1') {
         e.preventDefault();
@@ -6250,6 +6572,39 @@ export default function POSTerminal() {
         e.preventDefault();
         handlePrintLastReceipt();
         return;
+      }
+
+      // To'lov oynasi: Ctrl+1 naqd, Ctrl+2 karta, Ctrl+3 QR, Ctrl+5 nasiya
+      if (paymentDialogOpen && (e.ctrlKey || e.metaKey) && !isProcessingPayment) {
+        const digit = e.key;
+        if (digit === '1' && isPaymentEnabled('cash') && checkoutGrandTotal > 0 && !hasReturnLine) {
+          e.preventDefault();
+          void handleCompletePayment('cash', { cashAmountOverride: checkoutGrandTotal });
+          return;
+        }
+        if (digit === '2' && isPaymentEnabled('card') && checkoutGrandTotal > 0 && !hasReturnLine) {
+          e.preventDefault();
+          void handleCompletePayment('card');
+          return;
+        }
+        if (digit === '3' && isPaymentEnabled('qr') && checkoutGrandTotal > 0 && !hasReturnLine) {
+          e.preventDefault();
+          void handleCompletePayment('qr');
+          return;
+        }
+        if (
+          digit === '5' &&
+          isPaymentEnabled('credit') &&
+          saleCurrency !== 'USD' &&
+          selectedCustomer &&
+          selectedCustomer.id !== 'none' &&
+          checkoutGrandTotal > 0 &&
+          !hasReturnLine
+        ) {
+          e.preventDefault();
+          void handleCompletePayment('credit');
+          return;
+        }
       }
 
       if (e.key === 'F9') {
@@ -6299,11 +6654,56 @@ export default function POSTerminal() {
         return;
       }
 
+      // F3: kutilayotgan (hold) buyurtmalar; Shift+F3: joriy savatni saqlash
       if (e.key === 'F3') {
         e.preventDefault();
-        if (cart.length > 0) {
-          void handleHoldOrderShortcutRef.current();
+        if (paymentDialogOpen || numpadOpen || customerPaymentOpen || expenseDialogOpen) return;
+        if (e.shiftKey) {
+          if (cart.length > 0) void handleHoldOrderShortcutRef.current();
+          return;
         }
+        setWaitingOrdersDialogOpen(true);
+        return;
+      }
+
+      // Ctrl+Z — oxirgi savat tozalash/o'chirishni qaytarish
+      if ((e.ctrlKey || e.metaKey) && !e.shiftKey && (e.key === 'z' || e.key === 'Z')) {
+        if (undoCartSnapshotRef.current) {
+          e.preventDefault();
+          restoreUndoCartRef.current();
+        }
+        return;
+      }
+
+      // Ctrl+Backspace / Shift+Delete — savatni tozalash
+      if (
+        ((e.ctrlKey || e.metaKey) && e.key === 'Backspace') ||
+        (e.shiftKey && e.key === 'Delete')
+      ) {
+        if (paymentDialogOpen || numpadOpen || customerPaymentOpen || waitingOrdersDialogOpen) return;
+        e.preventDefault();
+        clearCartWithUndoRef.current();
+        return;
+      }
+
+      // ? — hotkey qo'llanma
+      if (
+        !typing &&
+        !fromSearch &&
+        !paymentDialogOpen &&
+        !numpadOpen &&
+        (e.key === '?' || (e.shiftKey && e.code === 'Slash'))
+      ) {
+        e.preventDefault();
+        setHotkeyGuideOpen(true);
+        return;
+      }
+
+      // Ctrl+E — xarajat
+      if ((e.ctrlKey || e.metaKey) && (e.key === 'e' || e.key === 'E')) {
+        if (paymentDialogOpen || numpadOpen || customerPaymentOpen) return;
+        e.preventDefault();
+        setExpenseDialogOpen(true);
         return;
       }
 
@@ -6331,6 +6731,11 @@ export default function POSTerminal() {
       }
 
       if (e.key === 'Escape') {
+        if (manualPricePopoverProductId) {
+          e.preventDefault();
+          setManualPricePopoverProductId(null);
+          return;
+        }
         if (paymentDialogOpen) {
           setPaymentDialogOpen(false);
           setMixedCash(null);
@@ -6359,7 +6764,13 @@ export default function POSTerminal() {
 
       if (e.key === 'Enter' && fromSearch && searchResults.length > 0) {
         e.preventDefault();
+        const raw = String(searchInputRef.current?.value || searchTerm || '').trim();
         requestAddToCart(searchResults[0]);
+        if (isPosScannerQuery(raw)) {
+          searchSeqRef.current += 1;
+          setSearchTerm('');
+          setSearchResults([]);
+        }
         focusSearchInput();
         return;
       }
@@ -6403,19 +6814,22 @@ export default function POSTerminal() {
       if (e.altKey && selectedCartIndex >= 0 && cart[selectedCartIndex]) {
         const item = cart[selectedCartIndex];
         const step = getQuantityStep(item.sale_unit || item.product.unit);
+        const qty = Number(item.qty_sale ?? item.quantity ?? 0) || 0;
+        const isReturn = qty < 0;
+        // Return lines: +button = more return (more negative); −button = less return.
         if (e.key === '1') {
           e.preventDefault();
-          updateQuantity(item.product.id, (item.qty_sale ?? item.quantity) + step);
+          updateQuantity(item.product.id, qty + (isReturn ? -step : step));
           return;
         }
         if (e.key === '5') {
           e.preventDefault();
-          updateQuantity(item.product.id, (item.qty_sale ?? item.quantity) + step * 5);
+          updateQuantity(item.product.id, qty + (isReturn ? -step * 5 : step * 5));
           return;
         }
         if (e.key === '-' || e.key === '_') {
           e.preventDefault();
-          updateQuantity(item.product.id, (item.qty_sale ?? item.quantity) - step);
+          updateQuantity(item.product.id, qty + (isReturn ? step : -step));
           return;
         }
       }
@@ -6458,7 +6872,7 @@ export default function POSTerminal() {
             cartRef.current.length,
           );
           if (idx < 0) return;
-          applyCartLineStep(idx, -1);
+          applyCartLineStep(idx, 'remove');
           return;
         }
       }
@@ -6475,7 +6889,22 @@ export default function POSTerminal() {
           e.preventDefault();
           const idx = clampListIndex(selectedCartIndexRef.current, cartRef.current.length);
           if (idx < 0) return;
-          applyCartLineStep(idx, e.key === 'ArrowRight' ? 1 : -1);
+          applyCartLineStep(idx, e.key === 'ArrowRight' ? 'add' : 'remove');
+          return;
+        }
+        if (e.key === 'Delete' && !e.shiftKey) {
+          e.preventDefault();
+          const idx = clampListIndex(selectedCartIndexRef.current, cartRef.current.length);
+          const item = cartRef.current[idx];
+          if (!item) return;
+          const lenBefore = cartRef.current.length;
+          updateQuantityRef.current(item.product.id, 0);
+          const nextIdx = nextCartIndexAfterLineChange(idx, lenBefore, true);
+          setSelectedCartIndex(nextIdx);
+          if (nextIdx < 0) {
+            setCartNavActive(false);
+            if (!jumpToProductList()) focusSearchInput();
+          }
           return;
         }
       }
@@ -6484,7 +6913,8 @@ export default function POSTerminal() {
         e.preventDefault();
         const item = cart[selectedCartIndex];
         const step = getQuantityStep(item.sale_unit || item.product.unit);
-        updateQuantity(item.product.id, item.quantity + step);
+        const qty = Number(item.qty_sale ?? item.quantity ?? 0) || 0;
+        updateQuantity(item.product.id, qty + (qty < 0 ? -step : step));
         return;
       }
 
@@ -6492,7 +6922,8 @@ export default function POSTerminal() {
         e.preventDefault();
         const item = cart[selectedCartIndex];
         const step = getQuantityStep(item.sale_unit || item.product.unit);
-        updateQuantity(item.product.id, item.quantity - step);
+        const qty = Number(item.qty_sale ?? item.quantity ?? 0) || 0;
+        updateQuantity(item.product.id, qty + (qty < 0 ? step : -step));
         return;
       }
     };
@@ -6525,11 +6956,16 @@ export default function POSTerminal() {
     customerPaymentOpen,
     cartReviewOpen,
     customerComboboxOpen,
+    manualPricePopoverProductId,
     focusSearchInput,
     focusOrderDiscountInput,
     openCustomerSelect,
     requestAddToCart,
     toggleExchangeReturnMode,
+    isPaymentEnabled,
+    hasReturnLine,
+    selectedCustomer,
+    saleCurrency,
   ]);
 
   // Get products to display (search results or all products filtered by category)
@@ -6557,13 +6993,20 @@ export default function POSTerminal() {
   );
   useEffect(() => {
     let cancelled = false;
-    void loadRetailUsdPricesForProducts(visibleProducts).then((map) => {
-      if (!cancelled) setUsdRetailByProductId(map);
-    });
+    // Search updates the list every keystroke — debounce USD price fan-out so we
+    // do not burn the auth RPC budget (429 "Juda ko'p so'rov").
+    const activeSearch = searchTerm.trim().length >= 2;
+    const delayMs = activeSearch ? 500 : 120;
+    const timer = window.setTimeout(() => {
+      void loadRetailUsdPricesForProducts(visibleProducts).then((map) => {
+        if (!cancelled) setUsdRetailByProductId(map);
+      });
+    }, delayMs);
     return () => {
       cancelled = true;
+      window.clearTimeout(timer);
     };
-  }, [visibleProducts]);
+  }, [visibleProducts, searchTerm]);
 
   useEffect(() => {
     setSelectedProductIndex((prev) => clampListIndex(prev, visibleProducts.length));
@@ -6701,17 +7144,30 @@ export default function POSTerminal() {
                         }
                         if (e.key === 'Enter') {
                           e.preventDefault();
+                          e.stopPropagation();
+                          const raw = String(
+                            (e.currentTarget as HTMLInputElement)?.value || searchTerm || '',
+                          ).trim();
+                          // Scanner codes must leave the search box once accepted.
+                          if (isPosScannerQuery(raw)) {
+                            searchSeqRef.current += 1;
+                            setSearchTerm('');
+                            setSearchResults([]);
+                            if (searchResults.length > 0) {
+                              requestAddToCart(searchResults[0]);
+                            } else {
+                              void handleBarcodeSearch(raw, { clearSearch: true });
+                            }
+                            focusSearchInput();
+                            return;
+                          }
                           // Only add when a product was found — never mutate cart on empty search
                           if (searchResults.length > 0) {
                             requestAddToCart(searchResults[0]);
                             focusSearchInput();
                             return;
                           }
-                          const raw = String(
-                            (e.currentTarget as HTMLInputElement)?.value || searchTerm || '',
-                          ).trim();
                           if (!raw) return;
-                          // Barcode path: handleBarcodeSearch only adds when resolved
                           void handleBarcodeSearch(raw, { clearSearch: true });
                         }
                         if (e.key === 'Escape') {
@@ -6725,10 +7181,15 @@ export default function POSTerminal() {
                       }}
                       className={cn(
                         'h-8 pl-7 text-xs font-medium',
-                        searchTerm ? 'pr-7' : 'pr-2',
+                        searchTerm.trim().length >= 2 ? 'pr-12' : searchTerm ? 'pr-7' : 'pr-2',
                       )}
                       autoFocus
                     />
+                    {searchTerm.trim().length >= 2 && (
+                      <span className="pointer-events-none absolute right-7 top-1/2 -translate-y-1/2 text-[10px] tabular-nums text-muted-foreground">
+                        {searchResults.length}
+                      </span>
+                    )}
                     {searchTerm && (
                       <button
                         type="button"
@@ -6914,7 +7375,7 @@ export default function POSTerminal() {
                         className="h-6 px-2 text-[10px] text-blue-900 hover:bg-blue-100 dark:text-blue-100 dark:hover:bg-blue-900/50"
                         onClick={restoreUndoCart}
                       >
-                        Bekor qilish
+                        Bekor qilish (Ctrl+Z)
                       </Button>
                     </div>
                   )}
@@ -7100,6 +7561,29 @@ export default function POSTerminal() {
                                   className="w-72"
                                   align="start"
                                   onClick={(e) => e.stopPropagation()}
+                                  onOpenAutoFocus={(e) => {
+                                    // Focus the price field so typing works immediately; Enter applies below.
+                                    e.preventDefault();
+                                    const root = e.currentTarget as HTMLElement;
+                                    window.setTimeout(() => {
+                                      root.querySelector<HTMLInputElement>('input')?.focus();
+                                    }, 0);
+                                  }}
+                                  onKeyDown={(e) => {
+                                    if (e.key === 'Enter') {
+                                      e.preventDefault();
+                                      e.stopPropagation();
+                                      // Same as Qo'llash — apply and dismiss; block cart Enter → numpad.
+                                      suppressPosEnterUntilRef.current = Date.now() + 500;
+                                      applyManualLinePrice(item.product.id, manualPriceDraft);
+                                      return;
+                                    }
+                                    if (e.key === 'Escape') {
+                                      e.preventDefault();
+                                      e.stopPropagation();
+                                      setManualPricePopoverProductId(null);
+                                    }
+                                  }}
                                 >
                                   <div className="space-y-3">
                                     <div>
@@ -7115,6 +7599,7 @@ export default function POSTerminal() {
                                       allowZero
                                       placeholder="0"
                                       syncWhileFocused
+                                      autoFocus
                                     />
                                     <div className="flex flex-col gap-2">
                                       <Button
@@ -7749,7 +8234,11 @@ export default function POSTerminal() {
                 variant="outline"
                 size="icon"
                 className="h-12 w-12 shrink-0 border-yellow-600 bg-yellow-500 text-white hover:bg-yellow-600 hover:text-white"
-                title={!currentShift ? shiftRequiredReason : t('pos.hold_order')}
+                title={
+                  !currentShift
+                    ? shiftRequiredReason
+                    : `${t('pos.hotkey_waiting_orders', { defaultValue: 'Navbat' })} (F3) · ${t('pos.hold_order')} (Shift+F3)`
+                }
                 aria-label={t('pos.hold_order')}
                 disabled={!currentShift}
                 onClick={() => {
@@ -7777,8 +8266,8 @@ export default function POSTerminal() {
               variant="outline"
               size="icon"
               className="relative h-12 w-12 shrink-0"
-              title="Kutilayotgan buyurtmalar"
-              aria-label="Kutilayotgan buyurtmalar"
+              title={`${t('pos.hotkey_waiting_orders', { defaultValue: 'Kutilayotgan buyurtmalar' })} (F3)`}
+              aria-label={`${t('pos.hotkey_waiting_orders', { defaultValue: 'Kutilayotgan buyurtmalar' })} (F3)`}
               onClick={() => setWaitingOrdersDialogOpen(true)}
             >
               <Clock className="h-5 w-5" />
@@ -7796,8 +8285,8 @@ export default function POSTerminal() {
               variant="outline"
               size="icon"
               className="h-12 w-12 shrink-0"
-              title={t('pos.rail_expense', { defaultValue: 'Xarajat' })}
-              aria-label={t('pos.rail_expense', { defaultValue: 'Xarajat' })}
+              title={`${t('pos.rail_expense', { defaultValue: 'Xarajat' })} (Ctrl+E)`}
+              aria-label={`${t('pos.rail_expense', { defaultValue: 'Xarajat' })} (Ctrl+E)`}
               onClick={() => setExpenseDialogOpen(true)}
             >
               <Wallet className="h-5 w-5" />
@@ -7824,28 +8313,9 @@ export default function POSTerminal() {
               size="icon"
               className="h-12 w-12 shrink-0"
               disabled={cart.length === 0}
-              title="Tozalash"
-              aria-label="Savatni tozalash"
-              onClick={() => {
-                if (cart.length === 0) {
-                  toast({
-                    title: t('pos.cart_empty'),
-                    variant: 'destructive',
-                  });
-                  return;
-                }
-                queueCartUndo(cart, 'Savat tozalandi');
-                clearCartAndNavDraft();
-                clearPosSaleImportContext();
-                setExchangeReturnMode(false);
-                setDiscount({ type: 'amount', value: '' });
-                setPromoCodeInput('');
-                resetCustomerSelection();
-                toast({
-                  title: 'Cart cleared',
-                  description: 'All items removed from cart',
-                });
-              }}
+              title={`${t('pos.clear', { defaultValue: 'Tozalash' })} (Ctrl+Backspace)`}
+              aria-label={`${t('pos.clear_cart')} (Ctrl+Backspace)`}
+              onClick={() => clearCartWithUndo()}
             >
               <Trash2 className="h-5 w-5" />
             </Button>
@@ -7854,8 +8324,8 @@ export default function POSTerminal() {
               variant="outline"
               size="icon"
               className="h-12 w-12 shrink-0"
-              title="Hotkey qo'llanma"
-              aria-label="Hotkey qo'llanma"
+              title={`${t('pos.hotkey_guide', { defaultValue: "Hotkey qo'llanma" })} (?)`}
+              aria-label={`${t('pos.hotkey_guide', { defaultValue: "Hotkey qo'llanma" })} (?)`}
               onClick={() => setHotkeyGuideOpen(true)}
             >
               <Keyboard className="h-5 w-5" />
@@ -8199,13 +8669,13 @@ export default function POSTerminal() {
               })()}`}
             >
               {isPaymentEnabled('cash') && (
-                <TabsTrigger value="cash">{labelFor('cash', t('pos.cash'))}</TabsTrigger>
+                <TabsTrigger value="cash">{labelFor('cash', t('pos.cash'))} <span className="ml-1 text-[10px] opacity-60">Ctrl+1</span></TabsTrigger>
               )}
               {isPaymentEnabled('card') && (
-                <TabsTrigger value="card">{labelFor('card', t('pos.card'))}</TabsTrigger>
+                <TabsTrigger value="card">{labelFor('card', t('pos.card'))} <span className="ml-1 text-[10px] opacity-60">Ctrl+2</span></TabsTrigger>
               )}
               {isPaymentEnabled('qr') && (
-                <TabsTrigger value="qr">{labelFor('qr', t('pos.qr_pay'))}</TabsTrigger>
+                <TabsTrigger value="qr">{labelFor('qr', t('pos.qr_pay'))} <span className="ml-1 text-[10px] opacity-60">Ctrl+3</span></TabsTrigger>
               )}
               {posTerminalSettings.enable_mixed_payment && (
                 <TabsTrigger value="mixed">{t('pos.mixed')}</TabsTrigger>
@@ -8215,7 +8685,7 @@ export default function POSTerminal() {
                   value="credit"
                   disabled={!selectedCustomer || selectedCustomer.id === 'none'}
                 >
-                  {labelFor('credit', t('pos.credit'))}
+                  {labelFor('credit', t('pos.credit'))} <span className="ml-1 text-[10px] opacity-60">Ctrl+5</span>
                 </TabsTrigger>
               )}
             </TabsList>
@@ -8714,11 +9184,10 @@ export default function POSTerminal() {
                 className="h-14 justify-between"
                 onClick={() => {
                   setHotkeyGuideOpen(false);
-                  if (cart.length > 0) void handleHoldOrder();
-                  else setWaitingOrdersDialogOpen(true);
+                  setWaitingOrdersDialogOpen(true);
                 }}
               >
-                <span>Hold</span>
+                <span>{t('pos.hotkey_waiting_orders', { defaultValue: 'Navbat' })}</span>
                 <kbd className="rounded bg-muted px-2 py-1 font-mono text-xs">F3</kbd>
               </Button>
               <Button
@@ -8848,11 +9317,49 @@ export default function POSTerminal() {
                 className="h-14 justify-between"
                 onClick={() => {
                   setHotkeyGuideOpen(false);
-                  setWaitingOrdersDialogOpen(true);
+                  if (cart.length > 0) void handleHoldOrder();
                 }}
               >
-                <span>Navbat</span>
-                <Clock className="h-4 w-4" />
+                <span>{t('pos.hold_order')}</span>
+                <kbd className="rounded bg-muted px-2 py-1 font-mono text-xs">Shift+F3</kbd>
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                className="h-14 justify-between"
+                onClick={() => {
+                  setHotkeyGuideOpen(false);
+                  setExpenseDialogOpen(true);
+                }}
+              >
+                <span>{t('pos.rail_expense', { defaultValue: 'Xarajat' })}</span>
+                <kbd className="rounded bg-muted px-2 py-1 font-mono text-xs">Ctrl+E</kbd>
+              </Button>
+              <Button
+                type="button"
+                variant="destructive"
+                className="h-14 justify-between"
+                disabled={cart.length === 0}
+                onClick={() => {
+                  setHotkeyGuideOpen(false);
+                  clearCartWithUndo();
+                }}
+              >
+                <span>{t('pos.clear', { defaultValue: 'Tozalash' })}</span>
+                <kbd className="rounded bg-muted px-2 py-1 font-mono text-xs">Ctrl+⌫</kbd>
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                className="h-14 justify-between"
+                disabled={!undoCartSnapshot}
+                onClick={() => {
+                  setHotkeyGuideOpen(false);
+                  restoreUndoCart();
+                }}
+              >
+                <span>{t('pos.hotkey_undo', { defaultValue: 'Bekor qilish' })}</span>
+                <kbd className="rounded bg-muted px-2 py-1 font-mono text-xs">Ctrl+Z</kbd>
               </Button>
             </div>
 
@@ -8887,6 +9394,7 @@ export default function POSTerminal() {
                   ['↑ / ↓', t('pos.hotkey_cart_move')],
                   ['→', t('pos.hotkey_cart_add')],
                   ['←', t('pos.hotkey_cart_remove')],
+                  ['Delete', t('pos.hotkey_cart_delete', { defaultValue: 'Qatorni o‘chirish' })],
                   ['Enter', t('pos.hotkey_cart_enter')],
                   ['Esc', t('pos.hotkey_cart_back')],
                   ['+', 'Miqdor +'],
@@ -8895,6 +9403,10 @@ export default function POSTerminal() {
                   ['Alt+5', '+5 qator'],
                   ['Alt+-', '-1 qator'],
                   ['Alt+1..8', 'Tez mahsulot'],
+                  ['Ctrl+⌫', t('pos.hotkey_clear_cart', { defaultValue: 'Savatni tozalash' })],
+                  ['Ctrl+Z', t('pos.hotkey_undo', { defaultValue: 'Bekor qilish' })],
+                  ['?', t('pos.hotkey_guide', { defaultValue: "Qo'llanma" })],
+                  ['Ctrl+1..3/5', t('pos.hotkey_pay_methods', { defaultValue: 'To‘lov turi (oynada)' })],
                 ].map(([keyName, label]) => (
                   <div key={`${keyName}-${label}`} className="flex items-center justify-between gap-2 rounded-lg border bg-background px-3 py-2">
                     <span className="text-muted-foreground">{label}</span>
@@ -9113,6 +9625,7 @@ export default function POSTerminal() {
         onRestore={handleRestoreOrder}
         onCancel={handleCancelHeldOrder}
         onRename={handleRenameHeldOrder}
+        suspendHotkeys={restoreConfirmOpen}
       />
 
       <ExpenseFormDialog
@@ -9128,14 +9641,7 @@ export default function POSTerminal() {
         key={
           (() => {
             if (!numpadConfig) return 'pos-numpad';
-            if (
-              numpadConfig.type === 'add_quantity' &&
-              numpadConfig.unit &&
-              isFractionalUnit(numpadConfig.unit) &&
-              (Number(numpadConfig.refUnitPrice) || 0) > 0
-            ) {
-              return `pos-wadd-${numpadConfig.product?.id ?? 'x'}`;
-            }
+            // Stable key while open — unit / so'm toggle must NOT remount (avoids open/close flash).
             return `pos-np-${numpadConfig.type}-${numpadConfig.productId ?? numpadConfig.product?.id ?? 'g'}`;
           })()
         }
@@ -9143,12 +9649,14 @@ export default function POSTerminal() {
         onOpenChange={(open) => {
           setNumpadOpen(open);
           if (!open) {
+            // Enter bilan yopilganda fokus qayta ochilmasin (fokus + key repeat).
+            suppressPosEnterUntilRef.current = Date.now() + 500;
             setNumpadConfig(null);
             setWeightedCartAddMode('sale_qty');
             if (cartNavActiveRef.current) {
-              window.setTimeout(() => cartFocusRef.current?.focus({ preventScroll: true }), 0);
+              window.setTimeout(() => cartFocusRef.current?.focus({ preventScroll: true }), 50);
             } else if (productListNavActiveRef.current) {
-              window.setTimeout(() => productListFocusRef.current?.focus({ preventScroll: true }), 0);
+              window.setTimeout(() => productListFocusRef.current?.focus({ preventScroll: true }), 50);
             }
           }
         }}
@@ -9156,24 +9664,26 @@ export default function POSTerminal() {
           if (numpadConfig?.type === 'discount') return 'Enter Discount Amount';
           const refP = Number(numpadConfig?.refUnitPrice) || 0;
           const wa =
-            numpadConfig?.type === 'add_quantity' &&
+            (numpadConfig?.type === 'add_quantity' || numpadConfig?.type === 'quantity') &&
             numpadConfig.unit &&
             isFractionalUnit(numpadConfig.unit) &&
             refP > 0;
           if (wa && weightedCartAddMode === 'amount_uzs') return "Summani kiriting (so'm)";
-          if (wa) return `Miqdor (${numpadConfig.unit})`;
+          if (numpadConfig?.unit) {
+            return `Miqdor (${formatUnit(numpadConfig.unit) || numpadConfig.unit})`;
+          }
           return 'Enter Quantity';
         })()}
         description={(() => {
           if (!numpadConfig) return undefined;
           const refP = Number(numpadConfig.refUnitPrice) || 0;
           const wa =
-            numpadConfig.type === 'add_quantity' &&
+            (numpadConfig.type === 'add_quantity' || numpadConfig.type === 'quantity') &&
             numpadConfig.unit &&
             isFractionalUnit(numpadConfig.unit) &&
             refP > 0;
           if (wa && weightedCartAddMode === 'amount_uzs') {
-            return `Taxminiy: 1 ${numpadConfig.unit} ≈ ${formatMoneyUZS(refP)}`;
+            return `Taxminiy: 1 ${formatUnit(numpadConfig.unit) || numpadConfig.unit} ≈ ${formatMoneyUZS(refP)}`;
           }
           if (
             numpadConfig.max !== undefined &&
@@ -9188,39 +9698,152 @@ export default function POSTerminal() {
           return undefined;
         })()}
         headerExtra={(() => {
-          if (!numpadConfig || numpadConfig.type !== 'add_quantity') return undefined;
+          if (
+            !numpadConfig ||
+            (numpadConfig.type !== 'add_quantity' && numpadConfig.type !== 'quantity')
+          ) {
+            return undefined;
+          }
+          const product =
+            numpadConfig.product ||
+            (numpadConfig.productId
+              ? cart.find((c) => c.product.id === numpadConfig.productId)?.product
+              : undefined);
+          const units = product ? getProductUnits(product).units : [];
+          const unitCodes = units
+            .map((u: { unit?: string }) => String(u.unit || '').trim())
+            .filter(Boolean);
+          const uniqueUnits = [...new Set(unitCodes)];
           const refP = Number(numpadConfig.refUnitPrice) || 0;
           const unit = numpadConfig.unit;
-          if (!unit || !isFractionalUnit(unit) || refP <= 0) return undefined;
+          const showAmount =
+            Boolean(unit) && isFractionalUnit(unit) && refP > 0;
+          if (uniqueUnits.length <= 1 && !showAmount) return undefined;
           return (
-            <div className="flex gap-2">
-              <Button
-                type="button"
-                size="sm"
-                variant={weightedCartAddMode === 'sale_qty' ? 'default' : 'outline'}
-                className="flex-1 text-xs sm:text-sm"
-                onClick={() => setWeightedCartAddMode('sale_qty')}
-              >
-                {unit} bo‘yicha
-              </Button>
-              <Button
-                type="button"
-                size="sm"
-                variant={weightedCartAddMode === 'amount_uzs' ? 'default' : 'outline'}
-                className="flex-1 text-xs sm:text-sm"
-                onClick={() => setWeightedCartAddMode('amount_uzs')}
-              >
-                So‘m bo‘yicha
-              </Button>
+            <div className="space-y-2">
+              {uniqueUnits.length > 1 && (
+                <div className="flex flex-wrap gap-1.5">
+                  {uniqueUnits.slice(0, 9).map((u, idx) => {
+                    const active =
+                      canonicalUnitCode(u) === canonicalUnitCode(unit);
+                    return (
+                      <Button
+                        key={u}
+                        type="button"
+                        size="sm"
+                        variant={active ? 'default' : 'outline'}
+                        className="min-w-[3.25rem] text-xs sm:text-sm"
+                        title={`${formatUnit(u) || u} (Alt+${idx + 1})`}
+                        onClick={() => selectNumpadSaleUnit(u)}
+                      >
+                        {formatUnit(u) || u}
+                        <kbd className="ml-1 rounded bg-black/10 px-1 font-mono text-[10px] opacity-80">
+                          Alt+{idx + 1}
+                        </kbd>
+                      </Button>
+                    );
+                  })}
+                </div>
+              )}
+              {showAmount && (
+                <div className="flex gap-2">
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant={weightedCartAddMode === 'sale_qty' ? 'default' : 'outline'}
+                    className="flex-1 text-xs sm:text-sm"
+                    title={`${formatUnit(unit) || unit} bo‘yicha (← / Tab)`}
+                    onClick={() => setWeightedCartAddMode('sale_qty')}
+                  >
+                    {formatUnit(unit) || unit} bo‘yicha
+                    <kbd className="ml-1 rounded bg-black/10 px-1 font-mono text-[10px] opacity-80">
+                      ←
+                    </kbd>
+                  </Button>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant={weightedCartAddMode === 'amount_uzs' ? 'default' : 'outline'}
+                    className="flex-1 text-xs sm:text-sm"
+                    title={`So‘m bo‘yicha (→ / Tab)`}
+                    onClick={() => setWeightedCartAddMode('amount_uzs')}
+                  >
+                    So‘m bo‘yicha
+                    <kbd className="ml-1 rounded bg-black/10 px-1 font-mono text-[10px] opacity-80">
+                      →
+                    </kbd>
+                  </Button>
+                </div>
+              )}
             </div>
           );
         })()}
-        initialValue={numpadConfig?.initialValue}
+        modeSwitch={(() => {
+          if (
+            !numpadConfig ||
+            (numpadConfig.type !== 'add_quantity' && numpadConfig.type !== 'quantity')
+          ) {
+            return undefined;
+          }
+          const refP = Number(numpadConfig.refUnitPrice) || 0;
+          const unit = numpadConfig.unit;
+          if (!unit || !isFractionalUnit(unit) || refP <= 0) return undefined;
+          return {
+            active: weightedCartAddMode === 'sale_qty' ? ('left' as const) : ('right' as const),
+            onSelectLeft: () => setWeightedCartAddMode('sale_qty'),
+            onSelectRight: () => setWeightedCartAddMode('amount_uzs'),
+          };
+        })()}
+        unitSwitch={(() => {
+          if (
+            !numpadConfig ||
+            (numpadConfig.type !== 'add_quantity' && numpadConfig.type !== 'quantity')
+          ) {
+            return undefined;
+          }
+          const product =
+            numpadConfig.product ||
+            (numpadConfig.productId
+              ? cart.find((c) => c.product.id === numpadConfig.productId)?.product
+              : undefined);
+          if (!product) return undefined;
+          const units = getProductUnits(product).units;
+          const unitCodes = [
+            ...new Set(
+              units
+                .map((u: { unit?: string }) => String(u.unit || '').trim())
+                .filter(Boolean),
+            ),
+          ];
+          if (unitCodes.length <= 1) return undefined;
+          return {
+            count: Math.min(9, unitCodes.length),
+            onSelectIndex: (index: number) => {
+              const u = unitCodes[index];
+              if (u) selectNumpadSaleUnit(u);
+            },
+          };
+        })()}
+        initialValue={(() => {
+          if (!numpadConfig) return undefined;
+          const refP = Number(numpadConfig.refUnitPrice) || 0;
+          const amountMode =
+            (numpadConfig.type === 'add_quantity' || numpadConfig.type === 'quantity') &&
+            weightedCartAddMode === 'amount_uzs' &&
+            numpadConfig.unit &&
+            isFractionalUnit(numpadConfig.unit) &&
+            refP > 0;
+          if (amountMode) {
+            const q = Number(numpadConfig.initialValue) || 0;
+            return q > 0 ? Math.max(1, Math.floor(Math.abs(q) * refP)) : undefined;
+          }
+          return numpadConfig.initialValue;
+        })()}
         max={(() => {
           if (!numpadConfig) return undefined;
           const refP = Number(numpadConfig.refUnitPrice) || 0;
           const amountMode =
-            numpadConfig.type === 'add_quantity' &&
+            (numpadConfig.type === 'add_quantity' || numpadConfig.type === 'quantity') &&
             weightedCartAddMode === 'amount_uzs' &&
             numpadConfig.unit &&
             isFractionalUnit(numpadConfig.unit) &&
@@ -9235,7 +9858,7 @@ export default function POSTerminal() {
           if (numpadConfig.type === 'discount') return 0;
           const refP = Number(numpadConfig.refUnitPrice) || 0;
           const amountMode =
-            numpadConfig.type === 'add_quantity' &&
+            (numpadConfig.type === 'add_quantity' || numpadConfig.type === 'quantity') &&
             weightedCartAddMode === 'amount_uzs' &&
             numpadConfig.unit &&
             isFractionalUnit(numpadConfig.unit) &&
@@ -9249,7 +9872,11 @@ export default function POSTerminal() {
           return 0;
         })()}
         maxHint={(() => {
-          if (!numpadConfig || numpadConfig.type !== 'add_quantity' || weightedCartAddMode !== 'amount_uzs') {
+          if (
+            !numpadConfig ||
+            (numpadConfig.type !== 'add_quantity' && numpadConfig.type !== 'quantity') ||
+            weightedCartAddMode !== 'amount_uzs'
+          ) {
             return undefined;
           }
           const refP = Number(numpadConfig.refUnitPrice) || 0;
@@ -9260,7 +9887,7 @@ export default function POSTerminal() {
         inputMode={(() => {
           const refP = Number(numpadConfig?.refUnitPrice) || 0;
           if (
-            numpadConfig?.type === 'add_quantity' &&
+            (numpadConfig?.type === 'add_quantity' || numpadConfig?.type === 'quantity') &&
             weightedCartAddMode === 'amount_uzs' &&
             numpadConfig.unit &&
             isFractionalUnit(numpadConfig.unit) &&
@@ -9275,7 +9902,7 @@ export default function POSTerminal() {
             ? true
             : numpadConfig?.type === 'quantity' || numpadConfig?.type === 'add_quantity'
               ? !(
-                  numpadConfig.type === 'add_quantity' &&
+                  (numpadConfig.type === 'add_quantity' || numpadConfig.type === 'quantity') &&
                   weightedCartAddMode === 'amount_uzs' &&
                   numpadConfig.unit &&
                   isFractionalUnit(numpadConfig.unit) &&
@@ -9286,8 +9913,22 @@ export default function POSTerminal() {
         onApply={handleNumpadApply}
       />
 
-      <AlertDialog open={restoreConfirmOpen} onOpenChange={setRestoreConfirmOpen}>
-        <AlertDialogContent>
+      <AlertDialog
+        open={restoreConfirmOpen}
+        onOpenChange={(open) => {
+          if (!open) cancelRestoreHeldOrder();
+          else setRestoreConfirmOpen(true);
+        }}
+      >
+        <AlertDialogContent
+          onOpenAutoFocus={(e) => {
+            e.preventDefault();
+            const action = (e.currentTarget as HTMLElement).querySelector<HTMLButtonElement>(
+              '[data-restore-confirm-action]',
+            );
+            action?.focus({ preventScroll: true });
+          }}
+        >
           <AlertDialogHeader>
             <AlertDialogTitle>{t('pos.replace_cart')}</AlertDialogTitle>
             <AlertDialogDescription>
@@ -9295,20 +9936,20 @@ export default function POSTerminal() {
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
-            <AlertDialogCancel onClick={() => setOrderToRestore(null)}>
+            <AlertDialogCancel onClick={cancelRestoreHeldOrder}>
               {t('pos.cancel')}
+              <kbd className="ml-2 rounded bg-muted px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground">
+                Esc
+              </kbd>
             </AlertDialogCancel>
             <AlertDialogAction
-              onClick={() => {
-                if (!orderToRestore) return;
-                if (isRemoteImportHeldOrder(orderToRestore)) {
-                  void restoreRemoteHeldOrder(orderToRestore);
-                } else {
-                  void restoreLocalHeldOrder(orderToRestore);
-                }
-              }}
+              data-restore-confirm-action
+              onClick={confirmRestoreHeldOrder}
             >
               {t('pos.replace')}
+              <kbd className="ml-2 rounded bg-black/15 px-1.5 py-0.5 font-mono text-[10px] opacity-90">
+                Enter
+              </kbd>
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

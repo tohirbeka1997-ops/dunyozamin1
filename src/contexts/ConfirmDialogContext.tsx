@@ -11,6 +11,7 @@ import {
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog';
 import { Button } from '@/components/ui/button';
+import { scheduleRestoreTypingAfterDialog } from '@/lib/releaseStuckPointerEvents';
 
 export type ConfirmDialogOptions = {
   title?: React.ReactNode;
@@ -57,6 +58,9 @@ export function ConfirmDialogProvider({ children }: { children: React.ReactNode 
       activeResolveRef.current = null;
       setOpen(false);
       resolve(result);
+      // Radix can leave body pointer-events:none after native/Electron focus
+      // theft or a toast in the same turn. Re-check after overlay unmounts.
+      scheduleRestoreTypingAfterDialog();
 
       // Let Radix unmount overlay/content before opening the next one.
       setTimeout(() => openNext(), 0);

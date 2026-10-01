@@ -30,7 +30,7 @@
       "print_offline_before_receipt": "Print agent offline. Receipt may open in the browser."
     },
     "close_shift": {
-      "expected_cash_formula": "Opening + Cash sales + Customer-balance cash + Manual in − Cash refunds − Cash expenses − Manual out"
+      "expected_cash_formula": "Opening + Cash sales + Customer-balance cash + Manual in − Change given − Cash refunds − Cash expenses − Manual out"
     },
     "search_placeholder": "Name, SKU, barcode… (F2 · ↓/F4 · Enter)",
     "brand_label": "Brand",
@@ -82,6 +82,7 @@
       "emptyDescription": "Saved orders are visible here",
       "counter_one": "1 order is pending",
       "counter_other": "{{count}} orders are pending",
+      "hotkey_hint": "↑↓ select · Enter reopen · Del delete · Esc close",
       "items_one": "1 product",
       "items_other": "{{count}} products",
       "restore": "Reopen",
@@ -106,7 +107,7 @@
     "rail_hints_title": "Keyboard",
     "rail_hint_f1": "F1 — customer",
     "rail_hint_f2": "F2 — search",
-    "rail_hint_f3": "F3 — hold",
+    "rail_hint_f3": "F3 — waiting · Shift+F3 — hold",
     "rail_hint_f4": "F4 — product list",
     "rail_hint_f5": "F5 — cart",
     "rail_hint_f6": "F6 — cost price",
@@ -119,6 +120,15 @@
     "hotkey_cost_toggle": "Cost price (show/hide)",
     "hotkey_customer_focus": "Select customer",
     "hotkey_discount_focus": "Discount",
+    "hotkey_waiting_orders": "Waiting orders",
+    "hotkey_guide": "Hotkey guide",
+    "hotkey_undo": "Undo",
+    "hotkey_clear_cart": "Clear cart",
+    "hotkey_cart_delete": "Delete line",
+    "hotkey_pay_methods": "Payment method (in dialog)",
+    "cart_cleared_title": "Cart cleared",
+    "cart_cleared_desc": "All items removed. Ctrl+Z to undo.",
+    "cart_cleared_undo": "Cart cleared",
     "show_cost_price": "Show cost price",
     "hide_cost_price": "Hide cost price",
     "hotkey_list_section": "Product list",
@@ -2127,7 +2137,9 @@
       },
       "warnings": {
         "missing_cogs_title": "Warning",
-        "missing_cogs": "Some line items are missing cost_price ({{count}}). COGS may be understated."
+        "missing_cogs": "Some line items are missing cost ({{count}}). Profit may be overstated.",
+        "profit_incomplete": "Profit is incomplete — lines without cost",
+        "lines": "lines"
       },
       "trend": {
         "title": "Trend (Sales / Cost / Profit)",

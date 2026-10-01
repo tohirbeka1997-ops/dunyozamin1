@@ -278,6 +278,19 @@ let mainWindow = null;
 let backupRunner = null;
 let hostServerRef = null;
 let isQuitting = false;
+const hasSingleInstanceLock = app.requestSingleInstanceLock();
+
+if (!hasSingleInstanceLock) {
+  console.warn('[Electron] Another instance is already running; exiting.');
+  app.quit();
+} else {
+  app.on('second-instance', () => {
+    if (!mainWindow) return;
+    if (mainWindow.isMinimized()) mainWindow.restore();
+    mainWindow.show();
+    mainWindow.focus();
+  });
+}
 
 function createWindow() {
   console.log('========================================');

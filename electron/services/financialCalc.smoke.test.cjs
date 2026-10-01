@@ -285,6 +285,33 @@ try {
     );
   });
 
+  const cartReturnAmt = 40000;
+  const cartReturnRes = sales.completePOSOrder(
+    { total_amount: -cartReturnAmt, shift_id: shift.id, user_id: ADMIN, sales_channel: 'pos' },
+    [cartLine(formulaProduct, -1, cartReturnAmt)],
+    [{ payment_method: 'refund_cash', amount: cartReturnAmt }],
+  );
+  assert.ok(cartReturnRes?.order_id, 'POS cart return order created');
+
+  runStep('3b. POS savat qaytarishi Sof tushumdan ayiriladi (displayed_sof)', () => {
+    const pl = reports.getProfitAndLossSQL(filters);
+    const s = pl.summary;
+    const displayedSof = Number(s.net_revenue ?? s.net_sales);
+    const expectedSof = Number(s.gross_revenue) - Number(s.discounts) - Number(s.returns_revenue);
+    assert.ok(Number(s.returns_revenue) >= 50000 + cartReturnAmt - 1, `returns ${s.returns_revenue}`);
+    assert.strictEqual(displayedSof, expectedSof, `displayed_sof ${displayedSof} != ${expectedSof}`);
+    assert.strictEqual(Number(s.net_sales), displayedSof, 'net_sales ekran Sof bilan bir xil');
+    if (Number(s.gross_revenue_usd || 0) === 0 && Number(s.net_sales_usd || 0) === 0) {
+      assert.strictEqual(
+        displayedSof,
+        Number(s.gross_revenue_uzs || s.gross_revenue) - Number(s.discounts) - Number(s.returns_revenue),
+        'DualCurrency UZS Sof = brutto − chegirma − qaytarishlar',
+      );
+    }
+    const margin = displayedSof > 0 ? (Number(s.gross_profit) / displayedSof) * 100 : 0;
+    assert.ok(Math.abs(Number(s.profit_margin) - margin) < 0.05, `margin ${s.profit_margin} vs ${margin}`);
+  });
+
   enableBatchMode(db, batches);
   const fifoProduct = products.create({
     name: 'Financial TZ FIFO',
@@ -465,10 +492,100 @@ try {
   runStep('10. Eksport P&L payload ekran bilan bir xil', () => {
     const pl = reports.getProfitAndLossSQL(filters);
     const s = pl.summary;
+    const displayedSof = Number(s.net_revenue ?? s.net_sales);
     assert.strictEqual(Number(s.net_sales), Number(s.net_revenue));
+    assert.strictEqual(
+      displayedSof,
+      Number(s.gross_revenue) - Number(s.discounts) - Number(s.returns_revenue),
+      `displayed_sof ${displayedSof}`,
+    );
     assert.ok(s.cogs_source);
     assert.ok(pl.meta?.data_version);
     assert.ok(pl.meta?.timezone);
+  });
+
+  const shift2 = shifts.openShift({ user_id: ADMIN, opening_cash: 0 });
+  const catalogFallbackProduct = products.create({
+    name: 'Financial TZ catalog COGS',
+    sku: `FIN-CAT-${Date.now()}`,
+    sale_price: 8000,
+    purchase_price: 3000,
+    track_stock: 0,
+    current_stock: 0,
+    unit: 'pcs',
+  });
+  const catalogSale = sales.completePOSOrder(
+    { total_amount: 8000, shift_id: shift2.id, user_id: ADMIN, sales_channel: 'pos' },
+    [cartLine(catalogFallbackProduct, 1, 8000)],
+    [{ payment_method: 'cash', amount: 8000 }],
+  );
+  const catalogItem = db
+    .prepare('SELECT id FROM order_items WHERE order_id = ?')
+    .get(catalogSale.order_id);
+  db.prepare('UPDATE order_items SET cost_price = 0 WHERE id = ?').run(catalogItem.id);
+  try {
+    db.prepare(
+      `DELETE FROM inventory_batch_allocations
+       WHERE reference_type = 'order_item' AND reference_id = ?`
+    ).run(catalogItem.id);
+  } catch {
+    /* no allocations */
+  }
+
+  runStep('11. FIFO yo‘q, products.purchase_price bor — COGS fallback, banner yo‘q', () => {
+    const pl = reports.getProfitAndLossSQL(filters);
+    assert.ok(
+      Number(pl.summary.cogs_source_breakdown?.historical_fallback || 0) >= 3000,
+      `fallback ${pl.summary.cogs_source_breakdown?.historical_fallback}`,
+    );
+    assert.strictEqual(Number(pl.warnings?.missing_cost_count || 0), 0, 'banner should be off');
+    assert.strictEqual(!!pl.warnings?.cogs_missing, false);
+    assert.strictEqual(!!pl.warnings?.profit_incomplete, false);
+  });
+
+  const noCostProduct = products.create({
+    name: 'Financial TZ no cost',
+    sku: `FIN-NC-${Date.now()}`,
+    sale_price: 5000,
+    purchase_price: 0,
+    track_stock: 0,
+    current_stock: 0,
+    unit: 'pcs',
+  });
+  const noCostSale = sales.completePOSOrder(
+    { total_amount: 5000, shift_id: shift2.id, user_id: ADMIN, sales_channel: 'pos' },
+    [cartLine(noCostProduct, 1, 5000)],
+    [{ payment_method: 'cash', amount: 5000 }],
+  );
+  const noCostItem = db.prepare('SELECT id FROM order_items WHERE order_id = ?').get(noCostSale.order_id);
+  db.prepare('UPDATE order_items SET cost_price = 0 WHERE id = ?').run(noCostItem.id);
+  try {
+    db.prepare(
+      `DELETE FROM inventory_batch_allocations
+       WHERE reference_type = 'order_item' AND reference_id = ?`
+    ).run(noCostItem.id);
+  } catch {
+    /* no allocations */
+  }
+
+  runStep('12. Tannarx umuman yo‘q — banner qoladi, COGS uydirilmaydi', () => {
+    const pl = reports.getProfitAndLossSQL(filters);
+    assert.ok(Number(pl.warnings?.missing_cost_count || 0) >= 1, 'banner should stay');
+    assert.strictEqual(!!pl.warnings?.cogs_missing, true);
+    assert.ok(
+      Number(pl.summary.cogs_source_breakdown?.historical_fallback || 0) >= 3000,
+      'catalog fallback line still counted',
+    );
+    assert.strictEqual(
+      Number(pl.summary.cogs_source_breakdown?.insufficient || 0),
+      0,
+      'no invented cost on empty-cost line',
+    );
+    const samples = pl.warnings?.missing_cost_samples || [];
+    assert.ok(
+      samples.some((s) => String(s.product_id) === String(noCostProduct.id) || s.product_name === noCostProduct.name),
+      'sample names the no-cost product',
+    );
   });
 } catch (e) {
   fail('setup', e);

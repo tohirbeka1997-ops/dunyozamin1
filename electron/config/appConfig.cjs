@@ -18,8 +18,35 @@ function getConfigPath(electronApp = null) {
   return path.join(userData, CONFIG_FILENAME);
 }
 
-function defaultConfig() {
-  return {
+function readProvisionedClientDefaults(electronApp = null) {
+  const appInstance = resolveApp(electronApp);
+  const candidates = [
+    String(process.env.POS_CLIENT_DEFAULTS_FILE || '').trim(),
+    path.join(appInstance.getAppPath?.() || '', 'electron', 'config', 'client.defaults.json'),
+    process.resourcesPath
+      ? path.join(process.resourcesPath, 'client.defaults.json')
+      : '',
+  ].filter(Boolean);
+
+  for (const filePath of candidates) {
+    try {
+      if (!fs.existsSync(filePath)) continue;
+      const parsed = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+      const hostUrl = String(parsed?.client?.hostUrl || '').trim().replace(/\/+$/, '');
+      const secret = String(parsed?.client?.secret || '').trim();
+      if (parsed?.mode !== 'client' || !/^https?:\/\//i.test(hostUrl) || secret.length < 16) {
+        continue;
+      }
+      return { mode: 'client', client: { hostUrl, secret } };
+    } catch {
+      // Ignore an invalid provisioning file and retain safe local defaults.
+    }
+  }
+  return null;
+}
+
+function defaultConfig(electronApp = null) {
+  const config = {
     device_id: randomUUID(),
     // 'host' | 'client'
     mode: 'host',
@@ -52,6 +79,12 @@ function defaultConfig() {
       retryCount: 2,
     },
   };
+  const provisioned = readProvisionedClientDefaults(electronApp);
+  if (provisioned) {
+    config.mode = 'client';
+    config.client = { ...config.client, ...provisioned.client };
+  }
+  return config;
 }
 
 function readConfig(electronApp = null) {
@@ -60,14 +93,14 @@ function readConfig(electronApp = null) {
 
   try {
     if (!fs.existsSync(cfgPath)) {
-      const cfg = defaultConfig();
+      const cfg = defaultConfig(appInstance);
       fs.writeFileSync(cfgPath, JSON.stringify(cfg, null, 2), 'utf8');
       return cfg;
     }
 
     const raw = fs.readFileSync(cfgPath, 'utf8');
     const parsed = JSON.parse(raw);
-    const defaults = defaultConfig();
+    const defaults = defaultConfig(appInstance);
     const merged = {
       ...defaults,
       ...parsed,
@@ -75,7 +108,19 @@ function readConfig(electronApp = null) {
       client: { ...defaults.client, ...(parsed.client || {}) },
       printer: { ...defaults.printer, ...(parsed.printer || {}) },
     };
-    if (!parsed.device_id) {
+    const provisioned = readProvisionedClientDefaults(appInstance);
+    const provisioningChanged =
+      !!provisioned &&
+      (merged.mode !== 'client' ||
+        merged.client.hostUrl !== provisioned.client.hostUrl ||
+        merged.client.secret !== provisioned.client.secret);
+    if (provisioned) {
+      // A server-client installer must remain a client even when Windows has
+      // pos-config.json left from an older local/HOST installation.
+      merged.mode = 'client';
+      merged.client = { ...merged.client, ...provisioned.client };
+    }
+    if (!parsed.device_id || provisioningChanged) {
       try {
         fs.writeFileSync(cfgPath, JSON.stringify(merged, null, 2), 'utf8');
       } catch {
@@ -85,7 +130,7 @@ function readConfig(electronApp = null) {
     return merged;
   } catch (_e) {
     // Fail-safe: never crash the app due to config corruption
-    const cfg = defaultConfig();
+    const cfg = defaultConfig(appInstance);
     try {
       fs.writeFileSync(cfgPath, JSON.stringify(cfg, null, 2), 'utf8');
     } catch {
@@ -113,7 +158,7 @@ function writeConfig(patch, electronApp = null) {
 function resetConfig(electronApp = null) {
   const appInstance = resolveApp(electronApp);
   const cfgPath = getConfigPath(appInstance);
-  const cfg = defaultConfig();
+  const cfg = defaultConfig(appInstance);
   fs.writeFileSync(cfgPath, JSON.stringify(cfg, null, 2), 'utf8');
   return cfg;
 }
@@ -123,6 +168,7 @@ module.exports = {
   readConfig,
   writeConfig,
   resetConfig,
+  readProvisionedClientDefaults,
 };
 
 

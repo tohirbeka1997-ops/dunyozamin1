@@ -122,10 +122,58 @@ class ReportsService {
   _cogsLineSql(itemAlias = 'oi', qtyExpr = null, options = {}) {
     const fromUnified =
       options.fromUnified != null ? !!options.fromUnified : this._useUnifiedSales();
+    const usePurchaseFallback =
+      options.usePurchaseFallback != null
+        ? !!options.usePurchaseFallback
+        : this._isTruthySetting('accounting.cogs_legacy_fallback');
     return actualCogsLineSql(this.db, itemAlias, qtyExpr, {
-      usePurchaseFallback: this._isTruthySetting('accounting.cogs_legacy_fallback'),
+      usePurchaseFallback,
       fromUnified,
     });
+  }
+
+  /**
+   * POS savat qaytarish qatori tannarxi: ABS(qty) × (frozen cost yoki purchase_price).
+   * cost_price=0 bo‘lgan eski qaytarishlar sof foydani sun’iy minusga tortmasin.
+   */
+  _posReturnLineCogsSql(itemAlias = 'oi') {
+    const qtyAbs = `ABS(COALESCE(${itemAlias}.qty_base, ${itemAlias}.qty_sale, ${itemAlias}.quantity, 0))`;
+    return this._cogsLineSql(itemAlias, qtyAbs, {
+      usePurchaseFallback: true,
+      fromUnified: this._useUnifiedSales(),
+    });
+  }
+
+  _posCartReturnTotals(rows) {
+    let total = 0;
+    let cogs = 0;
+    for (const o of rows || []) {
+      const rev = Math.abs(Number(o.revenue ?? o.total_amount ?? 0));
+      const explicitCogs = Number(o.return_cogs_abs);
+      const lineCogs =
+        Number.isFinite(explicitCogs) && explicitCogs >= 0
+          ? explicitCogs
+          : Math.max(0, rev - Math.abs(Number(o.profit ?? 0)));
+      total += rev;
+      cogs += lineCogs;
+    }
+    return { total, profitImpact: Math.max(0, total - cogs), cogs };
+  }
+
+  _posCartReturnLineTotals(rows) {
+    let total = 0;
+    let cogs = 0;
+    for (const o of rows || []) {
+      const rev = Math.abs(Number(o.return_revenue_abs || 0));
+      const explicitCogs = Number(o.return_cogs_abs);
+      const lineCogs =
+        Number.isFinite(explicitCogs) && explicitCogs >= 0
+          ? explicitCogs
+          : Math.max(0, rev - Math.abs(Number(o.return_profit_abs || 0)));
+      total += rev;
+      cogs += lineCogs;
+    }
+    return { total, profitImpact: Math.max(0, total - cogs), cogs };
   }
 
   _soldLineRevenueSql(itemAlias = 'oi') {
@@ -204,30 +252,6 @@ class ReportsService {
   /** Almashuv savati: jami musbat, lekin ichida manfiy (qaytarish) qatorlar bor. */
   _hasPosCartReturnLines(row) {
     return Number(row?.return_revenue_abs || 0) > 0.009;
-  }
-
-  _posCartReturnTotals(rows) {
-    let total = 0;
-    let profitImpact = 0;
-    for (const o of rows || []) {
-      const rev = Math.abs(Number(o.revenue ?? o.total_amount ?? 0));
-      const profit = Math.abs(Number(o.profit ?? 0));
-      total += rev;
-      profitImpact += profit;
-    }
-    return { total, profitImpact, cogs: total - profitImpact };
-  }
-
-  _posCartReturnLineTotals(rows) {
-    let total = 0;
-    let profitImpact = 0;
-    for (const o of rows || []) {
-      const rev = Math.abs(Number(o.return_revenue_abs || 0));
-      const profit = Math.abs(Number(o.return_profit_abs || 0));
-      total += rev;
-      profitImpact += profit;
-    }
-    return { total, profitImpact, cogs: total - profitImpact };
   }
 
   _posCartReturnRowsFromOrders(posCartReturns) {
@@ -1529,10 +1553,13 @@ class ReportsService {
       date_to: dateTo,
       sales_channel: filters.sales_channel,
     });
-    if (Number(pnl.meta?.insufficient_cogs_lines || 0) > 0) {
-      warnings.missing_cost_count = Number(pnl.meta.insufficient_cogs_lines);
-      warnings.cogs_missing = true;
-    }
+    const insufficient = Number(pnl.meta?.insufficient_cogs_lines || 0) || 0;
+    warnings.missing_cost_count = insufficient;
+    warnings.cogs_missing = insufficient > 0;
+    warnings.accounting_cogs_missing = insufficient > 0;
+    warnings.profit_incomplete = insufficient > 0;
+    warnings.missing_cost_samples =
+      insufficient > 0 ? pnl.meta?.insufficient_cogs_samples || [] : [];
     warnings.cogs_source = pnl.cogs_source;
     warnings.cogs_source_breakdown = pnl.cogs_source_breakdown;
 
@@ -1633,6 +1660,7 @@ class ReportsService {
     const orderJoinCol = this._useUnifiedSales() ? 'unified_order_id' : 'order_id';
     const salesJoinCol = this._useUnifiedSales() ? 'unified_id' : 'id';
     const cogsItemExpr = this._cogsLineSql('oi');
+    const returnCogsAbsExpr = this._posReturnLineCogsSql('oi');
     const soldRevExpr = this._soldLineRevenueUzsSql('oi');
     const profitItemExpr = `(${soldRevExpr}) - (${cogsItemExpr})`;
 
@@ -1719,6 +1747,11 @@ class ReportsService {
               ELSE 0
             END) AS return_profit_abs,
             SUM(CASE
+              WHEN COALESCE(oi.qty_sale, oi.quantity, 0) < -0.009
+              THEN (${returnCogsAbsExpr})
+              ELSE 0
+            END) AS return_cogs_abs,
+            SUM(CASE
               WHEN COALESCE(oi.qty_sale, oi.quantity, 0) >= -0.009
               THEN ${soldRevExpr}
               ELSE 0
@@ -1767,6 +1800,7 @@ class ReportsService {
           COALESCE(a.profit, COALESCE(a.revenue, 0) - COALESCE(a.cogs, 0)) AS profit,
           COALESCE(a.return_revenue_abs, 0) AS return_revenue_abs,
           COALESCE(a.return_profit_abs, 0) AS return_profit_abs,
+          COALESCE(a.return_cogs_abs, 0) AS return_cogs_abs,
           COALESCE(a.sale_revenue, COALESCE(a.revenue, 0)) AS sale_revenue,
           COALESCE(a.sale_profit, COALESCE(a.profit, 0)) AS sale_profit
         FROM ${salesTable} o

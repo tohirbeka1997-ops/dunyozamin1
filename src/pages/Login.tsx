@@ -32,9 +32,12 @@ export default function Login() {
   const navigate = useNavigate();
   const location = useLocation();
   const { toast } = useToast();
-  const { signIn, signUp, loading, multiTenantMode } = useAuth();
+  const { signIn, signInWithGoogle, signUp, loading, multiTenantMode } = useAuth();
 
   const redirectFrom = (location.state as { from?: { pathname?: string } })?.from?.pathname;
+
+  const googleBtnRef = useRef<HTMLDivElement | null>(null);
+  const [googleEnabled, setGoogleEnabled] = useState(false);
 
   const [entryMode, setEntryMode] = useState<AppEntryMode>(() => {
     return loadPreferredEntryMode() ?? detectAppEntryMode();
@@ -91,11 +94,145 @@ export default function Login() {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const submittingRef = useRef(false);
 
+  // Must sit AFTER the state it mirrors — otherwise TDZ ("Cannot access 'P'
+  // before initialization") crashes Login/POS in production minified builds.
+  const googleCtxRef = useRef({
+    multiTenantMode,
+    rememberLogin,
+    entryMode,
+    tenant: signInData.tenant,
+    email: signInData.email,
+    loading,
+    isSubmitting,
+  });
+  googleCtxRef.current = {
+    multiTenantMode,
+    rememberLogin,
+    entryMode,
+    tenant: signInData.tenant,
+    email: signInData.email,
+    loading,
+    isSubmitting,
+  };
+
   // Web: drop any stale session before login RPC runs (prevents 401 on auth.me
   // and accidental redirect to /pos with an expired token).
   useEffect(() => {
     if (!isRemoteRpcMode()) return;
     clearRemoteSessionForLogin();
+  }, []);
+
+  // Google Sign-In: load GIS once when server has GOOGLE_CLIENT_ID.
+  useEffect(() => {
+    let cancelled = false;
+
+    const finishGoogleLogin = async (idToken: string) => {
+      const ctx = googleCtxRef.current;
+      if (submittingRef.current || ctx.isSubmitting || ctx.loading) return;
+      const trimmedTenant = String(ctx.tenant || '').trim().toLowerCase();
+      if (ctx.multiTenantMode === true) {
+        if (!trimmedTenant || !/^[a-z0-9][a-z0-9_-]{1,39}$/.test(trimmedTenant)) {
+          toast({
+            title: 'Xatolik',
+            description: 'Google bilan kirishdan oldin do\'kon (tenant) kodini kiriting',
+            variant: 'destructive',
+          });
+          return;
+        }
+      }
+      submittingRef.current = true;
+      setIsSubmitting(true);
+      try {
+        setRememberMeEnabled(ctx.rememberLogin);
+        await signInWithGoogle(idToken, trimmedTenant || null);
+        saveRememberedLogin(ctx.rememberLogin, ctx.email || 'google', trimmedTenant || null);
+        toast({ title: 'Muvaffaqiyatli', description: 'Google orqali kirdingiz' });
+        completeLoginNavigation(ctx.entryMode);
+      } catch (error) {
+        const errorMessage = error instanceof Error ? error.message : 'Google kirishda xatolik';
+        toast({ title: 'Xatolik', description: errorMessage, variant: 'destructive' });
+      } finally {
+        submittingRef.current = false;
+        setIsSubmitting(false);
+      }
+    };
+
+    (async () => {
+      try {
+        const api = (window as any).posApi;
+        if (!api?.auth?.googleConfig) return;
+        const cfg = await handleIpcResponse<{ enabled?: boolean; client_id?: string | null }>(
+          api.auth.googleConfig(),
+        );
+        const clientId = cfg?.enabled && cfg?.client_id ? String(cfg.client_id).trim() : '';
+        if (!clientId || cancelled) return;
+
+        await new Promise<void>((resolve, reject) => {
+          if ((window as any).google?.accounts?.id) {
+            resolve();
+            return;
+          }
+          const existing = document.querySelector(
+            'script[src="https://accounts.google.com/gsi/client"]',
+          ) as HTMLScriptElement | null;
+          if (existing) {
+            // Script already present but may still be loading (or already failed).
+            if ((window as any).google?.accounts?.id) {
+              resolve();
+              return;
+            }
+            existing.addEventListener('load', () => resolve(), { once: true });
+            existing.addEventListener('error', () => reject(new Error('Google script yuklanmadi')), {
+              once: true,
+            });
+            return;
+          }
+          const scriptEl = document.createElement('script');
+          scriptEl.src = 'https://accounts.google.com/gsi/client';
+          scriptEl.async = true;
+          scriptEl.onload = () => resolve();
+          scriptEl.onerror = () => reject(new Error('Google script yuklanmadi'));
+          document.head.appendChild(scriptEl);
+        });
+
+        if (cancelled) return;
+        const googleId = (window as any).google?.accounts?.id;
+        if (!googleId || !googleBtnRef.current) return;
+        try {
+          googleId.initialize({
+            client_id: clientId,
+            callback: (resp: { credential?: string }) => {
+              const token = resp?.credential;
+              if (token) void finishGoogleLogin(token);
+            },
+            auto_select: false,
+            cancel_on_tap_outside: true,
+          });
+          googleBtnRef.current.innerHTML = '';
+          googleId.renderButton(googleBtnRef.current, {
+            theme: 'outline',
+            size: 'large',
+            text: 'signin_with',
+            shape: 'rectangular',
+            width: 320,
+            locale: 'uz',
+          });
+        } catch (gisErr) {
+          console.warn('[Login] Google GIS render failed:', gisErr);
+          if (!cancelled) setGoogleEnabled(false);
+          return;
+        }
+        if (!cancelled) setGoogleEnabled(true);
+      } catch (err) {
+        console.warn('[Login] Google config unavailable:', err);
+        if (!cancelled) setGoogleEnabled(false);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   /** Loaded from pos:tenants:publicProfile when tenant slug is valid (MT only). */
@@ -439,9 +576,6 @@ export default function Login() {
                     disabled={isSubmitting || loading}
                     autoComplete="username"
                   />
-                  <p className="text-xs text-muted-foreground">
-                    Google/Gmail orqali kirish qo&apos;llab-quvvatlanmaydi — login va parol bilan kiring.
-                  </p>
                 </div>
                 <div className="space-y-2">
                   <Label htmlFor="signin-password">Parol</Label>
@@ -482,6 +616,25 @@ export default function Login() {
                 <Button type="submit" className="w-full" disabled={isSubmitting || loading}>
                   {isSubmitting || loading ? 'Kirilmoqda...' : 'Kirish'}
                 </Button>
+                <div
+                  className={cn('space-y-3', googleEnabled ? '' : 'hidden')}
+                  aria-hidden={!googleEnabled}
+                >
+                  <div className="relative py-1">
+                    <div className="absolute inset-0 flex items-center">
+                      <span className="w-full border-t" />
+                    </div>
+                    <div className="relative flex justify-center text-xs uppercase">
+                      <span className="bg-card px-2 text-muted-foreground">yoki</span>
+                    </div>
+                  </div>
+                  <div className="flex justify-center">
+                    <div ref={googleBtnRef} />
+                  </div>
+                  <p className="text-xs text-center text-muted-foreground">
+                    Google hisobidagi email POS foydalanuvchisiga mos kelishi kerak
+                  </p>
+                </div>
                 <div className="text-center text-sm text-muted-foreground">
                   Hisobingiz yo'qmi?{' '}
                   <button

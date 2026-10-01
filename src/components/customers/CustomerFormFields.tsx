@@ -152,7 +152,7 @@ export default function CustomerFormFields({
               </SelectContent>
             </Select>
             <p className="text-xs text-muted-foreground">
-              Usta bo‘lsa POS’da usta narxi avtomatik qo‘llanadi (min miqdor sharti bilan).
+              Usta belgisi mijozni usta sifatida ko‘rsatadi (bonus/loylik). POS’da usta narxi faqat operator «Narxi»ni Usta qilib tanlaganda qo‘llanadi.
             </p>
           </div>
 

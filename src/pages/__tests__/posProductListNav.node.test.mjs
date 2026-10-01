@@ -71,9 +71,13 @@ function clampListIndexLocal(index, length) {
   return Math.max(0, Math.min(len - 1, i));
 }
 
-function planCartLineQtyStep(qtySale, direction) {
+function planCartLineQtyStep(qtySale, intentOrDirection) {
   const raw = Number(qtySale);
   const current = Number.isFinite(raw) ? raw : 0;
+  const isReturn = current < 0;
+  let direction = intentOrDirection;
+  if (intentOrDirection === 'add') direction = isReturn ? -1 : 1;
+  else if (intentOrDirection === 'remove') direction = isReturn ? 1 : -1;
   if (direction > 0) {
     const next = current + 1;
     if (next === 0) return { action: 'remove', nextQty: 0 };
@@ -209,6 +213,16 @@ test('planCartLineQtyStep: +1, first-line −1, clamp to remove at 0, empty noop
   assert.deepEqual(planCartLineQtyStep(Number.NaN, -1), { action: 'noop', nextQty: 0 });
   assert.deepEqual(planCartLineQtyStep(-1, 1), { action: 'remove', nextQty: 0 });
   assert.deepEqual(planCartLineQtyStep(-2, -1), { action: 'update', nextQty: -3 });
+});
+
+test('planCartLineQtyStep intents: add/remove flip on return lines', () => {
+  assert.deepEqual(planCartLineQtyStep(2, 'add'), { action: 'update', nextQty: 3 });
+  assert.deepEqual(planCartLineQtyStep(2, 'remove'), { action: 'update', nextQty: 1 });
+  assert.deepEqual(planCartLineQtyStep(1, 'remove'), { action: 'remove', nextQty: 0 });
+  // Return −3: remove → −2 (kamaytirish), add → −4 (ko‘paytirish)
+  assert.deepEqual(planCartLineQtyStep(-3, 'remove'), { action: 'update', nextQty: -2 });
+  assert.deepEqual(planCartLineQtyStep(-3, 'add'), { action: 'update', nextQty: -4 });
+  assert.deepEqual(planCartLineQtyStep(-1, 'remove'), { action: 'remove', nextQty: 0 });
 });
 
 test('resolveListLeftCartIndex prefers selected line, else first; empty cart is -1', () => {

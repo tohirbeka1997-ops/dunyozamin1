@@ -5,8 +5,10 @@ import './lib/i18n';
 import KassaApp from './KassaApp.tsx';
 import { AppWrapper } from './components/common/PageMeta.tsx';
 import { installRemotePosApiIfConfigured } from './lib/remotePosApi';
+import { installPointerEventsGuard } from './lib/releaseStuckPointerEvents';
 
 installRemotePosApiIfConfigured();
+installPointerEventsGuard();
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>

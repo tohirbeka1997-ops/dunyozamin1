@@ -6,6 +6,7 @@
  *   - two batches different costs, FIFO sale
  *   - partial sale
  *   - sale return restores original batch
+ *   - POS cart return (qty < 0) restores batch remaining
  *   - revision surplus/shortage
  *   - costless correction blocked
  *   - parallel/retry allocate cannot consume same qty twice
@@ -477,6 +478,105 @@ try {
     const cmpRows = Array.isArray(valCmp) ? valCmp : valCmp?.rows || [];
     const c = cmpRows.find((r) => r.product_id === p.id);
     assert.ok(c, 'compare valuation should include product');
+  });
+
+  const skuCart = `FIFO-CART-RET-${Date.now()}`;
+  const productCart = products.create({
+    name: 'FIFO Cart Return',
+    sku: skuCart,
+    sale_price: 3000,
+    purchase_price: 1200,
+    track_stock: 1,
+    current_stock: 0,
+  });
+
+  runStep('POS cart return (qty < 0) restores batch remaining', () => {
+    receive(purchases, suppliers, productCart, 3, 1200, 'CART');
+    assert.strictEqual(stockOf(inventory, productCart.id), 3);
+
+    sales.completePOSOrder(
+      { total_amount: 6000, shift_id: shift.id, user_id: ADMIN },
+      [cartLine(productCart, { qtySale: 2, unitPrice: 3000 })],
+      [{ payment_method: 'cash', amount: 6000 }],
+    );
+    assert.strictEqual(stockOf(inventory, productCart.id), 1);
+    const remAfterSale = Number(
+      db.prepare(`SELECT SUM(remaining_qty) AS q FROM inventory_batches WHERE product_id = ?`).get(productCart.id).q
+    );
+    assert.strictEqual(remAfterSale, 1, 'batch remaining after sale');
+
+    const cartReturnRes = sales.completePOSOrder(
+      { total_amount: -3000, shift_id: shift.id, user_id: ADMIN, sales_channel: 'pos' },
+      [cartLine(productCart, { qtySale: -1, unitPrice: 3000 })],
+      [{ payment_method: 'refund_cash', amount: 3000 }],
+    );
+    assert.ok(cartReturnRes?.order_id, 'cart return order created');
+
+    assert.strictEqual(stockOf(inventory, productCart.id), 2, 'stock restored by cart return');
+    const remAfterCartReturn = Number(
+      db.prepare(`SELECT SUM(remaining_qty) AS q FROM inventory_batches WHERE product_id = ?`).get(productCart.id).q
+    );
+    assert.strictEqual(remAfterCartReturn, 2, 'batch remaining must rise with cart return');
+
+    const negItem = db
+      .prepare(
+        `SELECT id FROM order_items WHERE order_id = ? AND COALESCE(qty_base, quantity, 0) < 0 LIMIT 1`
+      )
+      .get(cartReturnRes.order_id);
+    assert.ok(negItem?.id, 'negative order_item exists');
+    const inAlloc = db
+      .prepare(
+        `SELECT COALESCE(SUM(quantity), 0) AS q
+         FROM inventory_batch_allocations
+         WHERE direction = 'in'
+           AND reference_type = 'return_item'
+           AND reference_id = ?`
+      )
+      .get(`cart_return:${negItem.id}`);
+    assert.strictEqual(Number(inAlloc.q), 1, 'cart_return IN allocation written');
+
+    const health = batches.getBatchHealth(productCart.id, WH);
+    assert.strictEqual(Number(health.drift_count || 0), 0, 'no stock/batch drift after cart return');
+  });
+
+  runStep('POS cart return with source_order_item_id restores original sale batch', () => {
+    const skuSrc = `FIFO-CART-SRC-${Date.now()}`;
+    const productSrc = products.create({
+      name: 'FIFO Cart Return Sourced',
+      sku: skuSrc,
+      sale_price: 4000,
+      purchase_price: 1500,
+      track_stock: 1,
+      current_stock: 0,
+    });
+    receive(purchases, suppliers, productSrc, 2, 1500, 'SRC');
+    const saleRes = sales.completePOSOrder(
+      { total_amount: 4000, shift_id: shift.id, user_id: ADMIN },
+      [cartLine(productSrc, { qtySale: 1, unitPrice: 4000 })],
+      [{ payment_method: 'cash', amount: 4000 }],
+    );
+    const soldItem = db
+      .prepare(`SELECT id FROM order_items WHERE order_id = ? AND product_id = ? LIMIT 1`)
+      .get(saleRes.order_id, productSrc.id);
+    assert.ok(soldItem?.id);
+    const batchBefore = db
+      .prepare(`SELECT id, remaining_qty FROM inventory_batches WHERE product_id = ? LIMIT 1`)
+      .get(productSrc.id);
+    assert.strictEqual(Number(batchBefore.remaining_qty), 1);
+
+    const line = cartLine(productSrc, { qtySale: -1, unitPrice: 4000 });
+    line.source_order_item_id = soldItem.id;
+    sales.completePOSOrder(
+      { total_amount: -4000, shift_id: shift.id, user_id: ADMIN, sales_channel: 'pos' },
+      [line],
+      [{ payment_method: 'refund_cash', amount: 4000 }],
+    );
+
+    const batchAfter = db
+      .prepare(`SELECT remaining_qty FROM inventory_batches WHERE id = ?`)
+      .get(batchBefore.id);
+    assert.strictEqual(Number(batchAfter.remaining_qty), 2, 'original sale batch restored');
+    assert.strictEqual(stockOf(inventory, productSrc.id), 2);
   });
 
   console.log(`\nPassed: ${passed}  Failed: ${failed}\n`);

@@ -128,6 +128,16 @@ function registerPurchasesHandlers(services) {
     return purchases.createDraftFromPlanning(payload || {});
   }));
 
+  ipcMain.removeHandler('pos:purchases:extractInvoiceDraft');
+  ipcMain.handle('pos:purchases:extractInvoiceDraft', wrapHandler(async (_event, payload) => {
+    return purchases.extractInvoiceDraft(payload || {});
+  }));
+
+  ipcMain.removeHandler('pos:purchases:confirmInvoicePurchase');
+  ipcMain.handle('pos:purchases:confirmInvoicePurchase', wrapHandler(async (_event, payload) => {
+    return purchases.confirmInvoicePurchase(payload || {});
+  }));
+
   console.log('All purchases handlers registered successfully');
 }
 

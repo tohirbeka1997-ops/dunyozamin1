@@ -1013,6 +1013,138 @@ class BatchService {
   }
 
   /**
+   * Legacy / pre-batch sales: no OUT allocations on the order_item.
+   * Put returned qty into the newest batch (or create a return coverage batch).
+   */
+  _putReturnWithoutSoldAllocations({
+    returnItemId,
+    orderItemId,
+    productId,
+    warehouseId,
+    quantity,
+  } = {}) {
+    const wh = this._resolveWarehouseId(warehouseId);
+    const qty = Number(quantity || 0);
+    if (!(qty > 0)) {
+      throw createError(ERROR_CODES.VALIDATION_ERROR, 'quantity must be > 0');
+    }
+    const now = this._nowSql();
+
+    let batch = this.db
+      .prepare(
+        `
+        SELECT id, unit_cost, remaining_qty, status
+        FROM inventory_batches
+        WHERE product_id = ?
+          AND warehouse_id = ?
+        ORDER BY CASE WHEN status = 'active' THEN 0 ELSE 1 END,
+                 opened_at DESC,
+                 created_at DESC
+        LIMIT 1
+      `
+      )
+      .get(productId, wh);
+
+    let unitCost = 0;
+    if (!batch?.id) {
+      unitCost = Number(this.defaultUnitCost(productId) || 0) || 0;
+      const batchId = randomUUID();
+      const docNo = `RET-LEGACY-${String(now).slice(0, 10).replace(/-/g, '')}`;
+      this._insertBatch({
+        id: batchId,
+        product_id: productId,
+        warehouse_id: wh,
+        opened_at: now,
+        unit_cost: unitCost,
+        cost_price_uzs: unitCost,
+        initial_qty: qty,
+        remaining_qty: qty,
+        source_type: 'adjustment_in',
+        source_id: orderItemId || returnItemId,
+        supplier_id: null,
+        supplier_name: null,
+        doc_no: docNo,
+        status: 'active',
+        created_at: now,
+      });
+      this._warnZeroCostBatch(batchId, productId, unitCost, 'return_legacy');
+      batch = this.db.prepare('SELECT id, unit_cost, remaining_qty, status FROM inventory_batches WHERE id = ?').get(batchId);
+    } else {
+      unitCost = Number(batch.unit_cost || 0) || 0;
+      const before = Number(batch.remaining_qty || 0);
+      const after = before + qty;
+      this.db
+        .prepare(
+          `
+          UPDATE inventory_batches
+          SET remaining_qty = ?,
+              status = CASE WHEN status = 'closed' AND ? > 0 THEN 'active' ELSE status END
+          WHERE id = ?
+        `
+        )
+        .run(after, after, batch.id);
+    }
+
+    const allocId = randomUUID();
+    this.db
+      .prepare(
+        `
+        INSERT INTO inventory_batch_allocations (
+          id, batch_id, direction, product_id, warehouse_id,
+          quantity, unit_cost, reference_type, reference_id, created_at
+        )
+        VALUES (?, ?, 'in', ?, ?, ?, ?, 'return_item', ?, ?)
+      `
+      )
+      .run(allocId, batch.id, productId, wh, qty, unitCost, returnItemId, now);
+
+    return [{ id: allocId, batch_id: batch.id, quantity: qty, unit_cost: unitCost }];
+  }
+
+  /**
+   * POS cart / exchange return (negative qty order_item): put stock back into batches.
+   * When sourceOrderItemId is known, mirror formal returns (restore the original sale's OUT batches).
+   * Otherwise fall back to newest-batch / coverage-batch put-back (same as legacy returns).
+   *
+   * Call inside the same db.transaction() as the stock_balances increase.
+   */
+  allocateReturnForCartOrderItem({
+    orderItemId,
+    productId,
+    warehouseId,
+    quantity,
+    sourceOrderItemId = null,
+  } = {}) {
+    this._requireBatchTables();
+    const qty = Math.abs(Number(quantity || 0));
+    if (!orderItemId) throw createError(ERROR_CODES.VALIDATION_ERROR, 'orderItemId is required');
+    if (!productId) throw createError(ERROR_CODES.VALIDATION_ERROR, 'productId is required');
+    if (!(qty > 0)) throw createError(ERROR_CODES.VALIDATION_ERROR, 'quantity must be > 0');
+
+    const returnItemId = `cart_return:${orderItemId}`;
+    const sourceId = sourceOrderItemId ? String(sourceOrderItemId) : null;
+
+    if (sourceId) {
+      return this.allocateReturnForReturnItem({
+        returnItemId,
+        orderItemId: sourceId,
+        productId,
+        warehouseId,
+        quantity: qty,
+      });
+    }
+
+    // No linked original sale line: put into newest batch (or create coverage batch).
+    return this._putReturnWithoutSoldAllocations({
+      returnItemId,
+      orderItemId,
+      productId,
+      warehouseId,
+      quantity: qty,
+    });
+  }
+
+  /**
    * Supports both call styles:
    * - allocateReturnForReturnItem({ returnItemId, orderItemId, productId, warehouseId, quantity })
    * - allocateReturnForReturnItem(returnItemId, orderItemId, productId, warehouseId, quantity)
@@ -1049,12 +1181,30 @@ class BatchService {
       .all(orderItemId2);
 
     if (!soldAllocs || soldAllocs.length === 0) {
-      const err = createError(
-        ERROR_CODES.VALIDATION_ERROR,
-        'Cannot process return: no batch allocations found for original sale (order_item)'
-      );
-      err.details = { orderItemId: orderItemId2, productId: productId2, warehouseId: wh };
-      throw err;
+      // Pre-batch / legacy sales (or sale that never wrote OUT allocs): still allow return.
+      // Strict mode keeps the hard error; otherwise put stock back into an existing/new batch.
+      if (this.isBatchStrictBlock()) {
+        const err = createError(
+          ERROR_CODES.VALIDATION_ERROR,
+          'Cannot process return: no batch allocations found for original sale (order_item)'
+        );
+        err.details = { orderItemId: orderItemId2, productId: productId2, warehouseId: wh };
+        throw err;
+      }
+      batchLogger.warn('Return without sold batch allocations — using fallback put-back', {
+        order_item_id: orderItemId2,
+        product_id: productId2,
+        warehouse_id: wh,
+        quantity: requested,
+        return_item_id: returnItemId2,
+      });
+      return this._putReturnWithoutSoldAllocations({
+        returnItemId: returnItemId2,
+        orderItemId: orderItemId2,
+        productId: productId2,
+        warehouseId: wh,
+        quantity: requested,
+      });
     }
 
     // Build set of other return_item ids for this order_item (to compute already returned per batch)

@@ -187,17 +187,21 @@ export default function ProfitLossReport() {
   const grossSalesUzs = Number(summary.gross_revenue_uzs ?? summary.revenue_uzs ?? grossSales);
   const grossSalesUsd = Number(summary.gross_revenue_usd ?? summary.revenue_usd ?? 0);
   const totalDiscounts = Number(summary.discounts ?? summary.discount ?? 0);
-  const netSales = Number(summary.net_revenue ?? summary.net_sales ?? 0);
-  const netSalesUzs = Number(summary.net_sales_uzs ?? netSales);
-  const netSalesUsd = Number(summary.net_sales_usd ?? 0);
-  const cogs = Number(summary.cogs || 0);
-  const grossProfit = Number(summary.gross_profit || 0);
   const returnsRevenue = Number(summary.returns_revenue || 0);
   const returnsRevenueUzs = Number(summary.returns_revenue_uzs ?? returnsRevenue);
   const returnsRevenueUsd = Number(summary.returns_revenue_usd ?? 0);
+  // Sof = brutto − chegirma − qaytarishlar (hujjat + POS F8).
+  // net_sales_uzs faqat sales_returns UZS ni ayiradi — Sof/ DualCurrency uchun emas.
+  const netSales = Number(
+    summary.net_revenue ?? summary.net_sales ?? (grossSales - totalDiscounts - returnsRevenue)
+  );
+  const netSalesUzs = netSales;
+  const netSalesUsd = Number(summary.net_sales_usd ?? 0);
+  const cogs = Number(summary.cogs || 0);
+  const grossProfit = Number(summary.gross_profit || 0);
   const totalExpenses = Number(summary.expenses || 0);
   const finalProfit = Number(summary.net_profit || 0);
-  const profitMargin = Number(summary.profit_margin || 0);
+  const profitMargin = netSales > 0 ? (grossProfit / netSales) * 100 : Number(summary.profit_margin || 0);
   const returnRate = Number(summary.return_rate || 0);
   const cogsSource = String(summary.cogs_source || '');
 

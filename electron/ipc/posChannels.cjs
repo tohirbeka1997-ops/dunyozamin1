@@ -83,6 +83,14 @@ module.exports = {
     'pos:customers:getBonusLedger',
     'pos:customers:adjustBonusPoints',
 
+    // Customer credit reminders
+    'pos:creditReminders:list',
+    'pos:creditReminders:listOpenOrders',
+    'pos:creditReminders:updateDueDate',
+    'pos:creditReminders:send',
+    'pos:creditReminders:listStaffAlerts',
+    'pos:creditReminders:ackStaffAlert',
+
     // Suppliers
     'pos:suppliers:list',
     'pos:suppliers:get',
@@ -171,6 +179,8 @@ module.exports = {
     'pos:purchases:deleteExpense',
     'pos:purchases:previewPlanningDraft',
     'pos:purchases:createPlanningDraft',
+    'pos:purchases:extractInvoiceDraft',
+    'pos:purchases:confirmInvoicePurchase',
 
     // Expenses
     'pos:expenses:listCategories',
@@ -310,6 +320,44 @@ module.exports = {
     'pos:users:update',
     'pos:users:delete',
     'pos:users:listLoginSessions',
+
+    // Newer desktop surfaces (keep in sync with preload + RPC dispatcher)
+    'pos:customers:findDuplicates',
+    'pos:customers:reissueLoyaltyCard',
+    'pos:dashboard:getLowStock',
+    'pos:inventory:getDeadStock',
+    'pos:inventory:getReorderSuggestions',
+    'pos:inventory:getStockTurnover',
+    'pos:marketplaceContent:dailyDealHistory',
+    'pos:marketplaceContent:deleteBanner',
+    'pos:marketplaceContent:getDailyDeal',
+    'pos:marketplaceContent:listBanners',
+    'pos:marketplaceContent:reorderBanners',
+    'pos:marketplaceContent:saveBanner',
+    'pos:marketplaceContent:setDailyDeal',
+    'pos:orders:cancel',
+    'pos:products:addImage',
+    'pos:products:count',
+    'pos:products:getImages',
+    'pos:products:removeImage',
+    'pos:products:setImages',
+    'pos:purchases:approveCostCorrection',
+    'pos:purchases:createCostCorrection',
+    'pos:purchases:exportList',
+    'pos:purchases:listCostCorrections',
+    'pos:quotes:convertToSale',
+    'pos:quotes:create',
+    'pos:quotes:delete',
+    'pos:quotes:generateNumber',
+    'pos:quotes:get',
+    'pos:quotes:list',
+    'pos:quotes:update',
+    'pos:reports:abcAnalysis',
+    'pos:settings:openaiStatus',
+    'pos:settings:testTelegramAiAnalysis',
+    'pos:settings:testTelegramDailyPoster',
+    'pos:settings:testTelegramReport',
+    'pos:users:resetPassword',
 
     // System / Debug
     'pos:health',
