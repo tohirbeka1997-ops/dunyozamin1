@@ -364,13 +364,35 @@ function main() {
         timeoutMs: stepTimeoutMs,
       });
 
-      // Windows bsdtar ignores many --exclude patterns and will pack Electron
-      // release zips / node_modules (multi-GB). git archive ships only HEAD.
-      console.log('[deploy:server] packing source tar via git archive (HEAD only)...');
-      runStep('pack-git-archive', 'git', ['archive', '--format=tar', '-o', tmpTar, 'HEAD'], {
-        cwd: ROOT,
-        timeoutMs: 120_000,
-      });
+      // Windows bsdtar ignores --exclude and packs Electron zips (multi-GB).
+      // git archive ships HEAD only; drop trees deployed by other steps.
+      console.log('[deploy:server] packing source tar via git archive (HEAD, slim)...');
+      runStep(
+        'pack-git-archive',
+        'git',
+        [
+          'archive',
+          '--format=tar',
+          '-o',
+          tmpTar,
+          'HEAD',
+          '--',
+          '.',
+          ':(exclude)sales-mobile',
+          ':(exclude)mini-app',
+          ':(exclude)admin-panel',
+          ':(exclude)release',
+          ':(exclude)release-client',
+          ':(exclude)release-client-0.0.6',
+          ':(exclude)release-client-0.0.7',
+          ':(exclude)release-client-final',
+          ':(exclude)release-print-agent',
+        ],
+        {
+          cwd: ROOT,
+          timeoutMs: 120_000,
+        },
+      );
       const tarMb = Math.round((fs.statSync(tmpTar).size / (1024 * 1024)) * 10) / 10;
       console.log(`[deploy:server] tar size: ${tarMb} MB → ${tmpTar}`);
       if (tarMb > 200) {
