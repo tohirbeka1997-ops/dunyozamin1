@@ -238,8 +238,14 @@ test('staff customers, suppliers, purchase orders (integration)', async () => {
         const payBody = await payRes.json();
         assert.equal(Number(payBody.data.new_balance), -30000);
 
-        // Credit sale with due_date
-        const dueDate = '2026-09-15';
+        // Credit sale with due_date (must be today or later — POS rejects backdated due_date)
+        const due = new Date();
+        due.setDate(due.getDate() + 14);
+        const dueDate = [
+          due.getFullYear(),
+          String(due.getMonth() + 1).padStart(2, '0'),
+          String(due.getDate()).padStart(2, '0'),
+        ].join('-');
         const sellRes = await fetch(`${base}/v1/staff/sales`, {
           method: 'POST',
           headers: authHeader(token),
