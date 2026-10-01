@@ -364,64 +364,12 @@ function main() {
         timeoutMs: stepTimeoutMs,
       });
 
-      // Windows bsdtar: `--exclude=PAT` often ignored; use `--exclude PAT`.
-      // Also exclude fat local artifacts that must never ship to VPS.
-      const excludePatterns = [
-        '.git',
-        'node_modules',
-        '**/node_modules',
-        'public-api/node_modules',
-        'sales-mobile',
-        'mini-app',
-        'admin-panel',
-        'dist',
-        '.pos-data-dev',
-        'release',
-        'release2',
-        'release_build',
-        'release_build2',
-        'release_build3',
-        'release_final',
-        'release-livefixes',
-        'release-build',
-        'release-client',
-        'release-client-0.0.6',
-        'release-client-0.0.7',
-        'release-client-final',
-        'release-print-agent',
-        '.expo',
-        'sales-mobile/.expo',
-        'agent-transcripts',
-        '.agents',
-        'backups',
-        '*.sqlite',
-        '*.sqlite.gz',
-        '*.db',
-        '*.db-wal',
-        '*.db-shm',
-        'tmp-*',
-        '.env',
-        '.env.*',
-        'deploy/deploy.env',
-        '*.log',
-        'deploy-full*.log',
-      ];
-      const excludeArgs = excludePatterns.flatMap((p) => ['--exclude', p]);
-      // Quote paths for Windows shells (spaces in user profile / temp).
-      const tarCmd = [
-        'tar',
-        ...excludeArgs,
-        '-cf',
-        `"${tmpTar}"`,
-        '-C',
-        `"${ROOT}"`,
-        '.',
-      ].join(' ');
-      console.log('[deploy:server] packing source tar (Windows-safe excludes)...');
-      execSync(tarCmd, {
-        stdio: 'inherit',
+      // Windows bsdtar ignores many --exclude patterns and will pack Electron
+      // release zips / node_modules (multi-GB). git archive ships only HEAD.
+      console.log('[deploy:server] packing source tar via git archive (HEAD only)...');
+      runStep('pack-git-archive', 'git', ['archive', '--format=tar', '-o', tmpTar, 'HEAD'], {
         cwd: ROOT,
-        shell: true,
+        timeoutMs: 120_000,
       });
       const tarMb = Math.round((fs.statSync(tmpTar).size / (1024 * 1024)) * 10) / 10;
       console.log(`[deploy:server] tar size: ${tarMb} MB → ${tmpTar}`);
